@@ -323,6 +323,7 @@ fn complete_six_second_prefix_exercises_targets_without_expanding_native_history
                         engine_sample_rate: 48_000,
                         max_demand_frames: 48,
                         age_limit_100ns: None,
+                        max_ingress_elapsed_100ns: None,
                     },
                 )
                 .unwrap();

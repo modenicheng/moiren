@@ -76,7 +76,63 @@ fn candidate(target: u32, capacity: u32) -> ProcessBridgeOptions {
         engine_sample_rate: 48_000,
         max_demand_frames: 4,
         age_limit_100ns: None,
+        max_ingress_elapsed_100ns: None,
     }
+}
+
+#[test]
+fn ingress_elapsed_candidate_refuses_replay_instead_of_silently_disabling_enforcement() {
+    let (packets, reads) = collected(8);
+    let trace = trace(packets, reads).unwrap();
+    for limit in [1, 100_000, u64::MAX] {
+        let options = ProcessBridgeOptions {
+            max_ingress_elapsed_100ns: Some(limit),
+            ..candidate(12, 32)
+        };
+        let error = trace.replay(&process(), 7, options).unwrap_err();
+        assert!(
+            error.to_string().contains("host-ingress elapsed"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn ingress_elapsed_baseline_losses_remain_visible_when_candidate_has_no_limit() {
+    let (mut ingress, mut source, observer) = capture_bridge(ClockBridgeConfig {
+        capacity_frames: 8,
+        target_fill_frames: 4,
+        detect_position_gaps: false,
+        max_ingress_elapsed_100ns: Some(1),
+        ..Default::default()
+    })
+    .unwrap();
+    ingress
+        .push_packet_with_publication_clock(
+            &[],
+            CapturePacket {
+                frames: 4,
+                flags: SILENT,
+                device_position_frames: 0,
+                qpc_100ns: 0,
+            },
+            || Some(1000),
+        )
+        .unwrap();
+    source
+        .read_interleaved_with_publication_clock(&mut [0.0; 8], || Some(1100))
+        .unwrap();
+    drop(ingress);
+    drop(source);
+    let trace = trace(
+        observer.packet_history().unwrap(),
+        observer.queue_history().unwrap(),
+    )
+    .unwrap();
+    let report = trace.replay(&process(), 7, candidate(12, 32)).unwrap();
+    let json = serde_json::to_value(report).unwrap();
+    assert_eq!(json["baseline"]["ingress_elapsed_discarded_frames"], 4);
+    assert!(!json["qualified"].as_bool().unwrap());
 }
 
 #[test]
@@ -295,6 +351,7 @@ fn replay_independent_capacity_and_bounded_target_candidates_are_not_presets() {
                         engine_sample_rate: 48_000,
                         max_demand_frames: 48,
                         age_limit_100ns: None,
+                        max_ingress_elapsed_100ns: None,
                     },
                 )
                 .unwrap();
@@ -481,6 +538,7 @@ fn expanded_candidate(
         engine_sample_rate: consumer_rate,
         max_demand_frames: demand,
         age_limit_100ns: None,
+        max_ingress_elapsed_100ns: None,
     };
     options.prepare().unwrap();
     options

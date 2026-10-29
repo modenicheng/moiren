@@ -885,6 +885,7 @@ fn preferences_persist_transport_latency_and_startup_keeps_it_requested() {
             ..Default::default()
         }),
         vad_recovery_cap_periods: Some(1),
+        ..Default::default()
     };
     let preferences = AppPreferences {
         transport_latency: transport,

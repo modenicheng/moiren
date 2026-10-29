@@ -48,6 +48,8 @@ pub enum MeasuredAdmissionError {
     GenerationMismatch,
     #[error("measured admission requires an explicit Target policy")]
     TargetRequired,
+    #[error("measured Process admission cannot preserve or replay ingress elapsed enforcement")]
+    IngressElapsedUnsupported,
     #[error("measured Process frame conversion or arithmetic overflowed")]
     ArithmeticOverflow,
     #[error(transparent)]
@@ -184,6 +186,7 @@ impl MeasuredProcessDelivery {
             engine_sample_rate,
             max_demand_frames,
             age_limit_100ns: None,
+            max_ingress_elapsed_100ns: None,
         })
     }
 

@@ -2,6 +2,37 @@ use super::*;
 use crate::{SessionDuration, capture::CaptureSource};
 
 #[test]
+fn ingress_elapsed_native_preparation_refuses_missing_host_clock() {
+    let options = crate::process_loopback::ProcessBridgeOptions {
+        max_ingress_elapsed_100ns: Some(100_000),
+        ..Default::default()
+    };
+    let (sender, _receiver) = mpsc::sync_channel(1);
+    let preparation = CapturePreparation::Configured {
+        sender,
+        config: options.clock_config().unwrap(),
+    };
+    let mut report = CaptureReport::new(
+        CaptureSource::ProcessLoopback,
+        SessionDuration::UntilStopped,
+    );
+    assert!(
+        preparation
+            .prepare(
+                NativeStreamTiming {
+                    sample_rate: 48_000,
+                    period_frames: None,
+                    capacity_frames: 480
+                },
+                2,
+                &mut report,
+                None
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn configured_process_preparation_changes_real_priming_and_reports_the_attached_queue() {
     use crate::{
         clock_bridge::CapturePacket,

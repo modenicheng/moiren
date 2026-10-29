@@ -158,6 +158,12 @@ fn measured_projection_requires_complete_matching_observations() {
     let measured = observation.measured(&process, 7).unwrap();
     assert!(measured.process().same_process(&process));
     assert_eq!(measured.owner_generation(), 7);
+    for limit in [1, u64::MAX] {
+        let mut limited = observation.clone();
+        limited.admitted_bridge.max_ingress_elapsed_100ns = Some(limit);
+        let error = limited.measured(&process, 7).unwrap_err();
+        assert_eq!(error, Error::IngressElapsedUnsupported);
+    }
     assert_eq!(
         observation.measured(&process, 8).unwrap_err(),
         Error::GenerationMismatch

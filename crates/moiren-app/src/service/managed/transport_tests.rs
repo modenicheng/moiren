@@ -5,6 +5,7 @@ fn expert() -> TransportLatencySettings {
         process: Some(ExpertInputBuffer::default()),
         vad: Some(ExpertInputBuffer::default()),
         vad_recovery_cap_periods: Some(1),
+        ..Default::default()
     }
 }
 

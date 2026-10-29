@@ -32,6 +32,10 @@ pub struct ClockSource {
     fade_remaining: usize,
     last_age_recovery_written_frames: Option<u64>,
     age_clock: Option<QpcClock>,
+    acquired_ring_remaining: Option<usize>,
+    ingress_read_now: Option<u64>,
+    ingress_clock_high_water_100ns: Option<u64>,
+    ingress_fade_pending: bool,
 }
 impl ClockSource {
     /// Immutable queue policy actually attached during capture preparation.
@@ -116,6 +120,10 @@ impl ClockSource {
             fade_remaining: 0,
             last_age_recovery_written_frames: None,
             age_clock,
+            acquired_ring_remaining: None,
+            ingress_read_now: None,
+            ingress_clock_high_water_100ns: None,
+            ingress_fade_pending: false,
         }
     }
     pub fn read_interleaved(
@@ -148,6 +156,8 @@ impl ClockSource {
     /// Bracket an actual consumer read with a host clock, never a source
     /// sample timestamp. The prepared native path uses the same mechanism;
     /// this injectable variant allows deterministic envelope verification.
+    /// Ingress elapsed enforcement adds one observation after acquiring the
+    /// finite input prefix, for three observations per nonempty read.
     pub fn read_interleaved_with_publication_clock(
         &mut self,
         output: &mut [f32],
@@ -173,11 +183,21 @@ impl ClockSource {
         }
     }
     fn pop_frame(&mut self) -> Option<Frame> {
+        if self.acquired_ring_remaining == Some(0) {
+            return None;
+        }
         let frame = self.rx.pop().ok()?;
+        if let Some(remaining) = self.acquired_ring_remaining.as_mut() {
+            *remaining -= 1;
+        }
         self.add_removed(1);
         Some(frame)
     }
     fn discard_ring(&mut self, frames: usize) {
+        if let Some(remaining) = self.acquired_ring_remaining.as_mut() {
+            assert!(frames <= *remaining, "discard stays in the acquired prefix");
+            *remaining -= frames;
+        }
         self.rx
             .read_chunk(frames)
             .expect("capture discard snapshot")
@@ -220,6 +240,48 @@ impl ClockSource {
             .correction_bits
             .store(0.0f64.to_bits(), Relaxed);
         self.counters.resets.fetch_add(1, Relaxed);
+    }
+    fn ingress_frame_fresh(&self, frame: Frame) -> bool {
+        let Some(limit) = self.config.max_ingress_elapsed_100ns else {
+            return true;
+        };
+        self.ingress_read_now
+            .zip(frame.ingress_started_100ns)
+            .and_then(|(now, started)| now.checked_sub(started.get()))
+            .is_some_and(|elapsed| elapsed <= limit)
+    }
+
+    fn observe_ingress_clock(&mut self, observation: Option<u64>) -> bool {
+        let Some(now) = observation.filter(|&now| now != 0) else {
+            return false;
+        };
+        let monotonic = self
+            .ingress_clock_high_water_100ns
+            .is_none_or(|previous| now >= previous);
+        // Even a rejected bracket can contain a later known time. Retain every
+        // endpoint so a subsequent regression cannot make old input fresh.
+        self.ingress_clock_high_water_100ns = self.ingress_clock_high_water_100ns.max(Some(now));
+        monotonic
+    }
+
+    fn discard_ingress_prefix(&mut self, sample: &mut QueueReadSample) {
+        let ring = self.acquired_ring_remaining.unwrap_or(0);
+        let held = usize::from(self.current.is_some()) + usize::from(self.next.is_some());
+        let discarded = ring + held;
+        if discarded == 0 {
+            return;
+        }
+        self.discard_ring(ring);
+        // Loss is attributed here, not again as reset-held discards.
+        self.reset(false);
+        self.ingress_fade_pending = true;
+        sample.ingress_elapsed_discarded_frames += discarded as u64;
+        self.counters
+            .ingress_elapsed_discarded_frames
+            .fetch_add(discarded as u64, Relaxed);
+        self.counters
+            .ingress_elapsed_recoveries
+            .fetch_add(1, Relaxed);
     }
     fn recover_backlog(&mut self, fill: usize) -> usize {
         let Some(input) = self.config.prepared_input else {
@@ -363,6 +425,16 @@ impl ClockSource {
         }
         let now_qpc_100ns = now_qpc_100ns.or_else(&mut *clock);
         let before = self.queue_boundary(self.rx.slots());
+        if self.config.max_ingress_elapsed_100ns.is_some() {
+            self.acquired_ring_remaining = Some(before.ring_frames as usize);
+            let before_monotonic = self.observe_ingress_clock(now_qpc_100ns);
+            // The pre-read stamp precedes tail acquisition. Observe once after
+            // acquisition so a concurrent newer publication cannot appear fresh
+            // using a clock observation that actually preceded its arrival.
+            let after_acquire = clock().filter(|&now| now != 0);
+            let after_monotonic = self.observe_ingress_clock(after_acquire);
+            self.ingress_read_now = after_acquire.filter(|_| before_monotonic && after_monotonic);
+        }
         let mut sample = QueueReadSample {
             requested_frames: frames as u64,
             before,
@@ -372,8 +444,13 @@ impl ClockSource {
         let resets = self.reset_count;
         let reset_discarded = self.reset_discarded_frames;
         let report = self.read_inventory(frames, now_qpc_100ns, set, &mut sample);
+        self.acquired_ring_remaining = None;
+        self.ingress_read_now = None;
         sample.after = self.queue_boundary(self.rx.slots());
         sample.qpc_after_100ns = clock();
+        if self.config.max_ingress_elapsed_100ns.is_some() {
+            self.observe_ingress_clock(sample.qpc_after_100ns);
+        }
         sample.output_frames = report.transferred_frames as u64;
         sample.resets = self.reset_count - resets;
         sample.reset_discarded_frames = self.reset_discarded_frames - reset_discarded;
@@ -395,6 +472,28 @@ impl ClockSource {
             .publish(now_qpc_100ns.and_then(|now| self.oldest_frame_age(now)));
         let mut fill = (sample.before.ring_frames + sample.before.held_frames) as usize;
         let mut report = BoundaryReport::default();
+        if self.config.max_ingress_elapsed_100ns.is_some() {
+            let fresh = self
+                .current
+                .is_none_or(|frame| self.ingress_frame_fresh(frame))
+                && self
+                    .next
+                    .is_none_or(|frame| self.ingress_frame_fresh(frame))
+                && (sample.before.ring_frames == 0
+                    || self
+                        .rx
+                        .peek()
+                        .is_ok_and(|frame| self.ingress_frame_fresh(*frame)));
+            if !fresh {
+                self.discard_ingress_prefix(sample);
+                self.counters.fill_frames.store(0, Relaxed);
+                return BoundaryReport {
+                    discontinuity: true,
+                    xruns: 1,
+                    ..Default::default()
+                };
+            }
+        }
         let discarded = self.recover_backlog(fill);
         let age_discarded = (discarded == 0)
             .then_some(now_qpc_100ns)
@@ -435,6 +534,10 @@ impl ClockSource {
             }
             self.current = self.pop_frame();
             self.next = self.pop_frame();
+            if self.ingress_fade_pending {
+                self.fade_remaining = RECOVERY_FADE_FRAMES;
+                self.ingress_fade_pending = false;
+            }
         }
         self.counters.min_fill_frames.fetch_min(fill, Relaxed);
         self.counters.max_fill_frames.fetch_max(fill, Relaxed);
@@ -462,6 +565,12 @@ impl ClockSource {
                 self.reset(true);
                 break;
             };
+            if !self.ingress_frame_fresh(a) || !self.ingress_frame_fresh(b) {
+                self.discard_ingress_prefix(sample);
+                report.discontinuity = true;
+                report.xruns = 1;
+                break;
+            }
             if a.generation != b.generation {
                 // Keep the new generation's remaining frames in the ring, but
                 // never interpolate across a missing packet or overflow tail.

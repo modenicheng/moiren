@@ -20,6 +20,10 @@ pub struct ProcessBridgeOptions {
     /// capture cannot currently qualify sample age, so every Some is refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub age_limit_100ns: Option<u64>,
+    /// Maximum host elapsed time since packet publication started. This does
+    /// not establish native sample age or end-to-end presentation latency.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_ingress_elapsed_100ns: Option<u64>,
 }
 
 impl Default for ProcessBridgeOptions {
@@ -30,6 +34,7 @@ impl Default for ProcessBridgeOptions {
             engine_sample_rate: crate::NATIVE_SAMPLE_RATE,
             max_demand_frames: 256,
             age_limit_100ns: None,
+            max_ingress_elapsed_100ns: None,
         }
     }
 }
@@ -56,6 +61,9 @@ impl ProcessBridgeOptions {
         // to a bridge whose Process packet stamps cannot establish sample age.
         if self.age_limit_100ns.is_some() {
             return Err(CaptureError::ProcessAgeUnsupported);
+        }
+        if self.max_ingress_elapsed_100ns == Some(0) {
+            return Err(crate::clock_bridge::ClockBridgeError::InvalidConfig.into());
         }
         if !moiren_engine::audio_config::SAMPLE_RATES.contains(&self.engine_sample_rate) {
             return Err(crate::clock_bridge::ClockBridgeError::InvalidConfig.into());
@@ -88,11 +96,13 @@ impl ProcessBridgeOptions {
             return Ok(crate::clock_bridge::ClockBridgeConfig {
                 output_sample_rate: self.engine_sample_rate,
                 detect_position_gaps: false,
+                max_ingress_elapsed_100ns: self.max_ingress_elapsed_100ns,
                 ..Default::default()
             });
         }
         Ok(crate::clock_bridge::ClockBridgeConfig {
             detect_position_gaps: false,
+            max_ingress_elapsed_100ns: self.max_ingress_elapsed_100ns,
             ..crate::clock_bridge::ClockBridgeConfig::with_engine_input(
                 crate::NATIVE_SAMPLE_RATE,
                 self.engine_sample_rate,

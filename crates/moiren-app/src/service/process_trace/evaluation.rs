@@ -16,6 +16,11 @@ impl ProcessTraceSessionEvidence {
         jitter_frames: u32,
         policy: ReplayWindowPolicy,
     ) -> Result<AssessedProcessReplay, String> {
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            self.origin
+                .transport_latency
+                .process_max_ingress_elapsed_100ns,
+        )?;
         let trace = self.ordered_trace()?;
         super::super::MeasuredProcessRequest {
             node: self.origin.node,
@@ -71,6 +76,7 @@ impl ProcessTraceSessionEvidence {
             engine_sample_rate: archive.consumer_sample_rate,
             max_demand_frames: archive.prepared_consumer_demand_frames,
             age_limit_100ns: None,
+            max_ingress_elapsed_100ns: None,
         };
         trace
             .replay_window(

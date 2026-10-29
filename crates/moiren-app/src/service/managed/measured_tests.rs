@@ -147,6 +147,72 @@ fn stale_or_invalid_measured_selection_preserves_running_owner() {
 }
 
 #[test]
+fn ingress_elapsed_desired_or_active_policy_refuses_measured_apply_before_side_effects() {
+    for active in [false, true] {
+        let mut r = Rig::new();
+        let request = start_process(&mut r);
+        if active {
+            r.c.native_observations
+                .as_mut()
+                .unwrap()
+                .observation
+                .process_delivery[0]
+                .admitted_bridge
+                .max_ingress_elapsed_100ns = Some(50_000);
+        } else {
+            // Keep the captured owner settings matching: this is a supported
+            // baseline policy, not a stale-settings refusal.
+            r.c.transport_latency.process_max_ingress_elapsed_100ns = Some(50_000);
+            r.driver.owner.as_mut().unwrap().transport_latency = r.c.transport_latency;
+            r.c.active_transport_latency = Some(r.c.transport_latency);
+        }
+        let selection = r.driver.measured_selection_id;
+        let captured = r.driver.apply_settings.as_ref().map(|settings| {
+            (
+                settings.audio.clone(),
+                settings.transport,
+                settings.profile,
+                settings
+                    .measured_process
+                    .as_ref()
+                    .map(|profile| profile.summary().clone()),
+            )
+        });
+        r.request(AppRequest::ApplyMeasuredProcessBridge(request));
+        assert!(
+            r.c.graph
+                .snapshot()
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("ingress"))
+        );
+        assert!(r.c.measured_process.is_none());
+        assert_eq!(r.driver.measured_selection_id, selection);
+        assert!(!r.driver.apply);
+        assert_eq!(
+            r.driver.apply_settings.as_ref().map(|settings| {
+                (
+                    settings.audio.clone(),
+                    settings.transport,
+                    settings.profile,
+                    settings
+                        .measured_process
+                        .as_ref()
+                        .map(|profile| profile.summary().clone()),
+                )
+            }),
+            captured,
+            "refusal must preserve the previous captured configuration"
+        );
+        assert_eq!(r.c.core.phase(), SessionPhase::Running);
+        assert_eq!(r.state.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(r.state.stops.load(Ordering::SeqCst), 0);
+        r.request(AppRequest::Stop);
+        r.wait(|r| r.driver.is_drained());
+    }
+}
+
+#[test]
 fn later_transport_draft_does_not_mutate_a_captured_measured_replacement() {
     let mut r = Rig::new();
     let backend = FakeBackend(r.state.clone());

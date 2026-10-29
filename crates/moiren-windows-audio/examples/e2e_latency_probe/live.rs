@@ -1395,6 +1395,7 @@ fn bridge_options(options: &LiveOptions) -> Result<ProcessBridgeOptions> {
         engine_sample_rate: 48_000,
         max_demand_frames: options.engine_block_frames,
         age_limit_100ns: None,
+        max_ingress_elapsed_100ns: None,
     })
 }
 

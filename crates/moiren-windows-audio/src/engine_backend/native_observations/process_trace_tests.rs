@@ -323,6 +323,53 @@ fn pinned_final_measurement_refuses_missing_whole_wake_observer() {
 }
 
 #[test]
+fn ingress_elapsed_pinned_measurement_refuses_without_erasing_closed_raw_archive() {
+    use crate::latency::InputDeliveryRecorder;
+    for limit in [None, Some(1), Some(u64::MAX)] {
+        let mut f = Fixture::new();
+        let mut metadata = f.registry.retain_session().unwrap().0.process_delivery[0].clone();
+        let (mut consumer, observer) = crate::latency::events::event_history();
+        metadata.consumer = Some(observer);
+        metadata.admitted_bridge.max_ingress_elapsed_100ns = limit;
+        f.registry
+            .publish_with_process(7, vec![], vec![], vec![], vec![], vec![metadata]);
+        let mut collector = f
+            .registry
+            .retain_session()
+            .unwrap()
+            .process_trace_collector(f.node, &f.process, 7)
+            .unwrap();
+        let mut delivery = InputDeliveryRecorder::new(None).unwrap();
+        for n in 0..4 {
+            f.event(n);
+            let stamp = 1000 + n * 100;
+            delivery.packet(4, Some(stamp + 1));
+            delivery.callback_burst(4);
+            f.ingress.record_native_delivery_event(4, Some(stamp + 2));
+            f.ingress.publish_native_delivery(delivery.snapshot());
+            consumer.record(4, Some(stamp + 10));
+        }
+        f.registry.clear(7);
+        f.registry.publish(8, vec![], vec![], vec![]);
+        drop(f.ingress);
+        drop(f.source);
+        drop(consumer);
+        collector.poll();
+        let raw = collector.artifact();
+        assert_eq!(raw.packet_history.total_events, 4);
+        assert!(raw.packet_history.writer_finished && raw.queue_history.writer_finished);
+        assert!(collector.ordered_trace().is_ok());
+        let measured = collector.final_measurement();
+        if limit.is_some() {
+            assert!(measured.unwrap_err().contains("ingress"));
+        } else {
+            assert!(measured.is_ok());
+        }
+        assert_eq!(f.registry.snapshot().unwrap().owner_generation, 8);
+    }
+}
+
+#[test]
 fn pinned_final_measurement_replays_exact_empirical_options_with_retained_origin() {
     use crate::{
         latency::{

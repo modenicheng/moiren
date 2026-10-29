@@ -41,6 +41,15 @@ impl EvaluatedProcessCandidate {
         context: &crate::service::ServiceContext,
         document: u64,
     ) -> Result<(), String> {
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            context.transport_latency.process_max_ingress_elapsed_100ns,
+        )?;
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            self.evidence()
+                .origin
+                .transport_latency
+                .process_max_ingress_elapsed_100ns,
+        )?;
         let origin = self.evidence().origin();
         let graph = context.graph.snapshot();
         let cleanup = context
@@ -83,6 +92,15 @@ impl EvaluatedProcessCandidate {
         Ok(())
     }
     pub(crate) fn profile(&self, selection_id: u64) -> Result<MeasuredProcessProfile, String> {
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            self.0.options.max_ingress_elapsed_100ns,
+        )?;
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            self.evidence()
+                .origin
+                .transport_latency
+                .process_max_ingress_elapsed_100ns,
+        )?;
         let evidence = self
             .0
             .evidence
@@ -156,6 +174,11 @@ impl ProcessTraceSessionEvidence {
         jitter_frames: u32,
         policy: ReplayWindowPolicy,
     ) -> Result<EvaluatedProcessCandidate, String> {
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            self.origin
+                .transport_latency
+                .process_max_ingress_elapsed_100ns,
+        )?;
         let trace = self.ordered_trace()?;
         let evidence = self.measurement.as_ref().map_err(Clone::clone)?.clone();
         let request = MeasuredProcessRequest {
@@ -201,6 +224,15 @@ impl ProcessTraceSessionEvidence {
         options: ProcessBridgeOptions,
         assessment: AssessedProcessReplay,
     ) -> Result<EvaluatedProcessCandidate, String> {
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            evidence
+                .origin
+                .transport_latency
+                .process_max_ingress_elapsed_100ns,
+        )?;
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            options.max_ingress_elapsed_100ns,
+        )?;
         if assessment.assessment.status != ReplayWindowStatus::NoViolationInWindow {
             return Err(format!(
                 "evaluated Process window is {:?}",
@@ -219,6 +251,34 @@ impl ProcessTraceSessionEvidence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingress_elapsed_token_construction_and_profile_cannot_drop_a_retained_policy() {
+        let mut graph = moiren_core::graph::LogicalGraph::new();
+        let node = graph
+            .create_node(moiren_core::graph::NodeKind::Source, 2)
+            .unwrap();
+        let mut evidence = super::super::tests::evidence(node);
+        let observed = crate::service::measured_process::tests::observation(node);
+        evidence.measurement = observed
+            .measured(&observed.process, 7)
+            .map_err(|e| e.to_string());
+        let mut fixture = software_candidate(Arc::new(evidence));
+        let before = fixture.assessment().clone();
+        Arc::get_mut(&mut fixture.0)
+            .unwrap()
+            .options
+            .max_ingress_elapsed_100ns = Some(50_000);
+        assert!(fixture.profile(2).unwrap_err().contains("ingress"));
+        let error = ProcessTraceSessionEvidence::candidate_from_assessment(
+            fixture.evidence().clone(),
+            fixture.request(),
+            fixture.0.options,
+            before,
+        )
+        .unwrap_err();
+        assert!(error.contains("ingress"));
+    }
 
     #[test]
     fn retained_apply_observed_violation_or_insufficient_exposure_cannot_issue_a_candidate() {

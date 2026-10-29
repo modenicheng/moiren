@@ -144,6 +144,9 @@ impl NativeProcessDeliveryObservation {
         if self.owner_generation != expected_generation {
             return Err(Error::GenerationMismatch);
         }
+        if self.admitted_bridge.max_ingress_elapsed_100ns.is_some() {
+            return Err(Error::IngressElapsedUnsupported);
+        }
         let delivery = self.delivery.ok_or(Error::MissingObservation {
             observation: "packet delivery",
         })?;

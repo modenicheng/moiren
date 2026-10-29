@@ -3,6 +3,17 @@ use super::{InputSelection, SessionGeneration};
 use moiren_core::graph::NodeId;
 use serde::Serialize;
 
+#[cfg(windows)]
+pub(crate) fn validate_ingress_elapsed_admission(limit: Option<u64>) -> Result<(), String> {
+    if limit.is_some() {
+        return Err(
+            moiren_windows_audio::process_loopback::MeasuredAdmissionError::IngressElapsedUnsupported
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeasuredProcessRequest {
     pub node: NodeId,
@@ -107,6 +118,7 @@ impl MeasuredProcessProfile {
         observation: &moiren_windows_audio::engine_backend::NativeProcessDeliveryObservation,
     ) -> Result<Self, String> {
         request.validate()?;
+        validate_ingress_elapsed_admission(observation.admitted_bridge.max_ingress_elapsed_100ns)?;
         if selection_id == 0 || observation.node != request.node {
             return Err("measured Process node or selection identity mismatch".into());
         }

@@ -49,6 +49,8 @@ pub struct ClockBridgeConfig {
     /// Optional age limit for live native input. This is deliberately an
     /// explicit owner-local policy; offline FIFO consumers leave it unset.
     pub age_limit_100ns: Option<u64>,
+    /// Host publication residence only; not native source/sample age.
+    pub max_ingress_elapsed_100ns: Option<u64>,
 }
 impl Default for ClockBridgeConfig {
     fn default() -> Self {
@@ -64,6 +66,7 @@ impl Default for ClockBridgeConfig {
             max_correction_ppm: 2000.0,
             byte_budget: 8 * 1024 * 1024,
             age_limit_100ns: None,
+            max_ingress_elapsed_100ns: None,
         }
     }
 }
@@ -156,6 +159,7 @@ struct Frame {
     generation: u64,
     packet_stamp: Option<timing::PacketStamp>,
     packet_offset_frames: u64,
+    ingress_started_100ns: Option<std::num::NonZeroU64>,
 }
 
 /// Non-RT preparation. Every endpoint has one owner; all allocation and final
@@ -177,6 +181,7 @@ pub(crate) fn capture_bridge_with_clock(
         || config.target_fill_frames >= config.capacity_frames
         || !config.prepared_input_valid()
         || config.age_limit_100ns == Some(0)
+        || config.max_ingress_elapsed_100ns == Some(0)
         || !config.max_correction_ppm.is_finite()
         || !(0.0..=2000.0).contains(&config.max_correction_ppm)
     {

@@ -154,6 +154,7 @@ fn startup_preserves_both_transport_requests_without_inventing_an_active_owner()
             ..Default::default()
         }),
         vad_recovery_cap_periods: Some(2),
+        ..Default::default()
     };
     let context = moiren_app::project::StartupDocuments {
         preferences: AppPreferences {
@@ -205,4 +206,74 @@ fn process_age_intent_cannot_be_silently_used_as_a_vad_setting() {
     let error = settings.validate().unwrap_err();
     assert!(error.contains("VAD"), "{error}");
     assert!(error.contains("Process"), "{error}");
+}
+
+#[test]
+fn ingress_elapsed_limit_persists_independently_and_remains_inactive_at_startup() {
+    for elapsed in [1_u64, 100_000, 123_456, u64::MAX] {
+        for expert in [false, true] {
+            let mut saved = serde_json::to_value(AppPreferences::default()).unwrap();
+            saved["transport_latency"]["process_max_ingress_elapsed_100ns"] = json!(elapsed);
+            if expert {
+                saved["transport_latency"]["process"] =
+                    serde_json::to_value(ExpertInputBuffer::default()).unwrap();
+            }
+            let preferences: AppPreferences = serde_json::from_value(saved).unwrap();
+            preferences.validate().unwrap();
+            let restored = serde_json::to_value(&preferences).unwrap();
+            assert_eq!(
+                restored["transport_latency"]["process_max_ingress_elapsed_100ns"],
+                elapsed
+            );
+            assert!(
+                restored["audio"]
+                    .get("process_max_ingress_elapsed_100ns")
+                    .is_none()
+            );
+            if expert {
+                assert!(restored["transport_latency"]["process"]["age_limit_100ns"].is_null());
+            } else {
+                assert!(restored["transport_latency"]["process"].is_null());
+            }
+            let context = moiren_app::project::StartupDocuments {
+                preferences,
+                project: None,
+            }
+            .into_context()
+            .unwrap();
+            assert_eq!(context.active_transport_latency, None);
+            assert_eq!(
+                serde_json::to_value(context.transport_latency).unwrap()["process_max_ingress_elapsed_100ns"],
+                elapsed
+            );
+        }
+    }
+}
+
+#[test]
+fn ingress_elapsed_default_is_omitted_and_zero_or_malformed_values_are_refused() {
+    let legacy: TransportLatencySettings =
+        serde_json::from_value(json!({"process": null, "vad": null})).unwrap();
+    assert_eq!(legacy, TransportLatencySettings::default());
+    assert!(
+        serde_json::to_value(legacy)
+            .unwrap()
+            .get("process_max_ingress_elapsed_100ns")
+            .is_none()
+    );
+    let settings: TransportLatencySettings = serde_json::from_value(json!({
+        "process_max_ingress_elapsed_100ns": 0
+    }))
+    .unwrap();
+    let error = settings.validate().unwrap_err();
+    assert!(error.contains("Process"), "{error}");
+    assert!(error.contains("ingress"), "{error}");
+    for invalid in [json!(-1), json!(1.5), json!("100000"), json!(true)] {
+        assert!(
+            serde_json::from_value::<TransportLatencySettings>(json!({
+                "process_max_ingress_elapsed_100ns": invalid
+            }))
+            .is_err()
+        );
+    }
 }

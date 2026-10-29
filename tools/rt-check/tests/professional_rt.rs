@@ -629,6 +629,59 @@ fn capture_queue_and_servo_are_allocation_free_with_startup_silence() {
     measure_capture::<f64>();
 }
 
+#[test]
+fn process_ingress_elapsed_freshness_discard_and_reprime_allocate_nothing() {
+    for rate in [44_100, 48_000, 96_000] {
+        let (mut ingress, mut source, observer) =
+            clock_bridge::capture_bridge(clock_bridge::ClockBridgeConfig {
+                output_sample_rate: rate,
+                capacity_frames: 64,
+                target_fill_frames: 16,
+                max_correction_ppm: 0.0,
+                detect_position_gaps: false,
+                max_ingress_elapsed_100ns: Some(100),
+                ..Default::default()
+            })
+            .unwrap();
+        let packet = clock_bridge::CapturePacket {
+            frames: 16,
+            flags: stats::SILENT,
+            device_position_frames: 0,
+            qpc_100ns: 0,
+        };
+        let mut output = [0.0; 2];
+        measured(|| {
+            for n in 0..1000 {
+                let origin = 1000 + n * 1000;
+                assert_eq!(
+                    ingress
+                        .push_packet_with_publication_clock(&[], packet, || Some(origin))
+                        .unwrap(),
+                    16
+                );
+                assert_eq!(
+                    source
+                        .read_interleaved_with_publication_clock(&mut output, || Some(origin + 1))
+                        .unwrap()
+                        .transferred_frames,
+                    1
+                );
+                let stale = source
+                    .read_interleaved_with_publication_clock(&mut output, || Some(origin + 101))
+                    .unwrap();
+                assert_eq!(stale.transferred_frames, 0);
+                assert!(stale.discontinuity);
+            }
+        });
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.ingress_elapsed_recoveries, 1000);
+        assert_eq!(snapshot.ingress_elapsed_discarded_frames, 16_000);
+        assert_eq!(snapshot.dropped_frames, 0);
+        assert!(source.oldest_frame_age(2_000_000).is_none());
+        assert!(!observer.queue_history().unwrap().saturated);
+    }
+}
+
 fn transport<S: ProcessingSample>(
     failure: Failure,
     panic: bool,

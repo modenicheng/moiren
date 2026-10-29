@@ -113,6 +113,38 @@ fn retained_apply_requires_final_whole_wake_measurement_and_never_promotes_calle
 }
 
 #[test]
+fn ingress_elapsed_origin_refuses_diagnostic_replay_and_apply_without_erasing_trace() {
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    for limit in [1, u64::MAX] {
+        let mut evidence = self::evidence(node);
+        evidence
+            .origin
+            .transport_latency
+            .process_max_ingress_elapsed_100ns = Some(limit);
+        let observation = crate::service::measured_process::tests::observation(node);
+        evidence.measurement = observation
+            .measured(&observation.process, 7)
+            .map_err(|error| error.to_string());
+        let evidence = std::sync::Arc::new(evidence);
+        assert!(evidence.ordered_trace().is_ok());
+        assert!(evidence.artifact().packet_history.events.len() > 1);
+        let error = evidence
+            .clone()
+            .evaluate_for_apply(2048, 256, 0, policy())
+            .unwrap_err();
+        assert!(error.contains("ingress"));
+        let error = evidence
+            .evaluate_candidate(2048, 256, 0, policy())
+            .unwrap_err();
+        assert!(error.contains("ingress"));
+        assert!(evidence.ordered_trace().is_ok());
+    }
+}
+
+#[test]
 fn process_window_offered_supply_including_dropped_tails_is_never_shrunk_to_accepted() {
     let mut graph = moiren_core::graph::LogicalGraph::new();
     let node = graph

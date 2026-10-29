@@ -557,6 +557,23 @@ fn invalid_custom_candidates_are_structured_refusals_without_compatible_fallback
 }
 
 #[test]
+fn ingress_elapsed_candidate_intent_is_retained_in_explicit_replay_refusal() {
+    let fixture = Fixture::new();
+    fixture.inputs();
+    let mut requested = candidate(12, 32);
+    requested["max_ingress_elapsed_100ns"] = json!(100_000);
+    fixture.json("candidates.json", &candidates(vec![requested]));
+    assert_eq!(super::super::run(fixture.arguments()).unwrap(), 0);
+    let output = fixture.output();
+    let result = &output["candidates"][0];
+    assert_eq!(result["options"]["max_ingress_elapsed_100ns"], 100_000);
+    assert_eq!(result["status"], "refused");
+    assert_eq!(result["error"]["code"], "ingress_elapsed_unsupported");
+    assert_eq!(output["qualified"], false);
+    assert!(result.get("report").is_none());
+}
+
+#[test]
 fn invalid_trace_refusals_keep_requested_candidates_and_exit_one() {
     for fault in ["truncated", "ambiguous", "pid", "created", "generation"] {
         let fixture = Fixture::new();

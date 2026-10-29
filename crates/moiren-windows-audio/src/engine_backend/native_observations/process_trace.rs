@@ -74,6 +74,14 @@ impl NativeProcessTraceCollector {
     pub fn final_measurement(&self) -> Result<MeasuredProcessDelivery, String> {
         self.ordered_trace().map_err(|error| error.to_string())?;
         let source = &self.source;
+        // Refuse only replacement admission. The pinned raw archive and its
+        // closure/provenance remain available independently of this policy.
+        if source.admitted_bridge.max_ingress_elapsed_100ns.is_some() {
+            return Err(
+                crate::process_loopback::MeasuredAdmissionError::IngressElapsedUnsupported
+                    .to_string(),
+            );
+        }
         let counters = source.bridge.snapshot();
         let delivery = counters
             .native_delivery

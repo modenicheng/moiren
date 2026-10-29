@@ -121,6 +121,12 @@ impl Draft {
         transport: TransportLatencySettings,
     ) -> Result<Submission, String> {
         let merged_transport = TransportLatencySettings {
+            process_max_ingress_elapsed_100ns: merge_value(
+                self.original.3.process_max_ingress_elapsed_100ns,
+                self.transport.process_max_ingress_elapsed_100ns,
+                transport.process_max_ingress_elapsed_100ns,
+                &t!("Process host ingress elapsed limit"),
+            )?,
             process: merge_value(
                 self.original.3.process,
                 self.transport.process,

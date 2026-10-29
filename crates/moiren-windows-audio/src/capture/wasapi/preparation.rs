@@ -22,6 +22,9 @@ impl CapturePreparation {
         age_clock: Option<QpcClock>,
     ) -> Result<CaptureIngress, CaptureError> {
         let Self::Configured { sender, config } = self;
+        if config.max_ingress_elapsed_100ns.is_some() && age_clock.is_none() {
+            return Err(crate::clock_bridge::ClockBridgeError::InvalidConfig.into());
+        }
         // Process loopback positions do not establish a physical clock. Keep
         // an explicitly configured physical clock only when packet lengths
         // and device positions use the same rate (also used by loop tests).

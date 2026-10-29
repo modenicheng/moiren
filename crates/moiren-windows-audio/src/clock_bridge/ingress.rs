@@ -20,6 +20,7 @@ pub struct CapturePacket {
 pub struct CaptureIngress {
     packet_events: PacketHistoryWriter,
     publication_clock: Option<QpcClock>,
+    publication_clock_high_water_100ns: Option<u64>,
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     delivery_events: crate::latency::events::EventHistoryWriter,
     tx: Producer<Frame>,
@@ -41,6 +42,7 @@ impl CaptureIngress {
         Self {
             packet_events,
             publication_clock,
+            publication_clock_high_water_100ns: None,
             delivery_events,
             tx,
             config,
@@ -142,6 +144,15 @@ impl CaptureIngress {
                 .fetch_add(packet.frames as u64, Relaxed);
         }
         let before = clock();
+        let ingress_started_100ns = before
+            .filter(|&now| {
+                self.publication_clock_high_water_100ns
+                    .is_none_or(|previous| now >= previous)
+            })
+            .and_then(std::num::NonZeroU64::new);
+        self.publication_clock_high_water_100ns = self
+            .publication_clock_high_water_100ns
+            .max(before.filter(|&now| now != 0));
         let accepted = if self.tx.is_abandoned() {
             0
         } else {
@@ -187,14 +198,21 @@ impl CaptureIngress {
                     generation,
                     packet_stamp,
                     packet_offset_frames: frame as u64,
+                    ingress_started_100ns,
                 }
             }));
         }
+        let after = clock();
+        // Completion cannot retroactively qualify frames already published,
+        // but it fences the next packet against a regressed start observation.
+        self.publication_clock_high_water_100ns = self
+            .publication_clock_high_water_100ns
+            .max(after.filter(|&now| now != 0));
         self.packet_events.record(PacketPublicationSample {
             offered_frames: packet.frames as u64,
             accepted_frames: accepted as u64,
             qpc_before_100ns: before,
-            qpc_after_100ns: clock(),
+            qpc_after_100ns: after,
             origin: PacketPublicationOrigin::NativeCapture,
             buffer_generation: self.generation,
             flags: packet.flags,
@@ -275,6 +293,7 @@ impl moiren_engine::boundary::RtAudioSink<f32> for CaptureIngress {
                 generation,
                 packet_stamp: None,
                 packet_offset_frames: frame as u64,
+                ingress_started_100ns: None,
             }));
         }
         if input.frames() > 0 {

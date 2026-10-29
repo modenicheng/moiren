@@ -132,6 +132,7 @@ impl Inventory {
                 sample.backlog_discarded_frames,
                 sample.age_discarded_frames,
                 sample.reset_discarded_frames,
+                sample.ingress_elapsed_discarded_frames,
             ] {
                 add(&mut self.discarded, discarded)?;
             }
@@ -167,4 +168,81 @@ impl Inventory {
 fn add(total: &mut u64, value: u64) -> Result<(), Error> {
     *total = total.checked_add(value).ok_or(Error::InvalidHistory)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::latency::queue::{QueueBoundary, QueueReadEvent, QueueReadSample};
+
+    fn history(sample: QueueReadSample) -> QueueHistorySnapshot {
+        QueueHistorySnapshot {
+            events: vec![QueueReadEvent {
+                sequence: 1,
+                sample,
+            }],
+            total_events: 1,
+            overwritten_events: 0,
+            unavailable_clocks: 0,
+            regressed_clocks: 0,
+            saturated: false,
+            writer_finished: true,
+        }
+    }
+
+    #[test]
+    fn ingress_elapsed_discards_are_not_replayed_as_consumed_input() {
+        let sample = QueueReadSample {
+            requested_frames: 8,
+            output_frames: 8,
+            before: QueueBoundary {
+                ring_frames: 32,
+                ..Default::default()
+            },
+            after: QueueBoundary {
+                removed_frames: 20,
+                ring_frames: 12,
+                ..Default::default()
+            },
+            prime_discarded_frames: 1,
+            backlog_discarded_frames: 2,
+            age_discarded_frames: 3,
+            reset_discarded_frames: 4,
+            ingress_elapsed_discarded_frames: 5,
+            resets: 1,
+            ..Default::default()
+        };
+        let mut inventory = Inventory::default();
+        let history = history(sample);
+        inventory.reads(&history).unwrap();
+        // Re-reading the retained prefix cannot count any category twice.
+        inventory.reads(&history).unwrap();
+        let report = inventory.finish(32, 12).unwrap();
+        assert_eq!(report.retired_input_frames, 20);
+        assert_eq!(report.consumed_input_frames, 5);
+        assert_eq!(report.reset_discarded_frames, 4);
+        assert_eq!(report.initial_prime_discarded_frames, 1);
+    }
+
+    #[test]
+    fn ingress_elapsed_discard_excess_cannot_pass_replay_conservation() {
+        let sample = QueueReadSample {
+            requested_frames: 8,
+            output_frames: 8,
+            before: QueueBoundary {
+                ring_frames: 8,
+                ..Default::default()
+            },
+            after: QueueBoundary {
+                removed_frames: 8,
+                ..Default::default()
+            },
+            prime_discarded_frames: 8,
+            ingress_elapsed_discarded_frames: 1,
+            ..Default::default()
+        };
+        let mut inventory = Inventory::default();
+        inventory.reads(&history(sample)).unwrap();
+        assert_eq!(inventory.finish(8, 0).unwrap_err(), Error::InvalidHistory);
+    }
 }

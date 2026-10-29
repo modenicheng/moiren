@@ -222,6 +222,7 @@ fn exercise<S: ProcessingSample>(rate: u32, block: usize) {
             engine_sample_rate: rate,
             max_demand_frames: 256,
             age_limit_100ns: None,
+            max_ingress_elapsed_100ns: None,
         }
         .prepare()
         .is_ok()

@@ -69,6 +69,10 @@ pub struct TransportLatencySettings {
     /// bounds refer to the fixed 48 kHz input transport, not Engine segments.
     pub process: Option<ExpertInputBuffer>,
     pub vad: Option<ExpertInputBuffer>,
+    /// Process host time since packet publication began. This is neither a
+    /// source sample-age limit nor an end-to-end latency bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_max_ingress_elapsed_100ns: Option<u64>,
     /// Virtual-clock catch-up only, independent of input residency and physical
     /// output wake demand. None preserves the native eight-period ceiling.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,6 +81,9 @@ pub struct TransportLatencySettings {
 
 impl TransportLatencySettings {
     pub fn validate(self) -> Result<(), String> {
+        if self.process_max_ingress_elapsed_100ns == Some(0) {
+            return Err("Process: ingress elapsed limit must be positive".into());
+        }
         if self
             .vad_recovery_cap_periods
             .is_some_and(|periods| !(1..=8).contains(&periods))
@@ -107,6 +114,7 @@ impl TransportLatencySettings {
             input: policy(self.process),
             delivery: delivery(self.process),
             age_limit_100ns: self.process.and_then(|input| input.age_limit_100ns),
+            max_ingress_elapsed_100ns: self.process_max_ingress_elapsed_100ns,
             engine_sample_rate: 48_000,
             // Static preflight must not invent a 256-frame consumer. The
             // output owner replaces this with its complete prepared demand.
@@ -159,6 +167,36 @@ fn delivery(
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingress_elapsed_native_options_preserve_policy_and_whole_consumer_demand() {
+        for limit in [None, Some(1), Some(123_456), Some(u64::MAX)] {
+            for process in [None, Some(ExpertInputBuffer::default())] {
+                let settings = TransportLatencySettings {
+                    process,
+                    process_max_ingress_elapsed_100ns: limit,
+                    vad_recovery_cap_periods: Some(3),
+                    ..Default::default()
+                };
+                settings.validate().unwrap();
+                let options = settings.process_options();
+                assert_eq!(options.max_ingress_elapsed_100ns, limit);
+                assert_eq!(options.age_limit_100ns, None);
+                assert_eq!(options.max_demand_frames, 1);
+                let admitted = options.for_consumer(96_000, 512).unwrap();
+                assert_eq!(admitted.max_ingress_elapsed_100ns, limit);
+                assert_eq!(admitted.engine_sample_rate, 96_000);
+                assert_eq!(admitted.max_demand_frames, 512);
+                assert_eq!(settings.virtual_options().recovery_cap_periods, Some(3));
+            }
+        }
+        let invalid = TransportLatencySettings {
+            process_max_ingress_elapsed_100ns: Some(0),
+            ..Default::default()
+        };
+        assert!(invalid.validate().is_err());
+        assert!(invalid.process_options().prepare().is_err());
+    }
 
     #[test]
     fn sub_256_expert_requests_use_one_frame_preflight_then_actual_native_demand() {

@@ -44,6 +44,10 @@ pub enum ProcessReplayError {
     InvalidHistory,
     #[error("Process replay requires known, nonregressing host-QPC envelopes")]
     ClockFault,
+    #[error(
+        "Process replay cannot assess host-ingress elapsed enforcement without native freshness observations"
+    )]
+    IngressElapsedUnsupported,
     #[error("Process packet/read envelopes overlap or tie; order is ambiguous")]
     AmbiguousOrder,
     #[error("Process read publication frontiers disagree with admitted packet prefixes")]
@@ -89,8 +93,14 @@ pub struct ReplayBaselineReport {
     pub prime_discarded_frames: u64,
     pub backlog_discarded_frames: u64,
     pub age_discarded_frames: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ingress_elapsed_discarded_frames: u64,
     pub reset_discarded_frames: u64,
     pub resets: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,6 +417,9 @@ impl ObservedProcessTrace {
         if self.owner_generation != generation {
             return Err(ProcessReplayError::GenerationMismatch);
         }
+        if options.max_ingress_elapsed_100ns.is_some() {
+            return Err(ProcessReplayError::IngressElapsedUnsupported);
+        }
         if options.engine_sample_rate != self.consumer_rate
             || options.max_demand_frames < self.prepared_demand
         {
@@ -570,6 +583,7 @@ impl ObservedProcessTrace {
             baseline.prime_discarded_frames += s.prime_discarded_frames;
             baseline.backlog_discarded_frames += s.backlog_discarded_frames;
             baseline.age_discarded_frames += s.age_discarded_frames;
+            baseline.ingress_elapsed_discarded_frames += s.ingress_elapsed_discarded_frames;
             baseline.reset_discarded_frames += s.reset_discarded_frames;
             baseline.resets += s.resets;
         }

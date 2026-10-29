@@ -118,3 +118,22 @@ fn selection_refuses_stale_origin_unknown_observations_and_insufficient_target()
     request.session_generation = SessionGeneration(0);
     assert!(request.validate().is_err());
 }
+
+#[test]
+fn ingress_elapsed_active_observation_cannot_become_an_unlimited_measured_profile() {
+    let mut graph = LogicalGraph::new();
+    let node = graph.create_node(NodeKind::Source, 2).unwrap();
+    let request = MeasuredProcessRequest {
+        node,
+        session_generation: SessionGeneration(3),
+        native_owner_generation: 7,
+        graph_revision: 11,
+        capacity_frames: 2048,
+        target_frames: 256,
+        jitter_frames: 0,
+    };
+    let mut observed = observation(node);
+    observed.admitted_bridge.max_ingress_elapsed_100ns = Some(50_000);
+    let error = MeasuredProcessProfile::from_observation(1, request, &observed).unwrap_err();
+    assert!(error.contains("ingress"));
+}

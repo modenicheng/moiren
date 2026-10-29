@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 const HISTORY_CAPACITY: usize = 256;
-const EVENT_FIELDS: usize = 17;
+const EVENT_FIELDS: usize = 18;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,7 +47,10 @@ pub struct QueueReadSample {
     pub prime_discarded_frames: u64,
     pub backlog_discarded_frames: u64,
     pub age_discarded_frames: u64,
-    /// Held-frame losses not already attributed to backlog or age recovery.
+    /// Host-ingress elapsed recovery loss, never native sample-age loss.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ingress_elapsed_discarded_frames: u64,
+    /// Held-frame losses not already attributed to another discard category.
     pub reset_discarded_frames: u64,
     /// Per-read reset count, not a cumulative telemetry counter.
     pub resets: u64,
@@ -58,6 +61,10 @@ pub struct QueueReadSample {
     /// Host clock immediately after acquiring the after inventory boundary.
     /// A missing bracket endpoint does not invalidate inventory observations.
     pub qpc_after_100ns: Option<u64>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl QueueReadSample {
@@ -77,7 +84,8 @@ impl QueueReadSample {
             .prime_discarded_frames
             .checked_add(self.backlog_discarded_frames)?
             .checked_add(self.age_discarded_frames)?
-            .checked_add(self.reset_discarded_frames)?;
+            .checked_add(self.reset_discarded_frames)?
+            .checked_add(self.ingress_elapsed_discarded_frames)?;
         // Held interpolation frames are already removed from the ring. Only
         // retired input, not output-rate demand, can bound native discards.
         retired.checked_sub(discarded)?;
@@ -237,6 +245,7 @@ impl QueueHistoryWriter {
             sample.underrun_frames,
             sample.qpc_before_100ns.unwrap_or(0),
             sample.qpc_after_100ns.unwrap_or(0),
+            sample.ingress_elapsed_discarded_frames,
         ];
         let event = &self.shared.events[((total - 1) % HISTORY_CAPACITY as u64) as usize];
         for (slot, field) in event.iter().zip(fields) {
@@ -311,6 +320,7 @@ impl QueueHistoryObserver {
                     prime_discarded_frames: f[9],
                     backlog_discarded_frames: f[10],
                     age_discarded_frames: f[11],
+                    ingress_elapsed_discarded_frames: f[17],
                     reset_discarded_frames: f[12],
                     resets: f[13],
                     underrun_frames: f[14],

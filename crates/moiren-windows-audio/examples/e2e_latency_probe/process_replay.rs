@@ -81,6 +81,8 @@ struct ExplicitCandidate {
     engine_sample_rate: u32,
     max_demand_frames: u32,
     age_limit_100ns: Option<u64>,
+    #[serde(default)]
+    max_ingress_elapsed_100ns: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +148,7 @@ impl From<ExplicitCandidate> for ProcessBridgeOptions {
             engine_sample_rate: candidate.engine_sample_rate,
             max_demand_frames: candidate.max_demand_frames,
             age_limit_100ns: candidate.age_limit_100ns,
+            max_ingress_elapsed_100ns: candidate.max_ingress_elapsed_100ns,
         }
     }
 }
@@ -166,6 +169,7 @@ impl Refusal {
             ProcessReplayError::IncompleteHistory => "incomplete_history",
             ProcessReplayError::InvalidHistory => "invalid_history",
             ProcessReplayError::ClockFault => "clock_fault",
+            ProcessReplayError::IngressElapsedUnsupported => "ingress_elapsed_unsupported",
             ProcessReplayError::AmbiguousOrder => "ambiguous_order",
             ProcessReplayError::InconsistentPublication => "inconsistent_publication",
             ProcessReplayError::UnsupportedShape => "unsupported_shape",

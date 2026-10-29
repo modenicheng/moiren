@@ -73,6 +73,28 @@ fn retained_apply_reopens_stopped_host_in_both_precisions_and_preserves_original
 }
 
 #[test]
+fn ingress_elapsed_desired_policy_refuses_retained_apply_before_selection_or_start() {
+    let mut r = Rig::new();
+    let candidate = stopped(&mut r);
+    r.c.transport_latency.process_max_ingress_elapsed_100ns = Some(50_000);
+    let selection = r.driver.measured_selection_id;
+    r.request(AppRequest::ApplyEvaluatedProcessBridge(candidate));
+    assert!(
+        r.c.graph
+            .snapshot()
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("ingress"))
+    );
+    assert_eq!(r.driver.measured_selection_id, selection);
+    assert!(r.c.measured_process.is_none());
+    assert!(!r.driver.apply);
+    assert!(r.driver.apply_settings.is_none());
+    assert_eq!(r.c.core.phase(), SessionPhase::Idle);
+    assert_eq!(r.state.starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn retained_apply_rechecks_settings_before_open_and_refuses_stale_document_or_predecessor() {
     for fault in 0..5 {
         let mut r = Rig::new();

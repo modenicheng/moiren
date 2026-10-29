@@ -163,3 +163,93 @@ fn evaluated_backend_refuses_growth_beyond_the_exact_replayed_rate_and_whole_wak
             .is_err()
     );
 }
+
+#[test]
+fn ingress_elapsed_measured_builders_refuse_global_policy_before_recording_override() {
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    for limit in [1, u64::MAX] {
+        let (process, measured) = evidence();
+        let options = measured
+            .admit_for_consumer(&process, 7, target(), 48_000, 96)
+            .unwrap();
+        let global = ProcessBridgeOptions {
+            max_ingress_elapsed_100ns: Some(limit),
+            ..Default::default()
+        };
+        let backend = ProfessionalBackend::<f32>::new()
+            .unwrap()
+            .with_process_bridge(global)
+            .unwrap();
+        let result =
+            backend.with_measured_process_bridge(node, &process, 7, measured.clone(), target());
+        assert!(matches!(result, Err(error) if error.to_string().contains("ingress")));
+        let backend = ProfessionalBackend::<f64>::new()
+            .unwrap()
+            .with_process_bridge(global)
+            .unwrap();
+        let result = backend.with_evaluated_process_bridge(node, &process, 7, measured, options);
+        assert!(matches!(result, Err(error) if error.to_string().contains("ingress")));
+    }
+}
+
+#[test]
+fn ingress_elapsed_resolver_refuses_later_global_policy_for_measured_and_evaluated_overrides() {
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    for evaluated in [false, true] {
+        let (process, measured) = evidence();
+        let options = measured
+            .admit_for_consumer(&process, 7, target(), 48_000, 96)
+            .unwrap();
+        let backend = ProfessionalBackend::<f64>::new().unwrap();
+        let backend = if evaluated {
+            backend.with_evaluated_process_bridge(node, &process, 7, measured, options)
+        } else {
+            backend.with_measured_process_bridge(node, &process, 7, measured, target())
+        }
+        .unwrap()
+        .with_process_bridge(ProcessBridgeOptions {
+            max_ingress_elapsed_100ns: Some(123_456),
+            ..Default::default()
+        })
+        .unwrap();
+        for demand in [1, 96] {
+            let error = backend
+                .process_bridge_for(node, (42, 123), 48_000, demand)
+                .unwrap_err();
+            assert!(error.to_string().contains("ingress"));
+        }
+        let other = graph
+            .create_node(moiren_core::graph::NodeKind::Source, 2)
+            .unwrap();
+        assert_eq!(
+            backend
+                .process_bridge_for(other, (43, 456), 48_000, 96)
+                .unwrap()
+                .max_ingress_elapsed_100ns,
+            Some(123_456)
+        );
+    }
+}
+
+#[test]
+fn ingress_elapsed_evaluated_builder_refuses_explicit_candidate_limit() {
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    let (process, measured) = evidence();
+    let mut options = measured
+        .admit_for_consumer(&process, 7, target(), 48_000, 96)
+        .unwrap();
+    options.max_ingress_elapsed_100ns = Some(10_000);
+    let result = ProfessionalBackend::<f32>::new()
+        .unwrap()
+        .with_evaluated_process_bridge(node, &process, 7, measured, options);
+    assert!(matches!(result, Err(error) if error.to_string().contains("ingress")));
+}

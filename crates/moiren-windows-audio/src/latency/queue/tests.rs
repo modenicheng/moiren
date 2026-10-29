@@ -17,6 +17,7 @@ fn sample(n: u64) -> QueueReadSample {
         prime_discarded_frames: 0,
         backlog_discarded_frames: 0,
         age_discarded_frames: 0,
+        ingress_elapsed_discarded_frames: 0,
         reset_discarded_frames: 0,
         resets: 0,
         underrun_frames: 0,
@@ -246,6 +247,94 @@ fn legacy_before_only_clock_keeps_valid_inventory_but_not_a_complete_bracket() {
     assert_eq!(snapshot.unavailable_clocks, 1);
     assert_eq!(snapshot.regressed_clocks, 0);
     assert!(!snapshot.saturated);
+}
+
+#[test]
+fn ingress_elapsed_discard_roundtrips_atomic_payload_json_and_closed_writer() {
+    let discarded = (1 << 53) + 17;
+    let value = QueueReadSample {
+        before: boundary(0, discarded + 12, 0),
+        after: boundary(discarded + 10, 2, 2),
+        prime_discarded_frames: 1,
+        backlog_discarded_frames: 1,
+        age_discarded_frames: 1,
+        reset_discarded_frames: 1,
+        ingress_elapsed_discarded_frames: discarded,
+        resets: 1,
+        ..sample(1)
+    };
+    let (mut writer, observer) = queue_history();
+    writer.record(value);
+    let mut expected = observer.snapshot().unwrap();
+    assert!(!expected.saturated);
+    assert_eq!(expected.total_events, 1);
+    assert_eq!(expected.events[0].sample, value);
+    let json = serde_json::to_value(&expected).unwrap();
+    assert_eq!(
+        json["events"][0]["sample"]["ingress_elapsed_discarded_frames"].as_u64(),
+        Some(discarded)
+    );
+    assert_eq!(
+        serde_json::from_value::<QueueHistorySnapshot>(json).unwrap(),
+        expected
+    );
+    drop(writer);
+    expected.writer_finished = true;
+    assert_eq!(observer.snapshot().unwrap(), expected);
+}
+
+#[test]
+fn ingress_elapsed_combined_discard_excess_and_overflow_saturate_without_publishing() {
+    for value in [
+        QueueReadSample {
+            prime_discarded_frames: 4,
+            backlog_discarded_frames: 1,
+            age_discarded_frames: 1,
+            reset_discarded_frames: 1,
+            ingress_elapsed_discarded_frames: 2,
+            resets: 1,
+            ..sample(1)
+        },
+        QueueReadSample {
+            before: boundary(0, u64::MAX, 0),
+            after: boundary(u64::MAX, 0, 0),
+            prime_discarded_frames: u64::MAX,
+            ingress_elapsed_discarded_frames: 1,
+            ..sample(1)
+        },
+    ] {
+        let (mut writer, observer) = queue_history();
+        writer.record(value);
+        writer.record(sample(1));
+        let snapshot = observer.snapshot().unwrap();
+        assert!(snapshot.saturated, "{value:?}");
+        assert_eq!(snapshot.total_events, 0);
+        assert!(snapshot.events.is_empty());
+    }
+}
+
+#[test]
+fn ingress_elapsed_discard_defaults_from_old_json_and_zero_keeps_old_shape() {
+    let json = serde_json::to_value(sample(1)).unwrap();
+    assert!(json.get("ingress_elapsed_discarded_frames").is_none());
+    let restored: QueueReadSample = serde_json::from_value(json).unwrap();
+    assert_eq!(restored.ingress_elapsed_discarded_frames, 0);
+    assert_eq!(restored, sample(1));
+    let (mut writer, observer) = queue_history();
+    writer.record(sample(1));
+    drop(writer);
+    let old = serde_json::to_value(observer.snapshot().unwrap()).unwrap();
+    assert!(
+        old["events"][0]["sample"]
+            .get("ingress_elapsed_discarded_frames")
+            .is_none()
+    );
+    let restored: QueueHistorySnapshot = serde_json::from_value(old).unwrap();
+    assert!(restored.writer_finished);
+    assert_eq!(
+        restored.events[0].sample.ingress_elapsed_discarded_frames,
+        0
+    );
 }
 
 #[test]
@@ -535,7 +624,10 @@ fn concurrent_atomic_history_never_mixes_event_fields_or_counts() {
     let thread = std::thread::spawn(move || {
         start.wait();
         for n in 1..=20_000 {
-            writer.record(sample(n));
+            writer.record(QueueReadSample {
+                ingress_elapsed_discarded_frames: n % 5,
+                ..sample(n)
+            });
         }
     });
     barrier.wait();
@@ -553,7 +645,13 @@ fn concurrent_atomic_history_never_mixes_event_fields_or_counts() {
                     event.sequence,
                     snapshot.overwritten_events + index as u64 + 1
                 );
-                assert_eq!(event.sample, sample(event.sequence));
+                assert_eq!(
+                    event.sample,
+                    QueueReadSample {
+                        ingress_elapsed_discarded_frames: event.sequence % 5,
+                        ..sample(event.sequence)
+                    }
+                );
             }
         }
     }
@@ -568,7 +666,7 @@ fn storage_budget_includes_all_published_atomic_slots() {
     assert_eq!(queue_history_storage_bytes(), size_of::<PublishedHistory>());
     assert_eq!(
         queue_history_storage_bytes(),
-        (256 * 17 + 6) * size_of::<AtomicU64>()
+        (256 * 18 + 6) * size_of::<AtomicU64>()
     );
 }
 

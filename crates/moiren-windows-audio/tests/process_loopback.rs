@@ -67,6 +67,7 @@ fn explicit_process_bridge_admits_delivery_without_fabricating_a_native_period()
         engine_sample_rate: 48_000,
         max_demand_frames: 256,
         age_limit_100ns: None,
+        max_ingress_elapsed_100ns: None,
     };
     let input = bridge.prepare().unwrap();
     assert_eq!(input.prime_frames, 1024);

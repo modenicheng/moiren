@@ -9,6 +9,9 @@ impl ManagedDriver {
         context: &ServiceContext,
         candidate: &super::super::EvaluatedProcessCandidate,
     ) -> Result<(), String> {
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            context.transport_latency.process_max_ingress_elapsed_100ns,
+        )?;
         if self.exiting
             || self.owner.is_some()
             || self.cleaning != 0
@@ -85,6 +88,9 @@ impl ManagedDriver {
         request: MeasuredProcessRequest,
     ) -> Result<(), String> {
         request.validate()?;
+        super::super::measured_process::validate_ingress_elapsed_admission(
+            context.transport_latency.process_max_ingress_elapsed_100ns,
+        )?;
         let graph = context.graph.snapshot();
         self.owner_for_measurement(context, request)?;
         if graph.candidate_revision != request.graph_revision

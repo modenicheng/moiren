@@ -25,6 +25,11 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         evidence: MeasuredProcessDelivery,
         input: TransportInputPolicy,
     ) -> Result<Self, BackendError> {
+        if self.process_bridge.max_ingress_elapsed_100ns.is_some() {
+            return Err(unsupported(
+                crate::process_loopback::MeasuredAdmissionError::IngressElapsedUnsupported,
+            ));
+        }
         if self
             .measured_process_bridges
             .iter()
@@ -63,6 +68,13 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         evidence: MeasuredProcessDelivery,
         options: ProcessBridgeOptions,
     ) -> Result<Self, BackendError> {
+        if self.process_bridge.max_ingress_elapsed_100ns.is_some()
+            || options.max_ingress_elapsed_100ns.is_some()
+        {
+            return Err(unsupported(
+                crate::process_loopback::MeasuredAdmissionError::IngressElapsedUnsupported,
+            ));
+        }
         let admitted = evidence
             .admit_for_consumer(
                 expected_process,
@@ -137,6 +149,17 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 .for_consumer(rate, complete_demand)
                 .map_err(unsupported);
         };
+        // A later global-policy builder must not let this override erase an
+        // enforcement field that measured admission cannot yet retain.
+        if self.process_bridge.max_ingress_elapsed_100ns.is_some()
+            || request
+                .evaluated_envelope
+                .is_some_and(|options| options.max_ingress_elapsed_100ns.is_some())
+        {
+            return Err(unsupported(
+                crate::process_loopback::MeasuredAdmissionError::IngressElapsedUnsupported,
+            ));
+        }
         if identity
             != (
                 request.expected_process.pid,
