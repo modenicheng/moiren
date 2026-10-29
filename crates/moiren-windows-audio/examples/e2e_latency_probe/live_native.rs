@@ -1755,6 +1755,8 @@ fn vad_observation_json(observation: &moiren_windows_audio::vad::VadExportObserv
     serde_json::json!({
         "endpoint_id": observation.endpoint_id,
         "spec_name": observation.spec_name,
+        "intent": format!("{:?}", observation.intent),
+        "channels": format!("{:?}", observation.channels),
         "transport_prepared": observation.transport_prepared,
         "removing": observation.removing,
         "diagnostic_provenance": format!("{:?}", observation.diagnostic_provenance),
@@ -1762,6 +1764,12 @@ fn vad_observation_json(observation: &moiren_windows_audio::vad::VadExportObserv
         "error": observation.error,
         "snapshot": observation.snapshot.map(|snapshot| serde_json::json!({
             "state": format!("{:?}", snapshot.state()),
+            "stable_id": snapshot.stable_id().to_virtual_endpoint_id(),
+            "stamp": snapshot_stamp(snapshot),
+            "stream_state": format!("{:?}", snapshot.stream_state()),
+            "intent": format!("{:?}", snapshot.intent()),
+            "channels": format!("{:?}", snapshot.channels()),
+            "sample_format": snapshot.sample_format().map(|format| format!("{format:?}")),
             "gate_open": snapshot.gate_open(),
             "policy_prepared": snapshot.policy_prepared(),
             "audio_ready": snapshot.audio_ready(),
@@ -2486,6 +2494,33 @@ mod tests {
             );
             assert_eq!(report.as_ref().unwrap()["timeline"], frame);
         }
+    }
+
+    #[test]
+    fn source_start_observation_retains_identity_and_shape_on_refusal() {
+        let baseline = ready_playback();
+        let changed = endpoint_view_at(Intent::Playback, StreamState::Running, true, 18, 20);
+        assert!(playback_reads_ready(&baseline, &changed).is_err());
+        let evidence = vad_observation_json(&changed);
+        assert_eq!(evidence["intent"], "Playback");
+        assert_eq!(evidence["channels"], "Stereo");
+        let snapshot = changed.snapshot.unwrap();
+        assert_eq!(
+            evidence["snapshot"]["stable_id"],
+            serde_json::to_value(changed.endpoint_id).unwrap()
+        );
+        assert_eq!(
+            evidence["snapshot"]["stamp"],
+            serde_json::json!([13, 7, 13, 18, 20])
+        );
+        assert_eq!(evidence["snapshot"]["stream_state"], "Running");
+        assert_eq!(evidence["snapshot"]["intent"], "Playback");
+        assert_eq!(evidence["snapshot"]["channels"], "Stereo");
+        assert_eq!(
+            evidence["snapshot"]["sample_format"],
+            format!("{:?}", snapshot.sample_format().unwrap())
+        );
+        assert_eq!(evidence["snapshot"]["packet_frames"], 48);
     }
 
     #[test]
