@@ -3,6 +3,9 @@ name = "moiren-signal"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 thiserror = { workspace = true }
 rtrb = { workspace = true }

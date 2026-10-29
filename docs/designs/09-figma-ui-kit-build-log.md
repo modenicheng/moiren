@@ -1,5 +1,7 @@
 # Moiren UI v0.2 — Figma 构建账本（2026-10-12）
 
+> 状态：历史账本（Figma v0.2 构建记录）。
+
 > 本次会话在 `Moiren-UI-v0.1.0`（fileKey `axX8ZopKhTi9XfcfoLotiP`）中新建的全部内容。
 > 原则：`Main` 页的 `3:5604`（Graph 完整布局）是唯一风格原型，只读；
 > Application toolbar（`50:879`）与 Audio engine status（`50:880`）视为完成品，直接复用实例。

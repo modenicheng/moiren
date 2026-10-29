@@ -183,6 +183,11 @@ jobs:
       - name: Lint probe tools
         if: contains(needs.changes.outputs.lint_pkgs, 'moiren-windows-audio')
         run: cargo +stable clippy --locked -p moiren-windows-audio --all-targets --features probe-tools -- -D warnings
+      # The ui-profiler capture path is likewise feature-gated; lint it so
+      # the ~600 lines cannot rot silently between manual profiling runs.
+      - name: Lint ui profiler
+        if: contains(needs.changes.outputs.lint_pkgs, 'moiren-app')
+        run: cargo +stable clippy --locked -p moiren-app --all-targets --features ui-profiler -- -D warnings
   vad_driver_host:
     needs: changes
     if: needs.changes.outputs.vad == 'true'

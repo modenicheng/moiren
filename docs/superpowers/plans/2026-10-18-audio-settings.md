@@ -1,5 +1,7 @@
 # Professional audio settings implementation plan
 
+> **交付状态（2026-10-29 核对）：已全量交付。** 设置页、持久化与档位接线随 b79224b、1b1a817、ce933e9 落地（`crates/moiren-app/src/ui/window/settings/`、`src/service/latency.rs`）。本文 checkboxes 未逐项勾选，工单不再具有待办性。
+
 > **For agentic workers:** Use dispatching-parallel-agents for the disjoint native,
 > service and UI slices. Parent owns portable intent, persistence and integration.
 

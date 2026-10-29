@@ -1,5 +1,10 @@
 # Moiren VAD 开发交接：2026-10-21
 
+> **Update（2026-10-29）：本文为 2026-10-21 交接快照。** 头条的「8 小时空转未启动」
+> 已过时：8h idle 长测其后通过（28,730/28,800 窗口，零 epoch），详见
+> [validation 记录](vad-validation-2026-10-21.md) 的 Update 横幅与
+> `driver/vad/STATUS.md`（唯一 gate 状态 owner）。
+
 ## 1. 接手时的结论
 
 用户要求修复 VAD 审计问题并继续虚拟机稳定性测试，保留既有工作，

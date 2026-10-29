@@ -8,7 +8,7 @@
 //! obeys the same fall-off preference. Peaks accumulate between display
 //! reads, so a transient that has already decayed before the next frame is
 //! still shown at full height.
-use super::{ChannelLevel, DisplayLevel, Duration, Instant};
+use super::{ChannelLevel, DisplayLevel, Duration, Instant, REST_DB};
 use crate::project::MeterDisplayPreferences;
 
 /// One-pole mean-square integration across ingested windows. The natural
@@ -93,6 +93,15 @@ impl ChannelBallistics {
             marker: db_to_amplitude(self.marker_db),
             rms: db_to_amplitude(self.body_db),
         }
+    }
+
+    /// Whether every layer has decayed under the visible scale bottom, so
+    /// pumping further display frames cannot move anything a viewer sees.
+    /// The dB-domain check is exact here; the paint side maps everything
+    /// under the last tick through an amplitude-linear tail to the bottom
+    /// edge, which `REST_DB` sits far inside.
+    pub(super) fn at_rest(&self) -> bool {
+        self.bar_db <= REST_DB && self.marker_db <= REST_DB && self.body_db <= REST_DB
     }
 }
 

@@ -1,5 +1,7 @@
 # Graph Compiler：优化 lowering 与参考实现
 
+> 状态：现行设计（随实现更新，最近 2026-10-25）。
+
 日期：2026-10-08；2026-10-09 补充 Compressor 和 Plan 发布；2026-10-25 增加 Bus 融合、last-use、原位处理和 slot 复用。`moiren_engine::compiler::compile()` 在控制侧将只读 `LogicalGraph`、外部 IO 绑定和初始参数准备为可运行引擎，默认执行优化 lowering。`compile_reference()` 保留每条 Edge 独立执行、每个信号独立存储的路径，用于结果比较与诊断。编译后的候选可通过 [Plan 发布接口](06-compressor-plan-swap.md) 发布；编译器本身不访问运行中的音频线程。
 
 ## 编译与绑定

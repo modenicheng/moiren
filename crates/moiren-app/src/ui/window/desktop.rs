@@ -441,7 +441,7 @@ impl Desktop {
         if let Some(shell) = self.shell.clone() {
             let saved = shell.update(cx, |shell, cx| {
                 shell.finish_project_load(cx);
-                let meters_changed = !shell.meters_frame_active(cx) && shell.pump_meters(cx);
+                let meters_changed = !shell.meter_animation_active(cx) && shell.pump_meters(cx);
                 if changed || meters_changed {
                     cx.notify();
                 }
@@ -452,8 +452,12 @@ impl Desktop {
             }
         }
         if let Some(view) = self.flyout_view.clone() {
-            let pumped = view.update(cx, |_flyout, cx| {
-                if changed {
+            let pumped = view.update(cx, |flyout, cx| {
+                // The flyout's own render drives its meters only while its
+                // animation frames run; at rest this poll is the pump that
+                // notices fresh data and re-arms the loop.
+                let meters_changed = flyout.pump_meters(cx);
+                if changed || meters_changed {
                     cx.notify();
                 }
             });

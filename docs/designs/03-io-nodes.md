@@ -1,5 +1,7 @@
 # 基础 Input / Output IO 节点
 
+> 状态：历史设计记录（已实现；IO 边界现状见 crates/moiren-windows-audio/README.md）。
+
 > 日期：2026-10-08。依据 [Graph 设计](01-audio-graph.md)、[Engine 设计](02-engine-design.md)及[实时基础实施计划](../plans/2026-10-08-runtime-foundation.md)。
 
 ## 范围与方案

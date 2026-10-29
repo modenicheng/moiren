@@ -443,7 +443,7 @@ impl StudioShell {
                         });
                         shell.finish_project_load(cx);
                         let meters_changed =
-                            !shell.meters_frame_active(cx) && shell.pump_meters(cx);
+                            !shell.meter_animation_active(cx) && shell.pump_meters(cx);
                         if changed || meters_changed {
                             cx.notify();
                         }
@@ -469,11 +469,27 @@ impl StudioShell {
             && snapshot.phase == SessionPhase::Running
     }
 
+    /// Whether any observed meter still moves: decaying ballistics, a held
+    /// peak marker, or fresh readings above the scale bottom all keep the
+    /// display short of rest. While false the vsync loop stands down and the
+    /// control-side poll alone keeps the observations current, so a fully
+    /// silent session costs no animation frames at all.
+    fn meters_in_motion(&self) -> bool {
+        !self.meters.at_rest() || !self.node_meters.at_rest()
+    }
+
+    /// Whether the animation-frame loop is currently driving meter pumps;
+    /// the control-side poll may skip pumping only while this holds.
+    fn meter_animation_active(&self, cx: &App) -> bool {
+        self.meters_frame_active(cx) && self.meters_in_motion()
+    }
+
     /// Refresh every meter observation once: reads the latest windows,
     /// advances display ballistics, and reconciles subscriptions with the
     /// current visibility. Called per display frame while
-    /// [`Self::meters_frame_active`] holds, and from the slower control-side
-    /// loops otherwise. Returns whether a raw reading or status changed;
+    /// [`Self::meter_animation_active`] holds, and from the slower
+    /// control-side loops otherwise. Returns whether a display-bearing
+    /// reading changed — raw levels, status, or a freshly latched clip;
     /// ballistics motion alone does not, because animation frames (not
     /// notify) carry it.
     pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
@@ -622,7 +638,12 @@ impl Render for StudioShell {
             // Mixer owns a separate animation canvas; Graph keeps its existing
             // frame-driven path. Never pump the same subscriptions twice.
             self.pump_meters(cx);
-            window.request_animation_frame();
+            // Motion, not visibility, sustains the loop: once every observed
+            // layer rests at the scale bottom the frames stop and the
+            // control-side poll takes over pumping until fresh data moves.
+            if self.meters_in_motion() {
+                window.request_animation_frame();
+            }
         }
         self.refresh_observation_nodes(cx);
         // Mixer demand is retained with its cached controls. Clearing it on

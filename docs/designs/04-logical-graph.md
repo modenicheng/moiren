@@ -1,5 +1,7 @@
 # LogicalGraph 与 Bus / Pan
 
+> 状态：现行契约（随实现更新）。
+
 `LogicalGraph` 位于 core，不依赖 engine。[Graph Compiler](05-graph-compiler.md) 已自动准备 ExecutionPlan 和 PostFader Send DSP；后续增加了 [Compressor 与运行时 Plan 切换](06-compressor-plan-swap.md)。Pre/Post channel strip 与 slot liveness 优化仍是后续工作。以下保持拓扑、Bus 与 Pan 的契约。
 
 ## 拓扑契约

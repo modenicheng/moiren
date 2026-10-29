@@ -1,4 +1,6 @@
 //! Shared tokens for the approved v0.1.2 action components.
+//! Interactive-state palette variants (hover/pressed/on-accent) live here;
+//! `theme.rs` re-exports base tokens only and must not grow same-name copies.
 //!
 //! Source: Moiren UI v0.1.2, Navigation & Actions, checked 2026-10-14.
 //! The experimental graph theme is migrated as its components are replaced.

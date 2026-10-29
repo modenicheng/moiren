@@ -1,8 +1,6 @@
 use super::{Duration, NodeId, NodeKind, Page, StudioShell, reorder};
 use crate::ui::widgets::fader::FaderScale;
-use crate::ui::window::test_harness::{
-    finish_service, initial_projection, shell_with_state, spawn_service, test_shell, wait_until,
-};
+use crate::ui::window::test_harness::{finish_service, shell_with_state, test_shell, wait_until};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString,
@@ -243,29 +241,55 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
 
 #[gpui_kit::test]
 fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
-    let runtime = spawn_service();
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
     let handle = runtime.handle();
-    let mut snapshot = (*initial_projection(&handle)).clone();
-    snapshot.phase = crate::service::SessionPhase::Running;
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::window::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
     let node = snapshot.graph.graph.nodes()[0].id();
-    snapshot
-        .signal_topics
-        .node_levels
-        .insert(node, snapshot.signal_topics.tone_output.clone());
     cx.update(gpui_kit::init);
-    let state = cx.new(|_| crate::ui::state::UiState::new(handle, std::sync::Arc::new(snapshot)));
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Mixer;
         shell.inspector_open = false;
-        shell.state.update(cx, |state, _| {
-            std::sync::Arc::make_mut(&mut state.snapshot).phase =
-                crate::service::SessionPhase::Running;
-        });
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
+    // Live publications must arm the animation loop before the steady-state
+    // strip measurements begin.
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+    });
     // The inspector's closing spring is a real layout change, not a meter
     // invalidation. Let it finish before measuring steady-state frames.
     std::thread::sleep(Duration::from_millis(900));
@@ -365,6 +389,90 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
             0,
             "settings must stop the meter frame loop"
         );
+    });
+    finish_service(runtime);
+}
+
+/// Silence parks every observed layer at the scale bottom, so the vsync loop
+/// must stand down instead of redrawing idle meters; fresh data re-arms it
+/// through the control-side pump exactly as the desktop poll would.
+#[gpui_kit::test]
+fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let backend_state = backend.0.clone();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::window::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1024.), px(720.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // Live full-scale audio keeps the loop armed.
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, _| {
+            shell.node_meters.raw_levels(node).is_some()
+                && shell.node_meters.channel_levels(node).is_some()
+        })
+    });
+    // Digital silence (no publications) parks every layer at the scale
+    // bottom; the loop must stop requesting frames entirely.
+    backend_state.pause_audio.store(true, Ordering::SeqCst);
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            let frames = window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+            frames == 0
+        })
+    });
+    // Fresh data re-arms the loop: the control-side pump notices the raw
+    // change, notifies, and the canvas requests frames again.
+    backend_state.pause_audio.store(false, Ordering::SeqCst);
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            if shell.pump_meters(cx) {
+                cx.notify();
+            }
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.simulate_next_frame(cx) > 0
+        })
     });
     finish_service(runtime);
 }

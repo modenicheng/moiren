@@ -4,7 +4,10 @@
 //! shell pages and drive them through the same element APIs the platform uses.
 
 // The gpui test macro emits `gpui::…` paths; alias the Kit facade so they
-// resolve to the same GPUI snapshot the app uses.
+// resolve to the same GPUI snapshot the app uses. The reference lives inside
+// unexpanded test macros, so the alias looks unused when this file's cfg is
+// off (e.g. clippy with only ui-profiler enabled).
+#[allow(unused_extern_crates)]
 extern crate gpui_kit as gpui;
 
 mod common;

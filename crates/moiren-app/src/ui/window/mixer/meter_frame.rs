@@ -259,7 +259,10 @@ impl Render for MixerMeterFrame {
                     #[cfg(feature = "gpui-test")]
                     let began = std::time::Instant::now();
                     shell.pump_meters(cx);
-                    if shell.meters_frame_active(cx) {
+                    // Motion, not visibility, sustains the loop: at rest the
+                    // control-side poll keeps the strips current and re-arms
+                    // the frames once fresh data moves a layer.
+                    if shell.meters_frame_active(cx) && shell.meters_in_motion() {
                         window.request_animation_frame();
                     }
                     #[cfg(feature = "gpui-test")]

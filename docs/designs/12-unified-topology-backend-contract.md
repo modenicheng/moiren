@@ -1,5 +1,7 @@
 # 三视图共用的后端读取与编辑契约
 
+> 状态：历史设计（「Slint 尚未迁移」的表述已过时；当前为 gpui，见 FRONTEND.md）。
+
 日期：2026-10-14。对应[三视图评估](11-unified-topology-views-evaluation.md)第 5.4、7、8、9.4 节；本轮只实现 core/engine 基础接口，桌面应用与 Slint 尚未迁移。
 
 ## 一次读取项目和运行状态
