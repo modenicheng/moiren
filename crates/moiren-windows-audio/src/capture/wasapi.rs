@@ -109,6 +109,13 @@ impl CaptureSession {
             None => Ok(report.expect("joined capture report")),
         }
     }
+    /// Join the owner while retaining any partial report carried by its panic.
+    /// A retained report does not turn `WorkerPanicked` into successful cleanup;
+    /// callers must inspect the error and the report's own failure fields.
+    /// An unrelated panic has no report. Like `join`, this does not request Stop.
+    pub fn join_retaining_report(self) -> (Option<CaptureReport>, Option<CaptureError>) {
+        self.join_returning()
+    }
     fn join_returning(mut self) -> (Option<CaptureReport>, Option<CaptureError>) {
         match self.worker.take().expect("owned capture worker").join() {
             Ok(report) => (Some(report), None),

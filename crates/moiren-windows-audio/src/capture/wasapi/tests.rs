@@ -599,7 +599,7 @@ fn capture_abort_legacy_validation_and_no_owner_spawn_leave_stop_untouched() {
 
 #[test]
 fn capture_abort_process_panic_report_does_not_convert_legacy_join_to_success() {
-    for after_ready in [false, true] {
+    for (after_ready, retaining_join) in [(false, false), (true, false), (true, true)] {
         let result = start_owner_returning_with_abort(
             StopSignal::new().unwrap(),
             move |stop, sender, _| {
@@ -610,6 +610,8 @@ fn capture_abort_process_panic_report_does_not_convert_legacy_join_to_success() 
                 finish_owner_retaining_report(report, &stop, &sender, |report| {
                     report.activation_seconds = Some(0.375);
                     if after_ready {
+                        report.stream_started = true;
+                        report.packets = 7;
                         let (_, source, observer) =
                             crate::clock_bridge::capture_bridge(Default::default()).unwrap();
                         sender
@@ -628,10 +630,24 @@ fn capture_abort_process_panic_report_does_not_convert_legacy_join_to_success() 
             || (),
         );
         if after_ready {
-            assert!(matches!(
-                result.unwrap().session.join(),
-                Err(CaptureError::WorkerPanicked)
-            ));
+            let prepared = result.unwrap();
+            if retaining_join {
+                let (report, error) = prepared.session.join_retaining_report();
+                assert_eq!(error, Some(CaptureError::WorkerPanicked));
+                let report = report.expect("post-ready panic report must be retained");
+                assert_eq!(report.activation_seconds, Some(0.375));
+                assert!(report.stream_started);
+                assert_eq!(report.packets, 7);
+                assert_eq!(
+                    report.failure.as_deref(),
+                    Some(CaptureError::WorkerPanicked.to_string().as_str())
+                );
+            } else {
+                assert!(matches!(
+                    prepared.session.join(),
+                    Err(CaptureError::WorkerPanicked)
+                ));
+            }
         } else {
             let failure = result.err().unwrap();
             assert_eq!(failure.error, CaptureError::WorkerPanicked);
@@ -644,6 +660,69 @@ fn capture_abort_process_panic_report_does_not_convert_legacy_join_to_success() 
             );
         }
     }
+}
+
+#[test]
+fn capture_join_retaining_report_preserves_successful_owner_report() {
+    let prepared = start_owner_returning_with_abort(
+        StopSignal::new().unwrap(),
+        |_, sender, _| {
+            let (_, source, observer) = capture_bridge(Default::default()).unwrap();
+            sender
+                .send(Ok(Startup {
+                    source,
+                    observer,
+                    sample_rate: 48_000,
+                    channels: 2,
+                }))
+                .ok()
+                .unwrap();
+            let mut report = CaptureReport::new(
+                crate::capture::CaptureSource::ProcessLoopback,
+                crate::SessionDuration::UntilStopped,
+            );
+            report.activation_seconds = Some(0.625);
+            report.packets = 11;
+            report.status = CaptureStatus::Stopped;
+            report.stop_succeeded = true;
+            report
+        },
+        || panic!("successful preparation must not abort"),
+    )
+    .unwrap();
+    let (report, error) = prepared.session.join_retaining_report();
+    assert_eq!(error, None);
+    let report = report.expect("successful owner report must be retained");
+    assert_eq!(report.activation_seconds, Some(0.625));
+    assert_eq!(report.packets, 11);
+    assert_eq!(report.status, CaptureStatus::Stopped);
+    assert!(report.stop_succeeded);
+    assert!(report.failure.is_none());
+}
+
+#[test]
+fn capture_join_retaining_report_does_not_fabricate_report_for_unrelated_panic() {
+    let prepared = start_owner_returning_with_abort(
+        StopSignal::new().unwrap(),
+        |_, sender, _| {
+            let (_, source, observer) = capture_bridge(Default::default()).unwrap();
+            sender
+                .send(Ok(Startup {
+                    source,
+                    observer,
+                    sample_rate: 48_000,
+                    channels: 2,
+                }))
+                .ok()
+                .unwrap();
+            std::panic::panic_any(42_u64);
+        },
+        || panic!("post-ready panic must not become preparation failure"),
+    )
+    .unwrap();
+    let (report, error) = prepared.session.join_retaining_report();
+    assert!(report.is_none());
+    assert_eq!(error, Some(CaptureError::WorkerPanicked));
 }
 
 #[test]
