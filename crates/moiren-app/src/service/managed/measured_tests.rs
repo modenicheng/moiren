@@ -3,7 +3,7 @@ use crate::service::measured_process::tests::observation;
 use crate::service::{MeasuredProcessRequest, NativeSessionObservations};
 use moiren_windows_audio::engine_backend::NativeObservationSnapshot;
 
-fn start_process(r: &mut Rig) -> MeasuredProcessRequest {
+pub(super) fn start_process(r: &mut Rig) -> MeasuredProcessRequest {
     r.request(AppRequest::Start(SessionSpec {
         source: InputSelection::Process {
             pid: 42,

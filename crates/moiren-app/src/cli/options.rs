@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::service::{
-    AudioSettings, DeliveryProvenance, ExpertInputBuffer, ProcessingPrecision,
+    AudioSettings, DeliveryProvenance, ExpertInputBuffer, ProcessWindowPolicy, ProcessingPrecision,
     TransportLatencySettings,
 };
 use moiren_engine::node::DeviceMode;
@@ -21,6 +21,11 @@ pub(super) struct MonitorOptions {
     gap: Option<u32>,
     age: Option<u64>,
     ingress_elapsed: Option<u64>,
+    window_max_initial_unserved: Option<u64>,
+    window_max_initial_prime_discarded: Option<u64>,
+    window_min_output_frames: Option<u64>,
+    window_min_output_reads: Option<u64>,
+    window_min_output_span: Option<u64>,
 }
 
 impl Default for MonitorOptions {
@@ -39,15 +44,64 @@ impl Default for MonitorOptions {
             gap: None,
             age: None,
             ingress_elapsed: None,
+            window_max_initial_unserved: None,
+            window_max_initial_prime_discarded: None,
+            window_min_output_frames: None,
+            window_min_output_reads: None,
+            window_min_output_span: None,
         }
     }
 }
 
 impl MonitorOptions {
+    pub fn window_policy(&self) -> Result<Option<ProcessWindowPolicy>> {
+        let supplied = [
+            self.window_max_initial_unserved,
+            self.window_max_initial_prime_discarded,
+            self.window_min_output_frames,
+            self.window_min_output_reads,
+            self.window_min_output_span,
+        ]
+        .iter()
+        .filter(|field| field.is_some())
+        .count();
+        if supplied == 0 {
+            return Ok(None);
+        }
+        ensure!(
+            supplied == 5,
+            "Process window policy requires all five --window-* thresholds together"
+        );
+        ensure!(
+            self.measured_target()?.is_some(),
+            "Process window policy requires --measure-seconds and target, capacity and jitter together"
+        );
+        let policy = ProcessWindowPolicy {
+            max_initial_unserved_frames: self
+                .window_max_initial_unserved
+                .expect("complete window tuple"),
+            max_initial_prime_discarded_frames: self
+                .window_max_initial_prime_discarded
+                .expect("complete window tuple"),
+            min_output_frames: self
+                .window_min_output_frames
+                .expect("complete window tuple"),
+            min_output_reads: self.window_min_output_reads.expect("complete window tuple"),
+            min_output_span_100ns: self.window_min_output_span.expect("complete window tuple"),
+        };
+        policy.validate().map_err(anyhow::Error::msg)?;
+        Ok(Some(policy))
+    }
+
     pub fn set(&mut self, flag: &str, value: &str) -> Result<()> {
         let number = || {
             value
                 .parse::<u32>()
+                .with_context(|| format!("invalid {flag} value"))
+        };
+        let window_number = || {
+            value
+                .parse::<u64>()
                 .with_context(|| format!("invalid {flag} value"))
         };
         match flag {
@@ -82,6 +136,17 @@ impl MonitorOptions {
             "--jitter-frames" => self.jitter = Some(number()?),
             "--max-packet-frames" => self.packet = Some(number()?),
             "--max-gap-frames" => self.gap = Some(number()?),
+            "--window-max-initial-unserved-frames" => {
+                self.window_max_initial_unserved = Some(window_number()?)
+            }
+            "--window-max-initial-prime-discarded-frames" => {
+                self.window_max_initial_prime_discarded = Some(window_number()?)
+            }
+            "--window-min-output-frames" => self.window_min_output_frames = Some(window_number()?),
+            "--window-min-output-reads" => self.window_min_output_reads = Some(window_number()?),
+            "--window-min-output-span-100ns" => {
+                self.window_min_output_span = Some(window_number()?)
+            }
             "--age-limit-100ns" => {
                 self.age = Some(value.parse().context("invalid sample-age limit")?)
             }
@@ -137,6 +202,7 @@ impl MonitorOptions {
     }
 
     pub fn transport(&self) -> Result<TransportLatencySettings> {
+        self.window_policy()?;
         if self.measured_target()?.is_some() {
             // Start the observation phase with the unchanged compatible policy,
             // never guessed Empirical bounds or the unadmitted requested target.

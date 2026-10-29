@@ -2,8 +2,28 @@
 use super::*;
 
 impl ServiceDriver for ManagedDriver {
-    fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
+    fn request(&mut self, c: &mut ServiceContext, pool: &mut JobPool, request: AppRequest) {
+        // Every later control request supersedes a pending window selection.
+        // The worker still owns its reserved completion and no audio resource.
+        #[cfg(windows)]
+        if !matches!(&request, AppRequest::RefreshCatalog) {
+            self.window_evaluation = None;
+        }
+        #[cfg(not(windows))]
+        let _ = &pool;
         match request {
+            AppRequest::ApplyWindowedProcessBridge { request, policy } => {
+                #[cfg(windows)]
+                if let Err(error) = self.begin_windowed_process(c, pool, request, policy) {
+                    c.graph.record_error(error);
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = (request, policy);
+                    c.graph
+                        .record_error("observed Process windows require Windows");
+                }
+            }
             AppRequest::SetExportAuthorizations(values) => {
                 let previous = c.exports.authorizations.clone();
                 if let Err(error) = c.exports.set_authorizations(&values) {
@@ -211,6 +231,10 @@ impl ServiceDriver for ManagedDriver {
         update_vad_catalog(c);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
+        #[cfg(windows)]
+        {
+            self.window_evaluation = None;
+        }
         self.exiting = true;
         self.apply = false;
         self.apply_settings = None;
@@ -305,12 +329,16 @@ impl ManagedDriver {
 
     /// Drain owner-reaping and catalog-refresh completions from the cleanup
     /// worker.
-    fn poll_completions(&mut self, c: &mut ServiceContext, budget: RoundBudget) {
+    pub(super) fn poll_completions(&mut self, c: &mut ServiceContext, budget: RoundBudget) {
         for _ in 0..budget.completions {
             let Some(completion) = self.queue().try_recv() else {
                 break;
             };
             match completion {
+                #[cfg(windows)]
+                Completion::WindowEvaluated { id, result } => {
+                    self.finish_windowed_process(c, id, result);
+                }
                 Completion::Exports(result) => {
                     for error in self.exports_runtime.complete(&mut c.exports, result) {
                         c.graph.record_error(error);

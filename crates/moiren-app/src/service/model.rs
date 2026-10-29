@@ -88,6 +88,11 @@ pub enum AppRequest {
     SetTransportLatency(super::TransportLatencySettings),
     /// Select current native evidence and rebuild; never mutates a live queue.
     ApplyMeasuredProcessBridge(super::MeasuredProcessRequest),
+    /// Require a sealed supply/demand window from the service's pinned owner.
+    ApplyWindowedProcessBridge {
+        request: super::MeasuredProcessRequest,
+        policy: super::ProcessWindowPolicy,
+    },
     #[cfg(windows)]
     ApplyEvaluatedProcessBridge(super::EvaluatedProcessCandidate),
     EditGraph(super::GraphEdit),

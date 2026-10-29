@@ -1,5 +1,6 @@
 //! One original source archive per managed host, bounded independently of RT.
 use super::*;
+use crate::service::measured_process::live::{LiveProcessEvaluation, WindowEvaluation};
 use moiren_windows_audio::{
     engine_backend::NativeProcessTraceCollector,
     process_loopback::{ObservedProcessTrace, ProcessTraceArchive},
@@ -8,6 +9,13 @@ use moiren_windows_audio::{
 // Private seam lets host lifecycle tests use actual software bridge histories
 // without publishing a fake native registry or authenticating editable DTOs.
 pub(super) trait Collection: Send {
+    fn prepare_live_window(
+        &mut self,
+        _input: moiren_windows_audio::latency::transport::TransportInputPolicy,
+        _policy: moiren_windows_audio::process_loopback::ReplayWindowPolicy,
+    ) -> Result<WindowEvaluation, String> {
+        Err("live native Process window evaluation is unavailable".into())
+    }
     fn poll(&mut self);
     fn refusal(&self) -> Option<String> {
         None
@@ -22,6 +30,16 @@ pub(super) trait Collection: Send {
 }
 
 impl Collection for NativeProcessTraceCollector {
+    fn prepare_live_window(
+        &mut self,
+        input: moiren_windows_audio::latency::transport::TransportInputPolicy,
+        policy: moiren_windows_audio::process_loopback::ReplayWindowPolicy,
+    ) -> Result<WindowEvaluation, String> {
+        let prepared = self.prepare_live_window(input, policy)?;
+        Ok(Box::new(move || {
+            prepared.evaluate().map(LiveProcessEvaluation::native)
+        }))
+    }
     fn final_measurement(
         &self,
     ) -> Result<moiren_windows_audio::process_loopback::MeasuredProcessDelivery, String> {
@@ -46,6 +64,7 @@ pub(super) struct SessionTrace {
     pub(super) origin: ProcessTraceSessionOrigin,
     collection: Box<dyn Collection>,
     refusal: Option<String>,
+    pub(super) instance: Arc<()>,
 }
 
 impl SessionTrace {
@@ -55,7 +74,19 @@ impl SessionTrace {
             origin,
             collection,
             refusal,
+            instance: Arc::new(()),
         }
+    }
+
+    pub(super) fn prepare_window(
+        &mut self,
+        input: moiren_windows_audio::latency::transport::TransportInputPolicy,
+        policy: moiren_windows_audio::process_loopback::ReplayWindowPolicy,
+    ) -> Result<WindowEvaluation, String> {
+        if let Some(error) = &self.refusal {
+            return Err(error.clone());
+        }
+        self.collection.prepare_live_window(input, policy)
     }
 
     fn observe(&mut self, owner: &Owner, document: u64, state: &host::HostSnapshot) {

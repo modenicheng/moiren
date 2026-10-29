@@ -4,6 +4,50 @@ use moiren_core::graph::NodeId;
 use serde::Serialize;
 
 #[cfg(windows)]
+pub(crate) mod live;
+
+/// Explicit finite-window requirements, independent of baseline wall time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ProcessWindowPolicy {
+    pub max_initial_unserved_frames: u64,
+    pub max_initial_prime_discarded_frames: u64,
+    pub min_output_frames: u64,
+    pub min_output_reads: u64,
+    pub min_output_span_100ns: u64,
+}
+
+impl ProcessWindowPolicy {
+    pub fn validate(self) -> Result<(), String> {
+        if self.min_output_frames == 0
+            || self.min_output_reads < 2
+            || self.min_output_span_100ns == 0
+        {
+            return Err("invalid Process observed-window exposure policy".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn native(self) -> moiren_windows_audio::process_loopback::ReplayWindowPolicy {
+        moiren_windows_audio::process_loopback::ReplayWindowPolicy {
+            max_initial_unserved_frames: self.max_initial_unserved_frames,
+            max_initial_prime_discarded_frames: self.max_initial_prime_discarded_frames,
+            min_output_frames: self.min_output_frames,
+            min_output_reads: self.min_output_reads,
+            min_output_span_100ns: self.min_output_span_100ns,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MeasuredProcessWindow {
+    pub policy: ProcessWindowPolicy,
+    pub cutoff_100ns: u64,
+    pub replayed_packet_events: u64,
+    pub replayed_read_events: u64,
+}
+
+#[cfg(windows)]
 pub(crate) fn validate_ingress_elapsed_admission(limit: Option<u64>) -> Result<(), String> {
     if limit.is_some() {
         return Err(
@@ -70,6 +114,7 @@ pub struct MeasuredProcessSummary {
     pub process_pid: u32,
     pub process_creation_time_100ns: u64,
     pub delivery: MeasuredDeliveryBound,
+    pub observed_window: Option<MeasuredProcessWindow>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +126,8 @@ pub(crate) struct MeasuredProcessProfile {
     evaluated_envelope: Option<moiren_windows_audio::process_loopback::ProcessBridgeOptions>,
     #[cfg(windows)]
     evaluated: Option<super::EvaluatedProcessCandidate>,
+    #[cfg(windows)]
+    pub(crate) live_window: Option<std::sync::Arc<live::LiveProcessSelection>>,
 }
 
 impl MeasuredProcessProfile {
@@ -170,10 +217,12 @@ impl MeasuredProcessProfile {
                     max_packet_frames: bound.max_packet_frames,
                     max_gap_frames: bound.max_gap_frames,
                 },
+                observed_window: None,
             },
             evidence,
             evaluated_envelope: None,
             evaluated: None,
+            live_window: None,
         })
     }
 

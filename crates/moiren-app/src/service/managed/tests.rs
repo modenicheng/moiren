@@ -16,6 +16,9 @@ mod rename_tests;
 mod retained_apply_tests;
 #[path = "transport_tests.rs"]
 mod transport_tests;
+#[cfg(windows)]
+#[path = "windowed_tests.rs"]
+mod windowed_tests;
 
 struct Rig {
     driver: ManagedDriver,

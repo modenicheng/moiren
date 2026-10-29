@@ -7,6 +7,8 @@ pub(super) struct Measurement {
     seconds: Option<u16>,
     #[cfg(windows)]
     target: Option<(u32, u32, u32)>,
+    #[cfg(windows)]
+    window_policy: Option<crate::service::ProcessWindowPolicy>,
     stage: Stage,
 }
 
@@ -34,6 +36,8 @@ impl Measurement {
             seconds: options.measure_seconds,
             #[cfg(windows)]
             target: options.measured_target().expect("validated measured tuple"),
+            #[cfg(windows)]
+            window_policy: options.window_policy().expect("validated window tuple"),
             stage: if options.measure_seconds.is_some() {
                 Stage::Baseline
             } else {
@@ -171,19 +175,24 @@ impl Measurement {
                             target_frames,
                             jitter_frames,
                         };
-                        // Fail explicitly at the measured boundary rather than silently
-                        // trying a compatibility/default tuple after a bad profile.
-                        crate::service::measured_process::MeasuredProcessProfile::from_observation(
-                            1, request, observed,
-                        )
-                        .map_err(anyhow::Error::msg)?;
-                        let id = handle
-                            .try_request_tracked(
-                                crate::service::AppRequest::ApplyMeasuredProcessBridge(request),
+                        let apply = if let Some(policy) = self.window_policy {
+                            // The service seals and replays its retained native
+                            // prefix. Legacy per-wake admission is a separate
+                            // mode and must not replace that proof or refusal.
+                            crate::service::AppRequest::ApplyWindowedProcessBridge {
+                                request,
+                                policy,
+                            }
+                        } else {
+                            crate::service::measured_process::MeasuredProcessProfile::from_observation(
+                                1, request, observed,
                             )
-                            .map_err(|error| {
-                                anyhow::anyhow!("measured Apply request refused: {error:?}")
-                            })?;
+                            .map_err(anyhow::Error::msg)?;
+                            crate::service::AppRequest::ApplyMeasuredProcessBridge(request)
+                        };
+                        let id = handle.try_request_tracked(apply).map_err(|error| {
+                            anyhow::anyhow!("measured Apply request refused: {error:?}")
+                        })?;
                         self.stage = Stage::Applying {
                             since: Instant::now(),
                             request,
@@ -201,7 +210,10 @@ impl Measurement {
                         && snapshot
                             .active_measured_process
                             .as_ref()
-                            .is_some_and(|profile| profile.request == request)
+                            .is_some_and(|profile| {
+                                profile.request == request
+                                    && window_policy_matches(profile, self.window_policy)
+                            })
                         && snapshot.measured_process == snapshot.active_measured_process
                     {
                         self.stage = Stage::Ready;

@@ -15,7 +15,7 @@ fn monitor(extra: &[&str]) -> Result<MonitorOptions> {
     ]);
     values.extend(args(extra));
     match parse(values)? {
-        Command::Monitor(options) => Ok(options),
+        Command::Monitor(options) => Ok(*options),
         command => panic!("expected monitor: {command:?}"),
     }
 }

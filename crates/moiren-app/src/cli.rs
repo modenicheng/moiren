@@ -38,6 +38,17 @@ Two phases: baseline measurement -> owner replacement with measured admission
 run; startup and cleanup are separate. Sample age remains unsupported.
 Measurement/admission is per-wake evidence, not a latency qualification or a
 queue-stability/replay guarantee. The requested target may be refused.
+Observed window opt-in (all five required with --measure-seconds and budget tuple):
+  --window-max-initial-unserved-frames N
+  --window-max-initial-prime-discarded-frames N
+  --window-min-output-frames N
+  --window-min-output-reads N
+  --window-min-output-span-100ns N
+Thresholds have no defaults. Window admission replays an observed finite-prefix;
+a capped prefix refuses. This is not a stability or latency guarantee.
+It requires complete sequence-one packet/read histories (8192 events each) and
+complete-drain/whole-wake histories (256 events each); overwrites refuse.
+Omitting all window thresholds preserves the measured per-wake mode.
 No options changes saved desktop settings. Preparation may refuse unsafe
 targets against actual native output demand. Completion is operational only.";
 
@@ -45,7 +56,7 @@ targets against actual native output demand. Completion is operational only.";
 enum Command {
     Gui,
     Offline(AppConfig),
-    Monitor(MonitorOptions),
+    Monitor(Box<MonitorOptions>),
     Help(&'static str),
 }
 
@@ -99,7 +110,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command> {
         options.set(&flag, &value)?;
     }
     options.validate()?;
-    Ok(Command::Monitor(options))
+    Ok(Command::Monitor(Box::new(options)))
 }
 
 /// Parse before native initialization. Help and invalid arguments never discover
@@ -121,7 +132,7 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<()> {
             Ok(())
         }
         Command::Monitor(options) => {
-            let report = monitor::run(options)?;
+            let report = monitor::run(*options)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             if let Some(failure) = report.failure {
                 bail!("Process monitor failed: {failure}");
@@ -133,6 +144,8 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod window_tests;
 
 #[cfg(test)]
 mod ingress_elapsed_tests {
@@ -152,7 +165,7 @@ mod ingress_elapsed_tests {
         let Command::Monitor(options) = parse(arguments)? else {
             unreachable!("monitor arguments select the monitor command")
         };
-        Ok(options)
+        Ok(*options)
     }
 
     #[test]

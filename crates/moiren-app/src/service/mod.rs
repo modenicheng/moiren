@@ -35,7 +35,9 @@ pub use graph::{
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
-pub use measured_process::{MeasuredProcessRequest, MeasuredProcessSummary};
+pub use measured_process::{
+    MeasuredProcessRequest, MeasuredProcessSummary, MeasuredProcessWindow, ProcessWindowPolicy,
+};
 pub use moiren_engine::audio_config::*;
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 pub use transport_latency::{DeliveryProvenance, ExpertInputBuffer, TransportLatencySettings};
@@ -347,7 +349,8 @@ impl ServiceDriver for CoreDriver {
             AppRequest::SetTransportLatency(settings) => {
                 c.set_transport_latency(settings);
             }
-            AppRequest::ApplyMeasuredProcessBridge(_) => {
+            AppRequest::ApplyMeasuredProcessBridge(_)
+            | AppRequest::ApplyWindowedProcessBridge { .. } => {
                 c.graph.record_error(
                     "measured Process application requires the managed native service",
                 );

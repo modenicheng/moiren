@@ -20,6 +20,8 @@ mod parameters;
 mod process_traces;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windowed;
 
 type Factory<S> = dyn Fn(
         AudioLatencyProfile,
@@ -91,6 +93,11 @@ struct PendingParameter {
     confirmation: Option<ApplyConfirmation>,
 }
 enum Completion {
+    #[cfg(windows)]
+    WindowEvaluated {
+        id: u64,
+        result: Result<Box<super::measured_process::live::LiveProcessEvaluation>, String>,
+    },
     Reaped(SessionCleanupObservation),
     Catalog(Result<DeviceCatalog, BackendError>),
     Exports(Result<super::exports::runtime::Batch, String>),
@@ -119,6 +126,10 @@ impl ApplySettings {
 const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
 
 pub struct ManagedDriver {
+    #[cfg(windows)]
+    window_evaluation: Option<windowed::PendingWindowEvaluation>,
+    #[cfg(windows)]
+    window_evaluation_id: u64,
     #[cfg(windows)]
     process_trace: Option<process_traces::SessionTrace>,
     #[cfg(windows)]
@@ -192,6 +203,10 @@ impl ManagedDriver {
         + 'static,
     ) -> Self {
         Self {
+            #[cfg(windows)]
+            window_evaluation: None,
+            #[cfg(windows)]
+            window_evaluation_id: 0,
             #[cfg(windows)]
             process_trace: None,
             #[cfg(windows)]

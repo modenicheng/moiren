@@ -47,6 +47,7 @@ pub(super) struct MonitorReport {
     pub confirmed_native_generation: Option<u64>,
     pub requested_measurement_seconds: Option<u16>,
     pub requested_measured_target: Option<MeasuredTarget>,
+    pub requested_window_policy: Option<crate::service::ProcessWindowPolicy>,
     pub measurement_generation: Option<u64>,
     pub measurement_native_generation: Option<u64>,
     pub observed_measurement_ms: u64,
@@ -84,6 +85,14 @@ fn live_native_generation(snapshot: &AppSnapshot) -> Option<u64> {
 }
 
 #[cfg(any(windows, test))]
+fn window_policy_matches(
+    summary: &crate::service::MeasuredProcessSummary,
+    requested: Option<crate::service::ProcessWindowPolicy>,
+) -> bool {
+    summary.observed_window.as_ref().map(|window| window.policy) == requested
+}
+
+#[cfg(any(windows, test))]
 fn confirmed_run_matches(snapshot: &AppSnapshot, report: &MonitorReport) -> bool {
     let owner_matches = snapshot.phase == SessionPhase::Running
         && Some(snapshot.generation.0) == report.confirmed_generation
@@ -94,6 +103,12 @@ fn confirmed_run_matches(snapshot: &AppSnapshot, report: &MonitorReport) -> bool
         && (report.requested_measurement_seconds.is_none()
             || (report.confirmed_active_measured.is_some()
                 && snapshot.active_measured_process == report.confirmed_active_measured
+                && snapshot
+                    .active_measured_process
+                    .as_ref()
+                    .is_some_and(|summary| {
+                        window_policy_matches(summary, report.requested_window_policy)
+                    })
                 && report.confirmed_native_generation.is_some()
                 && live_native_generation(snapshot) == report.confirmed_native_generation))
 }
@@ -245,6 +260,7 @@ fn run_with_driver(
                     jitter_frames,
                 },
             );
+    let requested_window_policy = options.window_policy()?;
     let InputSelection::Process {
         pid,
         creation_time_100ns,
@@ -268,6 +284,7 @@ fn run_with_driver(
         confirmed_native_generation: None,
         requested_measurement_seconds: options.measure_seconds,
         requested_measured_target,
+        requested_window_policy,
         measurement_generation: None,
         measurement_native_generation: None,
         observed_measurement_ms: 0,

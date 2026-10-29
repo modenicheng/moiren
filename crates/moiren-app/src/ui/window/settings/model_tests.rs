@@ -311,6 +311,7 @@ fn measured(selection_id: u64) -> crate::service::MeasuredProcessSummary {
         },
         process_pid: 42,
         process_creation_time_100ns: 123,
+        observed_window: None,
         delivery: crate::service::measured_process::MeasuredDeliveryBound {
             sample_rate: 48_000,
             max_packet_frames: 480,

@@ -98,6 +98,15 @@ impl ManagedDriver {
             .expect("Apply captures the requested audio configuration")
             .clone();
         #[cfg(windows)]
+        if let Some(profile) = &requested.measured_process
+            && let Err(error) = self.validate_windowed_apply(c, &requested, profile)
+        {
+            c.graph.record_error(error);
+            self.apply = false;
+            self.apply_settings = None;
+            return;
+        }
+        #[cfg(windows)]
         if self.owner.is_none()
             && let Some(candidate) = requested
                 .measured_process
