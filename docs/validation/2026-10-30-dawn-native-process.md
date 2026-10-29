@@ -214,6 +214,44 @@ or reconfigured.
 All20 files /21 entries are downloaded and individually verified by exact
 file set, length and SHA-256. Failed/refused attempts remain retained.
 
+### Isolated budget follow-up
+
+`dawn-vad-budget2` starts after an idle audit and polls foreign
+Cargo/rustc/link/app/probe processes once per second. Neither case observes
+one. This scoped observation does not exclude other system activity, but
+supersedes the competing-app limitation for these two runs. There is no
+compilation during acquisition and no volume, mute or default-role write.
+The source is a 30-second, 1,440,000-frame marker schedule at amplitude0.025;
+the diagnostic continues with silence to the requested35 seconds.
+
+| Case | Actual native periods and input policy | Retained failures |
+| --- | --- | --- |
+| Shared target576 / input1792 | DAWN period480, capacity1056, render target576; VAD source480; Engine block128; input capacity4800, target1792, jitter96, low930, modeled minimum1602; whole demand896, transfer898, FIR32 | Actual duration34.9715725seconds; 15 playback xruns / short-read callbacks; 224 recovery-prime muted frames; 72 missing native sequence slots across23 gap observations; maximum completion interval119.735ms |
+| Exclusive256 / minimum VAD source / input1024 | DAWN period/capacity256; VAD source144; Engine block128; input capacity4800, target1024, jitter96, low610, modeled minimum898; whole demand576, transfer578, FIR32 | Actual duration34.9999107seconds; 8 playback xruns / short-read callbacks; 96 recovery-prime muted frames; 56 missing native sequence slots across14 gap observations; maximum completion interval47.7157ms |
+
+Both sources acknowledge all scheduled frames, which means successful
+ReleaseBuffer submission, not device playback or captured continuity.
+Both retain32 initial prime-muted frames separately from recovery silence.
+Driver READ-drop, provider dropped/stale/silent packet, epoch-reset and
+in-run recovery counters are zero. Native sequence holes are separate
+evidence and cannot be dismissed by those zero counters or interpreted
+as proven loss of nonsilent PCM. No PCM is acquired, the distribution is
+null, and both exits remain1/unqualified. The shorter first duration is
+retained exactly and is not a full35-second pass. Both owners stop and
+reach Removed/Dormant/Closed normally.
+
+Neither smaller candidate is stable. Do not promote a smaller default or
+expand a queue to hide these faults. Investigate source submission, native
+ready-buffer service, provider completion and actual graph-output waveform
+before assigning a cause.
+
+`dawn-vad-budget2.zip` is76,022bytes, SHA-256
+`9CD32A8877C8A1AD0CA7837D3D329E76956380D6972EA07BD76C8B67BD48508F`.
+All20 files /21 entries are downloaded and verified by exact file set,
+length and SHA-256. Its exact terminal scheduled task is unregistered after
+checking its action and child PIDs; evidence, deployment and shared Cargo
+caches are retained.
+
 DAWN resolves the lack of an authorized physical render endpoint; previous
 muted-Realtek limitations describe historical runs, not current routing.
 Independent common-clock reference capture and calibration remain absent.
