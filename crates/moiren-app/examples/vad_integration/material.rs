@@ -3,6 +3,8 @@
 //! starts, so a rejected file fails before audio begins.
 
 use anyhow::{Context, bail, ensure};
+// Only the Windows-gated loader takes a path; the parser tests do not.
+#[cfg(windows)]
 use std::path::Path;
 
 pub(super) const MATERIAL_SAMPLE_RATE: u32 = 48_000;
@@ -19,6 +21,9 @@ pub(super) struct Material {
     pub(super) frames: usize,
 }
 
+// Only the Windows-gated target coordinator loads a soak file; this module
+// also compiles on other targets for its parser tests.
+#[cfg(windows)]
 pub(super) fn load(path: &Path) -> anyhow::Result<Material> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     parse(&bytes)
