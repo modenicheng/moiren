@@ -486,7 +486,28 @@ fn render(service: &ServiceGraph) -> Vec<f32> {
         )
         .unwrap();
     bindings.bind_sink(sink, writer).unwrap();
-    preparation.bind_processors(&mut bindings).unwrap();
+    // Test-only binding for the kernels these tests exercise. Production
+    // binding goes through the managed EngineHost project; Bus and IO kinds
+    // need no kernel binding here.
+    for (node, config) in preparation.mixer_configs() {
+        bindings.bind_strip(node, config);
+    }
+    for node in preparation.graph.nodes() {
+        let state = preparation
+            .nodes
+            .iter()
+            .find(|state| state.id == node.id())
+            .expect("validated node state");
+        match node.kind() {
+            NodeKind::Gain => bindings.bind_gain(node.id(), state.gain).unwrap(),
+            NodeKind::Pan => {
+                bindings
+                    .bind_pan_with_stereo(node.id(), state.pan, state.mono, state.swap)
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
     let config = CompileConfig {
         engine: EngineConfig {
             processing_sr: 48_000.0,

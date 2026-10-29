@@ -5,10 +5,9 @@ use crate::capture_packet::borrow_capture_packet;
 use crate::codec::SampleCodec;
 use crate::native::{NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame};
 use crate::negotiation::{
-    EnginePeriodicityPolicy, EnginePeriods, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
-    StageError, client3_rejects_format, exclusive_format_supported, exclusive_frames_duration,
-    friendly_name, initialize_exclusive, initialize_legacy_shared, parse_descriptor,
-    shared_engine_periods,
+    EnginePeriods, SUBFORMAT_FLOAT, SUBFORMAT_PCM, StageError, client3_rejects_format,
+    exclusive_format_supported, exclusive_frames_duration, friendly_name, initialize_exclusive,
+    initialize_legacy_shared, parse_descriptor, shared_engine_periods,
 };
 use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
@@ -40,17 +39,6 @@ pub struct WasapiOptions {
     pub device: DeviceOptions,
     pub input: bool,
 }
-
-/// D4: professional's PERIODICITY_LOCKED policy — an explicit Shared period
-/// is exact-or-fail, so the HRESULT surfaces instead of retrying with the
-/// engine's current period. The legacy shared stack retries exactly once;
-/// see `negotiation::EnginePeriodicityPolicy`. The assertion keeps this
-/// stack pinned to the documented policy at compile time.
-const PERIODICITY_POLICY: EnginePeriodicityPolicy = EnginePeriodicityPolicy::ExactPeriod;
-const _: () = assert!(matches!(
-    PERIODICITY_POLICY,
-    EnginePeriodicityPolicy::ExactPeriod
-));
 
 fn api<T>(stage: &'static str, result: windows::core::Result<T>) -> Result<T, BackendError> {
     result.map_err(|error| {
@@ -717,12 +705,10 @@ fn negotiate_shared_exact(
                         "requested Shared period {period} is outside {minimum}..={maximum} or not a multiple of {fundamental}"
                     )));
                 }
-                // D4: an explicit Shared period is a hard contract
-                // here (out-of-range periods are rejected above,
-                // never rounded), so PERIODICITY_LOCKED surfaces
-                // instead of retrying with the engine period
-                // (PERIODICITY_POLICY; the legacy shared stack
-                // retries exactly once).
+                // An explicit Shared period is a hard contract: out-of-range
+                // periods were rejected above (never rounded), so
+                // PERIODICITY_LOCKED surfaces instead of retrying with the
+                // engine's current period.
                 api("InitializeSharedAudioStream", unsafe {
                     client3.InitializeSharedAudioStream(
                         AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -930,20 +916,11 @@ fn initialize_shared_legacy(
     format: &WAVEFORMATEX,
     stage: &'static str,
 ) -> Result<(), BackendError> {
-    // D4: professional keeps Windows' default persisted-session behavior
-    // (no NOPERSIST) and always converts between its fixed client format and
-    // the endpoint mix; the legacy shared stack passes its own combination.
+    // Keeps Windows' default persisted-session behavior (no NOPERSIST) and
+    // always converts between the fixed client format and the endpoint mix.
     // SAFETY: format is the caller's live descriptor for this call.
     api(stage, unsafe {
-        initialize_legacy_shared(
-            client,
-            std::ptr::from_ref(format),
-            None,
-            LegacySharedInit {
-                auto_convert: true,
-                nopersist: false,
-            },
-        )
+        initialize_legacy_shared(client, std::ptr::from_ref(format), None)
     })
 }
 
