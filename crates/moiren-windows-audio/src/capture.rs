@@ -37,6 +37,15 @@ pub enum CaptureError {
     InvalidPacket,
     #[error("native capture buffer exceeds the 8 MiB preparation budget")]
     BufferBudget,
+    #[error(
+        "native capture buffer query refused: expected S_OK and a written, nonzero capacity within the 8 MiB preparation budget (HRESULT 0x{hresult:08X}, raw_frames={raw_frames}, raw_bytes={raw_bytes:?}, output_changed={output_changed})"
+    )]
+    InvalidBufferSize {
+        hresult: i32,
+        raw_frames: u32,
+        raw_bytes: Option<u64>,
+        output_changed: bool,
+    },
     #[error(transparent)]
     Bridge(#[from] ClockBridgeError),
     #[error("{stage} failed (HRESULT 0x{hresult:08X})")]
@@ -113,6 +122,18 @@ pub enum CaptureStatus {
     TargetExited,
     Failed,
 }
+/// Raw GetBufferSize evidence, retained even when no capacity is admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CaptureBufferSizeQuery {
+    pub hresult: i32,
+    /// Poison value supplied before the call; an unchanged output is not proof
+    /// that the callee wrote it, even if the returned HRESULT is S_OK.
+    pub initial_frames: u32,
+    pub raw_frames: u32,
+    pub output_changed: bool,
+    /// Checked raw_frames * channels * sizeof(f32), not an allocation size.
+    pub raw_bytes: Option<u64>,
+}
 #[derive(Debug, Serialize)]
 pub struct CaptureReport {
     #[serde(skip)]
@@ -143,6 +164,8 @@ pub struct CaptureReport {
     pub sample_rate: Option<u32>,
     pub channels: Option<usize>,
     pub buffer_frames: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_size_query: Option<CaptureBufferSizeQuery>,
     pub stream_started: bool,
     pub stop_succeeded: bool,
     pub stop_hresult: Option<i32>,
@@ -181,6 +204,7 @@ impl CaptureReport {
             sample_rate: None,
             channels: None,
             buffer_frames: None,
+            buffer_size_query: None,
             stream_started: false,
             stop_succeeded: false,
             stop_hresult: None,

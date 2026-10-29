@@ -79,6 +79,7 @@ impl IAudioCaptureClient_Impl for Packets_Impl {
 struct Client {
     capture: IAudioCaptureClient,
     audio: HANDLE,
+    buffer_size: Result<u32, i32>,
 }
 impl IAudioClient_Impl for Client_Impl {
     fn Initialize(
@@ -93,7 +94,8 @@ impl IAudioClient_Impl for Client_Impl {
         unreachable!()
     }
     fn GetBufferSize(&self) -> WinResult<u32> {
-        Ok(64)
+        self.buffer_size
+            .map_err(|status| windows::core::Error::from_hresult(HRESULT(status)))
     }
     fn GetStreamLatency(&self) -> WinResult<i64> {
         Ok(0)
@@ -171,6 +173,7 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
             let client: IAudioClient = Client {
                 capture,
                 audio: audio.0,
+                buffer_size: Ok(64),
             }
             .into();
             let mut report = CaptureReport::new(source_kind, SessionDuration::UntilStopped);
@@ -282,6 +285,7 @@ fn interrupted_drain(end: DrainEnd) -> (CaptureReport, crate::clock_bridge::Brid
         let client: IAudioClient = Client {
             capture,
             audio: audio.0,
+            buffer_size: Ok(64),
         }
         .into();
         let mut report = CaptureReport::new(
@@ -393,4 +397,110 @@ fn native_drain_history_survives_packet_query_error_after_successful_releases() 
         )
     );
     assert_final_drain_is_retained(&report, &observer);
+}
+
+fn rejected_buffer_query(
+    source: CaptureSource,
+    buffer_size: Result<u32, i32>,
+) -> (CaptureError, CaptureReport) {
+    let stop = crate::StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let audio = crate::owner::OwnedHandle::event().unwrap();
+    let capture: IAudioCaptureClient = Packets {
+        audio: audio.0,
+        stop: handle(&stop.event),
+        next: Cell::new(0),
+        packet: Cell::new(0),
+        origin: 1,
+        end: DrainEnd::PacketQueryError,
+    }
+    .into();
+    let client: IAudioClient = Client {
+        capture,
+        audio: audio.0,
+        buffer_size,
+    }
+    .into();
+    let mut report = CaptureReport::new(source, SessionDuration::UntilStopped);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let error = run(
+        StreamInput {
+            client: &client,
+            audio: audio.0,
+            target: None,
+            stop: &stop.event,
+            duration: SessionDuration::UntilStopped,
+            latency_telemetry: TelemetryMode::Disabled,
+            gate: &gate,
+            started: &AtomicBool::new(false),
+            sample_rate: 48_000,
+            channels: 2,
+            artifact: None,
+        },
+        &sender,
+        &mut report,
+        ClockBridgeConfig::default(),
+    )
+    .unwrap_err();
+    assert!(!report.stream_started);
+    assert!(
+        receiver.try_recv().is_err(),
+        "no prepared source on refusal"
+    );
+    (error, report)
+}
+
+#[test]
+fn capture_buffer_query_retains_zero_and_oversized_raw_values_without_fallback() {
+    for source in [CaptureSource::Physical, CaptureSource::ProcessLoopback] {
+        for frames in [0, 1_048_577, 3_722_304_989, u32::MAX] {
+            let (error, report) = rejected_buffer_query(source, Ok(frames));
+            let json = serde_json::to_value(&report).unwrap();
+            assert_eq!(json["buffer_size_query"]["hresult"], 0);
+            assert_eq!(json["buffer_size_query"]["raw_frames"], frames);
+            assert_eq!(report.buffer_frames, None, "not an admitted capacity");
+            assert!(error.to_string().contains(&frames.to_string()));
+            assert_eq!(report.input_queue, None);
+        }
+    }
+}
+
+#[test]
+fn capture_buffer_query_refuses_s_false_and_retains_unchanged_output() {
+    // The COM implementation macro returns this HRESULT without writing the
+    // output. The ordinary windows binding currently maps S_FALSE to Ok(0).
+    let (error, report) = rejected_buffer_query(CaptureSource::ProcessLoopback, Err(1));
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["buffer_size_query"]["hresult"], 1);
+    assert_eq!(json["buffer_size_query"]["output_changed"], false);
+    assert!(error.to_string().contains("expected S_OK"));
+    assert_eq!(report.buffer_frames, None);
+}
+
+#[test]
+fn capture_buffer_query_retains_failed_hresult_before_returning() {
+    let (error, report) =
+        rejected_buffer_query(CaptureSource::ProcessLoopback, Err(E_NOINTERFACE.0));
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["buffer_size_query"]["hresult"], E_NOINTERFACE.0);
+    assert_eq!(json["buffer_size_query"]["output_changed"], false);
+    assert_eq!(
+        error,
+        CaptureError::Api {
+            stage: "GetBufferSize(capture)",
+            hresult: E_NOINTERFACE.0,
+        }
+    );
+    assert_eq!(report.buffer_frames, None);
+}
+
+#[test]
+fn capture_buffer_query_refuses_s_ok_without_output_instead_of_using_a_default() {
+    // Even S_OK cannot authorize a capacity when the output remains poisoned.
+    let (error, report) = rejected_buffer_query(CaptureSource::ProcessLoopback, Err(0));
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["buffer_size_query"]["hresult"], 0);
+    assert_eq!(json["buffer_size_query"]["output_changed"], false);
+    assert!(error.to_string().contains("8 MiB"));
+    assert_eq!(report.buffer_frames, None);
 }

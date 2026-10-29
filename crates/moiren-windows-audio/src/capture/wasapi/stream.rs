@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     Activation, ActivationGate, SessionDuration,
-    capture::{CaptureError, CaptureReport, CaptureStatus},
+    capture::{CaptureBufferSizeQuery, CaptureError, CaptureReport, CaptureStatus},
     latency::{
         CallbackObservation, InputDeliveryRecorder, LatencyRecorder, TelemetryMode, clock::QpcClock,
     },
@@ -22,10 +22,13 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use windows::Win32::{
-    Foundation::HANDLE,
-    Media::Audio::{IAudioCaptureClient, IAudioClient},
-    System::Threading::SetEvent,
+use windows::{
+    Win32::{
+        Foundation::{HANDLE, S_OK},
+        Media::Audio::{IAudioCaptureClient, IAudioClient},
+        System::Threading::SetEvent,
+    },
+    core::Interface,
 };
 
 pub(crate) struct StreamInput<'a> {
@@ -61,11 +64,46 @@ pub(super) fn run_prepared(
     preparation: &CapturePreparation,
     report: &mut CaptureReport,
 ) -> Result<CaptureStatus, CaptureError> {
-    let capacity = api("GetBufferSize(capture)", unsafe {
-        input.client.GetBufferSize()
-    })?;
-    if capacity == 0 || u64::from(capacity) * input.channels as u64 * 4 > 8 * 1024 * 1024 {
-        return Err(CaptureError::BufferBudget);
+    // The generated binding hides nonnegative HRESULTs and zeroes its output.
+    // Call the same ABI directly once so a refused Process client preserves
+    // both the status and the output instead of looking like a budget choice.
+    // The poison is deliberately outside the unchanged 8 MiB safety bound.
+    let initial_frames = u32::MAX;
+    let mut capacity = initial_frames;
+    // SAFETY: this live owner-local client supplies its IAudioClient vtable;
+    // capacity is a valid UINT32 output for the duration of this one call.
+    let status =
+        unsafe { (input.client.vtable().GetBufferSize)(input.client.as_raw(), &mut capacity) };
+    let query = CaptureBufferSizeQuery {
+        hresult: status.0,
+        initial_frames,
+        raw_frames: capacity,
+        output_changed: capacity != initial_frames,
+        raw_bytes: u64::try_from(input.channels)
+            .ok()
+            .and_then(|channels| channels.checked_mul(4))
+            .and_then(|frame_bytes| u64::from(capacity).checked_mul(frame_bytes)),
+    };
+    report.buffer_size_query = Some(query);
+    if status.is_err() {
+        return Err(CaptureError::Api {
+            stage: "GetBufferSize(capture)",
+            hresult: status.0,
+        });
+    }
+    if status != S_OK
+        || !query.output_changed
+        || capacity == 0
+        || query
+            .raw_bytes
+            .is_none_or(|bytes| bytes == 0 || bytes > 8 * 1024 * 1024)
+    {
+        return Err(CaptureError::InvalidBufferSize {
+            hresult: query.hresult,
+            raw_frames: query.raw_frames,
+            raw_bytes: query.raw_bytes,
+            output_changed: query.output_changed,
+        });
     }
     report.buffer_frames = Some(capacity);
     report.stream_latency_100ns = unsafe { input.client.GetStreamLatency() }.ok();
