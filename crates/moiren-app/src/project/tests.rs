@@ -884,6 +884,7 @@ fn preferences_persist_transport_latency_and_startup_keeps_it_requested() {
             max_gap_frames: 256,
             ..Default::default()
         }),
+        vad_recovery_cap_periods: Some(1),
     };
     let preferences = AppPreferences {
         transport_latency: transport,

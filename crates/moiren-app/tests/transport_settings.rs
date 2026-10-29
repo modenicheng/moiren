@@ -42,6 +42,51 @@ fn old_preferences_default_to_compatible_input_buffers() {
 }
 
 #[test]
+fn vad_recovery_cap_persists_independently_of_expert_input_policy() {
+    for cap in 1..=8 {
+        let mut saved = serde_json::to_value(AppPreferences::default()).unwrap();
+        saved["transport_latency"]["vad_recovery_cap_periods"] = json!(cap);
+        let preferences: AppPreferences = serde_json::from_value(saved).unwrap();
+        preferences.validate().unwrap();
+        let restored = serde_json::to_value(&preferences).unwrap();
+        assert_eq!(
+            restored["transport_latency"]["vad_recovery_cap_periods"],
+            cap
+        );
+        assert!(restored["transport_latency"]["vad"].is_null());
+        assert!(restored["audio"].get("vad_recovery_cap_periods").is_none());
+        let context = moiren_app::project::StartupDocuments {
+            preferences,
+            project: None,
+        }
+        .into_context()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(context.transport_latency).unwrap()["vad_recovery_cap_periods"],
+            cap
+        );
+        assert_eq!(context.active_transport_latency, None);
+    }
+}
+
+#[test]
+fn vad_recovery_cap_rejects_unsupported_values_instead_of_clamping() {
+    for cap in [json!(0), json!(9), json!(u64::MAX)] {
+        let mut saved = serde_json::to_value(TransportLatencySettings::default()).unwrap();
+        saved["vad_recovery_cap_periods"] = cap;
+        let settings: TransportLatencySettings = serde_json::from_value(saved).unwrap();
+        let error = settings.validate().unwrap_err();
+        assert!(error.contains("VAD"), "{error}");
+        assert!(error.contains("1..=8"), "{error}");
+    }
+    for cap in [json!(-1), json!(1.5), json!("1")] {
+        let mut saved = serde_json::to_value(TransportLatencySettings::default()).unwrap();
+        saved["vad_recovery_cap_periods"] = cap;
+        assert!(serde_json::from_value::<TransportLatencySettings>(saved).is_err());
+    }
+}
+
+#[test]
 fn invalid_transport_ranges_and_incomplete_delivery_evidence_are_rejected() {
     let valid = ExpertInputBuffer::default();
     for invalid in [
@@ -84,7 +129,11 @@ fn invalid_transport_ranges_and_incomplete_delivery_evidence_are_rejected() {
     ] {
         for (process, vad) in [(Some(invalid), None), (None, Some(invalid))] {
             let preferences = AppPreferences {
-                transport_latency: TransportLatencySettings { process, vad },
+                transport_latency: TransportLatencySettings {
+                    process,
+                    vad,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             assert!(preferences.validate().is_err(), "{invalid:?}");
@@ -104,6 +153,7 @@ fn startup_preserves_both_transport_requests_without_inventing_an_active_owner()
             provenance: DeliveryProvenance::Empirical,
             ..Default::default()
         }),
+        vad_recovery_cap_periods: Some(2),
     };
     let context = moiren_app::project::StartupDocuments {
         preferences: AppPreferences {

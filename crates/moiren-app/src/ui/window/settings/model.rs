@@ -133,6 +133,12 @@ impl Draft {
                 transport.vad,
                 &t!("VAD input buffer"),
             )?,
+            vad_recovery_cap_periods: merge_value(
+                self.original.3.vad_recovery_cap_periods,
+                self.transport.vad_recovery_cap_periods,
+                transport.vad_recovery_cap_periods,
+                &t!("VAD recovery cap"),
+            )?,
         };
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,

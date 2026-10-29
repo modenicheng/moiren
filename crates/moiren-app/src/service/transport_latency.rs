@@ -69,10 +69,20 @@ pub struct TransportLatencySettings {
     /// bounds refer to the fixed 48 kHz input transport, not Engine segments.
     pub process: Option<ExpertInputBuffer>,
     pub vad: Option<ExpertInputBuffer>,
+    /// Virtual-clock catch-up only, independent of input residency and physical
+    /// output wake demand. None preserves the native eight-period ceiling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vad_recovery_cap_periods: Option<u64>,
 }
 
 impl TransportLatencySettings {
     pub fn validate(self) -> Result<(), String> {
+        if self
+            .vad_recovery_cap_periods
+            .is_some_and(|periods| !(1..=8).contains(&periods))
+        {
+            return Err("VAD: recovery cap must be within 1..=8 periods".into());
+        }
         if self
             .vad
             .is_some_and(|input| input.age_limit_100ns.is_some())
@@ -111,7 +121,7 @@ impl TransportLatencySettings {
         moiren_windows_audio::virtual_owner::VirtualBufferOptions {
             input: policy(self.vad),
             delivery: delivery(self.vad),
-            ..Default::default()
+            recovery_cap_periods: self.vad_recovery_cap_periods,
         }
     }
 }
@@ -164,6 +174,7 @@ mod tests {
         let settings = TransportLatencySettings {
             process: Some(input),
             vad: Some(input),
+            ..Default::default()
         };
         settings.validate().unwrap();
         let process = settings.process_options();
@@ -207,6 +218,55 @@ mod tests {
         assert!(
             settings.virtual_options().validate().is_err(),
             "FIR reserve belongs to native preparation"
+        );
+    }
+
+    #[test]
+    fn vad_recovery_cap_controls_whole_virtual_burst_not_physical_wake_demand() {
+        let defaults = TransportLatencySettings::default().virtual_options();
+        assert_eq!(defaults.recovery_cap_periods, None);
+        assert_eq!(defaults.admitted_recovery_cap_periods().unwrap(), 8);
+        for cap in 1..=8 {
+            let settings = TransportLatencySettings {
+                vad_recovery_cap_periods: Some(cap),
+                ..Default::default()
+            };
+            settings.validate().unwrap();
+            let options = settings.virtual_options();
+            assert_eq!(options.recovery_cap_periods, Some(cap));
+            let prepared = options.prepare_recovery(48_000, 64).unwrap();
+            assert_eq!(prepared.engine_burst_frames, 64 * cap as u32);
+            assert_eq!(prepared.recovery_cap_periods, cap);
+            assert!(
+                prepared.queue.is_none(),
+                "Compatible residency is unchanged"
+            );
+        }
+        let mut settings = TransportLatencySettings {
+            vad: Some(ExpertInputBuffer {
+                capacity_frames: 1024,
+                target_frames: 128,
+                jitter_frames: 0,
+                max_packet_frames: 32,
+                max_gap_frames: 32,
+                ..Default::default()
+            }),
+            vad_recovery_cap_periods: Some(1),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        let options = settings.virtual_options();
+        let prepared = options.prepare_recovery(48_000, 32).unwrap();
+        assert_eq!(prepared.engine_burst_frames, 32);
+        assert_eq!(prepared.queue.unwrap().prime_frames, 128);
+        assert!(options.prepare_budget(48_000, 32, 256).is_err());
+        assert!(options.admit_native_packet(64).is_err());
+        settings.vad_recovery_cap_periods = None;
+        assert!(
+            settings
+                .virtual_options()
+                .prepare_recovery(48_000, 32)
+                .is_err()
         );
     }
 }

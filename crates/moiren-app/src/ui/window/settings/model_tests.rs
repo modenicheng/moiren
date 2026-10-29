@@ -209,6 +209,48 @@ fn transport_draft_rebases_independent_inputs_and_rejects_same_input_conflicts()
 }
 
 #[test]
+fn vad_recovery_cap_rebases_independently_and_conflicts_without_losing_draft() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let mut edited = draft(AudioSettings::default());
+    edited.transport.vad_recovery_cap_periods = Some(1);
+    let current = TransportLatencySettings {
+        process: Some(ExpertInputBuffer::default()),
+        vad: Some(ExpertInputBuffer::default()),
+        ..Default::default()
+    };
+    let merged = edited
+        .submission(&edited.audio, edited.profile, edited.density, current)
+        .unwrap();
+    assert_eq!(merged.transport.vad_recovery_cap_periods, Some(1));
+    assert_eq!(merged.transport.process, current.process);
+    assert_eq!(merged.transport.vad, current.vad);
+    assert!(merged.save_transport);
+    let conflict = TransportLatencySettings {
+        vad_recovery_cap_periods: Some(2),
+        ..current
+    };
+    let error = edited
+        .submission(&edited.audio, edited.profile, edited.density, conflict)
+        .err()
+        .unwrap();
+    assert!(error.contains("VAD recovery cap"), "{error}");
+    assert_eq!(edited.transport.vad_recovery_cap_periods, Some(1));
+    assert!(edited.dirty());
+
+    let mut independent = draft(AudioSettings::default());
+    independent.transport.vad = Some(ExpertInputBuffer::default());
+    let merged = independent
+        .submission(
+            &independent.audio,
+            independent.profile,
+            independent.density,
+            conflict,
+        )
+        .unwrap();
+    assert_eq!(merged.transport.vad_recovery_cap_periods, Some(2));
+}
+
+#[test]
 fn device_draft_does_not_overwrite_new_transport_intent_and_commit_tracks_it() {
     use crate::service::{ExpertInputBuffer, TransportLatencySettings};
     let mut device = draft(AudioSettings::default());

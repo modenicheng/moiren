@@ -4,6 +4,7 @@ fn expert() -> TransportLatencySettings {
     TransportLatencySettings {
         process: Some(ExpertInputBuffer::default()),
         vad: Some(ExpertInputBuffer::default()),
+        vad_recovery_cap_periods: Some(1),
     }
 }
 
@@ -62,6 +63,7 @@ fn transport_draft_after_apply_does_not_change_pending_replacement() {
     let applied = expert();
     let mut draft = applied;
     draft.process.as_mut().unwrap().target_frames = 1024;
+    draft.vad_recovery_cap_periods = Some(2);
     r.request(AppRequest::SetTransportLatency(applied));
     r.request(AppRequest::ApplyGraph);
     r.request(AppRequest::SetTransportLatency(draft));
@@ -92,6 +94,24 @@ fn invalid_transport_settings_preserve_requested_and_running_configuration() {
 }
 
 #[test]
+fn invalid_vad_recovery_caps_preserve_requested_and_running_configuration() {
+    let mut r = Rig::new();
+    r.start();
+    let defaults = TransportLatencySettings::default();
+    for cap in [0, 9, u64::MAX] {
+        r.request(AppRequest::SetTransportLatency(TransportLatencySettings {
+            vad_recovery_cap_periods: Some(cap),
+            ..defaults
+        }));
+        assert_eq!(r.c.transport_latency, defaults);
+        assert_eq!(r.c.active_transport_latency, Some(defaults));
+        assert!(r.c.graph.snapshot().last_error.is_some());
+        assert_eq!(r.state.stops.load(Ordering::SeqCst), 0);
+        assert_eq!(r.c.core.phase(), SessionPhase::Running);
+    }
+}
+
+#[test]
 fn both_precision_factories_receive_the_applied_transport_snapshot() {
     for precision in [ProcessingPrecision::F32, ProcessingPrecision::F64] {
         let mut r = Rig::new();
@@ -101,6 +121,15 @@ fn both_precision_factories_receive_the_applied_transport_snapshot() {
         let f32_backend = FakeBackend(r.state.clone());
         let f64_backend = f32_backend.clone();
         r.driver.factory = Arc::new(move |_, _, transport, _| {
+            #[cfg(windows)]
+            assert_eq!(
+                transport
+                    .virtual_options()
+                    .prepare_recovery(48_000, 64)
+                    .unwrap()
+                    .recovery_cap_periods,
+                1
+            );
             f32_observed
                 .lock()
                 .unwrap()
@@ -108,6 +137,15 @@ fn both_precision_factories_receive_the_applied_transport_snapshot() {
             Ok(Box::new(f32_backend.clone()))
         });
         r.driver.f64_factory = Some(Arc::new(move |_, _, transport, _| {
+            #[cfg(windows)]
+            assert_eq!(
+                transport
+                    .virtual_options()
+                    .prepare_recovery(48_000, 64)
+                    .unwrap()
+                    .recovery_cap_periods,
+                1
+            );
             f64_observed
                 .lock()
                 .unwrap()
