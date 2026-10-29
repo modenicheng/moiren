@@ -84,7 +84,7 @@ static void PureFirstRebase()
         timerBefore, clock, 10200209, 480, 1, 0, ring.PresentedFrames);
     Check(timer.DeadlineFrame == 960 && timer.DeadlineQpc == 10200000 &&
         timer.LatenessTicks == 209 && timer.PresentedFrames == 480,
-        "timer lateness is excess over one logical packet frontier");
+        "timer lateness is excess over the admitted pending-debt frontier");
     Check(timer.After.BaseFrames == 480 && timer.After.EpochQpc == 10200209 &&
         timer.After.LimitFrames == 528 && timer.PacketCount == 1,
         "timer observation preserves real rebase values and logical shape");
@@ -382,11 +382,75 @@ static void ProductionCallbackBoundary()
         "callback evidence does not rebase an ordinarily late event or retain locks");
 }
 
+static void ProductionShortTimerProgressAndStall()
+{
+    for (const auto frames : {48u, 49u}) {
+        for (const bool capture : {false, true}) {
+            Shared shared = {};
+            Child child = {&shared};
+            auto& slot = shared.Slots[0];
+            slot.Id = 5;
+            slot.Session = 9;
+            slot.StreamGeneration = 3;
+            slot.AdmissionGeneration = 11;
+            slot.GateOpen = slot.AudioReady = 1;
+            slot.State = MOIREN_VAD_STATE_PRESENT;
+            slot.StreamState = MOIREN_VAD_STREAM_RUNNING;
+            shared.ClockDiagnostics[0].Reset(3);
+            VAD_AUDIO_STREAM stream = {};
+            stream.Device = &child;
+            stream.PacketCount = 1;
+            stream.PacketFrames = frames;
+            stream.PacketSize = frames * 4;
+            stream.Capture = capture;
+            stream.Clock = {10000000, 10000000, 0, frames, true};
+            Check(InitializeTimerDrivenRing(stream.TimerRing, frames * 4, 4, 4096),
+                "production short ring");
+            TimerContext timer = {&stream};
+            Starts = Notifications = Transfers = Quiesces = 0;
+            CallbackQpc = 10011000;
+            VadAudioTimer(&timer);
+            Check(stream.TimerRing.PresentedFrames == frames && LastDue == -1 &&
+                stream.Clock.EpochQpc == 10000000 && Quiesces == 0 &&
+                slot.AdmissionGeneration == 11 && !shared.ClockDiagnostics[0].ReportFirst &&
+                !shared.Lock.Held && !stream.State.Held && Transfers <= 3,
+                "actual short callback progresses one packet and requests bounded debt service");
+            CallbackQpc = 10011100;
+            VadAudioTimer(&timer);
+            Check(stream.TimerRing.PresentedFrames == 53 && LastDue < -1 &&
+                stream.Clock.EpochQpc == 10000000 && Quiesces == 0 &&
+                slot.AdmissionGeneration == 11 && Notifications == 0,
+                "actual timely residual service retains original sample clock without event notification");
+
+            const auto before = stream.TimerRing.PresentedFrames;
+            const auto limit = TimerDrivenPendingLimit(stream.TimerRing);
+            const auto deadline = FrameQpc(stream.Clock, before + limit);
+            CallbackQpc = FrameQpc(stream.Clock, before + limit + 1);
+            const auto transfers = Transfers;
+            VadAudioTimer(&timer);
+            const auto diagnostic = shared.ClockDiagnostics[0].TakeUnreported();
+            Check(diagnostic.ReportFirst && diagnostic.First.Reason == ClockRebaseReason::TimerStall &&
+                diagnostic.First.DeadlineFrame == before + limit &&
+                diagnostic.First.DeadlineQpc == deadline &&
+                diagnostic.First.LatenessTicks == CallbackQpc - deadline &&
+                slot.AdmissionGeneration == 12 && Quiesces == 1 &&
+                stream.TimerRing.PresentedFrames == before && Transfers == transfers &&
+                LastDue == -10000 && !shared.Lock.Held && !stream.State.Held,
+                "actual over-threshold callback reports exact admitted deadline and invalidates without transfer");
+            VadAudioTimer(&timer);
+            Check(slot.AdmissionGeneration == 12 && Quiesces == 1 && Transfers == transfers &&
+                stream.TimerRing.PresentedFrames == before,
+                "duplicate stalled callback cannot invalidate again or catch up retired PCM");
+        }
+    }
+}
+
 int main()
 {
     PureFirstRebase();
     ProductionCallSites();
     ProductionCallbackBoundary();
+    ProductionShortTimerProgressAndStall();
     std::printf("PASS: first event/timer rebase, real callback/epoch causality, "
         "lateness, generation reset, passive WPP; fixed diagnostic=%zu bytes\n", sizeof(ClockDiagnostic));
 }

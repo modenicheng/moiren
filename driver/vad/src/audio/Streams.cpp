@@ -254,8 +254,9 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
 }
 
 // State is held. One callback consumes at most one logical packet of elapsed
-// time, split only at logical/native boundaries. Longer stalls discard time;
-// ordinary timer jitter must not repeatedly erase an incomplete PCM packet.
+// time, split only at logical/native boundaries. Short packets admit one timer
+// quantum of residual debt and redue without relabeling PCM; longer stalls
+// discard time. Ordinary jitter must not repeatedly erase incomplete PCM.
 _IRQL_requires_(DISPATCH_LEVEL)
 static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
     VAD_PCM_BATCH* batch)
@@ -272,7 +273,8 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
         const auto observation = vad::audio::ObserveClockRebase(
             vad::audio::ClockRebaseReason::TimerStall, clockBefore,
             stream->Clock, now, stream->PacketFrames, stream->PacketCount,
-            stream->CompletedPackets, stream->TimerRing.PresentedFrames);
+            stream->CompletedPackets, stream->TimerRing.PresentedFrames,
+            vad::audio::TimerDrivenPendingLimit(stream->TimerRing));
         VadAudioRebaseDiscontinuity(stream->Device, stream->Generation,
             reinterpret_cast<uint64_t>(stream->Stream), observation);
         QuiesceStreamBuffers(stream);

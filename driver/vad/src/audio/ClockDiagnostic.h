@@ -36,13 +36,16 @@ struct ClockRebaseObservation {
 inline ClockRebaseObservation ObserveClockRebase(ClockRebaseReason reason,
     const Clock& before, const Clock& after, uint64_t callbackQpc,
     uint32_t packetFrames, uint32_t packetCount, uint64_t completedPackets,
-    uint64_t presentedFrames)
+    uint64_t presentedFrames, uint64_t timerPendingLimit = 0)
 {
     // The event scheduler tests its NEXT packet deadline after completion.
-    // The timer planner instead rebases only when more than one logical packet
-    // remains unprocessed. Both deadlines must use the old clock association.
+    // Short timer packets permit one bounded quantum of debt. The caller
+    // supplies the actual ring-admitted threshold, including its mapped cap.
+    // Both deadlines must use the old clock association and the exact planner
+    // threshold, not the per-callback one-packet transfer bound.
     const auto frame = reason == ClockRebaseReason::EventDeadline ?
-        (completedPackets + 1) * packetFrames : presentedFrames + packetFrames;
+        (completedPackets + 1) * packetFrames :
+        presentedFrames + (timerPendingLimit != 0 ? timerPendingLimit : packetFrames);
     const auto deadline = FrameQpc(before, frame);
     return {before, after, callbackQpc, frame, deadline,
         callbackQpc > deadline ? callbackQpc - deadline : 0,
