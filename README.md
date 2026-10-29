@@ -14,11 +14,11 @@ cargo run --locked -p moiren-app -- --gain 0.25
 
 Graph 中的每个 Source、Sink 独立绑定音源或设备，多个输入可通过 Bus 混合到多个输出。首个输出驱动主时钟，其他输出通过有界时钟桥跟随。Compatible 图修改在块边界更新；改变设备或 IO 集合可能重建音频 owner。界面区分候选与引擎确认的活动版本。
 
-Settings 中的 Compatible、Balanced、Low 保存期望的延迟档位，通过 Apply 生效。实际设备周期、队列和初始化 fallback 来自原生观测。请求 5 ms 不代表设备实际为 5 ms，队列帧数也不代表物理端到端时延。
+Settings 中的 Compatible、Balanced、Low 保存期望的延迟档位，保存后下次启动生效。档位映射为设备 buffer 请求（Balanced ≈ 512 帧、Low ≈ 256 帧 @ 48 kHz，无显式配置时），不是队列模型；实际设备周期和初始化 fallback 来自原生观测，请求值不代表实测延迟。档位语义的 canonical 描述见[托管路由与低延迟](docs/designs/14-managed-routing-low-latency.md)。
 
-后端节点支持 Input/Output、Gain、Balance/Mono/Swap、Bus、Compressor、EQ、Gate、Limiter、Delay、ChannelMapper、Recorder、Meter、SpectrumAnalyzer 和 Rack。Rack 支持独立多输入/多输出端口、显式无分支处理链和声道宽度转换；slot 参数通过稳定身份控制，兼容换图保留相容 slot 的 DSP 状态。桌面编辑入口尚未覆盖所有后端节点。
+后端节点覆盖 Input/Output、Gain、Balance/Mono/Swap、Bus、Compressor、EQ、Gate、Limiter、Delay、ChannelMapper、Recorder、Meter、SpectrumAnalyzer 和 Rack（多端口、显式无分支链、slot 稳定身份兼容换图保留 DSP 状态）。完整清单与逐节点能力边界见[后端节点验收](docs/validation/backend-nodes.md)；桌面编辑入口尚未覆盖所有后端节点。
 
-正式 native 边界仍为 WASAPI Shared、双声道 IO、48 kHz 输出；中间 DSP 的端口宽度独立于原生 IO 限制。物理 endpoint 的常规 mono/stereo 输入和 stereo 输出可使用 Windows PCM/float 格式转换，保持声道宽度；多声道、mono 输出或非常规声道 mask 会明确拒绝，避免图前隐式下混或重新解释声道。最终是否支持由设备初始化结果确认。
+正式 native 边界仍为 WASAPI Shared、双声道 IO、48 kHz 输出；中间 DSP 的端口宽度独立于原生 IO 限制。mono/stereo PCM/float 格式经 Windows 转换保持声道宽度，多声道与非常规 mask 明确拒绝。该边界的 canonical 描述见 [windows-audio README](crates/moiren-windows-audio/README.md)。
 
 ## 验证
 
@@ -30,14 +30,7 @@ cargo clippy --locked --workspace --all-targets --features moiren-app/gpui-test 
 cargo fmt --all -- --check
 ```
 
-普通测试不打开音频设备。`routing_probe` 提供有限时长、全输出静音的多输出/低延迟实机检查，不改变系统默认设备或音量：
-
-```powershell
-cargo run --locked -p moiren-windows-audio --example routing_probe -- --list
-cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '<master endpoint ID>' --output '<follower endpoint ID>' --seconds 10 --profile low
-```
-
-可重复指定 `--input '<capture endpoint ID>'`；不指定时混合两个软件音源。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
+普通测试不打开音频设备。有限时长的实机探针（`asio_probe`、`exclusive_probe`、W00 系列）与硬件验证记录见 [windows-audio README](crates/moiren-windows-audio/README.md)；这些探针不改变系统默认设备或音量。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
 
 ## 当前边界
 
