@@ -51,7 +51,10 @@ use windows::{
                 CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
                 CoUninitialize, STGM_READ,
             },
-            Threading::{CreateEventW, WaitForSingleObject},
+            Threading::{
+                AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW,
+                WaitForSingleObject,
+            },
             Variant::VT_LPWSTR,
         },
     },
@@ -93,6 +96,26 @@ pub struct PlaybackInfo {
     pub adapter_instance: String,
     pub native_buffer_frames: u32,
     pub packet_format: String,
+    pub mmcss_registered: bool,
+    pub mmcss_hresult: Option<i32>,
+}
+
+struct AudioRegistration(HANDLE);
+
+impl Drop for AudioRegistration {
+    fn drop(&mut self) {
+        // Registration and retirement both run on this source owner thread.
+        let _ = unsafe { AvRevertMmThreadCharacteristics(self.0) };
+    }
+}
+
+fn record_audio_registration<T>(
+    result: std::result::Result<T, i32>,
+    info: &mut PlaybackInfo,
+) -> Option<T> {
+    info.mmcss_registered = result.is_ok();
+    info.mmcss_hresult = result.as_ref().err().copied();
+    result.ok()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1167,7 +1190,7 @@ fn run_worker(
     };
     let mut source = SourceCursor::new(source_plan);
     latest.lock().unwrap_or_else(|p| p.into_inner()).provenance = Some(source.provenance());
-    let info = PlaybackInfo {
+    let mut info = PlaybackInfo {
         source_mode: shared.then(|| "shared_explicit_mmdevice".into()),
         stable_endpoint_id,
         mmdevice_id,
@@ -1175,7 +1198,18 @@ fn run_worker(
         adapter_instance,
         native_buffer_frames: stream.frames,
         packet_format: format!("{:?}", stream.format),
+        mmcss_registered: false,
+        mmcss_hresult: None,
     };
+    // A normal-priority test source can starve before the graph while capture
+    // and render owners keep serving. Match their Audio task and retain the
+    // actual result; successful ReleaseBuffer alone cannot prove supply timing.
+    let mut task_index = 0;
+    let registration =
+        unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index) }
+            .map(AudioRegistration)
+            .map_err(|error| error.code().0);
+    let _audio_registration = record_audio_registration(registration, &mut info);
     let mut started = None;
     let result = (|| -> Result<()> {
         latest.lock().unwrap_or_else(|p| p.into_inner()).info = Some(info.clone());
@@ -1713,8 +1747,40 @@ mod tests {
                 adapter_instance: "test".into(),
                 native_buffer_frames: 480,
                 packet_format: "Float32".into(),
+                mmcss_registered: false,
+                mmcss_hresult: None,
             },
         }
+    }
+    #[test]
+    fn playback_source_reports_audio_scheduler_registration_separately_from_started() {
+        let session = fake_session(|| Ok(()));
+        let info = serde_json::to_value(&session.info).unwrap();
+        assert_eq!(info["mmcss_registered"], false);
+        assert_eq!(info["mmcss_hresult"], serde_json::Value::Null);
+    }
+    #[test]
+    fn playback_source_retains_scheduler_failure_and_retires_successful_registration() {
+        use std::cell::Cell;
+        struct Registration<'a>(&'a Cell<bool>);
+        impl Drop for Registration<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let mut session = fake_session(|| Ok(()));
+        let retired = Cell::new(false);
+        let registration = record_audio_registration(Ok(Registration(&retired)), &mut session.info);
+        assert!(session.info.mmcss_registered);
+        assert!(session.info.mmcss_hresult.is_none());
+        assert!(!retired.get());
+        drop(registration);
+        assert!(retired.get());
+        let registration =
+            record_audio_registration::<Registration<'_>>(Err(-123), &mut session.info);
+        assert!(registration.is_none());
+        assert!(!session.info.mmcss_registered);
+        assert_eq!(session.info.mmcss_hresult, Some(-123));
     }
     #[test]
     fn playback_activation_is_single_use_and_stop_before_start_is_rejected() {
