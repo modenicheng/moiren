@@ -281,9 +281,10 @@ impl GraphTracker {
             "physical host native/cleanup/update fault: {:?}",
             sample.fault
         );
+        // Resource generation starts at zero and advances on resource events;
+        // it is pinned below, not evidence that an owner has been activated.
         ensure!(
             sample.owner > 0
-                && sample.resource > 0
                 && sample.desired == 1
                 && sample.professional_owner == sample.owner
                 && sample.native.owner_generation == sample.owner,
@@ -1028,7 +1029,7 @@ mod tests {
                 host: HostState::Open,
                 execution: ExecutionState::Running,
                 owner: 1,
-                resource: 1,
+                resource: 0,
                 desired: 1,
                 active: Some(1),
                 plan: Some(1),
@@ -1308,8 +1309,123 @@ mod tests {
     }
 
     #[test]
+    fn physical_session_resource_generation_zero_is_valid_and_retained_through_join() {
+        for resource in [0, 1] {
+            let (mut tracker, mut sample) = graph();
+            let mut quality = QualityDiagnostics::default();
+            sample.resource = resource;
+            assert!(
+                tracker
+                    .observe(&options(), &sample, Duration::ZERO, &mut quality)
+                    .unwrap(),
+                "initial resource generation {resource}"
+            );
+            assert_eq!(tracker.pinned.as_ref().unwrap().resource, resource);
+            assert_eq!(
+                tracker.admission.as_ref().unwrap()["snapshot"]["resource_generation"],
+                resource
+            );
+            assert_eq!(
+                tracker.startup.as_ref().unwrap()["resource_generation"],
+                resource
+            );
+
+            sample.timeline = Some([1, 1, 1024]);
+            sample.streams[0].wakes += 1;
+            sample.streams[1].written += 512;
+            assert!(
+                tracker
+                    .observe(
+                        &options(),
+                        &sample,
+                        Duration::from_millis(100),
+                        &mut quality,
+                    )
+                    .unwrap()
+            );
+            assert_eq!(
+                tracker.latest.as_ref().unwrap()["resource_generation"],
+                resource
+            );
+
+            sample.host = HostState::Closed;
+            sample.execution = ExecutionState::Dormant;
+            sample.active = None;
+            sample.plan = None;
+            sample.timeline = None;
+            sample.professional_running = false;
+            sample.native.running = false;
+            sample.native.raw["running"] = json!(false);
+            tracker.finish(&options(), &sample, &mut quality).unwrap();
+            assert_eq!(
+                tracker.final_observation.as_ref().unwrap()["resource_generation"],
+                resource
+            );
+            assert!(quality.failure.is_none());
+        }
+    }
+
+    #[test]
+    fn physical_session_resource_generation_zero_keeps_pinned_identity_fences() {
+        for final_joined in [false, true] {
+            for variant in 0..3 {
+                let (mut tracker, mut sample) = graph();
+                let mut quality = QualityDiagnostics::default();
+                sample.resource = 0;
+                tracker
+                    .observe(&options(), &sample, Duration::ZERO, &mut quality)
+                    .unwrap();
+                match variant {
+                    0 => sample.resource = 1,
+                    1 => sample.host_id = "different-host".into(),
+                    _ => {
+                        sample.owner = 2;
+                        sample.professional_owner = 2;
+                        sample.native.owner_generation = 2;
+                        sample.native.raw["owner_generation"] = json!(2);
+                    }
+                }
+                let result = if final_joined {
+                    sample.host = HostState::Closed;
+                    sample.execution = ExecutionState::Dormant;
+                    sample.active = None;
+                    sample.plan = None;
+                    sample.timeline = None;
+                    sample.professional_running = false;
+                    sample.native.running = false;
+                    sample.native.raw["running"] = json!(false);
+                    tracker.finish(&options(), &sample, &mut quality)
+                } else {
+                    tracker
+                        .observe(
+                            &options(),
+                            &sample,
+                            Duration::from_millis(100),
+                            &mut quality,
+                        )
+                        .map(|_| ())
+                };
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("physical pinned host/owner/resource changed"),
+                    "final_joined={final_joined}, variant={variant}"
+                );
+                assert_eq!(tracker.pinned.as_ref().unwrap().resource, 0);
+                let evidence = if final_joined {
+                    tracker.final_observation.as_ref().unwrap()
+                } else {
+                    tracker.latest.as_ref().unwrap()
+                };
+                assert_eq!(evidence["resource_generation"], sample.resource);
+            }
+        }
+    }
+
+    #[test]
     fn physical_session_admission_refuses_wrong_nodes_generation_mode_and_period() {
-        for variant in 0..8 {
+        for variant in 0..12 {
             let (mut tracker, mut sample) = graph();
             let mut options = options();
             match variant {
@@ -1320,7 +1436,16 @@ mod tests {
                 4 => sample.streams[0].mode = DeviceMode::Exclusive,
                 5 => options.capture.period_frames = Some(128),
                 6 => sample.native.streams[0].timing = None,
-                _ => sample.native.streams[0].kind = NativeKind::Unexpected,
+                7 => sample.native.streams[0].kind = NativeKind::Unexpected,
+                8 => {
+                    sample.owner = 0;
+                    sample.professional_owner = 0;
+                    sample.native.owner_generation = 0;
+                    sample.native.raw["owner_generation"] = json!(0);
+                }
+                9 => sample.desired = 2,
+                10 => sample.active = Some(2),
+                _ => sample.timeline = Some([1, 2, 512]),
             }
             if variant == 3 {
                 sample.native.streams[0].node = sample.native.streams[1].node;
