@@ -22,7 +22,9 @@ The canonical driver qualification verdict remains in
 - Build and prepare on the development host; install and debug the kernel
   driver only on the separate test target. The existing VMware guest is the
   functional driver target, not permission to install the driver on the host.
-- Keep each implementation/test/documentation slice atomic and push promptly.
+- Keep each implementation/test/documentation slice atomic locally. Per the
+  2026-10-29 user update, batch pushes at meaningful verified integration
+  checkpoints to avoid triggering CI for every small commit.
   Do not stage unrelated screenshots, JSON, or other user work.
 - The VM has a roughly 64 GB system disk. Delete obsolete, owned scratch
   artifacts after verified archival; do not accumulate build trees or binaries.
@@ -159,7 +161,8 @@ topology in core and preparation/runtime contracts in engine.
 
 - Commit/push this requirement and audit record separately from code.
 - Before each implementation slice, check worktree state; stage explicit paths,
-  run relevant checks, commit, push and verify the remote hash.
+  run relevant checks and commit locally. Batch remote updates at verified
+  integration checkpoints, then verify the remote hash.
 - Before deployment, record host/guest builds, loaded package/SYS hash, binary
   hash, active settings, installed-driver status and free space.
 
