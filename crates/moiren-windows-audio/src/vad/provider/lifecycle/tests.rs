@@ -955,12 +955,195 @@ fn pcm_cancellation_rebuilds_on_epoch_change_but_same_epoch_fault_is_fatal() {
         &mut control,
         previous,
         &session,
-        unavailable("epoch cancellation"),
+        BackendError::Cancelled,
     )
     .unwrap();
     assert_eq!(current.stream_generation(), 4);
     assert!(!current.gate_open());
     assert_eq!(session.reset_epoch.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn pcm_cancel_active_same_stamp_pause_closed_and_running_abort_stay_fatal() {
+    for stream_state in [
+        StreamState::Paused,
+        StreamState::Closed,
+        StreamState::Running,
+    ] {
+        let admission = Arc::new(Admission::new());
+        let session = SessionState::new(admission.clone());
+        session.active.store(true, Ordering::Release);
+        session
+            .admitted_ticket
+            .store(admission.set(Some(9)), Ordering::Release);
+        session.admitted_revision.store(9, Ordering::Release);
+        let previous = snapshot(PdoState::Present, 3, 5, true);
+        let current = snapshot_native(
+            PdoState::Present,
+            3,
+            5,
+            true,
+            11,
+            (stream_state, true, true),
+        );
+        let mut control = Fake {
+            current,
+            ..Default::default()
+        };
+        let result = super::super::transport::after_io_error(
+            &mut control,
+            previous,
+            &session,
+            BackendError::Cancelled,
+        );
+        assert!(
+            matches!(result, Err(BackendError::Cancelled)),
+            "native state alone does not prove stop intent: {stream_state:?}"
+        );
+        assert!(
+            !session.drained.load(Ordering::Acquire),
+            "retirement still has to drain requests"
+        );
+        assert_eq!(
+            session.reset_epoch.load(Ordering::Acquire),
+            0,
+            "Pause is not a fabricated epoch"
+        );
+    }
+}
+
+#[test]
+fn pcm_cancel_shutdown_race_needs_no_error_recovery_query_but_still_needs_drain() {
+    let admission = Arc::new(Admission::new());
+    let session = SessionState::new(admission);
+    session.active.store(true, Ordering::Release);
+    session.cancel.store(true, Ordering::Release);
+    let previous = snapshot(PdoState::Present, 3, 5, true);
+    let mut control = Fake {
+        fail_query: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        super::super::transport::after_io_error(
+            &mut control,
+            previous,
+            &session,
+            BackendError::Cancelled,
+        )
+        .unwrap(),
+        previous,
+    );
+    assert!(!session.drained.load(Ordering::Acquire));
+    assert!(
+        control.gates.is_empty(),
+        "worker-exit gate close remains mandatory"
+    );
+}
+
+#[test]
+fn pcm_cancel_revoked_admission_closes_gate_without_claiming_a_drained_session() {
+    let admission = Arc::new(Admission::new());
+    let session = SessionState::new(admission.clone());
+    session.active.store(true, Ordering::Release);
+    session
+        .admitted_ticket
+        .store(admission.set(Some(9)), Ordering::Release);
+    session.admitted_revision.store(9, Ordering::Release);
+    admission.set(None);
+    let previous = snapshot(PdoState::Present, 3, 5, true);
+    let mut control = Fake {
+        current: previous,
+        ..Default::default()
+    };
+    let current = super::super::transport::after_io_error(
+        &mut control,
+        previous,
+        &session,
+        BackendError::Cancelled,
+    )
+    .unwrap();
+    assert!(!current.gate_open());
+    assert_eq!(control.gates, [false]);
+    assert!(!session.drained.load(Ordering::Acquire));
+}
+
+#[test]
+fn pcm_cancel_active_query_failure_and_prior_worker_failure_stay_visible_on_join() {
+    let admission = Arc::new(Admission::new());
+    let state = Arc::new(SessionState::new(admission.clone()));
+    state.active.store(true, Ordering::Release);
+    state
+        .admitted_ticket
+        .store(admission.set(Some(9)), Ordering::Release);
+    state.admitted_revision.store(9, Ordering::Release);
+    let previous = snapshot(PdoState::Present, 3, 5, true);
+    let mut control = Fake {
+        current: previous,
+        fail_query: true,
+        ..Default::default()
+    };
+    let error = super::super::transport::after_io_error(
+        &mut control,
+        previous,
+        &state,
+        BackendError::Cancelled,
+    )
+    .unwrap_err();
+    assert_eq!(error, unavailable("QUERY timeout"));
+    *state.failure.lock().unwrap() = Some(error.clone());
+    state.status.store(2, Ordering::Release);
+    let session = Box::new(VadSession {
+        state: state.clone(),
+        worker: None,
+    });
+    assert_eq!(session.stop_and_join(), Err(error));
+    assert!(state.cancel.load(Ordering::Acquire));
+    assert!(!state.drained.load(Ordering::Acquire));
+}
+
+#[test]
+fn pcm_cancel_does_not_hide_distinct_io_fault_when_stopped_revoked_or_epoch_changes() {
+    for situation in 0..4 {
+        let admission = Arc::new(Admission::new());
+        let session = SessionState::new(admission.clone());
+        session.active.store(true, Ordering::Release);
+        session
+            .admitted_ticket
+            .store(admission.set(Some(9)), Ordering::Release);
+        session.admitted_revision.store(9, Ordering::Release);
+        let previous = snapshot(PdoState::Present, 3, 5, true);
+        let mut current = previous;
+        match situation {
+            0 => session.cancel.store(true, Ordering::Release),
+            1 => session.revoke(),
+            2 => {
+                current = snapshot_native(
+                    PdoState::Present,
+                    3,
+                    5,
+                    true,
+                    11,
+                    (StreamState::Paused, true, true),
+                )
+            }
+            _ => current = snapshot(PdoState::Present, 4, 6, false),
+        }
+        let mut control = Fake {
+            current,
+            ..Default::default()
+        };
+        let error = unavailable("distinct PCM device failure");
+        assert_eq!(
+            super::super::transport::after_io_error(
+                &mut control,
+                previous,
+                &session,
+                error.clone(),
+            ),
+            Err(error),
+        );
+        assert!(!session.drained.load(Ordering::Acquire));
+    }
 }
 
 #[test]

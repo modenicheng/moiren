@@ -787,14 +787,14 @@ fn run_playback(
         &mut writer,
         &mut tickets,
     );
-    retired.finish();
-    result.and(close_result)
+    let drain_result = retired.finish();
+    combine_worker_results(combine_worker_results(result, close_result), drain_result)
 }
 
 /// Parked retired PCM owners whose cancelled requests the driver has not yet
 /// completed. Stack-allocated inside each transport worker; `poll` runs once
-/// per pump iteration and is a no-op when empty. No thread, lock, or heap
-/// allocation exists anywhere on this path.
+/// per pump iteration and is a no-op when empty. Parking adds no thread or
+/// allocation; terminal fault formatting may allocate on this non-RT worker.
 ///
 /// Capacity two bounds the pathological case: a fresh retire while two
 /// generations of requests are still stuck falls back to the bounded blocking
@@ -804,6 +804,7 @@ fn run_playback(
 struct RetiredPcm {
     parked: [(Option<ResidualPcm>, u64); RETIRE_PARK_SLOTS],
     next_age: u64,
+    failure: Option<BackendError>,
 }
 
 const RETIRE_PARK_SLOTS: usize = 2;
@@ -813,6 +814,7 @@ impl RetiredPcm {
         Self {
             parked: std::array::from_fn(|_| (None, 0)),
             next_age: 0,
+            failure: None,
         }
     }
 
@@ -836,9 +838,17 @@ impl RetiredPcm {
         if owner.retire(PCM_RETIRE_QUICK_DRAIN, &mut residual) {
             return;
         }
-        let Some(residual) = residual else {
+        let Some(mut residual) = residual else {
             return;
         };
+        if let Some(error) = residual.take_shutdown_failure() {
+            self.retain_failure(error);
+        }
+        if residual.pending() == 0 {
+            // A terminal fault is still a cleanup failure, but has already
+            // relinquished every request. Do not park a fully drained owner.
+            return;
+        }
         if let Some(index) = self.parked.iter().position(|(slot, _)| slot.is_none()) {
             self.parked[index] = (Some(residual), age);
         } else {
@@ -853,7 +863,12 @@ impl RetiredPcm {
                     "event=pcm_retire_park_full endpoint={endpoint} oldest_pending={}",
                     oldest.pending()
                 );
-                if !oldest.drain(PCM_SHUTDOWN_TIMEOUT) {
+                oldest.drain(PCM_SHUTDOWN_TIMEOUT);
+                if let Some(error) = oldest.take_shutdown_failure() {
+                    self.retain_failure(error);
+                }
+                if oldest.pending() != 0 {
+                    self.retain_failure(ClientError::DeadlineExceeded);
                     log::warn!(
                         target: "moiren::audio::vad",
                         "event=pcm_retire_park_full_timeout endpoint={endpoint}"
@@ -877,19 +892,29 @@ impl RetiredPcm {
     /// Non-blocking collect pass over every parked residual.
     fn poll(&mut self) {
         for (slot, _) in &mut self.parked {
-            if let Some(residual) = slot
-                && residual.drain(Duration::ZERO)
-            {
-                *slot = None;
+            if let Some(residual) = slot {
+                residual.drain(Duration::ZERO);
+                if let Some(error) = residual.take_shutdown_failure() {
+                    self.failure.get_or_insert_with(|| client_error(error));
+                }
+                if residual.pending() == 0 {
+                    *slot = None;
+                }
             }
         }
     }
 
     /// Worker-exit drain: bounded collect, then Drop's final safety drain.
-    fn finish(&mut self) {
+    fn finish(&mut self) -> Result<(), BackendError> {
         for (slot, _) in &mut self.parked {
             if let Some(mut residual) = slot.take() {
-                if !residual.drain(PCM_SHUTDOWN_TIMEOUT) {
+                residual.drain(PCM_SHUTDOWN_TIMEOUT);
+                if let Some(error) = residual.take_shutdown_failure() {
+                    self.failure.get_or_insert_with(|| client_error(error));
+                }
+                if residual.pending() != 0 {
+                    self.failure
+                        .get_or_insert_with(|| client_error(ClientError::DeadlineExceeded));
                     log::warn!(
                         target: "moiren::audio::vad",
                         "event=pcm_retire_exit_timeout pending={}",
@@ -899,6 +924,13 @@ impl RetiredPcm {
                 let _ = residual;
             }
         }
+        self.failure.take().map_or(Ok(()), Err)
+    }
+
+    fn retain_failure(&mut self, error: ClientError) {
+        // Bound retained worker evidence to the first cleanup failure. Each
+        // owner already retains all four distinct terminal slot outcomes.
+        self.failure.get_or_insert_with(|| client_error(error));
     }
 }
 
@@ -1084,8 +1116,21 @@ fn run_microphone(
         &mut reader,
         &mut tickets,
     );
-    retired.finish();
-    result.and(close_result)
+    let drain_result = retired.finish();
+    combine_worker_results(combine_worker_results(result, close_result), drain_result)
+}
+
+fn combine_worker_results(
+    result: Result<(), BackendError>,
+    cleanup: Result<(), BackendError>,
+) -> Result<(), BackendError> {
+    match (result, cleanup) {
+        (Err(work), Err(cleanup)) => Err(BackendError::Failed(format!(
+            "VAD worker: {work}; VAD cleanup: {cleanup}"
+        ))),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 fn teardown_microphone(
@@ -1122,6 +1167,35 @@ fn close_worker_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcm_cancel_worker_completion_retains_both_work_and_gate_cleanup_faults() {
+        let work = BackendError::ResourceUnavailable("distinct PCM work failure".into());
+        let close = BackendError::ResourceUnavailable("distinct close gate failure".into());
+        let combined = combine_worker_results(Err(work.clone()), Err(close.clone())).unwrap_err();
+        assert!(combined.to_string().contains("distinct PCM work failure"));
+        assert!(combined.to_string().contains("distinct close gate failure"));
+        assert_eq!(combine_worker_results(Err(work.clone()), Ok(())), Err(work));
+        assert_eq!(
+            combine_worker_results(Ok(()), Err(close.clone())),
+            Err(close)
+        );
+        assert_eq!(combine_worker_results(Ok(()), Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn pcm_cancel_retired_owner_keeps_terminal_cleanup_fault_until_worker_finish() {
+        let mut retired = RetiredPcm::new();
+        retired.retain_failure(ClientError::Io {
+            operation: "VAD PCM shutdown terminal failures",
+            source: std::io::Error::other("slot=2 HRESULT=0x80070005"),
+        });
+        retired.poll();
+        let error = retired
+            .finish()
+            .expect_err("drained storage must not erase cleanup failure");
+        assert!(error.to_string().contains("slot=2 HRESULT=0x80070005"));
+    }
 
     #[test]
     fn export_observation_is_a_detached_public_control_snapshot() {

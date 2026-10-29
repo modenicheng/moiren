@@ -5,6 +5,13 @@ use crate::latency::packet_service::PacketStampOrigin;
 use crate::vad::{PcmPacketStamp, SAMPLE_RATE};
 use std::time::Instant;
 
+fn pcm_error(error: ClientError) -> BackendError {
+    match error {
+        ClientError::Cancelled => BackendError::Cancelled,
+        error => client_error(error),
+    }
+}
+
 pub(super) trait PcmIo {
     fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), ClientError>;
     fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, ClientError>;
@@ -257,7 +264,7 @@ pub(super) fn playback<C: PcmIo>(
                 tickets.remove(0);
                 break;
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         };
         match completion {
             Some(PcmCompletion::Render { stamp, pcm }) => {
@@ -326,7 +333,7 @@ pub(super) fn playback<C: PcmIo>(
                 );
                 break;
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         }
     }
     Ok(PumpState::Current)
@@ -362,7 +369,7 @@ pub(super) fn microphone<C: PcmIo>(
                 tickets.remove(0);
                 break;
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         };
         let (stamp, dropped) = match completion {
             Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
@@ -473,7 +480,7 @@ pub(super) fn microphone<C: PcmIo>(
                     "event=pcm_kernel_quota_dropped endpoint=microphone stage=write"
                 );
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         }
     }
     Ok(PumpState::Current)
@@ -499,7 +506,7 @@ pub(super) fn wait_for_microphone<C: PcmIo>(
                     .unwrap_or(POLL_INTERVAL)
                     .min(POLL_INTERVAL),
             )
-            .map_err(client_error)?;
+            .map_err(pcm_error)?;
     } else if let Some(remaining) = pump
         .remaining(now)
         .filter(|remaining| !remaining.is_zero())
@@ -529,7 +536,7 @@ pub(super) fn wait_for_activity<C: PcmIo>(
     if let Some(&ticket) = tickets.first() {
         owner
             .wait_activity(ticket, POLL_INTERVAL)
-            .map_err(client_error)?;
+            .map_err(pcm_error)?;
     }
     Ok(())
 }

@@ -96,15 +96,42 @@ pub(super) fn after_io_error<C: EndpointControl>(
     state: &SessionState,
     error: BackendError,
 ) -> Result<super::super::EndpointSnapshot, BackendError> {
+    // Only a collected terminal PCM cancellation can be explained by a gate
+    // transition or explicit stop. A device/protocol/timeout fault stays a
+    // fault even if shutdown races it; never turn all retirement errors green.
+    if error != BackendError::Cancelled {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_io_fault endpoint={:?} previous={previous:?} cancel={} admitted={} error={error:?}",
+            previous.key(),
+            state.cancel.load(Ordering::Acquire),
+            state.admitted(),
+        );
+        return Err(error);
+    }
+    // A normal stop can race completion collection after the last loop check.
+    // Do not require an error-recovery QUERY once shutdown has been requested:
+    // run_* still closes the gate, retires all PCM owners and finishes drains.
+    if state.cancel.load(Ordering::Acquire) {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_pcm_cancel endpoint={:?} previous={previous:?} phase=stopping drained={}",
+            previous.key(),
+            state.drained.load(Ordering::Acquire),
+        );
+        return Ok(previous);
+    }
     let (current, changed) = poll_with_started_transport(control, previous, state, true)?;
     log::debug!(
         target: "moiren::audio::vad",
-        "event=transport_io_error endpoint={:?} previous={previous:?} current={current:?} epoch_changed={changed} admitted={} error={error:?}",
+        "event=transport_io_error endpoint={:?} previous={previous:?} current={current:?} epoch_changed={changed} cancel={} admitted={} error={error:?}",
         current.key(),
+        state.cancel.load(Ordering::Acquire),
         state.admitted(),
     );
-    // Gate/stream transitions cancel pending PCM by design. Rebuild its slots
-    // from the observed epoch; a same-epoch native failure remains a fault.
+    // Native Pause/Closed alone does not prove caller stop intent. Without
+    // cancellation, a revoked gate/admission or an observed epoch change,
+    // retain the fault instead of restarting same-generation PCM silently.
     if changed || !current.gate_open() || !state.admitted() {
         Ok(current)
     } else {

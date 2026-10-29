@@ -208,6 +208,21 @@ impl PcmIo for FakeIo {
 fn state() -> SessionState {
     SessionState::new(Arc::new(Admission::new()))
 }
+
+#[test]
+fn pcm_cancel_keeps_terminal_cancellation_typed_until_transport_checks_lifecycle() {
+    assert!(matches!(
+        pcm_error(ClientError::Cancelled),
+        BackendError::Cancelled
+    ));
+    let code = windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED.to_hresult();
+    let error = pcm_error(ClientError::windows(
+        "GetOverlappedResult(VAD PCM)",
+        windows::core::Error::from_hresult(code),
+    ));
+    assert!(matches!(error, BackendError::ResourceUnavailable(_)));
+    assert!(error.to_string().contains("GetOverlappedResult(VAD PCM)"));
+}
 fn pending_reads(io: &mut FakeIo) -> Vec<PcmTicket> {
     (0..crate::vad::REQUEST_SLOTS)
         .map(|_| io.read().unwrap())
