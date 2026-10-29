@@ -831,7 +831,7 @@ pub(super) fn collect(
         "config": config, "playback_source": provenance, "source": guard.vad.playback_outcome,
         "graph": { "input_kind": "VirtualPlayback", "stable_endpoint_id": options.stable_endpoint_id,
             "output_endpoint_id": options.output_endpoint, "engine_block_frames": options.engine_block_frames,
-            "render_queue": super::render_queue(options)?, "virtual_buffer": super::native::virtual_buffer(options)?,
+            "render_queue": super::render_queue(options)?, "virtual_buffer": super::virtual_buffer(options)?,
             "telemetry": options.telemetry, "admission": guard.vad.admission,
             "last_running": last_running, "last_observation": guard.vad.last_health,
             "engine": guard.vad.report.engine, "provider": guard.vad.report.vad_provider,

@@ -20,6 +20,7 @@ use moiren_windows_audio::{
         transport::{DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy},
     },
     process_loopback::ProcessBridgeOptions,
+    virtual_owner::VirtualBufferOptions,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -111,6 +112,7 @@ struct LiveOptions {
     input_jitter_frames: u32,
     max_packet_frames: u32,
     max_gap_frames: u32,
+    vad_recovery_cap_periods: Option<u64>,
     render_target_frames: Option<u32>,
     wake_margin_frames: u32,
     callback_budget_frames: u32,
@@ -156,6 +158,7 @@ impl Default for LiveOptions {
             input_jitter_frames: DEFAULT_INPUT_JITTER_FRAMES,
             max_packet_frames: DEFAULT_MAX_PACKET_FRAMES,
             max_gap_frames: DEFAULT_MAX_GAP_FRAMES,
+            vad_recovery_cap_periods: None,
             render_target_frames: None,
             wake_margin_frames: DEFAULT_WAKE_MARGIN_FRAMES,
             callback_budget_frames: DEFAULT_CALLBACK_BUDGET_FRAMES,
@@ -195,6 +198,8 @@ struct LiveRunManifest {
     diagnostic_soak: bool,
     observation_interval_seconds: u64,
     process_bridge: ProcessBridgeOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    virtual_buffer: Option<VirtualBufferOptions>,
     render_queue: RenderQueuePolicy,
     artifacts: ArtifactPaths,
     gaps: Vec<String>,
@@ -292,6 +297,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [options]\n\
              live-vad --source-schedule FILE --vad-collection FILE opts into bounded source +\n\
              production graph + independent waveform collection. --seconds is its total ceiling.\n\
+             live-vad accepts --vad-recovery-cap-periods 1..8; omitted preserves 8.\n\
+             This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
              --validation-mode latency-sensitive|correctness [--jitter-tolerance-ms 0..3000]\n\
              Correctness retains jitter/underruns without early quality abort; never latency qualification.\n\
              Correctness exit 0 means collection and cleanup completed, even if quality_passed=false.\n\
@@ -595,6 +602,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         diagnostic_soak: options.diagnostic_soak,
         observation_interval_seconds: options.observation_interval_seconds,
         process_bridge,
+        virtual_buffer: (options.source_kind == EvidenceSourceKind::VadPlayback)
+            .then(|| virtual_buffer(&options))
+            .transpose()?,
         render_queue,
         artifacts: artifact_paths(&paths, &options),
         gaps,
@@ -695,6 +705,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--input-jitter-frames"
             | "--max-packet-frames"
             | "--max-gap-frames"
+            | "--vad-recovery-cap-periods"
             | "--render-target-frames"
             | "--wake-margin-frames"
             | "--callback-budget-frames"
@@ -814,6 +825,14 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             "--max-gap-frames" => {
                 options.max_gap_frames = value.parse().context("invalid gap bound")?
             }
+            "--vad-recovery-cap-periods" => {
+                ensure!(
+                    options.vad_recovery_cap_periods.is_none(),
+                    "duplicate --vad-recovery-cap-periods"
+                );
+                options.vad_recovery_cap_periods =
+                    Some(value.parse().context("invalid VAD recovery cap")?);
+            }
             "--render-target-frames" => {
                 options.render_target_frames = if value == "capacity" {
                     None
@@ -853,6 +872,16 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 
 fn validate(options: &LiveOptions) -> Result<()> {
     options.validation.validate()?;
+    if let Some(cap) = options.vad_recovery_cap_periods {
+        ensure!(
+            options.source_kind == EvidenceSourceKind::VadPlayback,
+            "--vad-recovery-cap-periods is only valid for live-vad"
+        );
+        ensure!(
+            (1..=8).contains(&cap),
+            "--vad-recovery-cap-periods must be 1..=8"
+        );
+    }
     ensure!(
         !options.validation.is_correctness()
             || options.vad_collection.is_some()
@@ -1325,6 +1354,15 @@ fn bridge_options(options: &LiveOptions) -> Result<ProcessBridgeOptions> {
         engine_sample_rate: 48_000,
         max_demand_frames: options.engine_block_frames,
         age_limit_100ns: None,
+    })
+}
+
+fn virtual_buffer(options: &LiveOptions) -> Result<VirtualBufferOptions> {
+    let bridge = bridge_options(options)?;
+    Ok(VirtualBufferOptions {
+        input: bridge.input,
+        delivery: bridge.delivery,
+        recovery_cap_periods: options.vad_recovery_cap_periods,
     })
 }
 
@@ -1889,7 +1927,6 @@ mod native {
             ProcessLoopbackOptions, inspect_process, prepare_process_capture_with_gate,
         },
         vad::{Channels, Intent, PdoState, WindowsVadProvider},
-        virtual_owner::VirtualBufferOptions,
     };
     use std::{
         str::FromStr,
@@ -2967,15 +3004,6 @@ mod native {
         })
     }
 
-    pub(super) fn virtual_buffer(options: &LiveOptions) -> Result<VirtualBufferOptions> {
-        let bridge = bridge_options(options)?;
-        Ok(VirtualBufferOptions {
-            input: bridge.input,
-            delivery: bridge.delivery,
-            ..Default::default()
-        })
-    }
-
     fn minimal_vad_project(
         endpoint_id: VirtualEndpointId,
         output: EndpointSelector,
@@ -3260,6 +3288,131 @@ mod tests {
             "--artifact-dir".into(),
             directory.to_string_lossy().into_owned(),
         ]
+    }
+
+    #[test]
+    fn vad_recovery_cap_parser_admits_only_explicit_vad_periods() {
+        let directory = temp_dir("vad-cap-parser");
+        for cap in 1..=8 {
+            let mut args = source_test_args(&directory);
+            args.extend(["--vad-recovery-cap-periods".into(), cap.to_string()]);
+            let options = parse(args).unwrap();
+            validate(&options).unwrap();
+            let buffer = virtual_buffer(&options).unwrap();
+            assert_eq!(buffer.recovery_cap_periods, Some(cap));
+            let prepared = buffer.prepare_recovery(48_000, 32).unwrap();
+            assert_eq!(prepared.engine_burst_frames, 32 * cap as u32);
+            assert_eq!(prepared.recovery_cap_periods, cap);
+        }
+        for cap in ["0", "9", "18446744073709551615", "-1", "1.5", "word"] {
+            let mut args = source_test_args(&directory);
+            args.extend(["--vad-recovery-cap-periods".into(), cap.into()]);
+            assert!(
+                parse(args).and_then(|options| validate(&options)).is_err(),
+                "{cap}"
+            );
+        }
+        let mut duplicate = source_test_args(&directory);
+        duplicate.extend(
+            [
+                "--vad-recovery-cap-periods",
+                "1",
+                "--vad-recovery-cap-periods",
+                "2",
+            ]
+            .map(str::to_owned),
+        );
+        assert!(parse(duplicate).is_err());
+        let process = [
+            "--source-pid",
+            "42",
+            "--output",
+            "out",
+            "--artifact-dir",
+            "unused",
+            "--vad-recovery-cap-periods",
+            "1",
+        ];
+        assert!(
+            parse(process.map(str::to_owned).to_vec())
+                .and_then(|options| validate(&options))
+                .is_err()
+        );
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn vad_recovery_cap_probe_preserves_whole_wake_and_native_packet_admission() {
+        let directory = temp_dir("vad-cap-budget");
+        let mut args = source_test_args(&directory);
+        args.extend(
+            [
+                "--vad-recovery-cap-periods",
+                "1",
+                "--engine-block-frames",
+                "32",
+                "--input-capacity-frames",
+                "1024",
+                "--input-target-frames",
+                "128",
+                "--input-jitter-frames",
+                "1",
+                "--max-packet-frames",
+                "32",
+                "--max-gap-frames",
+                "32",
+            ]
+            .map(str::to_owned),
+        );
+        let mut options = parse(args).unwrap();
+        validate(&options).unwrap();
+        let buffer = virtual_buffer(&options).unwrap();
+        let prepared = buffer
+            .prepare_recovery(48_000, options.engine_block_frames)
+            .unwrap();
+        assert_eq!(prepared.engine_burst_frames, 32);
+        assert_eq!(prepared.queue.unwrap().prime_frames, 128);
+        assert!(buffer.prepare_budget(48_000, 32, 256).is_err());
+        assert!(buffer.admit_native_packet(64).is_err());
+        options.vad_recovery_cap_periods = None;
+        let buffer = virtual_buffer(&options).unwrap();
+        assert_eq!(buffer.admitted_recovery_cap_periods().unwrap(), 8);
+        assert!(
+            buffer
+                .prepare_recovery(48_000, options.engine_block_frames)
+                .is_err()
+        );
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn vad_recovery_cap_dry_manifest_retains_exact_intent_without_native_claim() {
+        for cap in [None, Some(1), Some(8)] {
+            let directory = temp_dir(&format!("vad-cap-manifest-{cap:?}"));
+            let mut args = source_test_args(&directory);
+            if let Some(cap) = cap {
+                args.extend(["--vad-recovery-cap-periods".into(), cap.to_string()]);
+            }
+            assert_eq!(run(args).unwrap(), 1);
+            let manifest: Value =
+                serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap())
+                    .unwrap();
+            assert!(manifest["virtual_buffer"].is_object());
+            assert_eq!(
+                manifest["virtual_buffer"]["recovery_cap_periods"],
+                serde_json::json!(cap)
+            );
+            assert_eq!(
+                manifest["virtual_buffer"]["input"],
+                serde_json::json!({"policy": "compatible"})
+            );
+            assert_eq!(manifest["status"], "unqualified");
+            let report: Value =
+                serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+            assert_eq!(report["qualified"], false);
+            assert!(report["native"]["engine"].is_null());
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     fn source_plan_bytes() -> Vec<u8> {

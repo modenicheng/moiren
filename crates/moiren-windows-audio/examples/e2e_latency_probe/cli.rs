@@ -37,6 +37,8 @@ Independent native capture retains bounded raw PCM/packet metadata; never claims
     [--measurement-boundary internal|wasapi-loopback|physical-cable|external-dual-channel]
     [--measurement-pcm FILE --schedule FILE] [--calibration FILE]
     [--input-target-frames N --input-capacity-frames N --input-jitter-frames N]
+    [--vad-recovery-cap-periods 1..8] (live-vad only; omitted preserves 8)
+VAD cap limits virtual-clock catch-up, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.
     [--render-target-frames N --wake-margin-frames N --callback-budget-frames N]
     [--validation-mode latency-sensitive|correctness --jitter-tolerance-ms 0..3000]
 Correctness requires --vad-collection or owned --process-collection; timing faults are retained without early abort.
