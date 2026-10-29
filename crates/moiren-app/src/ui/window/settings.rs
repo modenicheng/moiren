@@ -411,6 +411,10 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
     let requested = &snapshot.audio_settings;
+    let requested_process = transport::process_summary(
+        snapshot.transport_latency,
+        snapshot.measured_process.as_ref(),
+    );
     let mut view = div()
         .flex()
         .flex_col()
@@ -433,13 +437,15 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(label(t!(
             "Unsaved edits stay in the Audio draft until Save or Restart Audio."
         )))
-        .child(detail(
-            &t!("Requested process input"),
-            process_input_summary(
-                snapshot.transport_latency.process,
-                snapshot.measured_process.as_ref(),
-            ),
-        ))
+        .child(
+            detail(&t!("Requested process input"), requested_process.clone())
+                .id("process-input-requested")
+                .aria_label(format!(
+                    "{}: {requested_process}",
+                    t!("Requested process input")
+                ))
+                .gpui_test_observe(),
+        )
         .child(detail(
             &t!("Requested VAD input"),
             transport::vad_summary(snapshot.transport_latency),
@@ -469,11 +475,18 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         view = view.child(label(t!("No active audio configuration")));
     }
     if let Some(active) = snapshot.active_transport_latency {
+        let active_process =
+            transport::process_summary(active, snapshot.active_measured_process.as_ref());
         view = view
-            .child(detail(
-                &t!("Active process request"),
-                process_input_summary(active.process, snapshot.active_measured_process.as_ref()),
-            ))
+            .child(
+                detail(&t!("Active process request"), active_process.clone())
+                    .id("process-input-active")
+                    .aria_label(format!(
+                        "{}: {active_process}",
+                        t!("Active process request")
+                    ))
+                    .gpui_test_observe(),
+            )
             .child(detail(
                 &t!("Active VAD request"),
                 transport::vad_summary(active),

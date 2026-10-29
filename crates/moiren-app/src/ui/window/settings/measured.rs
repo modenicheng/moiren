@@ -154,8 +154,8 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(summary(
             "measured-process-requested",
             &t!("Requested process input"),
-            process_input_summary(
-                snapshot.transport_latency.process,
+            transport::process_summary(
+                snapshot.transport_latency,
                 snapshot.measured_process.as_ref(),
             ),
         ))
@@ -164,7 +164,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             &t!("Active process request"),
             if snapshot.phase == SessionPhase::Running {
                 snapshot.active_transport_latency.map(|v| {
-                    process_input_summary(v.process, snapshot.active_measured_process.as_ref())
+                    transport::process_summary(v, snapshot.active_measured_process.as_ref())
                 })
             } else {
                 None
@@ -197,7 +197,7 @@ fn conflict(shell: &StudioShell, cx: &Context<StudioShell>) -> Option<String> {
 }
 
 impl StudioShell {
-    #[cfg(all(test, windows))]
+    #[cfg(all(test, windows, feature = "gpui-test"))]
     pub(in crate::ui::window::settings) fn inject_software_window_candidate(
         &mut self,
         cx: &mut Context<Self>,

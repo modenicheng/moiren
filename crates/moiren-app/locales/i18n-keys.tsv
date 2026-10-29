@@ -703,3 +703,8 @@ Compatible (8 periods)	-	保持兼容追赶上限
 %{periods} periods	periods	显式追赶周期数
 Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods.	-	追赶上限不是延迟保证
 %{input}; virtual-clock recovery cap: %{cap}	input,cap	请求与生效追赶上限
+Process host ingress elapsed limit	-	进程输入主机发布起算时间上限，不是样本年龄
+Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy.	-	主机经过时间与物理延迟区分，说明保守恢复丢弃和实测准入限制
+%{input}; host ingress elapsed limit: %{limit}	input,limit	请求与生效进程输入上限，保留原有队列和实测身份
+%{ticks} x 100 ns	ticks	任意正整数上限保留完整数值和单位
+%{milliseconds} ms	milliseconds	主机经过时间预设毫秒数

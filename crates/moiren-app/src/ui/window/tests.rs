@@ -7,6 +7,8 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, point, px};
 use std::time::Duration;
 
+mod ingress_elapsed;
+
 #[gpui_kit::test]
 fn toolbar_reserves_draggable_space_outside_interactive_controls(
     cx: &mut gpui_kit::TestAppContext,

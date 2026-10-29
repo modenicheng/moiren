@@ -20,6 +20,7 @@ pub(super) struct MonitorOptions {
     packet: Option<u32>,
     gap: Option<u32>,
     age: Option<u64>,
+    ingress_elapsed: Option<u64>,
 }
 
 impl Default for MonitorOptions {
@@ -37,6 +38,7 @@ impl Default for MonitorOptions {
             packet: None,
             gap: None,
             age: None,
+            ingress_elapsed: None,
         }
     }
 }
@@ -83,6 +85,13 @@ impl MonitorOptions {
             "--age-limit-100ns" => {
                 self.age = Some(value.parse().context("invalid sample-age limit")?)
             }
+            "--max-ingress-elapsed-100ns" => {
+                let limit = value
+                    .parse::<u64>()
+                    .context("invalid --max-ingress-elapsed-100ns value")?;
+                ensure!(limit > 0, "--max-ingress-elapsed-100ns must be positive");
+                self.ingress_elapsed = Some(limit);
+            }
             _ => bail!("unknown monitor option: {flag}; use monitor --help"),
         }
         Ok(())
@@ -95,6 +104,10 @@ impl MonitorOptions {
         ensure!(
             (1..=60).contains(&seconds),
             "--measure-seconds must be 1..60"
+        );
+        ensure!(
+            self.ingress_elapsed.is_none(),
+            "measured Process budget does not support a host ingress elapsed limit"
         );
         ensure!(
             self.packet.is_none() && self.gap.is_none(),
@@ -141,7 +154,10 @@ impl MonitorOptions {
             supplied == 0 || supplied == fields.len(),
             "explicit Process budget requires target, capacity, jitter, max-packet and max-gap together"
         );
-        let mut settings = TransportLatencySettings::default();
+        let mut settings = TransportLatencySettings {
+            process_max_ingress_elapsed_100ns: self.ingress_elapsed,
+            ..Default::default()
+        };
         if supplied != 0 {
             settings.process = Some(ExpertInputBuffer {
                 target_frames: self.target.expect("complete tuple"),

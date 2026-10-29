@@ -121,6 +121,29 @@ fn input_editor(shell: &StudioShell, input: Input, cx: &Context<StudioShell>) ->
             },
             cx,
         ));
+    if matches!(input, Input::Process) {
+        let limit = shell
+            .settings
+            .global
+            .transport
+            .process_max_ingress_elapsed_100ns;
+        view = view
+            .child(field(
+                &t!("Process host ingress elapsed limit"),
+                choices(
+                    shell,
+                    Editor::Global,
+                    "process-ingress-elapsed",
+                    limit,
+                    ingress_elapsed_choices(limit),
+                    |draft, limit| draft.transport.process_max_ingress_elapsed_100ns = limit,
+                    cx,
+                ),
+            ))
+            .child(label(t!(
+                "Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy."
+            )));
+    }
     if matches!(input, Input::Vad) {
         view = view
             .child(field(
@@ -242,4 +265,35 @@ pub(super) fn vad_summary(settings: crate::service::TransportLatencySettings) ->
         )
     )
     .into()
+}
+
+pub(super) fn process_summary(
+    settings: crate::service::TransportLatencySettings,
+    measured: Option<&crate::service::MeasuredProcessSummary>,
+) -> String {
+    t!(
+        "%{input}; host ingress elapsed limit: %{limit}",
+        input = super::process_input_summary(settings.process, measured),
+        limit = settings.process_max_ingress_elapsed_100ns.map_or_else(
+            || t!("Disabled").to_string(),
+            |ticks| t!("%{ticks} x 100 ns", ticks = ticks).to_string()
+        )
+    )
+    .into()
+}
+
+pub(super) fn ingress_elapsed_choices(current: Option<u64>) -> Vec<(Option<u64>, String)> {
+    let mut choices = vec![(None, t!("Disabled").into())];
+    choices.extend([10_u64, 20, 50, 100, 250, 1000].map(|milliseconds| {
+        (
+            Some(milliseconds * 10_000),
+            t!("%{milliseconds} ms", milliseconds = milliseconds).into(),
+        )
+    }));
+    if let Some(ticks) = current
+        && !choices.iter().any(|(value, _)| *value == Some(ticks))
+    {
+        choices.push((Some(ticks), t!("%{ticks} x 100 ns", ticks = ticks).into()));
+    }
+    choices
 }

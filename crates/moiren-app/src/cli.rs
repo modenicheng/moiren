@@ -27,6 +27,9 @@ Explicit Process input budget (all five required together, in 48 kHz frames):
   --max-packet-frames N --max-gap-frames N
   --age-limit-100ns N           Requested sample age; currently refused
 Delivery bounds are declared assumptions, not measured periods or latency.
+Independent Process policy (compatible or declared; not measured mode):
+  --max-ingress-elapsed-100ns N Positive host time since publication began;
+                               not source sample age or physical latency
 Measured Process input budget (exactly three budget fields; no packet/gap bounds):
   --measure-seconds 1..60       Measure a compatible baseline before applying
   --target-frames N --capacity-frames N --jitter-frames N
@@ -130,3 +133,105 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ingress_elapsed_tests {
+    use super::*;
+
+    fn monitor(extra: &[&str]) -> Result<MonitorOptions> {
+        let arguments = [
+            "monitor",
+            "--process",
+            "4294967294",
+            "--output",
+            "pinned-output",
+        ]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .map(String::from);
+        let Command::Monitor(options) = parse(arguments)? else {
+            unreachable!("monitor arguments select the monitor command")
+        };
+        Ok(options)
+    }
+
+    #[test]
+    fn ingress_elapsed_cli_preserves_compatible_and_declared_policy() {
+        let declared = [
+            "--target-frames",
+            "2048",
+            "--capacity-frames",
+            "8192",
+            "--jitter-frames",
+            "96",
+            "--max-packet-frames",
+            "480",
+            "--max-gap-frames",
+            "480",
+        ];
+        for limit in ["1", "100000", "18446744073709551615"] {
+            for expert in [false, true] {
+                let mut extra = vec!["--max-ingress-elapsed-100ns", limit];
+                if expert {
+                    extra.extend(declared);
+                }
+                let options = monitor(&extra).unwrap();
+                let transport = options.transport().unwrap();
+                assert_eq!(transport.process.is_some(), expert);
+                let serialized = serde_json::to_value(transport).unwrap();
+                assert_eq!(
+                    serialized["process_max_ingress_elapsed_100ns"],
+                    limit.parse::<u64>().unwrap()
+                );
+                if let Some(input) = transport.process {
+                    assert_eq!(input.age_limit_100ns, None);
+                    assert_eq!(input.target_frames, 2048);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ingress_elapsed_cli_refuses_measured_instead_of_clearing_the_baseline_limit() {
+        let error = monitor(&[
+            "--measure-seconds",
+            "1",
+            "--target-frames",
+            "256",
+            "--capacity-frames",
+            "8192",
+            "--jitter-frames",
+            "32",
+            "--max-ingress-elapsed-100ns",
+            "100000",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("measured"), "{error}");
+        assert!(error.contains("ingress"), "{error}");
+        assert!(!error.contains("unknown monitor option"), "{error}");
+    }
+
+    #[test]
+    fn ingress_elapsed_cli_refuses_zero_malformed_duplicate_and_missing_values() {
+        for invalid in ["0", "-1", "1.5", "NaN", "18446744073709551616"] {
+            assert!(monitor(&["--max-ingress-elapsed-100ns", invalid]).is_err());
+        }
+        assert!(monitor(&["--max-ingress-elapsed-100ns"]).is_err());
+        assert!(
+            monitor(&[
+                "--max-ingress-elapsed-100ns",
+                "100000",
+                "--max-ingress-elapsed-100ns",
+                "200000",
+            ])
+            .is_err()
+        );
+        assert!(
+            serde_json::to_value(monitor(&[]).unwrap().transport().unwrap())
+                .unwrap()
+                .get("process_max_ingress_elapsed_100ns")
+                .is_none()
+        );
+    }
+}

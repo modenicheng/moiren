@@ -2121,3 +2121,18 @@ _version: 2
 "%{input}; virtual-clock recovery cap: %{cap}":
   en: "%{input}; virtual-clock recovery cap: %{cap}"
   zh-CN: "%{input}；虚拟时钟追赶周期上限：%{cap}"
+"Process host ingress elapsed limit":
+  en: "Process host ingress elapsed limit"
+  zh-CN: "进程输入发布起算的主机时间上限"
+"Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy.":
+  en: "Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy."
+  zh-CN: "限制从数据包开始发布起算的主机经过时间，并非源样本年龄或物理延迟。恢复时也可能丢弃同一输入前缀中较新的帧。当前实测准入不支持此策略。"
+"%{input}; host ingress elapsed limit: %{limit}":
+  en: "%{input}; host ingress elapsed limit: %{limit}"
+  zh-CN: "%{input}；主机发布起算时间上限：%{limit}"
+"%{ticks} x 100 ns":
+  en: "%{ticks} x 100 ns"
+  zh-CN: "%{ticks} x 100 ns"
+"%{milliseconds} ms":
+  en: "%{milliseconds} ms"
+  zh-CN: "%{milliseconds} ms"

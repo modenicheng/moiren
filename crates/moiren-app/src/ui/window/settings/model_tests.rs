@@ -403,3 +403,187 @@ fn measured_restart_cannot_confirm_a_new_selection_over_the_captured_request() {
     assert!(captured.matches_requested(&snapshot));
     assert!(captured.matches_active(&snapshot));
 }
+
+#[test]
+fn ingress_elapsed_draft_rebases_independently_and_preserves_conflicting_edits() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let settings = |elapsed| {
+        serde_json::from_value::<TransportLatencySettings>(serde_json::json!({
+            "process_max_ingress_elapsed_100ns": elapsed
+        }))
+        .unwrap()
+    };
+    let mut edited = draft(AudioSettings::default());
+    edited.transport = settings(100_000_u64);
+    let current = TransportLatencySettings {
+        process: Some(ExpertInputBuffer::default()),
+        vad_recovery_cap_periods: Some(2),
+        ..Default::default()
+    };
+    let merged = edited
+        .submission(&edited.audio, edited.profile, edited.density, current)
+        .unwrap();
+    assert_eq!(merged.transport.process, current.process);
+    assert_eq!(merged.transport.vad_recovery_cap_periods, Some(2));
+    assert_eq!(
+        serde_json::to_value(merged.transport).unwrap()["process_max_ingress_elapsed_100ns"],
+        100_000
+    );
+    assert!(merged.save_transport);
+
+    let conflict = settings(200_000_u64);
+    let error = edited
+        .submission(&edited.audio, edited.profile, edited.density, conflict)
+        .err()
+        .unwrap();
+    assert!(error.contains("ingress"), "{error}");
+    assert_eq!(
+        serde_json::to_value(edited.transport).unwrap()["process_max_ingress_elapsed_100ns"],
+        100_000
+    );
+    assert!(edited.dirty());
+
+    let mut independent = draft(AudioSettings::default());
+    independent.transport.process = Some(ExpertInputBuffer::default());
+    let merged = independent
+        .submission(
+            &independent.audio,
+            independent.profile,
+            independent.density,
+            conflict,
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(merged.transport).unwrap()["process_max_ingress_elapsed_100ns"],
+        200_000
+    );
+    assert_eq!(merged.transport.process, independent.transport.process);
+}
+
+#[test]
+fn ingress_elapsed_restart_confirmation_requires_the_active_policy() {
+    use crate::service::TransportLatencySettings;
+    let mut editor = draft(AudioSettings::default());
+    editor.transport = serde_json::from_value::<TransportLatencySettings>(serde_json::json!({
+        "process_max_ingress_elapsed_100ns": 100_000
+    }))
+    .unwrap();
+    let mut snapshot = running_settings();
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    snapshot.transport_latency = captured.transport;
+    assert!(captured.matches_requested(&snapshot));
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.active_transport_latency = Some(captured.transport);
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
+fn ingress_elapsed_selector_retains_arbitrary_integer_limits_and_disabled_choice() {
+    let expected = [
+        None,
+        Some(100_000),
+        Some(200_000),
+        Some(500_000),
+        Some(1_000_000),
+        Some(2_500_000),
+        Some(10_000_000),
+    ];
+    for current in [None, Some(1), Some(100_000), Some(123_456), Some(u64::MAX)] {
+        let choices = super::transport::ingress_elapsed_choices(current);
+        for value in expected.into_iter().chain([current]) {
+            assert_eq!(
+                choices
+                    .iter()
+                    .filter(|(option, _)| *option == value)
+                    .count(),
+                1,
+                "missing or duplicate {value:?}: {choices:?}"
+            );
+        }
+        if let Some(current) = current.filter(|value| !expected.contains(&Some(*value))) {
+            let title = &choices
+                .iter()
+                .find(|(value, _)| *value == Some(current))
+                .unwrap()
+                .1;
+            assert!(title.contains(&current.to_string()), "{title}");
+            assert!(title.contains("100 ns"), "{title}");
+        }
+    }
+}
+
+#[test]
+fn ingress_elapsed_process_summary_keeps_measured_identity_and_exact_limit() {
+    use crate::service::TransportLatencySettings;
+    for measured in [None, Some(measured(17))] {
+        for limit in [None, Some(1), Some(123_456), Some(u64::MAX)] {
+            let settings = TransportLatencySettings {
+                process_max_ingress_elapsed_100ns: limit,
+                ..Default::default()
+            };
+            let summary = super::transport::process_summary(settings, measured.as_ref());
+            assert!(
+                summary.contains(&super::process_input_summary(
+                    settings.process,
+                    measured.as_ref()
+                )),
+                "{summary}"
+            );
+            assert!(summary.contains("host ingress elapsed limit"), "{summary}");
+            match limit {
+                Some(limit) => {
+                    assert!(summary.contains(&limit.to_string()), "{summary}");
+                    assert!(summary.contains("100 ns"), "{summary}");
+                }
+                None => assert!(summary.contains("Disabled"), "{summary}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn ingress_elapsed_localization_preserves_publication_origin_and_integer_units() {
+    use rust_i18n::t;
+    // Explicit locales leave parallel headless click tests' locale unchanged.
+    assert_eq!(
+        t!("Process host ingress elapsed limit", locale = "zh-CN"),
+        "进程输入发布起算的主机时间上限"
+    );
+    let ticks = (1_u64 << 53) + 1;
+    let limit = t!("%{ticks} x 100 ns", locale = "zh-CN", ticks = ticks);
+    assert_eq!(limit, format!("{ticks} x 100 ns"));
+    assert_eq!(
+        t!(
+            "%{input}; host ingress elapsed limit: %{limit}",
+            locale = "zh-CN",
+            input = "Compatible",
+            limit = limit
+        ),
+        format!("Compatible；主机发布起算时间上限：{ticks} x 100 ns")
+    );
+    assert_eq!(
+        t!("%{milliseconds} ms", locale = "zh-CN", milliseconds = 10),
+        "10 ms"
+    );
+    let caveat = t!(
+        "Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy.",
+        locale = "zh-CN"
+    );
+    for fact in [
+        "数据包开始发布",
+        "并非源样本年龄或物理延迟",
+        "较新的帧",
+        "实测准入不支持",
+    ] {
+        assert!(caveat.contains(fact), "{caveat}");
+    }
+    assert_eq!(
+        t!(
+            "%{input}; host ingress elapsed limit: %{limit}",
+            locale = "en",
+            input = "Compatible",
+            limit = "Disabled"
+        ),
+        "Compatible; host ingress elapsed limit: Disabled"
+    );
+}
