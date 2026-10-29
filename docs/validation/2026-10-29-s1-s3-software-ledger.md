@@ -84,7 +84,9 @@ recordings still retain one discontinuity and fail quality. Explicit 1536/1024
 refuse the complete native-wake budget before capture; their missing/not-started
 receipts still report cleanup false. Neither refusal is a successful run.
 The separate probe deployment and all 128 evidence files are host-verified;
-the application remains at `45a084e` until its next verified deployment.
+the application was still at `45a084e` at that Process4 receipt. The later
+`e195bfe` software verification does not itself update that deployed copy;
+release, deployment, smoke, archival and cleanup have separate receipts.
 The earlier post-clean zero-target receipt is historical: the shared target is
 reused for this next bounded build/test phase and requires another idle clean
 after final copies and archival. No new physical latency claim follows.
@@ -116,11 +118,16 @@ The exact virtual IO/Bus
 collector now has the separate bounded software receipt below. S2's bounded
 software mechanisms are present under their
 declared/admitted conditions; native/lower-setting qualification remains open.
-S3 remains partial because continuous retained/checkpointed long windows,
-desktop live-window controls, freshness composition and source-time provenance
-remain open. Bounded live-window service/CLI admission, the live-prefix
-core/native API and audited probe repair have
-separate bounded software receipt below.
+S3's original bounded configuration/replacement paths exist in the actual
+desktop and CLI. The separately selected [desktop live-window controls](2026-10-29-desktop-live-process-window.md)
+are now implemented in `e195bfe`, with fresh full app/Clippy verification and
+independent review; native deployment/activation remain separate. Bounded
+live-window service/CLI
+admission, the live-prefix core/native API and audited probe repair have
+separate software receipts below. Checkpointed long windows, combining
+freshness with replay, and authentic source-time provenance are unsupported
+extensions, not additional prerequisites silently added to the original S3
+scope. Their refusal boundaries remain binding and must stay visible.
 
 ## Completed bounded software slices
 
@@ -137,7 +144,7 @@ separate bounded software receipt below.
 | S3 app/API | Validated independent target/capacity/jitter through API, declared and two-phase measured monitor CLI, actual desktop measured selection, prepared owner replacement and truthful requested/active confirmation. See [monitor CLI](2026-10-29-process-monitor-cli.md) and [desktop measured selection](2026-10-29-desktop-measured-process.md). | Desktop/service regressions are distinct from CLI coverage. Experimental 1024/512/256-frame candidates are not qualified presets. Source/sample-age requests are explicitly refused. |
 | S3 retained evaluation | Pinned exact-prefix collection, bounded ordered replay/inventory, finite-window assessment, conservative final whole-drain/whole-wake measurement and opaque retained-native candidate with explicit desktop Apply. See [retained evaluation/Apply](2026-10-29-retained-process-apply.md). | This software workflow is present, not a missing UI button. Imported JSON remains caller-supplied; finite historical approval does not authenticate future service or physical latency. |
 | S3 live-prefix assessment | The [bounded live Process prefix core and pinned native API](2026-10-29-live-process-prefix.md), source `5df48d0`, seal and replay a sequence-one prefix through the production queue while actual writers remain open. Reports preserve explicit policy, origin, actual closure, refusal and observed loss. | Diagnostic reports are not Apply tokens. The separately linked service/CLI slice adds opaque native admission; checkpointed continuation beyond8192 events remains open. No future service or physical latency guarantee follows. |
-| S3 live-window application admission | The [explicit service/CLI workflow](2026-10-29-windowed-process-admission.md), sources `88853ab`/`75481a8`, freezes opaque native measured evidence, replays on the bounded Prepare worker and binds successful policy/options to owner replacement with source/settings/predecessor fences. Final full app suite 612 passed / 4 ignored. | Existing per-wake and stopped Apply remain separate. Either 256-event measured history overwriting refuses even below the 8192-event archive cap. Desktop live-window controls and continuous retained/checkpointed windows remain open; no native/physical qualification follows. |
+| S3 live-window application admission | The [explicit service/CLI workflow](2026-10-29-windowed-process-admission.md), sources `88853ab`/`75481a8`, freezes opaque native measured evidence, replays on the bounded Prepare worker and binds successful policy/options to owner replacement with source/settings/predecessor fences. The [desktop opt-in page](2026-10-29-desktop-live-process-window.md), source `e195bfe`, requires all five policy choices and exact asynchronous confirmation. Fresh full app suite 633 passed /4 ignored; strict Clippy passed. | Existing per-wake and stopped Apply remain separate. Either 256-event measured history overwriting refuses even below the 8192-event archive cap. Longer checkpointed windows and unsupported policy combinations are explicit limits, not hidden fallback or extra baseline scope. No native/physical qualification follows. |
 | S3 production wake reserve | The production backend/Pump admits and publishes complete native-wake demand independently of segmented source reads. See [whole-wake regression](2026-10-29-process-whole-wake.md). | That production receipt does not certify the two separate E2E probe preparation callers; their audit finding is tracked below. |
 | S3 host residence | Optional positive [host-ingress elapsed enforcement](2026-10-29-process-ingress-elapsed.md), finite-prefix recovery, separate loss accounting, exact app persistence/selector/CLI forwarding and requested/active state. `None` preserves compatibility. | This is time since publication began, not source age or hardware presentation. Measured/evaluated/replay combinations currently refuse enabled policy explicitly rather than clearing it. |
 
@@ -177,7 +184,7 @@ the VAD routing change. The audit records Shared Process source versus
 Exclusive VAD source; sharing output ID and nominal rate alone does not make
 those historical runs a fully matched comparison.
 
-### S3 probe demand, observed windows and policy composition
+### S3 probe demand and bounded capability limits
 
 - **Actual E2E probe whole-wake preparation - software repair complete:** both
   ordinary and owned Process callers now prepare gated render first and admit
@@ -200,30 +207,39 @@ those historical runs a fully matched comparison.
   separate opt-in request with all five explicit policy fields, opaque native
   preparation, background replay and exact source/settings/rate/whole-wake
   demand binding before replacement. Joined predecessor and captured settings
-  are rechecked before opening; later requests invalidate in-flight work.
+  are rechecked before opening; later mutating control requests invalidate
+  in-flight work. `RefreshCatalog` is deliberately non-cancelling, and its
+  later cumulative receipt is neither cancellation nor activation.
   Per-wake measured selection and stopped retained evaluation/Apply remain
-  separate workflows. The desktop live-window controls are not yet wired.
-  Continuous measurement is still limited by256 complete-drain/whole-wake
-  history events; overwrite refuses instead of using a suffix. Beyond8192
-  packet/read events, continuous replay also needs checkpoint state rather
-  than invented empty/full queue state at each chunk boundary.
+  separate workflows. The [desktop live-window controls](2026-10-29-desktop-live-process-window.md)
+  now dispatch that exact existing request after explicit opt-in and all five
+  policy choices, preserving original-source and requested/active guards.
+  Measurement is limited by256 complete-drain/whole-wake history events;
+  overwrite refuses instead of using a suffix. The packet/read archive is
+  capped at8192 events per writer. Longer continuously checkpointed windows
+  are an unimplemented extension, not promised support or a new baseline S3
+  completion gate. Any future extension must carry actual checkpoint state,
+  not invent an empty/full queue at each chunk boundary.
 - **Freshness composition:** measured/evaluated/replay paths honestly refuse
   enabled host-ingress elapsed intent. They do not yet combine the independent
   features. Current queue histories retain the outside read clock endpoints,
   not the middle post-acquisition freshness-decision clock and acquired-prefix
-  provenance. Version and retain the required evidence and reproduce live
-  discard/prime/reset decisions before lifting guards; preserve the exact
-  policy and distinct ingress-expiry losses and refuse old/ambiguous traces.
+  provenance. These combinations are outside current supported capability;
+  the original S3 does not require every independent option's combination.
+  Any future support must version/retain the required evidence and reproduce
+  live discard/prime/reset decisions before lifting guards, preserving exact
+  policy and distinct ingress-expiry losses and refusing old/ambiguous traces.
 - **Source/sample-age provenance:** positionless Process publication observations
   do not establish the source application's sample timestamp. A raw stamp
   integrity diagnostic may reject zero/error/regression/discontinuity, but
   cannot enable physical position correlation or manufacture source age.
   Existing sample-age intent remains explicitly refused.
 
-These are concrete bounded integration/capability gaps, not a requirement to
-prove all future Windows scheduling. A runtime budget violation or loss must
-still be reported; rejecting a universal guarantee does not weaken an actual
-admission invariant or qualification gate.
+The original S1-S3 baseline does not require unbounded history, all policy
+combinations or unavailable source clocks. Honest refusal is an implemented
+boundary, not a reason to manufacture evidence or continually expand this
+task. A runtime budget violation or loss must still be reported; none of
+these scope distinctions weakens actual admission or physical quality gates.
 
 ## Missing native, waveform and physical evidence
 

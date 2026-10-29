@@ -2,7 +2,7 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-10-27.
+verdict. Status updated 2026-10-29.
 
 **Long-soak gate status (updated for the 2026-10-22 run, `cdd44a2`):** the
 eight-hour **idle** run passed for the first time — 28,730/28,800 verified
@@ -43,6 +43,26 @@ generated unsigned development package is neither installed nor deployed; no
 native audio or target qualification occurs. Hardware gates and prior run
 verdicts are unchanged. Exact RED/GREEN, bounds and final artifact hashes:
 [`2026-10-29-vad-short-timer-progress.md`](../../docs/validation/2026-10-29-vad-short-timer-progress.md).
+
+## Separate physical target - 2026-10-29
+
+The subsequently analyzed/test-signed package is installed on the separate
+physical `LAPTOP-NP49RG6H`, not the development host: `ROOT\MEDIA\0001`,
+`oem147.inf`, version `18.58.53.555`, service Running / PnP OK. Exact installed
+SYS hash, package verification and deployment history are retained in the
+[physical-target receipt](../../docs/validation/2026-10-29-physical-target-deployment.md).
+This supersedes only the earlier statement that the generated short-timer
+package was not deployed; it does not retroactively change that build receipt.
+
+Bounded native VAD IO/Bus recordings now contain changing PCM and complete
+collection/cleanup at explicit2048/1024 targets with independent capacity.
+They still fail independent-recorder continuity; the2048 case also retains
+provider faults. No stable lower preset or calibrated sub-10-ms physical
+result is established. The output remains muted and a common pre-route
+reference/calibration is not available. P1 and all unfinished long-soak/music
+gates remain unqualified. VM timing qualification stays deferred; these
+physical results do not erase its historical failures or prove naming
+propagation while a native external client holds an endpoint.
 
 ## Audit follow-up - 2026-10-21
 
