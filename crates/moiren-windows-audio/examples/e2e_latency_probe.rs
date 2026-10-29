@@ -14,6 +14,8 @@ mod measurement_sink;
 mod pcm;
 #[path = "e2e_latency_probe/probe_logging.rs"]
 mod probe_logging;
+#[path = "e2e_latency_probe/process_recording.rs"]
+mod process_recording;
 
 #[cfg(test)]
 #[path = "e2e_latency_probe/tests.rs"]

@@ -42,6 +42,11 @@ only the exact owned capture endpoint is resolved, and any supplied recorder ID 
 record-measurement --input ENDPOINT --artifact-dir NEW_DIR --seconds 1..7200
     --ring-frames N --max-pcm-bytes N --max-metadata-bytes N --max-packets N [--dry-run]
 Independent native capture retains bounded raw PCM/packet metadata; never claims physical qualification.
+record-process --source-pid PID --source-created-100ns N --artifact-dir NEW_DIR
+    --seconds 1..600 --max-frames 1..33554432 [--dry-run]
+Bounded process-tree output recording as 48 kHz stereo f32le; capture-only, no render or volume writes.
+Identity is rechecked before activation. PCM and partial native reports survive faults; always unqualified.
+Process positions cannot prove waveform continuity, source age or physical presentation; not a physical reference.
     [--measurement-boundary internal|wasapi-loopback|physical-cable|external-dual-channel]
     [--measurement-pcm FILE --schedule FILE] [--calibration FILE]
     [--input-target-frames N --input-capacity-frames N --input-jitter-frames N]
@@ -141,6 +146,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             return crate::measurement::list_inputs();
         }
         return crate::measurement::run(arguments[1..].to_vec());
+    }
+    if command == "record-process" {
+        return crate::process_recording::run(arguments[1..].to_vec());
     }
     if command == "controlled-load-worker" {
         return crate::controlled_load::run_worker(arguments[1..].to_vec());

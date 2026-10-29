@@ -8,10 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-struct Fixture(PathBuf);
+pub(crate) struct Fixture(PathBuf);
 
 impl Fixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "moiren-e2e-{}-{}",
@@ -21,7 +21,7 @@ impl Fixture {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn path(&self, name: &str) -> PathBuf {
+    pub(crate) fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
     fn json(&self, name: &str, value: &Value) -> PathBuf {
@@ -35,6 +35,121 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
     }
+}
+
+fn process_recording_arguments(directory: &Path) -> Vec<String> {
+    [
+        "record-process",
+        "--source-pid",
+        "42",
+        "--source-created-100ns",
+        "123",
+        "--artifact-dir",
+        directory.to_str().unwrap(),
+        "--seconds",
+        "2",
+        "--max-frames",
+        "96000",
+        "--dry-run",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+#[test]
+fn process_recording_dry_run_retains_explicit_identity_budget_and_unqualified_boundary() {
+    let fixture = Fixture::new();
+    let directory = fixture.path("recording");
+    assert_eq!(
+        cli::run(process_recording_arguments(&directory)).unwrap(),
+        1
+    );
+    let report: Value =
+        serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["qualified"], false);
+    assert_eq!(report["mode"], "process_output_recording");
+    assert_eq!(report["requested_pid"], 42);
+    assert_eq!(report["requested_creation_time_100ns"], 123);
+    assert_eq!(report["max_frames"], 96000);
+    assert_eq!(report["max_pcm_bytes"], 768000);
+    assert_eq!(report["native_capture"], Value::Null);
+    assert_eq!(report["recording_complete"], false);
+    assert!(!directory.join("capture.f32le").exists());
+}
+
+#[test]
+fn process_recording_refuses_invalid_identity_duration_and_memory_before_reserving_output() {
+    let fixture = Fixture::new();
+    for (flag, value) in [
+        ("--source-pid", "0"),
+        ("--source-created-100ns", "0"),
+        ("--seconds", "0"),
+        ("--seconds", "601"),
+        ("--max-frames", "0"),
+        ("--max-frames", "33554433"),
+        ("--max-frames", "18446744073709551615"),
+    ] {
+        let directory = fixture.path("invalid");
+        let mut arguments = process_recording_arguments(&directory);
+        let index = arguments.iter().position(|arg| arg == flag).unwrap();
+        arguments[index + 1] = value.into();
+        assert!(cli::run(arguments).is_err(), "{flag} {value}");
+        assert!(!directory.exists(), "{flag} {value}");
+    }
+}
+
+#[test]
+fn process_recording_never_overwrites_an_existing_evidence_directory() {
+    let fixture = Fixture::new();
+    let directory = fixture.path("existing");
+    fs::create_dir(&directory).unwrap();
+    let sentinel = directory.join("report.json");
+    fs::write(&sentinel, b"retained failure").unwrap();
+    assert!(cli::run(process_recording_arguments(&directory)).is_err());
+    assert_eq!(fs::read(sentinel).unwrap(), b"retained failure");
+}
+
+#[test]
+fn process_recording_refuses_missing_unknown_and_duplicate_options_before_output() {
+    let fixture = Fixture::new();
+    let directory = fixture.path("invalid");
+    for extra in [
+        vec!["--unknown", "1"],
+        vec!["--seconds", "2"],
+        vec!["--dry-run"],
+        vec!["--max-frames"],
+    ] {
+        let mut arguments = process_recording_arguments(&directory);
+        arguments.extend(extra.into_iter().map(str::to_owned));
+        assert!(cli::run(arguments).is_err());
+        assert!(!directory.exists());
+    }
+    let mut arguments = process_recording_arguments(&directory);
+    arguments.drain(3..5);
+    assert!(cli::run(arguments).is_err());
+    assert!(!directory.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn process_recording_retains_target_refusal_without_starting_native_capture() {
+    let fixture = Fixture::new();
+    let directory = fixture.path("self-refused");
+    let mut arguments = process_recording_arguments(&directory);
+    arguments[2] = std::process::id().to_string();
+    arguments.pop();
+    assert_eq!(cli::run(arguments).unwrap(), 1);
+    let report: Value =
+        serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["native_capture"], Value::Null);
+    assert_eq!(report["recording_complete"], false);
+    assert_eq!(report["artifact_persisted"], false);
+    assert!(
+        report["failures"][0]
+            .as_str()
+            .unwrap()
+            .contains("would capture its own output")
+    );
 }
 
 fn schedule() -> Value {
