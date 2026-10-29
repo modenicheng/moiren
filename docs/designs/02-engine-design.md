@@ -1,7 +1,7 @@
 # Moiren Realtime Engine Design
 
 > 文件：`02-engine-design.md`  
-> 状态：Draft v0.3  
+> 状态：已实现（历史设计记录；当前行为以 moiren-engine 代码为准）
 > 适用范围：Moiren realtime audio engine、Graph Compiler、ExecutionPlan、buffer management、clock/boundary runtime
 
 ## 1. 设计目标

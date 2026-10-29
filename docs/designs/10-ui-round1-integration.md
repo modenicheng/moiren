@@ -1,5 +1,7 @@
 # 第一轮 UI 接入：Graph、Mix 与应用骨架
 
+> 状态：历史记录（第一轮 Slint UI 接入；Slint 已移除，见 FRONTEND.md）。
+
 验收日期：2026-10-12。参考 Moiren UI v0.1.0 的 Graph page `100:338`（完整 frame `100:361`）、Mix frame `109:330`、节点卡片 `5:976`、toolbar 与 Inspector。用户允许修正 Figma 布局及重新设计节点卡片。
 
 按职责提交：诊断500d86f、组件导入553c931、应用信号服务6ee64cd、真实epoch测试fixture8ed8978、Graph/Mix与骨架a5b2172、原生验收e0cc9f5。C4 Spec/Quality PASS；从21cba63开始的完整分支独立审查 APPROVE，四项发现全部关闭。未 push，用户07/08/09设计草稿保留。
