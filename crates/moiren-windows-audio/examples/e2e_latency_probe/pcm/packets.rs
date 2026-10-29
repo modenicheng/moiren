@@ -1,6 +1,6 @@
 //! Diagnostic validation of the sink's stored timeline, not a native epoch or
 //! hardware clock. Do not infer either from uncalibrated WASAPI packet fields.
-use super::{MarkerCorrelation, PcmAnalysis, PcmSchedule, analyze, marker_distribution};
+use super::{MarkerCorrelation, PcmAnalysis, PcmSchedule, analyze_windows, marker_distribution};
 use anyhow::{Context, Result, ensure};
 use moiren_windows_audio::stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR};
 use serde::{Deserialize, Serialize};
@@ -258,14 +258,20 @@ impl PacketTimeline {
         // Preserve the legacy correlation path and its bounds/failure details;
         // validation can only remove candidates, never manufacture a delay.
         let window = schedule.validate(bytes)? as u64;
-        let mut analysis = analyze(reader, bytes, schedule)?;
+        let mut analysis = analyze_windows(reader, bytes, schedule)?;
         let mut span_index = 0;
+        let mut breaks = Vec::with_capacity(analysis.results.len());
         for result in &mut analysis.results {
             let end = result.start_frame + window;
+            let mut break_before = false;
             while span_index < self.spans.len() && self.spans[span_index].end <= result.start_frame
             {
+                // Faults in gaps are trend barriers even when neither adjacent
+                // marker window overlaps them. Half-open endpoints matter.
+                break_before |= self.spans[span_index].invalid;
                 span_index += 1;
             }
+            breaks.push(break_before);
             let mut index = span_index;
             let mut invalid = !self.evidence.coverage_complete;
             // With exact coverage and nonoverlapping scheduled windows, this
@@ -308,9 +314,18 @@ impl PacketTimeline {
                 analysis.schedule.max_markers,
             )?)
         };
+        analysis.update_trend(Some(&breaks));
         let rate_search = analysis.schedule.rate_search.is_some();
-        analysis.schema_version = if rate_search { 4 } else { 2 };
-        analysis.mode = if rate_search {
+        analysis.schema_version = if analysis.schedule.trend.is_some() {
+            6
+        } else if rate_search {
+            4
+        } else {
+            2
+        };
+        analysis.mode = if analysis.schedule.trend.is_some() {
+            "offline_stereo_f32le_packet_validated_segmented_trend_marker_windows"
+        } else if rate_search {
             "offline_stereo_f32le_packet_validated_rate_grid_marker_windows"
         } else {
             "offline_stereo_f32le_packet_validated_marker_windows"

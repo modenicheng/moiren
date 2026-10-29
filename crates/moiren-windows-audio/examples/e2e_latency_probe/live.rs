@@ -228,6 +228,10 @@ struct LiveRunReport {
     /// Otherwise a downstream reader loses the analysis model and resolution.
     #[serde(skip_serializing_if = "Option::is_none")]
     rate_search_measurement: Option<PcmAnalysis>,
+    /// Trend-only imports retain the same full model without relabeling them
+    /// as rate searches. Combined opt-ins stay in rate_search_measurement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trend_measurement: Option<PcmAnalysis>,
     gaps: Vec<String>,
 }
 
@@ -556,6 +560,11 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         &native,
         &measurement,
     );
+    let (rate_search_measurement, trend_measurement) = match measurement.analysis {
+        Some(analysis) if analysis.schedule.rate_search.is_some() => (Some(analysis), None),
+        Some(analysis) if analysis.schedule.trend.is_some() => (None, Some(analysis)),
+        _ => (None, None),
+    };
     let report = LiveRunReport {
         validation: options.validation,
         schema_version: LIVE_SCHEMA_VERSION,
@@ -583,9 +592,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         native,
         collection: collection.clone(),
         qualification,
-        rate_search_measurement: measurement
-            .analysis
-            .filter(|analysis| analysis.schedule.rate_search.is_some()),
+        rate_search_measurement,
+        trend_measurement,
         gaps: gaps.clone(),
     };
     let manifest = LiveRunManifest {

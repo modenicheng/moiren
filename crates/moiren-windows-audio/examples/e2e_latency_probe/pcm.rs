@@ -11,9 +11,17 @@ use std::io::{Read, Seek, SeekFrom};
 mod packets;
 pub use packets::PacketTimeline;
 
+#[path = "pcm/trend.rs"]
+mod trend;
+use trend::{TrendAnalysis, TrendConfig};
+
 #[cfg(test)]
 #[path = "pcm/rate_tests.rs"]
 mod rate_tests;
+
+#[cfg(test)]
+#[path = "pcm/trend_tests.rs"]
+mod trend_tests;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +46,8 @@ pub struct PcmSchedule {
     pub min_rms: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_search: Option<MarkerRateSearchConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trend: Option<TrendConfig>,
     pub windows: Vec<MarkerWindow>,
 }
 
@@ -60,6 +70,8 @@ pub struct PcmAnalysis {
     pub distribution: Option<MarkerDistribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_search_scope: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trend: Option<TrendAnalysis>,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +158,9 @@ impl PcmSchedule {
             !self.windows.is_empty() && self.windows.len() <= self.max_markers,
             "marker count limit or empty schedule"
         );
+        if let Some(config) = self.trend {
+            config.validate(self.max_markers)?;
+        }
         ensure!(
             self.marker_frames <= self.max_marker_frames,
             "marker frame limit exceeded"
@@ -246,6 +261,25 @@ impl PcmSchedule {
 }
 
 pub fn analyze(
+    reader: &mut (impl Read + Seek),
+    bytes: u64,
+    schedule: PcmSchedule,
+) -> Result<PcmAnalysis> {
+    let mut analysis = analyze_windows(reader, bytes, schedule)?;
+    analysis.update_trend(None);
+    Ok(analysis)
+}
+
+impl PcmAnalysis {
+    fn update_trend(&mut self, breaks: Option<&[bool]>) {
+        self.trend = self
+            .schedule
+            .trend
+            .map(|config| trend::analyze(&self.results, config, breaks));
+    }
+}
+
+fn analyze_windows(
     reader: &mut (impl Read + Seek),
     bytes: u64,
     schedule: PcmSchedule,
@@ -367,8 +401,8 @@ pub fn analyze(
         )?)
     };
     Ok(PcmAnalysis {
-        schema_version: if schedule.rate_search.is_some() {3} else {1},
-        mode: if schedule.rate_search.is_some() {"offline_stereo_f32le_rate_grid_marker_windows"} else {"offline_stereo_f32le_marker_windows"},
+        schema_version: if schedule.trend.is_some() {5} else if schedule.rate_search.is_some() {3} else {1},
+        mode: if schedule.trend.is_some() {"offline_stereo_f32le_segmented_trend_marker_windows"} else if schedule.rate_search.is_some() {"offline_stereo_f32le_rate_grid_marker_windows"} else {"offline_stereo_f32le_marker_windows"},
         qualification: "not_evaluated",
         gaps: [
             "Marker windows do not verify full-waveform continuity or runtime quality counters.",
@@ -376,6 +410,7 @@ pub fn analyze(
             "No live recording/source mode, controlled-load soak or complete Stage 7 harness is implemented.",
         ],
         rate_search_scope: schedule.rate_search.map(|_| "explicit_linear_template_grid_not_clock_calibration; positive_ppm_stretches; raw_common_recorder_onsets_not_detrended; integer_resolution_not_physical_uncertainty; off_grid_or_time_varying_drift_may_refuse"),
+        trend: None,
         capture_frames: bytes / 8,
         failed_markers: results.len() - delays.len(),
         schedule,

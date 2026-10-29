@@ -166,7 +166,9 @@ fn pcm_rate_search_global_resampling_retains_accumulated_positive_and_negative_d
             };
             raw.extend(processed.to_le_bytes());
         }
-        let value = analyze(raw, schedule());
+        let mut settings = schedule();
+        settings["trend"] = json!({"min_markers":3,"min_span_frames":10000});
+        let value = analyze(raw, settings);
         assert_eq!(value["failed_markers"], 0, "{value}");
         for (index, result) in value["results"].as_array().unwrap().iter().enumerate() {
             assert_eq!(
@@ -176,6 +178,10 @@ fn pcm_rate_search_global_resampling_retains_accumulated_positive_and_negative_d
             );
         }
         assert_eq!(value["distribution"]["marker_count"], 3);
+        assert_eq!(value["schema_version"], 5);
+        let fit = &value["trend"]["segments"][0]["fit"];
+        assert!((fit["relative_delay_change_ppm"].as_f64().unwrap() - f64::from(ppm)).abs() < 1e-8);
+        assert!((fit["intercept_at_first_reference_frames"].as_f64().unwrap() - 23.0).abs() < 1e-8);
     }
 }
 
@@ -305,6 +311,46 @@ fn pcm_rate_search_live_loader_analyzes_imported_pcm_without_native_or_qualifica
         -2000
     );
     assert!(report["native"]["capture"].is_null());
+}
+
+#[test]
+fn pcm_rate_and_trend_live_import_retains_one_complete_analysis_not_duplicate_reports() {
+    let fixture = Fixture::new();
+    let raw = fixture.path("capture.raw");
+    std::fs::write(&raw, raw_fixture(2000)).unwrap();
+    let mut config = schedule();
+    config["trend"] = json!({"min_markers":3,"min_span_frames":10000});
+    let settings = fixture.json("schedule.json", &config);
+    let directory = fixture.path("run");
+    assert_eq!(
+        cli::run(vec![
+            "live-process-loopback".into(),
+            "--dry-run".into(),
+            "--source-pid".into(),
+            "1".into(),
+            "--output".into(),
+            "unopened".into(),
+            "--artifact-dir".into(),
+            directory.to_string_lossy().into_owned(),
+            "--measurement-pcm".into(),
+            raw.to_string_lossy().into_owned(),
+            "--schedule".into(),
+            settings.to_string_lossy().into_owned()
+        ])
+        .unwrap(),
+        1
+    );
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["qualified"], false);
+    let analysis = &report["rate_search_measurement"];
+    assert_eq!(analysis["schema_version"], 5);
+    assert_eq!(analysis["trend"]["segments"][0]["marker_count"], 3);
+    assert_eq!(
+        analysis["results"][0]["processed"]["rate_hypothesis"]["template_rate_ppm"],
+        2000
+    );
+    assert!(report.get("trend_measurement").is_none());
 }
 
 #[test]

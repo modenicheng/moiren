@@ -56,6 +56,12 @@ Positive ppm stretches a zero-extended linear template; explicit grid max129 hyp
 work (including a second rate-score pass) must fit schedule limits before reading PCM. Selected ppm is a template hypothesis,
 not clock calibration; integer onset resolution is not physical uncertainty. Raw common-recorder delays are never detrended.
 Opt-in rate search reports schema3 (PCM) or4 (packet-validated); omitted retains legacy schemas1/2 and behavior.
+Optional trend:{min_markers,min_span_frames}: min_markers>=3 within marker cap; positive span within2^53-1 frames.
+Trend opts into schema5 (PCM) or6 (packet-validated). Reports centered relative delay slope and residual RMS sqrt(SSE/n),
+not hardware clock skew, physical uncertainty or adjusted latency. Raw delays/distribution retain every accepted outlier.
+Failed markers and invalid packets BETWEEN windows split fits. Missing packets means unverified continuity;
+clean metadata is diagnostic only, not a native epoch or full-waveform continuity. Insufficient segments retain reasons.
+Imported live reports retain trend-only analysis in trend_measurement; combined rate+trend in rate_search_measurement.
 Without --packets, legacy schema_version=1 reports successful markers only, not capture continuity.
 With --packets, schema_version=2 validates measurement_sink JSONL against all stored PCM frames.
 Metadata uses --max-input-bytes (hard cap 256 MiB), --max-packets (1..1000000), 1024 bytes/record.
