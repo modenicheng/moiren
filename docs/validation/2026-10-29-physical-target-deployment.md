@@ -174,3 +174,72 @@ The earlier parallel app run has one curved-wire selection failure (560 passed
 full serial rerun pass. The failed run is preserved, not relabeled a pass;
 parallel UI-test isolation is still a residual risk. These software results do
 not close the separate native/waveform/physical S1-S3 acceptance gates.
+
+## Explicit VAD target experiment
+
+With the same 48-kHz source schedule, Engine block 256, one-period recovery
+ceiling, native exclusive event buffer 144 frames, capacity 4800, declared
+packet/gap bounds 480 and jitter reserve 96, the target-2048 and target-1024
+candidates both complete collection and cleanup. The requested and published
+targets match; capacity remains 4800. These are short operational candidates,
+not accepted presets or measured end-to-end latency. Both still fail quality;
+the 1024 candidate also retains provider faults and microphone silence.
+
+Target 768 and 512 refuse the declared operating budget rather than silently
+increasing their targets. The admitted 256-frame whole transfer needs a
+modeled minimum of 865 frames under these declarations. Both refusal runs
+retain successful cleanup; the 768 run additionally exposes a slow generic
+Running wait before reporting its already-available Blocked reason.
+
+The first exact physical Input -> Bus -> Output attempt uses the Intel
+microphone array and muted Realtek output, with a separate but unrelated
+Voicemeeter Out B1 recorder. This is only functional orchestration, not a
+common-reference measurement. It fails the collector's owner/revision check:
+actual host/professional/native owner are 1, all graph/plan revisions are 1,
+and resource generation is the valid initial value 0. The collector wrongly
+requires resource generation to be positive. That software defect is under
+repair; the failed run and independent recorder discontinuity are retained.
+
+Inspection scripts must read serde JSON using explicit UTF-8. Windows
+PowerShell's default file decoding corrupted Chinese names in an intermediate
+summary; the raw archived JSON is intact. A fresh explicit-UTF-8 read returns
+the playback MMDevice name as the Chinese generic speaker label plus adapter
+suffix, not the requested `Moiren Target Playback`. The microphone reads
+`Moiren Target Microphone` plus adapter suffix. Driver interface readback is
+not proof of final Windows playback FriendlyName propagation; that naming
+acceptance remains open.
+
+Additional host-verified archives (all individual entries checked by length
+and SHA-256; target originals preserved):
+
+- `evidence-round3.zip`: 542,476 bytes, 79 entries,
+  `BA80D03A6AD98F1E157D3FB3F6477573B276220EFE6137B77AE8CF1D8E513C35`.
+- `evidence-round4.zip`: 594,788 bytes, 51 entries,
+  `F135FA909FDAF764CC46099AD2B28426115884A5A85289A96441EB30542273D6`.
+
+## Native desktop and remote build isolation
+
+A freshly built `ui_capture` diagnostic using the real production Windows
+service/catalog and native GPUI renderer completed with exit 0, no timeout and
+26 screenshots. Its SHA-256 is
+`97E311236E37536AFDE696CD0D63C1736933CA89073784284BCA9CBD2D2A2AFB`.
+The interactive-logon task used isolated APPDATA, did not submit audio Start,
+and was removed after confirming no capture process remained. The actual
+session-ID field was unavailable and is not invented. This proves native
+idle rendering/catalog enumeration, not desktop audio Apply or latency.
+
+The user authorizes moving suitable work to the existing `D:\moiren` target
+repository. Its main worktree is clean at `497ac7c`, with stable Rust 1.99.1
+and Visual Studio 2022. Preserve that worktree; transfer committed snapshots
+to a separate detached worktree and use a single explicit D-drive Cargo
+target directory. Redirect task temporary files and new Cargo downloads to D:.
+Run compilation/portable tests separately from native audio acquisition so
+build pressure is not misclassified as target audio behavior.
+
+The user also requires regular remote cache cleanup. With no build/audio
+process active, the first path-checked `cargo clean` on `D:\moiren\target`
+removed 4,138 files / 1.1 GiB; reported D-drive free space increased from
+273,237,856,256 to 274,271,608,832 bytes. Source, driver package/rollback and
+test evidence were not removed. Check space before and after each build
+phase; do not accumulate per-agent target trees or overlap clean with a
+running build. Archive and verify evidence before any evidence pruning.
