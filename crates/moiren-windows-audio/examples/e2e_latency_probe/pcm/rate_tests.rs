@@ -122,6 +122,60 @@ fn pcm_rate_search_detects_stretched_markers_and_preserves_raw_common_clock_dela
                 .contains("not_clock_calibration")
         );
         assert_eq!(result["qualification"], "not_evaluated");
+        assert_eq!(result["schema_version"], 3);
+    }
+}
+
+#[test]
+fn pcm_legacy_output_omits_all_rate_search_fields() {
+    let mut settings = schedule();
+    settings.as_object_mut().unwrap().remove("rate_search");
+    let output = analyze(raw_fixture(0), settings);
+    assert_eq!(output["failed_markers"], 0);
+    assert_eq!(output["schema_version"], 1);
+    assert!(output.get("rate_search_scope").is_none());
+    assert!(output["schedule"].get("rate_search").is_none());
+    for result in output["results"].as_array().unwrap() {
+        assert!(result["reference"].get("rate_hypothesis").is_none());
+        assert!(result["processed"].get("rate_hypothesis").is_none());
+    }
+}
+
+#[test]
+fn pcm_rate_search_global_resampling_retains_accumulated_positive_and_negative_delay_drift() {
+    let mut source = vec![0.0; 15000];
+    let mut marker = vec![0.0; 4096];
+    MarkerGenerator::new(4096, 0.1).unwrap().fill(&mut marker);
+    for origin in [0, 5000, 10000] {
+        source[origin..origin + 4096].copy_from_slice(&marker);
+    }
+    for ppm in [-2000, 2000] {
+        let mut raw = Vec::with_capacity(15000 * 8);
+        let ratio = 1.0 + f64::from(ppm) / 1_000_000.0;
+        for (frame, reference) in source.iter().enumerate() {
+            raw.extend(reference.to_le_bytes());
+            let offset = (frame as f64 - 23.0) / ratio;
+            let processed = if offset < 0.0 || offset >= source.len() as f64 {
+                0.0
+            } else {
+                let low = offset.floor() as usize;
+                let fraction = (offset - low as f64) as f32;
+                (source[low] * (1.0 - fraction)
+                    + source.get(low + 1).copied().unwrap_or(0.0) * fraction)
+                    * -0.4
+            };
+            raw.extend(processed.to_le_bytes());
+        }
+        let value = analyze(raw, schedule());
+        assert_eq!(value["failed_markers"], 0, "{value}");
+        for (index, result) in value["results"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(
+                result["delay_frames"],
+                23 + index as i32 * ppm / 200,
+                "accumulated source-clock drift must not be subtracted from delay"
+            );
+        }
+        assert_eq!(value["distribution"]["marker_count"], 3);
     }
 }
 
@@ -301,4 +355,5 @@ fn pcm_rate_search_cli_retains_metadata_tail_reset_without_a_latency_pass() {
     );
     assert_eq!(value["failed_markers"], 1);
     assert_eq!(value["distribution"]["marker_count"], 2);
+    assert_eq!(value["schema_version"], 4);
 }

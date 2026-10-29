@@ -866,6 +866,7 @@ fn live_process_loopback_uses_process_identity_and_legacy_source_kind() {
     assert_eq!(report["mode"], "live_process_loopback");
     assert_eq!(report["source"]["source_kind"], "process_loopback");
     assert_eq!(report["source"]["pid"], 7);
+    assert!(report.get("rate_search_measurement").is_none());
     assert_eq!(
         report["qualification"]["configuration"]["source_kind"],
         "process_loopback"
