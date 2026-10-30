@@ -52,6 +52,24 @@ pub struct WasapiOptions {
     pub input: bool,
 }
 
+fn capture_packet_frames(
+    mode: DeviceMode,
+    next_packet: impl FnOnce() -> windows::core::Result<u32>,
+    acquire: impl FnOnce() -> windows::core::Result<u32>,
+) -> Result<u32, BackendError> {
+    // GetNextPacketSize is Shared-only. Exclusive capture polls GetBuffer
+    // directly and an unavailable packet must wait for the next native wake.
+    if mode == DeviceMode::Shared && api("GetNextPacketSize", next_packet())? == 0 {
+        return Ok(0);
+    }
+    match acquire() {
+        Err(error) if mode == DeviceMode::Exclusive && error.code() == AUDCLNT_E_BUFFER_ERROR => {
+            Ok(0)
+        }
+        result => api("GetBuffer(capture)", result),
+    }
+}
+
 fn api<T>(stage: &'static str, result: windows::core::Result<T>) -> Result<T, BackendError> {
     result.map_err(|error| {
         let failure = StageError::new(stage, error);
@@ -1179,20 +1197,25 @@ impl NativeStream for WasapiStream {
             return Ok(0);
         }
         if self.captured_frames == self.captured_offset {
-            if api("GetNextPacketSize", unsafe { capture.GetNextPacketSize() })? == 0 {
-                return Ok(0);
-            }
             let (mut data, mut frames, mut flags, mut position, mut qpc) =
                 (ptr::null_mut(), 0, 0, 0, 0);
-            api("GetBuffer(capture)", unsafe {
-                capture.GetBuffer(
-                    &mut data,
-                    &mut frames,
-                    &mut flags,
-                    Some(&mut position),
-                    Some(&mut qpc),
-                )
-            })?;
+            let available = capture_packet_frames(
+                self.mode,
+                || unsafe { capture.GetNextPacketSize() },
+                || unsafe {
+                    capture.GetBuffer(
+                        &mut data,
+                        &mut frames,
+                        &mut flags,
+                        Some(&mut position),
+                        Some(&mut qpc),
+                    )?;
+                    Ok(frames)
+                },
+            )?;
+            if available == 0 {
+                return Ok(0);
+            }
             let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
             self.stats.capture_discontinuities +=
@@ -1520,6 +1543,75 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
     use windows::core::PCWSTR;
+
+    #[test]
+    fn exclusive_capture_skips_shared_only_packet_query() {
+        let frames = capture_packet_frames(
+            DeviceMode::Exclusive,
+            || {
+                Err(windows::core::Error::from_hresult(
+                    windows::Win32::Foundation::E_NOTIMPL,
+                ))
+            },
+            || Ok(480),
+        )
+        .unwrap();
+        assert_eq!(frames, 480);
+    }
+
+    #[test]
+    fn exclusive_capture_empty_pass_never_becomes_signal_or_fatal_error() {
+        assert_eq!(
+            capture_packet_frames(
+                DeviceMode::Exclusive,
+                || Ok(480),
+                || Err(windows::core::Error::from_hresult(AUDCLNT_E_BUFFER_ERROR)),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            capture_packet_frames(DeviceMode::Exclusive, || Ok(480), || Ok(0)).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn capture_packet_polling_preserves_shared_admission_and_real_errors() {
+        assert_eq!(
+            capture_packet_frames(DeviceMode::Shared, || Ok(0), || panic!("no packet lease"))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            capture_packet_frames(DeviceMode::Shared, || Ok(480), || Ok(480)).unwrap(),
+            480
+        );
+        assert!(
+            capture_packet_frames(
+                DeviceMode::Shared,
+                || Err(windows::core::Error::from_hresult(
+                    AUDCLNT_E_DEVICE_INVALIDATED
+                )),
+                || panic!("query failure must be retained"),
+            )
+            .is_err()
+        );
+        for (mode, error) in [
+            (DeviceMode::Shared, AUDCLNT_E_BUFFER_ERROR),
+            (DeviceMode::Shared, AUDCLNT_E_DEVICE_INVALIDATED),
+            (DeviceMode::Exclusive, AUDCLNT_E_DEVICE_INVALIDATED),
+        ] {
+            assert!(
+                capture_packet_frames(
+                    mode,
+                    || Ok(480),
+                    || Err(windows::core::Error::from_hresult(error)),
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[implement(IAudioClock)]
     struct DiagnosticClock {
