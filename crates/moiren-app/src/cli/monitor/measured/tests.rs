@@ -216,7 +216,7 @@ fn window_options() -> MonitorOptions {
 
 #[test]
 fn measured_cli_waits_for_optional_samples_without_renewing_collection() {
-    for missing in 0..3 {
+    for missing in 0..6 {
         let (mut snapshot, mut report, _) = fixture();
         let node = snapshot
             .graph
@@ -230,6 +230,13 @@ fn measured_cli_waits_for_optional_samples_without_renewing_collection() {
             0 => incomplete.delivery = None,
             1 => incomplete.producer = None,
             2 => incomplete.consumer = None,
+            3 => incomplete.producer.as_mut().unwrap().events.truncate(1),
+            4 => incomplete.consumer.as_mut().unwrap().events.truncate(1),
+            5 => {
+                for event in &mut incomplete.consumer.as_mut().unwrap().events {
+                    event.qpc_100ns = event.qpc_100ns.map(|stamp| stamp + 10_000_000);
+                }
+            }
             _ => unreachable!(),
         }
         let native = snapshot.native_observations.as_mut().unwrap();

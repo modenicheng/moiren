@@ -165,17 +165,6 @@ impl Measurement {
                                     == report.process_creation_time_100ns,
                             "measured native Process identity changed"
                         );
-                        // A 1 Hz display snapshot may overlap an atomic writer
-                        // and retain an unknown optional sample. Wait only for
-                        // readiness within the original collection deadline;
-                        // clocks, malformed histories and budgets still refuse.
-                        if self.window_policy.is_none()
-                            && (observed.delivery.is_none()
-                                || observed.producer.is_none()
-                                || observed.consumer.is_none())
-                        {
-                            return Ok(());
-                        }
                         let (capacity_frames, target_frames, jitter_frames) = self.target.unwrap();
                         let request = MeasuredProcessRequest {
                             node: node.id(),
@@ -195,6 +184,20 @@ impl Measurement {
                                 policy,
                             }
                         } else {
+                            // A throttled display snapshot can still contain a
+                            // startup prefix or an unknown concurrent sample.
+                            // Retry only typed readiness failures within the
+                            // original deadline, never faults or budget refusal.
+                            use moiren_windows_audio::process_loopback::MeasuredAdmissionError;
+                            match observed.measured(&observed.process, native) {
+                                Ok(_) => {}
+                                Err(
+                                    MeasuredAdmissionError::MissingObservation { .. }
+                                    | MeasuredAdmissionError::InsufficientHistory { .. }
+                                    | MeasuredAdmissionError::InsufficientOverlap,
+                                ) => return Ok(()),
+                                Err(error) => return Err(error.into()),
+                            }
                             crate::service::measured_process::MeasuredProcessProfile::from_observation(
                                 1, request, observed,
                             )
