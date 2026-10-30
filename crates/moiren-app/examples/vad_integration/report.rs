@@ -1,3 +1,4 @@
+use moiren_app::service::{ExportDirection, ExportStatus};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,6 +141,7 @@ pub(super) struct PcmEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct ExportEvidence {
     pub endpoint_id: String,
+    pub direction: ExportDirection,
     pub present: bool,
     pub enabled: bool,
     pub bound: bool,
@@ -148,7 +150,46 @@ pub(super) struct ExportEvidence {
     pub gate_open: bool,
     pub active_revision: Option<u64>,
     pub native_stamp: Option<[u64; 5]>,
+    pub windows_name: Option<WindowsNameObservation>,
     pub resource: String,
+}
+
+/// Detached service evidence only; never grants native readiness or ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct WindowsNameObservation {
+    pub native_identity: [u64; 3],
+    pub observed_qpc_100ns: Option<u64>,
+    pub mmdevice_id: Option<String>,
+    pub name: Option<String>,
+    pub error: Option<String>,
+}
+
+impl From<&ExportStatus> for ExportEvidence {
+    fn from(export: &ExportStatus) -> Self {
+        Self {
+            endpoint_id: export.intent.endpoint_id.to_string(),
+            direction: export.intent.direction,
+            present: export.resource == moiren_app::service::ExportResourceState::Present,
+            enabled: export.intent.enabled,
+            bound: export.intent.binding.is_some(),
+            channels: export.intent.channels,
+            allow_default: export.allow_default,
+            gate_open: export.gate_open,
+            active_revision: export.active_revision,
+            native_stamp: export.native_stamp,
+            windows_name: export
+                .windows_name
+                .as_ref()
+                .map(|observation| WindowsNameObservation {
+                    native_identity: observation.native_identity,
+                    observed_qpc_100ns: observation.observed_qpc_100ns,
+                    mmdevice_id: observation.mmdevice_id.clone(),
+                    name: observation.name.clone(),
+                    error: observation.error.clone(),
+                }),
+            resource: format!("{:?}", export.resource).to_ascii_lowercase(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,22 +275,7 @@ impl From<&moiren_app::service::AppSnapshot> for Evidence {
             active_revision: snapshot.graph.active_revision,
             pending_revision: snapshot.graph.pending_revision,
             consumed_request_id: snapshot.consumed_request_id.0,
-            exports: snapshot
-                .exports
-                .iter()
-                .map(|export| ExportEvidence {
-                    endpoint_id: export.intent.endpoint_id.to_string(),
-                    present: export.resource == moiren_app::service::ExportResourceState::Present,
-                    enabled: export.intent.enabled,
-                    bound: export.intent.binding.is_some(),
-                    channels: export.intent.channels,
-                    allow_default: export.allow_default,
-                    gate_open: export.gate_open,
-                    active_revision: export.active_revision,
-                    native_stamp: export.native_stamp,
-                    resource: format!("{:?}", export.resource).to_ascii_lowercase(),
-                })
-                .collect(),
+            exports: snapshot.exports.iter().map(ExportEvidence::from).collect(),
             error: snapshot.error.clone(),
             graph_error: snapshot.graph.last_error.clone(),
         }
@@ -273,8 +299,10 @@ mod tests {
             consumed_request_id: 2,
             exports: ids()
                 .into_iter()
-                .map(|endpoint_id| ExportEvidence {
+                .zip([ExportDirection::Playback, ExportDirection::Microphone])
+                .map(|(endpoint_id, direction)| ExportEvidence {
                     endpoint_id,
+                    direction,
                     present: true,
                     enabled: true,
                     bound: true,
@@ -283,6 +311,7 @@ mod tests {
                     gate_open: true,
                     active_revision: Some(7),
                     native_stamp: Some([31, 42, 31, 0, 1]),
+                    windows_name: None,
                     resource: "present".into(),
                 })
                 .collect(),
@@ -372,6 +401,146 @@ mod tests {
         assert_eq!(json["service_joined"], false);
         assert_eq!(json["control_session_released"], false);
         assert_eq!(json["endpoint_absence_confirmed"], false);
+    }
+
+    #[test]
+    fn export_report_retains_direction_and_explicit_unknown_windows_name() {
+        let json = serde_json::to_value(running()).unwrap();
+        assert_eq!(json["exports"][0]["direction"], "playback");
+        assert_eq!(json["exports"][1]["direction"], "microphone");
+        for export in json["exports"].as_array().unwrap() {
+            assert_eq!(export.get("windows_name"), Some(&serde_json::Value::Null));
+        }
+    }
+
+    fn export_status() -> ExportStatus {
+        let document = super::super::project::document().unwrap();
+        let export = &document.exports[0];
+        ExportStatus {
+            intent: moiren_app::service::ExportIntent {
+                endpoint_id: export.endpoint_id,
+                direction: export.direction,
+                name: export.name.clone(),
+                channels: export.channels,
+                enabled: export.enabled,
+                binding: Some(
+                    moiren_core::graph::LogicalGraph::new()
+                        .create_node(moiren_core::graph::NodeKind::Source, 2)
+                        .unwrap(),
+                ),
+            },
+            actual_name: Some("provider name must not replace Windows readback".into()),
+            windows_name: Some(moiren_app::service::WindowsEndpointNameObservation {
+                native_identity: [31, 42, 31],
+                observed_qpc_100ns: Some(123_456),
+                mmdevice_id: Some("{exact-owned-render-id}".into()),
+                name: Some("Actual Windows name".into()),
+                error: None,
+            }),
+            rename_pending: false,
+            resource: moiren_app::service::ExportResourceState::Present,
+            allow_default: false,
+            gate_open: true,
+            active_revision: Some(7),
+            #[cfg(windows)]
+            diagnostics: None,
+            native_stamp: Some([31, 42, 31, 0, 1]),
+            observation_generation: Some(9),
+            native_retirement: None,
+        }
+    }
+
+    #[test]
+    fn service_export_projects_exact_typed_windows_name() {
+        let evidence = ExportEvidence::from(&export_status());
+        let json = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(json["direction"], "playback");
+        assert_eq!(
+            json["windows_name"],
+            serde_json::json!({
+                "native_identity": [31, 42, 31],
+                "observed_qpc_100ns": 123456,
+                "mmdevice_id": "{exact-owned-render-id}",
+                "name": "Actual Windows name",
+                "error": null,
+            })
+        );
+        assert_eq!(json["native_stamp"], serde_json::json!([31, 42, 31, 0, 1]));
+    }
+
+    #[test]
+    fn stale_missing_and_failed_windows_names_are_raw_evidence_not_readiness() {
+        for change in 0..7 {
+            let mut status = export_status();
+            match change {
+                0 => status.windows_name = None,
+                1 => status.windows_name.as_mut().unwrap().native_identity[0] += 1,
+                2 => status.windows_name.as_mut().unwrap().native_identity[1] += 1,
+                3 => status.windows_name.as_mut().unwrap().native_identity[2] += 1,
+                4 => status.windows_name.as_mut().unwrap().mmdevice_id = None,
+                5 => status.windows_name.as_mut().unwrap().mmdevice_id = Some(String::new()),
+                _ => status.windows_name.as_mut().unwrap().error = Some("topology failed".into()),
+            }
+            let mut evidence = running();
+            let mut projected = ExportEvidence::from(&status);
+            projected.endpoint_id = ids()[0].clone();
+            evidence.exports[0] = projected;
+            assert!(
+                evidence.running(&ids(), 2),
+                "readiness changed for {change}"
+            );
+            let json = serde_json::to_value(&evidence).unwrap();
+            let expected = status.windows_name.as_ref().map(|name| {
+                serde_json::json!({
+                    "native_identity": name.native_identity,
+                    "observed_qpc_100ns": name.observed_qpc_100ns,
+                    "mmdevice_id": name.mmdevice_id,
+                    "name": name.name,
+                    "error": name.error,
+                })
+            });
+            assert_eq!(
+                json["exports"][0]["windows_name"],
+                expected.unwrap_or(serde_json::Value::Null),
+                "lost raw observation for {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_retains_typed_windows_name_without_adding_qualification() {
+        let directory = std::env::temp_dir().join(format!(
+            "moiren-holder-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let mut report = Report::default();
+        let mut evidence = running();
+        evidence.exports[0] = ExportEvidence::from(&export_status());
+        report.checkpoint("no_clients_timeline_hold", evidence);
+        super::super::progress::persist(&directory, &report, 1, 20, 30, false).unwrap();
+        let bytes = std::fs::read(directory.join("progress.json")).unwrap();
+        std::fs::remove_file(directory.join("progress.json")).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let export = &json["report"]["checkpoints"][0]["evidence"]["exports"][0];
+        assert_eq!(export["direction"], "playback");
+        assert_eq!(
+            export["windows_name"]["native_identity"],
+            serde_json::json!([31, 42, 31])
+        );
+        assert_eq!(
+            export["windows_name"]["mmdevice_id"],
+            "{exact-owned-render-id}"
+        );
+        assert_eq!(export["windows_name"]["error"], serde_json::Value::Null);
+        assert_eq!(json["final_qualification"], false);
+        assert_eq!(json["report"]["native_clients_started_by_probe"], 0);
+        assert_eq!(json["report"]["pcm_verified"], false);
     }
 
     #[test]
