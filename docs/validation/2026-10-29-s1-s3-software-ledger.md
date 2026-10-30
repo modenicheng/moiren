@@ -12,6 +12,14 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [probe example-test cfg repair](2026-10-30-probe-test-cfg.md) fixes four
+Windows-only helpers exposed by the exact default-feature Linux test build.
+Existing portable tests remain enabled; Windows528+5, Linux nightly413+5 and
+bounded Linux-target Miri2+5 pass. The probe alone is updated to `9de94e4`;
+app `c222df2` and the installed driver remain unchanged. Native audio is
+still paused after the bugcheck; no waveform, physical latency or S1-S3
+completion verdict follows.
+
 The [native-helper cfg repair](2026-10-30-native-helper-cfg.md) corrects
 Linux library-test/Miri and non-test probe compilation without suppressing
 warnings or changing Windows runtime behavior. Both Linux-target Miri borrow

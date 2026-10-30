@@ -131,6 +131,12 @@ retains Linux/Miri compilation and private-clock test integration repairs,
 plus the final `c222df2` application/probe deployment. Installed SYS remains
 unchanged, Running /root PnP OK; no native audio retry or new hardware verdict.
 
+The [probe example-test cfg follow-up](../../docs/validation/2026-10-30-probe-test-cfg.md)
+repairs four Windows-only test-build helpers and deploys only the `9de94e4`
+probe after528+5 release tests and strict Clippy. App `c222df2` and installed
+SYS remain unchanged. Native retries stay paused; software checks do not
+close physical continuity, calibration or lower-budget qualification gates.
+
 ## Audit follow-up - 2026-10-21
 
 The reported Removing-state retry defect is absent in the current source:
