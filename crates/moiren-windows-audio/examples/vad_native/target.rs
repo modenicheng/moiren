@@ -882,11 +882,26 @@ fn exercise_case_inner(
         );
         // Cut admission first, then drain every outstanding direct request before
         // closing its native stream, including phase and revocation failures.
-        let outcome = validation::revoke_and_drain(
-            outcome,
-            || revoke(control, running),
-            || Ok(pcm.shutdown(Duration::from_secs(5))?),
-        );
+        let outcome = if mode.is_ac_diagnostic() {
+            // A deliberately refused diagnostic is still responsible for
+            // reporting revocation and cancellation failures independently.
+            let outcome = validation::retain_cleanup_failure(
+                outcome,
+                "gate revoke",
+                revoke(control, running),
+            );
+            validation::retain_cleanup_failure(
+                outcome,
+                "PCM drain",
+                pcm.shutdown(Duration::from_secs(5)).map_err(Into::into),
+            )
+        } else {
+            validation::revoke_and_drain(
+                outcome,
+                || revoke(control, running),
+                || Ok(pcm.shutdown(Duration::from_secs(5))?),
+            )
+        };
         drop(pcm);
         let position = outcome?;
         let after = if endpoint.intent() == Intent::Microphone {
@@ -929,6 +944,13 @@ fn exercise_case_inner(
             shared_capture_diagnostics: shared.clone(),
         })
     })();
+    let outcome = if mode.is_ac_diagnostic() {
+        // The expected refusal skips the normal success-path Stop. Attempt it
+        // explicitly before Drop and retain its error alongside the phase.
+        validation::retain_cleanup_failure(outcome, "native Stop", native.stop())
+    } else {
+        outcome
+    };
     // Capture the final native state even for setup, gate-check or Stop errors.
     counters.native_discontinuities = native.discontinuities;
     if let Some(metrics) = shared.as_mut() {

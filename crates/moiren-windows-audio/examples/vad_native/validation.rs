@@ -272,6 +272,22 @@ pub(super) fn revoke_and_drain<T>(
     Ok(value)
 }
 
+pub(super) fn retain_cleanup_failure<T>(
+    outcome: anyhow::Result<T>,
+    stage: &str,
+    cleanup: anyhow::Result<()>,
+) -> anyhow::Result<T> {
+    match cleanup {
+        Ok(()) => outcome,
+        Err(error) => match outcome {
+            Ok(_) => Err(error.context(format!("{stage} cleanup failed"))),
+            Err(original) => {
+                Err(original.context(format!("{stage} cleanup also failed: {error:#}")))
+            }
+        },
+    }
+}
+
 pub(super) fn cleanup_all<T: Copy>(
     items: &[T],
     mut cleanup: impl FnMut(T) -> anyhow::Result<()>,
@@ -1356,6 +1372,54 @@ mod tests {
         );
         assert_eq!(*actions.borrow(), ["revoke", "drain"]);
         assert!(result.unwrap_err().to_string().contains("PCM failed"));
+    }
+
+    #[test]
+    fn expected_diagnostic_refusal_retains_each_cleanup_failure_and_original_cause() {
+        for failure in 0..8 {
+            let original = std::io::Error::from_raw_os_error(5);
+            let mut result =
+                Err::<(), _>(anyhow::Error::new(original).context("diagnostic always unqualified"));
+            for (index, stage) in ["gate revoke", "PCM drain", "native Stop"]
+                .into_iter()
+                .enumerate()
+            {
+                result = retain_cleanup_failure(
+                    result,
+                    stage,
+                    if failure & (1 << index) != 0 {
+                        Err(anyhow::anyhow!("failure-{index}"))
+                    } else {
+                        Ok(())
+                    },
+                );
+            }
+            let error = result.unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(5)
+            );
+            let chain = format!("{error:#}");
+            assert!(chain.contains("diagnostic always unqualified"));
+            for index in 0..3 {
+                assert_eq!(
+                    chain.contains(&format!("failure-{index}")),
+                    failure & (1 << index) != 0,
+                    "{chain}"
+                );
+            }
+        }
+        assert!(
+            retain_cleanup_failure(Ok(42), "native Stop", Err(anyhow::anyhow!("stop failed")))
+                .is_err()
+        );
+        assert_eq!(
+            retain_cleanup_failure(Ok(42), "native Stop", Ok(())).unwrap(),
+            42
+        );
     }
 
     #[test]
