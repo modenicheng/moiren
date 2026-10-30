@@ -10,7 +10,7 @@ inline uint32_t InterfaceNameBytes(const wchar_t (&name)[MOIREN_VAD_MAX_NAME_UNI
     static_assert(sizeof(wchar_t) == 2, "interface properties use UTF-16");
     for (uint32_t index = 0; index < MOIREN_VAD_MAX_NAME_UNITS; ++index) {
         if (name[index] == L'\0') {
-            return index == 0 ? 0 : (index + 1) * 2;
+            return index == 0 ? 0 : (index + 1) * sizeof(wchar_t);
         }
     }
     return 0;

@@ -65,6 +65,7 @@
     <ClCompile Include="src\audio\Streams.cpp" />
     <ClCompile Include="src\audio\Guids.cpp" />
     <ClInclude Include="src\Driver.h" />
+    <ClInclude Include="src\InterfaceName.h" />
     <ClInclude Include="src\Lifecycle.h" />
     <ClInclude Include="src\PcmDiagnostics.h" />
     <ClInclude Include="src\audio\CaptureDiagnostic.h" />

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'capture_boundary')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,12 +15,17 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'capture_boundary') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary') } else { @($Test) })) {
     if ($testName -eq 'capture_boundary') {
         & python (Join-Path $PSScriptRoot 'tests\extract-capture-boundary.py') $PSScriptRoot $buildRoot
         if ($LASTEXITCODE -ne 0) { throw "Capture boundary extraction failed ($LASTEXITCODE)." }
     }
     if ($testName -eq 'interface_name') {
+        & python (Join-Path $PSScriptRoot 'tests\extract-interface-name.py') `
+            (Join-Path $PSScriptRoot 'src\Policy.cpp') (Join-Path $buildRoot 'interface-name-production.inc')
+        if ($LASTEXITCODE -ne 0) { throw "Interface-name source extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'interface_name_native') {
         # Compile publication/rollback from Policy.cpp, stubbing only DDI edges.
         @'
 import importlib.util
@@ -48,7 +53,7 @@ functions += ['StageInterface', 'VadReleasePolicy', 'PreparePolicy', 'VadPrepare
 patterns = tuple((name, r'(?:static\s+)?(?:NTSTATUS|void)\s+' + name +
     r'\s*\([^;{}]*\)\s*\{') for name in functions)
 parts.append(module.extract(text, source.as_posix(), patterns))
-(output / 'interface-name-production.inc').write_text('\n'.join(parts), encoding='utf-8')
+(output / 'interface-name-native-production.inc').write_text('\n'.join(parts), encoding='utf-8')
 '@ | & python - $PSScriptRoot $buildRoot
         if ($LASTEXITCODE -ne 0) { throw "Interface-name source extraction failed ($LASTEXITCODE)." }
     }
