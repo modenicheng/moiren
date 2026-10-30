@@ -261,6 +261,29 @@ policy changes. S1 independent calibrated reference and waveform acceptance,
 S2 sustained lower-budget delivery, and complete S1-S3 acceptance remain open.
 No default is promoted and draft PR26 remains unmerged.
 
+### Independent bounded-name foundation PR
+
+The delegated extraction worktree produces PR47 from `a9a59db`, independently
+reviewed at final head `792a3e2`:7driver/test files,+232/-5. It extracts only
+the bounded UTF-16 `StageInterface` name-size contract and invalid-name
+rejection, not typed publication/readback, name-derived endpoint identity,
+diagnostic experiments or latency policies. Baseline and empty-name mutation
+both fail the new regression as expected. All7 MSVC/portable suites pass;
+the parent separately passes analyzed WDK/InfVerif. Actual Ubuntu portable
+CI passes, then all20 final-head checks complete successfully. PR47 merges
+as `6b4ffe6` at2026-10-31T03:24:36+08:00, and clean local main fast-forwards.
+
+The experiment branch merges that main history in `31b6f4c`. The expanded
+native interface-policy fixture is retained unchanged except its generated
+include name and moved to `interface_name_native.cpp`; the portable bounds
+fixture stays distinct and extracts the real merged `StageInterface`. Its
+typed-property boundary is explicitly stubbed, while the native fixture still
+checks actual typed-publication bodies. All12 MSVC suites,7portable suites,
+analyzed WDK and InfVerif pass; disabling empty-name rejection reproduces a
+portable exit1, then restored head passes. No full-policy/native diagnostic
+coverage is dropped to resolve the merge. Test-only adaptations do not confer
+native name propagation or hardware acceptance on the experimental policies.
+
 ## Packet/notification follow-up deployment
 
 The next diagnostic slice `4934172` retains fixed first successful/nonzero/refused

@@ -32,7 +32,9 @@ deployment, original failures, settings and verified archive are in the
 
 Directions are from Moiren's perspective: virtual speaker is input/Source;
 virtual microphone is output/Sink. Accepted ownership/direction/control-error
-foundations are merged separately in PR43-45, not by merging draft PR26.
+foundations and bounded UTF-16 name staging are merged separately in PR43-45
+and PR47, not by merging draft PR26. PR47's final20CI checks pass; this is
+bounded safety coverage, not native endpoint-name propagation acceptance.
 No lower default, calibrated sub-10-ms result or VAD/Process winner is claimed.
 
 **Long-soak gate status (updated for the 2026-10-22 run, `cdd44a2`):** the
