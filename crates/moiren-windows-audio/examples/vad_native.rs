@@ -38,6 +38,7 @@ impl NativeMode {
         )
     }
 
+    #[cfg(any(windows, test))]
     fn is_ac_diagnostic(self) -> bool {
         matches!(self, Self::SharedAcDiagnostic | Self::SharedRawAcDiagnostic)
     }
