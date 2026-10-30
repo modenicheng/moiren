@@ -5,6 +5,8 @@
 //! PCM IO, polling and cancellation drains belong on control/IO owner threads.
 //! The PCM helper never performs IO on Engine render.
 
+#[cfg(any(windows, test))]
+mod endpoint_name;
 mod format;
 mod pcm_bridge;
 mod pcm_slots;
@@ -28,6 +30,8 @@ mod provider;
 pub use client::{ClientError, ControlClient};
 #[cfg(windows)]
 pub use discovery::{CONTROL_INTERFACE_GUID, DeviceInterface, discover_present_interfaces};
+#[cfg(windows)]
+pub use endpoint_name::{VadEndpointNameObservation, VadEndpointNameTarget};
 pub use format::{PcmFormatError, decode_interleaved, encode_interleaved};
 #[cfg(windows)]
 pub use pcm::{PcmCompletion, PcmOwner, ResidualPcm};
