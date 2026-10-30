@@ -2,7 +2,32 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-10-30.
+verdict. Status updated 2026-10-31.
+
+## Latest physical checkpoint - 2026-10-31
+
+The main-integrated app/probes `0fd3fbf` and diagnostic driver `c985fc3` are
+deployed on the separate physical target. New `oem184.inf`, version
+`2.15.56.622`, service Running/root PnP OK and exact SYS hash are verified,
+with old rollback package retained and no reboot. Native retries are authorized
+and have resumed; older paused-retry statements below describe dated history.
+Only DAWN headphones are used for audible runs; speaker/default settings stay
+unchanged.
+
+The strict Shared microphone control now observes a nonzero, equal16-byte
+post-copy native-buffer prefix, while its Shared client still receives all
+SILENT packets. Actual packet-delivery/notification remains the next boundary;
+no sole-driver or downstream-policy cause is established. A lower software-route
+target768/recovery4 completes30seconds with zero retained provider drop/silence
+and clock clamp/reset, but quality completeness/marker evidence still fails.
+This is not continuous stability or physical latency acceptance. Exact build,
+deployment, original failures, settings and verified archive are in the
+[integration/capture-boundary receipt](../../docs/validation/2026-10-31-native-integration-capture-boundary.md).
+
+Directions are from Moiren's perspective: virtual speaker is input/Source;
+virtual microphone is output/Sink. Accepted ownership/direction/control-error
+foundations are merged separately in PR43-45, not by merging draft PR26.
+No lower default, calibrated sub-10-ms result or VAD/Process winner is claimed.
 
 **Long-soak gate status (updated for the 2026-10-22 run, `cdd44a2`):** the
 eight-hour **idle** run passed for the first time — 28,730/28,800 verified
