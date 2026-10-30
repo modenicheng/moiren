@@ -412,3 +412,21 @@ as measured evidence, and no automatic login is authorized by this plan.
 If both contexts remain silent, the next useful boundary is an independent
 client/KS mapping observation, not repeated internal prefix/notify traces.
 Actual physical latency still requires the independent calibrated reference.
+
+### Subsequent controls and application joined counters
+
+The [AC microphone controls](2026-10-31-shared-microphone-direct.md#zero-mean-ac-control-and-explicit-cleanup-retention)
+remain all SILENT in ordinary and RAW modes, including successful same-packet
+notification. The [Exclusive256/target1152 DAWN control](2026-10-31-vad-dawn-continuous-control.md#exclusive256-target1152-diagnostic-candidate)
+retains lower-budget delivery counters, without PCM or physical qualification.
+Neither result closes the native consumption or calibrated-latency boundary.
+
+The [application Exclusive/joined controls](2026-10-31-app-exclusive-joined.md)
+add true post-host-join native/backend tallies and exact owned virtual source
+identity to explicit reports. Window admission refuses ambiguous ordering;
+a separate per-wake request confirms app generation replacement and10 seconds
+at actual Exclusive256, but records one delivery-gap violation and all-zero
+independent app recording. Both auxiliary holders lose Running confirmation
+and retain Cancelled in their final graph error. Those failures are not erased
+by the operational replacement, successful joins or zero native wait timeouts.
+S1-S3 and physical sub-10-ms qualification remain open.
