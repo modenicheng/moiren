@@ -163,6 +163,33 @@ recording or independent physical reference is collected. This verifies current
 CLI/service replacement after main integration, not new visual/desktop
 acceptance or a Process/VAD latency winner.
 
+### Smaller Engine block follow-up
+
+A separate actual `monitor --engine-block-frames32` request refuses before
+opening an audio owner: the app currently permits64/128/256/512/1024/2048/4096
+blocks. The probe's Engine32 capability must not be substituted for this
+production-entry constraint. Its error and cleanup receipt are retained; no
+validator is relaxed to admit it.
+
+The next request uses the accepted Engine64 with a fresh three-second Compatible
+baseline, keeping Shared output/capacity1056, capacity16384 and jitter96 fixed.
+Measured max packet480/gap559 and actual complete demand1248 admit target2048
+with low-water1250 and modeled minimum1905. Generation2 confirms exactly
+prime/servo2048, runs10001ms and cleans up, source/monitor exit0. The latest
+live snapshot retains433920captured/written frames,431488output frames and
+zero dropped/silent/underrun frames, discontinuities or resets, but two later
+gap violations and maximum116866 in100ns units. This is an actual lower
+configuration, not a qualified delivery envelope, physical latency measurement
+or isolated target comparison. No native-period/format fallback experiment is
+added to this checkpoint.
+
+The follow-up raw archive `process-engine64-20261031.zip` is67500bytes,
+35manifest files /36ZIP entries, SHA-256
+`D71F0BC966D8E01D079479C73D8A832F99545AA3E8160CDA5EAD3268A6C930E5`.
+The host verifies exact names, all lengths and hashes. Boot and new driver hash
+stay unchanged, only the root is present and no owned process remains;
+242333863936bytes remain free on D:. No remote files/cache are removed.
+
 ## Archive and next boundary
 
 Raw build/deployment/run evidence is retained on target and copied into
