@@ -29,7 +29,9 @@ pub struct ExportRetirementEvidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportDirection {
+    /// Virtual speaker: other apps render here; Moiren receives it as graph input.
     Playback,
+    /// Virtual microphone: Moiren sends graph output; other apps capture from it.
     Microphone,
 }
 
