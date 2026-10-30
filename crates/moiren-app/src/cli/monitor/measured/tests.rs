@@ -227,11 +227,27 @@ fn measured_cli_waits_for_optional_samples_without_renewing_collection() {
         let complete = crate::service::measured_process::tests::observation(node);
         let mut incomplete = complete.clone();
         match missing {
-            0 => incomplete.delivery = None,
+            0 => {
+                incomplete.delivery = None;
+                incomplete.counters.native_delivery = None;
+            }
             1 => incomplete.producer = None,
             2 => incomplete.consumer = None,
-            3 => incomplete.producer.as_mut().unwrap().events.truncate(1),
-            4 => incomplete.consumer.as_mut().unwrap().events.truncate(1),
+            3 => {
+                let history = incomplete.producer.as_mut().unwrap();
+                history.events.truncate(1);
+                history.total_events = 1;
+                let delivery = incomplete.delivery.as_mut().unwrap();
+                delivery.packets = 1;
+                delivery.gap_samples = 0;
+                delivery.max_gap_100ns = 0;
+                incomplete.counters.native_delivery = incomplete.delivery;
+            }
+            4 => {
+                let history = incomplete.consumer.as_mut().unwrap();
+                history.events.truncate(1);
+                history.total_events = 1;
+            }
             5 => {
                 for event in &mut incomplete.consumer.as_mut().unwrap().events {
                     event.qpc_100ns = event.qpc_100ns.map(|stamp| stamp + 10_000_000);
@@ -288,7 +304,7 @@ fn measured_cli_waits_for_optional_samples_without_renewing_collection() {
 
 #[test]
 fn measured_cli_complete_but_invalid_evidence_is_not_retried() {
-    for fault in 0..4 {
+    for fault in 0..8 {
         let (mut snapshot, mut report, _) = fixture();
         let node = snapshot
             .graph
@@ -302,6 +318,30 @@ fn measured_cli_complete_but_invalid_evidence_is_not_retried() {
             1 => observed.producer.as_mut().unwrap().unavailable_clocks = 1,
             2 => observed.producer.as_mut().unwrap().events[0].sequence += 1,
             3 => observed.process.creation_time_100ns += 1,
+            4 => {
+                let producer = observed.producer.as_mut().unwrap();
+                producer.events.truncate(1);
+                producer.total_events = 1;
+                let delivery = observed.delivery.as_mut().unwrap();
+                delivery.packets = 1;
+                delivery.gap_samples = 0;
+                delivery.max_gap_100ns = 0;
+                observed.counters.native_delivery = observed.delivery;
+                observed.consumer.as_mut().unwrap().saturated = true;
+            }
+            5 => {
+                let consumer = observed.consumer.as_mut().unwrap();
+                consumer.events.truncate(1);
+                consumer.total_events = 1;
+                observed.delivery.as_mut().unwrap().unavailable_clocks = 1;
+                observed.counters.native_delivery = observed.delivery;
+            }
+            6 => {
+                observed.delivery = None;
+                observed.counters.native_delivery = None;
+                observed.producer.as_mut().unwrap().regressed_clocks = 1;
+            }
+            7 => observed.producer.as_mut().unwrap().events.truncate(1),
             _ => unreachable!(),
         }
         let native = snapshot.native_observations.as_mut().unwrap();
@@ -345,6 +385,7 @@ fn measured_cli_missing_samples_expire_at_the_original_deadline() {
         .id();
     let mut observation = crate::service::measured_process::tests::observation(node);
     observation.delivery = None;
+    observation.counters.native_delivery = None;
     let native = snapshot.native_observations.as_mut().unwrap();
     native.observation.owner_generation = observation.owner_generation;
     native.observation.process_delivery = vec![observation];
