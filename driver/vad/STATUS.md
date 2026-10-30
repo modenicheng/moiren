@@ -120,6 +120,12 @@ P1, naming propagation, physical sub-10ms and outstanding long-soak/music gates
 remain unqualified. No new driver installation, system-setting change or
 speculative kernel patch follows from the crash.
 
+The offline [virtual-clock observability repair](../../docs/validation/2026-10-30-virtual-clock-loss.md)
+adds retained owner-level omitted-period/frame counters and mandatory final
+probe validation for the pure-virtual route. Native PCM loss and Engine periods
+omitted by the recovery cap remain distinct. This changes no kernel source,
+clock policy, default budget or hardware gate; native retries remain paused.
+
 ## Audit follow-up - 2026-10-21
 
 The reported Removing-state retry defect is absent in the current source:

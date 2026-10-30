@@ -12,6 +12,14 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [virtual-clock accounting repair](2026-10-30-virtual-clock-loss.md)
+retains cumulative omitted Engine periods/frames beyond the recovery cap
+through owner retirement. Live contention stays unavailable; the pure-virtual
+probe requires valid joined-final counters and cannot pass quality with
+final-only clamped loss. This closes an S1/S2 observability defect without
+changing scheduling, budgets or defaults. It does not recover historical loss
+totals or change the native-testing pause and physical qualification gates.
+
 The [pure-virtual readiness/crash follow-up](2026-10-30-vad-software-readiness-crash.md)
 retains cap1 overflow/reset failures, a completed30-second cap8/target1024
 recording with driver silence and recorder discontinuity, and cap8/target768
