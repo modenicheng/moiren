@@ -54,6 +54,8 @@ Run `write-witness1` spans07:30:39.668 to07:31:42.513 local on physical target
 `LAPTOP-NP49RG6H`. Source PID4152/creation134378766459386777 addresses the exact
 owned Shared Playback endpoint. Twenty contiguous1second xorshift markers
 command amplitude0.025 at48kHz stereo; the schedule is not shortened.
+These are target-local wall times, not cross-host clock synchronization;
+all QPC comparisons below use the same target/boot and recorded frequency.
 
 The first witnessed post-preroll packet is480Float32 stereo frames/3840bytes:
 
@@ -125,6 +127,21 @@ script is git-tracked there; its exact hash is the independent script pin.
 
 - ZIP SHA-256: `C32DB2C991F966072D9801B2019B74F8A453E3334562B71E294A75E46F5CB3D2`.
 - Manifest SHA-256: `46FBDFEFBB7A2B5BFC1ABD093417BEFDEE2AED4DAE0EDC27562F11E8DC71C528`.
+
+The separate frozen host-tooling archive contains78payloads plus manifest,
+808946payload bytes/207788ZIP bytes. Root independently compares every member
+with its original; it includes9source files, source RED/GREENs and selected
+runner/archive fixtures/logs. ZIP SHA-256:
+`279921BD47D111D210AFF3DA6163B5CCE2723590C1497DB5767E24174F51F8F6`;
+manifest SHA-256:
+`6FC8710DA2EC7BEFDE6F07E114C1D36528BB057B6B8162EEF99A5178CB46B283`.
+The later Linux-target example cargo check succeeds but is not Linux execution;
+its log and the final read-only target audit are retained separately, outside
+that earlier frozen host archive. The audit again finds no test/build owners,
+unchanged boot and healthy driver/root; no cache cleanup is needed.
+
+Prior pushed `ff8fb8b` CI run41142598234 completes20/20 successfully. That is
+the prior source checkpoint, not CI for `b393807` or a kernel/native acceptance.
 
 S1-S3, stable calibrated p95<=10ms, lower-buffer defaults and a matched
 VAD/Process latency comparison remain open. Exit0 is collection, not acceptance.
