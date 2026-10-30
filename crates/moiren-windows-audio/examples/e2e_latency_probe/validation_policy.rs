@@ -2,6 +2,7 @@
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
+#[cfg(any(windows, test))]
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ impl ValidationPolicy {
         self.mode == ValidationMode::Correctness
     }
 
+    #[cfg(any(windows, test))]
     pub fn progress_grace(self) -> Duration {
         if self.is_correctness() {
             Duration::from_millis(self.jitter_tolerance_ms)

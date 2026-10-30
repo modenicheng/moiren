@@ -55,7 +55,8 @@ impl ProcessTraceArchive {
         )
     }
 
-    #[cfg(any(windows, test))]
+    // Only the Windows backend can authenticate a retained native owner.
+    #[cfg(windows)]
     pub(crate) fn replay_retained_live_window(
         &self,
         process: &ProcessIdentity,
