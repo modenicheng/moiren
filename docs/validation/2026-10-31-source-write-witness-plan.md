@@ -4,6 +4,11 @@ Date: 2026-10-31. Diagnostic continuation after the
 [all-zero provider READ](2026-10-31-provider-input-capture.md), not an S1-S3
 acceptance plan or a product-default change.
 
+Implementation and one bounded native observation are now retained in the
+[source write receipt](2026-10-31-source-write-witness.md). The original
+checklist below is a planned contract, not a claim that all acceptance or
+test coverage is complete; the receipt retains limitations and the zero READ.
+
 The existing source counter commits generated nonzero f32 frames only after
 encoding/copy/ReleaseBuffer succeed. It does not independently inspect the
 granted native destination. Before another driver change, observe that missing

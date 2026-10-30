@@ -50,6 +50,16 @@ READ/Process/physical client and leaves routing/defaults unchanged. Cleanup and
 memberwise archives are retained in the
 [provider input receipt](../../docs/validation/2026-10-31-provider-input-capture.md).
 
+A fixed-holder continuation now witnesses16nonzero Float32 bytes in the actual
+source GetBuffer destination, matching the encoded prefix before successful
+ReleaseBuffer with flags0. The subsequent provider READ still contains480000
+all-zero stereo PCM16frames: all1000callbacks follow Release, and990also satisfy
+the conservative source-active observation window. This narrows the unobserved interval
+between client Release and accepted READ, not to a sole driver/Windows cause.
+No waveform/latency/default gate changes. Exact implementation, bounds and
+cleanup are in the
+[source write receipt](../../docs/validation/2026-10-31-source-write-witness.md).
+
 Shared microphone controls now correlate a successful ACX notification with a
 nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared
 clients still receive all-zero/SILENT PCM, including the explicit changing AC
