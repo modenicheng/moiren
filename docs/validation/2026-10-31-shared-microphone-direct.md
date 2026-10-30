@@ -90,3 +90,62 @@ The host copy was checked against the remote archive hash, exact entry names,
 and every manifest length and SHA-256. Neither target copies nor Cargo caches
 were deleted. Further native experiments are deferred while independently
 reviewable, accepted non-latency changes are extracted from draft PR26.
+
+## Explicit RAW control after the small foundation merge
+
+Probe `3ac3f6c` adds opt-in `--raw` to the explicit Shared microphone
+invocation. Only that mode sets Other/RAW, without offload, through
+`IAudioClient2::SetClientProperties` before Initialize. Interface, properties
+or initialization failures remain failures: no ordinary Shared, Exclusive,
+format or period fallback. Both modes keep the exact owned stereo PCM16
+client, 48 kHz, zero Shared duration/periodicity and QUERY PCM16/480 checks.
+Production routing and policies do not change. RAW still permits endpoint
+specific always-on processing; it is not proof that every processing layer
+is bypassed. See Microsoft's
+[AUDCLNT_STREAMOPTIONS reference](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-audclnt_streamoptions).
+
+The CLI regression fails on the absent `--raw` argument before implementation.
+All72 example tests then pass, as do host strict Clippy, formatting and diff
+checks. Independent review finds no definite dispatch/shape/fallback defect,
+but notes new COM failure paths lack injected integration coverage. Target
+release tests/build pass with two jobs and shared caches. A local Git bundle
+transfers exact committed source without triggering another CI run.
+
+New probe SHA-256:
+`734EE639C23163F4B88F8A364D652C9AD406899A96D72A9406DF71A0CB45C5B9`.
+App and `e2e_latency_probe` stay at verified `0fd3fbf`; installed driver stays
+`4934172`, `oem199.inf`, SYS SHA-256
+`1EA1FEBCCF842DBB4904AB3BB6A897FC9E2F71680226E932BE2BDD68D686E19D`.
+
+Two sequential two-second controls initialize with native buffer1056 and
+QUERY packet480. Each submits200 packets /384000 bytes /192000 nonzero
+samples, prefix `[2048, -5120, ...]`. Ordinary Shared completes179 successful
+WRITEs /343680 bytes with20 drops; RAW completes177 /339840 bytes with22 drops.
+Both capture199 packets /95520 frames, all SILENT, zero nonzero samples,
+one discontinuity and zero timestamp errors. Both exit1 with insufficient
+matching PCM. SILENT packets follow the API flag contract; zero sample counts
+do not independently inspect bytes the API declares silent.
+
+Both matching PDB/TMF decodes contain52 events, zero lost/unknown/format errors.
+Ordinary first nonzero equal16-byte copy is native1/request2, QPC643533696878;
+first successful notify is native0, QPC643533598200. RAW has the same ordering:
+native1/request2 copy QPC643693082558; native0 notify QPC643692982003. There is
+still no same-nonzero-packet notification result, query/readback or position
+witness. RAW does not resolve the failure or identify a sole cause.
+
+SSH runs in session0. A separate read-only audit finds no logged-on user,
+running Audiosrv/AudioEndpointBuilder/sshd and Allow values in inspected
+microphone consent stores. This is a confound, not a proven explanation.
+No privacy/session policy is changed or user logged on automatically. Both
+runs clean owned processes/children, preserve root PnP OK, boot, render volumes
+and default roles; no physical output or cache cleanup occurs.
+
+`raw-shared-3ac3f6c-20261031.zip`:274395 bytes,22 manifest files /23 entries,
+1559153 uncompressed bytes, SHA-256
+`6C5D56590EA13CE3061AB5657DB524787BDEF2009216882158B57C38035ECB68`.
+Host checks remote archive identity plus every entry name, length and hash.
+Host-only decodes stay outside the raw archive. Next, associate the first
+nonzero packet copy with its actual notification result instead of native0.
+The [ACX streaming contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/acx-streaming)
+permits packet-vregister consumption without the capture query callback;
+missing callback witnesses therefore remain unknown.
