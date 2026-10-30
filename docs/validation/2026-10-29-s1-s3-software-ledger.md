@@ -12,6 +12,13 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [rename diagnostic portability follow-up](2026-10-30-rename-test-portability.md)
+adds exact topology-error serialization and sticky phase-failure coverage,
+after Linux CI passes the repaired probe suites but exposes missing portable
+enum constructors in the app integration example. Windows110 and scoped
+Linux/Miri24 pass without production or deployed binary changes. Its scoped
+harness is not full Linux app/native verification; physical gates stay open.
+
 The [probe example-test cfg repair](2026-10-30-probe-test-cfg.md) fixes four
 Windows-only helpers exposed by the exact default-feature Linux test build.
 Existing portable tests remain enabled; Windows528+5, Linux nightly413+5 and
