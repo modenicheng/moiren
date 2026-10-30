@@ -40,8 +40,7 @@ mod native;
 const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
 
 fn includes_endpoint(mode: NativeMode, intent: Intent, channels: Channels) -> bool {
-    mode != NativeMode::SharedCapture
-        || (intent == Intent::Microphone && channels == Channels::Stereo)
+    !mode.is_shared_capture() || (intent == Intent::Microphone && channels == Channels::Stereo)
 }
 
 fn require_shared_shape(
@@ -51,7 +50,7 @@ fn require_shared_shape(
     frames: u32,
 ) -> anyhow::Result<()> {
     ensure!(
-        mode != NativeMode::SharedCapture
+        !mode.is_shared_capture()
             || (format == Some(SampleFormat::Pcm16)
                 && channels == Channels::Stereo
                 && frames == 480),
@@ -196,7 +195,10 @@ fn start_native_with_queued_pcm<T>(
     let mut pending = VecDeque::with_capacity(4);
     let count = match (intent, mode) {
         (Intent::Playback, _) => 4,
-        (Intent::Microphone, NativeMode::Timer | NativeMode::SharedCapture) => 1,
+        (
+            Intent::Microphone,
+            NativeMode::Timer | NativeMode::SharedCapture | NativeMode::SharedRawCapture,
+        ) => 1,
         (Intent::Microphone, NativeMode::Event) => 0,
     };
     for _ in 0..count {
@@ -224,7 +226,7 @@ impl TransferProgress {
             // Anchor event headroom before QUERY so it cannot re-arm the delay.
             next_mic_submit: (intent == Intent::Microphone && mode == NativeMode::Event)
                 .then(|| Self::microphone_deadline(now, frames)),
-            immediate_microphone: mode == NativeMode::SharedCapture,
+            immediate_microphone: mode.is_shared_capture(),
             ..Self::default()
         }
     }
@@ -332,8 +334,7 @@ pub(super) fn exercise(
     minimum_period: bool,
 ) -> anyhow::Result<()> {
     ensure!(
-        mode != NativeMode::SharedCapture
-            || (!minimum_period && intent_filter == Some(Intent::Microphone)),
+        !mode.is_shared_capture() || (!minimum_period && intent_filter == Some(Intent::Microphone)),
         "SharedCapture requires microphone-only and no minimum period"
     );
     let interfaces = discover_present_interfaces()?;
@@ -379,7 +380,7 @@ pub(super) fn exercise(
                 continue;
             }
             for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
-                if mode == NativeMode::SharedCapture && format != SampleFormat::Pcm16 {
+                if mode.is_shared_capture() && format != SampleFormat::Pcm16 {
                     continue;
                 }
                 eprintln!(
@@ -558,7 +559,9 @@ fn exercise_case(
 ) -> anyhow::Result<CaseReport> {
     // Caller-owned evidence survives every native preparation error path.
     let mut period = PeriodEvidence::new(minimum_period);
-    let mut shared = (mode == NativeMode::SharedCapture).then(SharedCaptureDiagnostics::default);
+    let mut shared = mode
+        .is_shared_capture()
+        .then(SharedCaptureDiagnostics::default);
     let mut counters = validation::FailureCounters {
         mode,
         signal_frames: 0,
@@ -1022,6 +1025,53 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn raw_shared_capture_keeps_exact_shape_owned_endpoint_and_prestart_write_contract() {
+        let mode = NativeMode::SharedRawCapture;
+        assert!(includes_endpoint(
+            mode,
+            Intent::Microphone,
+            Channels::Stereo
+        ));
+        assert!(!includes_endpoint(mode, Intent::Playback, Channels::Stereo));
+        assert!(!includes_endpoint(mode, Intent::Microphone, Channels::Mono));
+        assert!(
+            require_shared_shape(mode, Some(SampleFormat::Pcm16), Channels::Stereo, 480).is_ok()
+        );
+        for (format, channels, frames) in [
+            (None, Channels::Stereo, 480),
+            (Some(SampleFormat::Float32), Channels::Stereo, 480),
+            (Some(SampleFormat::Pcm16), Channels::Mono, 480),
+            (Some(SampleFormat::Pcm16), Channels::Stereo, 144),
+        ] {
+            assert!(require_shared_shape(mode, format, channels, frames).is_err());
+        }
+        let calls = std::cell::RefCell::new(Vec::new());
+        let pending = start_native_with_queued_pcm(
+            Intent::Microphone,
+            mode,
+            || {
+                calls.borrow_mut().push("write");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("start");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["write", "start"]);
+        assert_eq!(pending.len(), 1);
+        let now = Instant::now();
+        let mut progress = TransferProgress::native_started(now, 480, Intent::Microphone, mode);
+        for dropped in [false, true] {
+            progress.microphone_completed(now, 480, dropped);
+            assert!(progress.microphone_ready(now, 0));
+            assert!(!progress.microphone_ready(now, 1));
+            progress.microphone_submitted(now, 480);
+        }
+    }
 
     #[test]
     fn shared_capture_shape_refuses_any_native_format_channel_or_period_change() {

@@ -19,6 +19,14 @@ enum NativeMode {
     Timer,
     #[serde(rename = "shared-capture-pcm16")]
     SharedCapture,
+    #[serde(rename = "shared-raw-capture-pcm16")]
+    SharedRawCapture,
+}
+
+impl NativeMode {
+    fn is_shared_capture(self) -> bool {
+        matches!(self, Self::SharedCapture | Self::SharedRawCapture)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -42,6 +50,7 @@ impl Options {
             minimum_period: false,
         };
         let mut seconds_seen = false;
+        let mut raw = false;
         for argument in arguments {
             let argument = argument
                 .into_string()
@@ -54,6 +63,7 @@ impl Options {
                     options.mode = NativeMode::SharedCapture;
                 }
                 "--minimum-period" if !options.minimum_period => options.minimum_period = true,
+                "--raw" if !raw => raw = true,
                 value if value.starts_with("--intent=") && options.intent_filter.is_none() => {
                     options.intent_filter = Some(match &value["--intent=".len()..] {
                         "playback" => Intent::Playback,
@@ -88,7 +98,14 @@ impl Options {
             options.intent_filter.is_none() || options.exercise || options.help,
             "--intent requires --exercise"
         );
-        if options.mode == NativeMode::SharedCapture {
+        anyhow::ensure!(
+            !raw || options.mode == NativeMode::SharedCapture,
+            "--raw requires --shared-microphone"
+        );
+        if raw {
+            options.mode = NativeMode::SharedRawCapture;
+        }
+        if options.mode.is_shared_capture() {
             anyhow::ensure!(
                 options.exercise || options.help,
                 "--shared-microphone requires --exercise or --help"
@@ -111,7 +128,7 @@ fn main() -> anyhow::Result<()> {
     if options.help || !options.exercise {
         println!(
             "vad_native --exercise [--seconds=2] [--timer] [--intent=playback|microphone] [--minimum-period]\n\
-             vad_native --exercise --shared-microphone --intent=microphone [--seconds=2]\n\
+             vad_native --exercise --shared-microphone --intent=microphone [--seconds=2] [--raw]\n\
              Explicit installed-driver probe: four owned virtual endpoints,\n\
              MMDevice/adapter identity, exclusive 48 kHz PCM16/Float32,\n\
              mono/stereo in both directions and microphone gate-close silence.\n\
@@ -124,6 +141,7 @@ fn main() -> anyhow::Result<()> {
              Requests, buffer capacity and driver packets are separate evidence; always unqualified.\n\
              --shared-microphone: one owned stereo PCM16 Shared capture with direct known-pattern WRITE,\n\
              exact 48 kHz/480-frame driver shape; no Engine/Bus, format or mode fallback.\n\
+             --raw: explicit Shared Other/RAW processing control; failure never falls back.\n\
              No arguments or --help: display this help without contacting a driver.\n\
              Never installs a driver, selects defaults or changes endpoint settings."
         );
@@ -157,6 +175,41 @@ mod tests {
 
     fn parse(args: &[&str]) -> anyhow::Result<Options> {
         Options::parse(args.iter().map(Into::into))
+    }
+
+    #[test]
+    fn raw_shared_microphone_is_explicit_and_never_an_automatic_fallback() {
+        let raw = parse(&[
+            "--exercise",
+            "--shared-microphone",
+            "--intent=microphone",
+            "--raw",
+        ])
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(raw.mode).unwrap(),
+            "shared-raw-capture-pcm16"
+        );
+        for args in [
+            vec!["--exercise", "--raw"],
+            vec!["--raw"],
+            vec!["--exercise", "--timer", "--raw"],
+            vec![
+                "--exercise",
+                "--shared-microphone",
+                "--intent=microphone",
+                "--raw",
+                "--raw",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+        assert_eq!(
+            parse(&["--exercise", "--shared-microphone", "--intent=microphone"])
+                .unwrap()
+                .mode,
+            NativeMode::SharedCapture
+        );
     }
 
     #[test]

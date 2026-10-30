@@ -19,8 +19,9 @@ use windows::{
             AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
             AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_BUFFER_ERROR,
             AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE, AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient,
-            IAudioClient, IAudioClock, IAudioRenderClient, IMMDevice, WAVEFORMATEX,
+            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMOPTIONS_RAW,
+            AudioCategory_Other, AudioClientProperties, IAudioCaptureClient, IAudioClient,
+            IAudioClient2, IAudioClock, IAudioRenderClient, IMMDevice, WAVEFORMATEX,
             WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
         },
         System::{
@@ -43,13 +44,15 @@ fn capture_packet_available(result: windows::core::Result<()>) -> anyhow::Result
 
 fn stream_flags(mode: NativeMode) -> u32 {
     match mode {
-        NativeMode::Event | NativeMode::SharedCapture => AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+        NativeMode::Event | NativeMode::SharedCapture | NativeMode::SharedRawCapture => {
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        }
         NativeMode::Timer => 0,
     }
 }
 
 fn initialization_parameters(mode: NativeMode, period: i64) -> (AUDCLNT_SHAREMODE, u32, i64, i64) {
-    if mode == NativeMode::SharedCapture {
+    if mode.is_shared_capture() {
         (AUDCLNT_SHAREMODE_SHARED, stream_flags(mode), 0, 0)
     } else {
         (
@@ -59,6 +62,15 @@ fn initialization_parameters(mode: NativeMode, period: i64) -> (AUDCLNT_SHAREMOD
             period,
         )
     }
+}
+
+fn raw_client_properties(mode: NativeMode) -> Option<AudioClientProperties> {
+    (mode == NativeMode::SharedRawCapture).then_some(AudioClientProperties {
+        cbSize: size_of::<AudioClientProperties>() as u32,
+        bIsOffload: false.into(),
+        eCategory: AudioCategory_Other,
+        Options: AUDCLNT_STREAMOPTIONS_RAW,
+    })
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -195,7 +207,7 @@ impl Stream {
     ) -> anyhow::Result<Self> {
         let wave = descriptor(format, channels);
         ensure!(
-            mode != NativeMode::SharedCapture
+            !mode.is_shared_capture()
                 || (intent == Intent::Microphone
                     && channels == Channels::Stereo
                     && format == SampleFormat::Pcm16),
@@ -204,7 +216,7 @@ impl Stream {
         // SAFETY: complete descriptor, apartment-local COM objects, no reference
         // escapes Initialize. No fallback format or Windows SRC is requested.
         let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
-        if mode == NativeMode::SharedCapture {
+        if mode.is_shared_capture() {
             ensure!(
                 !period_evidence.minimum_period,
                 "SharedCapture refuses minimum period"
@@ -212,6 +224,14 @@ impl Stream {
             let (share, flags, duration, periodicity) = initialization_parameters(mode, 0);
             period_evidence.initial_request_hns = Some(duration);
             period_evidence.final_request_hns = Some(duration);
+            if let Some(properties) = raw_client_properties(mode) {
+                let client2: IAudioClient2 =
+                    client.cast().context("IAudioClient2(explicit RAW)")?;
+                // Set properties before Initialize; an unsupported RAW request
+                // remains an error, never an ordinary Shared retry.
+                unsafe { client2.SetClientProperties(&properties) }
+                    .context("SetClientProperties(Other/RAW capture)")?;
+            }
             // Exact client PCM16 descriptor; no AUTOCONVERTPCM, closest format,
             // alignment retry or Exclusive fallback is requested.
             unsafe { client.Initialize(share, flags, duration, periodicity, &wave.Format, None) }
@@ -304,8 +324,7 @@ impl Stream {
             discontinuities: 0,
             position,
             mode,
-            capture_diagnostics: (mode == NativeMode::SharedCapture)
-                .then(CaptureDiagnostics::default),
+            capture_diagnostics: mode.is_shared_capture().then(CaptureDiagnostics::default),
         };
         encode_interleaved(
             &pattern.repeat(frames as usize),
@@ -326,7 +345,7 @@ impl Stream {
         }
         // SAFETY: fully initialized client; Drop stops on every later error.
         unsafe { self.client.Start() }.with_context(|| {
-            if self.mode == NativeMode::SharedCapture {
+            if self.mode.is_shared_capture() {
                 "Start(shared capture)"
             } else {
                 "Start(exclusive)"
@@ -339,7 +358,7 @@ impl Stream {
     pub fn stop(&mut self) -> anyhow::Result<()> {
         if self.active {
             unsafe { self.client.Stop() }.with_context(|| {
-                if self.mode == NativeMode::SharedCapture {
+                if self.mode.is_shared_capture() {
                     "Stop(shared capture)"
                 } else {
                     "Stop(exclusive)"
@@ -358,7 +377,7 @@ impl Stream {
         // Probe polling is control-side and is not a production timing path.
         if let Some(event) = &self.event {
             match unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 0) } {
-                WAIT_TIMEOUT if self.mode != NativeMode::SharedCapture => return Ok(()),
+                WAIT_TIMEOUT if !self.mode.is_shared_capture() => return Ok(()),
                 WAIT_TIMEOUT => {}
                 WAIT_OBJECT_0 => {}
                 WAIT_FAILED => {
@@ -397,7 +416,7 @@ impl Stream {
                 let (mut frames, mut flags) = (0, 0);
                 // SAFETY: initialized capture client, writable packet outputs.
                 // S_BUFFER_EMPTY is a successful call with zero frames.
-                let available = if self.mode == NativeMode::SharedCapture {
+                let available = if self.mode.is_shared_capture() {
                     // One packet per poll bounds the drain; all three lease
                     // operations remain on this same probe-owner thread.
                     if unsafe { service.GetNextPacketSize() }
@@ -511,6 +530,29 @@ impl Drop for Stream {
 mod tests {
     use super::*;
     use windows::core::HRESULT;
+
+    #[test]
+    fn raw_properties_are_explicit_other_nonoffloaded_and_do_not_change_shared_initialization() {
+        for mode in [
+            NativeMode::Event,
+            NativeMode::Timer,
+            NativeMode::SharedCapture,
+        ] {
+            assert!(raw_client_properties(mode).is_none());
+        }
+        let properties = raw_client_properties(NativeMode::SharedRawCapture).unwrap();
+        assert_eq!(
+            properties.cbSize as usize,
+            size_of::<AudioClientProperties>()
+        );
+        assert!(!properties.bIsOffload.as_bool());
+        assert_eq!(properties.eCategory, AudioCategory_Other);
+        assert_eq!(properties.Options, AUDCLNT_STREAMOPTIONS_RAW);
+        assert_eq!(
+            initialization_parameters(NativeMode::SharedRawCapture, 100_000),
+            initialization_parameters(NativeMode::SharedCapture, 100_000)
+        );
+    }
 
     #[test]
     fn shared_capture_initialization_is_exact_event_zero_duration_and_periodicity() {
