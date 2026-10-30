@@ -25,6 +25,13 @@ native-fix or waveform-continuity claim follows. Exact deployment, rollback,
 verified archive and limitations are in the
 [pause-fence receipt](../../docs/validation/2026-10-31-vad-pause-fence.md).
 
+A separate source-process capture also retains all-zero native PCM without
+starting a Process monitor or DAWN render client. Exact source identity,
+nonzero-source submission within the active schedule and full cleanup are
+retained, but a nonzero Process positive control and sole root cause remain
+unproven. The active VAD holder fixture is not graph-free or exact S1. See the
+[source-side receipt](../../docs/validation/2026-10-31-source-process-control.md).
+
 Shared microphone controls now correlate a successful ACX notification with a
 nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared
 clients still receive all-zero/SILENT PCM, including the explicit changing AC
