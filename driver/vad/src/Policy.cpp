@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "Driver.h"
+#include "InterfaceName.h"
 #include "Policy.tmh"
 
 VAD_PAGE static EVT_WDF_WORKITEM PreparePolicy;
@@ -62,9 +63,13 @@ static NTSTATUS SetValue(HANDLE key, PCWSTR name, ULONG type,
 // returned allocation is owned by this driver.
 static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     PCWSTR association, ULONG associationBytes, ULONG neverDefault,
-    PCWSTR name, UNICODE_STRING* link)
+    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS], UNICODE_STRING* link)
 {
     *link = {};
+    const ULONG nameBytes = vad::InterfaceNameBytes(name);
+    if (nameBytes == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
     UNICODE_STRING reference;
     RtlInitUnicodeString(&reference, VadAudioReference);
     // Registration alone leaves the interface DISABLED. Never call
@@ -79,7 +84,6 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     HANDLE endpointKey = nullptr;
     status = IoOpenDeviceInterfaceRegistryKey(link,
         KEY_CREATE_SUB_KEY | KEY_SET_VALUE, &interfaceKey);
-    const ULONG nameBytes = static_cast<ULONG>((wcslen(name) + 1) * sizeof(WCHAR));
     static const WCHAR proxy[] = L"{17CCA71B-ECD7-11D0-B908-00A0C9223196}";
     if (NT_SUCCESS(status)) {
         // Dynamic raw PDOs have no per-endpoint AddInterface INF section.
