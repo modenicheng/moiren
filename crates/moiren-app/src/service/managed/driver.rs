@@ -216,7 +216,7 @@ impl ServiceDriver for ManagedDriver {
         }
         if let Some(owner) = self.owner.as_ref() {
             let snapshot = owner.observer.read();
-            self.poll_observations(c, &snapshot, owner.generation);
+            self.poll_observations(c, &snapshot.state, owner.generation);
             #[cfg(windows)]
             self.poll_process_trace(c, &snapshot);
             self.poll_execution(c, &snapshot);
@@ -461,21 +461,56 @@ impl ManagedDriver {
         );
     }
     /// Publish native and professional observations, filtered by the running
-    /// owner generation.
+    /// owner generation. Refreshes are tick-batched at 1 Hz: the raw counters
+    /// advance every audio block, while the UI renders only static timing
+    /// rows. Owner/execution transitions bypass this cadence and invalidate
+    /// stale native snapshots before they can be published again.
     #[cfg(windows)]
-    fn poll_observations(
+    pub(super) fn poll_observations(
         &mut self,
         c: &mut ServiceContext,
-        snapshot: &host::ProjectSnapshot,
+        state: &host::HostSnapshot,
         generation: SessionGeneration,
     ) {
+        let now = std::time::Instant::now();
+        let identity = (generation, state.owner_generation, state.execution);
+        // Recovery can replace a native owner inside one app generation.
+        // Invalidate stale DTOs before the cadence guard, not one second later.
+        let fresh = |observed_generation, running, owner_generation| {
+            observed_generation == generation
+                && running
+                && owner_generation == state.owner_generation
+                && state.execution == ExecutionState::Running
+        };
+        if c.native_observations.as_ref().is_some_and(|value| {
+            !fresh(
+                value.generation,
+                value.observation.running,
+                value.observation.owner_generation,
+            )
+        }) {
+            c.native_observations = None;
+        }
+        if c.professional_observations.as_ref().is_some_and(|value| {
+            !fresh(
+                value.generation,
+                value.observation.running,
+                value.observation.owner_generation,
+            )
+        }) {
+            c.professional_observations = None;
+        }
+        let due = self.observation_identity != Some(identity)
+            || self
+                .observation_refreshed_at
+                .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1));
+        if !due {
+            return;
+        }
+        self.observation_refreshed_at = Some(now);
+        self.observation_identity = Some(identity);
         // Write-side stale guard: an observation counts only while its own
         // owner generation still runs.
-        let fresh = |running: bool, owner_generation: u64| {
-            running
-                && owner_generation == snapshot.state.owner_generation
-                && snapshot.state.execution == ExecutionState::Running
-        };
         c.professional_observations = self
             .professional_observations
             .as_ref()
@@ -486,7 +521,13 @@ impl ManagedDriver {
                     .as_ref()
                     .and_then(|value| value.snapshot())
             })
-            .filter(|observation| fresh(observation.running, observation.owner_generation))
+            .filter(|observation| {
+                fresh(
+                    generation,
+                    observation.running,
+                    observation.owner_generation,
+                )
+            })
             .map(|observation| ProfessionalSessionObservations {
                 generation,
                 observation,
@@ -501,17 +542,23 @@ impl ManagedDriver {
                     .as_ref()
                     .and_then(|value| value.snapshot())
             })
-            .filter(|observation| fresh(observation.running, observation.owner_generation))
+            .filter(|observation| {
+                fresh(
+                    generation,
+                    observation.running,
+                    observation.owner_generation,
+                )
+            })
             .map(|observation| NativeSessionObservations {
                 generation,
                 observation,
             });
     }
     #[cfg(not(windows))]
-    fn poll_observations(
+    pub(super) fn poll_observations(
         &mut self,
         _c: &mut ServiceContext,
-        _snapshot: &host::ProjectSnapshot,
+        _state: &host::HostSnapshot,
         _generation: SessionGeneration,
     ) {
     }

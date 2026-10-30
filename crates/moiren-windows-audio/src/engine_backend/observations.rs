@@ -10,7 +10,7 @@ use std::sync::{
 use crate::native::NativeStreamStats;
 use crate::native::{NativeCaptureQuality, NativeLatency, NativeStreamInfo};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProfessionalStreamObservation {
     pub node: NodeId,
     pub input: bool,
@@ -33,7 +33,7 @@ pub struct ProfessionalStreamObservation {
     pub driver_latency: Option<NativeLatency>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProfessionalObservationSnapshot {
     pub owner_generation: u64,
     /// Publication state only. False does not prove workers joined or cleanup

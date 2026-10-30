@@ -430,7 +430,10 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         control: c.control.clone(),
         signal_topics: c.signals.topics.clone(),
         tone_session: c.tone_session,
-        elapsed: c.core.elapsed(),
+        // The chrome clock renders whole seconds; publishing sub-second
+        // precision would change the snapshot on every poll and keep the UI
+        // repainting for as long as the session runs.
+        elapsed: Duration::from_secs(c.core.elapsed().as_secs()),
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -573,5 +576,172 @@ impl ServiceRuntime {
         self.thread
             .join()
             .map_err(|_| ServiceJoinError::ThreadPanicked)
+    }
+}
+
+#[cfg(test)]
+mod snapshot_publish_tests {
+    use super::measured_process::MeasuredDeliveryBound;
+    use super::*;
+
+    fn running_context() -> ServiceContext {
+        let mut c = ServiceContext::default();
+        let spec = SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "probe-input".into(),
+            },
+            output_endpoint_id: "probe-output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.0,
+            pan: 0.0,
+            max_block_frames: 64,
+        };
+        let generation = c.core.start(spec).expect("probe spec validates");
+        c.core.managed_execution(generation, true, None);
+        c
+    }
+
+    #[test]
+    fn snapshot_elapsed_is_quantized_to_whole_seconds() {
+        let c = running_context();
+        let first = snapshot(&c);
+        assert_eq!(first.phase, SessionPhase::Running);
+        assert_eq!(
+            first.elapsed.subsec_nanos(),
+            0,
+            "sub-second precision would churn every publish while running"
+        );
+    }
+
+    #[test]
+    fn same_second_snapshots_are_equal_for_publish_dedup() {
+        let c = running_context();
+        // Fresh graph Arcs must compare by content so an unchanged topology
+        // keeps equality across snapshot builds.
+        let first = snapshot(&c);
+        let second = snapshot(&c);
+        assert_eq!(first, second);
+    }
+
+    fn assert_published_change(before: AppSnapshot, after: AppSnapshot) {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        assert_ne!(before, after, "diagnostic changes must not be deduplicated");
+        mailbox.publish(before);
+        let first = handle.try_snapshot().unwrap();
+        mailbox.publish(after.clone());
+        let changed = handle.try_snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        mailbox.publish(after);
+        assert!(Arc::ptr_eq(&changed, &handle.try_snapshot().unwrap()));
+    }
+
+    #[test]
+    fn transport_and_measured_selection_changes_are_never_idle_deduplicated() {
+        let initial = snapshot(&ServiceContext::default());
+        let transport = TransportLatencySettings {
+            process: Some(ExpertInputBuffer::default()),
+            ..Default::default()
+        };
+        let measured = MeasuredProcessSummary {
+            selection_id: 1,
+            request: MeasuredProcessRequest {
+                node: initial.graph.graph.nodes()[0].id(),
+                session_generation: SessionGeneration(1),
+                native_owner_generation: 1,
+                graph_revision: 1,
+                capacity_frames: 8192,
+                target_frames: 2048,
+                jitter_frames: 96,
+            },
+            process_pid: 42,
+            process_creation_time_100ns: 123,
+            delivery: MeasuredDeliveryBound {
+                sample_rate: 48_000,
+                max_packet_frames: 480,
+                max_gap_frames: 480,
+            },
+            observed_window: None,
+        };
+        for field in 0..4 {
+            let mut changed = initial.clone();
+            match field {
+                0 => changed.transport_latency = transport,
+                1 => changed.active_transport_latency = Some(transport),
+                2 => changed.measured_process = Some(measured.clone()),
+                3 => changed.active_measured_process = Some(measured.clone()),
+                _ => unreachable!(),
+            }
+            assert_published_change(initial.clone(), changed);
+        }
+    }
+
+    #[test]
+    fn joined_cleanup_state_and_generation_changes_are_published() {
+        let initial = snapshot(&ServiceContext::default());
+        let mut previous = initial.clone();
+        previous.last_cleanup = Some(SessionCleanupObservation {
+            generation: SessionGeneration(1),
+            state: moiren_engine::host::HostSnapshot {
+                host: moiren_engine::host::HostState::Closed,
+                execution: moiren_engine::host::ExecutionState::Dormant,
+                desired_revision: 1,
+                active_revision: None,
+                plan_revision: None,
+                owner_generation: 1,
+                resource_generation: 1,
+                timeline: None,
+                update: moiren_engine::host::UpdateState::Idle,
+                fault: None,
+                cleanup_error: None,
+            },
+            #[cfg(windows)]
+            process_trace: None,
+        });
+        assert_published_change(initial, previous.clone());
+        for field in 0..2 {
+            let mut changed = previous.clone();
+            let cleanup = changed.last_cleanup.as_mut().unwrap();
+            match field {
+                0 => cleanup.generation.0 += 1,
+                1 => cleanup.state.host = moiren_engine::host::HostState::Closing,
+                _ => unreachable!(),
+            }
+            assert_published_change(previous.clone(), changed);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_telemetry_and_trace_refusals_remain_visible_with_idle_dedup() {
+        let initial = snapshot(&ServiceContext::default());
+        let mut previous = initial.clone();
+        previous.native_observations = Some(NativeSessionObservations {
+            generation: SessionGeneration(1),
+            observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot {
+                owner_generation: 1,
+                running: true,
+                streams: Vec::new(),
+                bridges: Vec::new(),
+                boundary_probes: Vec::new(),
+                render_padding: Vec::new(),
+                process_delivery: Vec::new(),
+                virtual_clock: None,
+            },
+        });
+        assert_published_change(initial.clone(), previous.clone());
+        let mut changed = previous.clone();
+        changed
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .running = false;
+        assert_published_change(previous, changed);
+        let mut changed = initial.clone();
+        changed.process_trace_status = Some(ProcessTraceCollectionStatus {
+            origin: None,
+            refusal: Some("history overwritten".into()),
+        });
+        assert_published_change(initial, changed);
     }
 }

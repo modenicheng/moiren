@@ -29,7 +29,7 @@ pub enum NativeStreamKind {
     VirtualPlayback,
     VirtualMicrophone,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeStreamObservation {
     #[serde(serialize_with = "serialize_node")]
     pub node: NodeId,
@@ -44,7 +44,7 @@ pub struct NativeStreamObservation {
     /// None for physical and Process Loopback streams.
     pub virtual_budget: Option<PreparedVirtualBudget>,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeBridgeObservation {
     #[serde(serialize_with = "serialize_node")]
     pub node: NodeId,
@@ -56,7 +56,7 @@ pub struct NativeBridgeObservation {
 fn serialize_node<S: serde::Serializer>(node: &NodeId, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_str(&format_args!("{node:?}"))
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeObservationSnapshot {
     pub owner_generation: u64,
     /// Publication state only. False does not prove workers joined or cleanup
@@ -75,7 +75,7 @@ pub struct NativeObservationSnapshot {
 /// Service boundary events belonging to this exact source and transport owner.
 /// Independent histories are coherent individually, not a cross-owner audio
 /// transaction. Process service timestamps never establish sample age.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeProcessDeliveryObservation {
     #[serde(serialize_with = "serialize_node")]
     pub node: NodeId,
@@ -188,7 +188,7 @@ pub(super) struct ProcessDeliverySource {
     pub consumer: Option<crate::latency::events::EventHistoryObserver>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeRenderPaddingObservation {
     #[serde(serialize_with = "serialize_node")]
     pub node: NodeId,

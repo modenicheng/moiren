@@ -622,6 +622,14 @@ impl Render for StudioShell {
         self.sync_export_controls(window, cx);
         self.sync_mixer_controls(window, cx);
         self.sync_compressor_controls(window, cx);
+        // An iconic window never presents, but the platform vsync thread
+        // still re-invalidates it every tick and such frames render
+        // unconditionally, so a minimized window would otherwise keep paying
+        // full tree construction forever (#38). The first render after
+        // restore rebuilds the real tree.
+        if native::window_is_iconic(window) {
+            return div().into_any_element();
+        }
         #[cfg(feature = "gpui-test")]
         if let Some(page) = &self.test_page {
             self.presentation.page = page.read(cx).page;
@@ -866,6 +874,7 @@ impl Render for StudioShell {
             .on_action(cx.listener(|shell, _: &app_view::Redo, window, cx| {
                 shell.undo_redo_graph(true, window, cx);
             }))
+            .into_any_element()
     }
 }
 

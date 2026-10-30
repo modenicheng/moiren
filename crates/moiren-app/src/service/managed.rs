@@ -172,6 +172,13 @@ pub struct ManagedDriver {
             >,
         >,
     >,
+    /// Tick-batch gate for [`driver::poll_observations`]: raw stream counters
+    /// advance with every audio block, so the displayed snapshot refreshes at
+    /// 1 Hz instead of per service poll.
+    #[cfg(windows)]
+    observation_refreshed_at: Option<Instant>,
+    #[cfg(windows)]
+    observation_identity: Option<(SessionGeneration, u64, ExecutionState)>,
     #[cfg(windows)]
     virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
 }
@@ -254,6 +261,10 @@ impl ManagedDriver {
             native_observations: None,
             #[cfg(windows)]
             professional_observations: None,
+            #[cfg(windows)]
+            observation_refreshed_at: None,
+            #[cfg(windows)]
+            observation_identity: None,
             #[cfg(windows)]
             virtual_provider: None,
         }

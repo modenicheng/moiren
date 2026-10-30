@@ -146,7 +146,7 @@ pub struct DefaultEndpointRow {
     pub endpoint_id: Option<String>,
 }
 /// The UI keeps only the latest pending pair and latest reply, never a reply history.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ControlSummary {
     pub pending_node_parameters: usize,
     pub accepted_pending: usize,
@@ -209,15 +209,79 @@ pub struct SessionCleanupObservation {
     #[cfg(windows)]
     pub process_trace: Option<Arc<super::ProcessTraceSessionEvidence>>,
 }
+// Retained trace evidence is immutable and Arc-backed; comparing identity
+// avoids walking its bounded packet history on every idle publication.
+impl PartialEq for SessionCleanupObservation {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(windows)]
+        match (&self.process_trace, &other.process_trace) {
+            (None, None) => {}
+            (Some(left), Some(right)) if Arc::ptr_eq(left, right) => {}
+            _ => return false,
+        }
+        self.generation == other.generation && self.state == other.state
+    }
+}
 #[cfg(windows)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeSessionObservations {
     pub generation: SessionGeneration,
     pub observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot,
 }
 
+/// Publish-side change detection: while a session runs the only fields that
+/// advance on their own are the quantized clock and the tick-batched
+/// observations, so equality holds between real events. The loaded project
+/// Arc is swapped only on load, so pointer equality short-circuits a
+/// potentially large deep comparison; a same-content reload at worst costs
+/// one redundant publish. The graph Arc is rebuilt per snapshot, so it
+/// compares by value (small fixed topology).
+impl PartialEq for AppSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(windows)]
+        {
+            if self.professional_observations != other.professional_observations
+                || self.native_observations != other.native_observations
+                || self.process_trace_status != other.process_trace_status
+            {
+                return false;
+            }
+        }
+        fn same_arc<T>(left: &Option<Arc<T>>, right: &Option<Arc<T>>) -> bool {
+            match (left, right) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
+        }
+        same_arc(&self.loaded_project, &other.loaded_project)
+            && self.last_cleanup == other.last_cleanup
+            && (Arc::ptr_eq(&self.catalog, &other.catalog) || self.catalog == other.catalog)
+            && self.exports == other.exports
+            && self.export_plan == other.export_plan
+            && self.latency_profile == other.latency_profile
+            && self.active_latency_profile == other.active_latency_profile
+            && self.audio_settings == other.audio_settings
+            && self.active_audio_settings == other.active_audio_settings
+            && self.transport_latency == other.transport_latency
+            && self.active_transport_latency == other.active_transport_latency
+            && self.measured_process == other.measured_process
+            && self.active_measured_process == other.active_measured_process
+            && self.graph == other.graph
+            && self.consumed_request_id == other.consumed_request_id
+            && self.generation == other.generation
+            && self.phase == other.phase
+            && self.desired == other.desired
+            && self.error == other.error
+            && self.catalog_error == other.catalog_error
+            && self.control == other.control
+            && self.signal_topics == other.signal_topics
+            && self.tone_session == other.tone_session
+            && self.elapsed == other.elapsed
+    }
+}
 #[cfg(windows)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProfessionalSessionObservations {
     pub generation: SessionGeneration,
     pub observation: moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot,

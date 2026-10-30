@@ -17,7 +17,7 @@ const LEVEL_STREAM_DEPTH: usize = 16;
 
 pub type LevelTopic = StreamBlock<AudioWindow, ChannelLevel>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SignalTopics {
     pub node_levels: std::collections::BTreeMap<moiren_core::graph::NodeId, Topic<LevelTopic>>,
     pub monitor_input: Topic<LevelTopic>,

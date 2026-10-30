@@ -25,7 +25,7 @@ pub struct ProcessTraceSessionOrigin {
     pub latency_profile: AudioLatencyProfile,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcessTraceCollectionStatus {
     pub origin: Option<ProcessTraceSessionOrigin>,
     pub refusal: Option<String>,

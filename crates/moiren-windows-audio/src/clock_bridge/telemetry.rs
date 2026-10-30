@@ -14,7 +14,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed},
 };
 
-#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
 pub struct BridgeSnapshot {
     /// Latest completed native packet/callback publication. None before native
     /// publication (including graph followers), or during a concurrent write.
