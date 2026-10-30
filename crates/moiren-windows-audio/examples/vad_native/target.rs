@@ -39,6 +39,84 @@ mod native;
 
 const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
 
+fn includes_endpoint(mode: NativeMode, intent: Intent, channels: Channels) -> bool {
+    mode != NativeMode::SharedCapture
+        || (intent == Intent::Microphone && channels == Channels::Stereo)
+}
+
+fn require_shared_shape(
+    mode: NativeMode,
+    format: Option<SampleFormat>,
+    channels: Channels,
+    frames: u32,
+) -> anyhow::Result<()> {
+    ensure!(
+        mode != NativeMode::SharedCapture
+            || (format == Some(SampleFormat::Pcm16)
+                && channels == Channels::Stereo
+                && frames == 480),
+        "SharedCapture requires native QUERY stereo PCM16/480 without fallback"
+    );
+    Ok(())
+}
+
+#[derive(Clone, Default, Serialize)]
+struct SharedCaptureDiagnostics {
+    submitted_packets: u64,
+    submitted_bytes: u64,
+    submitted_samples: u64,
+    submitted_nonzero_samples: u64,
+    submitted_peak_abs_pcm16: u32,
+    first_submitted_samples: [i16; 16],
+    first_submitted_sample_count: usize,
+    successful_capture_completions: u64,
+    successful_capture_bytes: u64,
+    dropped_capture_completions: u64,
+    capture_all_phases: Option<native::CaptureDiagnostics>,
+    capture_before_revoke: Option<native::CaptureDiagnostics>,
+}
+
+impl SharedCaptureDiagnostics {
+    fn submitted(&mut self, payload: &[u8]) {
+        self.submitted_packets += 1;
+        self.submitted_bytes += payload.len() as u64;
+        for pair in payload.as_chunks::<2>().0 {
+            let sample = i16::from_le_bytes(*pair);
+            self.submitted_samples += 1;
+            self.submitted_nonzero_samples += u64::from(sample != 0);
+            self.submitted_peak_abs_pcm16 = self
+                .submitted_peak_abs_pcm16
+                .max(u32::from(sample.unsigned_abs()));
+            if self.first_submitted_sample_count < self.first_submitted_samples.len() {
+                self.first_submitted_samples[self.first_submitted_sample_count] = sample;
+                self.first_submitted_sample_count += 1;
+            }
+        }
+    }
+
+    fn completed(
+        &mut self,
+        completion: &PcmCompletion<'_>,
+        expected_bytes: usize,
+    ) -> anyhow::Result<()> {
+        match completion {
+            PcmCompletion::Capture { bytes, .. } => {
+                ensure!(
+                    *bytes == expected_bytes,
+                    "successful WRITE completion byte count changed: {bytes} != {expected_bytes}"
+                );
+                self.successful_capture_completions += 1;
+                self.successful_capture_bytes += *bytes as u64;
+            }
+            PcmCompletion::CaptureDropped { .. } => self.dropped_capture_completions += 1,
+            PcmCompletion::Render { .. } => {
+                anyhow::bail!("SharedCapture received a render completion")
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PendingPcm<T> {
     ticket: T,
@@ -118,7 +196,7 @@ fn start_native_with_queued_pcm<T>(
     let mut pending = VecDeque::with_capacity(4);
     let count = match (intent, mode) {
         (Intent::Playback, _) => 4,
-        (Intent::Microphone, NativeMode::Timer) => 1,
+        (Intent::Microphone, NativeMode::Timer | NativeMode::SharedCapture) => 1,
         (Intent::Microphone, NativeMode::Event) => 0,
     };
     for _ in 0..count {
@@ -135,6 +213,7 @@ struct TransferProgress {
     microphone_completion_diagnostics: validation::MicrophoneCompletionDiagnostics,
     next_mic_submit: Option<Instant>,
     last_mic_phase: Option<Instant>,
+    immediate_microphone: bool,
 }
 
 impl TransferProgress {
@@ -145,6 +224,7 @@ impl TransferProgress {
             // Anchor event headroom before QUERY so it cannot re-arm the delay.
             next_mic_submit: (intent == Intent::Microphone && mode == NativeMode::Event)
                 .then(|| Self::microphone_deadline(now, frames)),
+            immediate_microphone: mode == NativeMode::SharedCapture,
             ..Self::default()
         }
     }
@@ -159,6 +239,11 @@ impl TransferProgress {
     }
 
     fn microphone_completed(&mut self, now: Instant, frames: u32, dropped: bool) {
+        if self.immediate_microphone {
+            self.last_mic_phase = None;
+            self.next_mic_submit = Some(now);
+            return;
+        }
         // Successful collection can lag the native boundary. Advance the prior
         // intended phase, not collection time; overdue means one WRITE now,
         // never a catch-up burst. First/unanchored and dropped completions keep
@@ -223,6 +308,8 @@ struct CaseReport {
     native_discontinuities: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_position: Option<validation::PositionProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shared_capture_diagnostics: Option<SharedCaptureDiagnostics>,
 }
 
 #[derive(Serialize)]
@@ -244,6 +331,11 @@ pub(super) fn exercise(
     intent_filter: Option<Intent>,
     minimum_period: bool,
 ) -> anyhow::Result<()> {
+    ensure!(
+        mode != NativeMode::SharedCapture
+            || (!minimum_period && intent_filter == Some(Intent::Microphone)),
+        "SharedCapture requires microphone-only and no minimum period"
+    );
     let interfaces = discover_present_interfaces()?;
     ensure!(
         interfaces.len() == 1,
@@ -261,6 +353,9 @@ pub(super) fn exercise(
     let result = (|| -> anyhow::Result<Report> {
         for intent in [Intent::Playback, Intent::Microphone] {
             for channels in [Channels::Mono, Channels::Stereo] {
+                if !includes_endpoint(mode, intent, channels) {
+                    continue;
+                }
                 let stable_id = StableEndpointId::new(
                     intent as u64 | ((channels as u64) << 32),
                     0x4d6f_6972_656e_4e41,
@@ -284,6 +379,9 @@ pub(super) fn exercise(
                 continue;
             }
             for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
+                if mode == NativeMode::SharedCapture && format != SampleFormat::Pcm16 {
+                    continue;
+                }
                 eprintln!(
                     "native case mode={mode:?} minimum_period={minimum_period} intent={:?} channels={:?} format={format:?} id={}",
                     endpoint.intent(),
@@ -460,6 +558,7 @@ fn exercise_case(
 ) -> anyhow::Result<CaseReport> {
     // Caller-owned evidence survives every native preparation error path.
     let mut period = PeriodEvidence::new(minimum_period);
+    let mut shared = (mode == NativeMode::SharedCapture).then(SharedCaptureDiagnostics::default);
     let mut counters = validation::FailureCounters {
         mode,
         signal_frames: 0,
@@ -488,8 +587,9 @@ fn exercise_case(
         mode,
         &mut counters,
         &mut period,
+        &mut shared,
     );
-    diagnose_case_failure(outcome, &counters, &period, |line| {
+    diagnose_case_failure(outcome, &counters, &period, shared.as_ref(), |line| {
         // A failed stderr write must not replace the original case error.
         let _ = writeln!(std::io::stderr().lock(), "{line}");
     })
@@ -499,12 +599,17 @@ fn diagnose_case_failure<T>(
     outcome: anyhow::Result<T>,
     counters: &validation::FailureCounters,
     period: &PeriodEvidence,
+    shared: Option<&SharedCaptureDiagnostics>,
     emit: impl FnOnce(&str),
 ) -> anyhow::Result<T> {
     validation::diagnose_failure(outcome, counters, |line| {
         let enriched = (|| -> serde_json::Result<String> {
             let mut diagnostic: serde_json::Value = serde_json::from_str(line)?;
             diagnostic["counters"]["period"] = serde_json::to_value(period)?;
+            if let Some(shared) = shared {
+                diagnostic["counters"]["shared_capture_diagnostics"] =
+                    serde_json::to_value(shared)?;
+            }
             serde_json::to_string(&diagnostic)
         })();
         let enriched = enriched.unwrap_or_else(|error| {
@@ -527,6 +632,7 @@ fn exercise_case_inner(
     mode: NativeMode,
     counters: &mut validation::FailureCounters,
     period: &mut PeriodEvidence,
+    shared: &mut Option<SharedCaptureDiagnostics>,
 ) -> anyhow::Result<CaseReport> {
     let case_index = index * 2 + usize::from(format == SampleFormat::Float32);
     let pattern = validation::pattern(case_index, endpoint.channels());
@@ -571,6 +677,12 @@ fn exercise_case_inner(
             );
             std::thread::sleep(Duration::from_millis(1));
         }
+        require_shared_shape(
+            mode,
+            snapshot.sample_format(),
+            snapshot.channels(),
+            snapshot.packet_frames(),
+        )?;
         let opened = control.open_gate(snapshot)?;
         counters.admitted_opened = Some(opened.into());
         counters.stream_generation = opened.stream_generation();
@@ -593,82 +705,106 @@ fn exercise_case_inner(
                 );
             }
         };
-        let shape = pcm.shape();
-        counters.admitted_pcm_shape = Some(shape.snapshot().into());
-        counters.driver_packet_frames = shape.frames();
-        counters.stream_generation = opened.stream_generation();
-        ensure!(shape.format() == format, "PCM helper format changed");
-        let mut bytes = vec![0; shape.pcm_bytes()];
-        encode_interleaved(
-            &pattern.repeat(shape.frames() as usize),
-            &mut bytes,
-            format,
-            endpoint.channels(),
-        )
-        .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
-        let mut decoded = vec![0.0; shape.frames() as usize * 2];
-        // Fixed diagnostic storage is already initialized in the case counters.
-        // Keep the same origin across Timer's pre-Start WRITE and later pumps.
-        let submit_origin = Instant::now();
-        // Timer capture consumes at the first sub-packet segment. Prepare its
-        // single WRITE while Paused, not after Start/QUERY; event capture must
-        // instead retain the half-period freshness headroom below.
-        let mut pending = start_native_with_queued_pcm(
-            endpoint.intent(),
-            mode,
-            || {
-                if endpoint.intent() == Intent::Playback {
-                    Ok(PendingPcm {
-                        ticket: pcm.submit_read()?,
-                        write: None,
-                    })
-                } else {
-                    submit_microphone(
-                        &mut counters.microphone_submit_diagnostics,
-                        WriteTiming {
-                            origin: submit_origin,
-                            deadline: None,
-                            pending: 0,
-                        },
-                        Instant::now,
-                        collection_qpc,
-                        || pcm.submit_write(&bytes).map_err(anyhow::Error::from),
-                    )
-                }
-            },
-            || native.start(),
-        )?;
-        let mut progress = TransferProgress::native_started(
-            Instant::now(),
-            shape.frames(),
-            endpoint.intent(),
-            mode,
-        );
-        let mut snapshot = opened;
-        let deadline = Instant::now() + CONTROL_DEADLINE;
-        loop {
-            snapshot = control
-                .query(snapshot.key())?
-                .require_progress_after(snapshot)?;
-            counters.driver_packet_frames = snapshot.packet_frames();
-            counters.stream_generation = snapshot.stream_generation();
-            ensure!(snapshot.gate_open(), "gate closed before native Start");
-            if snapshot.stream_state() == StreamState::Running {
-                ensure!(
-                    snapshot.sample_format() == Some(format) && snapshot.packet_frames() > 0,
-                    "driver native format differs from exclusive request"
-                );
-                break;
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "native Start was not observed as Running"
+        let setup = (|| -> anyhow::Result<_> {
+            let shape = pcm.shape();
+            counters.admitted_pcm_shape = Some(shape.snapshot().into());
+            counters.driver_packet_frames = shape.frames();
+            counters.stream_generation = opened.stream_generation();
+            ensure!(shape.format() == format, "PCM helper format changed");
+            let mut bytes = vec![0; shape.pcm_bytes()];
+            encode_interleaved(
+                &pattern.repeat(shape.frames() as usize),
+                &mut bytes,
+                format,
+                endpoint.channels(),
+            )
+            .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
+            let decoded = vec![0.0; shape.frames() as usize * 2];
+            // Fixed diagnostic storage is already initialized in the case counters.
+            // Keep the same origin across Timer's pre-Start WRITE and later pumps.
+            let submit_origin = Instant::now();
+            // Timer capture consumes at the first sub-packet segment. Prepare its
+            // single WRITE while Paused, not after Start/QUERY; event capture must
+            // instead retain the half-period freshness headroom below.
+            let pending = start_native_with_queued_pcm(
+                endpoint.intent(),
+                mode,
+                || {
+                    if endpoint.intent() == Intent::Playback {
+                        Ok(PendingPcm {
+                            ticket: pcm.submit_read()?,
+                            write: None,
+                        })
+                    } else {
+                        let submitted = submit_microphone(
+                            &mut counters.microphone_submit_diagnostics,
+                            WriteTiming {
+                                origin: submit_origin,
+                                deadline: None,
+                                pending: 0,
+                            },
+                            Instant::now,
+                            collection_qpc,
+                            || pcm.submit_write(&bytes).map_err(anyhow::Error::from),
+                        );
+                        if submitted.is_ok()
+                            && let Some(metrics) = shared.as_mut()
+                        {
+                            metrics.submitted(&bytes);
+                        }
+                        submitted
+                    }
+                },
+                || native.start(),
+            )?;
+            let progress = TransferProgress::native_started(
+                Instant::now(),
+                shape.frames(),
+                endpoint.intent(),
+                mode,
             );
-            // A control-operation deadline, not a runtime no-PCM fault criterion.
-            native.poll(pattern, &mut Observation::default())?;
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let running = snapshot;
+            let mut snapshot = opened;
+            let deadline = Instant::now() + CONTROL_DEADLINE;
+            loop {
+                snapshot = control
+                    .query(snapshot.key())?
+                    .require_progress_after(snapshot)?;
+                counters.driver_packet_frames = snapshot.packet_frames();
+                counters.stream_generation = snapshot.stream_generation();
+                ensure!(snapshot.gate_open(), "gate closed before native Start");
+                if snapshot.stream_state() == StreamState::Running {
+                    require_shared_shape(
+                        mode,
+                        snapshot.sample_format(),
+                        snapshot.channels(),
+                        snapshot.packet_frames(),
+                    )?;
+                    ensure!(
+                        snapshot.sample_format() == Some(format) && snapshot.packet_frames() > 0,
+                        "driver native format differs from exclusive request"
+                    );
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "native Start was not observed as Running"
+                );
+                // A control-operation deadline, not a runtime no-PCM fault criterion.
+                native.poll(pattern, &mut Observation::default())?;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok((pending, progress, snapshot, bytes, decoded, submit_origin))
+        })();
+        let (mut pending, mut progress, running, bytes, mut decoded, submit_origin) = match setup {
+            Ok(setup) => setup,
+            Err(error) => {
+                return validation::revoke_and_drain(
+                    Err(error),
+                    || revoke(control, opened),
+                    || Ok(pcm.shutdown(Duration::from_secs(5))?),
+                );
+            }
+        };
         let shape = pcm.shape();
         counters.driver_packet_frames = shape.frames();
         counters.stream_generation = opened.stream_generation();
@@ -688,6 +824,7 @@ fn exercise_case_inner(
                     &mut progress,
                     &mut counters.microphone_submit_diagnostics,
                     submit_origin,
+                    shared.as_mut(),
                 )?;
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -706,6 +843,9 @@ fn exercise_case_inner(
         counters.silent_frames = seen.silent_frames;
         counters.microphone_dropped_packets = progress.microphone_drops;
         counters.microphone_completion_diagnostics = progress.microphone_completion_diagnostics;
+        if let Some(metrics) = shared.as_mut() {
+            metrics.capture_before_revoke = native.capture_diagnostics.clone();
+        }
         // Observe only a failed signal phase, before revocation changes its
         // admission epoch or the native stream is stopped. Never use this later
         // diagnostic snapshot to rebind the owner or authorize more PCM.
@@ -761,14 +901,21 @@ fn exercise_case_inner(
             ),
             native_discontinuities: native.discontinuities,
             native_position: position,
+            shared_capture_diagnostics: shared.clone(),
         })
     })();
     // Capture the final native state even for setup, gate-check or Stop errors.
     counters.native_discontinuities = native.discontinuities;
+    if let Some(metrics) = shared.as_mut() {
+        metrics.capture_all_phases = native.capture_diagnostics.clone();
+    }
     if mode == NativeMode::Timer {
         counters.native_position = Some(native.position.clone());
     }
-    outcome
+    outcome.map(|mut report| {
+        report.shared_capture_diagnostics = shared.clone();
+        report
+    })
 }
 
 fn revoke(control: &mut ControlClient, opened: EndpointSnapshot) -> anyhow::Result<()> {
@@ -801,6 +948,7 @@ fn pump_pcm(
     progress: &mut TransferProgress,
     submit_diagnostics: &mut validation::MicrophoneSubmitDiagnostics,
     submit_origin: Instant,
+    mut shared: Option<&mut SharedCaptureDiagnostics>,
 ) -> anyhow::Result<()> {
     let shape = pcm.shape();
     let playback = shape.snapshot().intent() == Intent::Playback;
@@ -829,6 +977,9 @@ fn pump_pcm(
         // Recording cannot choose a later pacing origin or turn a drop into
         // another PCM result.
         record_microphone_completion(submit_diagnostics, entry, &completed);
+        if let Some(metrics) = shared.as_mut() {
+            metrics.completed(&completed, shape.pcm_bytes())?;
+        }
         pending.pop_front();
     }
     if playback {
@@ -851,6 +1002,9 @@ fn pump_pcm(
             collection_qpc,
             || pcm.submit_write(encoded).map_err(anyhow::Error::from),
         )?;
+        if let Some(metrics) = shared.as_mut() {
+            metrics.submitted(encoded);
+        }
         progress.microphone_submitted(submitted_at, shape.frames());
         pending.push_back(entry);
     }
@@ -868,6 +1022,221 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn shared_capture_shape_refuses_any_native_format_channel_or_period_change() {
+        assert!(
+            require_shared_shape(
+                NativeMode::SharedCapture,
+                Some(SampleFormat::Pcm16),
+                Channels::Stereo,
+                480
+            )
+            .is_ok()
+        );
+        for (format, channels, frames) in [
+            (None, Channels::Stereo, 480),
+            (Some(SampleFormat::Float32), Channels::Stereo, 480),
+            (Some(SampleFormat::Pcm16), Channels::Mono, 480),
+            (Some(SampleFormat::Pcm16), Channels::Stereo, 144),
+            (Some(SampleFormat::Pcm16), Channels::Stereo, 0),
+        ] {
+            assert!(
+                require_shared_shape(NativeMode::SharedCapture, format, channels, frames).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn shared_capture_payload_and_terminal_metrics_use_actual_bytes() {
+        use moiren_windows_audio::vad::PcmPacketStamp;
+        let payload: Vec<u8> = [8192_i16, -16384, 0, i16::MIN]
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect();
+        let mut metrics = SharedCaptureDiagnostics::default();
+        metrics.submitted(&payload);
+        assert_eq!(metrics.submitted_packets, 1);
+        assert_eq!(metrics.submitted_bytes, 8);
+        assert_eq!(metrics.submitted_samples, 4);
+        assert_eq!(metrics.submitted_nonzero_samples, 3);
+        assert_eq!(metrics.submitted_peak_abs_pcm16, 32768);
+        assert_eq!(
+            &metrics.first_submitted_samples[..4],
+            &[8192, -16384, 0, i16::MIN]
+        );
+        let stamp = PcmPacketStamp {
+            sequence: 1,
+            qpc: 100,
+        };
+        metrics
+            .completed(&PcmCompletion::Capture { stamp, bytes: 8 }, 8)
+            .unwrap();
+        assert!(
+            metrics
+                .completed(&PcmCompletion::Capture { stamp, bytes: 7 }, 8)
+                .is_err()
+        );
+        metrics
+            .completed(&PcmCompletion::CaptureDropped { stamp }, 8)
+            .unwrap();
+        assert_eq!(metrics.successful_capture_completions, 1);
+        assert_eq!(metrics.successful_capture_bytes, 8);
+        assert_eq!(metrics.dropped_capture_completions, 1);
+    }
+
+    #[test]
+    fn shared_capture_dispatch_is_one_owned_stereo_microphone() {
+        let endpoints: Vec<_> = [Intent::Playback, Intent::Microphone]
+            .into_iter()
+            .flat_map(|intent| {
+                [Channels::Mono, Channels::Stereo].map(|channels| (intent, channels))
+            })
+            .filter(|&(intent, channels)| {
+                includes_endpoint(NativeMode::SharedCapture, intent, channels)
+            })
+            .collect();
+        assert_eq!(endpoints, [(Intent::Microphone, Channels::Stereo)]);
+        for mode in [NativeMode::Event, NativeMode::Timer] {
+            assert!(
+                [Intent::Playback, Intent::Microphone]
+                    .into_iter()
+                    .all(|intent| {
+                        [Channels::Mono, Channels::Stereo]
+                            .into_iter()
+                            .all(|channels| includes_endpoint(mode, intent, channels))
+                    })
+            );
+        }
+    }
+
+    #[test]
+    fn shared_capture_prequeues_exactly_one_write_before_native_start() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let pending = start_native_with_queued_pcm(
+            Intent::Microphone,
+            NativeMode::SharedCapture,
+            || {
+                calls.borrow_mut().push("write");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("start");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["write", "start"]);
+        assert_eq!(pending.len(), 1);
+        let now = Instant::now();
+        let progress = TransferProgress::native_started(
+            now,
+            480,
+            Intent::Microphone,
+            NativeMode::SharedCapture,
+        );
+        assert!(progress.microphone_ready(now, 0));
+        assert!(!progress.microphone_ready(now, 1));
+    }
+
+    #[test]
+    fn shared_capture_rearms_immediately_after_success_or_drop_without_a_burst() {
+        let origin = Instant::now();
+        let mut progress = TransferProgress::native_started(
+            origin,
+            480,
+            Intent::Microphone,
+            NativeMode::SharedCapture,
+        );
+        for dropped in [false, true, false] {
+            let completed = origin + Duration::from_millis(13);
+            progress.microphone_completed(completed, 480, dropped);
+            assert!(progress.microphone_ready(completed, 0));
+            assert!(!progress.microphone_ready(completed, 1));
+            progress.microphone_submitted(completed, 480);
+        }
+    }
+
+    #[test]
+    fn shared_capture_failure_receipt_retains_silence_malformed_and_payload_evidence() {
+        let counters = validation::FailureCounters {
+            mode: NativeMode::SharedCapture,
+            signal_frames: 0,
+            silent_frames: 480,
+            microphone_dropped_packets: 1,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
+            native_buffer_frames: 960,
+            driver_packet_frames: 480,
+            stream_generation: 7,
+            native_discontinuities: 1,
+            native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
+        };
+        for malformed in [false, true] {
+            let mut metrics = SharedCaptureDiagnostics::default();
+            metrics.submitted(&[0, 32, 0, 192]);
+            let stamp = moiren_windows_audio::vad::PcmPacketStamp {
+                sequence: 1,
+                qpc: 100,
+            };
+            metrics
+                .completed(&PcmCompletion::Capture { stamp, bytes: 4 }, 4)
+                .unwrap();
+            let samples: &[f32] = if malformed {
+                &[0.75, -0.125]
+            } else {
+                &[0.0, 0.0]
+            };
+            metrics.capture_all_phases = Some(native::CaptureDiagnostics {
+                packets: 1,
+                frames: 1,
+                first_flags: Some(if malformed { 1 } else { 2 }),
+                flags_or: if malformed { 1 } else { 2 },
+                silent_flag_packets: u64::from(!malformed),
+                silent_flag_frames: u64::from(!malformed),
+                ..Default::default()
+            });
+            let mut seen = Observation::default();
+            let result = native::observe_capture_samples(
+                metrics.capture_all_phases.as_mut(),
+                samples,
+                [0.25, -0.5],
+                &mut seen,
+            )
+            .and_then(|()| seen.require_signal(1));
+            let original = format!("{:#}", result.as_ref().unwrap_err());
+            let mut receipt = String::new();
+            let error = diagnose_case_failure(
+                result,
+                &counters,
+                &PeriodEvidence::new(false),
+                Some(&metrics),
+                |line| receipt = line.to_owned(),
+            )
+            .unwrap_err();
+            assert_eq!(format!("{error:#}"), original);
+            let receipt: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+            assert_eq!(receipt["error"], original);
+            assert_eq!(
+                receipt["counters"]["shared_capture_diagnostics"],
+                serde_json::to_value(&metrics).unwrap()
+            );
+            let diagnostic = &receipt["counters"]["shared_capture_diagnostics"];
+            assert_eq!(diagnostic["submitted_nonzero_samples"], 2);
+            assert_eq!(diagnostic["successful_capture_bytes"], 4);
+            assert_eq!(
+                diagnostic["capture_all_phases"]["nonzero_samples"],
+                if malformed { 2 } else { 0 }
+            );
+            assert_eq!(
+                diagnostic["capture_all_phases"]["silent_flag_frames"],
+                u64::from(!malformed)
+            );
+        }
+    }
 
     #[test]
     fn failed_prepare_retains_period_evidence_and_original_error() {
@@ -910,7 +1279,7 @@ mod pacing_tests {
             };
             let original = format!("{:#}", outcome.as_ref().unwrap_err());
             let mut line = String::new();
-            let error = diagnose_case_failure(outcome, &counters, &period, |value| {
+            let error = diagnose_case_failure(outcome, &counters, &period, None, |value| {
                 line = value.to_owned();
             })
             .unwrap_err();
@@ -929,9 +1298,13 @@ mod pacing_tests {
             assert_eq!(json["counters"]["driver_packet_frames"], 480);
         }
         assert_eq!(
-            diagnose_case_failure(Ok(42), &counters, &PeriodEvidence::new(false), |_| panic!(
-                "success must not emit failure evidence"
-            ))
+            diagnose_case_failure(
+                Ok(42),
+                &counters,
+                &PeriodEvidence::new(false),
+                None,
+                |_| panic!("success must not emit failure evidence")
+            )
             .unwrap(),
             42
         );
@@ -1415,6 +1788,7 @@ mod pacing_tests {
             microphone_submit_diagnostics: Default::default(),
             native_discontinuities: 0,
             native_position: None,
+            shared_capture_diagnostics: None,
         };
         // Capacity and the logical packet can differ, or coincide after alignment.
         // Neither is the accepted request, nor proof of measured stream cadence.

@@ -1,4 +1,4 @@
-//! One explicitly identified exclusive WASAPI client, owned on the probe thread.
+//! One explicitly identified WASAPI client, owned on the probe thread.
 use crate::{
     NativeMode,
     period::PeriodEvidence,
@@ -17,10 +17,11 @@ use windows::{
         Foundation::{HANDLE, S_OK, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
-            AUDCLNT_E_BUFFER_ERROR, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient, IAudioClient, IAudioClock,
-            IAudioRenderClient, IMMDevice, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-            WAVEFORMATEXTENSIBLE_0,
+            AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_BUFFER_ERROR,
+            AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE, AUDCLNT_SHAREMODE_EXCLUSIVE,
+            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient,
+            IAudioClient, IAudioClock, IAudioRenderClient, IMMDevice, WAVEFORMATEX,
+            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
         },
         System::{
             Com::CLSCTX_ALL,
@@ -42,9 +43,98 @@ fn capture_packet_available(result: windows::core::Result<()>) -> anyhow::Result
 
 fn stream_flags(mode: NativeMode) -> u32 {
     match mode {
-        NativeMode::Event => AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+        NativeMode::Event | NativeMode::SharedCapture => AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
         NativeMode::Timer => 0,
     }
+}
+
+fn initialization_parameters(mode: NativeMode, period: i64) -> (AUDCLNT_SHAREMODE, u32, i64, i64) {
+    if mode == NativeMode::SharedCapture {
+        (AUDCLNT_SHAREMODE_SHARED, stream_flags(mode), 0, 0)
+    } else {
+        (
+            AUDCLNT_SHAREMODE_EXCLUSIVE,
+            stream_flags(mode),
+            period,
+            period,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub(super) struct CaptureDiagnostics {
+    pub packets: u64,
+    pub frames: u64,
+    pub first_flags: Option<u32>,
+    pub flags_or: u32,
+    pub silent_flag_packets: u64,
+    pub silent_flag_frames: u64,
+    pub discontinuity_packets: u64,
+    pub timestamp_error_packets: u64,
+    pub samples: u64,
+    pub nonzero_samples: u64,
+    pub nonfinite_samples: u64,
+    pub peak_abs: f32,
+    pub first_samples: [f32; 16],
+    pub first_sample_count: usize,
+    pub first_nonzero_frame: Option<[f32; 2]>,
+}
+
+impl CaptureDiagnostics {
+    fn packet(&mut self, frames: u32, flags: u32) {
+        self.packets += 1;
+        self.frames += u64::from(frames);
+        self.first_flags.get_or_insert(flags);
+        self.flags_or |= flags;
+        if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
+            self.silent_flag_packets += 1;
+            self.silent_flag_frames += u64::from(frames);
+        }
+        self.discontinuity_packets +=
+            u64::from(flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0);
+        self.timestamp_error_packets +=
+            u64::from(flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0);
+    }
+
+    fn samples(&mut self, samples: &[f32]) {
+        for &sample in samples {
+            self.samples += 1;
+            if !sample.is_finite() {
+                self.nonfinite_samples += 1;
+                continue;
+            }
+            self.nonzero_samples += u64::from(sample != 0.0);
+            self.peak_abs = self.peak_abs.max(sample.abs());
+            if self.first_sample_count < self.first_samples.len() {
+                self.first_samples[self.first_sample_count] = sample;
+                self.first_sample_count += 1;
+            }
+        }
+        if self.first_nonzero_frame.is_none() {
+            self.first_nonzero_frame = samples
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .find(|frame| {
+                    frame.iter().all(|sample| sample.is_finite())
+                        && frame.iter().any(|sample| *sample != 0.0)
+                })
+                .copied();
+        }
+    }
+}
+
+pub(super) fn observe_capture_samples(
+    metrics: Option<&mut CaptureDiagnostics>,
+    decoded: &[f32],
+    expected: [f32; 2],
+    seen: &mut Observation,
+) -> anyhow::Result<()> {
+    // Retain the actual packet even when its samples fail pattern validation.
+    if let Some(metrics) = metrics {
+        metrics.samples(decoded);
+    }
+    seen.observe(decoded, expected)
 }
 
 enum Service {
@@ -65,6 +155,8 @@ pub(super) struct Stream {
     decoded: Vec<f32>,
     pub discontinuities: u64,
     pub position: PositionProgress,
+    mode: NativeMode,
+    pub capture_diagnostics: Option<CaptureDiagnostics>,
 }
 
 pub(super) fn descriptor(format: SampleFormat, channels: Channels) -> WAVEFORMATEXTENSIBLE {
@@ -102,55 +194,77 @@ impl Stream {
         period_evidence: &mut PeriodEvidence,
     ) -> anyhow::Result<Self> {
         let wave = descriptor(format, channels);
+        ensure!(
+            mode != NativeMode::SharedCapture
+                || (intent == Intent::Microphone
+                    && channels == Channels::Stereo
+                    && format == SampleFormat::Pcm16),
+            "SharedCapture requires owned stereo PCM16 microphone"
+        );
         // SAFETY: complete descriptor, apartment-local COM objects, no reference
         // escapes Initialize. No fallback format or Windows SRC is requested.
         let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
-        let supported =
-            unsafe { client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &wave.Format, None) };
-        supported
-            .ok()
-            .context("IsFormatSupported(exact exclusive format)")?;
-        ensure!(supported == S_OK, "exclusive format was not an exact match");
-        let (mut default_hns, mut minimum_hns) = (0, 0);
-        unsafe { client.GetDevicePeriod(Some(&mut default_hns), Some(&mut minimum_hns))? };
-        let mut period = period_evidence.select(default_hns, minimum_hns)?;
-        let initialize = |client: &IAudioClient, period| unsafe {
-            client.Initialize(
-                AUDCLNT_SHAREMODE_EXCLUSIVE,
-                stream_flags(mode),
-                period,
-                period,
-                &wave.Format,
-                None,
-            )
-        };
-        let initial = initialize(&client, period);
-        if initial
-            .as_ref()
-            .is_err_and(|e| e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
-        {
-            let frames = unsafe { client.GetBufferSize()? };
+        if mode == NativeMode::SharedCapture {
             ensure!(
-                (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
-                "alignment buffer out of bounds: {frames}"
+                !period_evidence.minimum_period,
+                "SharedCapture refuses minimum period"
             );
-            period = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
-            // Record the attempted retry before fresh activation can fail. This
-            // request is not a measurement of the eventual native cadence.
-            period_evidence.record_alignment_retry(period);
-            // Failed Initialize needs a fresh client, not a second Initialize.
-            drop(client);
-            client = unsafe { device.Activate(CLSCTX_ALL, None)? };
-            initialize(&client, period).context("Initialize(aligned exclusive)")?;
+            let (share, flags, duration, periodicity) = initialization_parameters(mode, 0);
+            period_evidence.initial_request_hns = Some(duration);
+            period_evidence.final_request_hns = Some(duration);
+            // Exact client PCM16 descriptor; no AUTOCONVERTPCM, closest format,
+            // alignment retry or Exclusive fallback is requested.
+            unsafe { client.Initialize(share, flags, duration, periodicity, &wave.Format, None) }
+                .context("Initialize(exact shared PCM16 capture)")?;
         } else {
-            initial.context("Initialize(exclusive)")?;
+            let supported = unsafe {
+                client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &wave.Format, None)
+            };
+            supported
+                .ok()
+                .context("IsFormatSupported(exact exclusive format)")?;
+            ensure!(supported == S_OK, "exclusive format was not an exact match");
+            let (mut default_hns, mut minimum_hns) = (0, 0);
+            unsafe { client.GetDevicePeriod(Some(&mut default_hns), Some(&mut minimum_hns))? };
+            let mut period = period_evidence.select(default_hns, minimum_hns)?;
+            let initialize = |client: &IAudioClient, period| unsafe {
+                client.Initialize(
+                    AUDCLNT_SHAREMODE_EXCLUSIVE,
+                    stream_flags(mode),
+                    period,
+                    period,
+                    &wave.Format,
+                    None,
+                )
+            };
+            let initial = initialize(&client, period);
+            if initial
+                .as_ref()
+                .is_err_and(|e| e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
+            {
+                let frames = unsafe { client.GetBufferSize()? };
+                ensure!(
+                    (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
+                    "alignment buffer out of bounds: {frames}"
+                );
+                period = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
+                // Record the attempted retry before fresh activation can fail. This
+                // request is not a measurement of the eventual native cadence.
+                period_evidence.record_alignment_retry(period);
+                // Failed Initialize needs a fresh client, not a second Initialize.
+                drop(client);
+                client = unsafe { device.Activate(CLSCTX_ALL, None)? };
+                initialize(&client, period).context("Initialize(aligned exclusive)")?;
+            } else {
+                initial.context("Initialize(exclusive)")?;
+            }
         }
         let frames = unsafe { client.GetBufferSize()? };
         ensure!(
             (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
             "native buffer out of bounds: {frames}"
         );
-        let event = if mode == NativeMode::Event {
+        let event = if mode != NativeMode::Timer {
             // SAFETY: auto-reset, unnamed, non-inheritable event transferred once.
             let event = unsafe { CreateEventW(None, false, false, None)? };
             let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
@@ -189,6 +303,9 @@ impl Stream {
             decoded: vec![0.0; frames as usize * 2],
             discontinuities: 0,
             position,
+            mode,
+            capture_diagnostics: (mode == NativeMode::SharedCapture)
+                .then(CaptureDiagnostics::default),
         };
         encode_interleaved(
             &pattern.repeat(frames as usize),
@@ -208,14 +325,26 @@ impl Stream {
             self.render(service, self.frames)?;
         }
         // SAFETY: fully initialized client; Drop stops on every later error.
-        unsafe { self.client.Start() }.context("Start(exclusive)")?;
+        unsafe { self.client.Start() }.with_context(|| {
+            if self.mode == NativeMode::SharedCapture {
+                "Start(shared capture)"
+            } else {
+                "Start(exclusive)"
+            }
+        })?;
         self.active = true;
         Ok(())
     }
 
     pub fn stop(&mut self) -> anyhow::Result<()> {
         if self.active {
-            unsafe { self.client.Stop() }.context("Stop(exclusive)")?;
+            unsafe { self.client.Stop() }.with_context(|| {
+                if self.mode == NativeMode::SharedCapture {
+                    "Stop(shared capture)"
+                } else {
+                    "Stop(exclusive)"
+                }
+            })?;
             self.active = false;
         }
         Ok(())
@@ -229,7 +358,8 @@ impl Stream {
         // Probe polling is control-side and is not a production timing path.
         if let Some(event) = &self.event {
             match unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 0) } {
-                WAIT_TIMEOUT => return Ok(()),
+                WAIT_TIMEOUT if self.mode != NativeMode::SharedCapture => return Ok(()),
+                WAIT_TIMEOUT => {}
                 WAIT_OBJECT_0 => {}
                 WAIT_FAILED => {
                     return Err(windows::core::Error::from_thread()).context("native event wait");
@@ -267,12 +397,29 @@ impl Stream {
                 let (mut frames, mut flags) = (0, 0);
                 // SAFETY: initialized capture client, writable packet outputs.
                 // S_BUFFER_EMPTY is a successful call with zero frames.
-                let available = capture_packet_available(unsafe {
-                    service.GetBuffer(&mut pointer, &mut frames, &mut flags, None, None)
-                })
-                .context("GetBuffer(exclusive capture)")?;
+                let available = if self.mode == NativeMode::SharedCapture {
+                    // One packet per poll bounds the drain; all three lease
+                    // operations remain on this same probe-owner thread.
+                    if unsafe { service.GetNextPacketSize() }
+                        .context("GetNextPacketSize(shared capture)")?
+                        == 0
+                    {
+                        return Ok(());
+                    }
+                    unsafe { service.GetBuffer(&mut pointer, &mut frames, &mut flags, None, None) }
+                        .context("GetBuffer(shared capture)")?;
+                    true
+                } else {
+                    capture_packet_available(unsafe {
+                        service.GetBuffer(&mut pointer, &mut frames, &mut flags, None, None)
+                    })
+                    .context("GetBuffer(exclusive capture)")?
+                };
                 if !available || frames == 0 {
                     return Ok(());
+                }
+                if let Some(metrics) = &mut self.capture_diagnostics {
+                    metrics.packet(frames, flags);
                 }
                 let result = (|| -> anyhow::Result<()> {
                     ensure!(
@@ -297,7 +444,12 @@ impl Stream {
                     if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
                         self.discontinuities += 1;
                     }
-                    seen.observe(decoded, expected)
+                    observe_capture_samples(
+                        self.capture_diagnostics.as_mut(),
+                        decoded,
+                        expected,
+                        seen,
+                    )
                 })();
                 // Return the lease even when PCM validation fails.
                 let released = unsafe { service.ReleaseBuffer(frames) };
@@ -359,6 +511,50 @@ impl Drop for Stream {
 mod tests {
     use super::*;
     use windows::core::HRESULT;
+
+    #[test]
+    fn shared_capture_initialization_is_exact_event_zero_duration_and_periodicity() {
+        let (share, flags, duration, periodicity) =
+            initialization_parameters(NativeMode::SharedCapture, 100_000);
+        assert_eq!(
+            share,
+            windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_SHARED
+        );
+        assert_eq!(flags, AUDCLNT_STREAMFLAGS_EVENTCALLBACK);
+        assert_eq!((duration, periodicity), (0, 0));
+        for mode in [NativeMode::Event, NativeMode::Timer] {
+            let (share, flags, duration, periodicity) = initialization_parameters(mode, 100_000);
+            assert_eq!(share, AUDCLNT_SHAREMODE_EXCLUSIVE);
+            assert_eq!(flags, stream_flags(mode));
+            assert_eq!((duration, periodicity), (100_000, 100_000));
+        }
+    }
+
+    #[test]
+    fn shared_capture_metrics_preserve_flags_samples_and_bounded_prefix() {
+        let mut metrics = CaptureDiagnostics::default();
+        metrics.packet(480, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
+        metrics.samples(&[0.0; 960]);
+        metrics.packet(2, AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 | 4);
+        metrics.samples(&[0.25, -0.5, 0.0, f32::NAN]);
+        assert_eq!(metrics.packets, 2);
+        assert_eq!(metrics.frames, 482);
+        assert_eq!(
+            metrics.first_flags,
+            Some(AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)
+        );
+        assert_eq!(metrics.silent_flag_packets, 1);
+        assert_eq!(metrics.silent_flag_frames, 480);
+        assert_eq!(metrics.discontinuity_packets, 1);
+        assert_eq!(metrics.timestamp_error_packets, 1);
+        assert_eq!(metrics.samples, 964);
+        assert_eq!(metrics.nonzero_samples, 2);
+        assert_eq!(metrics.nonfinite_samples, 1);
+        assert_eq!(metrics.peak_abs, 0.5);
+        assert_eq!(metrics.first_sample_count, 16);
+        assert_eq!(metrics.first_samples, [0.0; 16]);
+        assert!(serde_json::to_value(metrics).is_ok());
+    }
 
     #[test]
     fn timer_initialization_never_requests_an_event_callback() {

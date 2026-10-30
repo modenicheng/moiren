@@ -17,6 +17,8 @@ enum NativeMode {
     Event,
     #[serde(rename = "exclusive-timer")]
     Timer,
+    #[serde(rename = "shared-capture-pcm16")]
+    SharedCapture,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,6 +50,9 @@ impl Options {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--help" | "-h" => options.help = true,
                 "--timer" if options.mode == NativeMode::Event => options.mode = NativeMode::Timer,
+                "--shared-microphone" if options.mode == NativeMode::Event => {
+                    options.mode = NativeMode::SharedCapture;
+                }
                 "--minimum-period" if !options.minimum_period => options.minimum_period = true,
                 value if value.starts_with("--intent=") && options.intent_filter.is_none() => {
                     options.intent_filter = Some(match &value["--intent=".len()..] {
@@ -83,6 +88,20 @@ impl Options {
             options.intent_filter.is_none() || options.exercise || options.help,
             "--intent requires --exercise"
         );
+        if options.mode == NativeMode::SharedCapture {
+            anyhow::ensure!(
+                options.exercise || options.help,
+                "--shared-microphone requires --exercise or --help"
+            );
+            anyhow::ensure!(
+                options.help || options.intent_filter == Some(Intent::Microphone),
+                "--shared-microphone requires --intent=microphone"
+            );
+            anyhow::ensure!(
+                !options.minimum_period,
+                "--shared-microphone cannot request an exclusive minimum period"
+            );
+        }
         Ok(options)
     }
 }
@@ -92,6 +111,7 @@ fn main() -> anyhow::Result<()> {
     if options.help || !options.exercise {
         println!(
             "vad_native --exercise [--seconds=2] [--timer] [--intent=playback|microphone] [--minimum-period]\n\
+             vad_native --exercise --shared-microphone --intent=microphone [--seconds=2]\n\
              Explicit installed-driver probe: four owned virtual endpoints,\n\
              MMDevice/adapter identity, exclusive 48 kHz PCM16/Float32,\n\
              mono/stereo in both directions and microphone gate-close silence.\n\
@@ -102,6 +122,8 @@ fn main() -> anyhow::Result<()> {
              Default period: max(device default, 10 ms), unchanged baseline.\n\
              --minimum-period: request the queried exclusive minimum, without clamp/fallback.\n\
              Requests, buffer capacity and driver packets are separate evidence; always unqualified.\n\
+             --shared-microphone: one owned stereo PCM16 Shared capture with direct known-pattern WRITE,\n\
+             exact 48 kHz/480-frame driver shape; no Engine/Bus, format or mode fallback.\n\
              No arguments or --help: display this help without contacting a driver.\n\
              Never installs a driver, selects defaults or changes endpoint settings."
         );
@@ -217,5 +239,55 @@ mod tests {
         }
         assert!(parse(&["--exercise", "--intent=other"]).is_err());
         assert!(parse(&["--exercise", "--intent=microphone", "--intent=playback"]).is_err());
+    }
+
+    #[test]
+    fn shared_microphone_diagnostic_is_explicit_and_cannot_fallback() {
+        for arguments in [
+            vec!["--exercise", "--shared-microphone", "--intent=microphone"],
+            vec!["--intent=microphone", "--shared-microphone", "--exercise"],
+            vec!["--shared-microphone", "--help"],
+        ] {
+            let options = parse(&arguments).unwrap();
+            assert_eq!(
+                serde_json::to_value(options.mode).unwrap(),
+                "shared-capture-pcm16"
+            );
+        }
+        for arguments in [
+            vec!["--shared-microphone"],
+            vec!["--exercise", "--shared-microphone"],
+            vec!["--exercise", "--shared-microphone", "--intent=playback"],
+            vec![
+                "--exercise",
+                "--shared-microphone",
+                "--intent=microphone",
+                "--timer",
+            ],
+            vec![
+                "--exercise",
+                "--timer",
+                "--shared-microphone",
+                "--intent=microphone",
+            ],
+            vec![
+                "--exercise",
+                "--shared-microphone",
+                "--intent=microphone",
+                "--minimum-period",
+            ],
+            vec![
+                "--exercise",
+                "--shared-microphone",
+                "--shared-microphone",
+                "--intent=microphone",
+            ],
+        ] {
+            assert!(parse(&arguments).is_err(), "{arguments:?}");
+        }
+        assert_eq!(
+            serde_json::to_value(parse(&["--exercise"]).unwrap().mode).unwrap(),
+            "exclusive-event"
+        );
     }
 }
