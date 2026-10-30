@@ -128,6 +128,7 @@ struct LiveOptions {
     measurement_schedule: Option<PathBuf>,
     source_schedule: Option<PathBuf>,
     vad_collection: Option<PathBuf>,
+    vad_recorder_mode: moiren_engine::node::DeviceMode,
     calibration: Option<PathBuf>,
     seconds: u64,
     max_input_bytes: u64,
@@ -181,6 +182,7 @@ impl Default for LiveOptions {
             measurement_schedule: None,
             source_schedule: None,
             vad_collection: None,
+            vad_recorder_mode: Default::default(),
             calibration: None,
             seconds: 5,
             max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
@@ -248,7 +250,7 @@ impl LiveOptions {
             "microphone_stable_endpoint_id": id.to_ascii_lowercase(),
             "microphone_requested_name": self.vad_microphone_name,
             "source_native_request": {"mode": "exclusive", "sample_rate": 48000, "channels": 2},
-            "recorder_native_request": {"mode": "shared", "sample_format": "float32", "sample_rate": 48000},
+            "recorder_native_request": {"mode": self.vad_recorder_mode, "sample_format": "float32", "sample_rate": 48000},
             "native_request_meaning": "client modes are distinct; negotiated recorder shape is retained in measurement.info, not inferred from requests",
             "boundary": "internal", "qualified": false,
             "independent_reference": false,
@@ -429,7 +431,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         );
         return Ok(0);
     }
-    let options = parse(arguments)?;
+    let mut options = parse(arguments)?;
     validate(&options)?;
     // Decode and precompute before creating artifacts or opening native owners.
     let source_input = options
@@ -453,6 +455,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         .transpose()?;
     if let Some((_, config)) = &collection_input {
         config.validate_route(options.vad_route_kind())?;
+        options.vad_recorder_mode = config.capture_mode;
     }
     let process_input = options
         .process_collection
@@ -2433,6 +2436,43 @@ mod tests {
             }
         }
         assert!(!directory.exists());
+    }
+
+    #[test]
+    fn exclusive_microphone_dry_run_reports_requested_mode_without_native_claims() {
+        let directory = temp_dir("microphone-exclusive-report");
+        let source_path = directory.with_extension("source.json");
+        let collection_path = directory.with_extension("collection.json");
+        fs::write(&source_path, source_plan_bytes()).unwrap();
+        let config = br#"{"schema_version":2,"capture_mode":"exclusive","ring_frames":1024,"max_pcm_bytes":1048576,"max_metadata_bytes":100000,"max_packets":1000,"preroll_ms":100,"postroll_ms":200}"#;
+        fs::write(&collection_path, config).unwrap();
+        let mut args = microphone_route_args(&directory);
+        for (flag, path) in [
+            ("--source-schedule", &source_path),
+            ("--vad-collection", &collection_path),
+        ] {
+            let index = args.iter().position(|value| value == flag).unwrap();
+            args[index + 1] = path.to_string_lossy().into_owned();
+        }
+        assert_eq!(run(args).unwrap(), 1);
+        for name in ["manifest.json", "report.json"] {
+            let value: Value =
+                serde_json::from_slice(&fs::read(directory.join(name)).unwrap()).unwrap();
+            assert_eq!(
+                value["vad_route"]["recorder_native_request"]["mode"],
+                "exclusive"
+            );
+            assert_eq!(
+                value["vad_route"]["source_native_request"]["mode"],
+                "exclusive"
+            );
+            assert_eq!(value["vad_route"]["independent_reference"], false);
+            assert_eq!(value["measurement_boundary"], "internal");
+        }
+        assert!(!directory.join("measurement.f32le").exists());
+        fs::remove_file(source_path).unwrap();
+        fs::remove_file(collection_path).unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

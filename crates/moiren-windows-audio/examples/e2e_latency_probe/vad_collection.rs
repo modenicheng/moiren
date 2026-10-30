@@ -26,7 +26,7 @@ pub(super) struct Config {
     #[serde(default)]
     input_endpoint_id: String,
     #[serde(default)]
-    capture_mode: moiren_engine::node::DeviceMode,
+    pub(super) capture_mode: moiren_engine::node::DeviceMode,
     ring_frames: usize,
     max_pcm_bytes: u64,
     max_metadata_bytes: u64,
