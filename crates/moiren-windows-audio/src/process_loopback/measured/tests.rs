@@ -124,6 +124,33 @@ fn measured_history_admits_1024_512_and_256_without_inventing_a_native_period() 
 }
 
 #[test]
+fn retained_publication_envelope_only_widens_gap_without_replacing_other_evidence() {
+    let original = measure(regular()).unwrap();
+    let mut expected = serde_json::to_value(&original).unwrap();
+    let widened = original
+        .with_publication_gap_100ns(40_000)
+        .unwrap()
+        .with_publication_gap_100ns(20_000)
+        .unwrap();
+    expected["max_gap_frames"] = 192.into();
+    assert_eq!(serde_json::to_value(widened).unwrap(), expected);
+    assert_eq!(
+        measure(regular())
+            .unwrap()
+            .with_publication_gap_100ns(20_001)
+            .unwrap()
+            .max_gap_frames,
+        97
+    );
+    assert!(matches!(
+        measure(regular())
+            .unwrap()
+            .with_publication_gap_100ns(u64::MAX),
+        Err(MeasuredAdmissionError::ArithmeticOverflow)
+    ));
+}
+
+#[test]
 fn measured_admission_requires_a_target_and_pinned_identity_and_generation() {
     let evidence = measure(regular()).unwrap();
     let policy = target(2048, 256, 16);

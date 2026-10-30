@@ -15,7 +15,7 @@ use moiren_engine::{
 use moiren_windows_audio::capture;
 use moiren_windows_audio::native;
 use moiren_windows_audio::stats;
-use moiren_windows_audio::virtual_owner;
+use moiren_windows_audio::virtual_owner::ClockTick;
 use process_loopback::{ProcessBridgeOptions, ProcessIdentity};
 use std::{
     marker::PhantomData,
@@ -49,6 +49,16 @@ mod clock_bridge;
 #[path = "../../../crates/moiren-windows-audio/src/codec.rs"]
 #[allow(dead_code)]
 mod codec;
+#[path = "../../../crates/moiren-windows-audio/src/virtual_owner/clock_observation.rs"]
+#[allow(dead_code)]
+mod virtual_clock_observation;
+mod virtual_owner {
+    // Keep private publication inside this harness, just like its owner shadow.
+    pub use super::virtual_clock_observation::{
+        VirtualClockCounters, VirtualClockProbe, VirtualClockSnapshot,
+    };
+    pub use moiren_windows_audio::virtual_owner::*;
+}
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/native_observations.rs"]
 // The production adapter exports control-only collectors not used by this shadow.
 #[allow(dead_code, unused_imports)]

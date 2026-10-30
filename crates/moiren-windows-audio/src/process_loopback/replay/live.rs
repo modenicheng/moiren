@@ -55,8 +55,9 @@ impl ProcessTraceArchive {
         )
     }
 
-    // Only the Windows backend can authenticate a retained native owner.
-    #[cfg(windows)]
+    // Native provenance is assigned only by the Windows backend; portable
+    // tests also exercise that label without authenticating a native source.
+    #[cfg(any(windows, test))]
     pub(crate) fn replay_retained_live_window(
         &self,
         process: &ProcessIdentity,

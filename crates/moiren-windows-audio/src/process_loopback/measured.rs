@@ -197,7 +197,7 @@ impl MeasuredProcessDelivery {
     /// Closed retained traces also bound publication with two clock reads.
     /// Widen the measured reserve to their outer envelope, never replace the
     /// independently measured whole-drain or whole-wake maxima with segments.
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn with_publication_gap_100ns(
         mut self,
         gap: u64,

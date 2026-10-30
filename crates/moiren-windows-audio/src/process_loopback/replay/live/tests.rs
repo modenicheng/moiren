@@ -122,6 +122,27 @@ fn live_prefix_replays_open_owners_and_keeps_closed_replay_strict() {
 }
 
 #[test]
+fn retained_live_prefix_keeps_native_origin_without_claiming_closure_or_qualification() {
+    let (_ingress, _source, artifact) = live(false);
+    let report = artifact
+        .replay_retained_live_window(&process(), 7, options(), policy())
+        .unwrap();
+    assert_eq!(report.status, ReplayWindowStatus::NoViolationInWindow);
+    assert_eq!(report.trace_origin, ProcessTraceOrigin::RetainedNativeOwner);
+    assert!(!report.qualified);
+    let prefix = report.prefix.unwrap();
+    assert!(!prefix.packet_writer_finished && !prefix.read_writer_finished);
+    let replay = report.replay.unwrap();
+    assert_eq!(
+        replay.report.trace_origin,
+        ProcessTraceOrigin::RetainedNativeOwner
+    );
+    assert!(!replay.report.qualified);
+    assert!(!artifact.packet_history.writer_finished);
+    assert!(!artifact.queue_history.writer_finished);
+}
+
+#[test]
 fn live_prefix_density_loss_dominates_insufficient_exposure() {
     let (_ingress, _source, artifact) = live(true);
     assert!(options().prepare().is_ok(), "per-wake budget must fit");

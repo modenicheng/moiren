@@ -434,7 +434,7 @@ impl ObservedProcessTrace {
 
     /// Internal origin promotion only after reading immutable retained Session
     /// metadata and its exact bridge histories, never an externally edited DTO.
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn with_retained_owner_origin(mut self) -> Self {
         self.origin = ProcessTraceOrigin::RetainedNativeOwner;
         self

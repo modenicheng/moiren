@@ -81,6 +81,27 @@ fn candidate(target: u32, capacity: u32) -> ProcessBridgeOptions {
 }
 
 #[test]
+fn retained_owner_promotion_changes_origin_without_qualifying_replayed_pcm() {
+    let (packets, reads) = collected(8);
+    let trace = trace(packets, reads).unwrap();
+    let caller = trace.replay(&process(), 7, candidate(12, 32)).unwrap();
+    let retained = trace
+        .with_retained_owner_origin()
+        .replay(&process(), 7, candidate(12, 32))
+        .unwrap();
+    assert_eq!(caller.trace_origin, ProcessTraceOrigin::CallerSupplied);
+    assert_eq!(
+        retained.trace_origin,
+        ProcessTraceOrigin::RetainedNativeOwner
+    );
+    assert!(!caller.qualified && !retained.qualified);
+    let mut expected = serde_json::to_value(caller).unwrap();
+    expected["trace_origin"] =
+        serde_json::to_value(ProcessTraceOrigin::RetainedNativeOwner).unwrap();
+    assert_eq!(serde_json::to_value(retained).unwrap(), expected);
+}
+
+#[test]
 fn ingress_elapsed_candidate_refuses_replay_instead_of_silently_disabling_enforcement() {
     let (packets, reads) = collected(8);
     let trace = trace(packets, reads).unwrap();
