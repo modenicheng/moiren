@@ -13,18 +13,82 @@ use crate::service::{
     InputSelection, MixerState, RequestId, RunLimit, SessionPhase, SessionSpec,
 };
 
-pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
+pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<DeviceRow> {
     match backend {
-        AudioBackend::Wasapi => &catalog.inputs,
-        AudioBackend::Asio => &catalog.asio_drivers,
+        AudioBackend::Wasapi => catalog
+            .inputs
+            .iter()
+            .filter(|row| {
+                !catalog
+                    .vad_endpoints
+                    .values()
+                    .any(|id| id == &row.endpoint_id)
+            })
+            .cloned()
+            .collect(),
+        AudioBackend::Asio => catalog.asio_drivers.clone(),
     }
 }
 
-pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
+pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<DeviceRow> {
     match backend {
-        AudioBackend::Wasapi => &catalog.outputs,
-        AudioBackend::Asio => &catalog.asio_drivers,
+        AudioBackend::Wasapi => catalog
+            .outputs
+            .iter()
+            .filter(|row| {
+                !catalog
+                    .vad_endpoints
+                    .values()
+                    .any(|id| id == &row.endpoint_id)
+            })
+            .cloned()
+            .collect(),
+        AudioBackend::Asio => catalog.asio_drivers.clone(),
     }
+}
+
+/// Application-facing directions differ from Windows flow only for owned VAD exports.
+pub(crate) fn device_rows(
+    catalog: &DeviceCatalog,
+    exports: &[crate::service::ExportStatus],
+    backend: AudioBackend,
+    input: bool,
+) -> Vec<DeviceRow> {
+    let mut rows = if input {
+        input_rows(catalog, backend)
+    } else {
+        output_rows(catalog, backend)
+    };
+    if backend == AudioBackend::Wasapi {
+        let direction = if input {
+            crate::service::ExportDirection::Playback
+        } else {
+            crate::service::ExportDirection::Microphone
+        };
+        rows.extend(
+            exports
+                .iter()
+                .filter(|status| {
+                    status.intent.enabled
+                        && status.intent.direction == direction
+                        && status.resource == crate::service::ExportResourceState::Present
+                })
+                .filter_map(|status| {
+                    let name = status.windows_name.as_ref()?;
+                    if name.error.is_some() {
+                        return None;
+                    }
+                    Some(DeviceRow {
+                        endpoint_id: name.mmdevice_id.clone()?,
+                        name: name
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| status.intent.name.clone()),
+                    })
+                }),
+        );
+    }
+    rows
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +193,7 @@ impl SelectionState {
                 .as_deref()
                 .and_then(|id| {
                     input_rows(catalog, self.backend)
-                        .iter()
+                        .into_iter()
                         .find(|r| r.endpoint_id == id)
                 })
                 .map(|r| InputSelection::Physical {
@@ -579,7 +643,7 @@ fn primary_parameters(snapshot: &AppSnapshot) -> (f64, f64) {
 
 pub fn output_name(snapshot: &AppSnapshot, id: &str) -> String {
     output_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-        .iter()
+        .into_iter()
         .find(|row| row.endpoint_id == id)
         .map(|row| row.name.clone())
         .unwrap_or_else(|| t!("Unavailable output").into())
@@ -596,6 +660,14 @@ pub fn display_label(
     use moiren_core::graph::NodeKind;
     if entry.label != crate::service::default_label(kind) {
         return entry.label.clone();
+    }
+    if let Some(export) = snapshot
+        .graph
+        .exports
+        .iter()
+        .find(|export| export.enabled && export.binding == Some(entry.id))
+    {
+        return export.name.clone();
     }
     match kind {
         NodeKind::Source => entry
@@ -621,7 +693,7 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
         .to_string(),
         InputSelection::Physical { endpoint_id } => {
             input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-                .iter()
+                .into_iter()
                 .find(|row| row.endpoint_id == *endpoint_id)
                 .map(|row| row.name.clone())
                 .unwrap_or_else(|| t!("Unavailable input").into())

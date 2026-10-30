@@ -1,5 +1,5 @@
 use super::{IntentEdit, binding_candidate, create_export, edit_export};
-use crate::service::{ExportDirection, ExportIntent, ServiceGraph};
+use crate::service::{ExportDirection, ExportIntent, GraphEdit, ServiceGraph};
 use moiren_core::graph::NodeKind;
 use moiren_engine::node::VirtualEndpointId;
 
@@ -62,30 +62,81 @@ fn edits_preserve_other_intents_identity_and_channel_shape() {
 
 #[test]
 fn binding_requires_matching_direction_shape_and_exclusive_graph_io() {
-    let mut graph = ServiceGraph::default().snapshot();
-    let source = graph.graph.create_node(NodeKind::Source, 2).unwrap();
-    let sink = graph.graph.create_node(NodeKind::Sink, 2).unwrap();
-    let mono = graph.graph.create_node(NodeKind::Source, 1).unwrap();
-    let gain = graph.graph.create_node(NodeKind::Gain, 2).unwrap();
-    graph.exports = create_export(&graph, id(1), ExportDirection::Playback, "Playback", 2).unwrap();
-    assert_eq!(binding_candidate(&graph, id(1), Some(source)), Some(source));
+    let mut service = ServiceGraph::default();
+    let source = service.snapshot().graph.nodes()[0].id();
+    let sink = service.snapshot().graph.nodes()[3].id();
+    let gain = service.snapshot().graph.nodes()[1].id();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Source,
+            channels: 1,
+        })
+        .unwrap();
+    let mono = service.snapshot().graph.nodes()[4].id();
+    service
+        .edit(GraphEdit::SetExports(vec![ExportIntent {
+            endpoint_id: id(1),
+            direction: ExportDirection::Playback,
+            name: "Playback".into(),
+            channels: 2,
+            enabled: true,
+            binding: None,
+        }]))
+        .unwrap();
+    assert_eq!(
+        binding_candidate(&service.snapshot(), id(1), Some(source)),
+        Some(source)
+    );
     for selection in [None, Some(sink), Some(mono), Some(gain)] {
-        assert_eq!(binding_candidate(&graph, id(1), selection), None);
+        assert_eq!(
+            binding_candidate(&service.snapshot(), id(1), selection),
+            None
+        );
     }
-    assert!(edit_export(&graph, id(1), IntentEdit::Binding(Some(sink))).is_err());
-    graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(Some(source))).unwrap();
-    graph.exports.push(ExportIntent {
+    assert!(
+        service
+            .edit(GraphEdit::BindExport {
+                endpoint_id: id(1),
+                node: Some(sink)
+            })
+            .is_err()
+    );
+    service
+        .edit(GraphEdit::BindExport {
+            endpoint_id: id(1),
+            node: Some(source),
+        })
+        .unwrap();
+    let mut exports = service.snapshot().exports;
+    exports.push(ExportIntent {
         endpoint_id: id(2),
         name: "Other".into(),
         binding: None,
-        ..graph.exports[0].clone()
+        ..exports[0].clone()
     });
-    assert_eq!(binding_candidate(&graph, id(2), Some(source)), None);
-    assert!(edit_export(&graph, id(2), IntentEdit::Binding(Some(source))).is_err());
-    graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(None)).unwrap();
-    assert_eq!(binding_candidate(&graph, id(2), Some(source)), Some(source));
-    graph.exports[1].direction = ExportDirection::Microphone;
-    assert_eq!(binding_candidate(&graph, id(2), Some(sink)), Some(sink));
+    service.edit(GraphEdit::SetExports(exports)).unwrap();
+    assert_eq!(
+        binding_candidate(&service.snapshot(), id(2), Some(source)),
+        None
+    );
+    service
+        .edit(GraphEdit::BindExport {
+            endpoint_id: id(2),
+            node: Some(source),
+        })
+        .unwrap();
+    assert_eq!(service.snapshot().exports[0].binding, None);
+    assert_eq!(service.snapshot().exports[1].binding, Some(source));
+    service
+        .edit(GraphEdit::BindExport {
+            endpoint_id: id(2),
+            node: None,
+        })
+        .unwrap();
+    assert_eq!(
+        binding_candidate(&service.snapshot(), id(1), Some(source)),
+        Some(source)
+    );
 }
 
 #[test]
@@ -101,29 +152,84 @@ fn create_enforces_service_export_limit() {
 #[test]
 fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
     for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
-        let mut graph = ServiceGraph::default().snapshot();
-        let stereo = graph.graph.create_node(direction.node_kind(), 2).unwrap();
-        let mono = graph.graph.create_node(direction.node_kind(), 1).unwrap();
-        graph.exports = create_export(&graph, id(1), direction, "Endpoint", 2).unwrap();
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(Some(stereo))).unwrap();
-        assert!(edit_export(&graph, id(1), IntentEdit::Channels(1)).is_err());
-        assert_eq!(graph.exports[0].binding, Some(stereo));
-        assert_eq!(graph.exports[0].channels, 2);
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(None)).unwrap();
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Channels(1)).unwrap();
-        assert_eq!(graph.exports[0].endpoint_id, id(1));
-        assert_eq!(graph.exports[0].name, "Endpoint");
-        assert_eq!(graph.exports[0].direction, direction);
-        assert!(graph.exports[0].enabled);
-        assert_eq!(binding_candidate(&graph, id(1), Some(stereo)), None);
-        assert_eq!(binding_candidate(&graph, id(1), Some(mono)), Some(mono));
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(Some(mono))).unwrap();
-        assert!(edit_export(&graph, id(1), IntentEdit::Channels(2)).is_err());
-        assert!(edit_export(&graph, id(1), IntentEdit::Channels(0)).is_err());
-        assert!(edit_export(&graph, id(1), IntentEdit::Channels(3)).is_err());
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(None)).unwrap();
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Channels(2)).unwrap();
-        assert_eq!(binding_candidate(&graph, id(1), Some(stereo)), Some(stereo));
+        let mut service = ServiceGraph::default();
+        let stereo = if direction == ExportDirection::Playback {
+            service.snapshot().graph.nodes()[0].id()
+        } else {
+            service.snapshot().graph.nodes()[3].id()
+        };
+        service
+            .edit(GraphEdit::AddNode {
+                kind: direction.node_kind(),
+                channels: 1,
+            })
+            .unwrap();
+        let mono = service.snapshot().graph.nodes()[4].id();
+        service
+            .edit(GraphEdit::SetExports(vec![ExportIntent {
+                endpoint_id: id(1),
+                direction,
+                name: "Endpoint".into(),
+                channels: 2,
+                enabled: true,
+                binding: None,
+            }]))
+            .unwrap();
+        service
+            .edit(GraphEdit::BindExport {
+                endpoint_id: id(1),
+                node: Some(stereo),
+            })
+            .unwrap();
+        let before = service.snapshot();
+        assert!(edit_export(&before, id(1), IntentEdit::Channels(1)).is_err());
+        service
+            .edit(GraphEdit::BindExport {
+                endpoint_id: id(1),
+                node: None,
+            })
+            .unwrap();
+        let mut candidate = service.snapshot();
+        candidate.exports = edit_export(&candidate, id(1), IntentEdit::Channels(1)).unwrap();
+        service
+            .edit(GraphEdit::SetExports(candidate.exports.clone()))
+            .unwrap();
+        let exports = candidate.exports;
+        assert_eq!(exports[0].endpoint_id, id(1));
+        assert_eq!(exports[0].name, "Endpoint");
+        assert_eq!(exports[0].direction, direction);
+        assert!(exports[0].enabled);
+        assert_eq!(
+            binding_candidate(&service.snapshot(), id(1), Some(stereo)),
+            None
+        );
+        assert_eq!(
+            binding_candidate(&service.snapshot(), id(1), Some(mono)),
+            Some(mono)
+        );
+        service
+            .edit(GraphEdit::BindExport {
+                endpoint_id: id(1),
+                node: Some(mono),
+            })
+            .unwrap();
+        assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(2)).is_err());
+        assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(0)).is_err());
+        assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(3)).is_err());
+        service
+            .edit(GraphEdit::BindExport {
+                endpoint_id: id(1),
+                node: None,
+            })
+            .unwrap();
+        assert_eq!(
+            binding_candidate(&service.snapshot(), id(1), Some(stereo)),
+            None
+        );
+        assert_eq!(
+            binding_candidate(&service.snapshot(), id(1), Some(mono)),
+            Some(mono)
+        );
     }
 }
 

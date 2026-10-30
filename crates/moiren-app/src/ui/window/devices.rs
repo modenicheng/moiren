@@ -1,11 +1,39 @@
 use super::*;
-use crate::ui::state::{SourceMode, input_rows, output_name, output_rows, source_name};
+use crate::ui::state::{SourceMode, output_name, source_name};
 use controls::*;
 use rust_i18n::t;
 
 mod exports;
 pub(super) use exports::ExportControls;
 mod overrides;
+
+/// Quick-bind candidate for a virtual export row: the first graph node whose
+/// kind and channel count match the export, preferring one no other export
+/// holds so the shortcut never steals an occupied IO while a free match
+/// exists. The service edit still validates the final choice.
+fn export_bind_candidate(
+    graph: &crate::service::GraphSnapshot,
+    direction: crate::service::ExportDirection,
+    channels: usize,
+) -> Option<moiren_core::graph::NodeId> {
+    let kind = direction.node_kind();
+    let mut occupied = None;
+    for node in graph.graph.nodes() {
+        if node.kind() != kind || node.channels() != channels {
+            continue;
+        }
+        let id = node.id();
+        if graph
+            .exports
+            .iter()
+            .all(|export| export.binding != Some(id))
+        {
+            return Some(id);
+        }
+        occupied.get_or_insert(id);
+    }
+    occupied
+}
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeviceTab {
@@ -62,19 +90,27 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         }
         DeviceTab::Inputs | DeviceTab::Outputs => {
             let input = shell.device_tab == DeviceTab::Inputs;
-            let available = if input {
-                input_rows(catalog, snapshot.audio_settings.backend)
+            let available = crate::ui::state::device_rows(
+                catalog,
+                &snapshot.exports,
+                snapshot.audio_settings.backend,
+                input,
+            );
+            let direction = if input {
+                crate::service::ExportDirection::Playback
             } else {
-                output_rows(catalog, snapshot.audio_settings.backend)
+                crate::service::ExportDirection::Microphone
             };
-            let mut rows = available.to_vec();
+            let mut rows = available.clone();
             let saved = if input {
                 &shell.settings.device.audio.input_overrides
             } else {
                 &shell.settings.device.audio.output_overrides
             };
             for id in saved.keys() {
-                if !rows.iter().any(|row| &row.endpoint_id == id) {
+                if !catalog.vad_endpoints.values().any(|owned| owned == id)
+                    && !rows.iter().any(|row| &row.endpoint_id == id)
+                {
                     rows.push(crate::service::DeviceRow {
                         endpoint_id: id.clone(),
                         name: t!("Unavailable device (saved override)").into(),
@@ -95,7 +131,17 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .iter()
                     .any(|entry| entry.endpoint_id == row.endpoint_id);
                 let inspected = shell.selected_device.as_ref() == Some(&row.endpoint_id);
-                let selected = if input {
+                let vad_export = snapshot.exports.iter().find(|status| {
+                    status.intent.direction == direction
+                        && status
+                            .windows_name
+                            .as_ref()
+                            .and_then(|name| name.mmdevice_id.as_deref())
+                            == Some(row.endpoint_id.as_str())
+                });
+                let selected = if let Some(status) = vad_export {
+                    status.intent.binding.is_some()
+                } else if input {
                     state.selection.input_id.as_ref() == Some(&row.endpoint_id)
                 } else {
                     state.selection.output_id.as_ref() == Some(&row.endpoint_id)
@@ -105,7 +151,15 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 } else {
                     catalog.default_output_endpoint_id.as_ref() == Some(&row.endpoint_id)
                 };
-                let active=snapshot.phase==SessionPhase::Running&&snapshot.desired.as_ref().is_some_and(|s|if input{matches!(&s.source,crate::service::InputSelection::Physical{endpoint_id} if endpoint_id==&row.endpoint_id)}else{s.output_endpoint_id==row.endpoint_id});
+                let active = vad_export.map_or_else(
+                    || snapshot.phase == SessionPhase::Running
+                        && snapshot.desired.as_ref().is_some_and(|s| if input {
+                            matches!(&s.source, crate::service::InputSelection::Physical { endpoint_id } if endpoint_id == &row.endpoint_id)
+                        } else {
+                            s.output_endpoint_id == row.endpoint_id
+                        }),
+                    |status| status.active_revision.is_some(),
+                );
                 let this = cx.entity();
                 let id = row.endpoint_id.clone();
                 list = list.child(
@@ -142,8 +196,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .when(default && !asio, |v| {
                             v.child(badge(t!("Default"), theme::TEXT_MUTED))
                         })
-                        .child(
-                            button(SharedString::from(format!("inspect-{id}")), t!("Configure"))
+                        .when(vad_export.is_none(), |row| {
+                            row.child(
+                                button(
+                                    SharedString::from(format!("inspect-{id}")),
+                                    t!("Configure"),
+                                )
                                 .on_click({
                                     let this = cx.entity();
                                     let id = id.clone();
@@ -153,30 +211,84 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         })
                                     }
                                 }),
-                        )
+                            )
+                        })
                         .when(active, |v| v.child(badge(t!("Active"), theme::SUCCESS)))
                         .child(
                             button(
                                 SharedString::from(format!("choose-{id}")),
-                                if selected {
+                                if vad_export.is_some() {
+                                    if selected { t!("Bound") } else { t!("Bind") }
+                                } else if selected {
                                     t!("Next start")
                                 } else {
                                     t!("Use next start")
                                 },
                             )
-                            .disabled(!present || state.pending_request)
+                            .disabled(
+                                !present
+                                    || state.pending_request
+                                    || vad_export.is_some_and(|status| {
+                                        selected
+                                            || export_bind_candidate(
+                                                &snapshot.graph,
+                                                direction,
+                                                status.intent.channels,
+                                            )
+                                            .is_none()
+                                    }),
+                            )
                             .on_click(move |_, _, cx| {
                                 this.update(cx, |s, cx| {
-                                    s.state.update(cx, |state, _| {
-                                        if input {
-                                            state.selection.input_id = Some(id.clone());
-                                            state.selection.process_key = None;
-                                            state.source_mode = SourceMode::Input;
-                                        } else {
-                                            state.selection.output_id = Some(id.clone());
+                                    if let Some(status) =
+                                        s.state.read(cx).snapshot.exports.iter().find(|status| {
+                                            status.intent.enabled
+                                                && status.intent.direction == direction
+                                                && status
+                                                    .windows_name
+                                                    .as_ref()
+                                                    .and_then(|name| name.mmdevice_id.as_deref())
+                                                    == Some(id.as_str())
+                                        })
+                                    {
+                                        let endpoint_id = status.intent.endpoint_id;
+                                        let node = export_bind_candidate(
+                                            &s.state.read(cx).snapshot.graph,
+                                            direction,
+                                            status.intent.channels,
+                                        );
+                                        if let Some(node) = node {
+                                            s.state.update(cx, |state, _| {
+                                                state.dispatch(AppRequest::EditGraph(
+                                                    crate::service::GraphEdit::BindExport {
+                                                        endpoint_id,
+                                                        node: Some(node),
+                                                    },
+                                                ));
+                                            });
                                         }
-                                        state.bind_candidate_resources();
-                                    });
+                                    } else {
+                                        if s.state
+                                            .read(cx)
+                                            .snapshot
+                                            .catalog
+                                            .vad_endpoints
+                                            .values()
+                                            .any(|owned| owned == &id)
+                                        {
+                                            return;
+                                        }
+                                        s.state.update(cx, |state, _| {
+                                            if input {
+                                                state.selection.input_id = Some(id.clone());
+                                                state.selection.process_key = None;
+                                                state.source_mode = SourceMode::Input;
+                                            } else {
+                                                state.selection.output_id = Some(id.clone());
+                                            }
+                                            state.bind_candidate_resources();
+                                        });
+                                    }
                                     cx.notify();
                                 })
                             }),
@@ -374,3 +486,6 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .gpui_test_observe()
         .into_any_element()
 }
+
+#[cfg(test)]
+mod tests;

@@ -27,6 +27,7 @@ pub(crate) struct Work {
 pub(crate) struct NativeObservation {
     pub intent: ExportIntent,
     pub snapshot: Option<DriverStamp>,
+    pub windows_name: Option<WindowsEndpointNameObservation>,
     pub resource: ExportResourceState,
     pub gate_open: bool,
     pub allow_default: bool,
@@ -162,10 +163,12 @@ impl Runtime {
             Err(error) => {
                 self.healthy.clear();
                 self.ready.clear();
+                service.windows_names.clear();
                 self.revoke();
                 return vec![error];
             }
         };
+        service.windows_names.clear();
         self.native_empty = batch
             .observations
             .iter()
@@ -184,6 +187,14 @@ impl Runtime {
             }
             if let Some(stamp) = native.snapshot {
                 self.stamps.insert(native.intent.endpoint_id, stamp);
+            }
+            if native.resource == ExportResourceState::Present
+                && native.error.is_none()
+                && let (Some(name), Some(stamp)) = (&native.windows_name, native.snapshot)
+                && name.native_identity == [stamp[0], stamp[1], stamp[2]]
+                && name.error.is_none()
+            {
+                service.windows_names.insert(id, name.clone());
             }
             #[cfg(feature = "vad-integration-probe")]
             let native_stamp = native.snapshot.filter(|_| {
@@ -443,9 +454,19 @@ impl Adapter for WindowsAdapter {
                 errors.push(error);
             }
         }
-        let observations = self
-            .0
-            .export_observations()
+        let provider_views = self.0.export_observations();
+        let name_targets = provider_views
+            .iter()
+            .map(|view| moiren_windows_audio::vad::VadEndpointNameTarget {
+                endpoint_id: view.spec.id,
+                intent: view.spec.intent,
+                snapshot: view.snapshot,
+                removing: view.removing,
+                error: view.error.clone(),
+            })
+            .collect::<Vec<_>>();
+        let windows_names = self.0.export_name_observations(&name_targets);
+        let observations = provider_views
             .into_iter()
             .map(|view| {
                 let resource = match view.snapshot.map(|s| s.state()) {
@@ -455,6 +476,25 @@ impl Adapter for WindowsAdapter {
                     Some(PdoState::Present) => ExportResourceState::Present,
                     _ => ExportResourceState::Creating,
                 };
+                let snapshot = view.snapshot.map(|s| {
+                    [
+                        s.pdo_token().get(),
+                        s.session_epoch(),
+                        s.endpoint_generation(),
+                        s.stream_generation(),
+                        s.gate_epoch(),
+                    ]
+                });
+                let windows_name = windows_names
+                    .iter()
+                    .find(|name| name.endpoint_id == view.spec.id)
+                    .map(|name| WindowsEndpointNameObservation {
+                        native_identity: name.native_identity,
+                        observed_qpc_100ns: name.observed_qpc_100ns,
+                        mmdevice_id: name.mmdevice_id.clone(),
+                        name: name.name.clone(),
+                        error: name.error.clone(),
+                    });
                 NativeObservation {
                     intent: ExportIntent {
                         endpoint_id: view.spec.id,
@@ -468,15 +508,8 @@ impl Adapter for WindowsAdapter {
                         enabled: true,
                         binding: None,
                     },
-                    snapshot: view.snapshot.map(|s| {
-                        [
-                            s.pdo_token().get(),
-                            s.session_epoch(),
-                            s.endpoint_generation(),
-                            s.stream_generation(),
-                            s.gate_epoch(),
-                        ]
-                    }),
+                    snapshot,
+                    windows_name,
                     resource,
                     gate_open: view.snapshot.is_some_and(|s| s.gate_open()),
                     allow_default: view.spec.allow_default,

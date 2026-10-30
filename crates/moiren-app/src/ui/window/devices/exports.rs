@@ -67,7 +67,6 @@ enum IntentEdit {
     Rename(String),
     Channels(usize),
     Enabled(bool),
-    Binding(Option<NodeId>),
     Remove,
 }
 
@@ -105,7 +104,6 @@ fn edit_export(
         IntentEdit::Rename(name) => export.name = name,
         IntentEdit::Channels(channels) => export.channels = channels,
         IntentEdit::Enabled(enabled) => export.enabled = enabled,
-        IntentEdit::Binding(binding) => export.binding = binding,
         IntentEdit::Remove => exports.retain(|export| export.endpoint_id != endpoint_id),
     }
     validate_exports(&exports, &graph.graph)?;
@@ -175,6 +173,23 @@ impl StudioShell {
         self.dispatch_exports(result, cx);
     }
 
+    fn submit_export_binding(
+        &mut self,
+        id: VirtualEndpointId,
+        node: Option<NodeId>,
+        cx: &mut Context<StudioShell>,
+    ) {
+        self.state.update(cx, |state, _| {
+            if !state.pending_request {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::BindExport {
+                    endpoint_id: id,
+                    node,
+                }));
+            }
+        });
+        cx.notify();
+    }
+
     fn dispatch_exports(
         &mut self,
         exports: Result<Vec<ExportIntent>, String>,
@@ -209,7 +224,7 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .child(heading(t!("Virtual exports")))
         .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
         .child(creation_controls(shell, cx))
-        .child(label(t!("Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.")))
+        .child(label(t!("Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.")))
         .child(div().id("export-default-help")
             .aria_label(t!(DEFAULT_ELIGIBILITY_HELP))
             .child(label(t!(DEFAULT_ELIGIBILITY_HELP)))
@@ -501,7 +516,7 @@ fn export_row(
                                 shell.selected_node,
                             );
                             if let Some(node) = selected {
-                                shell.submit_export_edit(id, IntentEdit::Binding(Some(node)), cx);
+                                shell.submit_export_binding(id, Some(node), cx);
                             }
                         });
                     }),
@@ -513,9 +528,7 @@ fn export_row(
                     )
                     .disabled(state.pending_request || desired.binding.is_none())
                     .on_click(move |_, _, cx| {
-                        unbind.update(cx, |shell, cx| {
-                            shell.submit_export_edit(id, IntentEdit::Binding(None), cx)
-                        });
+                        unbind.update(cx, |shell, cx| shell.submit_export_binding(id, None, cx));
                     }),
                 )
                 .child(
