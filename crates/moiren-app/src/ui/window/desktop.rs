@@ -187,6 +187,9 @@ impl Desktop {
                     ..Default::default()
                 }),
                 window_min_size: Some(size(px(940.0), px(600.0))),
+                // The mixer's meters must keep animating while another app is
+                // focused; gpui would otherwise cap the window at ~30 fps.
+                inactive_frame_interval: None,
                 ..Default::default()
             },
             cx,
@@ -258,6 +261,10 @@ impl Desktop {
                 is_movable: false,
                 focus: true,
                 window_background: WindowBackgroundAppearance::Transparent,
+                // The flyout shows live meters even while it is not the
+                // focused window (it is shown from the tray), so the
+                // inactive-window ~30 fps cap must not apply.
+                inactive_frame_interval: None,
                 ..Default::default()
             },
             cx,
