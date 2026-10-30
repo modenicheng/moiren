@@ -53,6 +53,121 @@ fn name(direction: &str) -> NativeName {
 }
 
 #[test]
+fn topology_errors_keep_exact_typed_diagnostics_in_setup_evidence() {
+    use serde_json::json;
+
+    let failures = [
+        (
+            TopologyReadError::Hresult {
+                stage: "GetConnectedTo",
+                hresult: -2147467259,
+            },
+            json!({"kind":"hresult","stage":"GetConnectedTo","hresult":-2147467259i32}),
+        ),
+        (
+            TopologyReadError::ConfigRet {
+                stage: "CM_Get_Parent",
+                code: 13,
+            },
+            json!({"kind":"config_ret","stage":"CM_Get_Parent","code":13}),
+        ),
+        (
+            TopologyReadError::ConnectorCount { count: 2 },
+            json!({"kind":"connector_count","count":2}),
+        ),
+        (
+            TopologyReadError::Dependency {
+                stage: "GetDeviceId",
+                dependency: "GetTopologyObject",
+            },
+            json!({"kind":"dependency","stage":"GetDeviceId","dependency":"GetTopologyObject"}),
+        ),
+        (
+            TopologyReadError::NullString { field: "name" },
+            json!({"kind":"null_string","field":"name"}),
+        ),
+        (
+            TopologyReadError::UnterminatedString {
+                field: "device_id",
+                max_units: 1024,
+            },
+            json!({"kind":"unterminated_string","field":"device_id","max_units":1024}),
+        ),
+        (
+            TopologyReadError::InvalidUtf16 { field: "name" },
+            json!({"kind":"invalid_utf16","field":"name"}),
+        ),
+        (
+            TopologyReadError::PropertyType { property_type: 25 },
+            json!({"kind":"property_type","property_type":25}),
+        ),
+        (
+            TopologyReadError::PropertyBytes {
+                bytes: 24,
+                capacity_bytes: 20,
+            },
+            json!({"kind":"property_bytes","bytes":24,"capacity_bytes":20}),
+        ),
+        (
+            TopologyReadError::PropertyTermination,
+            json!({"kind":"property_termination"}),
+        ),
+        (
+            TopologyReadError::UnexpectedDetailSuccess,
+            json!({"kind":"unexpected_detail_success"}),
+        ),
+    ];
+    for (error, expected) in failures {
+        assert_eq!(serde_json::to_value(&error).unwrap(), expected);
+        let evidence = SetupInterfaceEvidence::Error { error };
+        assert_eq!(
+            serde_json::to_value(evidence).unwrap(),
+            json!({"status":"error","error":expected})
+        );
+    }
+}
+
+#[test]
+fn every_rename_phase_retains_its_first_failure_after_a_successful_retry() {
+    let phases = [
+        (Phase::Baseline, "baseline"),
+        (Phase::StrictHeld, "strict_held"),
+        (Phase::HeldRelease, "held_release"),
+        (Phase::DirectRemoved, "direct_removed"),
+        (Phase::ReplacementPresent, "replacement_present"),
+        (Phase::ReplacementNativeInit, "replacement_native_init"),
+        (Phase::ExactWindowsName, "exact_windows_name"),
+        (Phase::EngineConfirmation, "engine_confirmation"),
+        (Phase::DiagnosticContinuation, "diagnostic_continuation"),
+        (Phase::ReplacementRelease, "replacement_release"),
+    ];
+    let mut case = completed_case();
+    for (phase, tag) in phases {
+        let failed: Option<()> = step(&mut case, phase, &mut |_: &Case| {}, |_, _| {
+            anyhow::bail!("{tag} failed")
+        });
+        assert!(failed.is_none());
+        assert!(step(&mut case, phase, &mut |_: &Case| {}, |_, _| Ok(())).is_some());
+    }
+    case.finish();
+    assert!(!case.completed && !case.qualified);
+    assert_eq!(case.error.as_deref(), Some("baseline failed"));
+    assert_eq!(case.progress.len(), phases.len());
+    assert_eq!(case.acceptance_failures.len(), phases.len());
+    let json = serde_json::to_value(&case).unwrap();
+    for (index, (phase, tag)) in phases.into_iter().enumerate() {
+        assert_eq!(case.progress[index].phase, phase);
+        assert_eq!(json["progress"][index]["phase"], tag);
+        assert_eq!(json["progress"][index]["status"], "failed");
+        assert_eq!(json["acceptance_failures"][index]["phase"], tag);
+        assert_eq!(
+            json["acceptance_failures"][index]["error"],
+            format!("{tag} failed")
+        );
+    }
+}
+
+#[test]
 fn opaque_topology_and_setup_rejection_are_optional_diagnostics_not_gate_authority() {
     let opaque = r"{2}.\\?\Mixed#Opaque Adapter ";
     let diagnostic = TopologyEvidence {
