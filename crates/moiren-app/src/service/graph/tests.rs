@@ -461,6 +461,175 @@ fn managed_project_translates_every_io_and_stereo_parameter() {
     project.validate().unwrap();
 }
 
+#[test]
+fn clearing_virtual_io_releases_the_export_binding() {
+    use crate::service::ExportDirection;
+    for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+        let mut service = ServiceGraph::default();
+        let (source, _, _, sink) = ids(&service);
+        let node = if direction == ExportDirection::Playback {
+            source
+        } else {
+            sink
+        };
+        service
+            .edit(GraphEdit::SetExports(vec![ExportIntent {
+                endpoint_id: moiren_engine::node::VirtualEndpointId::from_bytes([0x42; 16]),
+                direction,
+                name: "Virtual IO".into(),
+                channels: 2,
+                enabled: true,
+                binding: Some(node),
+            }]))
+            .unwrap();
+        service.edit(GraphEdit::ClearBinding(node)).unwrap();
+        assert_eq!(service.snapshot().exports[0].binding, None);
+    }
+}
+
+#[test]
+fn vad_exports_bind_to_opposite_app_io_directions_and_replace_physical_bindings_atomically() {
+    use crate::service::{ExportDirection, ExportIntent};
+    use moiren_engine::{
+        host::NodeConfig,
+        node::{InputSource, OutputTarget, VirtualEndpointId},
+    };
+
+    let mut service = ServiceGraph::default();
+    let (source, _, _, sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Physical {
+                endpoint_id: "capture-device".into(),
+            },
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render-device".into(),
+        })
+        .unwrap();
+
+    let playback = VirtualEndpointId::from_bytes([0xa1; 16]);
+    let microphone = VirtualEndpointId::from_bytes([0xa2; 16]);
+    service
+        .edit(GraphEdit::SetExports(vec![
+            ExportIntent {
+                endpoint_id: playback,
+                direction: ExportDirection::Playback,
+                name: "VAD Speaker".into(),
+                channels: 2,
+                enabled: true,
+                binding: None,
+            },
+            ExportIntent {
+                endpoint_id: microphone,
+                direction: ExportDirection::Microphone,
+                name: "VAD MIC".into(),
+                channels: 2,
+                enabled: true,
+                binding: None,
+            },
+        ]))
+        .unwrap();
+    service
+        .edit(GraphEdit::BindExport {
+            endpoint_id: playback,
+            node: Some(source),
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::BindExport {
+            endpoint_id: microphone,
+            node: Some(sink),
+        })
+        .unwrap();
+
+    let snapshot = service.snapshot();
+    assert_eq!(snapshot.node(source).unwrap().source, None);
+    assert_eq!(snapshot.node(sink).unwrap().output_endpoint_id, None);
+    assert_eq!(snapshot.exports[0].binding, Some(source));
+    assert_eq!(snapshot.exports[1].binding, Some(sink));
+    let project = service.preparation().engine_project(256).unwrap();
+    let NodeConfig::Input(input) = &project.nodes[&source] else {
+        panic!("expected input node");
+    };
+    assert!(
+        matches!(input.source, InputSource::VirtualPlayback { endpoint_id } if endpoint_id == playback)
+    );
+    let NodeConfig::Output(output) = &project.nodes[&sink] else {
+        panic!("expected output node");
+    };
+    assert!(
+        matches!(output.target, OutputTarget::VirtualMicrophone { endpoint_id } if endpoint_id == microphone)
+    );
+
+    service
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "physical-output-again".into(),
+        })
+        .unwrap();
+    assert!(
+        service
+            .snapshot()
+            .exports
+            .iter()
+            .all(|export| export.binding.is_none())
+    );
+    let project = service.preparation().engine_project(256).unwrap();
+    let NodeConfig::Output(output) = &project.nodes[&sink] else {
+        panic!("expected physical output");
+    };
+    assert!(
+        matches!(&output.target, OutputTarget::Physical(moiren_engine::node::EndpointSelector::PinnedEndpoint { endpoint_id, .. }) if endpoint_id == "physical-output-again")
+    );
+}
+
+#[test]
+fn vad_export_binding_rejects_wrong_node_shape_without_partial_changes() {
+    use crate::service::{ExportDirection, ExportIntent};
+    use moiren_engine::node::VirtualEndpointId;
+
+    let mut service = ServiceGraph::default();
+    let (source, _, _, sink) = ids(&service);
+    let playback = VirtualEndpointId::from_bytes([0xb1; 16]);
+    service
+        .edit(GraphEdit::SetExports(vec![ExportIntent {
+            endpoint_id: playback,
+            direction: ExportDirection::Playback,
+            name: "VAD Speaker".into(),
+            channels: 2,
+            enabled: true,
+            binding: None,
+        }]))
+        .unwrap();
+    let before = service.snapshot();
+    assert!(
+        service
+            .edit(GraphEdit::BindExport {
+                endpoint_id: playback,
+                node: Some(sink),
+            })
+            .is_err()
+    );
+    let after = service.snapshot();
+    assert_eq!(after.exports, before.exports);
+    assert_eq!(after.nodes, before.nodes);
+    assert_eq!(after.candidate_revision, before.candidate_revision);
+    assert_ne!(source, sink);
+}
+
 fn ids(service: &ServiceGraph) -> (NodeId, NodeId, NodeId, NodeId) {
     let nodes = service.snapshot.graph.nodes();
     (nodes[0].id(), nodes[1].id(), nodes[2].id(), nodes[3].id())

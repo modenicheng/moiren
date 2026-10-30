@@ -163,6 +163,7 @@ impl Adapter for FakeAdapter {
             .map(|record| NativeObservation {
                 intent: record.intent.clone(),
                 snapshot: (!self.uncertain_create.load(Ordering::Acquire)).then_some(record.stamp),
+                windows_name: None,
                 resource: record.resource,
                 gate_open: record.gate,
                 allow_default: record.allow_default,
@@ -448,6 +449,7 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                     observations: vec![NativeObservation {
                         intent: intent.clone(),
                         snapshot: Some([1, 7, 1, 0, 5]),
+                        windows_name: None,
                         resource: ExportResourceState::Present,
                         gate_open: false,
                         allow_default: false,
@@ -504,6 +506,7 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
+                windows_name: None,
                 resource: ExportResourceState::Present,
                 gate_open: true,
                 allow_default: false,
@@ -550,6 +553,7 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
+                windows_name: None,
                 resource: ExportResourceState::Present,
                 gate_open: false,
                 allow_default: false,
@@ -593,6 +597,7 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                 observations: vec![NativeObservation {
                     intent: intent.clone(),
                     snapshot: Some([value as u64, 7, value as u64, 3, 5]),
+                    windows_name: None,
                     resource: ExportResourceState::Absent,
                     gate_open: false,
                     allow_default: false,
@@ -608,6 +613,52 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
     assert!(runtime.stamps.is_empty());
 }
 
+#[test]
+fn windows_identity_projection_requires_current_healthy_native_identity() {
+    let (graph, intent) = runtime_graph();
+    let adapter = Arc::new(FakeAdapter::default());
+    let mut runtime = Runtime {
+        adapter: Some(adapter),
+        ..Default::default()
+    };
+    let mut service = ExportService::default();
+    runtime.project(&mut service, &graph, &[], None);
+    for (identity, error, expected) in [
+        ([1, 7, 1], None, true),
+        ([2, 7, 1], None, false),
+        ([1, 7, 1], Some("QUERY failed".to_string()), false),
+    ] {
+        let batch = Batch {
+            observations: vec![NativeObservation {
+                intent: intent.clone(),
+                snapshot: Some([1, 7, 1, 0, 5]),
+                windows_name: Some(WindowsEndpointNameObservation {
+                    native_identity: identity,
+                    observed_qpc_100ns: None,
+                    mmdevice_id: Some("exact-id".into()),
+                    name: Some("Exact name".into()),
+                    error: None,
+                }),
+                resource: ExportResourceState::Present,
+                gate_open: false,
+                allow_default: false,
+                can_open: false,
+                error,
+            }],
+            errors: vec![],
+        };
+        runtime.complete(&mut service, Ok(batch));
+        assert_eq!(
+            service.windows_names.contains_key(&intent.endpoint_id),
+            expected
+        );
+        assert!(!service.statuses(&graph)[0].gate_open);
+        assert_eq!(service.statuses(&graph)[0].active_revision, None);
+    }
+    runtime.complete(&mut service, Err("worker unavailable".into()));
+    assert!(service.windows_names.is_empty());
+}
+
 #[cfg(feature = "vad-integration-probe")]
 mod native_stamp {
     use super::*;
@@ -617,6 +668,7 @@ mod native_stamp {
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot,
+                windows_name: None,
                 resource: ExportResourceState::Present,
                 gate_open: false,
                 allow_default: false,

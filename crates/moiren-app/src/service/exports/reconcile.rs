@@ -50,6 +50,8 @@ pub struct ExportReconcilePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportStatus {
     pub intent: ExportIntent,
+    /// Exact Windows MMDevice evidence for the current native endpoint identity.
+    pub windows_name: Option<WindowsEndpointNameObservation>,
     pub resource: ExportResourceState,
     pub allow_default: bool,
     pub gate_open: bool,
@@ -58,6 +60,15 @@ pub struct ExportStatus {
     /// Read-only probe evidence; it grants no readiness or gate authority.
     #[cfg(feature = "vad-integration-probe")]
     pub native_stamp: Option<[u64; 5]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsEndpointNameObservation {
+    pub native_identity: [u64; 3],
+    pub observed_qpc_100ns: Option<u64>,
+    pub mmdevice_id: Option<String>,
+    pub name: Option<String>,
+    pub error: Option<String>,
 }
 
 pub(super) fn same_resource(a: &ExportIntent, b: &ExportIntent) -> bool {
@@ -177,6 +188,7 @@ impl ExportService {
                     active_revision: observed
                         .filter(|value| self.available && confirms_active(value, graph))
                         .and_then(|value| value.active_revision),
+                    windows_name: self.windows_names.get(&intent.endpoint_id).cloned(),
                     #[cfg(feature = "vad-integration-probe")]
                     native_stamp: self.native_stamps.get(&intent.endpoint_id).copied(),
                     intent,
