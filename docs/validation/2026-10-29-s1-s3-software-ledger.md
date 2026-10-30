@@ -12,6 +12,16 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [pure-virtual readiness/crash follow-up](2026-10-30-vad-software-readiness-crash.md)
+retains cap1 overflow/reset failures, a completed30-second cap8/target1024
+recording with driver silence and recorder discontinuity, and cap8/target768
+budget refusal. Cap4/target768 is interrupted by an automatic bugcheck reboot;
+missing reports remain incomplete even though the task later returns result0.
+Matched kernel symbols/images locate an access violation in `nvlddmkm.sys`'s
+system worker chain, without establishing sole root cause or excluding prior
+corruption. Native audio retries are paused; all three exact terminal owned
+tasks are removed after verified archival. No speaker state or cache changes.
+
 The [source-readiness/lower-budget receipt](2026-10-30-vad-source-readiness.md)
 retains an old-probe startup drop, a bounded pre-source accepted-READ observation
 and three repaired repetitions. Exclusive256 / Engine32 / input-target768 admits

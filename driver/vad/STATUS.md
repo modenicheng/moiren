@@ -2,7 +2,7 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-10-29.
+verdict. Status updated 2026-10-30.
 
 **Long-soak gate status (updated for the 2026-10-22 run, `cdd44a2`):** the
 eight-hour **idle** run passed for the first time — 28,730/28,800 verified
@@ -87,6 +87,38 @@ tests pass. A new480-packet/128-block/target1024 native retest completes its
 schedule/collection/cleanup but still fails recorder continuity; no transient
 null recurs in this run. Installed driver and application are unchanged, build
 caches are retained, and physical/long-soak qualification remains open.
+
+### DAWN and interrupted software-route follow-up - 2026-10-30
+
+The later [DAWN app-output receipt](../../docs/validation/2026-10-30-dawn-vad-app-pcm.md)
+uses the authorized DAWN headphones rather than the muted Realtek output of
+the earlier physical receipt. Production VAD -> Bus -> DAWN PCM is retained;
+no independent calibrated physical reference or continuity qualification is
+established. No other speaker volume/mute or default role is changed.
+
+Probe-only [source-readiness coordination](../../docs/validation/2026-10-30-vad-source-readiness.md)
+waits for a bounded accepted-READ observation before starting its owned source.
+Three repaired repetitions record zero driver drops. A35-second physical-master
+diagnostic admits Exclusive256 / Engine32 / target768 / capacity4800 with zero
+retained active loss/reset/xrun counters, but acquires no PCM and does not qualify
+its declared delivery bound. No production default/provider/kernel change.
+
+The separate [pure-virtual follow-up](../../docs/validation/2026-10-30-vad-software-readiness-crash.md)
+retains cap1 overflow/reset failures and a cap8/target1024 completed30-second
+recording that still fails driver-silence/recorder-continuity gates. Cap8/target768
+refuses its budget; cap4/target768 is interrupted by a0x7E bugcheck and automatic
+reboot before results persist. Matched kernel symbols/images recover an access
+violation at `nvlddmkm+0x262fa6` in a System worker chain, without proving sole
+root cause or excluding earlier corruption/indirect Moiren involvement. No
+Moiren frame appears in that recovered stack. Native audio retries are paused,
+not treated as passed or repeated automatically.
+
+The final post-reboot audit retains the same installed SYS hash, service Running,
+root PnP OK and no dynamic child/app/probe/build process. All three exact terminal
+owned tasks are unregistered after verified archival; Cargo caches remain.
+P1, naming propagation, physical sub-10ms and outstanding long-soak/music gates
+remain unqualified. No new driver installation, system-setting change or
+speculative kernel patch follows from the crash.
 
 ## Audit follow-up - 2026-10-21
 
