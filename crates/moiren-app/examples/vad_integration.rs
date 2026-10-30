@@ -1,4 +1,7 @@
 //! Opt-in real service/VAD integration. No native client or driver opens by default.
+#[cfg(windows)]
+#[path = "vad_integration/input_capture.rs"]
+mod input_capture;
 #[cfg(any(windows, test))]
 #[path = "vad_integration/material.rs"]
 mod material;
@@ -37,6 +40,12 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-sec
     [--rename-fixture-seed=POSITIVE_U64 (only --exercise --rename)]\n\
     [--soak-idle-seconds=1..28800] [--soak-pcm-seconds=1..28800]\n\
     [--soak-pcm-file=material.wav (48kHz stereo PCM16/Float32, >=1s)]\n\
+    [--input-capture-frames=1..480000 (explicit --exercise; not --rename)]\n\
+    Input capture: single-shot raw provider READ before decode, <=4MiB and\n\
+    <=4096 whole packets; first accepted packet locks native/admission identity.\n\
+    Identity change/capacity seals evidence without changing audio policy.\n\
+    provider-input.pcm + provider-input.json are written only after service join;\n\
+    empty means unknown, not silence. Raw capture is not waveform qualification.\n\
     Stage1: persisted v2 stereo VirtualPlayback -> Gain(0.5) -> VirtualMicrophone;\n\
     production service startup/discovery, Apply with no probe native clients,\n\
     Stop with closed gates and retained endpoints, then service exit/join.\n\

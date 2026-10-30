@@ -1150,6 +1150,7 @@ fn pcm_cancel_active_query_failure_and_prior_worker_failure_stay_visible_on_join
     let session = Box::new(VadSession {
         state: state.clone(),
         worker: None,
+        capture: None,
     });
     assert_eq!(session.stop_and_join(), Err(error));
     assert!(state.cancel.load(Ordering::Acquire));
@@ -1236,6 +1237,7 @@ fn dropping_prepared_session_before_attachment_cancels_and_joins_worker() {
     drop(VadSession {
         state: state.clone(),
         worker: Some(worker),
+        capture: None,
     });
     assert!(state.cancel.load(Ordering::Acquire));
     assert!(state.drained.load(Ordering::Acquire));

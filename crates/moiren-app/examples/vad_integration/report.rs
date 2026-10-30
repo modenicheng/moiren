@@ -33,6 +33,8 @@ pub(super) struct Report {
     pub service_joined: bool,
     pub control_session_released: bool,
     pub endpoint_absence_confirmed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_capture: Option<InputCaptureExport>,
     pub checkpoints: Vec<Checkpoint>,
     pub error: Option<String>,
     pub cleanup_error: Option<String>,
@@ -76,6 +78,7 @@ impl Default for Report {
             service_joined: false,
             control_session_released: false,
             endpoint_absence_confirmed: false,
+            input_capture: None,
             checkpoints: Vec::new(),
             error: None,
             cleanup_error: None,
@@ -87,6 +90,15 @@ impl Default for Report {
             ],
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct InputCaptureExport {
+    pub requested_frames: u32,
+    pub raw_file: &'static str,
+    pub metadata_file: &'static str,
+    pub exported: bool,
+    pub error: Option<String>,
 }
 
 impl Report {

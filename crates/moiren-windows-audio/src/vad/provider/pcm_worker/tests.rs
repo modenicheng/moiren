@@ -3,6 +3,8 @@ use super::*;
 #[path = "sequence_tests.rs"]
 mod sequence_tests;
 
+#[path = "input_capture_tests.rs"]
+mod input_capture_tests;
 #[path = "reprime_tests.rs"]
 mod reprime_tests;
 use crate::vad::{SampleFormat, pcm_slots::SlotBook};

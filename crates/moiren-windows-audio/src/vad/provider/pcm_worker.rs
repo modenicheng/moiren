@@ -235,6 +235,7 @@ pub(super) fn quiesce_microphone(
     true
 }
 
+#[cfg(test)]
 pub(super) fn playback<C: PcmIo>(
     owner: &mut C,
     bridge: &mut PcmPlaybackBridge,
@@ -243,11 +244,29 @@ pub(super) fn playback<C: PcmIo>(
     state: &SessionState,
     epoch: u64,
 ) -> Result<PumpState, BackendError> {
+    playback_recorded(owner, bridge, tickets, order, state, epoch, None)
+}
+
+pub(super) fn playback_recorded<C: PcmIo>(
+    owner: &mut C,
+    bridge: &mut PcmPlaybackBridge,
+    tickets: &mut Vec<PcmTicket>,
+    order: &mut PacketOrder,
+    state: &SessionState,
+    epoch: u64,
+    mut capture: Option<&mut input_capture::CaptureWorker>,
+) -> Result<PumpState, BackendError> {
     if !epoch_ready(state, epoch) {
+        if let Some(capture) = capture.as_mut() {
+            capture.epoch_excluded();
+        }
         return Ok(PumpState::Reset);
     }
     while let Some(ticket) = tickets.first().copied() {
         if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            if let Some(capture) = capture.as_mut() {
+                capture.epoch_excluded();
+            }
             return Ok(PumpState::Reset);
         }
         // A kernel quota completion is terminal for the ticket but transient
@@ -275,16 +294,25 @@ pub(super) fn playback<C: PcmIo>(
                     .telemetry
                     .service_stamp(PacketStampOrigin::DriverTransfer, stamp.qpc);
                 if state.reset_epoch.load(Ordering::Acquire) != epoch {
+                    if let Some(capture) = capture.as_mut() {
+                        capture.epoch_excluded();
+                    }
                     return Ok(PumpState::Reset);
                 }
                 #[cfg(test)]
                 tests::before_playback_publish();
                 if !epoch_ready(state, epoch) {
+                    if let Some(capture) = capture.as_mut() {
+                        capture.epoch_excluded();
+                    }
                     return Ok(PumpState::Reset);
                 }
                 state.telemetry.completion(bridge.packet_frames());
                 let accepted = match order.accept(epoch, stamp) {
                     PacketProgress::Stale => {
+                        if let Some(capture) = capture.as_mut() {
+                            capture.stale();
+                        }
                         state.telemetry.stale_packet();
                         false
                     }
@@ -296,7 +324,29 @@ pub(super) fn playback<C: PcmIo>(
                     }
                     PacketProgress::First | PacketProgress::Contiguous => true,
                 };
-                if accepted && !bridge.decode_packet(pcm)? {
+                let record = if accepted {
+                    capture
+                        .as_mut()
+                        .and_then(|capture| capture.before_decode(state, epoch, stamp, pcm))
+                } else {
+                    None
+                };
+                let decoded = if accepted {
+                    bridge.decode_packet(pcm)
+                } else {
+                    Ok(true)
+                };
+                if let Some(capture) = capture.as_mut() {
+                    capture.published(
+                        record,
+                        match &decoded {
+                            Ok(true) => "published",
+                            Ok(false) => "carrier_full",
+                            Err(_) => "decode_error",
+                        },
+                    );
+                }
+                if !decoded? {
                     // Only the consumer can discard this SPSC carrier. Ask its
                     // prepared boundary to drop the stale queue before replay.
                     state.telemetry.carrier_drop();

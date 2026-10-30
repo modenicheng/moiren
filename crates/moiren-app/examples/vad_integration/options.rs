@@ -15,6 +15,7 @@ pub(super) struct Options {
     /// constant sources; requires a PCM soak.
     pub soak_pcm_file: Option<PathBuf>,
     pub output_dir: Option<PathBuf>,
+    pub input_capture_frames: Option<u32>,
 }
 
 impl Options {
@@ -30,6 +31,7 @@ impl Options {
             soak_pcm_seconds: 0,
             soak_pcm_file: None,
             output_dir: None,
+            input_capture_frames: None,
         };
         let mut timeout_seen = false;
         for argument in arguments {
@@ -51,6 +53,22 @@ impl Options {
                     options.rename_fixture_seed = Some(seed);
                 }
                 "--help" | "-h" => options.help = true,
+                value
+                    if value.starts_with("--input-capture-frames=")
+                        && options.input_capture_frames.is_none() =>
+                {
+                    let value = &value["--input-capture-frames=".len()..];
+                    ensure!(
+                        !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()),
+                        "--input-capture-frames requires decimal 1..=480000"
+                    );
+                    let frames: u32 = value.parse()?;
+                    ensure!(
+                        (1..=480_000).contains(&frames),
+                        "--input-capture-frames must be 1..=480000"
+                    );
+                    options.input_capture_frames = Some(frames);
+                }
                 value if value.starts_with("--timeout-seconds=") && !timeout_seen => {
                     timeout_seen = true;
                     options.timeout_seconds = value["--timeout-seconds=".len()..].parse()?;
@@ -112,6 +130,10 @@ impl Options {
             "--rename cannot be combined with --pcm or any soak option"
         );
         options.pcm |= options.soak_pcm_seconds > 0;
+        ensure!(
+            options.input_capture_frames.is_none() || (options.exercise && !options.rename),
+            "--input-capture-frames requires --exercise and cannot accompany --rename"
+        );
         if let Some(path) = &options.soak_pcm_file {
             ensure!(
                 options.exercise && options.soak_pcm_seconds > 0,
@@ -196,6 +218,37 @@ mod tests {
         assert!(!parse(&[]).unwrap().exercise);
         assert!(parse(&["--help"]).unwrap().help);
         assert!(parse(&["-h"]).unwrap().help);
+    }
+
+    #[test]
+    fn input_capture_is_explicit_bounded_and_does_not_start_native_clients() {
+        for arguments in [vec![], vec!["--help"], vec!["--exercise"]] {
+            assert_eq!(parse(&arguments).unwrap().input_capture_frames, None);
+        }
+        for frames in [1, 480_000] {
+            let argument = format!("--input-capture-frames={frames}");
+            let options = parse(&["--exercise", &argument]).unwrap();
+            assert_eq!(options.input_capture_frames, Some(frames));
+            assert!(!options.pcm && !options.rename);
+        }
+        for arguments in [
+            vec!["--input-capture-frames=1"],
+            vec!["--help", "--input-capture-frames=1"],
+            vec!["--exercise", "--input-capture-frames=0"],
+            vec!["--exercise", "--input-capture-frames=480001"],
+            vec!["--exercise", "--input-capture-frames=+1"],
+            vec!["--exercise", "--input-capture-frames=-1"],
+            vec!["--exercise", "--input-capture-frames="],
+            vec!["--exercise", "--input-capture-frames=4294967296"],
+            vec![
+                "--exercise",
+                "--input-capture-frames=1",
+                "--input-capture-frames=2",
+            ],
+            vec!["--exercise", "--rename", "--input-capture-frames=1"],
+        ] {
+            assert!(parse(&arguments).is_err(), "accepted {arguments:?}");
+        }
     }
 
     #[test]

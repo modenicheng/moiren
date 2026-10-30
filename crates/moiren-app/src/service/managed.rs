@@ -319,13 +319,33 @@ impl ManagedDriver {
     }
     #[cfg(windows)]
     pub fn windows() -> Self {
+        Self::windows_with_provider(moiren_windows_audio::vad::WindowsVadProvider::discover().ok())
+    }
+
+    /// Explicit bounded evidence only. Discovery happens once; the factories,
+    /// lifecycle adapter and capture all use that exact provider/control owner.
+    #[cfg(windows)]
+    pub fn windows_with_input_capture(
+        endpoint: moiren_engine::node::VirtualEndpointId,
+        frames: u32,
+    ) -> Result<(Self, moiren_windows_audio::vad::VadInputCaptureHandle), host::BackendError> {
+        let (provider, capture) =
+            moiren_windows_audio::vad::WindowsVadProvider::discover_with_input_capture(
+                endpoint, frames,
+            )?;
+        Ok((Self::windows_with_provider(Some(provider)), capture))
+    }
+
+    #[cfg(windows)]
+    fn windows_with_provider(
+        virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
+    ) -> Self {
         let native_observations = Arc::new(std::sync::Mutex::new(None));
         let native_publisher = native_observations.clone();
         let f64_native_publisher = native_observations.clone();
         let professional_observations = Arc::new(std::sync::Mutex::new(None));
         let professional_publisher = professional_observations.clone();
         let f64_publisher = professional_observations.clone();
-        let virtual_provider = moiren_windows_audio::vad::WindowsVadProvider::discover().ok();
         let provider_for_factory = virtual_provider.clone();
         let provider_for_f64 = virtual_provider.clone();
         let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))

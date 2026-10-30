@@ -209,148 +209,174 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
         }
     }
     let mut runtime = None;
+    let mut input_capture = None;
+    if let Some(frames) = options.input_capture_frames {
+        report.input_capture = Some(super::report::InputCaptureExport {
+            requested_frames: frames,
+            raw_file: super::input_capture::RAW_FILE,
+            metadata_file: super::input_capture::JSON_FILE,
+            exported: false,
+            error: Some("not_joined_unknown".into()),
+        });
+    }
     let timeout = Duration::from_secs(options.timeout_seconds);
     // Long soak keeps a fixed cleanup reserve; a ratio would truncate 16h work.
     let work_deadline = started + options.work_budget();
     let overall_deadline = started + timeout;
-    let outcome =
-        (|| -> anyhow::Result<()> {
-            let startup = project::persist(directory, options.rename_fixture_seed)?;
-            report.persisted_project_verified = true;
-            publish(shared, &report);
-            // Load soak material before any driver/service work so a rejected
-            // file fails without touching native audio.
-            let material = match &options.soak_pcm_file {
-                Some(path) => Some(material::load(path).context("music soak material")?),
-                None => None,
+    let outcome = (|| -> anyhow::Result<()> {
+        let startup = project::persist(directory, options.rename_fixture_seed)?;
+        report.persisted_project_verified = true;
+        publish(shared, &report);
+        // Load soak material before any driver/service work so a rejected
+        // file fails without touching native audio.
+        let material = match &options.soak_pcm_file {
+            Some(path) => Some(material::load(path).context("music soak material")?),
+            None => None,
+        };
+        let document = startup
+            .project
+            .as_ref()
+            .context("startup did not restore project")?;
+        let ids: [String; 2] = document
+            .exports
+            .iter()
+            .map(|export| export.endpoint_id.to_string())
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("fixture must have two exports"))?;
+        let stable_ids: [StableEndpointId; 2] = document
+            .exports
+            .iter()
+            .map(|export| StableEndpointId::from_virtual_endpoint_id(export.endpoint_id))
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("fixture needs two stable IDs"))?;
+        // Only the production factory discovers/opens the single control owner.
+        let driver = if let Some(frames) = options.input_capture_frames {
+            let endpoint = document
+                .exports
+                .iter()
+                .find(|export| export.direction == moiren_app::service::ExportDirection::Playback)
+                .context("missing Playback/Source export")?
+                .endpoint_id;
+            let (driver, capture) = ManagedDriver::windows_with_input_capture(endpoint, frames)
+                .map_err(|error| anyhow::anyhow!("arm input capture: {error:?}"))?;
+            input_capture = Some(capture);
+            driver
+        } else {
+            ManagedDriver::windows()
+        };
+        let service = ServiceRuntime::spawn_with_startup(driver, startup)?;
+        let handle = service.handle();
+        shared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .handle = Some(handle.clone());
+        runtime = Some(service);
+        let initial = handle.try_snapshot().context("missing startup snapshot")?;
+        ensure!(
+            initial.phase == SessionPhase::Idle && initial.graph.active_revision.is_none(),
+            "restored project started without Apply"
+        );
+        ensure!(
+            initial.exports.iter().all(|export| !export.gate_open),
+            "startup gate was open"
+        );
+        report.checkpoints.push(Checkpoint {
+            stage: "startup_restored_before_apply".into(),
+            evidence: Evidence::from(initial.as_ref()),
+        });
+        publish(shared, &report);
+        let applied = handle
+            .try_request_tracked(AppRequest::ApplyGraph)
+            .map_err(|error| anyhow::anyhow!("Apply enqueue: {error:?}"))?;
+        let apply_deadline = if options.soaking() {
+            (Instant::now() + Duration::from_secs(15)).min(work_deadline)
+        } else {
+            work_deadline
+        };
+        let running = wait(
+            &handle,
+            apply_deadline,
+            "apply_no_probe_clients",
+            &mut report,
+            shared,
+            |evidence| evidence.running(&ids, applied.0),
+        )?;
+        ensure!(
+            running.active_revision.is_some(),
+            "missing Engine confirmation"
+        );
+        if options.rename {
+            return super::rename::target::exercise(
+                &handle,
+                &ids,
+                stable_ids,
+                work_deadline,
+                &mut report,
+                |report| publish(shared, report),
+            );
+        }
+        if pcm || options.soaking() {
+            let session = LiveSession {
+                handle: &handle,
+                ids: &ids,
+                apply_request: applied.0,
+                revision: running.active_revision.expect("checked"),
+                deadline: work_deadline,
+                started,
+                last_snapshot: RefCell::new(None),
             };
-            let document = startup
-                .project
-                .as_ref()
-                .context("startup did not restore project")?;
-            let ids: [String; 2] = document
+            report.gate_transitions = running
                 .exports
                 .iter()
-                .map(|export| export.endpoint_id.to_string())
-                .collect::<Vec<_>>()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("fixture must have two exports"))?;
-            let stable_ids: [StableEndpointId; 2] = document
-                .exports
-                .iter()
-                .map(|export| StableEndpointId::from_virtual_endpoint_id(export.endpoint_id))
-                .collect::<Vec<_>>()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("fixture needs two stable IDs"))?;
-            // Only the production factory discovers/opens the single control owner.
-            let service = ServiceRuntime::spawn_with_startup(ManagedDriver::windows(), startup)?;
-            let handle = service.handle();
-            shared
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .handle = Some(handle.clone());
-            runtime = Some(service);
-            let initial = handle.try_snapshot().context("missing startup snapshot")?;
-            ensure!(
-                initial.phase == SessionPhase::Idle && initial.graph.active_revision.is_none(),
-                "restored project started without Apply"
-            );
-            ensure!(
-                initial.exports.iter().all(|export| !export.gate_open),
-                "startup gate was open"
-            );
-            report.checkpoints.push(Checkpoint {
-                stage: "startup_restored_before_apply".into(),
-                evidence: Evidence::from(initial.as_ref()),
-            });
+                .map(|export| {
+                    validation::GateProgress::new(
+                        export.endpoint_id.clone(),
+                        export.native_stamp,
+                        started.elapsed().as_millis(),
+                    )
+                })
+                .collect::<anyhow::Result<_>>()?;
             publish(shared, &report);
-            let applied = handle
-                .try_request_tracked(AppRequest::ApplyGraph)
-                .map_err(|error| anyhow::anyhow!("Apply enqueue: {error:?}"))?;
-            let apply_deadline = if options.soaking() {
-                (Instant::now() + Duration::from_secs(15)).min(work_deadline)
+            session.hold_without_clients(options.soak_idle_seconds, &mut report, shared)?;
+            if pcm {
+                session.exercise_pcm(
+                    stable_ids,
+                    options.soak_pcm_seconds,
+                    material.as_ref(),
+                    &mut report,
+                    shared,
+                )?;
+                return Ok(());
+            }
+        }
+        let stopped = handle
+            .try_request_tracked(AppRequest::Stop)
+            .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
+        wait(
+            &handle,
+            if options.soaking() {
+                (Instant::now() + PCM_PHASE_LIMIT).min(work_deadline)
             } else {
                 work_deadline
-            };
-            let running = wait(
-                &handle,
-                apply_deadline,
-                "apply_no_probe_clients",
-                &mut report,
-                shared,
-                |evidence| evidence.running(&ids, applied.0),
-            )?;
-            ensure!(
-                running.active_revision.is_some(),
-                "missing Engine confirmation"
-            );
-            if options.rename {
-                return super::rename::target::exercise(
-                    &handle,
-                    &ids,
-                    stable_ids,
-                    work_deadline,
-                    &mut report,
-                    |report| publish(shared, report),
-                );
-            }
-            if pcm || options.soaking() {
-                let session = LiveSession {
-                    handle: &handle,
-                    ids: &ids,
-                    apply_request: applied.0,
-                    revision: running.active_revision.expect("checked"),
-                    deadline: work_deadline,
-                    started,
-                    last_snapshot: RefCell::new(None),
-                };
-                report.gate_transitions = running
-                    .exports
-                    .iter()
-                    .map(|export| {
-                        validation::GateProgress::new(
-                            export.endpoint_id.clone(),
-                            export.native_stamp,
-                            started.elapsed().as_millis(),
-                        )
-                    })
-                    .collect::<anyhow::Result<_>>()?;
-                publish(shared, &report);
-                session.hold_without_clients(options.soak_idle_seconds, &mut report, shared)?;
-                if pcm {
-                    session.exercise_pcm(
-                        stable_ids,
-                        options.soak_pcm_seconds,
-                        material.as_ref(),
-                        &mut report,
-                        shared,
-                    )?;
-                    return Ok(());
-                }
-            }
-            let stopped = handle
-                .try_request_tracked(AppRequest::Stop)
-                .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
-            wait(
-                &handle,
-                if options.soaking() {
-                    (Instant::now() + PCM_PHASE_LIMIT).min(work_deadline)
-                } else {
-                    work_deadline
-                },
-                "stop_closed_gates_retained_endpoints",
-                &mut report,
-                shared,
-                |evidence| evidence.stopped(&ids, stopped.0),
-            )?;
-            ensure!(
-                options.soak_idle_seconds == 0
-                    || report.soak_idle.as_ref().is_some_and(|soak| soak.completed
+            },
+            "stop_closed_gates_retained_endpoints",
+            &mut report,
+            shared,
+            |evidence| evidence.stopped(&ids, stopped.0),
+        )?;
+        ensure!(
+            options.soak_idle_seconds == 0
+                || report
+                    .soak_idle
+                    .as_ref()
+                    .is_some_and(|soak| soak.completed
                         && soak.elapsed_ms >= options.soak_idle_seconds * 1_000),
-                "requested idle soak incomplete"
-            );
-            Ok(())
-        })();
+            "requested idle soak incomplete"
+        );
+        Ok(())
+    })();
     if let Err(error) = outcome {
         report.error = Some(format!("{error:#}"));
     }
@@ -412,6 +438,20 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
                 Err(error) => report.cleanup_error = Some(format!("service join: {error:?}")),
             },
             Err(error) => report.cleanup_error = Some(format!("exit deadline: {error:#}")),
+        }
+    }
+    // A failed outer service join must not erase already joined PCM evidence.
+    // The detached handle enforces the actual worker join itself; an exit
+    // timeout or a still-running worker remains an explicit not_joined error.
+    if let (Some(handle), Some(receipt)) = (input_capture, report.input_capture.as_mut()) {
+        let result = handle
+            .take_after_join()
+            .map_err(anyhow::Error::msg)
+            .and_then(|artifact| super::input_capture::persist(directory, &artifact));
+        receipt.exported = result.is_ok();
+        receipt.error = result.err().map(|error| format!("{error:#}"));
+        if receipt.error.is_some() && report.error.is_none() && report.cleanup_error.is_none() {
+            report.error = Some("input capture export incomplete; see input_capture.error".into());
         }
     }
     if report.error.is_none() && cleanup_ok && report.service_joined {

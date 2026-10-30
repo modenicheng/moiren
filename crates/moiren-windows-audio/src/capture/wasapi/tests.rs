@@ -549,10 +549,7 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
     }
 }
 
-// The library test binary needs its own allocator; the retired render worker
-// used to provide it. Integration tests compile this same scaffold separately.
-#[path = "../../../tests/common/alloc_guard.rs"]
-mod allocation_guard;
+use crate::test_allocation as allocation_guard;
 
 #[test]
 fn capture_preparation_failure_joins_owner_before_returning() {
