@@ -200,10 +200,10 @@ The preceding `a26d0d8` ordinary/RAW controls are also all SILENT: respectively
 188/179 successful WRITEs, 11/20 dropped, with the same 199 packets / 95520
 captured frames and zero nonzero samples. Its archive
 `ac-control-a26d0d8-20261031.zip` is 276654 bytes, 22 manifest files / 23
-entries, 1432670 uncompressed bytes, SHA-256
+entries, 1432670 payload bytes excluding the archive manifest, SHA-256
 `34E97CC77DAEF70056DEB0A6E3C74C86FD23476C765D39448FAB770AC88AE0EC`.
 Final archive `ac-final-cdbb836-20261031.zip` is 277956 bytes, 22 manifest
-files / 23 entries, 1439366 uncompressed bytes, SHA-256
+files / 23 entries, 1439366 payload bytes excluding the archive manifest, SHA-256
 `112110B351618D437EB1A44D8E054DADD2D80C30478328C8A6BB3CD601AF818E`.
 Host verification checks exact entry sets, every length/hash, archive receipt
 and totals. Raw target copies and caches remain; no cleanup is justified by

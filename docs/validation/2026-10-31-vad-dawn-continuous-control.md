@@ -114,7 +114,7 @@ Owned processes/children are removed, root PnP remains OK, boot and render
 volume/mute/default settings stay unchanged. No cache clean or remote artifact
 deletion occurs; D: free242282983424 bytes. Archive
 `vad-dawn-exclusive256-target1152-20261031.zip`:42847 bytes,12 manifest files /
-13 entries,1141917 uncompressed bytes, SHA-256
+13 entries,1141917 payload bytes excluding the archive manifest, SHA-256
 `7A32130FBE781D53F7853F7FF0D774FD9BAE1405F16FDEE62A2DA4FDEA71322A`.
 Host verification checks the archive receipt, exact entry set, every file's
 length/hash and uncompressed total before any future pruning.
