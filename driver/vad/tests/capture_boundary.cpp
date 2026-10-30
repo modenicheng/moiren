@@ -15,6 +15,8 @@ using namespace vad::audio;
 constexpr KIRQL PASSIVE_LEVEL = 0;
 constexpr KIRQL DISPATCH_LEVEL = 2;
 constexpr bool FALSE = false;
+constexpr NTSTATUS STATUS_DEVICE_NOT_READY = -4;
+constexpr NTSTATUS STATUS_NOT_SUPPORTED = -5;
 static KIRQL CurrentIrql = PASSIVE_LEVEL;
 struct ChildContext { VAD_SHARED* Shared; ULONG Index = 0; uint64_t Id = 5; };
 using WDFDEVICE = ChildContext*;
@@ -36,12 +38,34 @@ struct VAD_AUDIO_STREAM {
     TimerDrivenRing TimerRing = {};
     TimerPcmPacket TimerPacket = {};
     Clock Clock = {48000, 1000, 0, 480, true};
+    uint64_t CompletedPackets = 0;
+    uint64_t DeliveredPackets = 0;
+    uint64_t LastCaptureStart = 0;
 };
 using ACXSTREAM = VAD_AUDIO_STREAM*;
 using PULONGLONG = uint64_t*;
+using PULONG = ULONG*;
+using PBOOLEAN = bool*;
 using PUCHAR = unsigned char*;
 static ChildContext* VadChild(WDFDEVICE child) { return child; }
 static VAD_AUDIO_STREAM* VadAudioStream(ACXSTREAM stream) { return stream; }
+static bool VadAudioIsStreamCurrent(WDFDEVICE child, uint64_t generation)
+{
+    return child->Shared->Slots[child->Index].StreamGeneration == generation;
+}
+static NTSTATUS NotifyStatus = STATUS_SUCCESS;
+static unsigned NotifyCalls = 0;
+static uint64_t NotifiedPacket = 0, NotifiedQpc = 0;
+static bool AdvanceGateDuringNotify = false;
+static NTSTATUS AcxRtStreamNotifyPacketComplete(void* opaque, uint64_t packet, uint64_t qpc)
+{
+    auto stream = static_cast<VAD_AUDIO_STREAM*>(opaque);
+    Check(!stream->State.Held && !stream->Device->Shared->Lock.Held,
+        "real notification boundary holds neither State nor Shared");
+    ++NotifyCalls; NotifiedPacket = packet; NotifiedQpc = qpc;
+    if (AdvanceGateDuringNotify) { ++stream->Device->Shared->Slots[0].AdmissionGeneration; }
+    return NotifyStatus;
+}
 static bool ExAcquireRundownProtection(unsigned* rundown) { ++*rundown; return true; }
 static void KeAcquireSpinLock(SpinLock* lock, KIRQL* previous)
 {
@@ -68,16 +92,26 @@ static void ZeroTimerRingSpan(VAD_AUDIO_STREAM*, const TimerDrivenSegment&)
 static bool TraceEnabled = false;
 static unsigned TraceEvents = 0;
 static SpinLock* TraceLock = nullptr;
+struct TraceRecord {
+    const char* Format = nullptr;
+    std::array<uint64_t, 14> Values = {};
+};
+static std::array<TraceRecord, 16> TraceRecords = {};
 #define WPP_LEVEL_FLAGS_ENABLED(level, flags) TraceEnabled
 constexpr unsigned TRACE_LEVEL_INFORMATION = 4;
 constexpr unsigned VAD_CONTROL = 1;
 static KIRQL KeGetCurrentIrql() { return CurrentIrql; }
 template<typename... Args>
-static void VadTrace(unsigned, unsigned, const char*, Args...)
+static void VadTrace(unsigned, unsigned, const char* format, Args... args)
 {
     Check(CurrentIrql == PASSIVE_LEVEL, "WPP only at passive IRQL");
     Check(TraceLock != nullptr && !TraceLock->Held, "WPP outside shared lock");
     Check(sizeof...(Args) <= 14, "bounded decodable WPP fragment");
+    Check(TraceEvents < TraceRecords.size(), "fixed number of first-witness WPP fragments");
+    auto& record = TraceRecords[TraceEvents];
+    record.Format = format;
+    const std::array<uint64_t, sizeof...(Args)> values = {static_cast<uint64_t>(args)...};
+    for (size_t i = 0; i < values.size(); ++i) { record.Values[i] = values[i]; }
     ++TraceEvents;
 }
 #include "capture-boundary-production.inc"
@@ -85,9 +119,11 @@ static void VadTrace(unsigned, unsigned, const char*, Args...)
 struct Fixture {
     VAD_SHARED Shared = {};
     ChildContext Child = {&Shared};
-    NativePacket Packet;
+    std::array<NativePacket, 2> Packets;
+    NativePacket& Packet = Packets[0];
     VAD_AUDIO_STREAM Stream = {};
     std::array<unsigned char, 4096> Native = {};
+    std::array<unsigned char, 4096> NativeSecond = {};
     std::array<unsigned char, 1920> Scratch = {};
     std::array<unsigned char, 1920> Payload = {};
     Request Write;
@@ -114,8 +150,9 @@ struct Fixture {
         header.Channels = 2; header.Frames = 480; header.Qpc = 1000; header.Sequence = 1;
         Write.Buffer = Payload.data();
         Requests.Requests[0] = &Write; Requests.Count = 1;
-        Stream.Device = &Child; Stream.Buffers[0] = Native.data();
-        Stream.Packets = &Packet; Stream.TimerScratch = Scratch.data();
+        Stream.Device = &Child; Stream.Stream = &Stream; Stream.Buffers[0] = Native.data();
+        Stream.Buffers[1] = NativeSecond.data();
+        Stream.Packets = Packets.data(); Stream.TimerScratch = Scratch.data();
         Check(InitializeTimerDrivenRing(Stream.TimerRing, 1920, 4, 4096), "real ring shape");
     }
 
@@ -264,14 +301,204 @@ static void PositionRequiresActualAllocationAndCopy()
     Check(!diagnostic.Position.Observed, "different gate cannot masquerade as copy's returned position");
 }
 
+static void RealCaptureQueryPublishesBoundary()
+{
+    Fixture f;
+    f.Stream.PacketCount = 2;
+    f.Packet.RtPacketSize = 1920;
+    f.Packet.RtPacketOffset = 2176;
+    f.Stream.CompletedPackets = 1;
+    f.Stream.LastCaptureStart = 900;
+    Check(PacketAddress(&f.Stream, 0) == f.Native.data() + 2176,
+        "actual query packet address follows the ACX MDL offset");
+    ULONG packet = 99;
+    uint64_t qpc = 99;
+    bool more = true;
+    Check(VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more) == STATUS_SUCCESS &&
+        packet == 0 && qpc == 900 && !more && f.Stream.DeliveredPackets == 1,
+        "actual callback preserves packet, timestamp and delivery bookkeeping");
+    Check(VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more) == STATUS_DEVICE_NOT_READY &&
+        packet == 0 && qpc == 0 && !more && f.Stream.DeliveredPackets == 1,
+        "actual repeated query still refuses without fabricating another packet");
+    TraceLock = &f.Shared.Lock;
+    TraceEvents = 0; TraceEnabled = true;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(TraceEvents == 4,
+        "actual GetCapturePacket success and refusal produce bounded passive evidence");
+    Check(std::strstr(TraceRecords[0].Format, "Capture packet query") != nullptr &&
+        std::strstr(TraceRecords[0].Format, "stream=") == nullptr &&
+        TraceRecords[0].Values[4] == 7 && TraceRecords[0].Values[5] == 0 &&
+        TraceRecords[0].Values[6] == 1 && TraceRecords[0].Values[7] == 0 &&
+        TraceRecords[0].Values[8] == 1 && TraceRecords[0].Values[9] == 0 &&
+        TraceRecords[0].Values[10] == 900 &&
+        std::strstr(TraceRecords[1].Format, "Capture packet readback") != nullptr &&
+        TraceRecords[1].Values[8] == 0 && TraceRecords[1].Values[9] == 2176 &&
+        TraceRecords[1].Values[10] == 16 && TraceRecords[1].Values[11] == 0 &&
+        TraceRecords[2].Values[3] == 2 &&
+        static_cast<uint32_t>(TraceRecords[2].Values[5]) == static_cast<uint32_t>(STATUS_DEVICE_NOT_READY),
+        "passive query/readback fragments preserve status, counters, offset and no new address identity");
+    const auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    Check(diagnostic.FirstPacket.Observed && !diagnostic.FirstPacket.Prefix.Nonzero &&
+        diagnostic.FirstPacket.Prefix.Bytes == 16 && diagnostic.FirstPacket.OffsetBytes == 2176 &&
+        diagnostic.FirstPacket.Index == 0 && diagnostic.FirstPacket.GateEpoch == 7 &&
+        diagnostic.FirstPacket.Completed == 1 && diagnostic.FirstPacket.DeliveredBefore == 0 &&
+        diagnostic.FirstPacket.DeliveredAfter == 1 && diagnostic.FirstPacket.PacketStartQpc == 900,
+        "first successful zero callback retains exact identity, offsets and before/after counters");
+    Check(diagnostic.FirstPacketRefusal.Observed &&
+        diagnostic.FirstPacketRefusal.Status == static_cast<uint32_t>(STATUS_DEVICE_NOT_READY) &&
+        diagnostic.FirstPacketRefusal.DeliveredBefore == 1 &&
+        diagnostic.FirstPacketRefusal.DeliveredAfter == 1 &&
+        diagnostic.FirstPacketRefusal.Prefix.Bytes == 0,
+        "actual repeated-query refusal never reads or claims returned PCM");
+
+    // A later real successful WRITE populates buffer1, not a synthetic prefix.
+    f.Payload.fill(41);
+    f.Batch.Shared = &f.Shared;
+    KIRQL previous;
+    KeAcquireSpinLock(&f.Shared.Lock, &previous);
+    VadPcmTransferLocked(&f.Shared, 0, PacketAddress(&f.Stream, 1), 480, 4, 1, 1000, &f.Batch);
+    KeReleaseSpinLock(&f.Shared.Lock, previous);
+    f.Stream.CompletedPackets = 2;
+    f.Stream.LastCaptureStart = 950;
+    Check(VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more) == STATUS_SUCCESS && packet == 1 &&
+        diagnostic.FirstNonzeroPacket.Observed && diagnostic.FirstNonzeroPacket.Packet == 1 &&
+        diagnostic.FirstNonzeroPacket.Index == 1 && diagnostic.FirstNonzeroPacket.OffsetBytes == 0 &&
+        diagnostic.FirstNonzeroPacket.GateEpoch == 7 && diagnostic.FirstNonzeroPacket.Prefix.Bytes == 16 &&
+        diagnostic.FirstNonzeroPacket.Prefix.Nonzero && diagnostic.FirstPacket.Packet == 0 &&
+        !diagnostic.FirstPacket.Prefix.Nonzero,
+        "later actual nonzero packet1 is retained independently from first zero packet0");
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(TraceEvents == 6 && !diagnostic.ReportPacket && !diagnostic.ReportNonzeroPacket &&
+        !diagnostic.ReportPacketRefusal, "each fixed callback witness emits only once");
+    f.Stream.CompletedPackets = 3;
+    VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more);
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(TraceEvents == 6 && diagnostic.FirstNonzeroPacket.Packet == 1,
+        "later query cannot overwrite or rearm published witnesses");
+    Check(CaptureReadPrefix::Read(nullptr, 0).Bytes == 0, "zero length readback never dereferences");
+    f.NativeSecond.fill(0); f.NativeSecond[16] = 1;
+    Check(!CaptureReadPrefix::Read(f.NativeSecond.data(), 1920).Nonzero,
+        "query nonzero is restricted to the first sixteen bytes");
+}
+
+static void QueryWrapResetGateAndRefusal()
+{
+    Fixture f;
+    f.Stream.PacketCount = 2;
+    f.Packet.RtPacketSize = 1920;
+    f.Packet.RtPacketOffset = 2176;
+    f.Native[2176] = 51;
+    f.Stream.CompletedPackets = 0x100000001ULL;
+    f.Stream.DeliveredPackets = 0xffffffffULL;
+    ULONG packet;
+    uint64_t qpc;
+    bool more;
+    auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more);
+    Check(packet == 0 && diagnostic.FirstPacket.Packet == 0 && diagnostic.FirstPacket.Index == 0 &&
+        diagnostic.FirstPacket.Completed == 0x100000001ULL &&
+        diagnostic.FirstPacket.DeliveredBefore == 0xffffffffULL &&
+        diagnostic.FirstPacket.DeliveredAfter == 0x100000001ULL &&
+        diagnostic.FirstPacket.Prefix.Nonzero,
+        "actual ULONG packet wrap retains full counters and correct buffer0 offset");
+    diagnostic.Reset(4);
+    VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more);
+    Check(!diagnostic.FirstPacketRefusal.Observed && !diagnostic.FirstPacket.Observed,
+        "retired callback cannot populate new generation diagnostics");
+    f.Shared.Slots[0].StreamGeneration = f.Stream.Generation = 4;
+    ++f.Shared.Slots[0].AdmissionGeneration;
+    f.Stream.CompletedPackets = 0x100000002ULL;
+    VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more);
+    Check(diagnostic.FirstPacket.Observed && diagnostic.FirstPacket.GateEpoch == 8 &&
+        diagnostic.FirstPacket.Packet == 1 && diagnostic.FirstPacket.Index == 1 &&
+        !diagnostic.FirstNonzeroPacket.Observed,
+        "new generation records its own query gate without fabricating copy provenance");
+    diagnostic.Reset(4);
+    f.Stream.PacketCount = 1;
+    const auto delivered = f.Stream.DeliveredPackets;
+    Check(VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more) == STATUS_NOT_SUPPORTED &&
+        diagnostic.FirstPacketRefusal.Status == static_cast<uint32_t>(STATUS_NOT_SUPPORTED) &&
+        diagnostic.FirstPacketRefusal.Prefix.Bytes == 0 && f.Stream.DeliveredPackets == delivered,
+        "timer path preserves unsupported status and never claims a packet read");
+    diagnostic.Reset(4);
+    f.Stream.PacketCount = 2; f.Stream.Packets = nullptr;
+    Check(VadAudioGetCapturePacket(&f.Stream, &packet, &qpc, &more) == STATUS_DEVICE_NOT_READY &&
+        diagnostic.FirstPacketRefusal.Observed && diagnostic.FirstPacketRefusal.Prefix.Bytes == 0,
+        "pre-allocation refusal retains status without touching a nonexistent native buffer");
+}
+
+static void RealNotifyResultAndGateIdentity()
+{
+    Fixture f;
+    f.Stream.PacketCount = 2;
+    f.Packet.RtPacketSize = 1920;
+    f.Packet.RtPacketOffset = 2176;
+    auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    KIRQL previous;
+    KeAcquireSpinLock(&f.Stream.State, &previous);
+    const auto first = RecordEventCaptureCopy(&f.Stream, 0, 0, 1000, f.Batch);
+    KeReleaseSpinLock(&f.Stream.State, previous);
+    Check(first.Observed && first.GateEpoch == 7 && !diagnostic.FirstCopy.Observed,
+        "notify identity exists even for a zero/unserved packet with no successful WRITE");
+    NotifyStatus = STATUS_SUCCESS; NotifyCalls = 0;
+    AdvanceGateDuringNotify = true;
+    NotifyPacketComplete(&f.Stream, 0, 1000, first);
+    AdvanceGateDuringNotify = false;
+    Check(NotifyCalls == 1 && NotifiedPacket == 0 && NotifiedQpc == 1000 &&
+        diagnostic.FirstNotifySuccess.Observed && diagnostic.FirstNotifySuccess.Status == 0 &&
+        diagnostic.FirstNotifySuccess.GateEpoch == 7 && f.Shared.Slots[0].AdmissionGeneration == 8,
+        "actual successful notify records pre-notify gate rather than relabeling it after transition");
+    auto next = first;
+    next.GateEpoch = 8; next.NativeSequence = 1; next.CompletionQpc = 1100;
+    NotifyStatus = STATUS_DEVICE_NOT_READY;
+    NotifyPacketComplete(&f.Stream, 1, 1100, next);
+    Check(NotifyCalls == 2 && NotifiedPacket == 1 && NotifiedQpc == 1100 &&
+        diagnostic.FirstNotifyFailure.Status == static_cast<uint32_t>(STATUS_DEVICE_NOT_READY) &&
+        diagnostic.FirstNotifyFailure.GateEpoch == 8 && diagnostic.FirstNotifyFailure.NativeSequence == 1 &&
+        diagnostic.FirstNotifySuccess.NativeSequence == 0,
+        "actual negative notify result remains separate from the first successful notification");
+    TraceLock = &f.Shared.Lock; TraceEvents = 0; TraceEnabled = false;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(TraceEvents == 0 && diagnostic.ReportNotifySuccess && diagnostic.ReportNotifyFailure,
+        "disabled WPP retains both actual notify results");
+    TraceEnabled = true;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(TraceEvents == 2 && !diagnostic.ReportNotifySuccess && !diagnostic.ReportNotifyFailure,
+        "passive publication drains two fixed notify results");
+    Check(std::strstr(TraceRecords[0].Format, "Capture packet notify") != nullptr &&
+        std::strstr(TraceRecords[0].Format, "stream=") == nullptr &&
+        TraceRecords[0].Values[3] == 0 && TraceRecords[0].Values[4] == 7 &&
+        TraceRecords[0].Values[5] == 0 && TraceRecords[0].Values[6] == 1000 &&
+        TraceRecords[0].Values[7] == 2 && TraceRecords[0].Values[8] == 0 &&
+        TraceRecords[1].Values[3] == 1 && TraceRecords[1].Values[4] == 8 &&
+        TraceRecords[1].Values[5] == 1 && TraceRecords[1].Values[6] == 1100 &&
+        static_cast<uint32_t>(TraceRecords[1].Values[8]) == static_cast<uint32_t>(STATUS_DEVICE_NOT_READY),
+        "passive notify output preserves both actual statuses and their distinct packet/gate identities");
+    NotifyPacketComplete(&f.Stream, 1, 1100, next);
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(NotifyCalls == 3 && TraceEvents == 2,
+        "diagnostic dedup never suppresses a real notification or rearms first evidence");
+    diagnostic.Reset(4);
+    NotifyPacketComplete(&f.Stream, 1, 1100, next);
+    Check(!diagnostic.FirstNotifyFailure.Observed && !diagnostic.FirstNotifySuccess.Observed,
+        "generation reset refuses a late old notification result");
+    NotifyPacketComplete(&f.Stream, 2, 1200, {});
+    Check(NotifyCalls == 5 && !diagnostic.FirstNotifyFailure.Observed,
+        "unobserved/render notification still calls ACX exactly once without capture evidence");
+    NotifyStatus = STATUS_SUCCESS;
+}
+
 int main()
 {
     RealTimerCopyWithoutRebase();
     RealWrapAndFailedWrite();
     EventCopyResetAndPassivePublication();
     PositionRequiresActualAllocationAndCopy();
+    RealCaptureQueryPublishesBoundary();
+    QueryWrapResetGateAndRefusal();
+    RealNotifyResultAndGateIdentity();
     std::printf("PASS: real PCM-to-Scratch-to-ring, zero/nonzero, no-rebase, wrap, "
-        "generation reset, event copy and passive position publication; record=%zu bytes\n",
+        "generation reset, event copy, actual query/notify results and passive publication; record=%zu bytes\n",
         sizeof(CaptureDiagnostic));
 }
 #endif

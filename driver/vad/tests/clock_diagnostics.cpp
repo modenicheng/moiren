@@ -10,6 +10,7 @@ int main()
 }
 #else
 #include "../src/audio/ClockDiagnostic.h"
+#include "../src/audio/CaptureDiagnostic.h"
 #include "../src/UnservedDiagnostics.h"
 #include <array>
 #include <cstring>
@@ -230,14 +231,19 @@ static void VadPcmComplete(VAD_PCM_BATCH*)
 {
     Check(CurrentIrql == PASSIVE_LEVEL, "PCM completion stays outside spin locks");
 }
-static void RecordEventCaptureCopy(VAD_AUDIO_STREAM*, ULONG, uint64_t, uint64_t,
-    const VAD_PCM_BATCH&) {}
+static CaptureNotifyObservation RecordEventCaptureCopy(VAD_AUDIO_STREAM*, ULONG, uint64_t, uint64_t,
+    const VAD_PCM_BATCH&) { return {}; }
 static int WdfTimerStart(uint64_t, long long due) { ++Starts; LastDue = due; return 0; }
 static int AcxRtStreamNotifyPacketComplete(void*, uint64_t, uint64_t)
 {
     Check(CurrentIrql == PASSIVE_LEVEL, "ACX notification stays outside spin locks");
     ++Notifications;
     return 0;
+}
+static void NotifyPacketComplete(VAD_AUDIO_STREAM* stream, uint64_t packet, uint64_t qpc,
+    CaptureNotifyObservation)
+{
+    (void)AcxRtStreamNotifyPacketComplete(stream->Stream, packet, qpc);
 }
 static void Schedule(VAD_AUDIO_STREAM*, uint64_t) { ++Starts; }
 static void VadAudioRebaseDiscontinuity(WDFDEVICE child, uint64_t generation,

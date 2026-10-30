@@ -143,6 +143,38 @@ static void TracePendingCaptureDiagnostic(VAD_SHARED* shared,
             snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation, diagnostic.Stream,
             item.GateEpoch, item.Qpc, item.PacketCount, item.Frames);
     }
+    const vad::audio::CapturePacketObservation* packets[] = {
+        &diagnostic.FirstPacket, &diagnostic.FirstNonzeroPacket, &diagnostic.FirstPacketRefusal};
+    const bool packetPending[] = {diagnostic.ReportPacket, diagnostic.ReportNonzeroPacket,
+        diagnostic.ReportPacketRefusal};
+    for (ULONG i = 0; i < 3; ++i) {
+        if (!packetPending[i]) { continue; }
+        const auto& item = *packets[i];
+        // No callback record means unknown: ACX may consume the registered
+        // packet counter without invoking GetCapturePacket at all.
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture packet query endpoint=%I64u session=%I64u generation=%I64u kind=%u gate=%I64u status=%!STATUS! completed=%I64u delivered_before=%I64u delivered_after=%I64u packet=%u packet_qpc=%I64u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation, i,
+            item.GateEpoch, static_cast<NTSTATUS>(item.Status), item.Completed,
+            item.DeliveredBefore, item.DeliveredAfter, item.Packet, item.PacketStartQpc);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture packet readback endpoint=%I64u session=%I64u generation=%I64u kind=%u gate=%I64u completed=%I64u packet=%u packets=%u index=%u offset=%u bytes=%u nonzero=%u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation, i,
+            item.GateEpoch, item.Completed, item.Packet, item.PacketCount, item.Index,
+            item.OffsetBytes, item.Prefix.Bytes, static_cast<ULONG>(item.Prefix.Nonzero));
+    }
+    const vad::audio::CaptureNotifyObservation* notifications[] = {
+        &diagnostic.FirstNotifySuccess, &diagnostic.FirstNotifyFailure};
+    const bool notifyPending[] = {diagnostic.ReportNotifySuccess, diagnostic.ReportNotifyFailure};
+    for (ULONG i = 0; i < 2; ++i) {
+        if (!notifyPending[i]) { continue; }
+        const auto& item = *notifications[i];
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture packet notify endpoint=%I64u session=%I64u generation=%I64u kind=%u gate=%I64u native=%I64u completion_qpc=%I64u packets=%u status=%!STATUS!",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation, i,
+            item.GateEpoch, item.NativeSequence, item.CompletionQpc, item.PacketCount,
+            static_cast<NTSTATUS>(item.Status));
+    }
 }
 
 static void TracePendingUnservedDiagnostics(VAD_SHARED* shared,

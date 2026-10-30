@@ -51,6 +51,46 @@ struct CapturePositionObservation {
     bool Observed;
 };
 
+struct CaptureReadPrefix {
+    uint32_t Bytes;
+    bool Nonzero;
+
+    static CaptureReadPrefix Read(const void* buffer, uint32_t bytes)
+    {
+        CaptureReadPrefix result = {};
+        result.Bytes = bytes < 16 ? bytes : 16;
+        const auto from = static_cast<const volatile unsigned char*>(buffer);
+        for (uint32_t i = 0; i < result.Bytes; ++i) {
+            result.Nonzero |= from[i] != 0;
+        }
+        return result;
+    }
+};
+
+struct CapturePacketObservation {
+    uint64_t GateEpoch; // Gate at callback readback, not proof of the payload's origin.
+    uint64_t Completed;
+    uint64_t DeliveredBefore;
+    uint64_t DeliveredAfter;
+    uint64_t PacketStartQpc;
+    uint32_t Status;
+    uint32_t Packet;
+    uint32_t PacketCount;
+    uint32_t Index;
+    uint32_t OffsetBytes;
+    CaptureReadPrefix Prefix;
+    bool Observed;
+};
+
+struct CaptureNotifyObservation {
+    uint64_t GateEpoch; // Captured under State/Shared before completion/notification.
+    uint64_t NativeSequence;
+    uint64_t CompletionQpc;
+    uint32_t PacketCount;
+    uint32_t Status;
+    bool Observed;
+};
+
 // Existing State/Shared locks protect these fixed first witnesses. No RT trace,
 // allocation, full-packet scan, scheduling change or public ABI is involved.
 struct CaptureDiagnostic {
@@ -59,9 +99,19 @@ struct CaptureDiagnostic {
     CaptureCopyObservation FirstCopy;
     CaptureCopyObservation FirstNonzero;
     CapturePositionObservation Position;
+    CapturePacketObservation FirstPacket;
+    CapturePacketObservation FirstNonzeroPacket;
+    CapturePacketObservation FirstPacketRefusal;
+    CaptureNotifyObservation FirstNotifySuccess;
+    CaptureNotifyObservation FirstNotifyFailure;
     bool ReportCopy;
     bool ReportNonzero;
     bool ReportPosition;
+    bool ReportPacket;
+    bool ReportNonzeroPacket;
+    bool ReportPacketRefusal;
+    bool ReportNotifySuccess;
+    bool ReportNotifyFailure;
 
     void Reset(uint64_t generation) { *this = {}; Generation = generation; }
     bool NeedsCopy() const { return !FirstCopy.Observed || !FirstNonzero.Observed; }
@@ -89,14 +139,55 @@ struct CaptureDiagnostic {
         Position = observation;
         ReportPosition = true;
     }
-    // QUERY consumes pending publication, not historical witnesses. An absent
-    // position is unknown/not observed, never evidence that ACX did not poll.
+    bool NeedsPacket(uint32_t status) const
+    {
+        return (status & 0x80000000u) == 0 ?
+            !FirstPacket.Observed || !FirstNonzeroPacket.Observed : !FirstPacketRefusal.Observed;
+    }
+    void RecordPacket(uint64_t generation, CapturePacketObservation observation)
+    {
+        if (generation != Generation) { return; }
+        observation.Observed = true;
+        if ((observation.Status & 0x80000000u) != 0) {
+            if (!FirstPacketRefusal.Observed) {
+                FirstPacketRefusal = observation;
+                ReportPacketRefusal = true;
+            }
+            return;
+        }
+        if (!FirstPacket.Observed) {
+            FirstPacket = observation;
+            ReportPacket = true;
+        }
+        if (!FirstNonzeroPacket.Observed && observation.Prefix.Nonzero) {
+            FirstNonzeroPacket = observation;
+            ReportNonzeroPacket = true;
+        }
+    }
+    void RecordNotify(uint64_t generation, CaptureNotifyObservation observation)
+    {
+        if (generation != Generation || !observation.Observed) { return; }
+        if ((observation.Status & 0x80000000u) == 0) {
+            if (!FirstNotifySuccess.Observed) {
+                FirstNotifySuccess = observation;
+                ReportNotifySuccess = true;
+            }
+        } else if (!FirstNotifyFailure.Observed) {
+            FirstNotifyFailure = observation;
+            ReportNotifyFailure = true;
+        }
+    }
+    // QUERY consumes pending publication, not historical witnesses. Missing
+    // position/query evidence is unknown, not proof of no delivery: ACX clients
+    // may read the packet count/QPC register updated by NotifyPacketComplete.
     CaptureDiagnostic TakeUnreported()
     {
         const auto snapshot = *this;
         ReportCopy = ReportNonzero = ReportPosition = false;
+        ReportPacket = ReportNonzeroPacket = ReportPacketRefusal = false;
+        ReportNotifySuccess = ReportNotifyFailure = false;
         return snapshot;
     }
 };
-static_assert(sizeof(CaptureDiagnostic) <= 256, "fixed capture boundary diagnostic budget");
+static_assert(sizeof(CaptureDiagnostic) <= 512, "fixed capture boundary diagnostic budget");
 }

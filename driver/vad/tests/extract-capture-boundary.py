@@ -17,13 +17,16 @@ pcm = root / "src/Pcm.cpp"
 )
 parts = []
 for relative, functions in (
-    ("src/audio/Streams.cpp", ("RecordEventCaptureCopy", "TransferTimerSegment", "VadAudioGetPosition")),
+    ("src/audio/Streams.cpp", ("PacketAddress", "RecordEventCaptureCopy", "NotifyPacketComplete",
+                              "TransferTimerSegment", "RecordCapturePacket",
+                              "VadAudioGetCapturePacket", "VadAudioGetPosition")),
     ("src/Control.cpp", ("TracePendingCaptureDiagnostic",)),
 ):
     source = root / relative
     text = source.read_text(encoding="utf-8")
     patterns = tuple(
-        (name, r"(?:static\s+)?(?:void|NTSTATUS)\s+" + name + r"\s*\([^;{}]*\)\s*\{")
+        (name, r"(?:static\s+)?(?:void|NTSTATUS|PVOID|vad::audio::CaptureNotifyObservation)\s+" +
+         name + r"\s*\([^;{}]*\)\s*\{")
         for name in functions if re.search(r"\b" + name + r"\s*\(", text)
     )
     parts.append(module.extract(text, source.as_posix(), patterns))
