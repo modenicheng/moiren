@@ -99,6 +99,32 @@ impl MeasuredProcessDelivery {
         producer: EventHistorySnapshot,
         consumer: EventHistorySnapshot,
     ) -> Result<Self, MeasuredAdmissionError> {
+        Self::from_optional_observations(
+            process,
+            owner_generation,
+            input_sample_rate,
+            consumer_sample_rate,
+            prepared_consumer_demand_frames,
+            Some(delivery),
+            Some(producer),
+            Some(consumer),
+        )
+    }
+
+    /// Check every present component before reporting readiness. Independent
+    /// snapshots need not arrive together, but a missing peer cannot hide a
+    /// known clock, counter or shape fault. No missing evidence is synthesized.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_optional_observations(
+        process: ProcessIdentity,
+        owner_generation: u64,
+        input_sample_rate: u32,
+        consumer_sample_rate: u32,
+        prepared_consumer_demand_frames: u32,
+        delivery: Option<InputDeliverySnapshot>,
+        producer: Option<EventHistorySnapshot>,
+        consumer: Option<EventHistorySnapshot>,
+    ) -> Result<Self, MeasuredAdmissionError> {
         if process.pid == 0 || process.creation_time_100ns == 0 {
             return Err(MeasuredAdmissionError::InvalidIdentity);
         }
@@ -109,9 +135,38 @@ impl MeasuredProcessDelivery {
             return Err(MeasuredAdmissionError::InvalidInputSampleRate);
         }
         validate_consumer(consumer_sample_rate, prepared_consumer_demand_frames)?;
-        let supply = validate_history(&producer, "producer")?;
-        let demand = validate_history(&consumer, "consumer")?;
-        let max_callback_burst_frames = validate_delivery(delivery, &producer, &supply)?;
+        let delivery = delivery
+            .map(|value| validate_delivery_counters(value).map(|burst| (value, burst)))
+            .transpose()?;
+        let producer = producer
+            .map(|history| validate_history(&history, "producer").map(|summary| (history, summary)))
+            .transpose()?;
+        let consumer = consumer
+            .map(|history| validate_history(&history, "consumer").map(|summary| (history, summary)))
+            .transpose()?;
+        if let Some((_, supply)) = &producer
+            && supply.max_gap_100ns != 0
+        {
+            frames_for_gap(supply.max_gap_100ns, input_sample_rate)?;
+        }
+        if let (Some((delivery, burst)), Some((producer, supply))) = (&delivery, &producer) {
+            validate_delivery(*delivery, producer, supply, *burst)?;
+        }
+        let (delivery, max_callback_burst_frames) =
+            delivery.ok_or(MeasuredAdmissionError::MissingObservation {
+                observation: "packet delivery",
+            })?;
+        let (producer, supply) = producer.ok_or(MeasuredAdmissionError::MissingObservation {
+            observation: "producer",
+        })?;
+        let (consumer, demand) = consumer.ok_or(MeasuredAdmissionError::MissingObservation {
+            observation: "consumer",
+        })?;
+        for (history, observation) in [(&producer, "producer"), (&consumer, "consumer")] {
+            if history.events.len() < 2 {
+                return Err(MeasuredAdmissionError::InsufficientHistory { observation });
+            }
+        }
         let max_gap_frames = frames_for_gap(
             delivery.max_gap_100ns.max(supply.max_gap_100ns),
             input_sample_rate,
@@ -250,9 +305,6 @@ fn validate_history(
     if history.unavailable_clocks != 0 || history.regressed_clocks != 0 {
         return Err(MeasuredAdmissionError::ClockFault { observation });
     }
-    if history.events.len() < 2 {
-        return Err(MeasuredAdmissionError::InsufficientHistory { observation });
-    }
     // A real fixed ring only omits a prefix after all retained slots fill.
     // Otherwise an internally consistent shortened suffix could erase a
     // larger consumer burst and manufacture a smaller measured reserve.
@@ -302,10 +354,8 @@ fn validate_history(
     Ok(summary)
 }
 
-fn validate_delivery(
+fn validate_delivery_counters(
     delivery: InputDeliverySnapshot,
-    producer: &EventHistorySnapshot,
-    supply: &HistorySummary,
 ) -> Result<u32, MeasuredAdmissionError> {
     if delivery.unavailable_clocks != 0 || delivery.regressed_clocks != 0 {
         return Err(MeasuredAdmissionError::ClockFault {
@@ -319,16 +369,36 @@ fn validate_delivery(
     }
     let burst = u32::try_from(delivery.max_callback_burst_frames)
         .map_err(|_| MeasuredAdmissionError::ArithmeticOverflow)?;
-    if delivery.packets < producer.total_events
-        || delivery.gap_samples != delivery.packets - 1
-        || delivery.max_packet_frames == 0
+    if delivery.gap_samples != delivery.packets.saturating_sub(1)
+        || (delivery.packets == 0
+            && (delivery.max_packet_frames != 0 || burst != 0 || delivery.max_gap_100ns != 0))
+        || (delivery.packets != 0 && delivery.max_packet_frames == 0)
         || delivery.max_packet_frames > burst
-        || burst < supply.max_frames
-        || (producer.overwritten_events == 0 && burst != supply.max_frames)
         || delivery.packet_bound_violations > delivery.packets
         || delivery.gap_bound_violations > delivery.gap_samples
     {
         return Err(MeasuredAdmissionError::InconsistentDelivery);
+    }
+    if delivery.max_gap_100ns != 0 {
+        frames_for_gap(delivery.max_gap_100ns, crate::NATIVE_SAMPLE_RATE)?;
+    }
+    Ok(burst)
+}
+
+fn validate_delivery(
+    delivery: InputDeliverySnapshot,
+    producer: &EventHistorySnapshot,
+    supply: &HistorySummary,
+    burst: u32,
+) -> Result<(), MeasuredAdmissionError> {
+    if delivery.packets < producer.total_events
+        || burst < supply.max_frames
+        || (producer.overwritten_events == 0 && burst != supply.max_frames)
+    {
+        return Err(MeasuredAdmissionError::InconsistentDelivery);
+    }
+    if delivery.packets == 0 {
+        return Ok(());
     }
     // Every retained drain must be explainable as complete native packets.
     // Prefix overwrites are permitted, but each omitted drain still needs at
@@ -359,7 +429,7 @@ fn validate_delivery(
     if maximum_frames < minimum_frames {
         return Err(MeasuredAdmissionError::InconsistentDelivery);
     }
-    Ok(burst)
+    Ok(())
 }
 
 fn frames_for_gap(gap_100ns: u64, rate: u32) -> Result<u32, MeasuredAdmissionError> {

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     clock_bridge::{ClockBridgeConfig, capture_bridge},
     latency::events::event_history,
-    process_loopback::ProcessIdentity,
+    process_loopback::{MeasuredAdmissionError as Error, ProcessIdentity},
 };
 use moiren_core::graph::{LogicalGraph, NodeKind};
 
@@ -112,11 +112,8 @@ fn retained_process_observations_keep_late_native_events_and_original_generation
     assert_eq!(observations.snapshot().unwrap().owner_generation, 8);
 }
 
-#[test]
-fn measured_projection_requires_complete_matching_observations() {
-    use crate::{
-        latency::InputDeliveryRecorder, process_loopback::MeasuredAdmissionError as Error,
-    };
+fn measured_observation() -> NativeProcessDeliveryObservation {
+    use crate::latency::InputDeliveryRecorder;
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Source, 2).unwrap();
     let process = ProcessIdentity {
@@ -133,7 +130,7 @@ fn measured_projection_requires_complete_matching_observations() {
         delivery.packet(96, Some(stamp - 1));
         delivery.callback_burst(96);
     }
-    let mut observation = NativeProcessDeliveryObservation {
+    NativeProcessDeliveryObservation {
         queue_history: None,
         packet_history: None,
         node,
@@ -154,7 +151,13 @@ fn measured_projection_requires_complete_matching_observations() {
             native_delivery: Some(delivery.snapshot()),
             ..Default::default()
         },
-    };
+    }
+}
+
+#[test]
+fn measured_projection_requires_complete_matching_observations() {
+    let mut observation = measured_observation();
+    let process = observation.process.clone();
     let measured = observation.measured(&process, 7).unwrap();
     assert!(measured.process().same_process(&process));
     assert_eq!(measured.owner_generation(), 7);
@@ -181,6 +184,191 @@ fn measured_projection_requires_complete_matching_observations() {
             observation: "consumer"
         }
     );
+}
+
+#[test]
+fn measured_projection_present_history_faults_precede_missing_components() {
+    for producer in [true, false] {
+        for missing_delivery in [true, false] {
+            for fault in 0..5 {
+                let mut observation = measured_observation();
+                if missing_delivery {
+                    observation.delivery = None;
+                    observation.counters.native_delivery = None;
+                } else if producer {
+                    observation.consumer = None;
+                } else {
+                    observation.producer = None;
+                }
+                let name = if producer { "producer" } else { "consumer" };
+                let present = if producer {
+                    observation.producer.as_mut().unwrap()
+                } else {
+                    observation.consumer.as_mut().unwrap()
+                };
+                let expected = match fault {
+                    0 => {
+                        present.saturated = true;
+                        Error::SaturatedEvidence { observation: name }
+                    }
+                    1 => {
+                        present.unavailable_clocks = 1;
+                        Error::ClockFault { observation: name }
+                    }
+                    2 => {
+                        present.events[0].sequence = 0;
+                        Error::InvalidHistory { observation: name }
+                    }
+                    3 => {
+                        present.events.truncate(1);
+                        Error::InvalidHistory { observation: name }
+                    }
+                    4 => {
+                        present.regressed_clocks = 1;
+                        Error::ClockFault { observation: name }
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    observation.measured(&observation.process, 7).unwrap_err(),
+                    expected,
+                    "{name} {missing_delivery} {fault}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn measured_projection_present_delivery_faults_precede_missing_histories() {
+    for producer in [true, false] {
+        for fault in 0..6 {
+            let mut observation = measured_observation();
+            if producer {
+                observation.producer = None;
+            } else {
+                observation.consumer = None;
+            }
+            let delivery = observation.delivery.as_mut().unwrap();
+            let expected = match fault {
+                0 => {
+                    delivery.unavailable_clocks = 1;
+                    Error::ClockFault {
+                        observation: "delivery",
+                    }
+                }
+                1 => {
+                    delivery.regressed_clocks = 1;
+                    Error::ClockFault {
+                        observation: "delivery",
+                    }
+                }
+                2 => {
+                    delivery.packets = u64::MAX;
+                    Error::SaturatedEvidence {
+                        observation: "delivery",
+                    }
+                }
+                3 => {
+                    delivery.gap_samples = 0;
+                    Error::InconsistentDelivery
+                }
+                4 => {
+                    delivery.max_callback_burst_frames = u64::MAX;
+                    Error::ArithmeticOverflow
+                }
+                5 => {
+                    delivery.max_gap_100ns = u64::MAX;
+                    Error::ArithmeticOverflow
+                }
+                _ => unreachable!(),
+            };
+            observation.counters.native_delivery = observation.delivery;
+            assert_eq!(
+                observation.measured(&observation.process, 7).unwrap_err(),
+                expected,
+                "{producer} {fault}"
+            );
+        }
+    }
+}
+
+#[test]
+fn measured_projection_delivery_counter_disagreement_precedes_missing_delivery() {
+    let mut observation = measured_observation();
+    observation.delivery = None;
+    assert_eq!(
+        observation.measured(&observation.process, 7).unwrap_err(),
+        Error::InconsistentDelivery
+    );
+}
+
+#[test]
+fn measured_projection_known_supply_faults_precede_missing_consumer() {
+    for fault in 0..3 {
+        let mut observation = measured_observation();
+        observation.consumer = None;
+        let expected = match fault {
+            0 => {
+                observation
+                    .delivery
+                    .as_mut()
+                    .unwrap()
+                    .max_callback_burst_frames = 192;
+                Error::InconsistentDelivery
+            }
+            1 => {
+                observation.delivery.as_mut().unwrap().packets = 1;
+                observation.delivery.as_mut().unwrap().gap_samples = 0;
+                Error::InconsistentDelivery
+            }
+            2 => {
+                observation.producer.as_mut().unwrap().events[2].qpc_100ns = Some(u64::MAX);
+                Error::ArithmeticOverflow
+            }
+            _ => unreachable!(),
+        };
+        observation.counters.native_delivery = observation.delivery;
+        assert_eq!(
+            observation.measured(&observation.process, 7).unwrap_err(),
+            expected,
+            "{fault}"
+        );
+    }
+}
+
+#[test]
+fn measured_projection_coherent_startup_preserves_missing_and_insufficient_errors() {
+    for count in 0..2 {
+        let (mut writer, observer) = event_history();
+        for index in 0..count {
+            writer.record(96, Some(1_000_000 + index * 20_000));
+        }
+        let short = observer.snapshot().unwrap();
+        let mut observation = measured_observation();
+        let mut delivery = crate::latency::InputDeliveryRecorder::new(None).unwrap();
+        for index in 0..count {
+            delivery.packet(96, Some(999_999 + index * 20_000));
+            delivery.callback_burst(96);
+        }
+        observation.delivery = Some(delivery.snapshot());
+        observation.counters.native_delivery = observation.delivery;
+        observation.producer = Some(short.clone());
+        observation.consumer = Some(short);
+        assert_eq!(
+            observation.measured(&observation.process, 7).unwrap_err(),
+            Error::InsufficientHistory {
+                observation: "producer"
+            }
+        );
+        observation.consumer = None;
+        assert_eq!(
+            observation.measured(&observation.process, 7).unwrap_err(),
+            Error::MissingObservation {
+                observation: "consumer"
+            }
+        );
+    }
 }
 
 #[test]

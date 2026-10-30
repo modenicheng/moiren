@@ -407,6 +407,147 @@ fn unavailable_regressed_or_saturated_evidence_is_refused_even_with_valid_tail()
 }
 
 #[test]
+fn coherent_startup_histories_remain_insufficient() {
+    for producer in [true, false] {
+        for events in [vec![], vec![(96, 1_000_000)]] {
+            let mut observation = regular();
+            let name = if producer { "producer" } else { "consumer" };
+            if producer {
+                observation = observations(&events, &[(96, 1_001_000), (96, 1_021_000)], 48);
+            } else {
+                observation.consumer = history(&events);
+            }
+            assert_eq!(
+                measure(observation).unwrap_err(),
+                MeasuredAdmissionError::InsufficientHistory { observation: name }
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_startup_histories_are_not_readiness_failures() {
+    for producer in [true, false] {
+        for fault in 0..10 {
+            let mut observation = regular();
+            let name = if producer { "producer" } else { "consumer" };
+            let mut short = history(&[(96, 1_000_000)]);
+            let expected = match fault {
+                0 => {
+                    short.total_events = 4;
+                    MeasuredAdmissionError::InvalidHistory { observation: name }
+                }
+                1 => {
+                    short.overwritten_events = 1;
+                    MeasuredAdmissionError::InvalidHistory { observation: name }
+                }
+                2 => {
+                    short.events[0].sequence = 2;
+                    MeasuredAdmissionError::InvalidHistory { observation: name }
+                }
+                3 => {
+                    short.events[0].frames = 0;
+                    MeasuredAdmissionError::InvalidHistory { observation: name }
+                }
+                4 => {
+                    short.events[0].qpc_100ns = None;
+                    MeasuredAdmissionError::ClockFault { observation: name }
+                }
+                5 => {
+                    short.events[0].qpc_100ns = Some(0);
+                    MeasuredAdmissionError::ClockFault { observation: name }
+                }
+                6 => {
+                    short.events[0].frames = u64::MAX;
+                    MeasuredAdmissionError::ArithmeticOverflow
+                }
+                7 => {
+                    short = history(&[]);
+                    short.total_events = 1;
+                    MeasuredAdmissionError::InvalidHistory { observation: name }
+                }
+                8 => {
+                    short.saturated = true;
+                    MeasuredAdmissionError::SaturatedEvidence { observation: name }
+                }
+                9 => {
+                    short.unavailable_clocks = 1;
+                    MeasuredAdmissionError::ClockFault { observation: name }
+                }
+                _ => unreachable!(),
+            };
+            if producer {
+                observation.producer = short;
+            } else {
+                observation.consumer = short;
+            }
+            assert_eq!(
+                measure(observation).unwrap_err(),
+                expected,
+                "{name} {fault}"
+            );
+        }
+    }
+}
+
+#[test]
+fn present_faults_precede_another_history_startup_prefix() {
+    for events in [vec![], vec![(96, 1_000_000)]] {
+        let mut observation = regular();
+        observation.producer = history(&events);
+        observation.consumer.saturated = true;
+        assert_eq!(
+            measure(observation).unwrap_err(),
+            MeasuredAdmissionError::SaturatedEvidence {
+                observation: "consumer"
+            }
+        );
+        for producer in [true, false] {
+            for fault in 0..4 {
+                let mut observation = regular();
+                if producer {
+                    observation = observations(&events, &[(96, 1_001_000), (96, 1_021_000)], 48);
+                } else {
+                    observation.consumer = history(&events);
+                }
+                let expected = match fault {
+                    0 => {
+                        observation.delivery.unavailable_clocks = 1;
+                        MeasuredAdmissionError::ClockFault {
+                            observation: "delivery",
+                        }
+                    }
+                    1 => {
+                        observation.delivery.packets = u64::MAX;
+                        MeasuredAdmissionError::SaturatedEvidence {
+                            observation: "delivery",
+                        }
+                    }
+                    2 => {
+                        observation.delivery.gap_samples += 1;
+                        MeasuredAdmissionError::InconsistentDelivery
+                    }
+                    3 => {
+                        observation.delivery.max_gap_100ns = u64::MAX;
+                        if observation.delivery.packets == 0 {
+                            MeasuredAdmissionError::InconsistentDelivery
+                        } else {
+                            MeasuredAdmissionError::ArithmeticOverflow
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    measure(observation).unwrap_err(),
+                    expected,
+                    "{producer} {fault}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn retained_sequences_counts_and_frame_shapes_must_be_consistent() {
     for producer in [true, false] {
         for fault in 0..8 {

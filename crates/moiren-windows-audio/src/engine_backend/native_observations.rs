@@ -152,25 +152,18 @@ impl NativeProcessDeliveryObservation {
         if self.admitted_bridge.max_ingress_elapsed_100ns.is_some() {
             return Err(Error::IngressElapsedUnsupported);
         }
-        let delivery = self.delivery.ok_or(Error::MissingObservation {
-            observation: "packet delivery",
-        })?;
-        if self.counters.native_delivery != Some(delivery) {
+        if self.counters.native_delivery != self.delivery {
             return Err(Error::InconsistentDelivery);
         }
-        MeasuredProcessDelivery::from_observations(
+        MeasuredProcessDelivery::from_optional_observations(
             self.process.clone(),
             self.owner_generation,
             self.input_sample_rate,
             self.consumer_sample_rate,
             self.prepared_consumer_demand_frames,
-            delivery,
-            self.producer.clone().ok_or(Error::MissingObservation {
-                observation: "producer",
-            })?,
-            self.consumer.clone().ok_or(Error::MissingObservation {
-                observation: "consumer",
-            })?,
+            self.delivery,
+            self.producer.clone(),
+            self.consumer.clone(),
         )
     }
 }
