@@ -569,7 +569,7 @@ fn validate_final_graph_with_policy(
     Ok(())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(super) fn validate_measurement_outcome(
     outcome: &crate::measurement::session::MeasurementOutcome,
     policy: ValidationPolicy,

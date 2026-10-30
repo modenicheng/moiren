@@ -6,12 +6,9 @@ use moiren_windows_audio::{
     clock_bridge::BridgeObserver,
     process_loopback::{ProcessIdentity, ProcessTraceArtifact},
 };
-use std::{
-    fs::OpenOptions,
-    io::Write,
-    path::Path,
-    time::{Duration, Instant},
-};
+#[cfg(windows)]
+use std::time::Instant;
+use std::{fs::OpenOptions, io::Write, path::Path, time::Duration};
 
 const MAX_ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -154,6 +151,7 @@ pub(super) fn persist(path: &Path, artifact: &impl serde::Serialize) -> Result<(
 
 /// Finite sessions may finish naturally; only the bounded deadline requests a
 /// stop. Supervised sessions keep their existing early-owner-exit hard gate.
+#[cfg(windows)]
 pub(super) fn poll_finite(
     duration: Duration,
     poll: impl FnMut(),

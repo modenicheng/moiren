@@ -1478,7 +1478,7 @@ fn reconcile_source_outcome_with_policy(
     submitted_complete
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn observe_measurement_quality(
     outcome: &crate::measurement::session::MeasurementOutcome,
     quality: &mut Quality,
@@ -1527,7 +1527,7 @@ fn observe_measurement_quality(
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn validate_measurement_outcome_with_policy(
     outcome: &crate::measurement::session::MeasurementOutcome,
     policy: ValidationPolicy,
