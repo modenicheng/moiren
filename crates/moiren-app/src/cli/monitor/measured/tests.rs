@@ -215,6 +215,121 @@ fn window_options() -> MonitorOptions {
 }
 
 #[test]
+fn measured_cli_waits_for_optional_samples_without_renewing_collection() {
+    for missing in 0..3 {
+        let (mut snapshot, mut report, _) = fixture();
+        let node = snapshot
+            .graph
+            .node_of_kind(NodeKind::Source)
+            .unwrap()
+            .0
+            .id();
+        let complete = crate::service::measured_process::tests::observation(node);
+        let mut incomplete = complete.clone();
+        match missing {
+            0 => incomplete.delivery = None,
+            1 => incomplete.producer = None,
+            2 => incomplete.consumer = None,
+            _ => unreachable!(),
+        }
+        let native = snapshot.native_observations.as_mut().unwrap();
+        native.observation.owner_generation = complete.owner_generation;
+        native.observation.process_delivery = vec![incomplete];
+        let (handle, mailbox) =
+            crate::service::ServiceMailbox::with_snapshot(std::thread::current(), snapshot.clone());
+        let mut options = MonitorOptions::default();
+        for (flag, value) in [
+            ("--measure-seconds", "1"),
+            ("--target-frames", "256"),
+            ("--capacity-frames", "2048"),
+            ("--jitter-frames", "0"),
+        ] {
+            options.set(flag, value).unwrap();
+        }
+        let mut measurement = Measurement::new(&options);
+        let since = Instant::now() - Duration::from_millis(1001);
+        measurement.stage = Stage::Collecting {
+            since,
+            generation: snapshot.generation.0,
+            revision: snapshot.graph.candidate_revision,
+            native: complete.owner_generation,
+        };
+        for _ in 0..2 {
+            measurement
+                .observe(&snapshot, &handle, &mut report, Instant::now(), 30000)
+                .expect("an unknown optional snapshot waits within the fixed deadline");
+            assert!(
+                matches!(measurement.stage, Stage::Collecting { since: anchor, .. } if anchor == since)
+            );
+            assert!(mailbox.try_request().is_none());
+        }
+        snapshot
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .process_delivery = vec![complete];
+        measurement
+            .observe(&snapshot, &handle, &mut report, Instant::now(), 30000)
+            .unwrap();
+        assert!(matches!(
+            mailbox.try_request(),
+            Some(crate::service::AppRequest::ApplyMeasuredProcessBridge(_))
+        ));
+    }
+}
+
+#[test]
+fn measured_cli_missing_samples_expire_at_the_original_deadline() {
+    let (mut snapshot, mut report, _) = fixture();
+    let node = snapshot
+        .graph
+        .node_of_kind(NodeKind::Source)
+        .unwrap()
+        .0
+        .id();
+    let mut observation = crate::service::measured_process::tests::observation(node);
+    observation.delivery = None;
+    let native = snapshot.native_observations.as_mut().unwrap();
+    native.observation.owner_generation = observation.owner_generation;
+    native.observation.process_delivery = vec![observation];
+    let (handle, mailbox) =
+        crate::service::ServiceMailbox::with_snapshot(std::thread::current(), snapshot.clone());
+    let mut measurement = Measurement {
+        seconds: Some(1),
+        target: Some((2048, 256, 0)),
+        window_policy: None,
+        stage: Stage::Baseline,
+    };
+    let since = Instant::now() - Duration::from_millis(1001);
+    measurement.stage = Stage::Collecting {
+        since,
+        generation: snapshot.generation.0,
+        revision: snapshot.graph.candidate_revision,
+        native: 7,
+    };
+    for _ in 0..2 {
+        measurement
+            .observe(&snapshot, &handle, &mut report, Instant::now(), 1000)
+            .unwrap();
+        assert!(
+            matches!(measurement.stage, Stage::Collecting { since: anchor, .. } if anchor == since)
+        );
+    }
+    if let Stage::Collecting { since, .. } = &mut measurement.stage {
+        *since = Instant::now() - Duration::from_millis(2100);
+    }
+    assert!(
+        measurement
+            .observe(&snapshot, &handle, &mut report, Instant::now(), 1000)
+            .unwrap_err()
+            .to_string()
+            .contains("startup deadline")
+    );
+    assert!(mailbox.try_request().is_none());
+}
+
+#[test]
 fn window_cli_collection_submits_exact_window_request_instead_of_per_wake_precheck() {
     let (mut snapshot, mut report, _) = fixture();
     let node = snapshot
