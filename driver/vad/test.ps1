@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,11 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence') } else { @($Test) })) {
+    if ($testName -eq 'pause_fence') {
+        & python (Join-Path $PSScriptRoot 'tests\extract-pause-fence.py') $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Pause fence extraction failed ($LASTEXITCODE)." }
+    }
     if ($testName -eq 'capture_boundary') {
         & python (Join-Path $PSScriptRoot 'tests\extract-capture-boundary.py') $PSScriptRoot $buildRoot
         if ($LASTEXITCODE -ne 0) { throw "Capture boundary extraction failed ($LASTEXITCODE)." }

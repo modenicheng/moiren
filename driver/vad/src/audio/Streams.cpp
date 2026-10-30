@@ -155,6 +155,10 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
     if (stream->Timer != nullptr) {
         (void)WdfTimerStop(stream->Timer, TRUE);
     }
+    auto child = VadChild(stream->Device);
+    // Hold the passive submission drain before publishing a new epoch: a
+    // freshly stamped Paused request must not enter this stop's purge.
+    VadPcmDrainGuard drain(child->Shared, child->Index);
     KeAcquireSpinLock(&stream->State, &irql);
     if (reset) {
         // Shared by ReleaseHardware, FreeRtPackets and cleanup. The epoch must
@@ -165,6 +169,10 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
         stream->TimerRing.RingFrameOffset = 0;
         stream->TimerRing.PresentedFrames = 0;
         stream->TimerRing.SegmentSequence = 0;
+    } else {
+        // Pause cancels PCM too, but must preserve packet numbering and the
+        // completed packet's capture timestamp rather than ResetPacketClock.
+        VadPcmDiscontinuity(stream->Device, stream->Generation, true);
     }
     // Deliberately not QuiesceStreamBuffers: across a pause (reset=false) a
     // packet completed before the stop must still deliver its capture time, so
@@ -176,8 +184,7 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
     KeReleaseSpinLock(&stream->State, irql);
     VadAudioDescribeStream(stream->Device, stream->Generation,
         stream->BlockAlign, stream->PacketFrames, MOIREN_VAD_STREAM_PAUSED);
-    auto child = VadChild(stream->Device);
-    VadPcmPurge(child->Shared, child->Index, true);
+    drain.Purge(true);
 }
 
 VAD_PAGE void VadAudioStopDeviceLocked(VAD_AUDIO_DEVICE* device)

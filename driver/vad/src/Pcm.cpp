@@ -129,24 +129,59 @@ VAD_PAGE NTSTATUS VadPcmInitialize(WDFDEVICE device)
     return STATUS_SUCCESS;
 }
 
-VAD_PAGE void VadPcmPurge(VAD_SHARED* shared, ULONG index, bool restart)
+_Use_decl_annotations_
+VAD_PAGE VadPcmDrainGuard::VadPcmDrainGuard(VAD_SHARED* shared, ULONG index) : Index(index)
 {
     PAGED_CODE();
-    if (!shared->PcmInitialized || !ExAcquireRundownProtection(&shared->PcmRundown)) {
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (!shared->PcmInitialized) {
+        return;
+    }
+    KeEnterCriticalRegion();
+    if (!ExAcquireRundownProtection(&shared->PcmRundown)) {
+        KeLeaveCriticalRegion();
         return;
     }
     KeWaitForSingleObject(&shared->PcmDrain[index], Executive, KernelMode, FALSE, nullptr);
-    const auto queue = shared->PcmQueues[index];
+    Shared = shared;
+}
+
+_Use_decl_annotations_
+VAD_PAGE VadPcmDrainGuard::~VadPcmDrainGuard()
+{
+    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (Shared != nullptr) {
+        KeReleaseMutex(&Shared->PcmDrain[Index], FALSE);
+        ExReleaseRundownProtection(&Shared->PcmRundown);
+        KeLeaveCriticalRegion();
+    }
+}
+
+_Use_decl_annotations_
+VAD_PAGE void VadPcmDrainGuard::Purge(bool restart)
+{
+    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (Shared == nullptr) {
+        return;
+    }
+    const auto queue = Shared->PcmQueues[Index];
     if (queue != nullptr) {
         // Called only outside ALL EvtIo callbacks (including other queues).
         // Cancellation never enters Admin, Lifecycle, or PcmDrain.
         WdfIoQueuePurgeSynchronously(queue);
-        if (restart && InterlockedCompareExchange(&shared->PcmOnline, 0, 0) != 0) {
+        if (restart && InterlockedCompareExchange(&Shared->PcmOnline, 0, 0) != 0) {
             WdfIoQueueStart(queue);
         }
     }
-    KeReleaseMutex(&shared->PcmDrain[index], FALSE);
-    ExReleaseRundownProtection(&shared->PcmRundown);
+}
+
+VAD_PAGE void VadPcmPurge(VAD_SHARED* shared, ULONG index, bool restart)
+{
+    PAGED_CODE();
+    VadPcmDrainGuard drain(shared, index);
+    drain.Purge(restart);
 }
 
 VAD_PAGE void VadPcmShutdown(VAD_SHARED* shared)

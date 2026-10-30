@@ -464,6 +464,9 @@ void VadAudioReleaseStream(WDFDEVICE child)
     KIRQL irql;
     KeAcquireSpinLock(&shared->Lock, &irql);
     auto& slot = shared->Slots[context->Index];
+    // Paused requests may arrive after Stop. Fence them atomically with Closed
+    // before purge; Closed then rejects any newly observed admission stamp.
+    vad::InvalidatePcmEpoch(slot);
     slot.SampleFormat = 0;
     slot.PacketFrames = 0;
     slot.StreamState = MOIREN_VAD_STREAM_CLOSED;

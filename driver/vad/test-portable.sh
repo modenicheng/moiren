@@ -8,9 +8,18 @@ mkdir -p -- "$build_dir"
 
 # Pure helpers and production-extracted lifecycle with DDI stubs; no device access.
 status=0
-for suite in lifecycle audio ownership timer cleanup removal interface_name; do
+for suite in lifecycle audio ownership timer cleanup removal interface_name pause_fence; do
     printf '\n=== VAD portable host suite: %s ===\n' "$suite"
     suite_flags=()
+    if [[ "$suite" == pause_fence ]]; then
+        suite_flags+=(-pthread)
+        if ! python3 "$script_dir/tests/extract-pause-fence.py" \
+            "$script_dir" "$build_dir" \
+            2>&1 | tee "$build_dir/pause_fence.extract.log"; then
+            status=1
+            continue
+        fi
+    fi
     if [[ "$suite" == interface_name ]]; then
         # Exercise the real UTF-16 wchar_t helper even on Linux. This suite
         # uses no wide libc calls, whose ABI may require 4-byte wchar_t.

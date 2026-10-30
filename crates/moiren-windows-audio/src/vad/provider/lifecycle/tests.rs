@@ -964,6 +964,61 @@ fn pcm_cancellation_rebuilds_on_epoch_change_but_same_epoch_fault_is_fatal() {
 }
 
 #[test]
+fn pcm_cancel_paused_same_stream_recovers_only_after_published_epoch_fence() {
+    for (previous_epoch, gate_epoch, open) in [
+        (5, 5, true),
+        (5, 6, true),
+        (6, 6, true),
+        (u64::MAX, u64::MAX, false),
+    ] {
+        let admission = Arc::new(Admission::new());
+        let session = SessionState::new(admission.clone());
+        session.active.store(true, Ordering::Release);
+        session
+            .admitted_ticket
+            .store(admission.set(Some(9)), Ordering::Release);
+        session.admitted_revision.store(9, Ordering::Release);
+        let previous = snapshot(PdoState::Present, 3, previous_epoch, true);
+        let current = snapshot_native(
+            PdoState::Present,
+            3,
+            gate_epoch,
+            open,
+            11,
+            (StreamState::Paused, true, true),
+        );
+        let mut control = Fake {
+            current,
+            ..Default::default()
+        };
+        let result = super::super::transport::after_io_error(
+            &mut control,
+            previous,
+            &session,
+            BackendError::Cancelled,
+        );
+        if gate_epoch == previous.gate_epoch() && open {
+            assert_eq!(result, Err(BackendError::Cancelled));
+        } else {
+            assert_eq!(result, Ok(current));
+        }
+        assert_eq!(
+            session.reset_epoch.load(Ordering::Acquire),
+            u64::from(gate_epoch != previous.gate_epoch()),
+        );
+        assert!(
+            session.admitted(),
+            "a pause fence does not fabricate revocation"
+        );
+        assert!(!session.drained.load(Ordering::Acquire));
+        assert!(
+            control.gates.is_empty(),
+            "observation does not mutate the gate"
+        );
+    }
+}
+
+#[test]
 fn pcm_cancel_active_same_stamp_pause_closed_and_running_abort_stay_fatal() {
     for stream_state in [
         StreamState::Paused,

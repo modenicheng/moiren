@@ -123,6 +123,24 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VAD_PCM_REQUEST, VadPcmRequest)
 VAD_PAGE NTSTATUS VadPcmInitialize(WDFDEVICE device);
 VAD_PAGE void VadPcmShutdown(VAD_SHARED* shared);
 VAD_PAGE NTSTATUS VadPcmSubmit(WDFDEVICE device, WDFREQUEST request, ULONG code);
+// Passive stack scope: exclude submissions from epoch publication through purge.
+// Rundown protects queue access; normal kernel APCs stay disabled until release.
+class VadPcmDrainGuard {
+public:
+    _IRQL_requires_(PASSIVE_LEVEL)
+    VAD_PAGE VadPcmDrainGuard(VAD_SHARED* shared, ULONG index);
+    _IRQL_requires_(PASSIVE_LEVEL)
+    VAD_PAGE ~VadPcmDrainGuard();
+    _IRQL_requires_(PASSIVE_LEVEL)
+    VAD_PAGE void Purge(bool restart);
+    VadPcmDrainGuard(const VadPcmDrainGuard&) = delete;
+    VadPcmDrainGuard& operator=(const VadPcmDrainGuard&) = delete;
+private:
+    void* operator new(size_t) = delete;
+    void* operator new[](size_t) = delete;
+    VAD_SHARED* Shared = nullptr;
+    ULONG Index;
+};
 VAD_PAGE void VadPcmPurge(VAD_SHARED* shared, ULONG index, bool restart);
 struct VAD_PCM_COMPLETION {
     WDFREQUEST Request;
