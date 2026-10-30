@@ -12,6 +12,12 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [native-helper cfg repair](2026-10-30-native-helper-cfg.md) corrects
+Linux library-test/Miri and non-test probe compilation without suppressing
+warnings or changing Windows runtime behavior. Both Linux-target Miri borrow
+models pass39VAD tests locally; this does not replace PR-wide CI or native
+audio evidence. Physical/reference and post-bugcheck testing gates remain open.
+
 The [virtual-clock accounting repair](2026-10-30-virtual-clock-loss.md)
 retains cumulative omitted Engine periods/frames beyond the recovery cap
 through owner retirement. Live contention stays unavailable; the pure-virtual

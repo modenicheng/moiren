@@ -126,6 +126,11 @@ probe validation for the pure-virtual route. Native PCM loss and Engine periods
 omitted by the recovery cap remain distinct. This changes no kernel source,
 clock policy, default budget or hardware gate; native retries remain paused.
 
+The [cross-target/RT-harness follow-up](../../docs/validation/2026-10-30-native-helper-cfg.md)
+retains Linux/Miri compilation and private-clock test integration repairs,
+plus the final `c222df2` application/probe deployment. Installed SYS remains
+unchanged, Running /root PnP OK; no native audio retry or new hardware verdict.
+
 ## Audit follow-up - 2026-10-21
 
 The reported Removing-state retry defect is absent in the current source:
