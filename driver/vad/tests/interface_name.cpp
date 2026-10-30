@@ -2,7 +2,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cwchar>
 #include "../include/moiren_vad.h"
 
 // Compile the real staging function; only registry/interface DDIs are stubs.
@@ -36,6 +35,17 @@ static void Check(bool condition, const char* message)
     }
 }
 
+// Do not pass short wchar_t strings to a platform's wide libc ABI.
+static bool SameUnits(PCWSTR left, PCWSTR right)
+{
+    while (*left == *right) {
+        if (*left == L'\0') { return true; }
+        ++left;
+        ++right;
+    }
+    return false;
+}
+
 struct Fixture {
     ULONG ExpectedBytes = 0;
     unsigned Registered = 0;
@@ -55,7 +65,7 @@ WDFDEVICE WdfDeviceWdmGetDeviceObject(WDFDEVICE device) { return device; }
 NTSTATUS IoRegisterDeviceInterface(WDFDEVICE, const GUID*, UNICODE_STRING* reference,
     UNICODE_STRING* link)
 {
-    Check(std::wcscmp(reference->Buffer, VadAudioReference) == 0,
+    Check(SameUnits(reference->Buffer, VadAudioReference),
         "fixed interface identity remains unchanged");
     ++F.Registered;
     link->Buffer = F.Link;
@@ -76,8 +86,8 @@ NTSTATUS CreateKey(HANDLE, PCWSTR, PHANDLE result)
 }
 NTSTATUS SetValue(HANDLE, PCWSTR key, ULONG type, const void* data, ULONG bytes)
 {
-    if (std::wcscmp(key, L"FriendlyName") == 0 ||
-        std::wcscmp(key, L"{A45C254E-DF1C-4EFD-8020-67D146A850E0},14") == 0) {
+    if (SameUnits(key, L"FriendlyName") ||
+        SameUnits(key, L"{A45C254E-DF1C-4EFD-8020-67D146A850E0},14")) {
         Check(type == REG_SZ && bytes == F.ExpectedBytes,
             "both name properties use exact UTF-16 bytes including one terminator");
         Check(static_cast<PCWSTR>(data)[bytes / sizeof(WCHAR) - 1] == L'\0',
