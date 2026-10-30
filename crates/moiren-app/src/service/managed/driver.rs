@@ -322,7 +322,10 @@ impl ManagedDriver {
         );
     }
     /// Publish native and professional observations, filtered by the running
-    /// owner generation.
+    /// owner generation. Refreshes are tick-batched at 1 Hz: the raw counters
+    /// advance every audio block, while the UI renders only static timing
+    /// rows. Generation and running-state transitions stay prompt through the
+    /// snapshot-side freshness filters rather than this cadence.
     #[cfg(windows)]
     fn poll_observations(
         &mut self,
@@ -330,6 +333,14 @@ impl ManagedDriver {
         snapshot: &host::ProjectSnapshot,
         generation: SessionGeneration,
     ) {
+        let now = std::time::Instant::now();
+        let due = self
+            .observation_refreshed_at
+            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1));
+        if !due {
+            return;
+        }
+        self.observation_refreshed_at = Some(now);
         // Write-side stale guard: an observation counts only while its own
         // owner generation still runs.
         let fresh = |running: bool, owner_generation: u64| {

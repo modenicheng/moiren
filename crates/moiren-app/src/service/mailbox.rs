@@ -107,6 +107,8 @@ pub struct ServiceMailbox {
     consumed_request_id: Cell<RequestId>,
     exit: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Arc<AppSnapshot>>>,
+    /// Publish-side dedup state; only the service thread calls [`publish`].
+    last_published: RefCell<Option<Arc<AppSnapshot>>>,
 }
 impl ServiceMailbox {
     pub fn new(wake: Thread) -> (AppHandle, Self) {
@@ -115,7 +117,8 @@ impl ServiceMailbox {
     pub(crate) fn with_snapshot(wake: Thread, initial: AppSnapshot) -> (AppHandle, Self) {
         let (sender, receiver) = mpsc::sync_channel(REQUEST_CAPACITY);
         let exit = Arc::new(AtomicBool::new(false));
-        let snapshot = Arc::new(Mutex::new(Arc::new(initial)));
+        let initial = Arc::new(initial);
+        let snapshot = Arc::new(Mutex::new(Arc::clone(&initial)));
         (
             AppHandle {
                 sender,
@@ -130,6 +133,7 @@ impl ServiceMailbox {
                 consumed_request_id: Cell::new(RequestId::default()),
                 exit,
                 snapshot,
+                last_published: RefCell::new(Some(initial)),
             },
         )
     }
@@ -176,7 +180,20 @@ impl ServiceMailbox {
         // The service publishes only after handling its drained round. A UI
         // holding an older phase snapshot cannot observe the newer receipt.
         value.consumed_request_id = self.consumed_request_id.get();
+        // An unchanged snapshot keeps the previous Arc so the UI's pointer
+        // identity poll sees no change and skips its notify; only real events
+        // (requests, phase transitions, quantized clock ticks, tick-batched
+        // observation refreshes) swap the Arc.
+        if self
+            .last_published
+            .borrow()
+            .as_ref()
+            .is_some_and(|previous| previous.as_ref() == &value)
+        {
+            return;
+        }
         let replacement = Arc::new(value);
+        *self.last_published.borrow_mut() = Some(Arc::clone(&replacement));
         let previous = {
             let mut slot = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::replace(&mut *slot, replacement)
@@ -188,6 +205,24 @@ impl ServiceMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identical_publish_keeps_arc_and_real_change_swaps_it() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        let initial = handle.try_snapshot().unwrap();
+        // Same content (including consumed id): the UI's Arc::ptr_eq poll
+        // must not observe a change, so the previous Arc is retained.
+        mailbox.publish((*initial).clone());
+        assert!(Arc::ptr_eq(&initial, &handle.try_snapshot().unwrap()));
+        let mut changed = (*initial).clone();
+        changed.phase = SessionPhase::Running;
+        mailbox.publish(changed);
+        let updated = handle.try_snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&initial, &updated));
+        assert_eq!(updated.phase, SessionPhase::Running);
+        // The swapped Arc is itself stable across unchanged republishes.
+        mailbox.publish((*updated).clone());
+        assert!(Arc::ptr_eq(&updated, &handle.try_snapshot().unwrap()));
+    }
     #[test]
     fn invalid_audio_settings_do_not_enter_queue_or_consume_request_id() {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
