@@ -271,7 +271,7 @@ impl Drop for ProcessSourceSession {
         }
     }
 }
-pub(super) fn run(config: Config, directory: PathBuf) -> Result<i32> {
+pub(super) fn run(config: Config, directory: PathBuf, witness: bool) -> Result<i32> {
     let created = Instant::now();
     config.validate()?;
     regular_path(&directory)?;
@@ -306,6 +306,7 @@ pub(super) fn run(config: Config, directory: PathBuf) -> Result<i32> {
         session = Some(vad::PlaybackSession::prepare_shared(
             config.source_endpoint.clone(),
             plan,
+            witness,
             &mut partial,
         )?);
         let owner = session.as_mut().unwrap();

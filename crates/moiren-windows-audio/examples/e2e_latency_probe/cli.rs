@@ -16,6 +16,10 @@ use std::{
 mod process_replay;
 
 const HELP: &str = "Offline evidence analysis plus an explicitly qualified live Process Loopback harness.
+process-source-worker --source-endpoint ID --source-schedule FILE --run-directory DIR --seconds 1..600
+    [--source-write-witness] (worker only; fixed one-shot native write/readback evidence, always unqualified)
+Witness final playback.write_witness distinguishes failed_attempt from successful Release confirmed;
+<=16B from the first actual nonzero encoded frame, not silence preroll; never proves delivery.
 evaluate --reports FILE --expectation FILE --level experimental|default --max-input-bytes N --max-runs N --output FILE
 analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE [--packets FILE --max-packets N]
 replay-process --trace FILE --candidates FILE --process-pid PID --process-created-100ns N

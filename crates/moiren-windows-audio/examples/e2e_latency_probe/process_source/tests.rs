@@ -367,6 +367,48 @@ fn owned_process_source_worker_protocol_accepts_explicit_correctness_policy() {
 }
 
 #[test]
+fn source_write_witness_switch_preserves_values_and_is_worker_only() {
+    let args = || {
+        [
+            "--source-endpoint",
+            "endpoint",
+            "--source-schedule",
+            "schedule.json",
+            "--run-directory",
+            "new-dir",
+            "--seconds",
+            "5",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    };
+    assert!(!parse(args()).unwrap().2);
+    for index in [1, 3, 5] {
+        let mut values = args();
+        values[index] = "--source-write-witness".into();
+        let (config, directory, enabled) = parse(values).unwrap();
+        assert!(!enabled, "a value must not become a switch");
+        let retained = match index {
+            1 => config.source_endpoint,
+            3 => config.source_schedule.to_str().unwrap().to_owned(),
+            _ => directory.to_str().unwrap().to_owned(),
+        };
+        assert_eq!(retained, "--source-write-witness");
+    }
+    for index in [0, 4, 8] {
+        let mut values = args();
+        values.insert(index, "--source-write-witness".into());
+        assert!(parse(values.clone()).unwrap().2);
+        values.push("--source-write-witness".into());
+        assert!(parse(values).is_err());
+    }
+    assert!(
+        super::super::super::cli::run(vec!["analyze-pcm".into(), "--source-write-witness".into(),])
+            .is_err()
+    );
+}
+
+#[test]
 fn owned_process_source_correctness_receipts_admit_timeouts_but_not_policy_or_identity_changes() {
     let policy = ValidationPolicy {
         mode: ValidationMode::Correctness,

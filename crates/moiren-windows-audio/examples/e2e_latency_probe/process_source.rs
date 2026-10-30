@@ -489,13 +489,20 @@ impl Config {
     }
 }
 
-fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf)> {
+fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf, bool)> {
+    let mut witness = false;
     ensure!(
-        arguments.len() >= 8 && arguments.len() <= 12 && arguments.len().is_multiple_of(2),
+        (8..=13).contains(&arguments.len()),
         "process source worker requires bounded separate option pairs"
     );
     let mut values = BTreeMap::new();
-    for pair in arguments.as_chunks::<2>().0 {
+    let mut arguments = arguments.iter();
+    while let Some(option) = arguments.next() {
+        if option == "--source-write-witness" {
+            ensure!(!witness, "duplicate --source-write-witness");
+            witness = true;
+            continue;
+        }
         ensure!(
             [
                 "--source-endpoint",
@@ -505,12 +512,14 @@ fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf)> {
                 "--validation-mode",
                 "--jitter-tolerance-ms",
             ]
-            .contains(&pair[0].as_str()),
+            .contains(&option.as_str()),
             "unknown source worker option {}",
-            pair[0]
+            option
         );
+        // Consume the value even when it happens to spell the standalone flag.
+        let value = arguments.next().context("missing source worker value")?;
         ensure!(
-            values.insert(pair[0].as_str(), pair[1].as_str()).is_none(),
+            values.insert(option.as_str(), value.as_str()).is_none(),
             "duplicate source option"
         );
     }
@@ -552,18 +561,18 @@ fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf)> {
         !directory.as_os_str().is_empty(),
         "new source run directory required"
     );
-    Ok((config, directory))
+    Ok((config, directory, witness))
 }
 
 pub(crate) fn run_worker(arguments: Vec<String>) -> Result<i32> {
-    let (config, directory) = parse(arguments)?;
+    let (config, directory, witness) = parse(arguments)?;
     #[cfg(windows)]
     {
-        native::run(config, directory)
+        native::run(config, directory, witness)
     }
     #[cfg(not(windows))]
     {
-        let _ = (config, directory);
+        let _ = (config, directory, witness);
         anyhow::bail!("process source worker requires Windows")
     }
 }

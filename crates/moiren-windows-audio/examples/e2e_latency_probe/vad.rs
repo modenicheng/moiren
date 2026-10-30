@@ -5,6 +5,7 @@
 //! writes into the VAD playback MMDevice.
 
 use super::source::{PreparedSource, SourceCursor, SourceProgress, SourceProvenance};
+use super::source_write_witness::{self, SubmitError, WriteWitness};
 use super::vad_collection::PlaybackProgress;
 use super::vad_period::{self, PeriodEvidence};
 use anyhow::{Context, Result, ensure};
@@ -82,6 +83,8 @@ pub struct PlaybackOutcome {
     pub native_stop_attempted: Option<bool>,
     pub native_stop_succeeded: Option<bool>,
     pub failure: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_witness: Option<WriteWitness>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -229,6 +232,7 @@ enum PlaybackTarget {
     },
     Shared {
         endpoint: String,
+        witness: bool,
     },
 }
 
@@ -252,6 +256,7 @@ struct WorkerState {
     elapsed_seconds: f64,
     native_stop_attempted: Option<bool>,
     native_stop_succeeded: Option<bool>,
+    write_witness: Option<WriteWitness>,
 }
 
 fn stop_and_publish(
@@ -332,6 +337,7 @@ impl PlaybackSession {
     pub(super) fn prepare_shared(
         endpoint: String,
         plan: PreparedSource,
+        witness: bool,
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
         ensure!(
@@ -341,7 +347,7 @@ impl PlaybackSession {
             "explicit shared endpoint required"
         );
         Self::prepare_target(
-            PlaybackTarget::Shared { endpoint },
+            PlaybackTarget::Shared { endpoint, witness },
             Some(plan),
             || {},
             partial,
@@ -537,6 +543,7 @@ fn join_outcome(
         native_stop_attempted: state.native_stop_attempted,
         native_stop_succeeded: state.native_stop_succeeded,
         failure,
+        write_witness: state.write_witness.clone(),
     }
 }
 
@@ -896,6 +903,8 @@ struct Stream {
     samples: Vec<f32>,
     active: bool,
     shared: bool,
+    witness: Option<WriteWitness>,
+    witness_clock: Option<moiren_windows_audio::latency::QpcClock>,
 }
 
 fn prepare_alignment_retry(
@@ -1011,10 +1020,12 @@ impl Stream {
             samples: vec![0.0; frames as usize * 2],
             active: false,
             shared: false,
+            witness: None,
+            witness_clock: None,
         })
     }
 
-    fn prepare_shared(device: &IMMDevice) -> Result<Self> {
+    fn prepare_shared(device: &IMMDevice, witness: bool) -> Result<Self> {
         let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
         let pointer = unsafe { client.GetMixFormat()? };
         struct Mix(*mut WAVEFORMATEX);
@@ -1080,6 +1091,10 @@ impl Stream {
             samples: vec![0.0; frames as usize * 2],
             active: false,
             shared: true,
+            witness: witness.then(WriteWitness::default),
+            witness_clock: witness
+                .then(moiren_windows_audio::latency::QpcClock::new)
+                .flatten(),
         })
     }
 
@@ -1101,6 +1116,11 @@ impl Stream {
         }
         let bytes = frames as usize * 2 * self.format.bytes_per_sample();
         let silent_preroll = preroll && source.has_schedule();
+        let cursor_before = self
+            .witness
+            .as_ref()
+            .filter(|w| !w.attempted)
+            .map(|_| source.progress.clone());
         submit_packet(source, &mut self.samples, frames, preroll, |samples| {
             encode_interleaved(
                 samples,
@@ -1109,22 +1129,46 @@ impl Stream {
                 Channels::Stereo,
             )
             .map_err(|error| anyhow::anyhow!("encode native VAD PCM: {error:?}"))?;
+            let flags = if silent_preroll {
+                AUDCLNT_BUFFERFLAGS_SILENT.0 as u32
+            } else {
+                0
+            };
+            let mut packet =
+                self.witness
+                    .as_ref()
+                    .zip(cursor_before.as_ref())
+                    .and_then(|(witness, cursor)| {
+                        witness.prepare(self.format, samples, &self.encoded[..bytes], flags, cursor)
+                    });
+            if let Some(packet) = packet.as_mut() {
+                packet.qpc_frequency_hz = self
+                    .witness_clock
+                    .as_ref()
+                    .and_then(|clock| clock.frequency_hz());
+            }
             let pointer = unsafe { self.render.GetBuffer(frames)? };
-            ensure!(!pointer.is_null(), "VAD render buffer is null");
             // SAFETY: WASAPI granted exactly frames of the checked format.
             // Only successful ReleaseBuffer commits the portable source cursor.
-            unsafe {
-                std::ptr::copy_nonoverlapping(self.encoded.as_ptr(), pointer, bytes);
-                self.render.ReleaseBuffer(
-                    frames,
-                    if silent_preroll {
-                        AUDCLNT_BUFFERFLAGS_SILENT.0 as u32
-                    } else {
-                        0
+            let result = unsafe {
+                source_write_witness::copy_release(
+                    &self.encoded[..bytes],
+                    pointer,
+                    self.witness.as_mut().zip(packet),
+                    || {
+                        self.witness_clock
+                            .as_ref()
+                            .and_then(|clock| clock.now_ticks())
                     },
-                )?;
+                    || self.render.ReleaseBuffer(frames, flags),
+                    |error| error.code().0,
+                )
+            };
+            match result {
+                Ok(()) => Ok(()),
+                Err(SubmitError::Release(error)) => Err(error.into()),
+                Err(SubmitError::NullBuffer) => anyhow::bail!("VAD render buffer is null"),
             }
-            Ok(())
         })
     }
 }
@@ -1149,6 +1193,7 @@ fn run_worker(
     latest: Arc<Mutex<WorkerState>>,
 ) -> Result<()> {
     let _apartment = Apartment::new()?;
+    let witness = matches!(&target, PlaybackTarget::Shared { witness: true, .. });
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
     let (device, mmdevice_id, observed_name, adapter_instance, stable_endpoint_id, shared) =
@@ -1159,7 +1204,7 @@ fn run_worker(
                 let (device, id, name, adapter) = wait_playback(&enumerator, stable_id, &root)?;
                 (device, id, name, adapter, stable_id.to_string(), false)
             }
-            PlaybackTarget::Shared { endpoint } => {
+            PlaybackTarget::Shared { endpoint, .. } => {
                 let device = unsafe { enumerator.GetDevice(&HSTRING::from(&endpoint))? };
                 let id = take_string(unsafe { device.GetId()? })?;
                 ensure!(id == endpoint, "shared MMDevice identity mismatch");
@@ -1184,7 +1229,7 @@ fn run_worker(
             }
         };
     let mut stream = if shared {
-        Stream::prepare_shared(&device)?
+        Stream::prepare_shared(&device, witness)?
     } else {
         Stream::prepare(&device, &latest)?
     };
@@ -1265,6 +1310,7 @@ fn run_worker(
     });
     {
         let mut state = latest.lock().unwrap_or_else(|p| p.into_inner());
+        state.write_witness = stream.witness.clone();
         if state.native_stop_succeeded == Some(true) {
             stream.active = false;
         }
