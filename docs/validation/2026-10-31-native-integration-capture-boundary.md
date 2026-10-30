@@ -1,7 +1,8 @@
 # Main integration, deployment and capture-boundary evidence
 
 Date: 2026-10-31, Asia/Shanghai. App/probe source: `0fd3fbf`.
-Diagnostic driver source: `c985fc3`. Target: physical `LAPTOP-NP49RG6H`
+Initial diagnostic driver source: `c985fc3`; packet/notify follow-up: `4934172`.
+Target: physical `LAPTOP-NP49RG6H`
 through the pinned existing SSH host key at `frp-rug.com:14857`.
 
 This is bounded native evidence, not completion of S1-S3, a new default,
@@ -259,3 +260,58 @@ Next work is bounded GetCapturePacket/Notify observation, not speculative audio
 policy changes. S1 independent calibrated reference and waveform acceptance,
 S2 sustained lower-budget delivery, and complete S1-S3 acceptance remain open.
 No default is promoted and draft PR26 remains unmerged.
+
+## Packet/notification follow-up deployment
+
+The next diagnostic slice `4934172` retains fixed first successful/nonzero/refused
+capture queries and actual successful/failed notification status. Readback stays
+bounded to16bytes; the record is480bytes/endpoint, capped at512. Existing locks
+protect detached witnesses and only passive QUERY emits trace output. No public
+ABI, sequence progression, notification order, audio policy or default changes.
+Parent independently repeats all11 MSVC host suites and WDK `-Analyze`/InfVerif
+successfully. Host tests stub DDIs and do not prove hardware delivery.
+
+The package is signed with the same pinned certificate; the physical target
+verifies SYS/CAT signatures, both SYS and INF catalog membership, and package
+hashes before installation. Root installation/restart return0 without reboot.
+`oem199.inf`, version `3.1.1.605`, service Running/root PnP OK and SYS SHA-256
+`1EA1FEBCCF842DBB4904AB3BB6A897FC9E2F71680226E932BE2BDD68D686E19D`
+are verified. The prior packages remain available for rollback. App/probes stay
+at the verified `0fd3fbf` binaries; no Rust rebuild or app replacement is needed
+for this driver-only observation. The initial long encoded SSH invocation is
+rejected before execution by the command-length limit; the unchanged script is
+then uploaded and invoked by file. Both original error and successful receipt
+are retained.
+
+Two independently named strict Shared microphone controls run with the same
+`--exercise --shared-microphone --intent=microphone --seconds=2` request. The
+first exits1 with0x88890004 before buffer/submission; its trace decodes64events.
+The next reaches PCM16 stereo480 with native capacity1056, submits200packets /
+384000bytes /192000nonzero samples and completes181successful WRITEs /
+347520bytes with18dropped completions. Shared capture again returns199packets /
+95520frames, all SILENT, zero nonzero samples, one discontinuity and no timestamp
+errors. This remains an actual failure, not a tolerated quality pass.
+
+New notification evidence reports `STATUS_SUCCESS` for generation1/gate1,
+native packet0, completion QPC625695804969. The first nonzero equal16-byte
+source/destination copy is native1/request2 at QPC625695902474 in the same
+generation/gate. The first successful notify therefore precedes the nonzero
+copy; it does not prove notification of that payload. No query/readback,
+position or failed-notify witness is observed. Missing callback evidence is
+unknown, not proof of absent ACX delivery. The bounded trace cannot assign a
+sole driver, client, privacy or downstream-policy cause.
+
+Matching host PDB/TMF decode reports52events, zero lost/unknown/format errors
+for the second run. The actual new notify message additionally demonstrates
+execution of the new diagnostic code. Both runs finish owned-process/child
+cleanup, retain root PnP OK and unchanged boot/render-volume/default settings.
+No physical output, speaker setting change, cache cleanup or reboot occurs.
+
+The raw target deployment and both runs are archived in
+`packet-notify-4934172-20261031.zip`:89568bytes,34manifest files /35ZIP entries,
+1146045uncompressed bytes, SHA-256
+`8C01923C8959DCCFD8B0A8D212D6A4E0A76156E0A09DECF05DC36AC4972AB350`.
+Host verification checks exact names, lengths and hashes before extraction;
+host-only decoded traces stay outside the raw archive. No remote evidence is
+deleted; D: retains242293538816free bytes. S1-S3 and physical latency gates
+remain open. Non-latency PR extraction continues separately from this experiment.

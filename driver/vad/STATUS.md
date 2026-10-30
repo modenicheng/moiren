@@ -6,9 +6,9 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
-The main-integrated app/probes `0fd3fbf` and diagnostic driver `c985fc3` are
-deployed on the separate physical target. New `oem184.inf`, version
-`2.15.56.622`, service Running/root PnP OK and exact SYS hash are verified,
+The main-integrated app/probes `0fd3fbf` and diagnostic driver `4934172` are
+deployed on the separate physical target. New `oem199.inf`, version
+`3.1.1.605`, service Running/root PnP OK and exact SYS hash are verified,
 with old rollback package retained and no reboot. Native retries are authorized
 and have resumed; older paused-retry statements below describe dated history.
 Only DAWN headphones are used for audible runs; speaker/default settings stay
@@ -16,8 +16,11 @@ unchanged.
 
 The strict Shared microphone control now observes a nonzero, equal16-byte
 post-copy native-buffer prefix, while its Shared client still receives all
-SILENT packets. Actual packet-delivery/notification remains the next boundary;
-no sole-driver or downstream-policy cause is established. A lower software-route
+SILENT packets. A new actual `STATUS_SUCCESS` notification witness is for native
+packet0, before the first nonzero copy at native1; notification of that payload
+remains unobserved. Missing query/readback evidence is unknown, not proof of
+absent delivery. No sole-driver or downstream-policy cause is established.
+A lower software-route
 target768/recovery4 completes30seconds and a separate60-second source schedule
 with zero pre-cleanup provider drop/silence and clock clamp/reset, but quality
 completeness and marker-continuity acceptance remain open. A host-only audit
