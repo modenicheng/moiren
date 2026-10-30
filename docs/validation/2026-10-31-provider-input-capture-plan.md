@@ -4,6 +4,12 @@ Date: 2026-10-31. This is a diagnostic implementation plan after the
 [independent Process control](2026-10-31-ms-process-reference.md), not a
 waveform, stable-buffer or physical-latency acceptance receipt.
 
+Implementation and one bounded native run are now retained in the
+[provider input receipt](2026-10-31-provider-input-capture.md). The checklist
+below remains the original planned contract, not an assertion that every
+test/acceptance item passed; the receipt explicitly lists missing automated
+same-instance/error-path coverage and the all-zero waveform observation.
+
 ## Decision and boundaries
 
 Observe the real provider's existing READ completion before decode/carrier

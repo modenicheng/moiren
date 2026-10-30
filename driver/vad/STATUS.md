@@ -40,6 +40,16 @@ this is not a matched implementation A/B or a demonstrated dither/session
 cause. Exact boundaries, tests and verified archive are in the
 [independent reference receipt](../../docs/validation/2026-10-31-ms-process-reference.md).
 
+An opt-in artifact from the actual provider READ, before decode/carrier/Engine,
+now retains480000stereo PCM16frames, all exactly zero. Of1000published packets,
+991transfer callbacks fall strictly inside the changing source's conservative
+Running-to-Stop window. This localizes this run's zero observation at or before
+READ, not solely in downstream Engine processing, but does not establish a sole
+driver/Windows/source cause or physical latency. The diagnostic adds no second
+READ/Process/physical client and leaves routing/defaults unchanged. Cleanup and
+memberwise archives are retained in the
+[provider input receipt](../../docs/validation/2026-10-31-provider-input-capture.md).
+
 Shared microphone controls now correlate a successful ACX notification with a
 nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared
 clients still receive all-zero/SILENT PCM, including the explicit changing AC
