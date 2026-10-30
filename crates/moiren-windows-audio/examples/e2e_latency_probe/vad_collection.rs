@@ -25,6 +25,8 @@ pub(super) struct Config {
     schema_version: u32,
     #[serde(default)]
     input_endpoint_id: String,
+    #[serde(default)]
+    capture_mode: moiren_engine::node::DeviceMode,
     ring_frames: usize,
     max_pcm_bytes: u64,
     max_metadata_bytes: u64,
@@ -38,6 +40,11 @@ impl Config {
         ensure!(
             matches!(self.schema_version, 1 | 2),
             "unsupported collection schema"
+        );
+        ensure!(
+            self.capture_mode == moiren_engine::node::DeviceMode::Shared
+                || (self.schema_version == 2 && route == super::vad_route::RouteKind::Microphone),
+            "exclusive recorder requires schema2 owned microphone route"
         );
         ensure!(
             !self.input_endpoint_id.contains('\0')
@@ -900,6 +907,7 @@ pub(super) fn collect(
             match MeasurementSession::prepare(
                 MeasurementConfig {
                     input_endpoint_id: recorder_endpoint.clone(),
+                    capture_mode: config.capture_mode,
                     max_active_duration: Duration::from_secs(options.seconds),
                     ring_frames: config.ring_frames,
                     max_pcm_bytes: config.max_pcm_bytes,
@@ -3572,6 +3580,7 @@ mod tests {
         Config {
             schema_version: 1,
             input_endpoint_id: "independent".into(),
+            capture_mode: Default::default(),
             ring_frames: 1024,
             max_pcm_bytes: 1024 * 1024,
             max_metadata_bytes: 100_000,
@@ -3579,6 +3588,36 @@ mod tests {
             preroll_ms: 100,
             postroll_ms: 200,
         }
+    }
+
+    #[test]
+    fn owned_microphone_can_explicitly_select_exclusive_recorder_without_default_change() {
+        let mut value = serde_json::to_value(config()).unwrap();
+        value["schema_version"] = 2.into();
+        value["input_endpoint_id"] = "".into();
+        value["capture_mode"] = "exclusive".into();
+        let requested: Config = serde_json::from_value(value.clone()).unwrap();
+        requested
+            .validate_route(super::super::vad_route::RouteKind::Microphone)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(requested).unwrap()["capture_mode"],
+            "exclusive"
+        );
+        let mut physical = value.clone();
+        physical["input_endpoint_id"] = "physical-capture".into();
+        let physical: Config = serde_json::from_value(physical).unwrap();
+        assert!(
+            physical
+                .validate_route(super::super::vad_route::RouteKind::Physical)
+                .is_err()
+        );
+        value["capture_mode"] = "fallback".into();
+        assert!(serde_json::from_value::<Config>(value).is_err());
+        assert_eq!(
+            serde_json::to_value(config()).unwrap()["capture_mode"],
+            "shared"
+        );
     }
 
     #[test]

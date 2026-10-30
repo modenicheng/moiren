@@ -101,6 +101,7 @@ impl RecorderConfig {
     ) -> crate::measurement::session::MeasurementConfig {
         crate::measurement::session::MeasurementConfig {
             input_endpoint_id: self.input_endpoint_id.clone(),
+            capture_mode: Default::default(),
             max_active_duration: std::time::Duration::from_secs(options.seconds + 14),
             ring_frames: self.ring_frames,
             max_pcm_bytes: self.max_pcm_bytes,

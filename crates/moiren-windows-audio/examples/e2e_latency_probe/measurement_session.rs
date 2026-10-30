@@ -17,6 +17,7 @@ const MAX_FAILURE_BYTES: usize = 16 * 1024;
 #[derive(Clone, Debug)]
 pub(crate) struct MeasurementConfig {
     pub(crate) input_endpoint_id: String,
+    pub(crate) capture_mode: moiren_engine::node::DeviceMode,
     pub(crate) max_active_duration: Duration,
     pub(crate) ring_frames: usize,
     pub(crate) max_pcm_bytes: u64,
@@ -122,6 +123,14 @@ pub(crate) struct MeasurementSession {
 }
 
 impl MeasurementConfig {
+    fn capture_device(&self) -> moiren_engine::node::DeviceOptions {
+        moiren_engine::node::DeviceOptions {
+            mode: self.capture_mode,
+            sample_format: moiren_engine::audio_config::SampleFormat::Float32,
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             !self.input_endpoint_id.trim().is_empty() && !self.input_endpoint_id.contains('\0'),
@@ -551,13 +560,16 @@ impl NativeCapture {
         let worker_started = started.clone();
         let stop_requested = std::sync::Arc::new(AtomicBool::new(false));
         let worker_stop_requested = stop_requested.clone();
-        let endpoint_id = config.input_endpoint_id.clone();
+        let request = NativeCaptureRequest {
+            endpoint_id: config.input_endpoint_id.clone(),
+            device: config.capture_device(),
+        };
         let worker_gate = gate.clone();
         let worker = std::thread::Builder::new()
             .name("e2e-measurement-capture".into())
             .spawn(move || {
                 capture_owner(
-                    endpoint_id,
+                    request,
                     duration,
                     worker_gate,
                     worker_started,
@@ -613,8 +625,14 @@ struct CaptureStartup {
 }
 
 #[cfg(windows)]
-fn capture_owner(
+struct NativeCaptureRequest {
     endpoint_id: String,
+    device: moiren_engine::node::DeviceOptions,
+}
+
+#[cfg(windows)]
+fn capture_owner(
+    request: NativeCaptureRequest,
     duration: moiren_windows_audio::SessionDuration,
     gate: moiren_windows_audio::ActivationGate,
     started: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -622,10 +640,7 @@ fn capture_owner(
     evidence_config: moiren_windows_audio::capture::PcmEvidenceConfig,
     ready: std::sync::mpsc::SyncSender<std::result::Result<CaptureStartup, String>>,
 ) -> NativeCaptureExit {
-    use moiren_engine::{
-        audio_config::SampleFormat,
-        node::{DeviceMode, DeviceOptions},
-    };
+    use moiren_engine::audio_config::SampleFormat;
     use moiren_windows_audio::{
         Activation,
         capture::{CaptureReport, CaptureSource, CaptureStatus, pcm_evidence_stream},
@@ -638,19 +653,15 @@ fn capture_owner(
     };
 
     let mut report = CaptureReport::new(CaptureSource::Physical, duration);
-    report.endpoint_id = Some(endpoint_id.clone());
+    report.endpoint_id = Some(request.endpoint_id.clone());
     let mut stream: Option<WasapiStream> = None;
     let mut writer = None;
     let mut ready = Some(ready);
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<CaptureStatus> {
         let mut opened = WasapiStream::open(WasapiOptions {
-            endpoint_id: endpoint_id.clone(),
+            endpoint_id: request.endpoint_id,
             sample_rate: 48_000,
-            device: DeviceOptions {
-                mode: DeviceMode::Shared,
-                sample_format: SampleFormat::Float32,
-                ..DeviceOptions::default()
-            },
+            device: request.device,
             input: true,
         })?;
         let info = opened.info();
@@ -1003,12 +1014,25 @@ mod tests {
     fn config() -> MeasurementConfig {
         MeasurementConfig {
             input_endpoint_id: "independent-endpoint".into(),
+            capture_mode: Default::default(),
             max_active_duration: Duration::from_secs(10),
             ring_frames: 8,
             max_pcm_bytes: 1024,
             max_metadata_bytes: 4096,
             max_packets: 10,
         }
+    }
+
+    #[test]
+    fn capture_request_preserves_explicit_mode_and_float32_without_period_fallback() {
+        use moiren_engine::{audio_config::SampleFormat, node::DeviceMode};
+        let mut request = config();
+        assert_eq!(request.capture_device().mode, DeviceMode::Shared);
+        request.capture_mode = DeviceMode::Exclusive;
+        let device = request.capture_device();
+        assert_eq!(device.mode, DeviceMode::Exclusive);
+        assert_eq!(device.sample_format, SampleFormat::Float32);
+        assert_eq!(device.period_frames, None);
     }
 
     fn info() -> MeasurementInfo {
