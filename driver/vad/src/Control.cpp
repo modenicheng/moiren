@@ -98,6 +98,53 @@ static void TracePendingClockDiagnostic(VAD_SHARED* shared,
         static_cast<ULONG>(item.After.Running));
 }
 
+static void TracePendingCaptureDiagnostic(VAD_SHARED* shared,
+    const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (snapshot.Intent != MOIREN_VAD_INTENT_MICROPHONE ||
+        !WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, VAD_CONTROL)) { return; }
+    vad::audio::CaptureDiagnostic diagnostic = {};
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
+        const auto& slot = shared->Slots[i];
+        if (slot.Id == snapshot.EndpointId && slot.Session == snapshot.SessionEpoch &&
+            slot.StreamGeneration == snapshot.StreamGeneration) {
+            diagnostic = shared->CaptureDiagnostics[i].TakeUnreported();
+            break;
+        }
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    const vad::audio::CaptureCopyObservation* copies[] = {
+        &diagnostic.FirstCopy, &diagnostic.FirstNonzero};
+    const bool pending[] = {diagnostic.ReportCopy, diagnostic.ReportNonzero};
+    for (ULONG i = 0; i < 2; ++i) {
+        if (!pending[i]) { continue; }
+        const auto& item = *copies[i];
+        // Repeated identity/kind joins fixed fragments; booleans describe only
+        // the inspected prefix, never the whole ring or downstream delivery.
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture boundary shape endpoint=%I64u session=%I64u generation=%I64u stream=%I64u kind=%u gate=%I64u native=%I64u request=%I64u qpc=%I64u packets=%u packet_bytes=%u native_bytes=%u ring_offset=%u packet_offset=%u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation, diagnostic.Stream,
+            i, item.GateEpoch, item.NativeSequence, item.RequestSequence, item.Qpc,
+            item.PacketCount, item.PacketBytes, item.NativePacketBytes,
+            item.RingOffsetBytes, item.PacketOffsetBytes);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture boundary prefix endpoint=%I64u session=%I64u generation=%I64u stream=%I64u kind=%u bytes=%u source_nonzero=%u destination_nonzero=%u equal=%u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation, diagnostic.Stream,
+            i, item.Prefix.Bytes, static_cast<ULONG>(item.Prefix.SourceNonzero),
+            static_cast<ULONG>(item.Prefix.DestinationNonzero), static_cast<ULONG>(item.Prefix.Equal));
+    }
+    if (diagnostic.ReportPosition) {
+        const auto& item = diagnostic.Position;
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture boundary position endpoint=%I64u session=%I64u generation=%I64u stream=%I64u gate=%I64u qpc=%I64u packets=%u returned_frames=%I64u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation, diagnostic.Stream,
+            item.GateEpoch, item.Qpc, item.PacketCount, item.Frames);
+    }
+}
+
 static void TracePendingUnservedDiagnostics(VAD_SHARED* shared,
     const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
 {
@@ -263,6 +310,7 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
             (code == IOCTL_MOIREN_VAD_SET_GATE && local.Gate.Open == 0)) {
             TracePendingPcmDiagnostics(shared, snapshot);
             TracePendingClockDiagnostic(shared, snapshot);
+            TracePendingCaptureDiagnostic(shared, snapshot);
             TracePendingUnservedDiagnostics(shared, snapshot);
         }
         RtlCopyMemory(output, &snapshot, sizeof(snapshot));

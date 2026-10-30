@@ -207,6 +207,26 @@ static void Schedule(VAD_AUDIO_STREAM* stream, uint64_t now)
     (void)WdfTimerStart(stream->Timer, schedule.Due);
 }
 
+// State is held. The batch contains detached post-copy evidence, never an MDL.
+static void RecordEventCaptureCopy(VAD_AUDIO_STREAM* stream, ULONG index,
+    uint64_t sequence, uint64_t qpc, const VAD_PCM_BATCH& batch)
+{
+    if (!batch.CaptureCopied || batch.CapturePrefix.Bytes == 0) { return; }
+    auto child = VadChild(stream->Device);
+    auto shared = child->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[child->Index];
+    if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
+        shared->CaptureDiagnostics[child->Index].RecordCopy(stream->Generation,
+            reinterpret_cast<uint64_t>(stream->Stream),
+            {batch.CaptureGateEpoch, sequence, batch.CaptureRequestSequence, qpc,
+                stream->PacketCount, stream->PacketSize, stream->Packets[index].RtPacketSize,
+                stream->Packets[index].RtPacketOffset, 0, batch.CapturePrefix, true});
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
 // State is held. The endpoint lock spans epoch validation and each bounded
 // copy; gate closure therefore cannot acknowledge revocation while stale
 // scratch is being copied. Requests retrieved here complete in this DPC.
@@ -235,6 +255,16 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
             auto scratch = static_cast<PUCHAR>(stream->TimerScratch) + span.PacketByteOffset;
             if (stream->Capture) {
                 RtlCopyMemory(native, scratch, span.ByteCount);
+                auto& diagnostic = shared->CaptureDiagnostics[child->Index];
+                if (stream->TimerPacket.CaptureCopied && diagnostic.NeedsCopy()) {
+                    diagnostic.RecordCopy(stream->Generation,
+                        reinterpret_cast<uint64_t>(stream->Stream),
+                        {stream->TimerPacket.GateEpoch, segment.PacketSequence,
+                            stream->TimerPacket.RequestSequence, now, stream->PacketCount,
+                            stream->PacketSize, stream->Packets[0].RtPacketSize,
+                            span.RingByteOffset, span.PacketByteOffset,
+                            vad::audio::CapturePrefix::ReadBack(scratch, native, span.ByteCount), true});
+                }
             } else {
                 RtlCopyMemory(scratch, native, span.ByteCount);
             }
@@ -247,6 +277,10 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
             VadPcmTransferLocked(shared, child->Index, stream->TimerScratch,
                 stream->PacketFrames, stream->BlockAlign,
                 segment.PacketSequence, now, batch);
+            if (stream->Capture) {
+                stream->TimerPacket.CaptureCopied = batch->CaptureCopied;
+                stream->TimerPacket.RequestSequence = batch->CaptureRequestSequence;
+            }
         });
     NT_ASSERT(copied);
     UNREFERENCED_PARAMETER(copied);
@@ -364,6 +398,7 @@ VOID VadAudioTimer(WDFTIMER timer)
         RtlZeroMemory(buffer, stream->PacketSize);
         VadPcmTransfer(stream->Device, stream->Generation, buffer,
             stream->PacketFrames, stream->BlockAlign, packet, now, &batch);
+        RecordEventCaptureCopy(stream, index, packet, now, batch);
     } else {
         const ULONG ready = 1u << index;
         if ((stream->RenderReadyMask & ready) != 0) {
@@ -653,6 +688,19 @@ NTSTATUS VadAudioGetPosition(ACXSTREAM stream, PULONGLONG blocks,
         context->TimerRing.PresentedFrames : vad::audio::Position(context->Clock, now);
     *blocks = frames;
     *qpc = now;
+    if (context->Capture && context->Packets != nullptr && context->PacketCount != 0) {
+        auto child = VadChild(context->Device);
+        KIRQL sharedIrql;
+        KeAcquireSpinLock(&child->Shared->Lock, &sharedIrql);
+        const auto& slot = child->Shared->Slots[child->Index];
+        auto& diagnostic = child->Shared->CaptureDiagnostics[child->Index];
+        if (slot.Id == child->Id && slot.StreamGeneration == context->Generation) {
+            diagnostic.RecordPosition(context->Generation,
+                reinterpret_cast<uint64_t>(context->Stream),
+                {slot.AdmissionGeneration, frames, now, context->PacketCount, true});
+        }
+        KeReleaseSpinLock(&child->Shared->Lock, sharedIrql);
+    }
     KeReleaseSpinLock(&context->State, irql);
     return STATUS_SUCCESS;
 }

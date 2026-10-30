@@ -230,6 +230,8 @@ static void VadPcmComplete(VAD_PCM_BATCH*)
 {
     Check(CurrentIrql == PASSIVE_LEVEL, "PCM completion stays outside spin locks");
 }
+static void RecordEventCaptureCopy(VAD_AUDIO_STREAM*, ULONG, uint64_t, uint64_t,
+    const VAD_PCM_BATCH&) {}
 static int WdfTimerStart(uint64_t, long long due) { ++Starts; LastDue = due; return 0; }
 static int AcxRtStreamNotifyPacketComplete(void*, uint64_t, uint64_t)
 {

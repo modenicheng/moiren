@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "../src/PcmDiagnostics.h"
+#include "../src/audio/CaptureDiagnostic.h"
 #include "../src/UnservedDiagnostics.h"
 #include "../src/Lifecycle.h"
 #include "../src/Ownership.h"
@@ -48,6 +49,7 @@ struct VAD_SHARED {
     SpinLock Lock;
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS] = {};
     vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    vad::audio::CaptureDiagnostic CaptureDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
     vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
     Queue* PcmQueues[MOIREN_VAD_MAX_ENDPOINTS] = {};
     LONG PcmOnline = 1;
@@ -63,6 +65,10 @@ struct VAD_PCM_BATCH {
     vad::CompletionBatch<VAD_PCM_COMPLETION, MOIREN_VAD_REQUEST_SLOTS> Completions = {};
     VAD_SHARED* Shared;
     vad::CallbackBoundary Callback = {};
+    bool CaptureCopied = false;
+    uint64_t CaptureGateEpoch = 0;
+    uint64_t CaptureRequestSequence = 0;
+    vad::audio::CapturePrefix CapturePrefix = {};
 };
 struct LARGE_INTEGER { int64_t QuadPart; };
 static LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER* frequency)

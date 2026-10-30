@@ -335,6 +335,13 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                     continue;
                 }
                 RtlCopyMemory(buffer, context->Buffer, bytes);
+                batch->CaptureCopied = true;
+                batch->CaptureGateEpoch = slot.AdmissionGeneration;
+                batch->CaptureRequestSequence = header.Sequence;
+                if (shared->CaptureDiagnostics[index].NeedsCopy()) {
+                    batch->CapturePrefix = vad::audio::CapturePrefix::ReadBack(
+                        context->Buffer, buffer, bytes);
+                }
                 completion.Information = bytes;
             } else {
                 header.Sequence = sequence;
