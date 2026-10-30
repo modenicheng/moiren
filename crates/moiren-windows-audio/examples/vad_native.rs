@@ -21,11 +21,25 @@ enum NativeMode {
     SharedCapture,
     #[serde(rename = "shared-raw-capture-pcm16")]
     SharedRawCapture,
+    #[serde(rename = "shared-ac-diagnostic-pcm16")]
+    SharedAcDiagnostic,
+    #[serde(rename = "shared-raw-ac-diagnostic-pcm16")]
+    SharedRawAcDiagnostic,
 }
 
 impl NativeMode {
     fn is_shared_capture(self) -> bool {
-        matches!(self, Self::SharedCapture | Self::SharedRawCapture)
+        matches!(
+            self,
+            Self::SharedCapture
+                | Self::SharedRawCapture
+                | Self::SharedAcDiagnostic
+                | Self::SharedRawAcDiagnostic
+        )
+    }
+
+    fn is_ac_diagnostic(self) -> bool {
+        matches!(self, Self::SharedAcDiagnostic | Self::SharedRawAcDiagnostic)
     }
 }
 
@@ -51,6 +65,7 @@ impl Options {
         };
         let mut seconds_seen = false;
         let mut raw = false;
+        let mut ac_diagnostic = false;
         for argument in arguments {
             let argument = argument
                 .into_string()
@@ -64,6 +79,7 @@ impl Options {
                 }
                 "--minimum-period" if !options.minimum_period => options.minimum_period = true,
                 "--raw" if !raw => raw = true,
+                "--ac-diagnostic" if !ac_diagnostic => ac_diagnostic = true,
                 value if value.starts_with("--intent=") && options.intent_filter.is_none() => {
                     options.intent_filter = Some(match &value["--intent=".len()..] {
                         "playback" => Intent::Playback,
@@ -105,6 +121,13 @@ impl Options {
         if raw {
             options.mode = NativeMode::SharedRawCapture;
         }
+        if ac_diagnostic {
+            options.mode = match options.mode {
+                NativeMode::SharedCapture => NativeMode::SharedAcDiagnostic,
+                NativeMode::SharedRawCapture => NativeMode::SharedRawAcDiagnostic,
+                _ => anyhow::bail!("--ac-diagnostic requires --shared-microphone"),
+            };
+        }
         if options.mode.is_shared_capture() {
             anyhow::ensure!(
                 options.exercise || options.help,
@@ -128,7 +151,7 @@ fn main() -> anyhow::Result<()> {
     if options.help || !options.exercise {
         println!(
             "vad_native --exercise [--seconds=2] [--timer] [--intent=playback|microphone] [--minimum-period]\n\
-             vad_native --exercise --shared-microphone --intent=microphone [--seconds=2] [--raw]\n\
+             vad_native --exercise --shared-microphone --intent=microphone [--seconds=2] [--raw] [--ac-diagnostic]\n\
              Explicit installed-driver probe: four owned virtual endpoints,\n\
              MMDevice/adapter identity, exclusive 48 kHz PCM16/Float32,\n\
              mono/stereo in both directions and microphone gate-close silence.\n\
@@ -142,6 +165,7 @@ fn main() -> anyhow::Result<()> {
              --shared-microphone: one owned stereo PCM16 Shared capture with direct known-pattern WRITE,\n\
              exact 48 kHz/480-frame driver shape; no Engine/Bus, format or mode fallback.\n\
              --raw: explicit Shared Other/RAW processing control; failure never falls back.\n\
+             --ac-diagnostic: explicit zero-mean 1/1.5 kHz PCM16 source; energy statistics only, always unqualified.\n\
              No arguments or --help: display this help without contacting a driver.\n\
              Never installs a driver, selects defaults or changes endpoint settings."
         );
@@ -172,6 +196,56 @@ mod target;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ac_diagnostic_is_explicit_shared_only_and_rejects_repetition() {
+        for raw in [false, true] {
+            let mut args = vec![
+                "--exercise",
+                "--shared-microphone",
+                "--intent=microphone",
+                "--ac-diagnostic",
+            ];
+            if raw {
+                args.push("--raw");
+            }
+            let mode = parse(&args).unwrap().mode;
+            assert!(mode.is_shared_capture() && mode.is_ac_diagnostic());
+            assert_eq!(
+                serde_json::to_value(mode).unwrap(),
+                if raw {
+                    "shared-raw-ac-diagnostic-pcm16"
+                } else {
+                    "shared-ac-diagnostic-pcm16"
+                }
+            );
+        }
+        for args in [
+            vec!["--exercise", "--ac-diagnostic"],
+            vec!["--ac-diagnostic"],
+            vec![
+                "--exercise",
+                "--timer",
+                "--intent=microphone",
+                "--ac-diagnostic",
+            ],
+            vec![
+                "--exercise",
+                "--shared-microphone",
+                "--intent=microphone",
+                "--ac-diagnostic",
+                "--ac-diagnostic",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+        assert!(
+            !parse(&["--exercise", "--shared-microphone", "--intent=microphone"])
+                .unwrap()
+                .mode
+                .is_ac_diagnostic()
+        );
+    }
 
     fn parse(args: &[&str]) -> anyhow::Result<Options> {
         Options::parse(args.iter().map(Into::into))

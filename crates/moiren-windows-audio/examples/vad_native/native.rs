@@ -44,9 +44,11 @@ fn capture_packet_available(result: windows::core::Result<()>) -> anyhow::Result
 
 fn stream_flags(mode: NativeMode) -> u32 {
     match mode {
-        NativeMode::Event | NativeMode::SharedCapture | NativeMode::SharedRawCapture => {
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-        }
+        NativeMode::Event
+        | NativeMode::SharedCapture
+        | NativeMode::SharedRawCapture
+        | NativeMode::SharedAcDiagnostic
+        | NativeMode::SharedRawAcDiagnostic => AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
         NativeMode::Timer => 0,
     }
 }
@@ -65,7 +67,11 @@ fn initialization_parameters(mode: NativeMode, period: i64) -> (AUDCLNT_SHAREMOD
 }
 
 fn raw_client_properties(mode: NativeMode) -> Option<AudioClientProperties> {
-    (mode == NativeMode::SharedRawCapture).then_some(AudioClientProperties {
+    matches!(
+        mode,
+        NativeMode::SharedRawCapture | NativeMode::SharedRawAcDiagnostic
+    )
+    .then_some(AudioClientProperties {
         cbSize: size_of::<AudioClientProperties>() as u32,
         bIsOffload: false.into(),
         eCategory: AudioCategory_Other,
@@ -463,12 +469,21 @@ impl Stream {
                     if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
                         self.discontinuities += 1;
                     }
-                    observe_capture_samples(
-                        self.capture_diagnostics.as_mut(),
-                        decoded,
-                        expected,
-                        seen,
-                    )
+                    if self.mode.is_ac_diagnostic() {
+                        // This control records energy only, never a waveform
+                        // match. The caller always ends it as unqualified.
+                        if let Some(metrics) = self.capture_diagnostics.as_mut() {
+                            metrics.samples(decoded);
+                        }
+                        seen.observe_diagnostic_energy(decoded)
+                    } else {
+                        observe_capture_samples(
+                            self.capture_diagnostics.as_mut(),
+                            decoded,
+                            expected,
+                            seen,
+                        )
+                    }
                 })();
                 // Return the lease even when PCM validation fails.
                 let released = unsafe { service.ReleaseBuffer(frames) };
@@ -552,6 +567,22 @@ mod tests {
             initialization_parameters(NativeMode::SharedRawCapture, 100_000),
             initialization_parameters(NativeMode::SharedCapture, 100_000)
         );
+        assert!(raw_client_properties(NativeMode::SharedAcDiagnostic).is_none());
+        assert_eq!(
+            raw_client_properties(NativeMode::SharedRawAcDiagnostic)
+                .unwrap()
+                .Options,
+            AUDCLNT_STREAMOPTIONS_RAW
+        );
+        for mode in [
+            NativeMode::SharedAcDiagnostic,
+            NativeMode::SharedRawAcDiagnostic,
+        ] {
+            assert_eq!(
+                initialization_parameters(mode, 100_000),
+                initialization_parameters(NativeMode::SharedCapture, 100_000)
+            );
+        }
     }
 
     #[test]

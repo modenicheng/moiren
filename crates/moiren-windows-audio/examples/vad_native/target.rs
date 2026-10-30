@@ -39,6 +39,17 @@ mod native;
 
 const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
 
+fn require_case_signal(mode: NativeMode, seen: &Observation, minimum: u64) -> anyhow::Result<()> {
+    if mode.is_ac_diagnostic() {
+        anyhow::bail!(
+            "AC diagnostic only: {} nonzero frames, {} silent frames; energy is not waveform validation, always unqualified",
+            seen.signal_frames,
+            seen.silent_frames
+        );
+    }
+    seen.require_signal(minimum)
+}
+
 fn includes_endpoint(mode: NativeMode, intent: Intent, channels: Channels) -> bool {
     !mode.is_shared_capture() || (intent == Intent::Microphone && channels == Channels::Stereo)
 }
@@ -197,7 +208,11 @@ fn start_native_with_queued_pcm<T>(
         (Intent::Playback, _) => 4,
         (
             Intent::Microphone,
-            NativeMode::Timer | NativeMode::SharedCapture | NativeMode::SharedRawCapture,
+            NativeMode::Timer
+            | NativeMode::SharedCapture
+            | NativeMode::SharedRawCapture
+            | NativeMode::SharedAcDiagnostic
+            | NativeMode::SharedRawAcDiagnostic,
         ) => 1,
         (Intent::Microphone, NativeMode::Event) => 0,
     };
@@ -609,6 +624,10 @@ fn diagnose_case_failure<T>(
         let enriched = (|| -> serde_json::Result<String> {
             let mut diagnostic: serde_json::Value = serde_json::from_str(line)?;
             diagnostic["counters"]["period"] = serde_json::to_value(period)?;
+            if counters.mode.is_ac_diagnostic() {
+                diagnostic["signal_validation"] =
+                    "unqualified-ac-energy-only; no waveform matching".into();
+            }
             if let Some(shared) = shared {
                 diagnostic["counters"]["shared_capture_diagnostics"] =
                     serde_json::to_value(shared)?;
@@ -722,6 +741,9 @@ fn exercise_case_inner(
                 endpoint.channels(),
             )
             .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
+            if mode.is_ac_diagnostic() {
+                bytes = validation::ac_microphone_payload(shape.frames())?;
+            }
             let decoded = vec![0.0; shape.frames() as usize * 2];
             // Fixed diagnostic storage is already initialized in the case counters.
             // Keep the same origin across Timer's pre-Start WRITE and later pumps.
@@ -831,7 +853,7 @@ fn exercise_case_inner(
                 )?;
                 std::thread::sleep(Duration::from_millis(1));
             }
-            seen.require_signal(u64::from(seconds) * 48_000 / 2)?;
+            require_case_signal(mode, &seen, u64::from(seconds) * 48_000 / 2)?;
             if mode == NativeMode::Timer {
                 native.position.require_advance()?;
             }
@@ -1025,6 +1047,87 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn ac_energy_never_passes_functional_signal_gate_and_failure_receipt_keeps_mode() {
+        for mode in [
+            NativeMode::SharedAcDiagnostic,
+            NativeMode::SharedRawAcDiagnostic,
+        ] {
+            assert!(includes_endpoint(
+                mode,
+                Intent::Microphone,
+                Channels::Stereo
+            ));
+            assert!(!includes_endpoint(mode, Intent::Playback, Channels::Stereo));
+            assert!(
+                require_shared_shape(mode, Some(SampleFormat::Float32), Channels::Stereo, 480)
+                    .is_err()
+            );
+            for signal_frames in [0, 96_000] {
+                let seen = Observation {
+                    signal_frames,
+                    silent_frames: 480,
+                };
+                let outcome = require_case_signal(mode, &seen, 48_000);
+                assert!(
+                    outcome
+                        .as_ref()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("always unqualified")
+                );
+                let counters = validation::FailureCounters {
+                    mode,
+                    signal_frames,
+                    silent_frames: 480,
+                    microphone_dropped_packets: 0,
+                    microphone_completion_diagnostics: Default::default(),
+                    microphone_submit_diagnostics: Default::default(),
+                    native_buffer_frames: 1056,
+                    driver_packet_frames: 480,
+                    stream_generation: 1,
+                    native_discontinuities: 0,
+                    native_position: None,
+                    admitted_opened: None,
+                    admitted_pcm_shape: None,
+                    failure_observation: None,
+                };
+                let mut receipt = String::new();
+                assert!(
+                    diagnose_case_failure(
+                        outcome,
+                        &counters,
+                        &PeriodEvidence::new(false),
+                        Some(&SharedCaptureDiagnostics::default()),
+                        |line| receipt = line.to_owned()
+                    )
+                    .is_err()
+                );
+                let receipt: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+                assert_eq!(
+                    receipt["counters"]["mode"],
+                    serde_json::to_value(mode).unwrap()
+                );
+                assert_eq!(receipt["counters"]["signal_frames"], signal_frames);
+                assert_eq!(
+                    receipt["signal_validation"],
+                    "unqualified-ac-energy-only; no waveform matching"
+                );
+            }
+        }
+        assert!(
+            require_case_signal(
+                NativeMode::SharedCapture,
+                &Observation {
+                    signal_frames: 48_000,
+                    silent_frames: 0
+                },
+                48_000
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn raw_shared_capture_keeps_exact_shape_owned_endpoint_and_prestart_write_contract() {

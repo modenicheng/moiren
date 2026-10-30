@@ -50,6 +50,69 @@ pub(super) fn pattern(index: usize, channels: Channels) -> [f32; 2] {
     ]
 }
 
+pub(super) fn ac_microphone_payload(frames: u32) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(
+        frames == 480,
+        "AC diagnostic requires exact stereo PCM16/480"
+    );
+    let mut bytes = Vec::with_capacity(frames as usize * 4);
+    // 480 frames contain integral 1/1.5 kHz cycles at 48 kHz, so repeating
+    // this buffer preserves phase. Quantized peaks match the original DC test.
+    for frame in 0..frames {
+        for (period, peak) in [(48, 2048.0_f32), (32, 5120.0_f32)] {
+            let phase = (frame % period) as f32 * std::f32::consts::TAU / period as f32;
+            bytes.extend_from_slice(&((phase.sin() * peak).round() as i16).to_le_bytes());
+        }
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod ac_tests {
+    use super::*;
+
+    #[test]
+    fn ac_payload_is_exact_pcm16_zero_mean_and_phase_continuous_per_packet() {
+        let bytes = ac_microphone_payload(480).unwrap();
+        assert_eq!(bytes.len(), 1920);
+        let samples: Vec<_> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
+        for (channel, period, peak) in [(0, 48, 2048_i16), (1, 32, 5120_i16)] {
+            let channel: Vec<_> = samples.iter().skip(channel).step_by(2).copied().collect();
+            assert_eq!(channel.iter().map(|&v| i64::from(v)).sum::<i64>(), 0);
+            assert_eq!(channel.iter().max(), Some(&peak));
+            assert_eq!(channel.iter().min(), Some(&-peak));
+            for i in period..480 {
+                assert_eq!(channel[i], channel[i % period]);
+            }
+            assert_eq!(channel[0], 0);
+            assert!(channel[479] < 0);
+        }
+        for frames in [0, 144, 479, 481, 960] {
+            assert!(ac_microphone_payload(frames).is_err());
+        }
+    }
+
+    #[test]
+    fn diagnostic_energy_preserves_silence_and_rejects_malformed_data_without_matching_dc() {
+        let mut seen = Observation::default();
+        seen.observe_diagnostic_energy(&[0.0, 0.0, 0.25, -0.5, -0.1, 0.125])
+            .unwrap();
+        assert_eq!((seen.signal_frames, seen.silent_frames), (2, 1));
+        assert!(seen.observe_diagnostic_energy(&[f32::NAN, 0.0]).is_err());
+        assert!(seen.observe_diagnostic_energy(&[0.0]).is_err());
+        assert!(
+            Observation::default()
+                .observe(&[0.25, -0.5, -0.1, 0.125], [0.25, -0.5])
+                .is_err()
+        );
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PacketProgress(Option<PcmPacketStamp>);
 
@@ -136,6 +199,22 @@ pub(super) struct Observation {
 }
 
 impl Observation {
+    pub fn observe_diagnostic_energy(&mut self, frames: &[f32]) -> anyhow::Result<()> {
+        anyhow::ensure!(frames.len().is_multiple_of(2), "incomplete two-slot frame");
+        for frame in frames.as_chunks::<2>().0 {
+            anyhow::ensure!(
+                frame.iter().all(|v| v.is_finite()),
+                "nonfinite diagnostic PCM"
+            );
+            if frame.iter().all(|v| v.abs() <= 2.0 / 32768.0) {
+                self.silent_frames += 1;
+            } else {
+                self.signal_frames += 1;
+            }
+        }
+        Ok(())
+    }
+
     pub fn observe(&mut self, frames: &[f32], expected: [f32; 2]) -> anyhow::Result<()> {
         anyhow::ensure!(frames.len().is_multiple_of(2), "incomplete two-slot frame");
         // Accommodate PCM16 rounding at each boundary, not gain/channel changes.
