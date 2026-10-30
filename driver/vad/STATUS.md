@@ -6,28 +6,41 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
-The main-integrated app/probes `0fd3fbf` and diagnostic driver `4934172` are
-deployed on the separate physical target. New `oem199.inf`, version
-`3.1.1.605`, service Running/root PnP OK and exact SYS hash are verified,
-with old rollback package retained and no reboot. Native retries are authorized
-and have resumed; older paused-retry statements below describe dated history.
-Only DAWN headphones are used for audible runs; speaker/default settings stay
-unchanged.
+The separate physical target has app `6827f02`, integration holder `ac93295`,
+and diagnostic driver `1513274`: `oem200.inf`, version `3.1.1.606`.
+Service Running/root PnP OK and exact SYS hash are verified, with the old
+rollback package retained and no reboot. A fresh read-only audit confirms no
+owned build/audio processes before further work. Native retries are authorized;
+older paused-retry statements below describe dated history. Only DAWN
+headphones are used for audible runs; speaker/default settings stay unchanged.
 
-The strict Shared microphone control now observes a nonzero, equal16-byte
-post-copy native-buffer prefix, while its Shared client still receives all
-SILENT packets. A new actual `STATUS_SUCCESS` notification witness is for native
-packet0, before the first nonzero copy at native1; notification of that payload
-remains unobserved. Missing query/readback evidence is unknown, not proof of
-absent delivery. No sole-driver or downstream-policy cause is established.
-A lower software-route
-target768/recovery4 completes30seconds and a separate60-second source schedule
-with zero pre-cleanup provider drop/silence and clock clamp/reset, but quality
-completeness and marker-continuity acceptance remain open. A host-only audit
-finds all29 inferred signal intervals in the30-second capture; weak raw-template
-matches are not evidence that six signal intervals are absent.
-This is not continuous stability or physical latency acceptance. Exact build,
-deployment, original failures, settings and verified archive are in the
+Shared microphone controls now correlate a successful ACX notification with a
+nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared
+clients still receive all-zero/SILENT PCM, including the explicit changing AC
+diagnostic. This narrows the observed boundary but proves neither a sole-driver
+nor a downstream-policy cause. Exact evidence and limitations are in the
+[Shared microphone receipt](../../docs/validation/2026-10-31-shared-microphone-direct.md).
+
+A VAD -> unity Bus -> DAWN Exclusive256 candidate with Engine64,
+target1152/capacity4800 and actual VAD period144 completes65 seconds with
+3,121,664 output frames,12,194 wakes and no output wait timeout. No waveform is
+acquired, so this is not continuity or physical-latency acceptance. Initial
+prime32 remains counted. See the
+[DAWN control receipt](../../docs/validation/2026-10-31-vad-dawn-continuous-control.md).
+
+The app's separate Process -> unity Bus -> DAWN Exclusive256 per-wake control
+confirms replacement and10 seconds of operation; final native counters are
+sampled after owner join, not copied from the last Running snapshot. It still
+retains one delivery-gap violation, an all-zero independent recording and a
+holder failure with nested cleanup `Cancelled`. A window-admission control
+separately refuses ambiguous overlapping packet/read envelopes. Neither control
+qualifies waveform delivery, and the operational per-wake result does not
+override the window refusal. Both holder idle requests end early, not at their
+requested180 seconds. See the
+[joined app receipt](../../docs/validation/2026-10-31-app-exclusive-joined.md).
+
+Earlier target768 controls, their failed acceptance gates and original
+archives remain in the
 [integration/capture-boundary receipt](../../docs/validation/2026-10-31-native-integration-capture-boundary.md).
 
 Directions are from Moiren's perspective: virtual speaker is input/Source;
