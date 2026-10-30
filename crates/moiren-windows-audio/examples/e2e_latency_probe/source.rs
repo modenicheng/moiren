@@ -160,6 +160,9 @@ pub struct SourceProgress {
     pub origin_submission_frame: Option<u64>,
     pub acknowledged_source_frames: u64,
     pub schedule_submitted_complete: bool,
+    /// Generated frames accepted by ReleaseBuffer, not native delivery or playback.
+    pub submitted_nonzero_frames: u64,
+    pub first_nonzero_submission_frame: Option<u64>,
 }
 
 #[cfg(any(windows, test))]
@@ -260,6 +263,20 @@ impl SourceCursor {
                     }
                 }
             };
+            if value != 0.0 {
+                next.submitted_nonzero_frames = next
+                    .submitted_nonzero_frames
+                    .checked_add(1)
+                    .context("nonzero source frame overflow")?;
+                if next.first_nonzero_submission_frame.is_none() {
+                    next.first_nonzero_submission_frame = Some(
+                        self.progress
+                            .native_submitted_frames
+                            .checked_add(index as u64)
+                            .context("first nonzero source position overflow")?,
+                    );
+                }
+            }
             pair.fill(value);
         }
         // ReleaseBuffer is the acknowledgement boundary. A failed write keeps
@@ -396,6 +413,61 @@ mod tests {
         assert!(postroll.iter().all(|sample| *sample == 0.0));
         assert_eq!(cursor.progress.acknowledged_source_frames, 117);
         assert_eq!(cursor.progress.native_submitted_frames, 145);
+    }
+
+    #[test]
+    fn source_nonzero_submission_receipt_tracks_native_chunks_and_failed_release() {
+        for packet_frames in [144, 480, 1056] {
+            let plan = SourceSchedule {
+                schema_version: 1,
+                schedule_id: "native-payload-evidence".into(),
+                waveform_version: WAVEFORM_VERSION.into(),
+                sample_rate: 48_000,
+                channels: 2,
+                marker_frames: 1024,
+                marker_amplitude: 0.025,
+                total_source_frames: 96_000,
+                starts: vec![24_000, 72_000],
+            };
+            let mut cursor = SourceCursor::new(Some(plan.prepare(2).unwrap()));
+            let mut buffer = vec![0.0; packet_frames * 2];
+            cursor.submit(&mut buffer, true, |_| Ok(())).unwrap();
+            let mut observed_nonzero = 0u64;
+            while !cursor.progress.schedule_submitted_complete {
+                let before = cursor.progress.clone();
+                assert!(
+                    cursor
+                        .submit(&mut buffer, false, |_| {
+                            anyhow::bail!("injected ReleaseBuffer failure")
+                        })
+                        .is_err()
+                );
+                assert_eq!(cursor.progress, before);
+                cursor
+                    .submit(&mut buffer, false, |samples| {
+                        observed_nonzero += samples
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .filter(|frame| frame.iter().any(|sample| *sample != 0.0))
+                            .count() as u64;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            let receipt = serde_json::to_value(&cursor.progress).unwrap();
+            assert_eq!(observed_nonzero, 2048);
+            assert_eq!(receipt["submitted_nonzero_frames"], observed_nonzero);
+            assert_eq!(
+                receipt["first_nonzero_submission_frame"],
+                packet_frames + 24_000
+            );
+            cursor.submit(&mut buffer, false, |_| Ok(())).unwrap();
+            assert_eq!(
+                serde_json::to_value(&cursor.progress).unwrap()["submitted_nonzero_frames"],
+                2048
+            );
+        }
     }
 
     #[test]

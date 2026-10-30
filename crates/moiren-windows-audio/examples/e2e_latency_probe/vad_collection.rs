@@ -3182,6 +3182,7 @@ mod tests {
                 origin_submission_frame: Some(480),
                 acknowledged_source_frames: 48_000,
                 schedule_submitted_complete: true,
+                ..Default::default()
             },
             event_timeouts: 3,
             elapsed_seconds: 1.3,
@@ -3471,6 +3472,7 @@ mod tests {
                 origin_submission_frame: Some(480),
                 acknowledged_source_frames: 48_000,
                 schedule_submitted_complete: true,
+                ..Default::default()
             },
             ..Default::default()
         };
