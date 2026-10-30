@@ -18,8 +18,11 @@ The strict Shared microphone control now observes a nonzero, equal16-byte
 post-copy native-buffer prefix, while its Shared client still receives all
 SILENT packets. Actual packet-delivery/notification remains the next boundary;
 no sole-driver or downstream-policy cause is established. A lower software-route
-target768/recovery4 completes30seconds with zero retained provider drop/silence
-and clock clamp/reset, but quality completeness/marker evidence still fails.
+target768/recovery4 completes30seconds and a separate60-second source schedule
+with zero pre-cleanup provider drop/silence and clock clamp/reset, but quality
+completeness and marker-continuity acceptance remain open. A host-only audit
+finds all29 inferred signal intervals in the30-second capture; weak raw-template
+matches are not evidence that six signal intervals are absent.
 This is not continuous stability or physical latency acceptance. Exact build,
 deployment, original failures, settings and verified archive are in the
 [integration/capture-boundary receipt](../../docs/validation/2026-10-31-native-integration-capture-boundary.md).

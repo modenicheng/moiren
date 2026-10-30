@@ -135,6 +135,55 @@ the first source marker and raised an empty-window error; a separate host-only
 copy retains out-of-range windows explicitly without lowering the threshold.
 No software or physical delay is inferred from these onsets.
 
+### Bounded marker audit and one-minute repeat
+
+A separate host-only audit preserves all four original inputs and the0.7 raw
+template threshold. It reproduces23global peaks, but finds29nonzero clusters
+and one cluster in each of29inferred schedule intervals. Assigning the first
+nonzero frame32140 to the first scheduled marker is an explicit assumption,
+not an independently identified source origin. Under that alignment the first
+strong peak belongs to inferred slot5, explaining the previous five-interval
+window-label shift. Original reports are retained unchanged.
+
+The six weak intervals have raw correlations0.5733-0.6922. A bounded linear
+rate/fractional-phase model search yields0.9454-0.9522; this supports template
+rate/phase mismatch as an explanation, not its sole cause or a waveform-damage
+exclusion. All3033 packet flags are zero and packet sequence, stored offsets
+and device positions are contiguous. Neither that metadata nor repeated-template
+matching establishes waveform continuity, physical latency or qualification.
+Derived audit/replay outputs and input hashes are retained separately in
+`vad-software-target768-cap4/host-marker-audit`; raw captures are not rewritten.
+
+The next complete-config repeat retains target768, capacity4800, recovery4,
+Engine32 and the3000ms correctness-mode jitter tolerance. Its source schedule
+contains2880000frames and59markers; source completion ends the observation
+after60.2225232seconds, rather than running the90-second watchdog budget.
+The owned process exits0 after61.4260384seconds. The recorder retains2896320
+frames in6034complete packets, no missing/incomplete packets, sequence gaps or
+nonfinite samples. Collection and cleanup complete; `quality_passed:true`
+still accompanies `quality_complete:false` and `qualified:false`.
+
+Both pre-cleanup provider snapshots retain zero dropped/silent packets,
+sequence gaps and epoch resets. Engine clock clamp/reset counters are zero.
+The microphone maximum completion interval is106390 in100ns units, again
+above the declared480-frame gap; the delivery envelope is not qualified.
+Cleanup snapshots separately record the expected gate/Removed transition
+with one epoch reset/recovery each; they are not presented as zero throughout
+the full lifecycle. No marker audit or continuity acceptance is claimed for
+this new one-minute capture.
+
+The raw repeat archive `vad-target768-cap4-repeat2-20261031.zip` is720614bytes,
+16manifest files /17ZIP entries,38162466uncompressed bytes, SHA-256
+`F7D0F7901760E983F86C14DA844F6AFD001B46ED0388590E2C1DD0FC4B440765`.
+The host verifies exact names, every file length and hash before extraction.
+The first archive attempt fails before ZIP creation because Windows PowerShell
+has not loaded `System.IO.Compression`; its original error and manifest are
+retained, then a versioned manifest retry loads the assembly explicitly. No
+remote raw files or caches are deleted. The read-only target audit finds no
+owned build/audio processes and the same boot; archive completion leaves
+242294849536bytes free on D:. No new audio run or setting write is performed
+during this archive/audit step.
+
 ## Actual app Process replacement and safe refusal
 
 The real `moiren-app monitor` route is Process Loopback -> Bus -> pinned DAWN.
