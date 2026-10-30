@@ -125,7 +125,14 @@ impl ApplySettings {
 /// within the window coalesce into one rebuild.
 const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
 
+#[cfg(all(test, windows))]
+type MeasuredSnapshotReader = dyn Fn() -> Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>
+    + Send
+    + Sync;
+
 pub struct ManagedDriver {
+    #[cfg(all(test, windows))]
+    measured_snapshot_reader: Option<Arc<MeasuredSnapshotReader>>,
     #[cfg(windows)]
     window_evaluation: Option<windowed::PendingWindowEvaluation>,
     #[cfg(windows)]
@@ -183,6 +190,17 @@ pub struct ManagedDriver {
     virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
 }
 impl ManagedDriver {
+    #[cfg(all(test, windows))]
+    pub(crate) fn set_measured_snapshot_reader_for_test(
+        &mut self,
+        read: impl Fn() -> Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.measured_snapshot_reader = Some(Arc::new(read));
+    }
+
     #[cfg(all(test, windows))]
     pub(crate) fn set_measured_test_factory(&mut self, backend: super::test_backend::FakeBackend) {
         let first = backend.clone();
@@ -257,6 +275,8 @@ impl ManagedDriver {
             apply: false,
             apply_settings: None,
             meters: None,
+            #[cfg(all(test, windows))]
+            measured_snapshot_reader: None,
             #[cfg(windows)]
             native_observations: None,
             #[cfg(windows)]

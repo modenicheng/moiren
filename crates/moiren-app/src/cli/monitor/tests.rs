@@ -242,6 +242,9 @@ impl ServiceDriver for MeasuredDriver {
                     process_delivery: vec![observed],
                 },
             });
+            let fresh = c.native_observations.as_ref().unwrap().observation.clone();
+            self.inner
+                .set_measured_snapshot_reader_for_test(move || Some(fresh.clone()));
         }
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, pool: &mut crate::service::JobPool) {

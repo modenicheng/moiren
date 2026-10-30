@@ -3,6 +3,20 @@ use crate::service::measured_process::tests::observation;
 use crate::service::{MeasuredProcessRequest, NativeSessionObservations};
 use moiren_windows_audio::engine_backend::NativeObservationSnapshot;
 
+fn install_snapshot_reader(r: &mut Rig, snapshot: Option<NativeObservationSnapshot>) {
+    r.driver.measured_snapshot_reader = Some(Arc::new(move || snapshot.clone()));
+}
+
+fn install_fixture_reader(r: &mut Rig) {
+    let snapshot =
+        r.c.native_observations
+            .as_ref()
+            .unwrap()
+            .observation
+            .clone();
+    install_snapshot_reader(r, Some(snapshot));
+}
+
 pub(super) fn start_process(r: &mut Rig) -> MeasuredProcessRequest {
     r.request(AppRequest::Start(SessionSpec {
         source: InputSelection::Process {
@@ -54,7 +68,96 @@ pub(super) fn start_process(r: &mut Rig) -> MeasuredProcessRequest {
             process_delivery: vec![observation],
         },
     });
+    install_fixture_reader(r);
     request
+}
+
+#[test]
+fn measured_apply_reads_fresh_evidence_once_without_touching_the_display_cache() {
+    let mut r = Rig::new();
+    let request = start_process(&mut r);
+    let fresh =
+        r.c.native_observations
+            .as_ref()
+            .unwrap()
+            .observation
+            .clone();
+    r.c.native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .process_delivery[0]
+        .delivery = None;
+    let display = r.c.native_observations.clone();
+    let refreshed = r.driver.observation_refreshed_at;
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = reads.clone();
+    r.driver.measured_snapshot_reader = Some(Arc::new(move || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Some(fresh.clone())
+    }));
+    r.request(AppRequest::ApplyMeasuredProcessBridge(request));
+    assert!(
+        r.c.measured_process.is_some(),
+        "fresh evidence, not the throttled unknown sample, admits Apply"
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(r.c.native_observations, display);
+    assert_eq!(r.driver.observation_refreshed_at, refreshed);
+    r.request(AppRequest::Stop);
+    r.wait(|r| r.driver.is_drained());
+}
+
+#[test]
+fn measured_apply_refuses_unknown_or_changed_fresh_evidence_without_cached_fallback() {
+    for fault in 0..7 {
+        let mut r = Rig::new();
+        let request = start_process(&mut r);
+        let mut fresh =
+            r.c.native_observations
+                .as_ref()
+                .unwrap()
+                .observation
+                .clone();
+        match fault {
+            0 => {}
+            1 => fresh.owner_generation += 1,
+            2 => fresh.running = false,
+            3 => fresh.process_delivery[0].process.pid += 1,
+            4 => fresh.process_delivery[0].process.creation_time_100ns += 1,
+            5 => fresh.process_delivery[0].consumer = None,
+            6 => fresh.process_delivery[0].owner_generation += 1,
+            _ => unreachable!(),
+        }
+        install_snapshot_reader(&mut r, (fault != 0).then_some(fresh));
+        let selection = r.driver.measured_selection_id;
+        r.request(AppRequest::ApplyMeasuredProcessBridge(request));
+        assert!(
+            r.c.measured_process.is_none(),
+            "fault {fault} cannot reuse good display evidence"
+        );
+        assert!(r.c.graph.snapshot().last_error.is_some());
+        assert_eq!(r.driver.measured_selection_id, selection);
+        assert!(!r.driver.apply);
+        assert_eq!(r.state.stops.load(Ordering::SeqCst), 0);
+        r.request(AppRequest::Stop);
+        r.wait(|r| r.driver.is_drained());
+    }
+}
+
+#[test]
+fn measured_apply_preflight_refusal_does_not_sample_native_evidence() {
+    let mut r = Rig::new();
+    let mut request = start_process(&mut r);
+    request.graph_revision += 1;
+    r.driver.measured_snapshot_reader = Some(Arc::new(|| {
+        panic!("stale preflight cannot read native evidence")
+    }));
+    r.request(AppRequest::ApplyMeasuredProcessBridge(request));
+    assert!(r.c.measured_process.is_none());
+    assert_eq!(r.state.stops.load(Ordering::SeqCst), 0);
+    r.request(AppRequest::Stop);
+    r.wait(|r| r.driver.is_drained());
 }
 
 #[test]
@@ -137,6 +240,7 @@ fn stale_or_invalid_measured_selection_preserves_running_owner() {
             }
             _ => unreachable!(),
         }
+        install_fixture_reader(&mut r);
         r.request(AppRequest::ApplyMeasuredProcessBridge(request));
         assert!(r.c.measured_process.is_none());
         assert!(r.c.graph.snapshot().last_error.is_some(), "fault {fault}");
@@ -167,6 +271,7 @@ fn ingress_elapsed_desired_or_active_policy_refuses_measured_apply_before_side_e
             r.driver.owner.as_mut().unwrap().transport_latency = r.c.transport_latency;
             r.c.active_transport_latency = Some(r.c.transport_latency);
         }
+        install_fixture_reader(&mut r);
         let selection = r.driver.measured_selection_id;
         let captured = r.driver.apply_settings.as_ref().map(|settings| {
             (

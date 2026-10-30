@@ -4,6 +4,26 @@ use crate::service::measured_process::MeasuredProcessProfile;
 
 impl ManagedDriver {
     #[cfg(windows)]
+    fn read_measured_native_snapshot(
+        &self,
+    ) -> Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot> {
+        #[cfg(test)]
+        if let Some(read) = &self.measured_snapshot_reader {
+            return read();
+        }
+        // Explicit admission reads once from the current native registry,
+        // independently of the 1 Hz display cache. Drop the factory handoff
+        // mutex before copying bounded histories; unknown never falls back.
+        let observations = self
+            .native_observations
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()?;
+        observations.snapshot()
+    }
+
+    #[cfg(windows)]
     pub(super) fn validate_evaluated_process(
         &self,
         context: &ServiceContext,
@@ -99,17 +119,13 @@ impl ManagedDriver {
         {
             return Err("measured Process graph revision is stale or pending".into());
         }
-        let native = context
-            .native_observations
-            .as_ref()
-            .filter(|value| value.generation == request.session_generation)
+        let native = self
+            .read_measured_native_snapshot()
             .filter(|value| {
-                value.observation.running
-                    && value.observation.owner_generation == request.native_owner_generation
+                value.running && value.owner_generation == request.native_owner_generation
             })
             .ok_or("matching live native Process observations are unavailable")?;
         let observation = native
-            .observation
             .process_delivery
             .iter()
             .find(|value| value.node == request.node)
