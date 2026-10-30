@@ -204,19 +204,27 @@ fn single_skipped_period_is_repaid_without_resetting_boundaries() {
         reads_after_wait: 0,
     });
     let mut trace = ClockTrace::default();
-    run(
+    let clock_probe = VirtualClockProbe::new(48_000, 8, super::super::DEBT_CAP_PERIODS);
+    run_with_recovery_cap(
         &mut engine,
         &mut clock,
         &published,
         std::slice::from_ref(&reset),
         &StopSignal::new().unwrap(),
         &mut trace,
+        super::super::DEBT_CAP_PERIODS,
+        &clock_probe,
     )
     .unwrap();
     assert_eq!(
         trace.observed().collect::<Vec<_>>(),
         [(16, 0, 1, GapStage::Wake)]
     );
+    let counters = clock_probe.snapshot().unwrap().counters;
+    assert_eq!(counters.clamped_periods, 0);
+    assert_eq!(counters.rendered_periods, 2);
+    assert_eq!(counters.late_wake_bursts, 1);
+    assert_eq!(counters.timeline_resets, 0);
     assert_eq!(
         reset.load(Ordering::Acquire),
         0,
@@ -326,19 +334,29 @@ fn persistently_late_owner_observes_stop_without_waiting_for_clock_headroom() {
         reads: 0,
         stop: stop.clone(),
     };
-    run(
+    let clock_probe = VirtualClockProbe::new(48_000, 8, super::super::DEBT_CAP_PERIODS);
+    run_with_recovery_cap(
         &mut engine,
         &mut clock,
         &published,
         &[],
         &stop,
         &mut ClockTrace::default(),
+        super::super::DEBT_CAP_PERIODS,
+        &clock_probe,
     )
     .unwrap();
     assert_eq!(clock.reads, 20);
     // One now_ticks is consumed by run() itself as the schedule origin; every
     // remaining read drives one immediate clamped render until stop is polled.
     assert_eq!(engine.timeline(), 152);
+    let counters = clock_probe.snapshot().unwrap().counters;
+    assert_eq!(counters.rendered_periods, 19);
+    assert_eq!(
+        counters.timeline_resets, 6,
+        "one reset event per three clamped wakes"
+    );
+    assert!(counters.clamped_frames > 0);
 }
 
 #[test]

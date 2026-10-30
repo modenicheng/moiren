@@ -1,4 +1,7 @@
-use super::{ClockSchedule, ClockWake, VirtualRealtimeClock, VirtualSessions};
+use super::{
+    ClockSchedule, ClockWake, VirtualClockCounters, VirtualClockProbe, VirtualRealtimeClock,
+    VirtualSessions,
+};
 use crate::{Activation, ActivationGate, StopSignal, capture::CaptureSession};
 use moiren_core::graph::NodeId;
 use moiren_engine::{
@@ -37,6 +40,7 @@ pub struct VirtualPreparedTransport {
     gate: ActivationGate,
     clock: Option<Box<dyn VirtualRealtimeClock>>,
     recovery_cap_periods: u64,
+    clock_probe: Option<Arc<VirtualClockProbe>>,
 }
 
 impl VirtualPreparedTransport {
@@ -55,6 +59,7 @@ impl VirtualPreparedTransport {
             gate,
             clock: Some(clock),
             recovery_cap_periods: super::DEBT_CAP_PERIODS,
+            clock_probe: None,
         }
     }
 
@@ -71,6 +76,11 @@ impl VirtualPreparedTransport {
 
     pub fn with_captures(mut self, captures: Vec<CaptureSession>) -> Self {
         self.captures = captures;
+        self
+    }
+
+    pub(crate) fn with_clock_probe(mut self, probe: Arc<VirtualClockProbe>) -> Self {
+        self.clock_probe = Some(probe);
         self
     }
 }
@@ -137,6 +147,7 @@ struct Exit<S: ProcessingSample> {
     clock_trace: ClockTrace,
     _clock: Box<dyn VirtualRealtimeClock>,
     _timeline_resets: Vec<Arc<AtomicU64>>,
+    _clock_probe: Arc<VirtualClockProbe>,
 }
 
 impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
@@ -158,9 +169,21 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                 || processing_rate.fract() != 0.0
                 || !(8_000.0..=384_000.0).contains(&processing_rate)
                 || engine.config().max_block_frames == 0
+                || u32::try_from(engine.config().max_block_frames).is_err()
             {
                 return Err(BackendError::Unsupported(
                     "virtual owner requires an integral Engine rate in 8..384kHz".into(),
+                ));
+            }
+            if self.clock_probe.as_ref().is_some_and(|probe| {
+                !probe.matches(
+                    processing_rate as u32,
+                    engine.config().max_block_frames as u32,
+                    self.recovery_cap_periods,
+                )
+            }) {
+                return Err(BackendError::Unsupported(
+                    "virtual clock observation shape changed before attachment".into(),
                 ));
             }
             let protected = self
@@ -197,6 +220,13 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
         if let Err(error) = validated {
             return Err(Box::new(AttachFailure { engine, error }));
         }
+        let clock_probe = self.clock_probe.take().unwrap_or_else(|| {
+            Arc::new(VirtualClockProbe::new(
+                engine.config().processing_sr as u32,
+                engine.config().max_block_frames as u32,
+                self.recovery_cap_periods,
+            ))
+        });
         let published = Arc::new(Published::new(&engine));
         // This slot is used only for the one startup handoff. It keeps the
         // Engine on the caller when thread creation fails, with no RT locks.
@@ -237,6 +267,7 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                         &stop,
                         &mut clock_trace,
                         recovery_cap_periods,
+                        &clock_probe,
                     )
                 })) {
                     Ok(result) => result.err(),
@@ -255,6 +286,9 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                     clock_trace,
                     _clock: clock,
                     _timeline_resets: timeline_resets,
+                    // Even a directly constructed transport can own the final
+                    // Arc. Reclaim its atomic storage on the joiner, never RT.
+                    _clock_probe: clock_probe,
                 }
             });
         let worker = match worker {
@@ -302,6 +336,11 @@ fn run<S: ProcessingSample>(
     stop: &StopSignal,
     clock_trace: &mut ClockTrace,
 ) -> Result<(), BackendError> {
+    let clock_probe = VirtualClockProbe::new(
+        engine.config().processing_sr as u32,
+        engine.config().max_block_frames as u32,
+        super::DEBT_CAP_PERIODS,
+    );
     run_with_recovery_cap(
         engine,
         clock,
@@ -310,9 +349,11 @@ fn run<S: ProcessingSample>(
         stop,
         clock_trace,
         super::DEBT_CAP_PERIODS,
+        &clock_probe,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_with_recovery_cap<S: ProcessingSample>(
     engine: &mut Engine<S>,
     clock: &mut dyn VirtualRealtimeClock,
@@ -321,6 +362,7 @@ fn run_with_recovery_cap<S: ProcessingSample>(
     stop: &StopSignal,
     clock_trace: &mut ClockTrace,
     recovery_cap_periods: u64,
+    clock_probe: &VirtualClockProbe,
 ) -> Result<(), BackendError> {
     let origin = clock.now_ticks()?;
     let frequency = clock.frequency();
@@ -335,6 +377,8 @@ fn run_with_recovery_cap<S: ProcessingSample>(
     )
     .map_err(|error| BackendError::Failed(error.to_string()))?;
     published.state.store(1, Ordering::Release);
+    let mut clock_counters = VirtualClockCounters::default();
+    clock_probe.publish(clock_counters);
     let mut clamped_streak = 0_u32;
     let mut burst_open = false;
     loop {
@@ -361,6 +405,7 @@ fn run_with_recovery_cap<S: ProcessingSample>(
         };
         // One trace event per late burst: the redue loop drains the backlog
         // without waiting, so only the burst's first wake is the news.
+        let new_late_burst = (tick.backlog_periods > 1 || tick.clamped_periods > 0) && !burst_open;
         if tick.backlog_periods > 1 {
             if !burst_open {
                 clock_trace.record(
@@ -374,6 +419,7 @@ fn run_with_recovery_cap<S: ProcessingSample>(
         } else {
             burst_open = false;
         }
+        let mut reset = false;
         if tick.clamped_periods > 0 {
             clock_trace.record(
                 now,
@@ -385,14 +431,24 @@ fn run_with_recovery_cap<S: ProcessingSample>(
             if clamped_streak >= STALL_CLAMPED_WAKE_STREAK {
                 reset_timeline(timeline_resets);
                 clamped_streak = 0;
+                reset = true;
             }
         } else {
             clamped_streak = 0;
+        }
+        clock_counters.tick(tick, new_late_burst, reset);
+        if tick.clamped_periods > 0 {
+            // Keep omitted periods even if the subsequent render unwinds.
+            clock_probe.publish(clock_counters);
         }
         // Exactly one Engine executes one bounded block per due wake, repaying
         // at most the capped backlog. External microphone client counts are
         // deliberately absent from this decision.
         let rendered = engine.render(tick.frames);
+        if rendered.is_ok() {
+            clock_counters.rendered(tick.frames);
+        }
+        clock_probe.publish(clock_counters);
         published.publish(engine);
         rendered.map_err(|error| BackendError::Failed(error.to_string()))?;
     }

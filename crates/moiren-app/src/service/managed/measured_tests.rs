@@ -44,6 +44,7 @@ pub(super) fn start_process(r: &mut Rig) -> MeasuredProcessRequest {
     r.c.native_observations = Some(NativeSessionObservations {
         generation: request.session_generation,
         observation: NativeObservationSnapshot {
+            virtual_clock: None,
             owner_generation: generation,
             running: true,
             streams: Vec::new(),

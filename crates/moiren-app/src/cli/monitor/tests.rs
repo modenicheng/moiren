@@ -232,6 +232,7 @@ impl ServiceDriver for MeasuredDriver {
             c.native_observations = Some(crate::service::NativeSessionObservations {
                 generation: c.core.generation(),
                 observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot {
+                    virtual_clock: None,
                     owner_generation: 1,
                     running: true,
                     streams: Vec::new(),

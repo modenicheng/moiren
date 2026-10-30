@@ -158,6 +158,7 @@ fn small_virtual_target_prepares_and_repays_only_the_configured_recovery_burst()
     let owner = attach(&project, prepared, cancel);
     owner.activate().unwrap();
     let snapshot = backend.native_observations().snapshot().unwrap();
+    let retained = backend.native_observations().retain_session().unwrap();
     assert_eq!(snapshot.streams.len(), 2);
     for kind in [
         NativeStreamKind::VirtualPlayback,
@@ -185,6 +186,17 @@ fn small_virtual_target_prepares_and_repays_only_the_configured_recovery_burst()
         256,
         "nine clamped periods are not repaid"
     );
+    let final_observation = serde_json::to_value(retained.snapshot()).unwrap();
+    assert_eq!(
+        final_observation["virtual_clock"]["clamped_periods"], 9,
+        "clock debt discarded by this joined owner must survive outside debug-log tails"
+    );
+    assert_eq!(
+        final_observation["virtual_clock"]["clamped_frames"],
+        9 * 256
+    );
+    assert_eq!(final_observation["virtual_clock"]["rendered_periods"], 1);
+    assert_eq!(final_observation["virtual_clock"]["timeline_resets"], 0);
     assert_sessions_joined(&probe, 2);
 }
 
@@ -305,6 +317,10 @@ fn virtual_budget_observations_preserve_whole_physical_master_demand() {
     owner.activate().unwrap();
     let snapshot = backend.native_observations().snapshot().unwrap();
     assert_eq!(snapshot.streams.len(), 3);
+    assert!(
+        snapshot.virtual_clock.is_none(),
+        "physical master owns no virtual clock"
+    );
     for kind in [
         NativeStreamKind::VirtualPlayback,
         NativeStreamKind::VirtualMicrophone,

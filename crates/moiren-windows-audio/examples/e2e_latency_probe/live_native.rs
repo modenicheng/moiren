@@ -836,6 +836,10 @@ impl VadCleanup<'_> {
                 .find(|view| view.endpoint_id == target.endpoint_id)
         });
         let playback = endpoint_health(runtime, self.endpoint_id, Intent::Playback);
+        let clock_quality = vad_collection::clock_quality::live(
+            native.as_ref().and_then(|view| view.virtual_clock.as_ref()),
+            self.microphone.is_some(),
+        );
         let microphone = self.microphone.as_ref().map(|target| {
             endpoint_health(microphone_runtime, target.endpoint_id, Intent::Microphone)
         });
@@ -844,6 +848,9 @@ impl VadCleanup<'_> {
                 .as_ref()
                 .map_or(0, |health| health.quality_faults),
         );
+        if let Ok(Some(loss)) = &clock_quality {
+            faults = faults.saturating_add(*loss);
+        }
         if let Some(value) = &native {
             for probe in &value.boundary_probes {
                 faults = faults.saturating_add(probe.xruns);
@@ -935,6 +942,13 @@ impl VadCleanup<'_> {
                 .as_ref()
                 .map(|guard| guard.evidence())
                 .into();
+            value["virtual_clock_validation"] = match &clock_quality {
+                Ok(Some(loss)) => serde_json::json!({"clamped_frames": loss, "failure": null}),
+                Ok(None) => serde_json::json!({"clamped_frames": null, "failure": null}),
+                Err(error) => {
+                    serde_json::json!({"clamped_frames": null, "failure": format!("{error:#}")})
+                }
+            };
             replace_engine_observation(&mut self.report.engine, value);
         }
         if self.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
@@ -948,6 +962,7 @@ impl VadCleanup<'_> {
         }
         self.last_health = Some(health.clone());
         progress?;
+        clock_quality?;
         Ok(health)
     }
 
@@ -1631,6 +1646,7 @@ mod final_evidence_tests {
 
     fn native() -> NativeObservationSnapshot {
         NativeObservationSnapshot {
+            virtual_clock: None,
             process_delivery: Vec::new(),
             owner_generation: 7,
             running: false,
@@ -1990,6 +2006,7 @@ mod tests {
             cleanup_error: None,
         };
         let native = NativeObservationSnapshot {
+            virtual_clock: None,
             owner_generation: 7,
             running: true,
             process_delivery: Vec::new(),

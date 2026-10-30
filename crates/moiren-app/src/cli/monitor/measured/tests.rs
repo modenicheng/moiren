@@ -59,6 +59,7 @@ fn fixture() -> (AppSnapshot, MonitorReport, MeasuredProcessRequest) {
     snapshot.native_observations = Some(crate::service::NativeSessionObservations {
         generation: snapshot.generation,
         observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot {
+            virtual_clock: None,
             owner_generation: 1,
             running: true,
             streams: Vec::new(),

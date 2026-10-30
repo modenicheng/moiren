@@ -458,6 +458,7 @@ mod tests {
         let mut graph = LogicalGraph::new();
         let node = graph.create_node(NodeKind::Sink, 2).unwrap();
         let snapshot = NativeObservationSnapshot {
+            virtual_clock: None,
             owner_generation: 7,
             running: true,
             streams: vec![NativeStreamObservation {

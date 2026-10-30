@@ -13,6 +13,7 @@ pub enum ProjectClock {
 mod boundary;
 mod budget;
 mod clock;
+mod clock_observation;
 mod provider;
 mod reprime;
 
@@ -23,6 +24,7 @@ pub use boundary::{
 pub use budget::{PreparedVirtualBudget, VirtualBufferOptions};
 #[allow(unused_imports)]
 pub use clock::{ClockError, ClockSchedule, ClockTick, DEBT_CAP_PERIODS};
+pub use clock_observation::{VirtualClockCounters, VirtualClockProbe, VirtualClockSnapshot};
 #[allow(unused_imports)]
 pub use provider::{
     PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,

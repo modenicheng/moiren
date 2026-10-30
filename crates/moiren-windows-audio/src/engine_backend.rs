@@ -839,6 +839,12 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             // The retired transport keeps publishing and fencing the stream
             // observations even when it owns no worker or auxiliary, so
             // virtual-only projects stay visible in the diagnostics snapshot.
+            let clock_probe = Arc::new(crate::virtual_owner::VirtualClockProbe::new(
+                rate,
+                block_demand,
+                recovery_cap_periods,
+            ));
+            transport.virtual_clock = Some(clock_probe.clone());
             virtual_sessions.push(transport.into_follower(cancel.clone())?);
             let stop = crate::StopSignal::new().map_err(unsupported)?;
             let gate = crate::ActivationGate::new(stop.clone()).map_err(unsupported)?;
@@ -856,7 +862,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                         gate,
                         clock,
                     )
-                    .with_recovery_cap(recovery_cap_periods)?,
+                    .with_recovery_cap(recovery_cap_periods)?
+                    .with_clock_probe(clock_probe),
                 )),
             });
         }

@@ -15,6 +15,10 @@ use super::validation_policy::ValidationPolicy;
 #[path = "vad_collection/boundary_quality.rs"]
 mod boundary_quality;
 
+#[cfg(any(windows, test))]
+#[path = "vad_collection/clock_quality.rs"]
+pub(super) mod clock_quality;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
@@ -1799,6 +1803,21 @@ fn final_graph_schema2_health(
     let mut virtual_inputs = std::collections::BTreeSet::new();
     let mut virtual_outputs = std::collections::BTreeSet::new();
     let mut soft = Vec::new();
+    match route {
+        super::vad_route::RouteKind::Microphone => {
+            let clock = native
+                .get("virtual_clock")
+                .context("final virtual clock unknown")?;
+            let loss = clock_quality::parse_final(clock)?;
+            if loss != 0 {
+                soft.push(format!("final virtual clock clamped frames: {loss}"));
+            }
+        }
+        super::vad_route::RouteKind::Physical => ensure!(
+            native.get("virtual_clock").is_none_or(Value::is_null),
+            "physical render master cannot claim a virtual clock"
+        ),
+    }
     for stream in &professional_streams {
         let id = node(stream)?;
         ensure!(
@@ -3762,6 +3781,13 @@ mod tests {
 
     fn microphone_final_summary() -> serde_json::Value {
         let mut summary = final_schema2();
+        summary["native"]["virtual_clock"] = serde_json::json!({
+            "schema_version": 1, "engine_sample_rate": 48000,
+            "engine_block_frames": 32, "recovery_cap_periods": 8,
+            "rendered_periods": 1000, "rendered_frames": 32000,
+            "late_wake_bursts": 4, "clamped_periods": 0, "clamped_frames": 0,
+            "timeline_resets": 0, "max_backlog_periods": 2, "counters_saturated": false,
+        });
         summary["professional"]["streams"][0]["master"] = false.into();
         summary["professional"]["streams"][0]["actual"]["buffer_frames"] = 0.into();
         summary["native"]["streams"][0]["kind"] = "virtual_microphone".into();
@@ -3775,6 +3801,58 @@ mod tests {
             .push(probe);
         summary["native"]["render_padding"] = serde_json::json!([]);
         summary
+    }
+
+    #[test]
+    fn microphone_final_clock_loss_is_retained_and_unknown_or_reset_cannot_pass() {
+        let route = super::super::vad_route::RouteKind::Microphone;
+        let mut lost = microphone_final_summary();
+        lost["native"]["virtual_clock"]["clamped_periods"] = 9.into();
+        lost["native"]["virtual_clock"]["clamped_frames"] = 288.into();
+        lost["native"]["virtual_clock"]["max_backlog_periods"] = 17.into();
+        let mut quality = Quality::default();
+        graph_summary_health_with_route(Some(&lost), route, correctness(), &mut quality).unwrap();
+        assert!(
+            quality
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("clock")),
+            "final-only virtual clock loss must fail quality even after complete collection"
+        );
+        assert!(
+            graph_summary_health_with_route(
+                Some(&lost),
+                route,
+                ValidationPolicy::default(),
+                &mut Quality::default()
+            )
+            .is_err()
+        );
+        for variant in 0..5 {
+            let mut bad = microphone_final_summary();
+            match variant {
+                0 => bad["native"]["virtual_clock"] = serde_json::Value::Null,
+                1 => bad["native"]["virtual_clock"]["counters_saturated"] = true.into(),
+                2 => bad["native"]["virtual_clock"]["timeline_resets"] = 1.into(),
+                3 => bad["native"]["virtual_clock"]["rendered_frames"] = 1.into(),
+                _ => bad["native"]["virtual_clock"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("clamped_frames")
+                    .map(|_| ())
+                    .unwrap(),
+            }
+            assert!(
+                graph_summary_health_with_route(
+                    Some(&bad),
+                    route,
+                    correctness(),
+                    &mut Quality::default()
+                )
+                .is_err(),
+                "unknown, inconsistent or reset clock evidence variant {variant}"
+            );
+        }
     }
 
     #[test]

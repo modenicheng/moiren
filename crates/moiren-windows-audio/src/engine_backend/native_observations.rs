@@ -67,6 +67,9 @@ pub struct NativeObservationSnapshot {
     pub boundary_probes: Vec<NativeBoundaryProbe>,
     pub render_padding: Vec<NativeRenderPaddingObservation>,
     pub process_delivery: Vec<NativeProcessDeliveryObservation>,
+    /// Only the pure-virtual owner publishes a clock. None is unknown/unstarted
+    /// for that route and inapplicable for a physical render master.
+    pub virtual_clock: Option<crate::virtual_owner::VirtualClockSnapshot>,
 }
 
 /// Service boundary events belonging to this exact source and transport owner.
@@ -259,6 +262,7 @@ pub(super) struct Session {
         std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
     )>,
     renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+    virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
 }
 impl NativeObservationReadHandle {
     /// Publication state only, not a successful-start or teardown witness.
@@ -346,6 +350,10 @@ impl NativeObservationReadHandle {
                 })
                 .collect(),
             boundary_probes,
+            virtual_clock: session
+                .virtual_clock
+                .as_ref()
+                .and_then(|probe| probe.snapshot()),
             render_padding: session
                 .renders
                 .iter()
@@ -409,7 +417,7 @@ impl NativeObservations {
     ) {
         self.publish_with_process(generation, streams, bridges, probes, renders, Vec::new());
     }
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn publish_with_process(
         &self,
@@ -424,6 +432,32 @@ impl NativeObservations {
         renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
         process_delivery: Vec<ProcessDeliverySource>,
     ) {
+        self.publish_with_clock(
+            generation,
+            streams,
+            bridges,
+            probes,
+            renders,
+            process_delivery,
+            None,
+        );
+    }
+    #[cfg(any(windows, test))]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn publish_with_clock(
+        &self,
+        generation: u64,
+        streams: Vec<NativeStreamObservation>,
+        bridges: Vec<(NodeId, BridgeObserver)>,
+        probes: Vec<(
+            NodeId,
+            NativeStreamKind,
+            Arc<crate::virtual_owner::BoundaryProbe>,
+        )>,
+        renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+        process_delivery: Vec<ProcessDeliverySource>,
+        virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
+    ) {
         let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         if let Some(previous) = state.as_ref() {
             previous.running.store(false, Ordering::Release);
@@ -436,6 +470,7 @@ impl NativeObservations {
             probes,
             bridges,
             renders,
+            virtual_clock,
         }));
     }
     #[cfg(any(windows, test))]
@@ -516,6 +551,51 @@ mod tests {
         drop(current);
         assert_eq!(retained.snapshot().owner_generation, 2);
         assert!(!retained.snapshot().running);
+    }
+
+    #[test]
+    fn retired_virtual_clock_keeps_trailing_loss_without_adopting_its_replacement() {
+        use crate::virtual_owner::{VirtualClockCounters, VirtualClockProbe};
+        let observations = NativeObservations::default();
+        let old_clock = Arc::new(VirtualClockProbe::new(48_000, 32, 1));
+        observations.publish_with_clock(
+            1,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            Some(old_clock.clone()),
+        );
+        let old = observations.retain_session().unwrap();
+        assert!(
+            old.snapshot().virtual_clock.is_none(),
+            "not started is unknown"
+        );
+        observations.clear(1);
+        let replacement = Arc::new(VirtualClockProbe::new(48_000, 128, 8));
+        replacement.publish(VirtualClockCounters::default());
+        observations.publish_with_clock(
+            2,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            Some(replacement),
+        );
+        old_clock.publish(VirtualClockCounters {
+            clamped_periods: 9,
+            clamped_frames: 288,
+            ..Default::default()
+        });
+        let sample = old.snapshot();
+        assert_eq!(sample.owner_generation, 1);
+        assert!(!sample.running);
+        assert_eq!(sample.virtual_clock.unwrap().counters.clamped_frames, 288);
+        let current = observations.snapshot().unwrap();
+        assert_eq!(current.owner_generation, 2);
+        assert_eq!(current.virtual_clock.unwrap().counters.clamped_frames, 0);
     }
 
     #[test]

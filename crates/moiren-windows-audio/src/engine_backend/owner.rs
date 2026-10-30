@@ -609,6 +609,7 @@ pub(super) struct Transport<S: ProcessingSample> {
         Arc<crate::virtual_owner::BoundaryProbe>,
     )>,
     pub native_renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+    pub virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
     pub generation: u64,
 }
 impl<S: ProcessingSample> Transport<S> {
@@ -628,6 +629,7 @@ impl<S: ProcessingSample> Transport<S> {
             native_process_delivery: Vec::new(),
             native_probes: Vec::new(),
             native_renders: Vec::new(),
+            virtual_clock: None,
             generation,
         }
     }
@@ -649,13 +651,14 @@ impl<S: ProcessingSample> Transport<S> {
         }))
     }
     fn activate(&self) -> Result<(), BackendError> {
-        self.native_observations.publish_with_process(
+        self.native_observations.publish_with_clock(
             self.generation,
             self.native_streams.clone(),
             self.native_bridges.clone(),
             self.native_probes.clone(),
             self.native_renders.clone(),
             self.native_process_delivery.clone(),
+            self.virtual_clock.clone(),
         );
         for auxiliary in &self.auxiliaries {
             if let Err(error) = auxiliary.activate() {

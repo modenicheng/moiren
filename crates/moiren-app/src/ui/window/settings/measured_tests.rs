@@ -37,6 +37,7 @@ pub(super) fn fixture() -> (crate::service::AppSnapshot, MeasuredDraft) {
     context.native_observations = Some(NativeSessionObservations {
         generation,
         observation: NativeObservationSnapshot {
+            virtual_clock: None,
             owner_generation: 7,
             running: true,
             streams: vec![],
