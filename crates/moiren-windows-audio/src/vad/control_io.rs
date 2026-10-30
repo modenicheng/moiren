@@ -27,6 +27,43 @@ use windows::{
     core::{Error, HRESULT},
 };
 
+fn operation_name(code: u32) -> &'static str {
+    match code {
+        crate::vad::IOCTL_CAPABILITIES => "CAPABILITIES",
+        crate::vad::IOCTL_CREATE => "CREATE",
+        crate::vad::IOCTL_QUERY => "QUERY",
+        crate::vad::IOCTL_REMOVE => "REMOVE",
+        crate::vad::IOCTL_SET_GATE => "SET_GATE",
+        crate::vad::IOCTL_READ_PCM => "READ_PCM",
+        crate::vad::IOCTL_WRITE_PCM => "WRITE_PCM",
+        _ => "UNKNOWN",
+    }
+}
+
+fn operation_label(operation: &'static str, phase: &'static str) -> &'static str {
+    match (operation, phase) {
+        ("CAPABILITIES", "DeviceIoControl(VAD)") => "CAPABILITIES DeviceIoControl(VAD)",
+        ("CREATE", "DeviceIoControl(VAD)") => "CREATE DeviceIoControl(VAD)",
+        ("QUERY", "DeviceIoControl(VAD)") => "QUERY DeviceIoControl(VAD)",
+        ("REMOVE", "DeviceIoControl(VAD)") => "REMOVE DeviceIoControl(VAD)",
+        ("SET_GATE", "DeviceIoControl(VAD)") => "SET_GATE DeviceIoControl(VAD)",
+        ("READ_PCM", "DeviceIoControl(VAD)") => "READ_PCM DeviceIoControl(VAD)",
+        ("WRITE_PCM", "DeviceIoControl(VAD)") => "WRITE_PCM DeviceIoControl(VAD)",
+        ("CAPABILITIES", "GetOverlappedResultEx(VAD)") => "CAPABILITIES GetOverlappedResultEx(VAD)",
+        ("CREATE", "GetOverlappedResultEx(VAD)") => "CREATE GetOverlappedResultEx(VAD)",
+        ("QUERY", "GetOverlappedResultEx(VAD)") => "QUERY GetOverlappedResultEx(VAD)",
+        ("REMOVE", "GetOverlappedResultEx(VAD)") => "REMOVE GetOverlappedResultEx(VAD)",
+        ("SET_GATE", "GetOverlappedResultEx(VAD)") => "SET_GATE GetOverlappedResultEx(VAD)",
+        ("READ_PCM", "GetOverlappedResultEx(VAD)") => "READ_PCM GetOverlappedResultEx(VAD)",
+        ("WRITE_PCM", "GetOverlappedResultEx(VAD)") => "WRITE_PCM GetOverlappedResultEx(VAD)",
+        (_, _) => phase,
+    }
+}
+
+fn control_error(code: u32, phase: &'static str, error: Error) -> ClientError {
+    ClientError::windows(operation_label(operation_name(code), phase), error)
+}
+
 struct Request {
     input: [u8; CREATE_SIZE],
     output: [u8; 128],
@@ -245,7 +282,7 @@ impl ControlHandle {
         if let Err(error) = submitted
             && error.code() != ERROR_IO_PENDING.to_hresult()
         {
-            return Err(ClientError::windows("DeviceIoControl(VAD)", error));
+            return Err(control_error(code, "DeviceIoControl(VAD)", error));
         }
         // Event creation, allocation, submission, or scheduling may have consumed
         // the budget. Refresh it here, after submission. Expiry uses exactly the
@@ -268,9 +305,10 @@ impl ControlHandle {
         };
         if let Err(error) = completed {
             let handle = raw(&self.owner.handle);
-            return Err(self.finish_failed_exchange(
+            return Err(self.finish_failed_exchange_named(
                 request,
                 error,
+                operation_name(code),
                 |request| {
                     // SAFETY: the request still owns its OVERLAPPED and buffers.
                     unsafe {
@@ -298,10 +336,22 @@ impl ControlHandle {
         Ok(request.output[..N].try_into().expect("bounded output"))
     }
 
+    #[cfg(test)]
     fn finish_failed_exchange(
+        &mut self,
+        request: Box<Request>,
+        error: Error,
+        probe: impl FnMut(&mut Request) -> windows::core::Result<()>,
+        cancel: impl FnOnce(&Request),
+    ) -> ClientError {
+        self.finish_failed_exchange_named(request, error, "", probe, cancel)
+    }
+
+    fn finish_failed_exchange_named(
         &mut self,
         mut request: Box<Request>,
         error: Error,
+        operation: &'static str,
         mut probe: impl FnMut(&mut Request) -> windows::core::Result<()>,
         cancel: impl FnOnce(&Request),
     ) -> ClientError {
@@ -310,7 +360,10 @@ impl ControlHandle {
         if error.code() == ERROR_REVISION_MISMATCH.to_hresult()
             && probe(&mut request).is_err_and(|terminal| terminal.code() == error.code())
         {
-            return ClientError::windows("GetOverlappedResultEx(VAD)", error);
+            return ClientError::windows(
+                operation_label(operation, "GetOverlappedResultEx(VAD)"),
+                error,
+            );
         }
         self.poisoned = true;
         cancel(&request);
@@ -326,7 +379,10 @@ impl ControlHandle {
         if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {
             ClientError::DeadlineExceeded
         } else {
-            ClientError::windows("GetOverlappedResultEx(VAD)", error)
+            ClientError::windows(
+                operation_label(operation, "GetOverlappedResultEx(VAD)"),
+                error,
+            )
         }
     }
 
@@ -382,6 +438,82 @@ mod tests {
     use super::*;
     use std::{cell::Cell, time::Duration};
     use windows::Win32::Foundation::{ERROR_DEVICE_NOT_CONNECTED, ERROR_OPERATION_ABORTED};
+
+    #[test]
+    fn every_current_control_ioctl_has_operation_and_phase_labels() {
+        let operations = [
+            (crate::vad::IOCTL_CAPABILITIES, "CAPABILITIES"),
+            (crate::vad::IOCTL_CREATE, "CREATE"),
+            (crate::vad::IOCTL_QUERY, "QUERY"),
+            (crate::vad::IOCTL_REMOVE, "REMOVE"),
+            (crate::vad::IOCTL_SET_GATE, "SET_GATE"),
+            (crate::vad::IOCTL_READ_PCM, "READ_PCM"),
+            (crate::vad::IOCTL_WRITE_PCM, "WRITE_PCM"),
+        ];
+        for (code, operation) in operations {
+            assert_eq!(operation_name(code), operation);
+            for phase in ["DeviceIoControl(VAD)", "GetOverlappedResultEx(VAD)"] {
+                assert_eq!(
+                    operation_label(operation_name(code), phase),
+                    format!("{operation} {phase}")
+                );
+                let hresult = HRESULT(0xE000_0225_u32 as i32);
+                let error = control_error(code, phase, Error::from_hresult(hresult));
+                let ClientError::Windows {
+                    operation: actual,
+                    source,
+                } = error
+                else {
+                    panic!("preserve native error");
+                };
+                assert_eq!(actual, format!("{operation} {phase}"));
+                assert_eq!(source.code(), hresult);
+            }
+        }
+        // SET_POLICY is not an IOCTL in the checked-in Rust ABI or driver header.
+        // Do not invent its numeric code or alias any reserved code to it.
+        for code in [0, 0x0022_e014, u32::MAX] {
+            assert_eq!(operation_name(code), "UNKNOWN");
+            for phase in [
+                "DeviceIoControl(VAD)",
+                "GetOverlappedResultEx(VAD)",
+                "future phase",
+            ] {
+                assert_eq!(operation_label(operation_name(code), phase), phase);
+                let hresult = HRESULT(0x8889_0004_u32 as i32);
+                assert!(
+                    matches!(control_error(code, phase, Error::from_hresult(hresult)), ClientError::Windows { operation, source } if operation == phase && source.code() == hresult)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn named_wait_failure_retains_original_hresult_and_cancellation_behavior() {
+        for hresult in [
+            ERROR_REVISION_MISMATCH.to_hresult(),
+            HRESULT(0xE000_0225_u32 as i32),
+        ] {
+            let mut control = test_control();
+            let cancelled = Cell::new(false);
+            let error = control.finish_failed_exchange_named(
+                test_request(),
+                Error::from_hresult(hresult),
+                operation_name(crate::vad::IOCTL_QUERY),
+                |_| Err(Error::from_hresult(hresult)),
+                |_| cancelled.set(true),
+            );
+            assert!(
+                matches!(error, ClientError::Windows { operation: "QUERY GetOverlappedResultEx(VAD)", source } if source.code() == hresult)
+            );
+            assert_eq!(
+                cancelled.get(),
+                hresult != ERROR_REVISION_MISMATCH.to_hresult()
+            );
+            assert_eq!(control.poisoned, cancelled.get());
+            assert!(control.pending.is_none());
+        }
+    }
 
     fn test_event() -> OwnedHandle {
         // SAFETY: an unnamed event is owned only by this test, never a driver.
