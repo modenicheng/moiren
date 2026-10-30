@@ -322,3 +322,148 @@ derived marker analysis stays beside the archive. No remote deletion occurs.
 The full S1-S3 objective, Shared waveform localization and independent
 calibrated physical latency remain open; this checkpoint does not establish a
 VAD/Process winner, a lower safe default or stable physical output below10ms.
+
+## Production Process measurement readiness
+
+The real app `monitor` path exposes a main-integration regression not covered
+by an isolated transport probe. Its display observation is throttled to1Hz.
+`resume-app-main-process` starts collection from Running, then at1001ms tries
+to admit the still-incomplete startup snapshot and exits1 for missing packet
+delivery. A separate unchanged2-second measurement completes replacement to
+generation2 and3001ms of requested execution. The first launch wrapper also
+incorrectly feeds INFO-prefixed stdout to `ConvertFrom-Json`; that wrapper
+failure is preserved separately from the valid nested JSON and native refusal.
+Neither the longer successful run nor a parser repair erases the original
+production readiness defect.
+
+Commits `014f8bd` and `cbe551d` separate two boundaries:
+
+- CLI waits for matching Running native ownership, within its existing fixed
+  startup/collection deadline. Missing samples do not renew the deadline.
+- Measured service Apply reads the real native registry once after preflight,
+  outside the outer host mutex, rather than admitting from the display cache.
+  The fresh sample must match running owner, node and Process identity; final
+  actual-host recheck remains. No cached DTO fallback, observation timestamp
+  rewrite or change to1Hz display publication is introduced.
+
+Regression cases first fail with fresh-good/cached-unknown and
+fresh-unknown/cached-good disagreement, then pass. They also cover wrong native
+owner, changed Process identity, malformed histories, zero reads on preflight
+refusal and exactly one read on successful admission. Test-only readers do not
+replace the production registry path. Commit `955ccbe` retains complete invalid
+evidence as a hard refusal.
+
+The target release at `cbe551d` is deployed side by side as
+`moiren-app-cbe551d.exe`,33439744bytes, SHA-256
+`DE832F4EDE1B64BFCEE5CB280C888FD90FEFDFAC32378015234B499FA078F4DD`.
+Two exact1-second-measurement native repetitions then distinguish a successful
+generation2 replacement /3000ms run from another startup prefix containing
+only one producer event. Both stop and join owned processes normally; no
+volume, mute, default-role, installed-driver or buffer changes occur.
+
+Commit `95dbf6e` makes missing observation, insufficient history and absent
+overlap typed CLI readiness waits, still under the original deadline. Review
+then catches a first-error ordering defect: an insufficient producer history
+can conceal a saturated consumer, malformed short history or delivery clock
+fault. This candidate is built remotely but deliberately not deployed.
+
+Commits `7dc6123` and `854e8a9` validate every present component and every
+independently checkable delivery/producer relationship before returning a
+readiness error. A genuine0/1-event prefix must first have valid counts,
+sequence, frames and clocks. Missing peers do not hide known clock,
+saturation, arithmetic or shape faults; no evidence is synthesized. Existing
+budget thresholds, audio scheduling, RT behavior and display cadence remain
+unchanged. CLI fixtures now distinguish genuinely missing delivery in both
+mirrored fields from an inconsistent DTO, and a coherent short producer from
+a truncated malformed history.
+
+Behavioral RED evidence retains31passing/5failing library cases and a separate
+cross-supply0passing/1failing case. Final focused library tests pass37/37;
+the CLI mixed-fault test first fails, then all13 CLI measurement tests pass.
+An intermediate fixture-only failure is retained rather than counted as a
+production regression. Fresh full host verification at `854e8a9` passes629
+audio library tests /2ignored,488 app library tests /2ignored and532 probe
+tests. Strict app/audio all-target Clippy, workspace fmt and diff checks pass.
+
+The native functional configuration remains `ProcessLoopback -> unity Bus ->
+DAWN`,48kHz stereo, Engine256, Shared output default480 period /1056 buffer,
+explicit measured target4096 /capacity16384 /jitter96,1second measurement and
+3seconds requested execution. The owned low-amplitude changing-marker source
+also renders to the same pinned DAWN device. This is a finite functional Apply
+smoke, not a low-latency preset, independent physical reference, recorded
+waveform or full-run/post-join quality accounting. Its latest1Hz counters must
+not be described as final joined counters or stable sub-10ms output.
+
+Historical verified archives retain all original failures and successes:
+
+| Archive | Bytes | Files / entries | SHA-256 |
+| --- | ---: | ---: | --- |
+| `native-resume-app-main-20261030.zip` |80944|55 /56|`D22BBE3A42DD8E1DEA723C9410DF30C9EA33334BD94BE35E32545141F2FA6000`|
+| `native-measured-fresh-20261030.zip` |77175|45 /46|`9FD6F4456943F858E4EB231E949215A390665D368E8C7CFD538F9D1175000AAE`|
+
+Both archives have exact-name and per-file length/SHA verification on the host.
+Their raw INFO-prefixed stdout is preserved; extracted monitor JSON is derived
+host-side, not falsely listed in the original archive manifest. In the second
+archive, the source audit is already `95dbf6e`, while the actually deployed
+`cbe551d` app identity is in `build/deployment.json`; the audit's older
+`DeployedAppHash` field names the retained `a29b13a` app, not the active test
+binary.
+
+On2026-10-31 the new FRP connection again verifies the original host key,
+unchanged09:50:49 boot, Running driver and no build/audio processes before
+the next build. The one retained System1001 event is the already-recorded
+2026-10-30 09:51:04 bugcheck, not a new crash. D: has253715595264bytes free;
+no cache or remote evidence cleanup is needed. Fresh authenticated fetch
+confirms main remains `c719546`, already an ancestor of this branch.
+
+The complete host `gpui-test` command is rerun serially at `854e8a9`:581
+library plus62 integration tests pass, zero failures and4 ignored across all
+targets. The previous full run at `95dbf6e` retains an unrelated compact-mixer
+2-second UI timeout (580passed/1failed/3ignored); that exact test passes alone,
+and the final serial full run passes without a threshold or production UI
+change. It is not relabeled as a successful earlier run.
+
+The hash-verified clean-source bundle for `854e8a9` builds on the target using
+the existing cache, jobs2 and finite20-minute stage deadlines. Target release
+audio629 /2ignored and app488 /2ignored pass, followed by a successful release
+app build. It deploys side by side as `moiren-app-854e8a9.exe`,33460224bytes,
+SHA-256 `3EAAFE820E689F524DD10963541CFA568709CF1FDC16866F3A2C8CBC1C3492C1`.
+Only this corrected candidate is deployed; the superseded `95dbf6e` build is
+not. Existing app/probe files and installed driver bytes remain unchanged.
+Native acquisition starts only after all remote build processes exit.
+
+Three corrected real-app repetitions all exit0, confirm generation2, complete
+the requested run and cleanup, and leave no owned process. Requested budgets
+and1-second measurement stay unchanged:
+
+| Run suffix | Measurement ms | Running ms | Measured max gap frames | Latest captured/written frames | Later gap-bound violations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `final-process1` |1001|3002|532|96960 /96960|4|
+| `final-process2` |1012|3002|520|96960 /96960|15|
+| `final-process3` |1004|3000|547|96480 /96480|0|
+
+All latest displayed bridge snapshots have zero dropped/silent/underrun frames,
+discontinuities and resets, with5888 priming /224 prime-discarded frames. The
+first two also contain later inter-delivery gap-bound violations4/15; their
+later maxima112538/114734 in100ns units exceed the measured532/520-frame
+declarations. Run3's maximum113822 remains within its547-frame declaration.
+These violations remain visible: the finite measured prefix does not predict
+future scheduling, and successful Apply/exit is not a quality pass. No threshold,
+buffer or counter is weakened or reset to manufacture acceptance. No waveform
+or independent physical reference is recorded; every report says
+`qualified:false`.
+
+All three source processes exit0; render volume/mute and default roles are
+unchanged. Final audit retains the same boot, Running SYS hash, original
+rollback binaries, only the root present/OK and no owned build/audio processes.
+No driver reinstall or Cargo clean occurs. `native-measured-final-20261031.zip`
+retains66files /67entries,2378119 uncompressed bytes,165471 archive bytes,
+SHA-256 `039EC2A0A69DB7AA492B4B79BE0A35FA540A91BE2A58BA83868FEEBE08BEDF49`.
+The host verifies exact entry names and every length/SHA before extraction;
+all three derived JSON reports stay beside, not inside, the raw archive.
+
+The earlier batched push `9aaf9a7` passes all20 CI jobs in run41072113481.
+That result belongs to its exact older head and does not verify the newer
+readiness/fresh-sampling commits. PR26 remains draft/open; it is not merged.
+Full S1-S3 acceptance, Shared waveform localization, matched physical routes
+and calibrated stable sub-10ms output remain open.
