@@ -280,6 +280,54 @@ fn measured_cli_waits_for_optional_samples_without_renewing_collection() {
 }
 
 #[test]
+fn measured_cli_complete_but_invalid_evidence_is_not_retried() {
+    for fault in 0..4 {
+        let (mut snapshot, mut report, _) = fixture();
+        let node = snapshot
+            .graph
+            .node_of_kind(NodeKind::Source)
+            .unwrap()
+            .0
+            .id();
+        let mut observed = crate::service::measured_process::tests::observation(node);
+        match fault {
+            0 => observed.producer.as_mut().unwrap().saturated = true,
+            1 => observed.producer.as_mut().unwrap().unavailable_clocks = 1,
+            2 => observed.producer.as_mut().unwrap().events[0].sequence += 1,
+            3 => observed.process.creation_time_100ns += 1,
+            _ => unreachable!(),
+        }
+        let native = snapshot.native_observations.as_mut().unwrap();
+        native.observation.owner_generation = observed.owner_generation;
+        native.observation.process_delivery = vec![observed];
+        let (handle, mailbox) =
+            crate::service::ServiceMailbox::with_snapshot(std::thread::current(), snapshot.clone());
+        let since = Instant::now() - Duration::from_millis(1001);
+        let mut measurement = Measurement {
+            seconds: Some(1),
+            target: Some((2048, 256, 0)),
+            window_policy: None,
+            stage: Stage::Collecting {
+                since,
+                generation: snapshot.generation.0,
+                revision: snapshot.graph.candidate_revision,
+                native: 7,
+            },
+        };
+        assert!(
+            measurement
+                .observe(&snapshot, &handle, &mut report, Instant::now(), 30000)
+                .is_err(),
+            "fault {fault}"
+        );
+        assert!(
+            matches!(measurement.stage, Stage::Collecting { since: anchor, .. } if anchor == since)
+        );
+        assert!(mailbox.try_request().is_none());
+    }
+}
+
+#[test]
 fn measured_cli_missing_samples_expire_at_the_original_deadline() {
     let (mut snapshot, mut report, _) = fixture();
     let node = snapshot
