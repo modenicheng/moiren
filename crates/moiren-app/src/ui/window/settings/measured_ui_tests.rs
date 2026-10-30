@@ -281,6 +281,7 @@ impl ServiceDriver for MeasuredDriver {
                 generation: evidence.origin().generation,
                 state: super::measured::window_tests::cleanup_state(),
                 process_trace: Some(Arc::new(evidence)),
+                final_observations: None,
             });
             let owner = context.core.owner_generation().unwrap();
             context.core.stop().unwrap();

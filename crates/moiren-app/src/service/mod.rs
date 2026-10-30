@@ -696,6 +696,8 @@ mod snapshot_publish_tests {
             },
             #[cfg(windows)]
             process_trace: None,
+            #[cfg(windows)]
+            final_observations: None,
         });
         assert_published_change(initial, previous.clone());
         for field in 0..2 {

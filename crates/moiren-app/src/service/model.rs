@@ -209,16 +209,36 @@ pub struct SessionCleanupObservation {
     pub state: moiren_engine::host::HostSnapshot,
     #[cfg(windows)]
     pub process_trace: Option<Arc<super::ProcessTraceSessionEvidence>>,
+    #[cfg(windows)]
+    pub final_observations: Option<Arc<JoinedSessionObservations>>,
+}
+
+/// Read from retained counter handles only after the corresponding host joined.
+/// Missing handles stay unknown; these are not the throttled UI snapshots.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinedSessionObservations {
+    pub graph_revision: u64,
+    pub host_revision: u64,
+    pub native: Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>,
+    pub backend: Option<moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot>,
 }
 // Retained trace evidence is immutable and Arc-backed; comparing identity
 // avoids walking its bounded packet history on every idle publication.
 impl PartialEq for SessionCleanupObservation {
     fn eq(&self, other: &Self) -> bool {
         #[cfg(windows)]
-        match (&self.process_trace, &other.process_trace) {
-            (None, None) => {}
-            (Some(left), Some(right)) if Arc::ptr_eq(left, right) => {}
-            _ => return false,
+        {
+            match (&self.final_observations, &other.final_observations) {
+                (None, None) => {}
+                (Some(left), Some(right)) if Arc::ptr_eq(left, right) => {}
+                _ => return false,
+            }
+            match (&self.process_trace, &other.process_trace) {
+                (None, None) => {}
+                (Some(left), Some(right)) if Arc::ptr_eq(left, right) => {}
+                _ => return false,
+            }
         }
         self.generation == other.generation && self.state == other.state
     }

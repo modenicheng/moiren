@@ -81,6 +81,17 @@ fn supervised_real_service_confirms_both_precisions_and_reaps_owner() {
         assert!(report.cleanup_complete, "{report:?}");
         assert_eq!(report.failure, None);
         assert!(!report.qualified);
+        assert!(
+            serde_json::to_value(&report)
+                .unwrap()
+                .get("final_after_owner_join")
+                .is_some()
+        );
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["final_after_owner_join"],
+            serde_json::Value::Null,
+            "a fake backend without retained native evidence must stay unknown"
+        );
         assert_eq!(
             report.confirmed_active_audio.unwrap().processing.precision,
             precision
@@ -92,6 +103,191 @@ fn supervised_real_service_confirms_both_precisions_and_reaps_owner() {
         assert_eq!(state.starts.load(Ordering::SeqCst), 1);
         assert_eq!(state.stops.load(Ordering::SeqCst), 1);
     }
+}
+
+#[cfg(windows)]
+fn joined_fixture() -> (MonitorReport, crate::service::SessionCleanupObservation) {
+    use moiren_engine::host::*;
+    use moiren_windows_audio::{
+        engine_backend::{
+            NativeObservationSnapshot, ProfessionalObservationSnapshot,
+            ProfessionalStreamObservation,
+        },
+        native::NativeStreamInfo,
+    };
+    let backend = FakeBackend::default();
+    let mut report = run_with_driver(
+        options(),
+        source(),
+        ManagedDriver::new(move |_| Ok(Box::new(backend.clone()))),
+        Duration::from_millis(20),
+    )
+    .unwrap();
+    report.confirmed_generation = Some(2);
+    report.confirmed_native_generation = Some(1);
+    let native = NativeObservationSnapshot {
+        owner_generation: 1,
+        running: false,
+        streams: Vec::new(),
+        bridges: Vec::new(),
+        boundary_probes: Vec::new(),
+        render_padding: Vec::new(),
+        process_delivery: Vec::new(),
+        virtual_clock: None,
+    };
+    let mut graph = LogicalGraph::default();
+    let node = graph.create_node(NodeKind::Sink, 2).unwrap();
+    let backend = ProfessionalObservationSnapshot {
+        owner_generation: 1,
+        running: false,
+        streams: vec![ProfessionalStreamObservation {
+            node,
+            input: false,
+            master: true,
+            requested: Default::default(),
+            actual: NativeStreamInfo {
+                sample_rate: 48000,
+                format: crate::service::SampleFormat::Float32,
+                channels: 2,
+                buffer_frames: 256,
+            },
+            dropped_frames: 3,
+            silent_frames: 5,
+            native_callbacks: 7,
+            native_wait_wakes: 11,
+            native_wait_timeouts: 13,
+            native_written_frames: 17024,
+            native_dropped_frames: 17,
+            native_silent_frames: 19,
+            native_capture_quality: None,
+            driver_latency: None,
+        }],
+    };
+    let cleanup = crate::service::SessionCleanupObservation {
+        generation: crate::service::SessionGeneration(2),
+        state: HostSnapshot {
+            host: HostState::Closed,
+            execution: ExecutionState::Dormant,
+            desired_revision: 1,
+            active_revision: None,
+            plan_revision: None,
+            owner_generation: 1,
+            resource_generation: 1,
+            timeline: None,
+            update: UpdateState::Idle,
+            fault: None,
+            cleanup_error: None,
+        },
+        process_trace: None,
+        final_observations: Some(Arc::new(crate::service::JoinedSessionObservations {
+            graph_revision: report.confirmed_revision.unwrap(),
+            host_revision: 1,
+            native: Some(native),
+            backend: Some(backend),
+        })),
+    };
+    (report, cleanup)
+}
+
+#[cfg(windows)]
+#[test]
+fn joined_tally_serializes_exact_counters_and_identity_without_relabelling_live_sample() {
+    let (mut report, cleanup) = joined_fixture();
+    let mut running = cleanup
+        .final_observations
+        .as_ref()
+        .unwrap()
+        .native
+        .clone()
+        .unwrap();
+    running.running = true;
+    report.last_running_native = Some(running.clone());
+    report.capture_joined_tally(&cleanup);
+    let json = serde_json::to_value(&report).unwrap();
+    let tally = &json["final_after_owner_join"];
+    assert_eq!(tally["observation_scope"], "final_after_owner_join");
+    assert_eq!(tally["app_generation"], 2);
+    assert_eq!(tally["native_owner_generation"], 1);
+    assert_eq!(tally["graph_revision"], report.confirmed_revision.unwrap());
+    assert_eq!(tally["host_revision"], 1);
+    assert_eq!(tally["native"]["running"], false);
+    let stream = &tally["backend"]["streams"][0];
+    for (key, value) in [
+        ("native_written_frames", 17024),
+        ("native_wait_wakes", 11),
+        ("native_wait_timeouts", 13),
+        ("native_callbacks", 7),
+        ("dropped_frames", 3),
+        ("silent_frames", 5),
+        ("native_dropped_frames", 17),
+        ("native_silent_frames", 19),
+    ] {
+        assert_eq!(stream[key], value, "{key}");
+    }
+    assert!(stream["native_capture_quality"].is_null());
+    assert!(stream["driver_latency"].is_null());
+    assert_eq!(report.last_running_native, Some(running));
+    assert!(!report.qualified);
+}
+
+#[cfg(windows)]
+#[test]
+fn joined_tally_rejects_stale_identity_or_still_running_evidence() {
+    for field in 0..9 {
+        let (mut report, mut cleanup) = joined_fixture();
+        let joined = Arc::make_mut(cleanup.final_observations.as_mut().unwrap());
+        match field {
+            0 => cleanup.generation.0 += 1,
+            1 => cleanup.state.owner_generation += 1,
+            2 => joined.graph_revision += 1,
+            3 => joined.host_revision += 1,
+            4 => joined.native.as_mut().unwrap().owner_generation += 1,
+            5 => joined.backend.as_mut().unwrap().owner_generation += 1,
+            6 => joined.native.as_mut().unwrap().running = true,
+            7 => joined.backend.as_mut().unwrap().running = true,
+            8 => cleanup.state.host = moiren_engine::host::HostState::Open,
+            _ => unreachable!(),
+        }
+        report.capture_joined_tally(&cleanup);
+        assert!(report.final_after_owner_join.is_none(), "field {field}");
+        assert!(!report.cleanup_complete, "field {field}");
+        assert!(
+            report
+                .failure
+                .unwrap()
+                .contains("identity or closure mismatch")
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn joined_tally_preserves_failure_and_unknown_counters_without_live_fallback() {
+    let (mut report, mut cleanup) = joined_fixture();
+    report.failure = Some("earlier terminal failure".into());
+    cleanup.state.cleanup_error = Some(moiren_engine::host::BackendError::Failed(
+        "late stop error".into(),
+    ));
+    report.capture_joined_tally(&cleanup);
+    assert_eq!(report.failure.as_deref(), Some("earlier terminal failure"));
+    assert!(
+        report.final_after_owner_join.as_ref().unwrap()["cleanup_error"]
+            .as_str()
+            .unwrap()
+            .contains("late stop error")
+    );
+    let joined = Arc::make_mut(cleanup.final_observations.as_mut().unwrap());
+    report.last_running_native = joined.native.clone();
+    joined.native = None;
+    report.capture_joined_tally(&cleanup);
+    assert!(report.final_after_owner_join.as_ref().unwrap()["native"].is_null());
+    Arc::make_mut(cleanup.final_observations.as_mut().unwrap()).backend = None;
+    report.capture_joined_tally(&cleanup);
+    assert!(report.final_after_owner_join.is_none());
+    cleanup.final_observations = None;
+    report.capture_joined_tally(&cleanup);
+    assert!(report.final_after_owner_join.is_none());
+    assert!(report.last_running_native.is_some());
 }
 
 #[test]

@@ -11,6 +11,7 @@ fn fixture() -> (AppSnapshot, MeasuredDraft, Arc<ProcessTraceSessionEvidence>) {
         generation: evidence.origin().generation,
         state: cleanup_state(),
         process_trace: Some(evidence.clone()),
+        final_observations: None,
     });
     (snapshot, draft, evidence)
 }

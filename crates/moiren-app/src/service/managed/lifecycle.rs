@@ -4,6 +4,27 @@ impl ManagedDriver {
     pub(super) fn retire(&mut self, c: &mut ServiceContext) {
         #[cfg(windows)]
         let process_trace = self.retiring_process_trace(c);
+        // Pin the exact sessions before clearing the live registries. Handles
+        // retain counters, not audio resources; sample only after drop(host).
+        #[cfg(windows)]
+        let native = self.native_observations.as_ref().and_then(|registry| {
+            registry
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|value| value.retain_session())
+        });
+        #[cfg(windows)]
+        let backend = self
+            .professional_observations
+            .as_ref()
+            .and_then(|registry| {
+                registry
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.retain_session())
+            });
         self.exports_runtime.revoke();
         let generation = c.core.generation();
         log::info!(
@@ -34,6 +55,8 @@ impl ManagedDriver {
         self.edits.clear();
         self.clear_parameters(c);
         if let Some(owner) = self.owner.take() {
+            #[cfg(windows)]
+            let (host_revision, graph_revision) = owner.active_revision;
             let Owner {
                 host,
                 observer,
@@ -61,6 +84,17 @@ impl ManagedDriver {
                     state: observer.read().state,
                     #[cfg(windows)]
                     process_trace: None,
+                    #[cfg(windows)]
+                    final_observations: if native.is_some() || backend.is_some() {
+                        Some(Arc::new(JoinedSessionObservations {
+                            graph_revision,
+                            host_revision,
+                            native: native.map(|handle| handle.snapshot()),
+                            backend: backend.map(|handle| handle.snapshot()),
+                        }))
+                    } else {
+                        None
+                    },
                 };
                 #[cfg(windows)]
                 let cleanup = SessionCleanupObservation {

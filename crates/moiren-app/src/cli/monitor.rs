@@ -60,7 +60,100 @@ pub(super) struct MonitorReport {
     #[cfg(windows)]
     pub last_running_native:
         Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>,
+    /// Separate post-join evidence; null when no retained counters are available.
+    pub final_after_owner_join: Option<serde_json::Value>,
     pub failure: Option<String>,
+}
+
+#[cfg(windows)]
+impl MonitorReport {
+    fn capture_joined_tally(&mut self, cleanup: &crate::service::SessionCleanupObservation) {
+        use moiren_engine::host::HostState;
+        self.final_after_owner_join = None;
+        let Some(joined) = &cleanup.final_observations else {
+            return;
+        };
+        let state = &cleanup.state;
+        let owner = state.owner_generation;
+        let valid = state.host == HostState::Closed
+            && self
+                .confirmed_generation
+                .is_none_or(|value| value == cleanup.generation.0)
+            && self
+                .confirmed_revision
+                .is_none_or(|value| value == joined.graph_revision)
+            && self
+                .confirmed_native_generation
+                .is_none_or(|value| value == owner)
+            && state.desired_revision == joined.host_revision
+            && joined
+                .native
+                .as_ref()
+                .is_none_or(|value| !value.running && value.owner_generation == owner)
+            && joined
+                .backend
+                .as_ref()
+                .is_none_or(|value| !value.running && value.owner_generation == owner);
+        if !valid {
+            self.cleanup_complete = false;
+            self.failure.get_or_insert_with(|| {
+                "monitor final observation identity or closure mismatch".into()
+            });
+            return;
+        }
+        if joined.native.is_none() && joined.backend.is_none() {
+            return;
+        }
+        let backend = joined.backend.as_ref().map(|value| {
+            serde_json::json!({
+                "owner_generation": value.owner_generation,
+                "running": value.running,
+                "streams": value.streams.iter().map(|stream| serde_json::json!({
+                    "node": format!("{:?}", stream.node),
+                    "input": stream.input,
+                    "master": stream.master,
+                    "requested": {
+                        "backend": stream.requested.backend,
+                        "mode": stream.requested.mode,
+                        "hardware_sample_rate": stream.requested.hardware_sample_rate,
+                        "sample_format": stream.requested.sample_format,
+                        "period_frames": stream.requested.period_frames,
+                    },
+                    "actual": {
+                        "sample_rate": stream.actual.sample_rate,
+                        "format": stream.actual.format,
+                        "channels": stream.actual.channels,
+                        "buffer_frames": stream.actual.buffer_frames,
+                    },
+                    "dropped_frames": stream.dropped_frames,
+                    "silent_frames": stream.silent_frames,
+                    "native_callbacks": stream.native_callbacks,
+                    "native_wait_wakes": stream.native_wait_wakes,
+                    "native_wait_timeouts": stream.native_wait_timeouts,
+                    "native_written_frames": stream.native_written_frames,
+                    "native_dropped_frames": stream.native_dropped_frames,
+                    "native_silent_frames": stream.native_silent_frames,
+                    "native_capture_quality": stream.native_capture_quality,
+                    "driver_latency": stream.driver_latency.map(|latency| serde_json::json!({
+                        "input_frames": latency.input_frames,
+                        "output_frames": latency.output_frames,
+                    })),
+                })).collect::<Vec<_>>(),
+            })
+        });
+        self.final_after_owner_join = Some(serde_json::json!({
+            "observation_scope": "final_after_owner_join",
+            "app_generation": cleanup.generation.0,
+            "graph_revision": joined.graph_revision,
+            "host_revision": joined.host_revision,
+            "native_owner_generation": owner,
+            "resource_generation": state.resource_generation,
+            "cleanup_error": state.cleanup_error.as_ref().map(ToString::to_string),
+            "fault": state.fault.as_ref().map(|value| format!("{value:?}")),
+            "native": joined.native,
+            "backend": backend,
+        }));
+    }
 }
 
 #[cfg(any(windows, test))]
@@ -269,7 +362,7 @@ fn run_with_driver(
         unreachable!("validated Process context")
     };
     let mut report = MonitorReport {
-        schema_version: 1,
+        schema_version: 2,
         qualified: false,
         route: "Process Loopback -> Bus -> physical render",
         process_pid: pid,
@@ -295,6 +388,7 @@ fn run_with_driver(
         cleanup_complete: false,
         #[cfg(windows)]
         last_running_native: None,
+        final_after_owner_join: None,
         failure: None,
     };
     let runtime = ServiceRuntime::spawn_with_context(driver, context)?;
@@ -432,6 +526,8 @@ fn run_with_driver(
     // final cleanup between the last poll and the thread-finished observation.
     if let Some(snapshot) = handle.try_snapshot() {
         if let Some(cleanup) = &snapshot.last_cleanup {
+            #[cfg(windows)]
+            report.capture_joined_tally(cleanup);
             let state = &cleanup.state;
             if state.host != moiren_engine::host::HostState::Closed || state.cleanup_error.is_some()
             {

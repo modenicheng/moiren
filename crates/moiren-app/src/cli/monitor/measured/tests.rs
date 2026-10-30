@@ -99,6 +99,7 @@ fn fixture() -> (AppSnapshot, MonitorReport, MeasuredProcessRequest) {
         run_complete: false,
         cleanup_complete: false,
         last_running_native: None,
+        final_after_owner_join: None,
         failure: None,
     };
     (snapshot, report, request)

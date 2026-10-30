@@ -1,5 +1,174 @@
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn joined_tally_retains_real_backend_handles_after_live_registry_clear_and_replacement() {
+    use moiren_engine::boundary::{AudioReader, audio_bridge};
+    use moiren_windows_audio::{
+        engine_backend::ProfessionalBackend,
+        virtual_owner::{
+            BoundaryProbe, PreparedVirtualMicrophone, PreparedVirtualPlayback,
+            VirtualBoundaryProvider, VirtualBoundaryRequest, VirtualResourceSession,
+        },
+    };
+    use std::sync::{Mutex, atomic::AtomicU64};
+
+    #[derive(Default)]
+    struct Provider(Mutex<Vec<AudioReader<f32>>>);
+    struct Session;
+    impl VirtualResourceSession for Session {
+        fn activate(&self) -> Result<(), host::BackendError> {
+            Ok(())
+        }
+        fn cancel(&self) {}
+        fn status(&self) -> host::OwnerStatus {
+            host::OwnerStatus::Running
+        }
+        fn stop_and_join(self: Box<Self>) -> Result<(), host::BackendError> {
+            Ok(())
+        }
+    }
+    impl VirtualBoundaryProvider for Provider {
+        fn prepare_playback(
+            &self,
+            _: VirtualBoundaryRequest,
+            _: &host::CancellationToken,
+        ) -> Result<PreparedVirtualPlayback, host::BackendError> {
+            unreachable!()
+        }
+        fn prepare_microphone(
+            &self,
+            _: VirtualBoundaryRequest,
+            _: &host::CancellationToken,
+        ) -> Result<PreparedVirtualMicrophone, host::BackendError> {
+            let (writer, reader) = audio_bridge(2, 16384, 1 << 20).unwrap();
+            self.0.lock().unwrap().push(reader);
+            Ok(PreparedVirtualMicrophone {
+                carrier: writer,
+                reset_epoch: Arc::new(AtomicU64::new(0)),
+                producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                probe: Arc::new(BoundaryProbe::default()),
+                session: Box::new(Session),
+            })
+        }
+    }
+    let mut rig = Rig::new();
+    let native = Arc::new(Mutex::new(None));
+    let professional = Arc::new(Mutex::new(None));
+    let native_publisher = native.clone();
+    let professional_publisher = professional.clone();
+    rig.driver.factory = Arc::new(move |_, _, _, _| {
+        let backend = ProfessionalBackend::<f32>::new()
+            .unwrap()
+            .with_virtual_provider(Arc::new(Provider::default()));
+        *native_publisher.lock().unwrap() = Some(backend.native_observations());
+        *professional_publisher.lock().unwrap() = Some(backend.observations());
+        Ok(Box::new(backend))
+    });
+    rig.driver.native_observations = Some(native);
+    rig.driver.professional_observations = Some(professional);
+    rig.driver.exports_runtime.adapter = Some(Arc::new(
+        super::super::super::exports::runtime::tests::FakeAdapter::default(),
+    ));
+    let sink = rig.node(NodeKind::Sink);
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(vec![
+        ExportIntent {
+            endpoint_id: moiren_engine::node::VirtualEndpointId::from_bytes([0x71; 16]),
+            direction: ExportDirection::Microphone,
+            name: "Joined tally test".into(),
+            channels: 2,
+            enabled: true,
+            binding: Some(sink),
+        },
+    ])));
+    rig.start();
+    rig.wait(|r| {
+        r.c.native_observations
+            .as_ref()
+            .is_some_and(|v| v.observation.virtual_clock.is_some())
+    });
+    let live = rig
+        .c
+        .native_observations
+        .as_ref()
+        .unwrap()
+        .observation
+        .clone();
+    let native_handle = rig
+        .driver
+        .native_observations
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .retain_session()
+        .unwrap();
+    let backend_handle = rig
+        .driver
+        .professional_observations
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .retain_session()
+        .unwrap();
+    let first = rig.c.core.generation();
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.driver.cleaning == 0);
+    let cleanup = rig.c.last_cleanup.as_ref().unwrap();
+    assert_eq!(cleanup.generation, first);
+    assert_eq!(cleanup.state.host, host::HostState::Closed);
+    let joined = cleanup
+        .final_observations
+        .as_ref()
+        .expect("real post-join counters")
+        .clone();
+    let final_native = joined.native.as_ref().unwrap();
+    assert!(!final_native.running);
+    assert_eq!(
+        final_native.owner_generation,
+        cleanup.state.owner_generation
+    );
+    assert_eq!(*final_native, native_handle.snapshot());
+    assert_eq!(joined.backend.as_ref().unwrap(), &backend_handle.snapshot());
+    assert!(
+        final_native.virtual_clock.unwrap().counters.rendered_frames
+            >= live.virtual_clock.unwrap().counters.rendered_frames
+    );
+    assert!(!joined.backend.as_ref().unwrap().running);
+    assert!(rig.c.native_observations.is_none());
+    assert!(rig.c.professional_observations.is_none());
+    rig.start();
+    assert_ne!(rig.c.core.generation(), first);
+    assert_eq!(
+        rig.c
+            .last_cleanup
+            .as_ref()
+            .unwrap()
+            .final_observations
+            .as_ref(),
+        Some(&joined)
+    );
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.driver.cleaning == 0);
+    assert_ne!(rig.c.last_cleanup.as_ref().unwrap().generation, first);
+    assert!(!Arc::ptr_eq(
+        rig.c
+            .last_cleanup
+            .as_ref()
+            .unwrap()
+            .final_observations
+            .as_ref()
+            .unwrap(),
+        &joined
+    ));
+}
+
 fn expert() -> TransportLatencySettings {
     TransportLatencySettings {
         process: Some(ExpertInputBuffer::default()),
