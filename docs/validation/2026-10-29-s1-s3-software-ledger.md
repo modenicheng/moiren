@@ -12,6 +12,14 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [source-readiness/lower-budget receipt](2026-10-30-vad-source-readiness.md)
+retains an old-probe startup drop, a bounded pre-source accepted-READ observation
+and three repaired repetitions. Exclusive256 / Engine32 / input-target768 admits
+exactly and completes35seconds without recorded active loss/reset/xrun counters;
+64/128 output requests explicitly refuse DAWN's144-frame minimum. No PCM or
+calibrated reference is acquired by those diagnostics. The pure-virtual microphone
+route uses a separate clock/recovery budget and is not qualified by this result.
+
 The [production VAD app PCM follow-up](2026-10-30-dawn-vad-app-pcm.md) closes
 the missing actual VAD -> Bus -> DAWN app-output recording. Separate source
 and app process-tree captures each retain35 markers, zero artifact loss and
@@ -232,7 +240,9 @@ desktop and CLI. The separately selected [desktop live-window controls](2026-10-
 are now implemented in `e195bfe`, with fresh full app/Clippy verification and
 independent review and verified deployment; the later explicit4096 diagnostic
 has native CLI/service activation evidence, while2048 still refuses and native
-desktop-click acceptance remains unproved. Bounded
+desktop-click acceptance was subsequently verified in the DAWN receipt linked
+above, including exact requested/active4096 confirmation and replacement-owner
+retirement; smaller-target delivery and physical qualification remain open. Bounded
 live-window service/CLI
 admission, the live-prefix core/native API and audited probe repair have
 separate software receipts below. Checkpointed long windows, combining
