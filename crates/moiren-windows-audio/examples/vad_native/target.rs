@@ -50,6 +50,20 @@ fn require_case_signal(mode: NativeMode, seen: &Observation, minimum: u64) -> an
     seen.require_signal(minimum)
 }
 
+fn finish_pcm<T>(
+    mode: NativeMode,
+    outcome: anyhow::Result<T>,
+    revoke: impl FnOnce() -> anyhow::Result<()>,
+    drain: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<T> {
+    if mode.is_ac_diagnostic() {
+        let outcome = validation::retain_cleanup_failure(outcome, "gate revoke", revoke());
+        validation::retain_cleanup_failure(outcome, "PCM drain", drain())
+    } else {
+        validation::revoke_and_drain(outcome, revoke, drain)
+    }
+}
+
 fn includes_endpoint(mode: NativeMode, intent: Intent, channels: Channels) -> bool {
     !mode.is_shared_capture() || (intent == Intent::Microphone && channels == Channels::Stereo)
 }
@@ -720,7 +734,8 @@ fn exercise_case_inner(
         let mut pcm = match control.pcm_owner(opened) {
             Ok(pcm) => pcm,
             Err(error) => {
-                return validation::revoke_and_drain(
+                return finish_pcm(
+                    mode,
                     Err(error.into()),
                     || revoke(control, opened),
                     || Ok(()),
@@ -823,7 +838,8 @@ fn exercise_case_inner(
         let (mut pending, mut progress, running, bytes, mut decoded, submit_origin) = match setup {
             Ok(setup) => setup,
             Err(error) => {
-                return validation::revoke_and_drain(
+                return finish_pcm(
+                    mode,
                     Err(error),
                     || revoke(control, opened),
                     || Ok(pcm.shutdown(Duration::from_secs(5))?),
@@ -882,26 +898,12 @@ fn exercise_case_inner(
         );
         // Cut admission first, then drain every outstanding direct request before
         // closing its native stream, including phase and revocation failures.
-        let outcome = if mode.is_ac_diagnostic() {
-            // A deliberately refused diagnostic is still responsible for
-            // reporting revocation and cancellation failures independently.
-            let outcome = validation::retain_cleanup_failure(
-                outcome,
-                "gate revoke",
-                revoke(control, running),
-            );
-            validation::retain_cleanup_failure(
-                outcome,
-                "PCM drain",
-                pcm.shutdown(Duration::from_secs(5)).map_err(Into::into),
-            )
-        } else {
-            validation::revoke_and_drain(
-                outcome,
-                || revoke(control, running),
-                || Ok(pcm.shutdown(Duration::from_secs(5))?),
-            )
-        };
+        let outcome = finish_pcm(
+            mode,
+            outcome,
+            || revoke(control, running),
+            || Ok(pcm.shutdown(Duration::from_secs(5))?),
+        );
         drop(pcm);
         let position = outcome?;
         let after = if endpoint.intent() == Intent::Microphone {
@@ -1069,6 +1071,45 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn ac_setup_and_signal_failures_retain_revoke_and_drain_in_order() {
+        for mode in [
+            NativeMode::SharedAcDiagnostic,
+            NativeMode::SharedRawAcDiagnostic,
+        ] {
+            for stage in [
+                "PCM owner",
+                "prestart WRITE",
+                "native Start",
+                "running QUERY",
+                "signal diagnostic",
+            ] {
+                let calls = std::cell::RefCell::new(Vec::new());
+                let error = finish_pcm::<()>(
+                    mode,
+                    Err(anyhow::anyhow!("{stage} failed")),
+                    || {
+                        calls.borrow_mut().push("revoke");
+                        anyhow::bail!("revoke failed")
+                    },
+                    || {
+                        calls.borrow_mut().push("drain");
+                        anyhow::bail!("drain failed")
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(*calls.borrow(), ["revoke", "drain"]);
+                let chain = format!("{error:#}");
+                assert!(
+                    chain.contains(stage)
+                        && chain.contains("revoke failed")
+                        && chain.contains("drain failed"),
+                    "{chain}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn ac_energy_never_passes_functional_signal_gate_and_failure_receipt_keeps_mode() {
