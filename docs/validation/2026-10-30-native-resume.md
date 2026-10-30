@@ -1,7 +1,8 @@
 # Native testing resumed after explicit authorization
 
 Date: 2026-10-30, Asia/Shanghai. Target: `LAPTOP-NP49RG6H`,
-SSH `192.168.12.97`. The user explicitly authorizes continued testing and
+original SSH identity `192.168.12.97`; the current user-supplied transport is
+`frp-rug.com:14857`, verified against that existing host key. The user explicitly authorizes continued testing and
 automatic retries after a blue screen. This supersedes the testing pause
 recorded in the earlier dated crash, clock-loss and portability receipts;
 those historical receipts and failures remain unchanged.
@@ -230,3 +231,94 @@ receipts and the app/probe deployment audit. It contains74 manifest files /
 Host verifies exact names, all lengths/hashes and byte-for-byte agreement with
 the initial software6/7 downloads. Marker-presence analysis is host-derived and
 kept alongside the archive rather than falsely included in its manifest.
+
+## Main integration and upstream deployment
+
+Merge `a29b13a` incorporates main `c719546` (PR40's idle UI wakeup work).
+Fresh authenticated remote-ref inspection confirms that is still main on
+2026-10-30. The initial GitHub SSH fetch refuses public-key authentication;
+an invocation-local HTTPS credential helper succeeds without changing remotes,
+stored credentials or SSH configuration. Main is an ancestor of the merge.
+
+The merge preserves branch-specific cleanup, trace, native telemetry,
+requested/active transport budgets and measured selections in snapshot equality.
+Three real-mailbox regressions first fail when those fields are omitted, then
+pass with deduplication restricted to genuinely identical snapshots. Joined
+cleanup compares full host state and retained immutable trace Arc identity,
+without walking its history on every publication.
+
+Independent review also finds an interaction with upstream's one-second
+observation throttle: a new native owner within the same app generation could
+retain the previous owner's telemetry. The merged driver keys observation
+batching on app generation, native owner and execution state, invalidates stale
+native/professional caches before throttling, and bypasses the interval on an
+identity transition. An actual-method regression fails with the old owner
+visible, then passes through WaitingForResources -> Running without stale
+observations reappearing. Initial test import/visibility compile failures remain
+in host logs and are not counted as behavioral RED evidence. Final independent
+review finds no remaining scoped P1/P2 issue.
+
+Fresh verification at `a29b13a`:
+
+- Host app library:482 passed /2 ignored; audio library:621 /2 ignored;
+  probe:532 passed. Strict app/audio all-target Clippy, fmt and diff checks pass.
+- Full host app `--features gpui-test`:575 library tests plus62 integration tests
+  pass, zero failures,4 ignored across all targets. No ignored native-window or
+  audio test is claimed executed.
+- Target cached release:482 app library /2 ignored,621 audio library /2 ignored,
+  532 probe tests pass; app and probe builds complete. These finite tests do not
+  open native audio. Build and native acquisition never overlap.
+
+The new artifacts deploy side by side under
+`D:\MoirenTest\20261029-0118a54\bin`:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `moiren-app-a29b13a.exe` |33456640|`37B00F938AC27E2C1ACF958A116D0C9F3C0A7F7FADEABFF51FFDD88F16D435CE`|
+| `e2e_latency_probe-a29b13a.exe` |7026176|`D895DF0AAA197A600E748980D3F4E51A870721D667DC1D3E603AEE19257C852C`|
+
+The original app/probe, previous rollback versions and installed driver bytes
+are unchanged. This is a new application/probe deployment, not a driver upgrade
+or a claim that the GUI has been launched in the logged-off console.
+
+## Merged-binary complete-route repeat
+
+`resume-vad-software8-main-integrated` repeats software7's exact declared
+configuration with the merged probe. It completes collection and cleanup,
+stores1456320 finite frames /62970 nonzero scalar samples, peak0.04750768.
+Capture silence, drops, position gaps, overflow, discontinuities and timestamp
+errors are all zero. Both boundary probes retain zero xruns, and the joined
+clock retains zero clamped frames/periods and timeline resets, maximum backlog2.
+Source acknowledges1440000 frames including29696 generated nonzero frames.
+Both the collection config and recorded route request correctly say Exclusive.
+
+Native-statistics `quality_passed:true` remains separate from
+`quality_complete:false`, `boundary_quality.quality_complete:false` and
+`qualified:false`. The same retrospective0.7 template threshold finds27/29
+peaks: markers2/6 score0.677725/0.697082. Neither marker continuity nor latency
+qualification passes. No threshold is lowered, no input/output target is
+changed, and no source schedule is treated as an independent recorder reference.
+
+The comparison with earlier Shared acquisitions is not factor-isolated:
+archived Shared software2 uses driver-side PCM16/480, while the Exclusive
+software6/7 path uses Float32/480. Native client mode is not the only changed
+boundary. Shared standalone DAWN -> ProcessLoopback also bypasses the VAD
+driver, so no common driver, session-policy or APO cause is established. A
+next discriminating VAD diagnostic would inspect format-aware encoded WRITE
+payload immediately before submission and its terminal ticket completion,
+rather than inferring signal from zero silence/drop counters or repeating an
+identical all-zero Shared run. No speculative production-driver change is made.
+
+Final target audit retains the same boot, no minidump, only root PnP present/OK,
+no owned build/audio process, unchanged render volume/mute and default roles.
+D: remains253753569280bytes free; Cargo caches and raw evidence are retained.
+
+`native-resume-main-20261030.zip` retains run8, build/test/deployment receipts,
+scripts and final audit:38 manifest files /39 entries,26340572 uncompressed
+bytes,521732 archive bytes, SHA-256
+`53A30D4A51E95F4CAF0AE048A8ABCD005C13527255189CABA36B60A075F60097`.
+Host verifies exact entry names and every length/hash before extraction. The
+derived marker analysis stays beside the archive. No remote deletion occurs.
+The full S1-S3 objective, Shared waveform localization and independent
+calibrated physical latency remain open; this checkpoint does not establish a
+VAD/Process winner, a lower safe default or stable physical output below10ms.
