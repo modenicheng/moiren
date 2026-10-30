@@ -32,6 +32,14 @@ retained, but a nonzero Process positive control and sole root cause remain
 unproven. The active VAD holder fixture is not graph-free or exact S1. See the
 [source-side receipt](../../docs/validation/2026-10-31-source-process-control.md).
 
+A separately reviewed Microsoft-derived Process diagnostic records only
+-1/0/+1 PCM16 values at44.1kHz, not the intended changing waveform. All API
+stages complete, source submission remains within its active schedule and
+cleanup is clean; format differs from the earlier48kHz Float32 recorder, so
+this is not a matched implementation A/B or a demonstrated dither/session
+cause. Exact boundaries, tests and verified archive are in the
+[independent reference receipt](../../docs/validation/2026-10-31-ms-process-reference.md).
+
 Shared microphone controls now correlate a successful ACX notification with a
 nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared
 clients still receive all-zero/SILENT PCM, including the explicit changing AC
