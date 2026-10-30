@@ -841,13 +841,13 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(window.find("matrix-inspector").visible());
-        assert!(window.find("disconnect-route").visible());
     });
     // The freshly opened panel is still springing open; let it settle before
-    // clicking controls inside it.
+    // checking clipped controls or clicking them.
     settle_panels(cx);
     cx.update(|window, cx| {
+        assert!(window.find("matrix-inspector").visible());
+        assert!(window.find("disconnect-route").visible());
         window.click("route-up", cx);
     });
     wait_for_graph(&view, cx, |graph| graph.graph.edges()[0].params().gain > 1.);
