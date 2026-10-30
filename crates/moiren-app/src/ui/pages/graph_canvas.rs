@@ -37,7 +37,6 @@ pub struct CanvasNode {
     pub tint: Option<Hsla>,
     pub gain: f64,
     pub balance: Option<f64>,
-    pub peaks: Option<[f32; 2]>,
 }
 
 impl CanvasNode {
@@ -78,7 +77,6 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         tint: Some(theme::PRIMARY),
         gain: 1.,
         balance: None,
-        peaks: None,
     }
 }
 

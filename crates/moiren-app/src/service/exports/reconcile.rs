@@ -201,25 +201,7 @@ impl ExportService {
                             )
                     })
                     .map(|value| value.intent.name.clone());
-                #[cfg(windows)]
-                let windows_name = self
-                    .diagnostics
-                    .get(&intent.endpoint_id)
-                    .filter(|diagnostics| {
-                        self.available
-                            && observed.is_some_and(|value| {
-                                value.resource == ExportResourceState::Present
-                                    && value.generation == diagnostics.generation
-                                    && diagnostics.native_stamp.is_some()
-                                    && diagnostics.windows_name.as_ref().is_some_and(|name| {
-                                        diagnostics.native_stamp.unwrap()[..3]
-                                            == name.native_identity
-                                    })
-                            })
-                    })
-                    .and_then(|diagnostics| diagnostics.windows_name.clone());
-                #[cfg(not(windows))]
-                let windows_name: Option<WindowsEndpointNameObservation> = None;
+                let windows_name = self.windows_names.get(&intent.endpoint_id).cloned();
                 let rename_pending =
                     intent.enabled && provider_name.as_deref() != Some(&intent.name);
                 ExportStatus {

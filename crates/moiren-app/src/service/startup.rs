@@ -12,6 +12,13 @@ pub(super) fn default_session_for_backend(
     }
     let input = catalog.default_input_endpoint_id.as_ref()?;
     let output = catalog.default_output_endpoint_id.as_ref()?;
+    if catalog
+        .vad_endpoints
+        .values()
+        .any(|id| id == input || id == output)
+    {
+        return None;
+    }
     if !catalog.inputs.iter().any(|row| row.endpoint_id == *input)
         || !catalog.outputs.iter().any(|row| row.endpoint_id == *output)
     {
@@ -70,6 +77,18 @@ mod tests {
     fn asio_never_uses_wasapi_defaults_for_automatic_startup() {
         assert!(default_session_for_backend(&fixture(), AudioBackend::Asio).is_none());
         assert!(default_session_for_backend(&fixture(), AudioBackend::Wasapi).is_some());
+    }
+
+    #[test]
+    fn owned_vad_defaults_never_enter_the_physical_startup_path() {
+        for endpoint in ["input", "output"] {
+            let mut catalog = fixture();
+            catalog.vad_endpoints.insert(
+                moiren_engine::node::VirtualEndpointId::from_bytes([0x42; 16]),
+                endpoint.into(),
+            );
+            assert!(default_session_for_backend(&catalog, AudioBackend::Wasapi).is_none());
+        }
     }
 
     #[test]

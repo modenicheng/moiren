@@ -2136,3 +2136,7 @@ _version: 2
 "%{milliseconds} ms":
   en: "%{milliseconds} ms"
   zh-CN: "%{milliseconds} ms"
+
+"Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.":
+  en: "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export."
+  zh-CN: "虚拟扬声器：其他应用播放到 Moiren 输入。虚拟麦克风：Moiren 输出供其他应用录音。绑定时须匹配声道；每个 IO 仅属于一个导出。"

@@ -1050,3 +1050,141 @@ fn collapsed_library_rail_keeps_spawning_and_the_handle_stays_visible(
     });
     finish_service(runtime);
 }
+
+/// Meter motion on the graph page must not rebuild the cached page content
+/// or chrome: every drawn frame rebuilds the shell's root element, and that
+/// rebuild must splice the cached graph page (projection, library, toolbar)
+/// instead of re-projecting. The meter frame still pumps per frame, real
+/// edits still invalidate the cache, and the loop stands down under the
+/// settings overlay.
+#[gpui_kit::test]
+fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    // Live publications must arm the graph meter frame before steady-state
+    // measurements begin.
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+    });
+    // The panels' opening springs animate against the shell; let them settle
+    // before measuring so only the meter frame can request frames.
+    std::thread::sleep(Duration::from_millis(900));
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    let before = view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        (
+            trace.graph_renders,
+            trace.toolbar_renders,
+            trace.status_renders,
+            trace.graph_frames,
+        )
+    });
+    for _ in 0..10 {
+        cx.update(|window, cx| {
+            assert!(window.simulate_next_frame(cx) > 0);
+            window.draw(cx).clear(cx);
+        });
+    }
+    let after = view.read_with(cx, |shell, _| {
+        assert!(
+            shell.node_meter_points.borrow().contains(&node),
+            "graph meter demand must survive animation-only frames"
+        );
+        let trace = shell.mixer.trace.borrow();
+        (
+            trace.graph_renders,
+            trace.toolbar_renders,
+            trace.status_renders,
+            trace.graph_frames,
+        )
+    });
+    // Every drawn frame rebuilds the shell's root element (GPUI lays the
+    // root out from scratch); the isolation contract is that this rebuild
+    // splices the cached page content and chrome instead of re-projecting
+    // the graph or re-rendering the toolbar and status bar.
+    assert_eq!(
+        after.0, before.0,
+        "meter animation must not rebuild the cached graph page"
+    );
+    assert_eq!(
+        (after.1, after.2),
+        (before.1, before.2),
+        "meter animation must not rebuild the cached toolbar or status bar"
+    );
+    assert!(
+        after.3 >= before.3 + 10,
+        "the graph meter frame must actually pump per frame"
+    );
+
+    // A real state change still invalidates the cached page.
+    view.update(cx, |shell, cx| {
+        shell.selected_nodes.insert(node);
+        shell.selected_node = Some(node);
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().graph_renders) > after.0,
+        "a selection change must still re-render the graph page"
+    );
+
+    // The settings overlay must stop the meter frame loop.
+    view.update(cx, |shell, cx| {
+        shell.settings_open = true;
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|window, cx| {
+        assert_eq!(
+            window.simulate_next_frame(cx),
+            0,
+            "settings must stop the graph meter frame loop"
+        );
+    });
+    finish_service(runtime);
+}

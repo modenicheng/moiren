@@ -178,7 +178,6 @@ impl Adapter for FakeAdapter {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
-                #[cfg(windows)]
                 windows_name: None,
                 error: None,
             })
@@ -472,7 +471,6 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                         #[cfg(windows)]
                         diagnostic_provenance:
                             moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
-                        #[cfg(windows)]
                         windows_name: None,
                         error: None,
                     }],
@@ -537,7 +535,6 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
-                #[cfg(windows)]
                 windows_name: None,
                 error: Some("QUERY timed out; snapshot is last known".into()),
             }],
@@ -592,7 +589,6 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
-                #[cfg(windows)]
                 windows_name: None,
                 error: None,
             }],
@@ -644,7 +640,6 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                     #[cfg(windows)]
                     diagnostic_provenance:
                         moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
-                    #[cfg(windows)]
                     windows_name: None,
                     error: None,
                 }],
@@ -655,6 +650,129 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
     assert!(runtime.is_drained());
     assert!(service.observations.is_empty());
     assert!(runtime.stamps.is_empty());
+}
+
+#[test]
+fn windows_identity_projection_requires_current_healthy_native_identity() {
+    let (graph, intent) = runtime_graph();
+    let adapter = Arc::new(FakeAdapter::default());
+    let mut runtime = Runtime {
+        adapter: Some(adapter),
+        ..Default::default()
+    };
+    let mut service = ExportService::default();
+    runtime.project(&mut service, &graph, &[], None);
+    for (identity, error, expected) in [
+        ([1, 7, 1], None, true),
+        ([2, 7, 1], None, false),
+        ([1, 7, 1], Some("QUERY failed".to_string()), false),
+    ] {
+        let batch = Batch {
+            observations: vec![NativeObservation {
+                intent: intent.clone(),
+                snapshot: Some([1, 7, 1, 0, 5]),
+                windows_name: Some(WindowsEndpointNameObservation {
+                    native_identity: identity,
+                    observed_qpc_100ns: None,
+                    mmdevice_id: Some("exact-id".into()),
+                    name: Some("Exact name".into()),
+                    error: None,
+                }),
+                resource: ExportResourceState::Present,
+                gate_open: false,
+                allow_default: false,
+                can_open: false,
+                error,
+                #[cfg(feature = "vad-integration-probe")]
+                native_removed: None,
+                #[cfg(windows)]
+                diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+            }],
+            errors: vec![],
+        };
+        runtime.complete(&mut service, Ok(batch));
+        assert_eq!(
+            service.windows_names.contains_key(&intent.endpoint_id),
+            expected
+        );
+        assert!(!service.statuses(&graph)[0].gate_open);
+        assert_eq!(service.statuses(&graph)[0].active_revision, None);
+    }
+    #[cfg(windows)]
+    {
+        let mut cached = adapter_for_name_test(&intent);
+        cached.diagnostic_provenance =
+            moiren_windows_audio::vad::VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+        runtime.complete(
+            &mut service,
+            Ok(Batch {
+                observations: vec![cached],
+                errors: vec![],
+            }),
+        );
+        assert!(
+            service.windows_names.is_empty(),
+            "cached QUERY is not current name authority"
+        );
+        let mut invalid = adapter_for_name_test(&intent);
+        invalid.intent.channels = 0;
+        let errors = runtime.complete(
+            &mut service,
+            Ok(Batch {
+                observations: vec![invalid],
+                errors: vec![],
+            }),
+        );
+        assert!(!errors.is_empty());
+        assert!(
+            service.windows_names.is_empty(),
+            "rejected lifecycle observation cannot publish name evidence"
+        );
+    }
+    runtime.complete(&mut service, Err("worker unavailable".into()));
+    assert!(service.windows_names.is_empty());
+    service.windows_names.insert(
+        intent.endpoint_id,
+        WindowsEndpointNameObservation {
+            native_identity: [1, 7, 1],
+            observed_qpc_100ns: None,
+            mmdevice_id: Some("exact-id".into()),
+            name: Some("Exact name".into()),
+            error: None,
+        },
+    );
+    service.set_available(false);
+    assert!(
+        service.statuses(&graph)[0].windows_name.is_none(),
+        "unavailable adapter invalidates name evidence"
+    );
+}
+
+#[cfg(windows)]
+fn adapter_for_name_test(intent: &ExportIntent) -> NativeObservation {
+    NativeObservation {
+        intent: intent.clone(),
+        snapshot: Some([1, 7, 1, 0, 5]),
+        windows_name: Some(WindowsEndpointNameObservation {
+            native_identity: [1, 7, 1],
+            observed_qpc_100ns: None,
+            mmdevice_id: Some("exact-id".into()),
+            name: Some("Exact name".into()),
+            error: None,
+        }),
+        resource: ExportResourceState::Present,
+        gate_open: false,
+        allow_default: false,
+        can_open: false,
+        error: None,
+        #[cfg(feature = "vad-integration-probe")]
+        native_removed: None,
+        diagnostics: None,
+        diagnostic_provenance: moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+    }
 }
 
 #[cfg(feature = "vad-integration-probe")]
@@ -677,7 +795,6 @@ mod native_stamp {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
-                #[cfg(windows)]
                 windows_name: None,
                 error: None,
             }],

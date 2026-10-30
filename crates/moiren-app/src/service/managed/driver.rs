@@ -254,25 +254,34 @@ impl ServiceDriver for ManagedDriver {
     }
 }
 
+#[cfg(test)]
+#[path = "driver/vad_catalog_tests.rs"]
+mod vad_catalog_tests;
+
 fn update_vad_catalog(context: &mut ServiceContext) {
-    let endpoint_ids = context
-        .exports
-        .statuses(&context.graph.snapshot())
-        .into_iter()
-        .filter(|status| {
-            matches!(
-                status.resource,
-                super::super::ExportResourceState::Present
-                    | super::super::ExportResourceState::Removing
-            )
-        })
-        .filter_map(|status| status.windows_name?.mmdevice_id)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let mut catalog = (*context.catalog).clone();
-    if catalog.vad_endpoint_ids != endpoint_ids {
-        catalog.vad_endpoint_ids = endpoint_ids;
+    let statuses = context.exports.statuses(&context.graph.snapshot());
+    let live_exports = statuses
+        .iter()
+        .filter(|status| status.resource != super::super::ExportResourceState::Absent)
+        .map(|status| status.intent.endpoint_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut owned = context.catalog.vad_endpoints.clone();
+    owned.retain(|endpoint_id, _| live_exports.contains(endpoint_id));
+    for status in statuses {
+        if !matches!(
+            status.resource,
+            super::super::ExportResourceState::Present
+                | super::super::ExportResourceState::Removing
+        ) {
+            continue;
+        }
+        if let Some(mmdevice_id) = status.windows_name.and_then(|name| name.mmdevice_id) {
+            owned.insert(status.intent.endpoint_id, mmdevice_id);
+        }
+    }
+    if owned != context.catalog.vad_endpoints {
+        let mut catalog = (*context.catalog).clone();
+        catalog.vad_endpoints = owned;
         context.catalog = Arc::new(catalog);
     }
 }
@@ -363,7 +372,12 @@ impl ManagedDriver {
                 Completion::Catalog(result) => {
                     self.catalog.finished();
                     match result {
-                        Ok(catalog) => {
+                        Ok(mut catalog) => {
+                            // Enumeration has no export lifecycle knowledge. Retain known owned
+                            // MMDevice IDs until the lifecycle confirms absence, including removal.
+                            catalog
+                                .vad_endpoints
+                                .extend(c.catalog.vad_endpoints.clone());
                             c.catalog = Arc::new(catalog);
                             c.catalog_error = None;
                             if self.automatic_startup {

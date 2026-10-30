@@ -7,7 +7,7 @@ use rust_i18n::t;
 /// Pure control-side formatting; no diagnostic value authorizes a gate or
 /// supplies an active revision. Do not apply the live-session timing filter.
 pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
-    let windows_name = status.windows_name.as_ref();
+    let windows_name = displayed_windows_name(status);
 
     let windows_name_text = windows_name
         .and_then(|observation| observation.name.clone())
@@ -242,8 +242,26 @@ fn packet_service_clock_text(
     .into()
 }
 
+fn displayed_windows_name(
+    status: &ExportStatus,
+) -> Option<&crate::service::WindowsEndpointNameObservation> {
+    let current = status.windows_name.as_ref();
+    #[cfg(windows)]
+    let current = current.or_else(|| {
+        // Failed reads remain diagnostics only: device selectors continue to
+        // consume the successful, current top-level identity projection.
+        status
+            .diagnostics
+            .as_ref()?
+            .windows_name
+            .as_ref()
+            .filter(|name| name.error.is_some())
+    });
+    current
+}
+
 pub fn windows_name_match_text(status: &ExportStatus) -> String {
-    if let Some(observation) = status.windows_name.as_ref() {
+    if let Some(observation) = displayed_windows_name(status) {
         return match observation.name.as_deref() {
             Some(name) if name == status.intent.name => t!("Matches requested name").into(),
             Some(_) => t!("Does not match requested name").into(),

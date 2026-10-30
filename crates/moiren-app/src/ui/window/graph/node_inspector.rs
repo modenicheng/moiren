@@ -265,8 +265,10 @@ pub(in crate::ui::window) fn inspector(
                         ))),
                 );
         }
-        for row in crate::ui::state::input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-        {
+        for row in crate::ui::state::input_rows(
+            &snapshot.catalog,
+            moiren_engine::audio_config::AudioBackend::Wasapi,
+        ) {
             view = view.child(
                 button(
                     SharedString::from(format!("bind-input-{}", row.endpoint_id)),
@@ -279,25 +281,6 @@ pub(in crate::ui::window) fn inspector(
                         node: id,
                         source: InputSelection::Physical {
                             endpoint_id: row.endpoint_id.clone(),
-                        },
-                    },
-                )),
-            );
-        }
-        for row in &snapshot.catalog.processes {
-            view = view.child(
-                button(
-                    SharedString::from(format!("bind-process-{}", row.pid)),
-                    row.name.clone(),
-                )
-                .variant(ButtonVariant::Ghost)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindSource {
-                        node: id,
-                        source: InputSelection::Process {
-                            pid: row.pid,
-                            creation_time_100ns: row.creation_time_100ns,
                         },
                     },
                 )),
@@ -317,6 +300,25 @@ pub(in crate::ui::window) fn inspector(
                     GraphEdit::BindExport {
                         endpoint_id: export.endpoint_id,
                         node: Some(id),
+                    },
+                )),
+            );
+        }
+        for row in &snapshot.catalog.processes {
+            view = view.child(
+                button(
+                    SharedString::from(format!("bind-process-{}", row.pid)),
+                    row.name.clone(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .on_click(edit(
+                    cx.entity(),
+                    GraphEdit::BindSource {
+                        node: id,
+                        source: InputSelection::Process {
+                            pid: row.pid,
+                            creation_time_100ns: row.creation_time_100ns,
+                        },
                     },
                 )),
             );
@@ -356,8 +358,10 @@ pub(in crate::ui::window) fn inspector(
             button("unbind-node-output", t!("Clear binding"))
                 .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
         );
-        for row in crate::ui::state::output_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-        {
+        for row in crate::ui::state::output_rows(
+            &snapshot.catalog,
+            moiren_engine::audio_config::AudioBackend::Wasapi,
+        ) {
             view = view.child(
                 button(
                     SharedString::from(format!("bind-output-{}", row.endpoint_id)),

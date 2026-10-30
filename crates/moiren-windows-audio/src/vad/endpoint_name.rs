@@ -1,13 +1,13 @@
 //! Explicit control-worker Windows endpoint name evidence.
 
-use super::{MAX_ENDPOINTS, StableEndpointId, VadExportDiagnosticProvenance, VadExportObservation};
+use super::{EndpointSnapshot, Intent, MAX_ENDPOINTS, StableEndpointId};
 use moiren_engine::node::VirtualEndpointId;
 use std::{collections::BTreeMap, time::Duration};
 
+const MAX_REPORTED_OWNED_ERRORS: usize = 8;
+
 const NAME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const NEGATIVE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-/// Cap on attributed owned-enumeration errors retained in one observation.
-pub(super) const MAX_REPORTED_OWNED_ERRORS: usize = 8;
 
 /// Detached evidence from an exact Windows endpoint property read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +19,17 @@ pub struct VadEndpointNameObservation {
     pub mmdevice_id: Option<String>,
     /// Raw PKEY_Device_FriendlyName, never the requested/provider name.
     pub name: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Minimum detached lifecycle facts needed to associate an owned VAD endpoint
+/// with its exact Windows MMDevice identity.
+#[derive(Clone)]
+pub struct VadEndpointNameTarget {
+    pub endpoint_id: VirtualEndpointId,
+    pub intent: Intent,
+    pub snapshot: Option<EndpointSnapshot>,
+    pub removing: bool,
     pub error: Option<String>,
 }
 
@@ -38,7 +49,7 @@ pub(super) struct NameObserver {
 impl NameObserver {
     pub(super) fn observe<R: EndpointNameReader, C: ObserverClock>(
         &mut self,
-        exports: &[VadExportObservation],
+        exports: &[VadEndpointNameTarget],
         reader: &mut R,
         clock: &mut C,
     ) -> Vec<VadEndpointNameObservation> {
@@ -53,9 +64,10 @@ impl NameObserver {
             };
             if export.removing
                 || export.error.is_some()
-                || export.diagnostic_provenance
-                    == VadExportDiagnosticProvenance::CachedAfterQueryFailure
                 || snapshot.state() != super::PdoState::Present
+                || snapshot.stable_id()
+                    != StableEndpointId::from_virtual_endpoint_id(export.endpoint_id)
+                || snapshot.intent() != export.intent
             {
                 continue;
             }
@@ -82,7 +94,7 @@ impl NameObserver {
             pending.push((
                 export.endpoint_id,
                 identity,
-                super::StableEndpointId::from_virtual_endpoint_id(export.endpoint_id),
+                StableEndpointId::from_virtual_endpoint_id(export.endpoint_id),
                 export.intent,
             ));
         }
@@ -346,20 +358,13 @@ mod tests {
         state: PdoState,
         removing: bool,
         error: Option<&str>,
-        provenance: VadExportDiagnosticProvenance,
-    ) -> VadExportObservation {
-        VadExportObservation {
+    ) -> VadEndpointNameTarget {
+        VadEndpointNameTarget {
             endpoint_id,
-            spec_name: "requested fallback must not be used".into(),
             intent: Intent::Playback,
-            channels: Channels::Stereo,
-            allow_default: false,
             snapshot: Some(snapshot(endpoint_id, state)),
             removing,
-            transport_prepared: false,
-            telemetry: None,
             error: error.map(str::to_owned),
-            diagnostic_provenance: provenance,
         }
     }
 
@@ -457,9 +462,7 @@ mod tests {
                 Intent::Playback,
             ),
         ] {
-            let error = select(&[candidate], stable_id, intent, root).unwrap_err();
-            assert!(error.contains("no exact Windows endpoint"));
-            assert!(error.contains("stable-ID candidates"));
+            assert!(select(&[candidate], stable_id, intent, root).is_err());
         }
     }
 
@@ -517,14 +520,48 @@ mod tests {
         }
     }
 
-    fn fresh_export(endpoint_id: VirtualEndpointId) -> VadExportObservation {
-        export(
-            endpoint_id,
-            PdoState::Present,
-            false,
-            None,
-            VadExportDiagnosticProvenance::Fresh,
+    fn fresh_export(endpoint_id: VirtualEndpointId) -> VadEndpointNameTarget {
+        export(endpoint_id, PdoState::Present, false, None)
+    }
+
+    #[test]
+    fn mismatched_detached_stable_identity_or_flow_never_authorizes_a_read() {
+        let endpoint_id = id(0x42);
+        let mut observer = NameObserver::default();
+        let mut reader = FakeReader::default();
+        let mut clock = FakeClock {
+            now: Duration::ZERO,
+            qpc: 0,
+        };
+        let mut wrong_id = fresh_export(endpoint_id);
+        wrong_id.endpoint_id = id(0x43);
+        let mut wrong_flow = fresh_export(endpoint_id);
+        wrong_flow.intent = Intent::Microphone;
+        for target in [wrong_id, wrong_flow] {
+            assert!(
+                observer
+                    .observe(&[target], &mut reader, &mut clock)
+                    .is_empty()
+            );
+        }
+        assert_eq!(reader.calls, 0);
+    }
+
+    #[test]
+    fn exact_selection_uses_kernel_word_order_and_accepts_case_insensitive_pnp_ids() {
+        let stable = StableEndpointId::from_le_bytes(std::array::from_fn(|i| i as u8));
+        let mut endpoint = candidate(stable, ROOT, Intent::Microphone, "opaque capture ID");
+        endpoint.raw_instance = endpoint.raw_instance.to_uppercase();
+        let selected = select(
+            std::slice::from_ref(&endpoint),
+            stable,
+            Intent::Microphone,
+            ROOT,
         )
+        .unwrap();
+        assert_eq!(selected.mmdevice_id, "opaque capture ID");
+        endpoint.raw_instance = format!(r"MOIREN\VAD_RAW\{}", stable.to_virtual_endpoint_id());
+        assert!(select(&[endpoint], stable, Intent::Microphone, ROOT).is_err());
     }
 
     #[test]
@@ -618,13 +655,7 @@ mod tests {
         assert!(
             observer
                 .observe(
-                    &[export(
-                        endpoint_id,
-                        PdoState::Present,
-                        true,
-                        None,
-                        VadExportDiagnosticProvenance::Fresh
-                    )],
+                    &[export(endpoint_id, PdoState::Present, true, None,)],
                     &mut reader,
                     &mut clock,
                 )
@@ -635,26 +666,14 @@ mod tests {
         assert_eq!(recovered[0].observed_qpc_100ns, Some(1000));
 
         observer.observe(
-            &[export(
-                endpoint_id,
-                PdoState::Removed,
-                true,
-                None,
-                VadExportDiagnosticProvenance::Fresh,
-            )],
+            &[export(endpoint_id, PdoState::Removed, true, None)],
             &mut reader,
             &mut clock,
         );
         observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
         assert_eq!(reader.calls, 3);
 
-        let failed = export(
-            endpoint_id,
-            PdoState::Present,
-            false,
-            Some("QUERY failed"),
-            VadExportDiagnosticProvenance::CachedAfterQueryFailure,
-        );
+        let failed = export(endpoint_id, PdoState::Present, false, Some("QUERY failed"));
         assert!(
             observer
                 .observe(&[failed], &mut reader, &mut clock)

@@ -459,10 +459,10 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::AddBusInput(_)
         | GraphEdit::RemoveBusInput { .. }
         | GraphEdit::SetExports(_)
+        | GraphEdit::BindExport { .. }
         | GraphEdit::SetBuiltin { .. }
         | GraphEdit::BindSource { .. }
         | GraphEdit::BindOutput { .. }
-        | GraphEdit::BindExport { .. }
         | GraphEdit::ClearBinding(_) => true,
         GraphEdit::SetSend { edge, params } => previous
             .get_edge(*edge)

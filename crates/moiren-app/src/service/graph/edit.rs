@@ -178,7 +178,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         }
         GraphEdit::BindSource { node, source } => {
             if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Source {
-                return Err("Only input nodes can bind a source".into());
+                return Err("Only Source nodes can bind an input source".into());
             }
             for export in &mut next.exports {
                 if export.binding == Some(node) {
@@ -210,7 +210,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         }
         GraphEdit::BindOutput { node, endpoint_id } => {
             if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Sink {
-                return Err("Only output nodes can bind a device".into());
+                return Err("Only Sink nodes can bind a valid output device".into());
             }
             for export in &mut next.exports {
                 if export.binding == Some(node) {
@@ -257,7 +257,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                     .nodes
                     .iter_mut()
                     .find(|state| state.id == node)
-                    .ok_or("The node does not exist")?;
+                    .ok_or("The graph node does not exist")?;
                 match direction {
                     super::super::ExportDirection::Playback => state.source = None,
                     super::super::ExportDirection::Microphone => state.output_endpoint_id = None,

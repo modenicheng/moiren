@@ -22,7 +22,7 @@ use windows::{
         System::{
             Com::{
                 CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, STGM_READ,
-                StructuredStorage::{PROPVARIANT, PropVariantClear},
+                StructuredStorage::PROPVARIANT,
             },
             Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
             Variant::VT_LPWSTR,
@@ -55,14 +55,6 @@ impl Drop for TaskString {
 }
 
 struct OwnedProperty(PROPVARIANT);
-
-impl Drop for OwnedProperty {
-    fn drop(&mut self) {
-        // SAFETY: GetValue initialized this unique PROPVARIANT and no copy owns
-        // its union payload. PropVariantClear releases exactly that payload.
-        let _ = unsafe { PropVariantClear(&mut self.0) };
-    }
-}
 
 pub struct WindowsEndpointNameReader {
     interface: DeviceInterface,

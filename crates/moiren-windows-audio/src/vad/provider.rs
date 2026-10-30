@@ -4,7 +4,7 @@
 //! from native client lifetimes. A raw PDO may be Present while no client has
 //! opened a stream; that is an idle, usable state, not a transport failure.
 
-use super::endpoint_name::NameObserver;
+use super::endpoint_name::{NameObserver, VadEndpointNameTarget};
 use super::{
     Channels, ClientError, ControlClient, DeviceInterface, Intent, PcmCompletion,
     PcmMicrophoneBridge, PcmOwner, PcmPlaybackBridge, PcmTicket, PdoState, ResidualPcm,
@@ -192,7 +192,7 @@ impl WindowsVadProvider {
     /// lifecycle polling and service pumps never enumerate MMDevice endpoints.
     pub fn export_name_observations(
         &self,
-        exports: &[VadExportObservation],
+        exports: &[VadEndpointNameTarget],
     ) -> Vec<super::VadEndpointNameObservation> {
         let mut observer = self
             .name_observer

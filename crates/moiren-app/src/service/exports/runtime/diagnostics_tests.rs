@@ -654,3 +654,32 @@ fn direct_retirement_mapping_requires_a_fresh_real_removed_snapshot() {
         }
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn accepted_windows_name_read_failure_reaches_real_ui_without_device_authority() {
+    let (graph, intent) = runtime_graph();
+    let mut runtime = Runtime::default();
+    let mut service = ExportService::default();
+    service.set_available(true);
+    let mut native = NativeObservation::from(provider_view(&intent));
+    with_windows_name(&mut native, None);
+    complete_native(&mut runtime, &mut service, native);
+    let status = service.statuses(&graph).remove(0);
+    assert!(
+        status.windows_name.is_none(),
+        "failed read is not a selectable device identity"
+    );
+    let rows = crate::ui::presentation::export_diagnostic_rows(&status);
+    assert!(
+        rows.iter()
+            .any(|(_, value)| value == "FriendlyName read failed"),
+        "real UI must retain the accepted readback error"
+    );
+    assert_eq!(
+        crate::ui::presentation::windows_name_match_text(&status),
+        rust_i18n::t!("Read failed").to_string()
+    );
+    assert!(!status.gate_open);
+    assert_eq!(status.active_revision, None);
+}

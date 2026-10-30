@@ -119,6 +119,7 @@ pub struct ExportService {
     pub(super) available: bool,
     pub(super) authorizations: BTreeMap<VirtualEndpointId, bool>,
     pub(super) observations: BTreeMap<VirtualEndpointId, ExportObservation>,
+    pub(super) windows_names: BTreeMap<VirtualEndpointId, WindowsEndpointNameObservation>,
     #[cfg(windows)]
     pub(super) diagnostics: BTreeMap<VirtualEndpointId, ExportDiagnostics>,
     /// Probe-only observations, never consulted for native action authority.
@@ -148,6 +149,7 @@ impl ExportService {
     /// Enabling a project export never calls this method or grants default use.
     pub fn set_available(&mut self, available: bool) {
         if !available {
+            self.windows_names.clear();
             #[cfg(windows)]
             self.diagnostics.clear();
             #[cfg(feature = "vad-integration-probe")]

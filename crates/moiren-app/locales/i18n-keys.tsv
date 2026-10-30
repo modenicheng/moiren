@@ -708,3 +708,4 @@ Limits host time since packet publication began, not source sample age or physic
 %{input}; host ingress elapsed limit: %{limit}	input,limit	请求与生效进程输入上限，保留原有队列和实测身份
 %{ticks} x 100 ns	ticks	任意正整数上限保留完整数值和单位
 %{milliseconds} ms	milliseconds	主机经过时间预设毫秒数
+Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.	-	VAD 应用侧方向说明

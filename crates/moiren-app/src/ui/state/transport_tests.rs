@@ -176,15 +176,20 @@ fn physical_candidate_starts_before_primary_graph_bindings_are_published() {
 }
 
 #[test]
-fn physical_row_projection_hides_only_exact_vad_mmdevice_id_matches() {
-    let row = |id: &str| crate::service::DeviceRow {
+fn physical_device_rows_hide_only_exact_vad_mmdevice_ids() {
+    let row = |id: &str| DeviceRow {
         endpoint_id: id.into(),
         name: id.into(),
     };
     let catalog = DeviceCatalog {
-        inputs: vec![row("physical-input"), row("VAD endpoint")],
-        outputs: vec![row("physical-output"), row("VAD endpoint")],
-        vad_endpoint_ids: vec!["VAD endpoint".into()],
+        inputs: vec![row("physical-input"), row("vad-mmdevice")],
+        outputs: vec![row("physical-output"), row("vad-mmdevice")],
+        vad_endpoints: [(
+            VirtualEndpointId::from_bytes([0x42; 16]),
+            "vad-mmdevice".into(),
+        )]
+        .into_iter()
+        .collect(),
         ..Default::default()
     };
     assert_eq!(
@@ -200,6 +205,113 @@ fn physical_row_projection_hides_only_exact_vad_mmdevice_id_matches() {
             .map(|row| row.endpoint_id)
             .collect::<Vec<_>>(),
         vec!["physical-output"]
+    );
+}
+
+#[test]
+fn device_rows_project_vad_in_app_direction_without_reversing_physical_devices() {
+    use crate::service::{ExportResourceState, ExportStatus, WindowsEndpointNameObservation};
+    let row = |id: &str| DeviceRow {
+        endpoint_id: id.into(),
+        name: "Same friendly name".into(),
+    };
+    let playback = VirtualEndpointId::from_bytes([0x41; 16]);
+    let microphone = VirtualEndpointId::from_bytes([0x42; 16]);
+    let catalog = DeviceCatalog {
+        inputs: vec![row("physical-mic"), row("virtual-mic")],
+        outputs: vec![row("physical-speaker"), row("virtual-speaker")],
+        vad_endpoints: [
+            (playback, "virtual-speaker".into()),
+            (microphone, "virtual-mic".into()),
+        ]
+        .into_iter()
+        .collect(),
+        asio_drivers: vec![row("asio:driver")],
+        ..Default::default()
+    };
+    let exports = [
+        (playback, ExportDirection::Playback, "virtual-speaker"),
+        (microphone, ExportDirection::Microphone, "virtual-mic"),
+    ]
+    .map(|(id, direction, mmdevice)| ExportStatus {
+        intent: ExportIntent {
+            endpoint_id: id,
+            direction,
+            name: "Requested".into(),
+            channels: 2,
+            enabled: true,
+            binding: None,
+        },
+        actual_name: None,
+        rename_pending: false,
+        windows_name: Some(WindowsEndpointNameObservation {
+            native_identity: [1, 2, 3],
+            observed_qpc_100ns: None,
+            mmdevice_id: Some(mmdevice.into()),
+            name: Some("Observed".into()),
+            error: None,
+        }),
+        resource: ExportResourceState::Present,
+        allow_default: false,
+        gate_open: false,
+        active_revision: None,
+        #[cfg(windows)]
+        diagnostics: None,
+        #[cfg(feature = "vad-integration-probe")]
+        native_stamp: None,
+        #[cfg(feature = "vad-integration-probe")]
+        observation_generation: None,
+        #[cfg(feature = "vad-integration-probe")]
+        native_retirement: None,
+    });
+    let ids = |rows: Vec<DeviceRow>| rows.into_iter().map(|r| r.endpoint_id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(super::device_rows(
+            &catalog,
+            &exports,
+            AudioBackend::Wasapi,
+            true
+        )),
+        ["physical-mic", "virtual-speaker"]
+    );
+    assert_eq!(
+        ids(super::device_rows(
+            &catalog,
+            &exports,
+            AudioBackend::Wasapi,
+            false
+        )),
+        ["physical-speaker", "virtual-mic"]
+    );
+    assert_eq!(
+        ids(super::device_rows(
+            &catalog,
+            &exports,
+            AudioBackend::Asio,
+            true
+        )),
+        ["asio:driver"]
+    );
+    let mut retiring = exports.clone();
+    retiring[0].resource = ExportResourceState::Removing;
+    retiring[1].resource = ExportResourceState::Unavailable;
+    assert_eq!(
+        ids(super::device_rows(
+            &catalog,
+            &retiring,
+            AudioBackend::Wasapi,
+            true
+        )),
+        ["physical-mic"]
+    );
+    assert_eq!(
+        ids(super::device_rows(
+            &catalog,
+            &retiring,
+            AudioBackend::Wasapi,
+            false
+        )),
+        ["physical-speaker"]
     );
 }
 

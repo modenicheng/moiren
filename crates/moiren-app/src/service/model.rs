@@ -128,8 +128,9 @@ pub struct ProcessRow {
 pub struct DeviceCatalog {
     pub inputs: Vec<DeviceRow>,
     pub outputs: Vec<DeviceRow>,
-    /// Exact MMDevice IDs currently owned by VAD; do not infer ownership by name.
-    pub vad_endpoint_ids: Vec<String>,
+    /// Exact MMDevice IDs indexed by VAD export identity; ownership is never
+    /// inferred from a display name, and uncertain retirements stay excluded.
+    pub vad_endpoints: std::collections::BTreeMap<moiren_engine::node::VirtualEndpointId, String>,
     /// Native ASIO drivers use stable IDs accepted by the professional backend.
     pub asio_drivers: Vec<DeviceRow>,
     /// ASIO discovery can fail independently of usable WASAPI endpoints.

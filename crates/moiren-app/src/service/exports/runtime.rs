@@ -39,7 +39,6 @@ pub(crate) struct NativeObservation {
     pub diagnostics: Option<ExportDiagnostics>,
     #[cfg(windows)]
     pub diagnostic_provenance: moiren_windows_audio::vad::VadExportDiagnosticProvenance,
-    #[cfg(windows)]
     pub windows_name: Option<WindowsEndpointNameObservation>,
 }
 pub(crate) struct Batch {
@@ -175,10 +174,12 @@ impl Runtime {
             Err(error) => {
                 self.healthy.clear();
                 self.ready.clear();
+                service.windows_names.clear();
                 self.revoke();
                 return vec![error];
             }
         };
+        service.windows_names.clear();
         self.native_empty = batch
             .observations
             .iter()
@@ -271,6 +272,27 @@ impl Runtime {
             if let Some(stamp) = native.snapshot {
                 self.stamps.insert(native.intent.endpoint_id, stamp);
             }
+            #[cfg(windows)]
+            let current_name = native.diagnostic_provenance
+                == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh;
+            #[cfg(not(windows))]
+            let current_name = true;
+            let windows_name = if current_name
+                && native.resource == ExportResourceState::Present
+                && native.error.is_none()
+            {
+                native
+                    .windows_name
+                    .as_ref()
+                    .filter(|name| {
+                        native.snapshot.is_some_and(|stamp| {
+                            name.native_identity == [stamp[0], stamp[1], stamp[2]]
+                        }) && name.error.is_none()
+                    })
+                    .cloned()
+            } else {
+                None
+            };
             #[cfg(feature = "vad-integration-probe")]
             let native_stamp = native.snapshot.filter(|_| {
                 native.error.is_none() && native.resource != ExportResourceState::Unavailable
@@ -322,6 +344,9 @@ impl Runtime {
             }) {
                 errors.push(error);
             } else {
+                if let Some(name) = windows_name {
+                    service.windows_names.insert(id, name);
+                }
                 #[cfg(feature = "vad-integration-probe")]
                 if native.resource != ExportResourceState::Unavailable && accepted_result {
                     service.observation_generations.insert(id, generation);
@@ -571,7 +596,21 @@ impl Adapter for WindowsAdapter {
             }
         }
         let provider_views = self.0.export_observations();
-        let windows_names = self.0.export_name_observations(&provider_views);
+        let name_targets = provider_views
+            .iter()
+            .map(|view| moiren_windows_audio::vad::VadEndpointNameTarget {
+                endpoint_id: view.endpoint_id,
+                intent: view.intent,
+                snapshot: view.snapshot,
+                removing: view.removing,
+                error: view.error.clone().or_else(|| {
+                    (view.diagnostic_provenance
+                        == moiren_windows_audio::vad::VadExportDiagnosticProvenance::CachedAfterQueryFailure)
+                        .then(|| "QUERY failed; retained snapshot is not current name authority".into())
+                }),
+            })
+            .collect::<Vec<_>>();
+        let windows_names = self.0.export_name_observations(&name_targets);
         let observations = provider_views
             .into_iter()
             .map(|view| {

@@ -22,6 +22,7 @@ type CameraFitFn = dyn Fn(&Camera, Size<Pixels>, &mut Window, &mut App);
 type SelectFn = dyn Fn(&str, &mut Window, &mut App);
 type ZoomFn = dyn Fn((f32, Point<Pixels>), &mut Window, &mut App);
 type BoxSelectFn = dyn Fn(Option<Bounds<f32>>, &mut Window, &mut App);
+pub(in crate::ui) type NodeLevelsFn = dyn Fn(moiren_core::graph::NodeId, &App) -> Option<[f32; 2]>;
 type PreparedFrame = Rc<RefCell<Option<Rc<CanvasFrame>>>>;
 
 pub struct CanvasCallbacks {
@@ -29,6 +30,9 @@ pub struct CanvasCallbacks {
     pub connection: Option<(PortTarget, (f32, f32))>,
     /// Active rubber-band selection in window coordinates (anchor, current).
     pub selection_box: Option<((f32, f32), (f32, f32))>,
+    /// Live ballistics-smoothed bar readings per node, consulted at paint
+    /// time so meter motion repaints without rebuilding this element tree.
+    pub node_levels: Rc<NodeLevelsFn>,
     pub on_port_down: Rc<WindowAppCallback<(PortTarget, (f32, f32))>>,
     pub on_port_up: Rc<WindowAppCallback<Option<PortTarget>>>,
     pub on_connection_move: Rc<WindowAppCallback<(f32, f32)>>,
@@ -81,6 +85,7 @@ fn paint_canvas_layer(
     selected_nodes: &[String],
     selected_wire: Option<&str>,
     selection_box: Option<((f32, f32), (f32, f32))>,
+    node_levels: &NodeLevelsFn,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -128,6 +133,7 @@ fn paint_canvas_layer(
                         node,
                         layout,
                         selected_nodes.iter().any(|selected| selected == &node.id),
+                        node.node_id.and_then(|id| node_levels(id, cx)),
                         window,
                         cx,
                     );
@@ -205,7 +211,6 @@ pub(in crate::ui) fn node_drag_preview(
         tint: Some(tint),
         gain: 1.,
         balance: None,
-        peaks: None,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
@@ -229,6 +234,7 @@ pub(in crate::ui) fn node_drag_preview(
                 &frame.world.nodes[0],
                 &frame.nodes[0],
                 true,
+                None,
                 window,
                 cx,
             );
@@ -313,6 +319,7 @@ pub fn graph_canvas_view(
         on_select_node,
         on_select_wire,
         on_camera_fit,
+        node_levels,
         focus,
         connection,
         selection_box,
@@ -369,6 +376,7 @@ pub fn graph_canvas_view(
                         &selected_nodes,
                         selected_wire.as_deref(),
                         selection_box,
+                        node_levels.as_ref(),
                         window,
                         cx,
                     );
