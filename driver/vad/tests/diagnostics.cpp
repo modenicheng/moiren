@@ -71,10 +71,22 @@ struct VAD_PCM_BATCH {
     vad::audio::CapturePrefix CapturePrefix = {};
 };
 struct LARGE_INTEGER { int64_t QuadPart; };
+#ifdef VAD_DIAGNOSTICS_FIXTURE
+static int64_t FixtureQpc = 1001;
+static int64_t FixtureQpcStep = 0;
+static unsigned FixtureQpcCalls = 0;
+#endif
 static LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER* frequency)
 {
     if (frequency != nullptr) { frequency->QuadPart = 48000; }
+#ifdef VAD_DIAGNOSTICS_FIXTURE
+    const auto qpc = FixtureQpc;
+    FixtureQpc += FixtureQpcStep;
+    ++FixtureQpcCalls;
+    return {qpc};
+#else
     return {1001};
+#endif
 }
 static NTSTATUS WdfIoQueueRetrieveNextRequest(Queue* queue, WDFREQUEST* result)
 {

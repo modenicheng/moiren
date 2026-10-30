@@ -175,6 +175,18 @@ static void TracePendingCaptureDiagnostic(VAD_SHARED* shared,
             item.GateEpoch, item.NativeSequence, item.CompletionQpc, item.PacketCount,
             static_cast<NTSTATUS>(item.Status));
     }
+    if (diagnostic.ReportNonzeroNotify) {
+        const auto& copy = diagnostic.FirstNonzero;
+        const auto& item = diagnostic.NonzeroNotify;
+        // copy_qpc is the existing copy witness's callback timestamp, not a
+        // new timestamp sampled at memcpy. Only enter/return bracket this call;
+        // none proves consumption or requires a GetCapturePacket callback.
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture nonzero notify endpoint=%I64u session=%I64u generation=%I64u gate=%I64u native=%I64u request=%I64u index=%u copy_qpc=%I64u enter_qpc=%I64u return_qpc=%I64u status=%!STATUS!",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+            copy.GateEpoch, copy.NativeSequence, copy.RequestSequence, item.Index,
+            copy.Qpc, item.EnterQpc, item.ReturnQpc, static_cast<NTSTATUS>(item.Status));
+    }
 }
 
 static void TracePendingUnservedDiagnostics(VAD_SHARED* shared,

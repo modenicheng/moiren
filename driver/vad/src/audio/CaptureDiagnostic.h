@@ -89,6 +89,15 @@ struct CaptureNotifyObservation {
     uint32_t PacketCount;
     uint32_t Status;
     bool Observed;
+    bool NonzeroCopy; // Selected under State/Shared, before notification.
+};
+
+struct CaptureNonzeroNotifyObservation {
+    uint64_t EnterQpc;
+    uint64_t ReturnQpc;
+    uint32_t Status;
+    uint32_t Index;
+    bool Observed;
 };
 
 // Existing State/Shared locks protect these fixed first witnesses. No RT trace,
@@ -104,6 +113,7 @@ struct CaptureDiagnostic {
     CapturePacketObservation FirstPacketRefusal;
     CaptureNotifyObservation FirstNotifySuccess;
     CaptureNotifyObservation FirstNotifyFailure;
+    CaptureNonzeroNotifyObservation NonzeroNotify;
     bool ReportCopy;
     bool ReportNonzero;
     bool ReportPosition;
@@ -112,6 +122,7 @@ struct CaptureDiagnostic {
     bool ReportPacketRefusal;
     bool ReportNotifySuccess;
     bool ReportNotifyFailure;
+    bool ReportNonzeroNotify;
 
     void Reset(uint64_t generation) { *this = {}; Generation = generation; }
     bool NeedsCopy() const { return !FirstCopy.Observed || !FirstNonzero.Observed; }
@@ -164,9 +175,25 @@ struct CaptureDiagnostic {
             ReportNonzeroPacket = true;
         }
     }
-    void RecordNotify(uint64_t generation, CaptureNotifyObservation observation)
+    bool NeedsNonzeroNotify(const CaptureNotifyObservation& observation) const
+    {
+        return observation.Observed && !NonzeroNotify.Observed && FirstNonzero.Observed &&
+            FirstNonzero.PacketCount > 1 && observation.PacketCount == FirstNonzero.PacketCount &&
+            observation.GateEpoch == FirstNonzero.GateEpoch &&
+            observation.NativeSequence == FirstNonzero.NativeSequence &&
+            observation.CompletionQpc == FirstNonzero.Qpc;
+    }
+    void RecordNotify(uint64_t generation, CaptureNotifyObservation observation,
+        uint64_t enterQpc, uint64_t returnQpc)
     {
         if (generation != Generation || !observation.Observed) { return; }
+        if (observation.NonzeroCopy && NeedsNonzeroNotify(observation)) {
+            // The copy witness already owns native/request/gate/copy QPC. Match
+            // all identities before attaching the result of this exact call.
+            NonzeroNotify = {enterQpc, returnQpc, observation.Status,
+                static_cast<uint32_t>(observation.NativeSequence % observation.PacketCount), true};
+            ReportNonzeroNotify = true;
+        }
         if ((observation.Status & 0x80000000u) == 0) {
             if (!FirstNotifySuccess.Observed) {
                 FirstNotifySuccess = observation;
@@ -186,8 +213,9 @@ struct CaptureDiagnostic {
         ReportCopy = ReportNonzero = ReportPosition = false;
         ReportPacket = ReportNonzeroPacket = ReportPacketRefusal = false;
         ReportNotifySuccess = ReportNotifyFailure = false;
+        ReportNonzeroNotify = false;
         return snapshot;
     }
 };
-static_assert(sizeof(CaptureDiagnostic) <= 512, "fixed capture boundary diagnostic budget");
+static_assert(sizeof(CaptureDiagnostic) <= 576, "fixed capture boundary diagnostic budget");
 }

@@ -57,6 +57,7 @@ static NTSTATUS NotifyStatus = STATUS_SUCCESS;
 static unsigned NotifyCalls = 0;
 static uint64_t NotifiedPacket = 0, NotifiedQpc = 0;
 static bool AdvanceGateDuringNotify = false;
+static bool ReplaceGenerationDuringNotify = false;
 static NTSTATUS AcxRtStreamNotifyPacketComplete(void* opaque, uint64_t packet, uint64_t qpc)
 {
     auto stream = static_cast<VAD_AUDIO_STREAM*>(opaque);
@@ -64,6 +65,10 @@ static NTSTATUS AcxRtStreamNotifyPacketComplete(void* opaque, uint64_t packet, u
         "real notification boundary holds neither State nor Shared");
     ++NotifyCalls; NotifiedPacket = packet; NotifiedQpc = qpc;
     if (AdvanceGateDuringNotify) { ++stream->Device->Shared->Slots[0].AdmissionGeneration; }
+    if (ReplaceGenerationDuringNotify) {
+        auto& shared = *stream->Device->Shared;
+        shared.CaptureDiagnostics[0].Reset(++shared.Slots[0].StreamGeneration);
+    }
     return NotifyStatus;
 }
 static bool ExAcquireRundownProtection(unsigned* rundown) { ++*rundown; return true; }
@@ -488,6 +493,115 @@ static void RealNotifyResultAndGateIdentity()
     NotifyStatus = STATUS_SUCCESS;
 }
 
+static void FirstNonzeroCopyHasItsOwnNotifyResult(NTSTATUS result)
+{
+    Fixture f;
+    f.Stream.PacketCount = 2;
+    f.Packet.RtPacketSize = 1920;
+    f.Packet.RtPacketOffset = 2176;
+    KIRQL previous;
+    KeAcquireSpinLock(&f.Stream.State, &previous);
+    const auto empty = RecordEventCaptureCopy(&f.Stream, 0, 0, 900, f.Batch);
+    KeReleaseSpinLock(&f.Stream.State, previous);
+    NotifyStatus = STATUS_SUCCESS;
+    NotifyPacketComplete(&f.Stream, 0, 900, empty);
+    TraceLock = &f.Shared.Lock; TraceEvents = 0; TraceEnabled = true;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(TraceEvents == 1, "first successful zero packet notification is already published");
+
+    // Use the actual WRITE transfer and actual event wrapper. The second
+    // successful notify must not be hidden by first-success deduplication.
+    f.Payload.fill(43);
+    f.Batch.Shared = &f.Shared;
+    KeAcquireSpinLock(&f.Stream.State, &previous);
+    KIRQL sharedPrevious;
+    KeAcquireSpinLock(&f.Shared.Lock, &sharedPrevious);
+    VadPcmTransferLocked(&f.Shared, 0, PacketAddress(&f.Stream, 1), 480, 4, 1, 1000, &f.Batch);
+    KeReleaseSpinLock(&f.Shared.Lock, sharedPrevious);
+    const auto nonzero = RecordEventCaptureCopy(&f.Stream, 1, 1, 1000, f.Batch);
+    KeReleaseSpinLock(&f.Stream.State, previous);
+    Check(f.Batch.Completions.Count == 1 && f.Batch.Completions.Entries[0].Status == 0 &&
+        nonzero.NonzeroCopy && f.NativeSecond[0] == 43,
+        "real successful WRITE selects exactly its first nonzero event packet");
+    NotifyStatus = result;
+    FixtureQpc = 2000; FixtureQpcStep = 7; FixtureQpcCalls = 0;
+    AdvanceGateDuringNotify = true;
+    NotifyPacketComplete(&f.Stream, 1, 1000, nonzero);
+    AdvanceGateDuringNotify = false;
+    const auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    Check(FixtureQpcCalls == 2 && diagnostic.NonzeroNotify.Observed &&
+        diagnostic.NonzeroNotify.EnterQpc == 2000 && diagnostic.NonzeroNotify.ReturnQpc == 2007 &&
+        diagnostic.NonzeroNotify.Status == static_cast<uint32_t>(result) &&
+        diagnostic.NonzeroNotify.Index == 1 && diagnostic.FirstNonzero.NativeSequence == 1 &&
+        diagnostic.FirstNonzero.RequestSequence == 1 && diagnostic.FirstNonzero.Qpc == 1000 &&
+        diagnostic.FirstNonzero.GateEpoch == 7 && f.Shared.Slots[0].AdmissionGeneration == 8 &&
+        diagnostic.FirstNotifySuccess.NativeSequence == 0,
+        "same-call QPC and actual result attach to nonzero packet, never earlier success or newer gate");
+    TraceEvents = 0;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    bool matched = false;
+    for (unsigned i = 0; i < TraceEvents; ++i) {
+        const auto& trace = TraceRecords[i];
+        if (std::strstr(trace.Format, "Capture nonzero notify") == nullptr) { continue; }
+        matched = true;
+        Check(std::strstr(trace.Format, "stream=") == nullptr && trace.Values[2] == 3 &&
+            trace.Values[3] == 7 && trace.Values[4] == 1 && trace.Values[5] == 1 &&
+            trace.Values[6] == 1 && trace.Values[7] == 1000 && trace.Values[8] == 2000 &&
+            trace.Values[9] == 2007 && static_cast<uint32_t>(trace.Values[10]) ==
+                static_cast<uint32_t>(result),
+            "passive output has exact native/request/index/copy/call identity and actual success or failure");
+    }
+    Check(matched, "first nonzero native1/request1 needs its own actual notify result after native0 success");
+    TraceEvents = 0;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(f.Shared.Slots[0]));
+    Check(TraceEvents == 0 && !diagnostic.ReportNonzeroNotify,
+        "one passive drain consumes pending publication, not the retained nonzero notify witness");
+    KeAcquireSpinLock(&f.Stream.State, &previous);
+    const auto later = RecordEventCaptureCopy(&f.Stream, 0, 2, 1100, f.Batch);
+    KeReleaseSpinLock(&f.Stream.State, previous);
+    Check(!later.NonzeroCopy, "later packet cannot request additional nonzero-call QPC samples");
+    FixtureQpcCalls = 0;
+    NotifyPacketComplete(&f.Stream, 2, 1100, later);
+    Check(FixtureQpcCalls == 0 && !diagnostic.ReportNonzeroNotify &&
+        diagnostic.NonzeroNotify.EnterQpc == 2000 && diagnostic.NonzeroNotify.Status ==
+            static_cast<uint32_t>(result), "later notify neither resamples nor replaces the first nonzero result");
+    FixtureQpc = 1001; FixtureQpcStep = 0; NotifyStatus = STATUS_SUCCESS;
+}
+
+static void NonzeroNotifyDoesNotCrossIdentityOrGeneration()
+{
+    Fixture f;
+    auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    CaptureCopyObservation copy = {7, 1, 2, 1000, 2, 1920, 1920, 0, 0,
+        {16, true, true, true}, true};
+    diagnostic.RecordCopy(3, 77, copy);
+    CaptureNotifyObservation notification = {7, 1, 1000, 2, 0, true, true};
+    for (unsigned field = 0; field < 5; ++field) {
+        auto mismatch = notification;
+        switch (field) {
+        case 0: ++mismatch.GateEpoch; break;
+        case 1: ++mismatch.NativeSequence; break;
+        case 2: ++mismatch.CompletionQpc; break;
+        case 3: mismatch.PacketCount = 1; break;
+        default: mismatch.NonzeroCopy = false; break;
+        }
+        diagnostic.RecordNotify(3, mismatch, 2000, 2001);
+        Check(!diagnostic.NonzeroNotify.Observed,
+            "gate/sequence/copy-time/shape or unselected notification cannot attach another call's result");
+    }
+    diagnostic.RecordNotify(2, notification, 2000, 2001);
+    Check(!diagnostic.NonzeroNotify.Observed, "retired generation never completes a current copy witness");
+    ReplaceGenerationDuringNotify = true;
+    NotifyPacketComplete(&f.Stream, 1, 1000, notification);
+    ReplaceGenerationDuringNotify = false;
+    Check(diagnostic.Generation == 4 && !diagnostic.FirstNonzero.Observed &&
+        !diagnostic.NonzeroNotify.Observed && !diagnostic.ReportNonzeroNotify,
+        "generation reset during actual notification cannot publish an old result into new diagnostics");
+    notification.NonzeroCopy = false;
+    diagnostic.RecordNotify(4, notification, 2000, 2001);
+    Check(!diagnostic.NonzeroNotify.Observed, "notification before any copy cannot invent nonzero association");
+}
+
 int main()
 {
     RealTimerCopyWithoutRebase();
@@ -497,8 +611,12 @@ int main()
     RealCaptureQueryPublishesBoundary();
     QueryWrapResetGateAndRefusal();
     RealNotifyResultAndGateIdentity();
+    FirstNonzeroCopyHasItsOwnNotifyResult(STATUS_SUCCESS);
+    FirstNonzeroCopyHasItsOwnNotifyResult(STATUS_DEVICE_NOT_READY);
+    NonzeroNotifyDoesNotCrossIdentityOrGeneration();
     std::printf("PASS: real PCM-to-Scratch-to-ring, zero/nonzero, no-rebase, wrap, "
-        "generation reset, event copy, actual query/notify results and passive publication; record=%zu bytes\n",
+        "generation reset, event copy, actual query/notify results, same-copy notify success/failure QPC "
+        "and passive publication; record=%zu bytes\n",
         sizeof(CaptureDiagnostic));
 }
 #endif

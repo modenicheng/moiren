@@ -219,13 +219,15 @@ static vad::audio::CaptureNotifyObservation RecordEventCaptureCopy(VAD_AUDIO_STR
     const auto& slot = shared->Slots[child->Index];
     if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
         notification = {slot.AdmissionGeneration, sequence, qpc, stream->PacketCount, 0, true};
+        auto& diagnostic = shared->CaptureDiagnostics[child->Index];
         if (batch.CaptureCopied && batch.CapturePrefix.Bytes != 0) {
-            shared->CaptureDiagnostics[child->Index].RecordCopy(stream->Generation,
+            diagnostic.RecordCopy(stream->Generation,
                 reinterpret_cast<uint64_t>(stream->Stream),
                 {batch.CaptureGateEpoch, sequence, batch.CaptureRequestSequence, qpc,
                     stream->PacketCount, stream->PacketSize, stream->Packets[index].RtPacketSize,
                     stream->Packets[index].RtPacketOffset, 0, batch.CapturePrefix, true});
         }
+        notification.NonzeroCopy = diagnostic.NeedsNonzeroNotify(notification);
     }
     KeReleaseSpinLock(&shared->Lock, irql);
     return notification;
@@ -236,7 +238,13 @@ static vad::audio::CaptureNotifyObservation RecordEventCaptureCopy(VAD_AUDIO_STR
 static void NotifyPacketComplete(VAD_AUDIO_STREAM* stream, uint64_t packet, uint64_t qpc,
     vad::audio::CaptureNotifyObservation observation)
 {
+    // Only the selected first nonzero event packet needs these two samples.
+    // No buffer access, extra lock or policy change precedes the actual call.
+    const auto enterQpc = observation.NonzeroCopy ?
+        static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart) : 0;
     const auto status = AcxRtStreamNotifyPacketComplete(stream->Stream, packet, qpc);
+    const auto returnQpc = observation.NonzeroCopy ?
+        static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart) : 0;
     if (!observation.Observed) { return; }
     observation.Status = static_cast<uint32_t>(status);
     auto child = VadChild(stream->Device);
@@ -245,7 +253,8 @@ static void NotifyPacketComplete(VAD_AUDIO_STREAM* stream, uint64_t packet, uint
     KeAcquireSpinLock(&shared->Lock, &irql);
     const auto& slot = shared->Slots[child->Index];
     if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
-        shared->CaptureDiagnostics[child->Index].RecordNotify(stream->Generation, observation);
+        shared->CaptureDiagnostics[child->Index].RecordNotify(
+            stream->Generation, observation, enterQpc, returnQpc);
     }
     KeReleaseSpinLock(&shared->Lock, irql);
 }
