@@ -210,35 +210,28 @@ impl Render for CachedChrome {
     }
 }
 
-pub(super) fn toolbar_for_page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    if shell.presentation.page == Page::Mixer {
-        shell
-            .mixer_toolbar
-            .clone()
-            .cached(
-                StyleRefinement::default()
-                    .w_full()
-                    .h(px(theme::TOOLBAR_HEIGHT))
-                    .flex_none(),
-            )
-            .into_any_element()
-    } else {
-        toolbar(shell, cx).into_any_element()
-    }
+pub(super) fn toolbar_for_page(shell: &StudioShell) -> AnyElement {
+    // Chrome is cached on every page: both meter frames — not the shell —
+    // own the animation loops, so shell notifications here are real state
+    // changes and the cached tree rebuilds through its shell observer.
+    shell
+        .toolbar_chrome
+        .clone()
+        .cached(
+            StyleRefinement::default()
+                .w_full()
+                .h(px(theme::TOOLBAR_HEIGHT))
+                .flex_none(),
+        )
+        .into_any_element()
 }
 
-pub(super) fn status_for_page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    if shell.presentation.page == Page::Mixer {
-        shell
-            .mixer_status
-            .clone()
-            .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
-            .into_any_element()
-    } else {
-        statusbar(shell.state.read(cx))
-            .gpui_test_observe()
-            .into_any_element()
-    }
+pub(super) fn status_for_page(shell: &StudioShell) -> AnyElement {
+    shell
+        .status_chrome
+        .clone()
+        .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
+        .into_any_element()
 }
 
 fn titlebar_drag_region(id: &'static str) -> impl IntoElement {
