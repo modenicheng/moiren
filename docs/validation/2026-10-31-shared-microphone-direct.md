@@ -149,3 +149,71 @@ nonzero packet copy with its actual notification result instead of native0.
 The [ACX streaming contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/acx-streaming)
 permits packet-vregister consumption without the capture query callback;
 missing callback witnesses therefore remain unknown.
+
+## Zero-mean AC control and explicit cleanup retention
+
+Probe commits `a26d0d8`, `2b9bd4f` and `cdbb836` add an opt-in AC energy
+diagnostic and retain cleanup failures without changing production routing.
+`--ac-diagnostic` requires the explicit Shared stereo microphone mode; it
+keeps exact 48 kHz PCM16/480 and zero Shared duration/periodicity. Ordinary
+and explicit Other/RAW remain separate modes, with no fallback. The payload
+has zero-mean 1 kHz left / 1.5 kHz right cycles in each 480-frame packet,
+quantized peaks 2048/5120. It is phase-continuous repeating energy, not a
+unique marker or a continuity detector. Every AC result remains unqualified,
+including a hypothetical nonzero result; the constant-pattern matcher is
+not used to validate it.
+
+Independent review found expected diagnostic failure could obscure revoke,
+drain and Stop failures. The two fixes retain original error context and
+each cleanup error, and explicitly Stop on every AC exit, including owner
+creation and pre-start setup failures. Normal modes retain their existing
+cleanup behavior. CLI, cleanup and setup tests each reproduce RED before
+the corresponding fix. Final host tests pass 78/78, strict Clippy, fmt and
+diff checks pass, target release tests/build pass, and final independent
+review closes the cleanup finding. Intermediate `2b9bd4f` was deployed but
+not used for a native run.
+
+Final `cdbb836` probe SHA-256 is
+`EB71E0B3FFD530100933A1FE727C3AB3C8F8BF6022BA5D013AA9315C969E0C03`.
+Driver stays `1513274`, `oem200.inf`, SYS SHA-256
+`E450E9589F3775254241D851116EF145B4D00DE007195DC6924BC6623E7F610F`.
+App and e2e probe stay verified `0fd3fbf`. Two sequential two-second final
+controls each submit 200 packets / 384000 bytes / 182000 nonzero samples.
+Ordinary completes 179 successful WRITEs / 343680 bytes with 20 drops; RAW
+completes 174 / 334080 bytes with 25 drops. Each collects 199 packets /
+95520 frames, all SILENT, zero nonzero samples, one discontinuity and zero
+timestamp errors. Neither final failure contains a cleanup error. Both exit1
+with the explicitly unqualified energy-only diagnostic, not a signal pass.
+SILENT packet data is not read contrary to the API flag contract.
+
+Both matching WPP decodes have 53 events, zero lost/unknown/format errors.
+Ordinary native1/request2/index1 in generation1/gate1 has nonzero equal copy
+witness QPC664548726899 and successful notify entry664548727067 /
+return664548727092. RAW independently has native1/request2/index1 in
+generation1/gate1, copy664595514445, entry664595514685 /
+return664595514745, also STATUS_SUCCESS. Successful same-packet notification
+does not demonstrate Shared consumption, mapping correctness or whole-payload
+integrity. AC remaining silent rules out only the old DC shape as a sufficient
+explanation, not every processing, session or driver cause.
+
+The preceding `a26d0d8` ordinary/RAW controls are also all SILENT: respectively
+188/179 successful WRITEs, 11/20 dropped, with the same 199 packets / 95520
+captured frames and zero nonzero samples. Its archive
+`ac-control-a26d0d8-20261031.zip` is 276654 bytes, 22 manifest files / 23
+entries, 1432670 uncompressed bytes, SHA-256
+`34E97CC77DAEF70056DEB0A6E3C74C86FD23476C765D39448FAB770AC88AE0EC`.
+Final archive `ac-final-cdbb836-20261031.zip` is 277956 bytes, 22 manifest
+files / 23 entries, 1439366 uncompressed bytes, SHA-256
+`112110B351618D437EB1A44D8E054DADD2D80C30478328C8A6BB3CD601AF818E`.
+Host verification checks exact entry sets, every length/hash, archive receipt
+and totals. Raw target copies and caches remain; no cleanup is justified by
+242281246720 free D: bytes. Both final runs remove owned processes/children,
+preserve root PnP OK and boot, and change no volume, mute, role or privacy
+setting. No physical output is used.
+
+Session0 with no logged-on user remains an unproven confound. Do not repeat
+equivalent headless variants or add more same-packet driver instrumentation.
+The useful next comparison is the same binary/config in session0 after a real
+console login, then in that interactive session. No automatic login or policy
+change is authorized. If both remain silent, observe an independent client/KS
+mapping boundary instead of inferring consumption from internal trace success.
