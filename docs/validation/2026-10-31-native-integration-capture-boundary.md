@@ -338,3 +338,77 @@ Host verification checks exact names, lengths and hashes before extraction;
 host-only decoded traces stay outside the raw archive. No remote evidence is
 deleted; D: retains242293538816free bytes. S1-S3 and physical latency gates
 remain open. Non-latency PR extraction continues separately from this experiment.
+
+## Same-nonzero-packet notification result
+
+Diagnostic commit `1513274` (independent worktree source `7fe0e5e`) associates
+the first nonzero event-copy witness with that exact native packet's notify
+return status. Gate, generation, packet count, sequence and copy-witness QPC
+must match; the retained copy already identifies the request. Only that call
+adds entry/return QPC samples. No audio memory is read again at notification,
+no notification order changes, and no callback logs or allocations are added.
+Fixed record is520 bytes/endpoint, compile-time cap576. Passive QUERY publishes
+the detached record once; generation reset prevents stale publication.
+The field named copy_qpc is the existing callback timestamp, not a newly
+measured memcpy timestamp. A successful notify is not evidence of consumption.
+
+The sidecar reproduces the missing-native1 regression as exit1 and restores
+GREEN with success/failure, gate-change, generation-reset, mismatch and passive
+publication tests. Parent independently passes all12 host suites and WDK
+`-Analyze`, linked SYS generation and InfVerif. The new trace message's11 fields
+appear in matching PDB/TMF. These host tests stub DDIs, not native delivery.
+
+After signing with the existing pinned certificate, the target validates SYS/CAT
+signatures, SYS+INF catalog membership and exact hashes. Install/restart return0,
+no reboot: `oem200.inf`, version `3.1.1.606`, root PnP OK/service Running,
+installed SYS SHA-256
+`E450E9589F3775254241D851116EF145B4D00DE007195DC6924BC6623E7F610F`.
+Previous packages remain available for rollback. App remains verified `0fd3fbf`;
+the direct control uses RAW-capable probe `3ac3f6c`, SHA-256
+`734EE639C23163F4B88F8A364D652C9AD406899A96D72A9406DF71A0CB45C5B9`.
+
+Both ordinary and explicit Other/RAW Shared controls initialize exact stereo
+PCM16/480 with native buffer1056. Each submits200 packets /384000 bytes and
+192000 nonzero samples. Ordinary completes175 successful WRITEs /336000 bytes
+with24 drops; RAW completes182 /349440 bytes with17 drops. Both collect199
+packets /95520 frames, all SILENT, zero nonzero samples, one discontinuity,
+zero timestamp errors, and exit1 on insufficient matching PCM.
+
+The ordinary trace now correlates generation5/gate9 native1/request2/index1,
+nonzero/equal16-byte source/destination prefix, with actual `STATUS_SUCCESS`:
+copy witness QPC652550470497, notify entry652550470587, return652550470613.
+RAW independently correlates generation1/gate1 native1/request2/index1 and
+`STATUS_SUCCESS`, copy QPC652795705946, entry652795706133, return652795706166.
+This closes the prior missing same-packet notify-result boundary, but not
+same-packet consumption, whole-payload integrity, byte freshness at notify,
+Shared processing or session/privacy effects. No capture-query or position
+witness appears; ACX shared-register clients need not invoke that callback.
+
+Matching decodes have76 ordinary and53 RAW events, zero lost/unknown/format
+errors. Both runs remove owned processes/children, preserve root PnP/boot and
+render/default settings. No physical output, privacy write or cache clean.
+The SSH session0/no logged-on-user confound remains unresolved; no automatic
+login or privacy-policy adjustment is attempted. The known constant/DC probe
+pattern is functional evidence only, not a continuous-waveform test.
+
+`nonzero-notify-1513274-20261031.zip`:90632 bytes,33 manifest files /34 entries,
+1103460 uncompressed bytes, SHA-256
+`D0A4F8FE5B50A4E19BBA3057CB85616875AC26599E7C3D6B114262D9994C0D56`.
+Host checks remote identity and all entry names, lengths and hashes; host-only
+decoded logs stay outside raw archives. Remote evidence/caches remain;
+D: free242287792128 bytes. No physical latency or continuous-output acceptance
+is inferred, and draft PR26 remains unmerged.
+
+### Next boundary, without another driver-instrumentation loop
+
+The same-packet notification gap is now observed, so stop adding driver
+witnesses for that question. A bounded zero-mean changing-signal control can
+first distinguish the legacy constant/DC pattern from signal-shape effects,
+but must use explicit diagnostics rather than the constant-pattern matcher.
+If that remains all SILENT, compare the same binary/configuration first in
+session0 after a real console login, then in that interactive session. This
+separates login-state and execution-session changes; neither currently exists
+as measured evidence, and no automatic login is authorized by this plan.
+If both contexts remain silent, the next useful boundary is an independent
+client/KS mapping observation, not repeated internal prefix/notify traces.
+Actual physical latency still requires the independent calibrated reference.
