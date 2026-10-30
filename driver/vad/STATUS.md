@@ -7,12 +7,23 @@ verdict. Status updated 2026-10-31.
 ## Latest physical checkpoint - 2026-10-31
 
 The separate physical target has app `6827f02`, integration holder `ac93295`,
-and diagnostic driver `1513274`: `oem200.inf`, version `3.1.1.606`.
+and pause-fence driver `6d9e32f`: `oem201.inf`, version `3.1.1.607`.
 Service Running/root PnP OK and exact SYS hash are verified, with the old
 rollback package retained and no reboot. A fresh read-only audit confirms no
 owned build/audio processes before further work. Native retries are authorized;
 older paused-retry statements below describe dated history. Only DAWN
 headphones are used for audible runs; speaker/default settings stay unchanged.
+
+The pause-fence repair serializes epoch publication with PCM queue draining
+and adds a stream-release fence without weakening the Rust cancellation guard.
+All13 MSVC host suites,8 WSL portable suites,54 pause-fence scenarios,93 Rust
+provider tests and final WDK analysis/INF validation pass. Bounded old/new
+native observations retain unchanged-epoch Pause on the old driver and epoch
+increments on the new one; both60-second holders complete without nested
+errors. The original fatal holder failure occurs in neither, so no causal
+native-fix or waveform-continuity claim follows. Exact deployment, rollback,
+verified archive and limitations are in the
+[pause-fence receipt](../../docs/validation/2026-10-31-vad-pause-fence.md).
 
 Shared microphone controls now correlate a successful ACX notification with a
 nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared

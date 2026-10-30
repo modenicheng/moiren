@@ -12,6 +12,15 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [2026-10-31 pause-fence receipt](2026-10-31-vad-pause-fence.md) records
+three actual-routine cancellation/fencing RED cases, serialized drain/fence
+repair, bounded host/WSL/WDK/provider coverage and verified physical deployment
+of driver `6d9e32f` / `oem201.inf` / `3.1.1.607`. Matching old/new native
+observations retain the expected Pause epoch difference, but the original
+fatal holder failure occurs in neither. This is lifecycle evidence, not exact
+S1 routing, acquired waveform, calibrated latency or S1-S3 completion. The
+archive is verified entry-by-entry on target and host; rollback/caches remain.
+
 The [rename diagnostic portability follow-up](2026-10-30-rename-test-portability.md)
 adds exact topology-error serialization and sticky phase-failure coverage,
 after Linux CI passes the repaired probe suites but exposes missing portable
