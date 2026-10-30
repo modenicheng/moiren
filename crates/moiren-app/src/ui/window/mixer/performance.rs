@@ -12,13 +12,20 @@ pub(in crate::ui::window) struct MeterTrace {
     pub strip_renders: usize,
     pub toolbar_renders: usize,
     pub status_renders: usize,
+    /// Meter-frame pump invocations on the graph page's animation view.
+    pub graph_frames: usize,
+    /// Graph page content (cached controls) renders.
+    pub graph_renders: usize,
+    /// StudioShell root renders; on a healthy page this stays flat while
+    /// meter animation frames flow.
+    pub shell_renders: usize,
     previous: Option<Instant>,
     cpu: Duration,
     gap: Duration,
     active: bool,
     frames: Vec<(f64, f64, usize)>,
     dropped: usize,
-    sample_counts: (usize, usize, usize, usize),
+    sample_counts: (usize, usize, usize, usize, usize, usize, usize),
     level_changes: usize,
     previous_levels: Option<u64>,
 }
@@ -35,6 +42,9 @@ impl MeterTrace {
             self.meter_paints,
             self.toolbar_renders,
             self.status_renders,
+            self.graph_frames,
+            self.shell_renders,
+            self.graph_renders,
         );
         self.level_changes = 0;
         self.previous_levels = None;
@@ -94,6 +104,9 @@ impl MeterTrace {
                 "meter_paints": self.meter_paints - self.sample_counts.1,
                 "toolbar_renders": self.toolbar_renders - self.sample_counts.2,
                 "status_renders": self.status_renders - self.sample_counts.3,
+                "graph_frames": self.graph_frames - self.sample_counts.4,
+                "shell_renders": self.shell_renders - self.sample_counts.5,
+                "graph_renders": self.graph_renders - self.sample_counts.6,
                 "level_changes": self.level_changes,
             }))?,
         )?;

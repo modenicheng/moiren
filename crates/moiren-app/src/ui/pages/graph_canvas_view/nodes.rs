@@ -149,11 +149,14 @@ fn paint_track(
     );
 }
 
+/// `peaks` is read at paint time, not baked into the projected world, so
+/// meter motion repaints without re-projecting the graph.
 pub(super) fn paint_node(
     frame: &CanvasFrame,
     node: &CanvasNode,
     layout: &NodeLayout,
     selected: bool,
+    peaks: Option<[f32; 2]>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -252,7 +255,7 @@ pub(super) fn paint_node(
                 layout.scale,
                 window,
             );
-            if let Some(peaks) = node.peaks {
+            if let Some(peaks) = peaks {
                 meter.size.width *= crate::ui::widgets::meters::meter_height(peaks[channel]);
                 rounded(frame.window_rect(meter), tint, layout.scale, window);
             }

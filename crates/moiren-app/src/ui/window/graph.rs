@@ -5,6 +5,7 @@ use super::*;
 mod compressor;
 mod library;
 pub(super) use compressor::CompressorControls;
+pub(super) mod meter_frame;
 mod node_inspector;
 pub(super) use library::PendingNodeSpawn;
 pub(in crate::ui::window) use library::{library, library_rail};
@@ -105,17 +106,19 @@ impl StudioShell {
     }
 }
 
-pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyElement {
+/// The graph page's cached content: canvas, library, editing toolbar. The
+/// shell renders this through [`super::meter_frame::page`], which caches it
+/// behind [`meter_frame::ControlsKey`] and adds the animation-owner meter
+/// frame as a sibling.
+pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
-    let mut projected =
-        pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &shell.node_positions);
-    for node in &mut projected.nodes {
-        node.peaks = node
-            .node_id
-            .and_then(|id| shell.node_meters.levels(id))
-            .map(|levels| levels.map(|level| level.bar));
-    }
-    let world = std::sync::Arc::new(projected);
+    // Meter bar readings are not baked in: the canvas paint consults the
+    // live ballistics per draw, so meter motion repaints without the page
+    // cache being invalidated or the world being re-projected.
+    let world = std::sync::Arc::new(pages::graph_canvas::CanvasWorld::positioned(
+        &state.snapshot,
+        &shell.node_positions,
+    ));
     let camera = shell.camera;
     // The canvas view identifies nodes by their Debug id string; this is the
     // single NodeId -> canvas-id conversion on the render path.
@@ -135,6 +138,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
             .map(|edge| format!("{:?}", edge.id()))
     });
     let this = cx.entity();
+    let node_levels = meter_frame::node_levels(&this);
 
     // Canvas view with interaction plumbed to the shell entity.
     let on_zoom = {
@@ -411,6 +415,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 .selection_drag
                 .as_ref()
                 .map(|drag| (drag.anchor, drag.current)),
+            node_levels,
             on_port_down: std::rc::Rc::new({
                 let this = this.clone();
                 let nodes = world.clone();
@@ -535,8 +540,8 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
 
     div()
         .id("graph-page")
+        .size_full()
         .flex()
-        .flex_1()
         .min_h_0()
         .min_w_0()
         .overflow_hidden()
