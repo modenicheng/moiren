@@ -422,6 +422,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              source/collection and Internal boundary; schema2 config may omit input_endpoint_id,\n\
              which resolves only the owned microphone. An explicit recorder ID must match exactly.\n\
              Software capture has no independent delay reference and never qualifies physical latency.\n\
+              Source schedules retain v1; waveform_version moiren-marker-xorshift32-indexed-v2 explicitly opts into index-coded markers (4 MiB precompute cap), not recorder clock alignment.\n\
              live-vad accepts --vad-recovery-cap-periods 1..8; omitted preserves 8.\n\
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
              --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
@@ -2980,6 +2981,51 @@ mod tests {
             assert!(prepare_paths(&options).is_err(), "reserved {file}");
             assert!(!directory.exists());
         }
+    }
+
+    #[test]
+    fn source_v2_dry_run_retains_exact_versioned_plan_without_clock_mapping() {
+        let directory = temp_dir("source-v2-explicit-dry-run");
+        let input = directory.with_extension("input.json");
+        let bytes = String::from_utf8(source_plan_bytes())
+            .unwrap()
+            .replace(
+                "moiren-marker-xorshift32-v1",
+                "moiren-marker-xorshift32-indexed-v2",
+            )
+            .into_bytes();
+        let exact_plan: Value = serde_json::from_slice(&bytes).unwrap();
+        fs::write(&input, &bytes).unwrap();
+        let mut args = source_test_args(&directory);
+        args.extend([
+            "--source-schedule".into(),
+            input.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(run(args).unwrap(), 1);
+        assert_eq!(
+            fs::read(directory.join("source-schedule.json")).unwrap(),
+            bytes
+        );
+        for (file, path) in [
+            ("report.json", vec!["source", "playback_source"]),
+            ("manifest.json", vec!["playback_source"]),
+        ] {
+            let report: Value =
+                serde_json::from_slice(&fs::read(directory.join(file)).unwrap()).unwrap();
+            let provenance = path.iter().fold(&report, |value, key| &value[*key]);
+            assert_eq!(provenance["schedule"], exact_plan);
+            assert!(
+                provenance["recorder_clock"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no automatic")
+            );
+            assert_eq!(report["status"], "unqualified");
+            assert!(report["native"]["vad_playback"].is_null());
+        }
+        assert!(!directory.join("measurement.f32le").exists());
+        fs::remove_file(input).unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

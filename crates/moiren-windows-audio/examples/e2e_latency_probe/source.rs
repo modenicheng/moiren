@@ -1,4 +1,9 @@
 //! Source-clock plans and acknowledged native submissions, never recorder windows.
+//!
+//! v1 repeats one marker. Opt-in indexed-v2 assigns each starts[index] the
+//! corresponding segment of one continuous fixed-seed PRNG stream. Identity
+//! requires the exact schedule and version, not the order of recorded peaks;
+//! this generator neither aligns recorder clocks nor qualifies a waveform.
 
 use anyhow::{Context, Result, ensure};
 use moiren_windows_audio::latency::MarkerGenerator;
@@ -7,6 +12,8 @@ use std::{fs::File, io::Read, path::Path};
 
 pub const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 pub const WAVEFORM_VERSION: &str = "moiren-marker-xorshift32-v1";
+pub const INDEXED_WAVEFORM_VERSION: &str = "moiren-marker-xorshift32-indexed-v2";
+const MAX_CODEBOOK_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -76,7 +83,10 @@ impl SourceSchedule {
             "source schedule identity must be 1..128 ASCII letters/digits or -_."
         );
         ensure!(
-            self.waveform_version == WAVEFORM_VERSION,
+            matches!(
+                self.waveform_version.as_str(),
+                WAVEFORM_VERSION | INDEXED_WAVEFORM_VERSION
+            ),
             "unsupported source waveform version"
         );
         ensure!(
@@ -123,8 +133,32 @@ impl SourceSchedule {
             );
             previous_end = end;
         }
-        let mut marker = vec![0.0; self.marker_frames];
-        MarkerGenerator::new(self.marker_frames, self.marker_amplitude)?.fill(&mut marker);
+        // v1 deliberately restarts one marker at every start. The explicit v2
+        // codebook is one continuous PRNG stream: starts[index] owns segment
+        // index, independently of silence, native chunking, or later detection.
+        // Admission and generation happen before any native owner is opened.
+        let marker_count = if self.waveform_version == INDEXED_WAVEFORM_VERSION {
+            self.starts.len()
+        } else {
+            1
+        };
+        let marker_samples = self
+            .marker_frames
+            .checked_mul(marker_count)
+            .context("source codebook sample count overflow")?;
+        let marker_bytes = marker_samples
+            .checked_mul(size_of::<f32>())
+            .context("source codebook byte count overflow")?;
+        ensure!(
+            marker_bytes <= MAX_CODEBOOK_BYTES,
+            "source codebook byte cap exceeded"
+        );
+        let mut marker = Vec::new();
+        marker
+            .try_reserve_exact(marker_samples)
+            .context("reserve source codebook")?;
+        marker.resize(marker_samples, 0.0);
+        MarkerGenerator::new(marker_samples, self.marker_amplitude)?.fill(&mut marker);
         Ok(PreparedSource {
             schedule: self,
             marker,
@@ -251,7 +285,20 @@ impl SourceCursor {
                         0.0
                     } else {
                         let offset = frame - plan.schedule.starts[index - 1];
-                        plan.marker.get(offset as usize).copied().unwrap_or(0.0)
+                        if offset < plan.schedule.marker_frames as u64 {
+                            let code = if plan.schedule.waveform_version == INDEXED_WAVEFORM_VERSION
+                            {
+                                index - 1
+                            } else {
+                                0
+                            };
+                            // Slice the selected code first: silence after it
+                            // must never read into the next codebook segment.
+                            let start = code * plan.schedule.marker_frames;
+                            plan.marker[start..start + plan.schedule.marker_frames][offset as usize]
+                        } else {
+                            0.0
+                        }
                     }
                 }
                 Some(_) => 0.0,
@@ -305,6 +352,172 @@ mod tests {
         }
     }
 
+    fn indexed_schedule() -> SourceSchedule {
+        SourceSchedule {
+            waveform_version: "moiren-marker-xorshift32-indexed-v2".into(),
+            total_source_frames: 181,
+            starts: vec![0, 65, 130],
+            ..schedule()
+        }
+    }
+
+    fn rendered(plan: SourceSchedule, chunks: &[usize]) -> Vec<f32> {
+        let frames = plan.total_source_frames as usize + 19;
+        let mut cursor = SourceCursor::new(Some(plan.prepare(600).unwrap()));
+        let mut output = Vec::new();
+        for &chunk in chunks.iter().cycle() {
+            let count = chunk.min(frames - output.len() / 2);
+            let mut packet = vec![99.0; count * 2];
+            cursor.submit(&mut packet, false, |_| Ok(())).unwrap();
+            output.extend(packet);
+            if output.len() / 2 == frames {
+                break;
+            }
+        }
+        assert!(cursor.progress.schedule_submitted_complete);
+        output
+    }
+
+    #[test]
+    fn source_v1_golden_bytes_repeat_the_original_fixed_seed_marker() {
+        // Fixed expected bits, independent of the generator under test.
+        let negative_mask = 0x3f94_64abu32;
+        let output = rendered(schedule(), &[7, 31, 1, 480]);
+        for (frame, pair) in output.as_chunks::<2>().0.iter().enumerate() {
+            let offset = [0, 65]
+                .into_iter()
+                .find_map(|start| frame.checked_sub(start).filter(|offset| *offset < 32));
+            let expected = offset.map_or(0.0f32, |offset| {
+                if negative_mask & (1 << offset) == 0 {
+                    0.1
+                } else {
+                    -0.1
+                }
+            });
+            assert_eq!(pair.map(f32::to_bits), [expected.to_bits(); 2]);
+        }
+    }
+
+    #[test]
+    fn source_v2_codes_keep_plan_indices_across_silence_and_chunk_boundaries() {
+        let plan = indexed_schedule();
+        let output = rendered(plan.clone(), &[4096]);
+        assert_eq!(output, rendered(plan.clone(), &[1, 31, 33, 480, 7]));
+        let masks = [0x3f94_64abu32, 0x4ca4_5baa, 0x9187_8970];
+        for (frame, pair) in output.as_chunks::<2>().0.iter().enumerate() {
+            let expected = plan
+                .starts
+                .iter()
+                .enumerate()
+                .find_map(|(index, &start)| {
+                    frame
+                        .checked_sub(start as usize)
+                        .filter(|offset| *offset < 32)
+                        .map(|offset| {
+                            if masks[index] & (1 << offset) == 0 {
+                                0.1f32
+                            } else {
+                                -0.1
+                            }
+                        })
+                })
+                .unwrap_or(0.0);
+            assert_eq!(pair.map(f32::to_bits), [expected.to_bits(); 2]);
+        }
+        let mut moved = plan;
+        moved.starts = vec![13, 101, 167];
+        moved.total_source_frames = 211;
+        let shifted = rendered(moved.clone(), &[17, 29]);
+        for (index, &start) in moved.starts.iter().enumerate() {
+            let original_start = [0, 65, 130][index];
+            assert_eq!(
+                &shifted[start as usize * 2..(start as usize + 32) * 2],
+                &output[original_start * 2..(original_start + 32) * 2]
+            );
+        }
+        // If the first observation is absent, marker 1 is still code 1, not
+        // code 0. This is a source identity check, not a recovery algorithm.
+        assert_ne!(&output[65 * 2..97 * 2], &output[..32 * 2]);
+        assert_ne!(&output[130 * 2..162 * 2], &output[65 * 2..97 * 2]);
+    }
+
+    #[test]
+    fn source_v2_precomputes_29_distinct_segments_of_one_continuous_generator() {
+        let plan = SourceSchedule {
+            marker_frames: 1024,
+            total_source_frames: 29 * 1041,
+            starts: (0..29).map(|index| index * 1041).collect(),
+            ..indexed_schedule()
+        };
+        let prepared = plan.prepare(1).unwrap();
+        let mut expected = vec![0.0; 29 * 1024];
+        MarkerGenerator::new(expected.len(), 0.1)
+            .unwrap()
+            .fill(&mut expected);
+        assert_eq!(prepared.marker, expected);
+        let codes = prepared.marker.as_chunks::<1024>().0;
+        for (index, code) in codes.iter().enumerate() {
+            assert!(codes[..index].iter().all(|prior| prior != code));
+        }
+    }
+
+    #[test]
+    fn source_v2_codebook_cap_is_independent_of_json_duration_and_v1_limits() {
+        let mut plan = indexed_schedule();
+        plan.marker_frames = 256;
+        plan.starts = (0..4096).map(|index| index * 256).collect();
+        plan.total_source_frames = 4096 * 256;
+        let exact = plan.clone().prepare(600).unwrap();
+        assert_eq!(exact.marker.len() * size_of::<f32>(), 4 * 1024 * 1024);
+        plan.marker_frames = 257;
+        plan.starts = (0..4096).map(|index| index * 257).collect();
+        plan.total_source_frames = 4096 * 257;
+        assert!(
+            plan.clone()
+                .prepare(600)
+                .unwrap_err()
+                .to_string()
+                .contains("codebook")
+        );
+        plan.waveform_version = WAVEFORM_VERSION.into();
+        assert_eq!(plan.prepare(600).unwrap().marker.len(), 257);
+    }
+
+    #[test]
+    fn source_v2_failed_release_retries_identical_code_without_advancing_identity() {
+        let mut cursor = SourceCursor::new(Some(indexed_schedule().prepare(1).unwrap()));
+        cursor
+            .submit(&mut [99.0; 16], true, |samples| {
+                assert!(samples.iter().all(|sample| *sample == 0.0));
+                Ok(())
+            })
+            .unwrap();
+        for frames in [65, 32, 52, 32] {
+            let before = cursor.progress.clone();
+            let mut attempted = Vec::new();
+            let mut buffer = vec![99.0; frames * 2];
+            assert!(
+                cursor
+                    .submit(&mut buffer, false, |samples| {
+                        attempted.extend_from_slice(samples);
+                        anyhow::bail!("injected ReleaseBuffer failure")
+                    })
+                    .is_err()
+            );
+            assert_eq!(cursor.progress, before);
+            cursor
+                .submit(&mut buffer, false, |samples| {
+                    assert_eq!(samples, attempted);
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert_eq!(cursor.progress.origin_submission_frame, Some(8));
+        assert_eq!(cursor.progress.acknowledged_source_frames, 181);
+        assert_eq!(cursor.progress.submitted_nonzero_frames, 96);
+        assert!(cursor.progress.schedule_submitted_complete);
+    }
+
     #[test]
     fn source_plan_rejects_invalid_bounds_overflow_order_and_unknown_fields() {
         let valid = schedule();
@@ -344,6 +557,36 @@ mod tests {
         let mut unknown = serde_json::to_value(valid).unwrap();
         unknown["recorder_start_frame"] = serde_json::json!(0);
         assert!(serde_json::from_value::<SourceSchedule>(unknown).is_err());
+    }
+
+    #[test]
+    fn source_v2_uses_existing_schema_bounds_and_rejects_version_fallback() {
+        let valid = indexed_schedule();
+        for (field, value) in [
+            ("schema_version", serde_json::json!(2)),
+            (
+                "waveform_version",
+                serde_json::json!("moiren-marker-xorshift32-indexed-v3"),
+            ),
+            (
+                "waveform_version",
+                serde_json::json!("moiren-marker-xorshift32-indexed-v2 "),
+            ),
+            ("sample_rate", serde_json::json!(44_100)),
+            ("channels", serde_json::json!(1)),
+            ("marker_frames", serde_json::json!(31)),
+            ("marker_frames", serde_json::json!(48_001)),
+            ("starts", serde_json::json!([0, 31])),
+            ("starts", serde_json::json!([u64::MAX])),
+        ] {
+            let mut value_plan = serde_json::to_value(&valid).unwrap();
+            value_plan[field] = value;
+            let plan: SourceSchedule = serde_json::from_value(value_plan).unwrap();
+            assert!(plan.prepare(1).is_err(), "accepted invalid v2 {field}");
+        }
+        let mut missing = serde_json::to_value(valid).unwrap();
+        missing.as_object_mut().unwrap().remove("waveform_version");
+        assert!(serde_json::from_value::<SourceSchedule>(missing).is_err());
     }
 
     #[test]
