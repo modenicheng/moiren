@@ -16,6 +16,10 @@ use super::validation_policy::ValidationPolicy;
 mod boundary_quality;
 
 #[cfg(any(windows, test))]
+#[path = "vad_collection/retirement_quality.rs"]
+mod retirement_quality;
+
+#[cfg(any(windows, test))]
 #[path = "vad_collection/clock_quality.rs"]
 pub(super) mod clock_quality;
 
@@ -1223,6 +1227,19 @@ pub(super) fn collect(
         );
     }
     guard.finish();
+    if guard.recorder_admitted
+        && let Err(error) = retirement_quality::validate(
+            guard.vad.report,
+            guard.route,
+            guard.policy,
+            &mut guard.quality,
+        )
+    {
+        append_failure(
+            &mut guard.failures,
+            &format!("final provider QUERY: {error:#}"),
+        );
+    }
     let source_submitted_complete = reconcile_source_outcome_with_policy(
         guard.vad.playback_outcome.as_ref(),
         frames,
