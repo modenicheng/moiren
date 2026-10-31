@@ -55,6 +55,14 @@ setup failure without proving its unique cause, a scheduling fix, delivered
 waveform continuity or physical latency. Both original outcomes are preserved;
 the later final-QUERY repair remains natively unverified.
 
+A subsequent [frozen one-window model diagnostic](2026-10-31-stable-binding-src-window0.md)
+uses the existing synthetic FIR/affine model, unchanged grid and all29 exact
+codes. Within233290848 charged samples it resolves the first support window
+as code0, while preserving the original nominal13/29 and9611 policy violations.
+This makes transformation plausible for that mismatch, not a measured SRC
+history, complete-set/continuity result or replacement quality pass. Other
+windows are not evaluated and no native run or production change is made.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie

@@ -44,6 +44,10 @@ Clippy, formatting and Linux-target test compilation on the follow-up tree.
 
 The synthetic production-SRC fixtures recover exact nonzero source indices
 where the nominal model refuses. They do not analyze or fit retained native
-PCM. The existing14/29 native nominal result, all native quality faults and
+PCM in this original slice. The later separate
+[frozen single-window diagnostic](2026-10-31-stable-binding-src-window0.md)
+applies the unchanged model to one stable-binding recorder window, not a new
+CLI or complete-set/quality result. The existing14/29 native nominal result,
+the later stable-binding13/29 result, all native quality faults and
 source-clock unknowns remain unchanged. S1-S3, calibrated physical sub10ms,
 and evidence for a current-device theoretical lower bound remain open.

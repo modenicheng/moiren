@@ -123,6 +123,12 @@ Analysis receipt SHA256:
 The original argv, window proposal, inputs, stdout/stderr and failure remain
 under `root-indexed-analysis`; this is diagnostic evidence, not acceptance.
 
+The separate [one-window SRC-model investigation](2026-10-31-stable-binding-src-window0.md)
+then freezes window0 and competes all29 exact codes under the existing finite
+synthetic model. It resolves code0 without changing this nominal13/29 verdict,
+packet-quality failure or incomplete acceptance. Other windows are not evaluated;
+neither transformation cause nor whole-recording continuity is proved.
+
 ## Archive, decode and exact cleanup
 
 The44-payload archive plus manifest is2183778 bytes, SHA256
