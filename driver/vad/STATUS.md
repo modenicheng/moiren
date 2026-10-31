@@ -6,6 +6,21 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
+First-start MIC poll fix `9968505` requests half-packet wait (144frames ->1.5ms)
+only in the fresh admitted Paused window, preserving Running-only WRITE and
+all driver/buffer/default/recovery policies. Its actual same-fixture control
+`mic-startup-poll1` fails after4.7s: first retained Running startup silence0
+with3 host completions is followed by gate epoch1->2, driver silence2 at first
+fault/6live/7removed and cleanup slot2 `0x8007051A`. Source and runtime cleanup
+are incomplete; task/probe1 and all partial PCM are retained. Root verifies
+the28-payload archive; the nominal method identifies only1 of5 acknowledged
+source codes, with the other24 schedule codes not fully submitted. Neither
+missing detections nor1576 QPC-policy invalidations are proven losses. The
+new33781248-byte app is deployed side by side with help/monitor-help/offline
+smokes0, not new desktop/native acceptance. Host701 audio/622 probe tests,
+strict Clippy/fmt pass; no physical latency, stability or minimum is proven:
+[MIC startup poll control](../../docs/validation/2026-10-31-mic-startup-poll.md).
+
 The new Interactive/Limited exact `Playback -> unity Bus -> MIC` control
 `interactive-iobus1` completes source submission, collection and cleanup, with
 source480/MIC144 native frames and Engine32. Its acquired1456272-frame PCM is
@@ -31,7 +46,7 @@ master snapshots match; all four exact terminal tasks are removed after
 archive verification. No settings/default/budget or driver changes occur:
 [Shared VAD interactive control](../../docs/validation/2026-10-31-shared-vad-interactive-control.md).
 
-The separate physical target has the current main-PR52-integrated app
+The separate physical target retains the earlier main-PR52-integrated app
 `5f9eb02` (main `74ef5dd`),33780736 bytes, SHA256
 `4B3DD61FA488F5BB5C36AA9D0124AB0912D55FE79F49CFC33EE18882E5AFBCDE`,
 staged side by side with earlier app copies, and explicitly enabled
