@@ -655,28 +655,8 @@ pub fn shell_for_tests(
     shell
 }
 
-#[cfg(feature = "gpui-test")]
-pub(crate) trait TestObserve {
-    type Out;
-    fn gpui_test_observe(self) -> Self::Out;
-}
-#[cfg(feature = "gpui-test")]
-impl<E: gpui_kit::base::TestSupportExt> TestObserve for E {
-    type Out = gpui_kit::base::ObservedElement<E>;
-    fn gpui_test_observe(self) -> Self::Out {
-        gpui_kit::base::TestSupportExt::test_support(self)
-    }
-}
-#[cfg(not(feature = "gpui-test"))]
-pub(crate) trait TestObserve {
-    fn gpui_test_observe(self) -> Self;
-}
-#[cfg(not(feature = "gpui-test"))]
-impl<E> TestObserve for E {
-    fn gpui_test_observe(self) -> Self {
-        self
-    }
-}
+// Re-exported so the window submodules keep picking it up through `use super::*`.
+pub(crate) use crate::ui::observe::TestObserve;
 
 #[cfg(feature = "gpui-test")]
 mod capture;

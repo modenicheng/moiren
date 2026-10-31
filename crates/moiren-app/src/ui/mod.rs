@@ -8,6 +8,7 @@ mod branding;
 #[cfg(feature = "component-gallery")]
 mod component_gallery;
 pub mod monitoring;
+mod observe;
 mod pages;
 pub mod presentation;
 mod scroll_policy;
