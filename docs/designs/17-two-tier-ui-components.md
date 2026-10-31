@@ -1,7 +1,10 @@
 # Design 17: Two-tier UI components — hot surfaces and cached panels
 
-Status: accepted; implementation pending. User decisions D1–D3 confirmed
-2026-10-31.
+Status: implemented (2026-10-31, commits 6c38f30..70ef4bc). User decisions
+D1–D3 confirmed 2026-10-31. Validation: the full gpui-test suite, the
+workspace gates, and an `ui_capture` run — meter motion on the Mixer page
+rebuilds zero strips while the hot layers paint at display rate (190
+frames, meter work p95 3.3 ms debug, zero drops).
 
 Baseline: `main` at `c47035c` — P1 (platform frame pacing, #46) and P2 (graph
 render isolation, #42/#48/#50) landed. This is the consolidation step of
