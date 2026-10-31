@@ -345,11 +345,20 @@ pub struct NodeMeters {
 struct ClipHold(Vec<bool>);
 
 impl ClipHold {
-    fn observe(&mut self, levels: &[ChannelLevel]) {
+    /// Latches overload per channel and reports whether the latch state
+    /// changed, so the pump can wake on a freshly lit clip without cloning
+    /// the latch vector to compare (HC-14). A widening (new channels)
+    /// counts as a change, exactly as the previous before/after compare did.
+    fn observe(&mut self, levels: &[ChannelLevel]) -> bool {
+        let mut changed = self.0.len() != levels.len();
         self.0.resize(levels.len(), false);
         for (clip, level) in self.0.iter_mut().zip(levels) {
-            *clip |= level.peak >= 1.;
+            if !*clip && level.peak >= 1. {
+                *clip = true;
+                changed = true;
+            }
         }
+        changed
     }
 }
 
@@ -372,7 +381,7 @@ impl NodeMeters {
     pub fn update(
         &mut self,
         snapshot: &AppSnapshot,
-        visible: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
+        visible: impl IntoIterator<Item = moiren_core::graph::NodeId>,
     ) -> bool {
         self.update_at(snapshot, visible, Instant::now())
     }
@@ -380,7 +389,7 @@ impl NodeMeters {
     pub fn update_at(
         &mut self,
         snapshot: &AppSnapshot,
-        visible: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
+        visible: impl IntoIterator<Item = moiren_core::graph::NodeId>,
         now: Instant,
     ) -> bool {
         if self.generation != Some(snapshot.generation) {
@@ -393,7 +402,7 @@ impl NodeMeters {
         // brief swap window of an automatic rebuild must never blank them.
         let active = snapshot.phase == SessionPhase::Running;
         for id in visible {
-            self.seen.insert(*id, now);
+            self.seen.insert(id, now);
         }
         self.seen.retain(|id, seen| {
             snapshot.graph.node(*id).is_some()
@@ -411,43 +420,44 @@ impl NodeMeters {
         if !active {
             return changed;
         }
-        for (id, _) in self.seen.clone() {
-            let Some(topic) = snapshot.signal_topics.node_levels.get(&id) else {
+        // Borrow the seen table for the whole pass: the body only touches
+        // the sibling maps, and cloning the table here would allocate on
+        // every pump tick for every visible node (HC-14).
+        for id in self.seen.keys() {
+            let Some(topic) = snapshot.signal_topics.node_levels.get(id) else {
                 continue;
             };
             let Some(channels) = snapshot
                 .graph
                 .graph
-                .get_node(id)
+                .get_node(*id)
                 .ok()
                 .map(|node| node.channels())
             else {
                 continue;
             };
-            let subscription = self.subscriptions.entry(id).or_insert_with(|| {
+            let subscription = self.subscriptions.entry(*id).or_insert_with(|| {
                 MeterSubscription::new(self.handle.clone(), topic.clone(), channels)
             });
             if subscription.topic != *topic || subscription.channels != channels {
                 *subscription =
                     MeterSubscription::new(self.handle.clone(), topic.clone(), channels);
-                self.clips.remove(&id);
+                self.clips.remove(id);
             }
             let status = subscription.status.clone();
-            let raw = subscription.levels.clone();
             subscription.settings = self.settings;
-            let publication = subscription.poll(now);
+            let poll = subscription.poll(now);
             // A publication alone must not wake the interface: a running
             // stream publishes silence windows too, and notifying on each
             // would repaint at the control-poll rate forever. Only a
             // display-bearing change — raw readings, status, or a freshly
             // latched clip — justifies a repaint.
-            changed |=
-                subscription.status != status || raw.as_deref() != subscription.levels.as_deref();
-            if publication && let Some(levels) = subscription.levels.as_deref() {
-                let clips = self.clips.entry(id).or_default();
-                let before = clips.0.clone();
-                clips.observe(levels);
-                changed |= before != clips.0;
+            changed |= subscription.status != status || poll.raw_changed;
+            if poll.published
+                && let Some(levels) = subscription.levels.as_deref()
+            {
+                let clips = self.clips.entry(*id).or_default();
+                changed |= clips.observe(levels);
             }
         }
         changed
@@ -505,6 +515,17 @@ impl NodeMeters {
     }
 }
 
+/// What one pump of a subscription observed. `published` says windows were
+/// accepted; `raw_changed` says the stored reading moved. Callers may wake
+/// the interface only on the latter (plus status and clip changes): a
+/// running stream publishes unchanged windows at its own cadence, so a
+/// publication alone must not notify, and reporting the change from the
+/// drain itself spares the caller a pre-poll clone of every reading.
+struct MeterPoll {
+    published: bool,
+    raw_changed: bool,
+}
+
 impl MeterSubscription {
     /// Whether every layer of every channel is parked at the scale bottom:
     /// further frames would not move anything a viewer can see.
@@ -543,25 +564,31 @@ impl MeterSubscription {
         this
     }
 
-    fn poll(&mut self, now: Instant) -> bool {
-        let published = self.poll_windows(now);
+    fn poll(&mut self, now: Instant) -> MeterPoll {
+        let poll = self.poll_windows(now);
         self.advance_display(now);
-        published
+        poll
     }
 
-    /// Drains every queued window; returns whether a new publication was
-    /// accepted. Every drained window contributes its peak and its RMS share,
-    /// so intermediate windows between display reads are never lost.
-    fn poll_windows(&mut self, now: Instant) -> bool {
+    /// Drains every queued window; reports whether a new publication was
+    /// accepted and whether the raw reading moved. Every drained window
+    /// contributes its peak and its RMS share, so intermediate windows
+    /// between display reads are never lost.
+    fn poll_windows(&mut self, now: Instant) -> MeterPoll {
+        let mut raw_changed = false;
         let status = self.topic.status();
         if status.lifecycle == TopicLifecycle::Closed
             || status.publisher == PublisherStatus::NoPublisher
         {
+            raw_changed |= self.levels.is_some();
             self.levels = None;
             self.last_delivery = None;
             self.sequence_fence = self.topic.stats().attempts;
             self.status = MeterStatus::NoPublisher;
-            return false;
+            return MeterPoll {
+                published: false,
+                raw_changed,
+            };
         }
         if let Some(ticket) = self.ticket.as_mut() {
             match ticket.try_take() {
@@ -572,17 +599,24 @@ impl MeterSubscription {
                 Ok(None) => {}
                 Err(error) => {
                     self.ticket = None;
+                    raw_changed |= self.levels.is_some();
                     self.levels = None;
                     self.status = MeterStatus::Error(
                         t!("Meter subscription: %{error}", error = error.to_string()).to_string(),
                     );
-                    return false;
+                    return MeterPoll {
+                        published: false,
+                        raw_changed,
+                    };
                 }
             }
         }
         let Some(subscriber) = self.subscriber.as_mut() else {
             self.status = MeterStatus::Waiting;
-            return false;
+            return MeterPoll {
+                published: false,
+                raw_changed,
+            };
         };
         let mut published = false;
         while let Some(window) = subscriber.next() {
@@ -607,11 +641,15 @@ impl MeterSubscription {
             match self.levels.as_deref_mut() {
                 Some(levels) => {
                     for (level, element) in levels.iter_mut().zip(elements) {
+                        raw_changed |= element.peak > level.peak || element.rms != level.rms;
                         level.peak = level.peak.max(element.peak);
                         level.rms = element.rms;
                     }
                 }
-                None => self.levels = Some(elements.to_vec().into_boxed_slice()),
+                None => {
+                    self.levels = Some(elements.to_vec().into_boxed_slice());
+                    raw_changed = true;
+                }
             }
             let duration = window_secs(header);
             sync_ballistics(&mut self.ballistics, &mut self.display, self.channels);
@@ -620,18 +658,25 @@ impl MeterSubscription {
             }
         }
         if published {
-            return true;
+            return MeterPoll {
+                published: true,
+                raw_changed,
+            };
         }
         if self
             .last_delivery
             .is_some_and(|last| now.saturating_duration_since(last) >= STALE_AFTER)
         {
+            raw_changed |= self.levels.is_some();
             self.levels = None;
             self.status = MeterStatus::Stale;
         } else if self.last_delivery.is_none() {
             self.status = MeterStatus::Waiting;
         }
-        false
+        MeterPoll {
+            published: false,
+            raw_changed,
+        }
     }
 
     /// Step the display ballistics. Runs on every pump (display frame or

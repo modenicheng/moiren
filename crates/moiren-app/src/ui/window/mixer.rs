@@ -26,13 +26,16 @@ use routing::{inputs, sends};
 
 impl StudioShell {
     pub(super) fn update_node_meters(&mut self, visible: bool, cx: &mut Context<Self>) -> bool {
-        let mut nodes = if visible {
-            self.node_meter_points.borrow().clone()
-        } else {
-            Default::default()
-        };
-        if visible
+        // The node inspector is the only inspector that renders meter
+        // tracks, and it shows the selected node's own meters (sidebar's
+        // `page_inspector`). The Matrix route view and the Devices page
+        // mount no meter surface at all, so a selection carried across a
+        // page switch must not keep the node's level topic demanded.
+        // `visible` alone proves a Graph/Mixer frame gate or a graph
+        // gesture, not that the current page's inspector paints the node.
+        let inspector_selected = if visible
             && self.inspector_open
+            && matches!(self.presentation.page, Page::Graph | Page::Mixer)
             && let Some(selected) = self.selected_node
             && self
                 .state
@@ -43,12 +46,29 @@ impl StudioShell {
                 .iter()
                 .any(|node| node.id == selected)
         {
-            nodes.insert(selected);
-        }
+            Some(selected)
+        } else {
+            None
+        };
         let preferences = self.preferences.meters;
         self.state.update(cx, |state, _| {
             state.node_meters.set_preferences(preferences);
-            state.node_meters.update(&state.snapshot, &nodes)
+            // Borrow the registered set straight through: the pump runs at
+            // display and poll cadence, and cloning it here would allocate
+            // on every one of those ticks (HC-14). The selected node rides
+            // the same iterator instead of being inserted into the
+            // registration set, which belongs to the canvases alone.
+            if visible {
+                let points = self.node_meter_points.borrow();
+                state.node_meters.update(
+                    &state.snapshot,
+                    points.iter().copied().chain(inspector_selected),
+                )
+            } else {
+                // Nothing is registered and the inspector demand (above)
+                // cannot exist without visibility: release everything.
+                state.node_meters.update(&state.snapshot, [])
+            }
         })
     }
 }
