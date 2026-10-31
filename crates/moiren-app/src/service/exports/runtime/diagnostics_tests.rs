@@ -47,6 +47,7 @@ fn telemetry() -> VadPcmTelemetrySnapshot {
             min_delay_100ns: Some(101),
             max_delay_100ns: Some(103),
         },
+        playback_publication: None,
     }
 }
 
@@ -65,6 +66,7 @@ fn packet_service_summaries_pass_through_native_mapping_and_runtime_without_gate
     assert!(complete_native(&mut runtime, &mut service, native).is_empty());
     let status = service.statuses(&graph).remove(0);
     let observed = status.diagnostics.unwrap().telemetry.unwrap();
+    assert_eq!(observed.playback_publication, None);
     assert_eq!(
         observed.playback_transfer_service,
         expected.playback_transfer_service
@@ -74,6 +76,7 @@ fn packet_service_summaries_pass_through_native_mapping_and_runtime_without_gate
         expected.microphone_submission_service
     );
     let json = serde_json::to_value(observed).unwrap();
+    assert!(json["playback_publication"].is_null());
     assert_eq!(
         json["playback_transfer_service"]["origin"],
         "driver_transfer"
@@ -119,6 +122,7 @@ fn packet_service_legacy_telemetry_stays_unknown_in_provider_mapping() {
         .telemetry
         .unwrap();
     assert_eq!(observed, legacy);
+    assert_eq!(observed.playback_publication, None);
     assert_eq!(
         observed.playback_transfer_service.origin,
         PacketStampOrigin::Unknown
