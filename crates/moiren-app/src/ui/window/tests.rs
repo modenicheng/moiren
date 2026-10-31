@@ -1270,6 +1270,59 @@ fn inspector_panel_rebuilds_when_a_nested_editor_moves(cx: &mut gpui_kit::TestAp
     finish_service(runtime);
 }
 
+/// The inspector's meter pipeline must stay wired together (audit HY-10,
+/// design 17 hazard 9): the inspector's canvases register their tracks into
+/// the frame the sidebar hot surface reads, and that layer paints every one.
+/// A second `SharedFrame` of the same type at the assembly point compiles,
+/// runs, and paints nothing forever with no runtime way to notice — the
+/// failure that muted the flyout — so the surface itself must census what it
+/// sees and what it paints.
+#[gpui_kit::test]
+fn inspector_hot_layer_paints_the_registered_meter_tracks(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    let gain = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
+            .expect("fixed session graph holds a gain node")
+            .id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Graph;
+        shell.inspector_open = true;
+        shell.selected_node = Some(gain);
+        cx.notify();
+    });
+    settle_panels(cx);
+    // The selection's key change rebuilt the cached panel: `on_rebuild` reset
+    // the frame and the fresh subtree's canvases re-registered their tracks;
+    // the live hot layer paints them on every rendered frame after that.
+    let (registered, painted) = view.update(cx, |shell, cx| {
+        let meters = shell.inspector_meter_layer.read(cx).surface();
+        let meters = meters.borrow();
+        (meters.registered_tracks(), meters.painted_tracks())
+    });
+    assert!(
+        registered > 0,
+        "the hot surface must see the inspector's registered meter tracks"
+    );
+    assert!(
+        painted >= registered,
+        "the hot layer must paint every registered track"
+    );
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);

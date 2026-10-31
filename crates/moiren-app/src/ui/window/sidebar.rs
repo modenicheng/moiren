@@ -210,11 +210,33 @@ impl CachedPanel for LibraryRailPanel {
 pub(super) struct InspectorMeters {
     shell: WeakEntity<StudioShell>,
     geometry: SharedFrame<MeterTracks>,
+    /// How many registered tracks this surface has painted. Test-visible
+    /// census: a frame with registered tracks but zero paints means the
+    /// layer is not drawing — the inspector's variant of the flyout's
+    /// meter-less regression (design 17 hazard 9, audit HY-10).
+    painted_tracks: std::cell::Cell<usize>,
 }
 
 impl InspectorMeters {
     pub(super) fn new(shell: WeakEntity<StudioShell>, geometry: SharedFrame<MeterTracks>) -> Self {
-        Self { shell, geometry }
+        Self {
+            shell,
+            geometry,
+            painted_tracks: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Tracks the inspector's canvases registered for this surface. Empty
+    /// means the assembly handed this surface a frame of its own instead of
+    /// the panel's: it compiles, runs, and paints nothing forever.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn registered_tracks(&self) -> usize {
+        self.geometry.read().map_or(0, |frame| frame.iter().count())
+    }
+
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn painted_tracks(&self) -> usize {
+        self.painted_tracks.get()
     }
 }
 
@@ -258,6 +280,7 @@ impl HotSurface for InspectorMeters {
                 window.with_content_mask(Some(mask), |window| {
                     paint_inspector_meter(bounds, channels, levels, clips, window);
                 });
+                self.painted_tracks.set(self.painted_tracks.get() + 1);
             }
         });
     }
