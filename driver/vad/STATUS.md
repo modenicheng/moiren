@@ -50,6 +50,17 @@ remain retained; default roles and preexisting render controls are unchanged.
 No counter, buffer, quality exemption or physical qualification changes:
 [no-copy witness receipt](../../docs/validation/2026-10-31-microphone-no-copy-witness.md).
 
+Probe-only `8b574cc` now preserves MIC service until native Stop/release/join;
+both external stops still broadcast before waiting. Physical retirement and
+installed610 driver stay unchanged. Integrated618 host tests and independent
+review pass. A single actual same-fixture run completes10110 packets and
+cleanup with final MIC silence0, retaining reset/recovery1 rather than erasing
+them. Root verifies the27-payload archive and frozen provenance. The current
+collector intentionally keeps quality_complete/qualified false; unknown15 is
+historical live-read coverage, not the cause of that fixed verdict. This is
+operational progress, not sustained waveform or physical latency acceptance:
+[native-first retirement receipt](../../docs/validation/2026-10-31-native-first-mic-retirement.md).
+
 The user permits an evidenced device-limited theoretical minimum only if
 sub-10-ms is demonstrated impossible under the current declared conditions.
 Neither that impossibility nor a calibrated physical minimum is established;

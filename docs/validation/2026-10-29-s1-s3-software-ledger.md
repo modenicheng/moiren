@@ -21,6 +21,22 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [native-first MIC retirement](2026-10-31-native-first-mic-retirement.md)
+keeps MIC service/admission until actual native Stop/release/join completes,
+while broadcasting both stops before any wait and retaining physical-route
+order. Integrated618 tests, strict Clippy, formatting and independent source
+review pass. One actual unchanged610 acquisition completes10110 packets and
+collection/cleanup, final MIC silence0 rather than the prior1; cleanup reset/
+recovery1 remain visible. Root verifies all27 archived payloads and frozen
+provenance; hardened helpers pass100 fixtures and independent13 checks.
+`quality_complete=false` is a fixed collector boundary, not a classification
+derived from15 unknown live reads. This is neither sustained waveform/physical
+qualification nor evidence that sub10ms is impossible. Existing nominal native
+analysis, independently reproduced with equal JSON/exit1, resolves12/29 codes
+and retains17 missing plus9830 nominal-QPC policy issues; missing is not proven
+loss. Independent acquired-evidence audit passes107 checks and draft factual
+review13; neither is waveform or physical acceptance.
+
 The [first MIC no-copy witness](2026-10-31-microphone-no-copy-witness.md)
 adds fixed144-byte original transfer evidence and matching event/Notify, with
 unchanged counters and RT policy. Root17 host suites, both analyzed WDK builds,
