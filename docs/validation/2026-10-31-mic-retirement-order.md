@@ -49,7 +49,7 @@ Host regression logs:
 No later successful software result erases the previous native cleanup or
 early-Running MIC silence failures.
 
-## Staged target and open native gate
+## Target acquisition
 
 The isolated release EXE is7044096 bytes, SHA256
 `410BE9F5419489B4EC7AC651F1E5435D13982D3D94316D9B5A46BD6FFEA44304`.
@@ -60,12 +60,73 @@ The derived runner SHA256 is
 58/58 root PS5.1 fixtures pass. Native settings/input/driver pins are unchanged
 from the previous diagnostic collection.
 
-As of UTC02:45:37, an unrelated remote `moiren-app.exe` PID13256 is present.
-The probe has not started; that application is preserved. Target evidence
-and staging receipts live under
+An unrelated remote `moiren-app.exe` PID13256 is present at UTC02:45:37;
+it is preserved, and a bounded read-only wait confirms no owners at02:47:09.
+Only then does the guarded runner start. Target evidence and staging receipts
+live under
 `D:\coding\moiren-evidence\20261031-mic-retirement-order`.
 
-Native collection/cleanup improvement is unverified. Startup silence,
-continuous changing-waveform delivery, S1-S3 and calibrated physical
-sub-10-ms acceptance remain open. No experimental source is merged wholesale
-into main or described as an accepted driver/latency fix.
+The single acquisition starts UTC02:47:38.0388947 and retains a terminal
+receipt at02:48:14.5816875. PID12332 exits0, elapsed34.1638366 seconds.
+Runtime collection and cleanup complete=true, both failure fields=null;
+outer `DiagnosticCollectionPassed=true`. Engine ends Closed/Dormant with
+no fault/cleanup error and final native summary failure=null. This is a
+bounded operational collection/cleanup result, not complete quality acceptance.
+
+Raw logs first show both gates closed at generation1/gate2 while Running:
+Playback lifecycle success at line15 and MIC transport success at17. Later
+worker queries see already-closed gates (Playback gate6/Closed, MIC gate3/Paused).
+No close-confirmation rejection is logged. This is consistent with the intended
+ordering, but one rebuilt/logged run does not prove every possible teardown
+interleave or general production cleanup correctness.
+
+The source acknowledges1440000 scheduled frames,29696 nonzero source frames
+and1451040 native submitted frames including480 silent preroll frames.
+Recorder retains1456320 stereo Float32 frames/3034 complete480-frame packets,
+11650560 PCM bytes,31481 nonzero frames/62962 nonzero scalars,
+all finite, bit-identical channels and peak0.0474965088. Sink metadata retains
+zero incomplete/missing packets, sequence gaps and nonfinite samples; native
+capture flag/gap/drop/discontinuity counters are zero. These are storage and
+sample observations, not marker recovery or continuous waveform qualification.
+
+**Quality remains incomplete.** The report's `quality_passed=true` means no
+fault was latched by its existing active checks; `quality_complete=false`
+is explicitly retained by the existing schema/code, not a new result invented
+from the successful cleanup. Playback classification reaches final-after-join
+with32 initial-prime muted frames,zero classified steady delta/xruns, but
+retains15 unknown observations. No field is changed to make this look complete.
+
+Moreover, MIC worker-tail logs85-86 and the final `vad_microphone_cleanup`
+Removed snapshot retain **silence_packets=1**, while the last active provider
+snapshot and successful MIC Running/gate2 close snapshot have0. Thus the
+increment is observed after successful gate closure and before the later
+retirement query, not assigned to a specific callback or recorded PCM sample.
+The existing quality checks do not revalidate this final cleanup snapshot.
+Both cleanup telemetry snapshots retain epoch_resets=1 and
+recovery_events=1. They are not cleared or excluded from the raw evidence.
+The exact time/cause of the tail silence increment is not established; an
+active zero snapshot or the scalar `quality_passed=true` cannot establish
+zero faults over the whole acquisition/retirement interval. This run does not
+prove the prior early-Running silence problem is fixed.
+
+Catalog observations retain equal volume/mute/defaults; no audio owner or
+present VAD child remains, root PnP OK and driver Running. Boot remains
+`2026-10-30T09:50:49.6598450+08:00`, also checked after archive at UTC02:50:02.
+There is no driver install, physical render, volume/default change or reboot.
+
+## Evidence and remaining gates
+
+ZIP `20261031-mic-retirement-order-target.zip`:519821 bytes,21 payload files
+plus manifest, SHA256
+`974A96EB3624B3243A727C3B18259BE5FA64049B161311E4508B0094E9113F41`.
+Root verifies all ZIP CRCs, exact member set, manifest lengths/SHA256 and
+extracted bytes. Independent audit verifies the same archive, pins, metadata,
+sample statistics, successful cleanup and retained tail faults. Its receipt
+`independent-evidence-audit-20261031.json` has SHA256
+`2D9283DFAF3396438774BA17E198FC5E60999F82530418767B8A69946B6B0EFB`.
+No ETL decode/loss qualification is claimed. Original target evidence remains
+retained.
+
+Continuous changing-waveform delivery, full quality coverage, S1-S3 and
+calibrated physical sub-10-ms acceptance remain open. No experimental source
+is merged wholesale into main or described as an accepted driver/latency fix.

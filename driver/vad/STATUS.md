@@ -52,8 +52,10 @@ Pins, verified archive, independent audit and limits:
 A probe-only virtual-route retirement slice now closes gates before external
 Stop/reset, retaining both Stop broadcasts before every join and leaving the
 physical route unchanged. Software regressions/review pass; the isolated probe
-is staged but has not run while an unrelated target application remains active.
-Native cleanup improvement and MIC silence remain unverified:
+waits for an unrelated target app to exit, then one bounded native acquisition
+completes collection/cleanup with exit0 and Closed EngineHost. It is not a full
+quality pass: quality_complete=false, unknown observations and a MIC tail
+silence_packets=1 remain retained. Continuous quality and latency are open:
 [retirement-order checkpoint](../../docs/validation/2026-10-31-mic-retirement-order.md).
 
 The new READ-selected, bounded native-buffer observer records the actual
