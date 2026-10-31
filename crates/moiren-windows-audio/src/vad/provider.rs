@@ -46,7 +46,7 @@ pub use input_capture::{
 };
 use lifecycle::{Admission, ExportSpec, ExportView, Lifecycle};
 use telemetry::PcmTelemetry;
-pub use telemetry::VadPcmTelemetrySnapshot;
+pub use telemetry::{PublicationIdentity, PublicationSnapshot, VadPcmTelemetrySnapshot};
 
 /// Distinguishes current provider measurements from values retained after a
 /// failed QUERY. The app service uses this only to avoid relabeling evidence.
@@ -667,7 +667,8 @@ fn run_worker(
     // Match the physical paths' scheduling class: this thread paces bounded
     // PCM IO against native deadlines. Registration failure is non-fatal.
     let _mmcss = crate::owner::Mmcss::audio();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match config {
+    let playback = matches!(&config, WorkerConfig::Playback { .. });
+    let result = catch_worker_result(&state, playback, || match config {
         WorkerConfig::Playback {
             control,
             endpoint,
@@ -700,8 +701,7 @@ fn run_worker(
             budget,
             &state,
         ),
-    }))
-    .unwrap_or(Err(BackendError::WorkerPanicked));
+    });
     state.revoke();
     if let Some(capture) = capture.as_mut() {
         capture.finished(&result);
@@ -715,6 +715,21 @@ fn run_worker(
     }
     // run_* (or unwinding) has dropped/drained every overlapped PCM slot.
     state.drained.store(true, Ordering::Release);
+}
+
+fn catch_worker_result(
+    state: &SessionState,
+    playback: bool,
+    run: impl FnOnce() -> Result<(), BackendError>,
+) -> Result<(), BackendError> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+        .unwrap_or(Err(BackendError::WorkerPanicked));
+    // The outer boundary also covers unwinding past run_playback's cleanup.
+    // Drained below is still not a control-side worker-join witness.
+    if playback {
+        state.telemetry.publication.invalidate();
+    }
+    result
 }
 
 fn run_playback(
@@ -787,6 +802,21 @@ fn run_playback(
                             writer.take().expect("playback carrier is free"),
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
+                        // Latch the actual owner and its original admission.
+                        // Reopening even an identical native stamp breaks the
+                        // diagnostic segment; never relabel borrowed old PCM.
+                        state
+                            .telemetry
+                            .publication
+                            .bind(telemetry::PublicationIdentity {
+                                native_stamp: lifecycle::stamp(current),
+                                reset_epoch: observed_reset,
+                                admission_ticket,
+                                active_revision,
+                                format: shape.format() as u32,
+                                channels: shape.channels() as u32,
+                                packet_frames: shape.frames(),
+                            });
                         if let Some(capture) = capture.as_mut() {
                             capture.bind(input_capture::VadInputCaptureIdentity {
                                 stable_id: current.stable_id().to_le_bytes(),
@@ -1273,6 +1303,34 @@ fn close_worker_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_telemetry_worker_panic_retains_calls_and_invalidates_original_owner() {
+        let state = SessionState::new(Arc::new(Admission::new()));
+        state.telemetry.publication.bind(PublicationIdentity {
+            native_stamp: [1, 2, 3, 4, 5],
+            reset_epoch: 0,
+            admission_ticket: 2,
+            active_revision: 1,
+            format: 1,
+            channels: 2,
+            packet_frames: 144,
+        });
+        let result = catch_worker_result(&state, true, || {
+            state
+                .telemetry
+                .publication
+                .record(Some(10), Some(11), Ok(true), 144, 1, true);
+            panic!("publication worker regression");
+        });
+        assert_eq!(result, Err(BackendError::WorkerPanicked));
+        let snapshot = state.telemetry.publication.snapshot().unwrap();
+        assert_eq!(snapshot.successful_decode_calls, 1);
+        assert_eq!(snapshot.decode_ok_frames, 144);
+        assert!(snapshot.invalidated);
+        assert_eq!(snapshot.carrier_publication_effect_known, None);
+        assert_eq!(snapshot.complete_delivery_coverage, None);
+    }
 
     #[test]
     fn pcm_cancel_worker_completion_retains_both_work_and_gate_cleanup_faults() {

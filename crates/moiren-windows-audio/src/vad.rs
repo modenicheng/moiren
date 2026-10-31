@@ -40,7 +40,10 @@ pub use pcm_slots::PcmTicket;
 #[cfg(windows)]
 pub use provider::WindowsVadProvider;
 #[cfg(windows)]
-pub use provider::{VadExportDiagnosticProvenance, VadExportObservation, VadPcmTelemetrySnapshot};
+pub use provider::{
+    PublicationIdentity, PublicationSnapshot, VadExportDiagnosticProvenance, VadExportObservation,
+    VadPcmTelemetrySnapshot,
+};
 #[cfg(windows)]
 pub use provider::{
     VadInputCaptureArtifact, VadInputCaptureHandle, VadInputCaptureIdentity, VadInputCapturePacket,

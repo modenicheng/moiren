@@ -195,6 +195,7 @@ pub(super) fn quiesce_playback(
         return true;
     }
     state.telemetry.epoch_reset(epoch);
+    state.telemetry.publication.invalidate();
     retire();
     state
         .producer_quiesced_epoch
@@ -257,6 +258,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
     mut capture: Option<&mut input_capture::CaptureWorker>,
 ) -> Result<PumpState, BackendError> {
     if !epoch_ready(state, epoch) {
+        state.telemetry.publication.invalidate();
         if let Some(capture) = capture.as_mut() {
             capture.epoch_excluded();
         }
@@ -264,6 +266,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
     }
     while let Some(ticket) = tickets.first().copied() {
         if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            state.telemetry.publication.invalidate();
             if let Some(capture) = capture.as_mut() {
                 capture.epoch_excluded();
             }
@@ -294,6 +297,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
                     .telemetry
                     .service_stamp(PacketStampOrigin::DriverTransfer, stamp.qpc);
                 if state.reset_epoch.load(Ordering::Acquire) != epoch {
+                    state.telemetry.publication.invalidate();
                     if let Some(capture) = capture.as_mut() {
                         capture.epoch_excluded();
                     }
@@ -302,6 +306,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
                 #[cfg(test)]
                 tests::before_playback_publish();
                 if !epoch_ready(state, epoch) {
+                    state.telemetry.publication.invalidate();
                     if let Some(capture) = capture.as_mut() {
                         capture.epoch_excluded();
                     }
@@ -310,6 +315,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
                 state.telemetry.completion(bridge.packet_frames());
                 let accepted = match order.accept(epoch, stamp) {
                     PacketProgress::Stale => {
+                        state.telemetry.publication.stale();
                         if let Some(capture) = capture.as_mut() {
                             capture.stale();
                         }
@@ -317,6 +323,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
                         false
                     }
                     PacketProgress::Gap { missing_slots } => {
+                        state.telemetry.publication.missing(missing_slots);
                         // READ stamps describe native playback slots. A hole
                         // does not prove non-silent PCM loss and is not a reset.
                         state.telemetry.sequence_gap(missing_slots);
@@ -332,7 +339,26 @@ pub(super) fn playback_recorded<C: PcmIo>(
                     None
                 };
                 let decoded = if accepted {
-                    bridge.decode_packet(pcm)
+                    let valid_before = publication_current(state, epoch);
+                    let before = state.telemetry.publication_clock();
+                    #[cfg(test)]
+                    tests::before_decode_call();
+                    let decoded = bridge.decode_packet(pcm);
+                    let after = state.telemetry.publication_clock();
+                    #[cfg(test)]
+                    tests::after_playback_publish();
+                    // Observe revocation/reset after the existing write, but
+                    // never add a drop/retry or alter its result/error policy.
+                    let valid_after = publication_current(state, epoch);
+                    state.telemetry.publication.record(
+                        before,
+                        after,
+                        decoded.as_ref().copied().map_err(|_| ()),
+                        bridge.packet_frames(),
+                        stamp.sequence,
+                        valid_before && valid_after,
+                    );
+                    decoded
                 } else {
                     Ok(true)
                 };
@@ -595,6 +621,16 @@ fn epoch_ready(state: &SessionState, epoch: u64) -> bool {
     state.reset_epoch.load(Ordering::Acquire) == epoch
         && state.producer_quiesced_epoch.load(Ordering::Acquire) == epoch
         && state.consumer_quiesced_epoch.load(Ordering::Acquire) == epoch
+}
+
+fn publication_current(state: &SessionState, epoch: u64) -> bool {
+    epoch_ready(state, epoch)
+        && state.admitted()
+        && state.telemetry.publication.matches(
+            epoch,
+            state.admitted_ticket.load(Ordering::Acquire),
+            state.admitted_revision.load(Ordering::Acquire),
+        )
 }
 
 #[cfg(test)]

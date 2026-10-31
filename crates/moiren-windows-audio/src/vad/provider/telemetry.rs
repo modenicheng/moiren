@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
+pub(super) mod publication;
+pub use publication::{PublicationIdentity, PublicationSnapshot};
+
+const SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
@@ -52,6 +55,9 @@ pub struct VadPcmTelemetrySnapshot {
     /// Host WRITE submission -> owner collection, including dropped WRITE.
     /// Echoed submission stamp, never a microphone driver's transfer stamp.
     pub microphone_submission_service: PacketServiceSnapshot,
+    /// Coherent single-attempt decode-call summary. Legacy/contended reads are
+    /// unknown; Ok(true) does not prove carrier effect or delivery coverage.
+    pub playback_publication: Option<PublicationSnapshot>,
 }
 
 fn current_schema_version() -> u32 {
@@ -125,6 +131,7 @@ pub(super) struct PcmTelemetry {
     service_clock: Option<QpcClock>,
     playback_service: PacketServiceRecorder,
     microphone_service: PacketServiceRecorder,
+    pub(super) publication: publication::PublicationRecorder,
 }
 
 impl Default for PcmTelemetry {
@@ -148,12 +155,21 @@ impl PcmTelemetry {
                 PacketStampOrigin::HostSubmission,
                 frequency,
             ),
+            publication: publication::PublicationRecorder::new(frequency),
         }
     }
 
     pub(super) fn service_stamp(&self, origin: PacketStampOrigin, stamp_ticks: u64) {
         let collected = self.service_clock.as_ref().and_then(QpcClock::now_ticks);
         self.service_at(origin, stamp_ticks, collected);
+    }
+
+    pub(super) fn publication_clock(&self) -> Option<u64> {
+        #[cfg(test)]
+        if let Some(tick) = publication::test_tick() {
+            return tick;
+        }
+        self.service_clock.as_ref().and_then(QpcClock::now_ticks)
     }
 
     fn service_at(&self, origin: PacketStampOrigin, stamp_ticks: u64, collected: Option<u64>) {
@@ -315,6 +331,7 @@ impl PcmTelemetry {
             recovery_events: self.counters.recovery_events.load(Ordering::Relaxed),
             playback_transfer_service: self.playback_service.snapshot(),
             microphone_submission_service: self.microphone_service.snapshot(),
+            playback_publication: self.publication.snapshot(),
         }
     }
 
@@ -432,6 +449,7 @@ mod tests {
                 recovery_events: 1,
                 playback_transfer_service: telemetry.playback_service.snapshot(),
                 microphone_submission_service: telemetry.microphone_service.snapshot(),
+                playback_publication: telemetry.publication.snapshot(),
             }
         );
     }
