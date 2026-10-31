@@ -17,6 +17,10 @@ not retroactively acquire the new fields. This paragraph describes the
 original source-only slice. The subsequent, separately frozen
 [611 target attempt](2026-10-31-event-arm-native-setup-failure.md) installs the
 diagnostic but fails native setup before Start; it acquires no arm witness.
+The separately frozen [stable-binding control](2026-10-31-event-arm-stable-binding.md)
+then completes native collection/cleanup without reinstall/restart, but has
+no rebase witness and retains incomplete quality/13-of-29 identity resolution.
+Neither target result establishes an arm/dispatch cause or scheduling fix.
 
 ## Implementation and RT constraints
 

@@ -39,6 +39,22 @@ The exact terminal task is removed only after guarded quiescence/archive
 checks. Driver611 remains installed; no stable floor or physical qualification
 follows, and the preceding-arm native observation remains unacquired.
 
+The separately frozen [stable-binding control](2026-10-31-event-arm-stable-binding.md)
+keeps611/frozen9968505 and all audio/input/WPP settings, without another install
+or restart. Native preparation now observes MIC144 and completes source
+submission/collection/cleanup with10112 stored packets and zero reported
+drop/silence. Initial prime32 and final lifecycle reset/recovery remain visible;
+quality is incomplete with15 unknown boundary observations. Offline indexed-v2
+analysis exits1:13 unique identities/16 missing, no duplicate, and9611 native-QPC
+policy violations despite complete stored coverage. These are not16 proven
+lost markers or9611 lost frames. Its44-payload archive is byte/hash verified
+before/after guarded exact-task removal; matching TMFs decode159 events with
+reported loss/format/unknown0 but no rebase/no-copy witness, so schema2 refuses.
+This distinguishes a successful stable-binding control from the predecessor's
+setup failure without proving its unique cause, a scheduling fix, delivered
+waveform continuity or physical latency. Both original outcomes are preserved;
+the later final-QUERY repair remains natively unverified.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie

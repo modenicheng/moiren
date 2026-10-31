@@ -136,11 +136,12 @@ exact transient owner is not recoverable and is not assigned to the audio fault.
 
 ## Next discriminating work
 
-Preserve this completed failed attempt. A separately frozen future experiment
-may distinguish post-install child rebinding from stable-binding native
-preparation, without reinstalling/restarting the driver or changing audio
-periods, buffers, epoch safety or quality gates. If preparation still fails,
-capture exact setup/endpoint-lifecycle boundaries before pursuing timer cause.
+Preserve this completed failed attempt. The subsequent separately frozen
+[stable-binding control](2026-10-31-event-arm-stable-binding.md) uses the same
+driver/probe/audio configuration without reinstall/restart. Native preparation,
+collection and cleanup succeed, but waveform analysis retains13/29 unique
+identities and incomplete quality. This supports separating binding state;
+it does not prove the unique cause of this failed SetEventHandle or repair it.
 The preceding-arm observation itself still needs an actual rebase/no-copy
 witness. S1-S3, waveform continuity, sustained lower-budget output, matched
 VAD/Process and calibrated physical acceptance all remain open.
