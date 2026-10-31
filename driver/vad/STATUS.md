@@ -16,9 +16,9 @@ master snapshots match; all four exact terminal tasks are removed after
 archive verification. No settings/default/budget or driver changes occur:
 [Shared VAD interactive control](../../docs/validation/2026-10-31-shared-vad-interactive-control.md).
 
-The separate physical target has the current main-PR51-integrated app
-`7023b9a` (main `5c925dd`),33780736 bytes, SHA256
-`AB67439510570A6F758E4B1E2A051D985F8E67087D174895124D52F880160C1C`,
+The separate physical target has the current main-PR52-integrated app
+`5f9eb02` (main `74ef5dd`),33780736 bytes, SHA256
+`4B3DD61FA488F5BB5C36AA9D0124AB0912D55FE79F49CFC33EE18882E5AFBCDE`,
 staged side by side with earlier app copies, and explicitly enabled
 native-Playback/no-copy diagnostic driver `883a5be`: `oem204.inf`, version
 `3.1.1.610` (previous `2a5aee5`/609 is retained for rollback).
@@ -30,8 +30,10 @@ catalog members are verified. The 609,608 and older607 rollback packages remain;
 no reboot, trust/volume/default change or target build occurs. Native retries
 are authorized; older paused-retry statements below describe dated history.
 Only DAWN headphones may be used for audible runs. The driver acquisitions
-below add no physical render client; the separately recorded current-app
-desktop retry does explicitly open DAWN.
+below add no physical render client. Fresh5f9 help/monitor-help/offline smokes
+pass without native audio; the earlier7023 desktop retry explicitly opens DAWN
+and is not relabelled as a new5f9 desktop result:
+[integrated5f9 deployment](../../docs/validation/2026-10-31-integrated5f9-deployment.md).
 
 The earlier current-app console1 retry fails Settings UIA before measured
 Apply; its forced termination and original evidence remain retained. The later
