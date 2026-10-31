@@ -26,8 +26,18 @@ retains the preceding actual event rearm call interval/due intent and clock
 epoch with first-rebase entry/State QPC. This addresses the missing distinction
 between late rearm and late callback entry without changing due policy or
 weakening rebase safety. Two QPC observations per event arm are real diagnostic
-overhead. Legacy trace2 explicitly lacks these new fields; no target install,
-native result, stable floor or physical qualification is implied.
+overhead. Legacy trace2 explicitly lacks these new fields. The separately
+[frozen611 target attempt](2026-10-31-event-arm-native-setup-failure.md)
+installs/restarts once with verified pins/trust and unchanged boot/controls,
+but the unchanged9968505 probe fails MIC SetEventHandle0x88890004 before
+Start. Its42-payload archive is independently verified; matching TMFs
+decode116 events with reported loss/format/unknown0, but no rebase/no-copy
+witness exists and schema2 refuses rather than manufacturing an association.
+Collection/quality remain incomplete although cleanup succeeds. In-window
+child/MMDevice rebinding is a hypothesis, not a proved invalidation cause.
+The exact terminal task is removed only after guarded quiescence/archive
+checks. Driver611 remains installed; no stable floor or physical qualification
+follows, and the preceding-arm native observation remains unacquired.
 
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary

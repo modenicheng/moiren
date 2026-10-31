@@ -13,7 +13,10 @@ changes observation cost, not timer policy: two QPC calls are added around
 each event-mode WdfTimerStart. Do not claim zero instrumentation perturbation.
 No native installation/acquisition occurs for this slice. Installed driver610
 and the frozen9968505/trace2 failure remain unchanged; historical traces do
-not retroactively acquire the new fields.
+not retroactively acquire the new fields. This paragraph describes the
+original source-only slice. The subsequent, separately frozen
+[611 target attempt](2026-10-31-event-arm-native-setup-failure.md) installs the
+diagnostic but fails native setup before Start; it acquires no arm witness.
 
 ## Implementation and RT constraints
 
