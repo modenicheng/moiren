@@ -12,6 +12,13 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [current74f desktop regression](2026-10-31-app-deployment-desktop.md#main-pr50-integrated-app-current-binary-native-regression)
+includes main PR50, fresh graph20/direction1 tests and actual DAWN-only native
+start/restart/stop with13 UIA Invokes. Both owners retire/reap, app/source exit0,
+catalog/boot remain unchanged and the exact owned task is removed after verified
+archival. This bounded control/lifecycle GREEN is not meter-frame visual
+acceptance, a complete source schedule, waveform or physical latency pass.
+
 The [first native indexed-v2 acquisition](2026-10-31-indexed-marker-source.md#first-native-indexed-v2-acquisition)
 uses integrated74f173f/main PR50, retains the original indexed29-marker schedule
 and negotiates Playback480/MIC144. Operational collection/cleanup complete with

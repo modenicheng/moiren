@@ -289,3 +289,57 @@ successful Invokes do not prove every assistive-technology behavior. Root's
 post-merge app library suite passes595 with3 ignored, Graph19/Mixer19 and
 both exact graph/device-row VAD-direction regressions pass, and gpui-test
 all-target strict Clippy plus formatting pass.
+
+## Main PR50 integrated app, current-binary native regression
+
+Root main advances cleanly to `c47035c`, including PR50's graph meter overlay.
+Experimental merge `74f173f` preserves that mainline change without merging
+experimental PR26 into main. The correct routing remains virtual speaker/
+Playback = Moiren Input/Source; virtual microphone/MIC = Output/Sink. Fresh
+gpui-test checks at74f pass all20 graph tests (including the new meter-frame
+regression), the exact opposite-direction device-row test and formatting.
+This is a focused rerun, not a new full-library or full-Clippy receipt.
+
+Release app74f is33785344 bytes, SHA256
+`77208523C7CAB1BEDB5393424E8F120DBA4EB4E38DC38760E5916A1D39710935`.
+It is deployed side by side under `D:\MoirenTest\20261031-main74f-source-v2`.
+Target length/hash, help, monitor-help and exact offline gain0.25 pass before
+GUI/native acquisition. Driver609 remains unchanged. The same scenario retains
+the separately pinned old7f728 v1 source worker; this isolates the app update.
+
+Independent helper review confirms only deployment/run/revision/hash and source
+schedule-ID changes from desktop4. All functions, acquisition, no-activation
+handshake and finally acceptance are unchanged. PS5.1 parsing, retained contract
+and an actual wrong-host fixture pass. Helper SHA256 is
+`73FE488933E4CCD5A3FB70C8716A7C1A04376CB7D319E298956AC46525BF1BE3`.
+
+`desktop-main74f5` actually runs UTC04:54:42.971879 through04:55:14.496821.
+Scheduled-task Running state precedes script artifacts by about2minutes and is
+not mistaken for a reason to relaunch. Owned app5372, creation
+134378960841759004 and HWND853706 remain fixed. One ShowWindowAsync(4) confirms
+visible/noniconic, with foreground66882 unchanged before/after. Four UIA node
+counts are21/21/21/90 and all13 explicit Invokes return successfully.
+
+Requested/active Process source8484, creation134378960839309329, selection1,
+target4096/capacity16384/jitter96 match exactly. Native logs separately prove
+generation1 Running, its cleanup/reap, generation2 Running, then cleanup/reap
+after Stop. DAWN alone is opened Shared Float32 stereo48kHz, buffer1056.
+App/source exit0, task result0 and Completed=true; no forced/fallback termination,
+cleanup error, remaining owner or VAD child. Render volume/mute/default snapshots
+and boot remain unchanged. The exact terminal owned task is unregistered only
+after root archive verification; binaries, original artifacts and caches remain.
+Free space is C8.92GiB/D222.78GiB at cleanup; no cargo clean is warranted.
+
+Archive `desktop-main74f5-evidence.zip` is68080 bytes,47 payloads plus manifest,
+SHA256 `24A544750CE9A2729F9E653134AAC5D46B7A1DD9D4B17B932FDC80A0F7BA1AB9`.
+Root verifies CRC, exact membership and all original/extracted lengths/SHA256.
+Independent raw-log/UIA/catalog audit passes51 checks with0 failed; JSON SHA256
+is `E1D827D1C649660D542094D5F5BF61E8CC848F10BC779B48FFC41B975851C359`.
+Host evidence is `D:\coding\moiren-evidence\20261031-main74f-source-v2`.
+
+This is a bounded desktop-control/native-lifecycle regression on the current
+binary, not visual-frame acceptance of every meter. Source is deliberately
+stopped after about30seconds, before its299-marker schedule completes; this
+does not prove waveform continuity or complete schedule playback. Existing
+missing-accessibility-role INFO logs remain. Calibrated physical reference,
+continuous quality, lower-budget qualification and S1-S3 stay open.
