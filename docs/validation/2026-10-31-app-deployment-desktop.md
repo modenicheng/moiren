@@ -343,3 +343,74 @@ stopped after about30seconds, before its299-marker schedule completes; this
 does not prove waveform continuity or complete schedule playback. Existing
 missing-accessibility-role INFO logs remain. Calibrated physical reference,
 continuous quality, lower-budget qualification and S1-S3 stay open.
+
+## Main PR51 integrated app and latest7023 desktop control
+
+Main `5c925ddfc02159a2a3d73a998b1ca6c9fc6c1e0c` includes PR51's exact
+bridge-write abandonment fix. Experimental source
+`7023b9a212e46d67bc3ff95ff76cdf6cd2e1f27b` includes that mainline change;
+this does not merge experimental PR26 wholesale into main. The earlier74f
+deployment and all preceding failures remain historical evidence above.
+
+Fresh release app7023 is33780736 bytes, SHA256
+`AB67439510570A6F758E4B1E2A051D985F8E67087D174895124D52F880160C1C`,
+deployed side by side at
+`D:\MoirenTest\20261031-latest7023-deployment\bin\moiren-app.exe`.
+Target size/hash, help, monitor-help and exact offline gain0.25 smokes pass
+with exit0 before the desktop acquisition. Installed driver610 remains
+`883a5be`, SYS SHA256
+`94EAE9BC2F1611C38F050977F7E740A09FE8C5B8EB19BC8780A82036FD0D32C7`.
+Driver source/build inputs are unchanged from that revision; only its dated
+STATUS documentation differs. No driver install, trust change or reboot is
+part of this app deployment/control.
+
+The helper changes only deployment/run identity and app/driver pins from the
+retained74f helper. It keeps the same source worker revision
+`7f7287982403468ec55aea1e4f909f03785f3d7c`, SHA256
+`410BE9F5419489B4EC7AC651F1E5435D13982D3D94316D9B5A46BD6FFEA44304`,
+at `D:\MoirenTest\20261031-mic-retirement-order\bin\e2e_latency_probe.exe`.
+Catalog pin, Process -> unity Bus -> DAWN graph, Engine256,13 native actions,
+one-shot nonactivating show, cleanup and final acceptance are unchanged.
+PS5.1 parse, retained contract and helper/launcher wrong-host fixtures pass.
+Frozen helper SHA256 is
+`DAEF74C3A729E68F670BE695077B04040ABF120AA1D510A321A8FC1853E6F8F1`.
+
+`desktop-latest7023-1` executes UTC09:33:20.7869812 through09:33:53.0056039.
+App PID14912/creation134379128020646644/session1 and HWND1181350 remain
+bound across the four observations, with UIA node counts21/21/21/90. All13
+actual Invokes return without an error. The after-Apply tree independently
+retains exact requested/active Process PID13644/creation134379128017736279,
+selection1, target4096/capacity16384/jitter96 at48kHz. Native logs separately
+show generation1 Running and cleanup/reap, generation2 Running, then normal
+Stop cleanup/reap. Actual DAWN output is Shared Float32 stereo48kHz with
+buffer1056 and no requested native period, not Exclusive256 or a minimum.
+
+Close, Stop, Settings/Diagnostics and Quit complete; app/source exit0,
+Completed=true and task result0. No forced/fallback termination, cleanup or
+diagnostic error, or remaining owner is recorded. After archive verification,
+the exact terminal task is removed; root PnP is OK and driver610 Running.
+Boot is unchanged. Before/after snapshots match all six default roles and12
+render endpoint master volume/mute values. This does not prove unchanged
+session/channel/capture controls or every transient setting. Isolated app
+preferences, project, window state and logs are intentionally written.
+
+Host evidence: `D:\coding\moiren-evidence\20261031-latest7023-deployment`.
+Archive `desktop-latest7023-1-evidence.zip` is68600 bytes,47 payloads plus
+manifest, SHA256
+`6CF27DD924C3B0293D3E45E4574C1936D3F61BC91682567919E0F59409D9A207`.
+Root and independent audit verify CRC, exact membership, every payload
+length/hash and all48 extracted members byte for byte. Independent receipt
+`desktop-latest7023-1-independent-acquired-archive-audit.json` has SHA256
+`88F99F8D51F8D3EAE621A0735E691682DDFFF3D598B3EFC8D7D1211B497C0F20`.
+Its PASS_WITH_LIMITS retains one encoding difference: the host loose
+`app-deployment.json` omits only the archive copy's three-byte UTF-8 BOM;
+parsed content and all remaining bytes match. Post-archive task cleanup is a
+separate retained receipt, not a ZIP member.
+
+This confirms the bounded current-app desktop-control/lifecycle scenario only.
+The source joins after30.6846186 seconds with its long schedule incomplete;
+ReleaseBuffer/nonzero submission counters are not captured waveform evidence.
+No complete native-counter export or independent PCM/reference is acquired.
+WaveformQualityComplete and PhysicalLatencyQualified remain false. No S1-S3
+completion, physical delay/minimum, sub10ms acceptance, default promotion,
+budget reduction or quality-gate change follows.

@@ -6,10 +6,15 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
-The separate physical target has the current main-PR50-integrated app
-`74f173f` staged side by side with earlier app copies, and explicitly enabled
+The separate physical target has the current main-PR51-integrated app
+`7023b9a` (main `5c925dd`),33780736 bytes, SHA256
+`AB67439510570A6F758E4B1E2A051D985F8E67087D174895124D52F880160C1C`,
+staged side by side with earlier app copies, and explicitly enabled
 native-Playback/no-copy diagnostic driver `883a5be`: `oem204.inf`, version
 `3.1.1.610` (previous `2a5aee5`/609 is retained for rollback).
+Installed SYS SHA256 remains
+`94EAE9BC2F1611C38F050977F7E740A09FE8C5B8EB19BC8780A82036FD0D32C7`;
+driver source/build inputs are unchanged, excluding dated STATUS updates.
 Service Running/root PnP OK, exact installed SYS hash, target signatures and
 catalog members are verified. The 609,608 and older607 rollback packages remain;
 no reboot, trust/volume/default change or target build occurs. Native retries
@@ -20,13 +25,17 @@ desktop retry does explicitly open DAWN.
 
 The earlier current-app console1 retry fails Settings UIA before measured
 Apply; its forced termination and original evidence remain retained. The later
-actual74f desktop regression completes generation1/2 Start/restart/Stop,13 UIA
-Invokes, owner cleanup/reaping and normal app/source exit0 on pinned DAWN.
-Foreground, boot, volume/defaults remain unchanged and the exact terminal task
-is removed after verified archival. This closes that bounded current-binary
-control/lifecycle regression, not complete source-waveform, meter-frame visual,
-lower-budget S3 or physical quality acceptance:
-[application deployment and desktop receipt](../../docs/validation/2026-10-31-app-deployment-desktop.md).
+actual74f and latest7023 desktop regressions complete generation1/2
+Start/restart/Stop,13 UIA Invokes, owner cleanup/reaping and normal app/source
+exit0 on pinned DAWN.
+Latest7023 retains47 payloads plus manifest, independently verified, and removes
+the exact terminal task after archival. Boot, six default roles and12 render
+endpoint master volume/mute snapshots match before/after; this is not proof
+about all session/channel/capture controls or transient settings. This closes
+that bounded current-binary control/lifecycle regression, not complete
+source-waveform, meter-frame visual, lower-budget S3 or physical quality
+acceptance:
+[latest7023 application deployment and desktop receipt](../../docs/validation/2026-10-31-app-deployment-desktop.md#main-pr51-integrated-app-and-latest7023-desktop-control).
 
 Probe `18d1552` additionally retains close-gate, stop-broadcast, worker-observed
 stop, actual native Stop and join call windows. The actual indexed-v2
