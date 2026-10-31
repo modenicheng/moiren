@@ -2,6 +2,10 @@
 //! only projects snapshots into windows and dispatches [`AppRequest`]s back.
 mod app_view;
 mod branding;
+// Design-review surface with no production entry point; keeping it behind the
+// feature (paired with the component_preview example's required-features)
+// stops it from linking into ordinary application builds.
+#[cfg(feature = "component-gallery")]
 mod component_gallery;
 pub mod monitoring;
 mod pages;
@@ -17,6 +21,7 @@ mod tray;
 mod widgets;
 mod window;
 
+#[cfg(feature = "component-gallery")]
 pub use component_gallery::run_component_preview;
 
 pub use widgets::action_assets::ActionIcon;

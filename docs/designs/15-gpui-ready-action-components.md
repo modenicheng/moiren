@@ -22,10 +22,10 @@
 ## 原生预览
 
 ```sh
-cargo run --locked -p moiren-app --example component_preview
-cargo run --locked -p moiren-app --example component_preview -- --group=icons
-cargo run --locked -p moiren-app --example component_preview -- --group=navigation
-cargo run --locked -p moiren-app --example component_preview -- --small --compact
+cargo run --locked -p moiren-app --features component-gallery --example component_preview
+cargo run --locked -p moiren-app --features component-gallery --example component_preview -- --group=icons
+cargo run --locked -p moiren-app --features component-gallery --example component_preview -- --group=navigation
+cargo run --locked -p moiren-app --features component-gallery --example component_preview -- --small --compact
 ```
 
 预览不启动音频服务。上方切换组件组和 Comfortable / Compact，下方可实际点击、用键盘激活、切换 Toggle 与工作区。尺寸不足时使用滚动查看完整状态表。

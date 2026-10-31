@@ -155,6 +155,8 @@ impl ActionButton {
         self.on_click = Some(Box::new(handler));
         self
     }
+    // Preview-only state injection; the component gallery is the only user.
+    #[cfg(feature = "component-gallery")]
     pub(crate) fn sample(mut self, state: SampleState) -> Self {
         self.disabled |= matches!(state, SampleState::Disabled);
         self.sample = Some(state);
@@ -289,6 +291,7 @@ impl IconButton {
         self.button.on_click = Some(Box::new(handler));
         self
     }
+    #[cfg(feature = "component-gallery")]
     pub(crate) fn sample(mut self, state: SampleState) -> Self {
         self.button = self.button.sample(state);
         self
@@ -353,6 +356,7 @@ impl ToggleIconButton {
         self.on_change = Some(Box::new(handler));
         self
     }
+    #[cfg(feature = "component-gallery")]
     pub(crate) fn sample(mut self, state: SampleState) -> Self {
         self.disabled |= matches!(state, SampleState::Disabled);
         self.sample = Some(state);
