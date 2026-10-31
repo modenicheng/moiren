@@ -24,29 +24,16 @@ struct NameDraft {
 }
 
 impl ExportControls {
-    /// Whether one of the export editor's text inputs owns focus, so global
-    /// shortcuts (undo/redo) leave typing alone.
-    /// Every nested draft input, for panel hosts that must observe model
-    /// entities whose notifications cannot invalidate a cached ancestor.
+    /// Every text input of the export editor: the export-name draft and one
+    /// input per nested endpoint name draft. [`StudioShell::typing_focus`]
+    /// and the panel hosts' nested observers consume the list, so focus
+    /// checks and cache invalidation see exactly the same families.
     pub(in crate::ui::window) fn input_entities(
         &self,
     ) -> Vec<Entity<component::input::InputState>> {
         let mut inputs = vec![self.name.clone()];
         inputs.extend(self.names.values().map(|draft| draft.input.clone()));
         inputs
-    }
-
-    pub(in crate::ui::window) fn owns_focus(
-        &self,
-        focus: &gpui_kit::FocusHandle,
-        cx: &gpui_kit::App,
-    ) -> bool {
-        if self.name.read(cx).focus_handle(cx) == *focus {
-            return true;
-        }
-        self.names
-            .values()
-            .any(|draft| draft.input.read(cx).focus_handle(cx) == *focus)
     }
 
     pub(in crate::ui::window) fn new(window: &mut Window, cx: &mut Context<StudioShell>) -> Self {

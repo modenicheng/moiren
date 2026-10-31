@@ -918,23 +918,31 @@ impl StudioShell {
         }
     }
 
-    /// True when a text field anywhere in the shell owns focus: graph
-    /// search, node rename, inspector editors, mixer send gains, and export
-    /// fields all keep typing shortcuts (and their undo) for themselves.
+    /// True when a text field anywhere in the shell owns focus: the graph
+    /// search plus every family of [`Self::text_input_entities`] keep typing
+    /// shortcuts (and their undo) for themselves.
     fn typing_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
         self.node_search.read(cx).focus_handle(cx) == *focused
-            || self.node_name.read(cx).focus_handle(cx) == *focused
             || self
-                .compressor
-                .inputs
-                .values()
+                .text_input_entities()
+                .iter()
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
-            || self
-                .mixer
-                .send_inputs
-                .values()
-                .any(|input| input.read(cx).focus_handle(cx) == *focused)
-            || self.export_controls.owns_focus(focused, cx)
+    }
+
+    /// Every text-input entity the shell renders nested in a cached panel:
+    /// the inline node rename, the mixer's click-to-type families, the
+    /// compressor parameter fields, and the export drafts. [`Self::typing_focus`]
+    /// and the inspector panel's nested observers consume this single walk,
+    /// so a new editor family cannot land in one enumeration site and miss
+    /// the other (the shared root cause of audit SD-1/SD-2).
+    pub(in crate::ui::window) fn text_input_entities(
+        &self,
+    ) -> Vec<Entity<component::input::InputState>> {
+        let mut inputs = vec![self.node_name.clone()];
+        inputs.extend(self.mixer.text_input_entities().cloned());
+        inputs.extend(self.compressor.inputs.values().cloned());
+        inputs.extend(self.export_controls.input_entities());
+        inputs
     }
 
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and

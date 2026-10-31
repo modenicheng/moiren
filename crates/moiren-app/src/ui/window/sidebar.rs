@@ -63,6 +63,10 @@ impl CachedPanel for InspectorPanel {
         _window: &mut Window,
         cx: &mut Context<Self::Owner>,
     ) -> AnyElement {
+        #[cfg(feature = "gpui-test")]
+        {
+            shell.mixer.trace.borrow_mut().inspector_renders += 1;
+        }
         page_inspector(shell, cx)
     }
 
@@ -77,19 +81,44 @@ impl CachedPanel for InspectorPanel {
         owner: &Entity<Self::Owner>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
-        // Model entities nested in the panel — the inline rename input, the
-        // mixer's editable-value inputs, and the export drafts — whose
-        // notifications cannot invalidate this cached ancestor themselves.
-        let inputs = owner.read_with(cx, |shell, _| {
-            let mut inputs = vec![shell.node_name.clone()];
-            inputs.extend(shell.mixer.value_inputs.values().cloned());
-            inputs.extend(shell.export_controls.input_entities());
-            inputs
+        // Model entities nested in the panel whose notifications cannot
+        // invalidate this cached ancestor themselves: every text-input family
+        // the shell can render here (inline rename, the mixer's click-to-type
+        // editors, the compressor fields, the export drafts) rides the shell's
+        // single walk, and the inspector's own hslider slots — the channel
+        // strip's fader row and the compressor parameter sliders — are
+        // SliderStates only this panel renders, so they join the pool here.
+        // Missing any family leaves that editor blind-typing inside the
+        // cached subtree: its keystrokes update the model but no rebuild
+        // carries them to the screen.
+        let (inputs, sliders) = owner.read_with(cx, |shell, _| {
+            let mut sliders = Vec::new();
+            sliders.extend(
+                shell
+                    .mixer
+                    .inspector_faders
+                    .values()
+                    .map(|slot| slot.state.clone()),
+            );
+            sliders.extend(
+                shell
+                    .compressor
+                    .sliders
+                    .values()
+                    .map(|slot| slot.state.clone()),
+            );
+            (shell.text_input_entities(), sliders)
         });
-        inputs
+        let mut subscriptions: Vec<Subscription> = inputs
             .into_iter()
             .map(|input| cx.observe(&input, |host, _, cx| host.notify_nested(cx)))
-            .collect()
+            .collect();
+        subscriptions.extend(
+            sliders
+                .into_iter()
+                .map(|slider| cx.observe(&slider, |host, _, cx| host.notify_nested(cx))),
+        );
+        subscriptions
     }
 }
 
