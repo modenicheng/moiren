@@ -163,6 +163,11 @@ pub struct StudioShell {
     mixer_scroll: ScrollHandle,
     exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
+    /// Render/frame instrumentation for the whole window (shell, chrome,
+    /// every page), written by ui_capture and the gpui-test assertions.
+    /// Lives on the shell because its scope is the window, not the mixer.
+    #[cfg(feature = "gpui-test")]
+    trace: std::cell::RefCell<performance::MeterTrace>,
     mixer_geometry: mixer::page::Geometry,
     toolbar_chrome: Entity<chrome::ToolbarChrome>,
     status_chrome: Entity<chrome::StatusbarChrome>,
@@ -358,6 +363,8 @@ impl StudioShell {
             mixer_scroll: ScrollHandle::new(),
             exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
+            #[cfg(feature = "gpui-test")]
+            trace: Default::default(),
             mixer_geometry,
             toolbar_chrome,
             status_chrome,
@@ -670,6 +677,8 @@ mod matrix;
 mod mixer;
 mod native;
 mod panel;
+#[cfg(feature = "gpui-test")]
+mod performance;
 mod project;
 mod settings;
 mod sidebar;
@@ -687,7 +696,7 @@ impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "gpui-test")]
         {
-            self.mixer.trace.borrow_mut().shell_renders += 1;
+            self.trace.borrow_mut().shell_renders += 1;
         }
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);

@@ -7,8 +7,6 @@ use rust_i18n::t;
 
 mod model;
 pub(super) mod page;
-#[cfg(feature = "gpui-test")]
-pub(super) mod performance;
 mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
@@ -94,7 +92,7 @@ fn strip(
 ) -> impl IntoElement {
     #[cfg(feature = "gpui-test")]
     {
-        shell.mixer.trace.borrow_mut().strip_renders += 1;
+        shell.trace.borrow_mut().strip_renders += 1;
     }
     let id = entry.id;
     let selected = shell.selected_node == Some(id);

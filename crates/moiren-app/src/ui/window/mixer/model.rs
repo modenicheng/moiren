@@ -46,8 +46,6 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub inputs_collapsed: bool,
     pub sends_collapsed: bool,
     synced_revision: Option<u64>,
-    #[cfg(feature = "gpui-test")]
-    pub trace: std::cell::RefCell<super::performance::MeterTrace>,
 }
 
 /// Per-slider bookkeeping kept next to its entity: the dragging flag lets the

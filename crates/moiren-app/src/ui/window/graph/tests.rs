@@ -813,7 +813,7 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
     cx.simulate_mouse_down(anchor, MouseButton::Left, Modifiers::default());
     let cadence = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
         view.read_with(cx, |shell, _| {
-            let trace = shell.mixer.trace.borrow();
+            let trace = shell.trace.borrow();
             (trace.graph_frames, trace.graph_meter_paints)
         })
     };
@@ -968,7 +968,7 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
     // The selection highlight is cached-canvas content: every selection
     // change must rebuild the page within the gesture's frames — the tint
     // may not wait for the next publish.
-    let renders = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().graph_renders);
+    let renders = view.read_with(cx, |shell, _| shell.trace.borrow().graph_renders);
     // Shrink the band back to the anchor: the node leaves the selection.
     // The rebuild rides two effect passes (shell notify -> host notify ->
     // render), so give the cycle two frames.
@@ -989,7 +989,7 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
             "the shrunken band must deselect"
         );
         assert!(
-            shell.mixer.trace.borrow().graph_renders > renders,
+            shell.trace.borrow().graph_renders > renders,
             "a selection change must rebuild the cached page immediately"
         );
     });
@@ -1622,7 +1622,7 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
         });
     }
     let before = view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         (trace.graph_renders, trace.graph_frames)
     });
     for _ in 0..10 {
@@ -1636,7 +1636,7 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
             shell.node_meter_points.borrow().contains(&node),
             "graph meter demand must survive animation-only frames"
         );
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         (trace.graph_renders, trace.graph_frames)
     });
     // Every drawn frame rebuilds the shell's root element (GPUI lays the
@@ -1662,7 +1662,7 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().graph_renders) > after.0,
+        view.read_with(cx, |shell, _| shell.trace.borrow().graph_renders) > after.0,
         "a selection change must still re-render the graph page"
     );
 
@@ -1760,7 +1760,7 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
     });
     let (bar_before, paints_before, renders_before) = view.read_with(cx, |shell, cx| {
         let state = shell.state.read(cx);
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         (
             state.node_meters.channel_levels(node).unwrap()[0].bar,
             trace.graph_meter_paints,
@@ -1776,7 +1776,7 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
     }
     view.read_with(cx, |shell, cx| {
         let state = shell.state.read(cx);
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         assert!(
             trace.graph_meter_paints >= paints_before + 10,
             "the meter frame must repaint the node bars per animation frame"

@@ -616,12 +616,12 @@ impl HotSurface for MixerMeters {
         };
         shell.update(cx, |shell, cx| {
             #[cfg(feature = "gpui-test")]
-            shell.mixer.trace.borrow_mut().begin(true);
+            shell.trace.borrow_mut().begin(true);
             #[cfg(feature = "gpui-test")]
             let began = std::time::Instant::now();
             shell.pump_meters(cx);
             #[cfg(feature = "gpui-test")]
-            shell.mixer.trace.borrow_mut().add(began.elapsed());
+            shell.trace.borrow_mut().add(began.elapsed());
             shell.frames_wanted(cx)
         })
     }
@@ -744,7 +744,7 @@ fn paint_mixer_meter_frame(
     }
     #[cfg(feature = "gpui-test")]
     {
-        let mut trace = shell.mixer.trace.borrow_mut();
+        let mut trace = shell.trace.borrow_mut();
         trace.levels(levels_fingerprint);
         trace.meter_paints += 1;
         trace.add(began.elapsed());

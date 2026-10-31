@@ -1251,7 +1251,7 @@ fn inspector_panel_rebuilds_when_a_nested_editor_moves(cx: &mut gpui_kit::TestAp
         );
         shell.mixer.balance_inputs[&gain].clone()
     });
-    let before = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().inspector_renders);
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().inspector_renders);
     // One keystroke's worth of editor movement: notifies the InputState and
     // nothing else. With the nested pool wired the panel rebuilds on the
     // gate's leading edge; without it the character never reaches the screen.
@@ -1259,7 +1259,7 @@ fn inspector_panel_rebuilds_when_a_nested_editor_moves(cx: &mut gpui_kit::TestAp
         input.update(cx, |input, cx| input.set_value("L 10", window, cx));
         window.render_frame(cx);
     });
-    let after = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().inspector_renders);
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().inspector_renders);
     // `set_value` moves value and cursor in separate model notifications, so
     // the exact pass count rides the gate; the regression is the flat counter
     // of an unobserved family, so "at least one rebuild" is the invariant.

@@ -65,7 +65,7 @@ impl CachedPanel for InspectorPanel {
     ) -> AnyElement {
         #[cfg(feature = "gpui-test")]
         {
-            shell.mixer.trace.borrow_mut().inspector_renders += 1;
+            shell.trace.borrow_mut().inspector_renders += 1;
         }
         page_inspector(shell, cx)
     }
