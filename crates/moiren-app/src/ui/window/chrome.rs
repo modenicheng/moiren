@@ -210,7 +210,16 @@ impl Render for CachedChrome {
     }
 }
 
-pub(super) fn toolbar_for_page(shell: &StudioShell) -> AnyElement {
+pub(super) fn toolbar_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
+    // GPUI's cache replays paint/layout, not the per-frame accessibility tree.
+    if window.is_a11y_active() {
+        return div()
+            .w_full()
+            .h(px(theme::TOOLBAR_HEIGHT))
+            .flex_none()
+            .child(shell.toolbar_chrome.clone())
+            .into_any_element();
+    }
     // Chrome is cached on every page: both meter frames — not the shell —
     // own the animation loops, so shell notifications here are real state
     // changes and the cached tree rebuilds through its shell observer.
@@ -226,7 +235,15 @@ pub(super) fn toolbar_for_page(shell: &StudioShell) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn status_for_page(shell: &StudioShell) -> AnyElement {
+pub(super) fn status_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
+    if window.is_a11y_active() {
+        return div()
+            .w_full()
+            .h(px(28.))
+            .flex_none()
+            .child(shell.status_chrome.clone())
+            .into_any_element();
+    }
     shell
         .status_chrome
         .clone()

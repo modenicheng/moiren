@@ -842,7 +842,7 @@ impl Render for StudioShell {
             .text_color(theme::TEXT)
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT_MD))
-            .child(chrome::toolbar_for_page(self))
+            .child(chrome::toolbar_for_page(self, window))
             .when_some(error_strip, |view, error_strip| view.child(error_strip))
             .child(
                 div()
@@ -852,14 +852,14 @@ impl Render for StudioShell {
                     .min_h_0()
                     .min_w_0()
                     .child(match self.presentation.page {
-                        Page::Graph => graph::meter_frame::page(self),
-                        Page::Mixer => mixer::meter_frame::page(self),
+                        Page::Graph => graph::meter_frame::page(self, window),
+                        Page::Mixer => mixer::meter_frame::page(self, window),
                         Page::Matrix => matrix::page(self, cx),
                         Page::Devices => devices::page(self, cx),
                     })
                     .child(sidebar::inspector_host(self, cx)),
             )
-            .child(chrome::status_for_page(self))
+            .child(chrome::status_for_page(self, window))
             // Clicking anywhere outside an open inline editor commits it, so
             // saving never requires Enter. Editors stop presses inside their
             // own bounds from propagating; a press that reaches this root

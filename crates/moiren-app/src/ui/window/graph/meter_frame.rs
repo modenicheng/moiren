@@ -111,19 +111,27 @@ impl Render for GraphControls {
     }
 }
 
-pub(in crate::ui::window) fn page(shell: &StudioShell) -> AnyElement {
+pub(in crate::ui::window) fn page(shell: &StudioShell, window: &Window) -> AnyElement {
+    // Active accessibility needs the controls rebuilt into each frame's tree.
+    let controls = if window.is_a11y_active() {
+        div()
+            .size_full()
+            .child(shell.graph_controls.clone())
+            .into_any_element()
+    } else {
+        shell
+            .graph_controls
+            .clone()
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
+    };
     div()
         .relative()
         .flex()
         .flex_1()
         .min_h_0()
         .min_w_0()
-        .child(
-            shell
-                .graph_controls
-                .clone()
-                .cached(StyleRefinement::default().size_full()),
-        )
+        .child(controls)
         // The meter frame follows the page content: painting-free, hitbox
         // free, and the only part of the page that renders on an
         // animation-only frame.
