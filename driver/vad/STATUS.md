@@ -60,6 +60,14 @@ No waveform/latency/default gate changes. Exact implementation, bounds and
 cleanup are in the
 [source write receipt](../../docs/validation/2026-10-31-source-write-witness.md).
 
+A cheaper exact-client read-only control check observes session Active and
+session/endpoint master 1.0, both unmuted, after the first nonzero Release.
+The provider still retains 480000 all-zero PCM16 frames. Those master controls
+are not zero/muted at that instant; other gain/processing/transition causes
+remain unproven. No new client, volume write or default/driver change occurs.
+Exact snapshot timing, tests, cleanup and memberwise archive are in the
+[source controls receipt](../../docs/validation/2026-10-31-source-controls.md).
+
 Shared microphone controls now correlate a successful ACX notification with a
 nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared
 clients still receive all-zero/SILENT PCM, including the explicit changing AC
