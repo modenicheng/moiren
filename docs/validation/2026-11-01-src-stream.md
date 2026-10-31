@@ -156,3 +156,8 @@ S1-S3 and the overarching goal remain active. This slice performs no native
 audio acquisition/replay, remote audio, driver/system-control writes, speaker
 rendering, reboot, push, subagent or memory update. Unrelated `gate.log` is
 preserved.
+
+The subsequent [independent scalar archive reader](2026-11-01-src-archive-verifier.md)
+checks persisted chunk/terminal bytes and per-node sequence/count closure
+without trusting these flags alone. It does not turn scalar completeness into
+validated SRC phase, native provenance, waveform quality or physical delay.

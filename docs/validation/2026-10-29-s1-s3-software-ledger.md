@@ -144,6 +144,17 @@ Real IO/Bus owner readback covers 132,000 callbacks without native devices.
 Finite polling/storage, native cost, independent source/recorder reference,
 acquired waveform and physical qualification remain open; S1-S3 are not done.
 
+The [independent SRC archive reader](2026-11-01-src-archive-verifier.md) then
+checks persisted JSONL bytes, ordered per-node callbacks and final scalar/count
+closure without trusting writer flags. A real-owner synthetic-clock fixture
+round-trips132,000 checkpoints across60 chunks while retaining all deliberate
+XRUN/discontinuity callbacks. Scalar readback completeness remains distinct
+from validated phase arithmetic, native provenance, waveform quality or delay.
+Strict schemas, finite byte/boundary caps and tamper/truncation regressions
+refuse ambiguity; original refusals remain visible. Actual time-varying mapping,
+common source/recorder reference and native/physical qualification remain open.
+No audio/RT/servo/default or quality threshold changes occur; S1-S3 stay active.
+
 The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
 strictly associates first-copy/native0 and first-nonzero/native228 witnesses
 with raw WASAPI packets1/229 at the same callback/completion QPC labels. The

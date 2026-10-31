@@ -19,6 +19,10 @@ mod stream;
 #[path = "src_trace/fixture.rs"]
 mod fixture;
 
+#[cfg(test)]
+#[path = "src_trace/readback_fixture.rs"]
+mod readback_fixture;
+
 const PENDING_LIMIT: usize = 4096;
 const CHUNK_THRESHOLD: usize = 2048;
 const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;

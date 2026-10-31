@@ -70,6 +70,8 @@ jobs:
         run: python3 scripts/tests/vad-capture-qpc.tests.py
       - name: Test offline indexed model interval spacing
         run: python3 scripts/tests/vad-indexed-spacing.tests.py
+      - name: Test independent SRC scalar archive readback
+        run: python3 scripts/tests/vad-src-archive.tests.py
   test:
     needs: changes
     if: needs.changes.outputs.any == 'true'
