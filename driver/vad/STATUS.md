@@ -29,6 +29,16 @@ this Exclusive control. Clean cleanup, unchanged volume/defaults, pinned source,
 verified archive and limitations are in the
 [Exclusive positive-control receipt](../../docs/validation/2026-10-31-exclusive-playback-control.md).
 
+Two subsequent exact Playback/Input -> Bus -> MIC/Output collections use the
+default Exclusive period, actual Float32/480 at both native ends. They retain
+nonzero microphone PCM and complete source submission, but both fail EngineHost
+shutdown with SET_GATE revision mismatch. A single existing-debug-logger repeat
+observes a transport close refusal after Pause and later successful lifecycle
+closure; decisive confirmation-query evidence is still missing. No guard is
+relaxed or failure called a pass. Verified archives, separate internal cleanup
+failure/external absence, waveform-analysis limits and next diagnostic boundary:
+[default-period IO/Bus receipt](../../docs/validation/2026-10-31-default-period-iobus.md).
+
 The new READ-selected, bounded native-buffer observer records the actual
 consumption path and bytes before the original clearing. A retained first
 attempt loses MIC readiness before any source starts. An unchanged-fixture
