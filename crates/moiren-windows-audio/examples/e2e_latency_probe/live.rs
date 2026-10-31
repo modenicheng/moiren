@@ -34,11 +34,11 @@ use std::{
 #[path = "source.rs"]
 mod source;
 #[cfg(any(windows, test))]
-#[path = "source_write_witness.rs"]
-mod source_write_witness;
-#[cfg(any(windows, test))]
 #[path = "source_controls.rs"]
 mod source_controls;
+#[cfg(any(windows, test))]
+#[path = "source_write_witness.rs"]
+mod source_write_witness;
 
 #[path = "vad_route.rs"]
 mod vad_route;
