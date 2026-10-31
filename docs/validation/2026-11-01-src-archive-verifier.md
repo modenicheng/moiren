@@ -18,6 +18,10 @@ quality gate changes.
 
 ## Reader contract
 
+The later [execution/cascade slice](2026-11-01-src-cascade.md) adds trace4,
+prepared-route2 and checkpoint2 execution stamps while retaining old readback.
+Imported stamps remain structural facts, never authenticated native provenance.
+
 The later [prepared-route slice](2026-11-01-src-route.md) adds strict trace3
 readback while preserving trace2 support. Its preparation-only linkage is
 not active-plan confirmation or native provenance; the original receipt below

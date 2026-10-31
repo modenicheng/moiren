@@ -66,6 +66,7 @@ impl Fixture {
                     };
                     self.sink.as_mut().unwrap().write(
                         &ProcessContext {
+                            execution: None,
                             timeline_epoch: 1,
                             timeline_start: index * 32,
                             frames: 32,

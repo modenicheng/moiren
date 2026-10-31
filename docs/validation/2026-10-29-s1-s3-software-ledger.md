@@ -5,6 +5,13 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [stamped two-FIR dependency receipt](2026-11-01-src-cascade.md) adds actual
+callback plan/applied-control identity, trace4 backward readback and bounded
+three-pass full-support composition. Sixteen compiled IO/Bus/IO changing-PCM
+controls and144 independently checked dependency queries pass. The output is
+a reset-scoped playback pushed-input envelope, not a cascade center, native
+source/recorder correspondence, acquired-waveform or physical acceptance.
+
 The [prepared SRC route receipt](2026-11-01-src-route.md) adds exact initial
 IO/Bus/IO preparation to trace3 with sticky same-owner Update invalidation and
 backward-compatible independent readback. It deliberately does not turn matching

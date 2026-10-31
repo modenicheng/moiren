@@ -444,6 +444,7 @@ fn drift_reuses_the_existing_ring_and_idle_callbacks_remain_bounded() {
         .prepare_io(&[PortAccess::Read { port: 0, slot }])
         .unwrap();
     let ctx = ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: 0,
         frames: 128,
@@ -534,6 +535,7 @@ fn drift_trace<S: ProcessingSample>(rate: u32, channels: usize, ppm: i64) {
     // exhaust this ring's reserved headroom. No wall-clock sleeping.
     for block in 0..10_000 {
         let context = ProcessContext {
+            execution: None,
             timeline_epoch: 1,
             timeline_start: (block * BLOCK) as u64,
             frames: BLOCK,
@@ -728,6 +730,7 @@ fn reset_racing_graph_read_silences_the_entire_output_block() {
                 };
                 let report = source.read(
                     &ProcessContext {
+                        execution: None,
                         timeline_epoch: 1,
                         timeline_start: 0,
                         frames: 128,
@@ -787,6 +790,7 @@ fn microphone_late_write_is_fenced_until_the_consumer_discards_it() {
                 };
                 let report = sink.write(
                     &ProcessContext {
+                        execution: None,
                         timeline_epoch: 1,
                         timeline_start: 0,
                         frames: 128,
@@ -915,6 +919,7 @@ fn microphone_backpressure_drops_new_without_requesting_a_reset(drift: bool, fre
         })
         .unwrap();
     let context = ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: 0,
         frames: BLOCK,
@@ -1075,6 +1080,7 @@ fn playback_starvation_keeps_the_settled_servo_state() {
         .prepare_io(&[PortAccess::Read { port: 0, slot }])
         .unwrap();
     let context = |block: usize| ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: (block * BLOCK) as u64,
         frames: BLOCK,
@@ -1226,6 +1232,7 @@ fn microphone_probe_reports_occupancy_and_overflow() {
         .prepare_io(&[PortAccess::Read { port: 0, slot }])
         .unwrap();
     let context = |block: usize| ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: (block * BLOCK) as u64,
         frames: BLOCK,

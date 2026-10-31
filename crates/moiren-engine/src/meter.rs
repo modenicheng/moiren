@@ -229,6 +229,7 @@ mod tests {
             .unwrap();
         let (mut meter, mut reader) = level_meter(4, 4).unwrap();
         let context = ProcessContext {
+            execution: None,
             timeline_epoch: 3,
             timeline_start: 10,
             frames: 8,
@@ -289,6 +290,7 @@ mod tests {
                        start: u64,
                        frames: usize| {
             let context = ProcessContext {
+                execution: None,
                 timeline_epoch: 3,
                 timeline_start: start,
                 frames,
@@ -348,6 +350,7 @@ mod tests {
                        epoch: u64,
                        start: u64| {
             let context = ProcessContext {
+                execution: None,
                 timeline_epoch: epoch,
                 timeline_start: start,
                 frames: 2,

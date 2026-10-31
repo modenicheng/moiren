@@ -95,11 +95,18 @@ def validate_cursor(value):
 
 
 def validate_point(point):
+    require(type(point) is dict, "invalid checkpoint schema")
+    version = integer(point.get("schema_version"), "checkpoint schema")
+    require(version in [1, 2], "unsupported checkpoint schema")
     shape(point, "schema_version sequence timeline_epoch timeline_start engine_frames "
           "engine_sample_rate boundary_epoch_before boundary_epoch_after requested_epoch_after "
-          "before after processing_step carrier_frames muted_frames transferred_frames discontinuity xruns",
+          "before after processing_step carrier_frames muted_frames transferred_frames discontinuity xruns" +
+          (" execution" if version == 2 else ""),
           "checkpoint")
-    require(integer(point["schema_version"], "checkpoint schema") == 1, "unsupported checkpoint schema")
+    if version == 2 and point["execution"] is not None:
+        shape(point["execution"], "plan_revision control_generation", "execution stamp")
+        for name in ["plan_revision", "control_generation"]:
+            integer(point["execution"][name], "execution " + name)
     for name in ["sequence", "engine_frames"]:
         integer(point[name], name, 1)
     integer(point["engine_sample_rate"], "Engine rate", 8000, 384000)
@@ -122,9 +129,14 @@ def validate_route(trace, states):
     prepared = route["prepared"]
     if prepared is None:
         return
+    require(type(prepared) is dict, "invalid prepared route")
+    version = 2 if trace["schema_version"] == 4 else 1
     shape(prepared, "schema_version prepared_graph_revision source bus sink source_endpoint sink_endpoint "
-          "channels engine_sample_rate engine_block_frames", "prepared route")
-    require(integer(prepared["schema_version"], "route schema") == 1, "unsupported route schema")
+          "channels engine_sample_rate engine_block_frames" +
+          (" prepared_plan_revision" if version == 2 else ""), "prepared route")
+    require(integer(prepared["schema_version"], "route schema") == version, "unsupported route schema")
+    if version == 2:
+        integer(prepared["prepared_plan_revision"], "prepared plan revision")
     integer(prepared["prepared_graph_revision"], "route revision")
     for name in ["source", "bus", "sink"]:
         require(type(prepared[name]) is str and 0 < len(prepared[name]) <= 256, "invalid route node")
@@ -169,10 +181,10 @@ def prepare(summary, boundary_limit):
     trace = summary["trace"]
     require(type(trace) is dict, "invalid trace schema")
     version = integer(trace.get("schema_version"), "trace schema")
-    require(version in [2, 3], "unsupported trace schema")
+    require(version in [2, 3, 4], "unsupported trace schema")
     shape(trace, "schema_version owner_generation checkpoint_limit retained_checkpoints drained_checkpoints "
           "drained_chunks finalized history_complete qualified refusal boundaries" +
-          (" route" if version == 3 else ""), "trace")
+          (" route" if version >= 3 else ""), "trace")
     integer(trace["owner_generation"], "owner generation")
     integer(trace["checkpoint_limit"], "checkpoint limit", 1, 131072)
     require(trace["checkpoint_limit"] == LIMITS["pending_checkpoints"], "pending limit mismatch")

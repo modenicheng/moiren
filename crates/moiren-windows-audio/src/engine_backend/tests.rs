@@ -66,6 +66,7 @@ fn request<'a>(
         mode: PrepareMode::Initial,
         reuse: &[],
         graph_revision: 1,
+        plan_revision: 1,
         owner_generation: 7,
         resource_generation: 1,
         signal_host,

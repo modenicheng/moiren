@@ -221,6 +221,16 @@ fn src_route_engine_host_update_invalidates_same_owner_preparation_without_repla
     assert!(!original.invalidated);
     let route = original.prepared.clone().unwrap();
     let before = fixture.host.as_ref().unwrap().observer().snapshot();
+    let initial_plan = route.prepared_plan_revision;
+    for point in owner
+        .snapshot()
+        .boundary_probes
+        .iter()
+        .filter_map(|p| p.src_checkpoint)
+    {
+        assert_eq!(point.execution.unwrap().plan_revision, initial_plan);
+        assert_eq!(point.execution.unwrap().control_generation, 0);
+    }
     let receipt = fixture
         .host
         .as_ref()
@@ -256,8 +266,88 @@ fn src_route_engine_host_update_invalidates_same_owner_preparation_without_repla
     let after = fixture.host.as_ref().unwrap().observer().snapshot();
     assert_eq!(before.owner_generation, after.owner_generation);
     assert_ne!(before.active_revision, after.active_revision);
+    fixture.callbacks(1);
+    for point in owner
+        .snapshot()
+        .boundary_probes
+        .iter()
+        .filter_map(|p| p.src_checkpoint)
+    {
+        assert_ne!(point.execution.unwrap().plan_revision, initial_plan);
+        assert_eq!(point.execution.unwrap().control_generation, 0);
+    }
     assert_eq!(owner.src_route().prepared, original.prepared);
     fixture.close();
     assert!(owner.src_route().invalidated);
     assert_eq!(owner.src_route().prepared, original.prepared);
+}
+
+#[test]
+fn src_execution_host_direct_control_changes_stamp_without_preparation_invalidation() {
+    use moiren_core::protocol::ParamValue;
+    use moiren_engine::host::{ParameterOutcome, ParameterTarget, ParameterTiming, SendParameter};
+    let mut fixture = Fixture::new();
+    fixture.callbacks(4);
+    let owner = fixture.observations.retain_session().unwrap();
+    let route = owner.src_route().prepared.unwrap();
+    let edge = fixture
+        .host
+        .as_ref()
+        .unwrap()
+        .observer()
+        .read()
+        .active
+        .as_ref()
+        .unwrap()
+        .graph
+        .edges()[0]
+        .id();
+    let receipt = fixture
+        .host
+        .as_ref()
+        .unwrap()
+        .control()
+        .parameter(
+            ParameterTarget::Edge {
+                edge,
+                parameter: SendParameter::Gain,
+            },
+            ParamValue::Float(0.5),
+            ParameterTiming::NextBlock,
+            8,
+        )
+        .unwrap();
+    for _ in 0..100 {
+        fixture.callbacks(1);
+        if matches!(receipt.outcome(), ParameterOutcome::Applied(_)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        matches!(receipt.outcome(), ParameterOutcome::Applied(_)),
+        "{:?}",
+        receipt.outcome()
+    );
+    fixture.callbacks(1);
+    assert!(
+        !owner.src_route().invalidated,
+        "direct controls bypass preparation"
+    );
+    let mut checked = 0;
+    for point in owner
+        .snapshot()
+        .boundary_probes
+        .iter()
+        .filter_map(|p| p.src_checkpoint)
+    {
+        assert_eq!(
+            point.execution.unwrap().plan_revision,
+            route.prepared_plan_revision
+        );
+        assert!(point.execution.unwrap().control_generation > 0);
+        checked += 1;
+    }
+    assert_eq!(checked, 2);
+    fixture.close();
 }

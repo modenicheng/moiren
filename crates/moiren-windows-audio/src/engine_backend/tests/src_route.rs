@@ -24,8 +24,10 @@ fn bus_project() -> EngineProject {
 #[test]
 fn src_route_matches_exact_prepared_bus_topology_not_matching_labels() {
     let project = bus_project();
-    let route = native_observations::src_route::prepared_route(&project, 41).unwrap();
+    let route = native_observations::src_route::prepared_route(&project, 41, 17).unwrap();
     assert_eq!(route.prepared_graph_revision, 41);
+    assert_eq!(route.prepared_plan_revision, 17);
+    assert_eq!(route.schema_version, 2);
     assert_eq!(route.engine_sample_rate, 48_000);
     assert_eq!(route.engine_block_frames, 256);
     assert_eq!(route.channels, 2);
@@ -40,16 +42,17 @@ fn src_route_matches_exact_prepared_bus_topology_not_matching_labels() {
         "02020202020202020202020202020202"
     );
     assert!(
-        native_observations::src_route::prepared_route(&virtual_project(2, 48_000), 41).is_none()
+        native_observations::src_route::prepared_route(&virtual_project(2, 48_000), 41, 17)
+            .is_none()
     );
     let mut wrong = project.clone();
     let edge = wrong.graph.edges()[0].id();
     wrong.graph.disconnect(edge).unwrap();
-    assert!(native_observations::src_route::prepared_route(&wrong, 41).is_none());
+    assert!(native_observations::src_route::prepared_route(&wrong, 41, 17).is_none());
     let mut extra = project.clone();
     let gain = extra.graph.create_node(NodeKind::Gain, 2).unwrap();
     extra.nodes.insert(gain, NodeConfig::Gain { initial: 1.0 });
-    assert!(native_observations::src_route::prepared_route(&extra, 41).is_none());
+    assert!(native_observations::src_route::prepared_route(&extra, 41, 17).is_none());
 }
 
 #[test]
@@ -76,7 +79,7 @@ fn src_route_refuses_nonidentity_controls_or_extra_bus_inputs() {
         let mut project = bus_project();
         let edge = project.graph.edges()[0].id();
         project.graph.set_send_params(edge, params).unwrap();
-        assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+        assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
     }
     for strip in [
         StripConfig {
@@ -99,7 +102,7 @@ fn src_route_refuses_nonidentity_controls_or_extra_bus_inputs() {
         let mut project = bus_project();
         let node = project.graph.nodes()[0].id();
         project.strips.insert(node, strip);
-        assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+        assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
     }
     let mut project = bus_project();
     let bus = project
@@ -110,7 +113,7 @@ fn src_route_refuses_nonidentity_controls_or_extra_bus_inputs() {
         .unwrap()
         .id();
     project.graph.add_input_port(bus, 2).unwrap();
-    assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+    assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
 }
 
 #[test]
@@ -120,7 +123,7 @@ fn src_route_preparation_rejects_desired_controls_and_preserves_explicit_identit
     let mut project = bus_project();
     let node = project.graph.nodes()[0].id();
     project.strips.insert(node, StripConfig::default());
-    assert!(native_observations::src_route::prepared_route(&project, 1).is_some());
+    assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_some());
     project.parameters.push(DesiredParameter {
         target: ParameterTarget::Strip {
             node,
@@ -128,7 +131,7 @@ fn src_route_preparation_rejects_desired_controls_and_preserves_explicit_identit
         },
         value: ParamValue::Float(0.5),
     });
-    assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+    assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
 }
 
 #[test]
@@ -155,7 +158,7 @@ fn src_route_preparation_keeps_backend_rate_and_block_authority() {
                     .unwrap();
                 project.nodes.insert(bus, NodeConfig::Bus);
             }
-            let route = native_observations::src_route::prepared_route(&project, 9).unwrap();
+            let route = native_observations::src_route::prepared_route(&project, 9, 17).unwrap();
             assert_eq!(route.channels, channels);
             assert_eq!(route.engine_sample_rate, rate);
         }
@@ -163,11 +166,11 @@ fn src_route_preparation_keeps_backend_rate_and_block_authority() {
     for rate in [8000.0, 48000.5, 384000.0] {
         let mut project = bus_project();
         project.processing.engine.processing_sr = rate;
-        assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+        assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
     }
     let mut project = bus_project();
     project.processing.engine.max_block_frames = 4097;
-    assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+    assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
 }
 
 #[test]
@@ -184,7 +187,7 @@ fn src_route_preparation_never_relabels_other_input_or_output_paths() {
     input.source = InputSource::Software {
         name: "not-virtual".into(),
     };
-    assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+    assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
     let mut project = bus_project();
     let NodeConfig::Output(output) = project
         .nodes
@@ -198,7 +201,7 @@ fn src_route_preparation_never_relabels_other_input_or_output_paths() {
         endpoint_id: "not-opened".into(),
         stable_id: None,
     });
-    assert!(native_observations::src_route::prepared_route(&project, 1).is_none());
+    assert!(native_observations::src_route::prepared_route(&project, 1, 17).is_none());
 }
 
 #[test]
@@ -245,7 +248,7 @@ fn src_route_backend_lifecycle_retains_preparation_and_sticky_update_invalidatio
     assert_eq!(collector.artifact().route.prepared, first.prepared);
     let _ = owner.stop_and_join();
     collector.finish();
-    assert_eq!(collector.artifact().schema_version, 3);
+    assert_eq!(collector.artifact().schema_version, 4);
     assert!(collector.artifact().route.invalidated);
     assert_eq!(collector.artifact().route.prepared, first.prepared);
 }

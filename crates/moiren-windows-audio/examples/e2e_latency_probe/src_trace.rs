@@ -260,13 +260,17 @@ mod tests {
         stream.finish(&summary_path, &mut report).unwrap();
         assert_eq!(std::fs::read(&summary_path).unwrap(), first);
         let summary: serde_json::Value = serde_json::from_slice(&first).unwrap();
-        assert_eq!(summary["trace"]["schema_version"], 3);
+        assert_eq!(summary["trace"]["schema_version"], 4);
         let route = &summary["trace"]["route"];
         assert_eq!(route["invalidated"], false);
         assert_eq!(route["prepared"]["source"], "NodeId(0)");
         assert_eq!(route["prepared"]["sink"], "NodeId(1)");
         assert_eq!(route["prepared"]["bus"], "NodeId(2)");
         assert_eq!(route["prepared"]["engine_block_frames"], 32);
+        assert_eq!(route["prepared"]["schema_version"], 2);
+        let revision = route["prepared"]["prepared_plan_revision"]
+            .as_u64()
+            .unwrap();
         assert_eq!(summary["trace"]["drained_checkpoints"], 132000);
         assert_eq!(summary["stream"]["checkpoints"], 132000);
         assert_eq!(summary["stream"]["complete"], true);
@@ -284,6 +288,9 @@ mod tests {
                     for point in boundary["checkpoints"].as_array().unwrap() {
                         *count += 1;
                         assert_eq!(point["sequence"], *count);
+                        assert_eq!(point["schema_version"], 2);
+                        assert_eq!(point["execution"]["plan_revision"], revision);
+                        assert_eq!(point["execution"]["control_generation"], 0);
                     }
                 }
             }

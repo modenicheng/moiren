@@ -90,7 +90,7 @@ impl NativeObservationReadHandle {
         Ok(NativeSrcTraceCollector {
             owner: self.clone(),
             artifact: NativeSrcTrace {
-                schema_version: 3,
+                schema_version: 4,
                 owner_generation: self.0.generation,
                 route: self.src_route(),
                 checkpoint_limit: limit,
@@ -266,7 +266,7 @@ fn accept(
             .iter()
             .enumerate()
             .any(|(index, point)| {
-                point.schema_version != 1 || point.sequence != total - count + index as u64 + 1
+                point.schema_version != 2 || point.sequence != total - count + index as u64 + 1
             })
     {
         return Some(SrcTraceRefusal::InvalidHistory);

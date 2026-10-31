@@ -4,6 +4,8 @@ use moiren_engine::{
     buffer::{BufferArena, BufferSlotLayout, PortAccess, PreparedIo, ProcessIo},
 };
 
+#[path = "phase_tests/cascade.rs"]
+mod cascade_fixture;
 #[path = "phase_tests/fixture.rs"]
 mod phase_fixture;
 
@@ -520,6 +522,7 @@ impl<S: ProcessingSample> CallbackBuffer<S> {
             write,
             read,
             context: ProcessContext {
+                execution: None,
                 timeline_epoch: 1,
                 timeline_start: 0,
                 frames,

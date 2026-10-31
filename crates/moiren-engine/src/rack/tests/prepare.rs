@@ -83,6 +83,7 @@ fn render<S: ProcessingSample>(
                 .with_io(io, start..start + count, |io| {
                     kernel.process(
                         &ProcessContext {
+                            execution: None,
                             timeline_epoch: 1,
                             timeline_start: start as u64,
                             frames: count,

@@ -94,6 +94,50 @@ def defect(point, previous, kind):
     return None
 
 
+def track(state, point, kind):
+    before, after = point["before"], point["after"]
+    reason = defect(point, state["previous"], kind)
+    state["saturated"] |= any(cursor is not None and cursor["saturated"] for cursor in [before, after])
+    if state["saturated"]:
+        reason = "saturated_cursor"
+    state["checked_callbacks"] += 1
+    if reason:
+        state["barriers"] += 1
+        state["segment"] += 1
+        state["clean_from"] = None if after is None else after["input_frames"]
+    elif state["clean_from"] is None:
+        state["clean_from"] = before["input_frames"]
+    state["previous"] = point
+    return reason
+
+
+def new_state():
+    return {"previous": None, "clean_from": None, "barriers": 0,
+            "checked_callbacks": 0, "segment": 0, "saturated": False}
+
+
+def local_result(point, state, reason, offset):
+    result = {"status": "refused", "reason": reason, "center": None}
+    before, after = point["before"], point["after"]
+    if reason is not None:
+        return result
+    if offset >= after["output_frames"] - before["output_frames"]:
+        result["reason"] = "output_offset_out_of_range"
+        return result
+    lo, hi = center_interval(before, point["processing_step"], offset)
+    support_lo = before["next_input_frame"] + lo.numerator // lo.denominator - 15
+    support_hi = before["next_input_frame"] + hi.numerator // hi.denominator + 16
+    if support_lo < state["clean_from"] or support_hi >= after["input_frames"]:
+        result["reason"] = "tainted_or_startup_support"
+    else:
+        result.update(status="mapped", reason=None, segment=state["segment"],
+                      reset_generation=before["reset_generation"],
+                      fir_output_frame=before["output_frames"] + offset,
+                      center={"input_frame": before["next_input_frame"],
+                              "relative_interval": [pair(lo), pair(hi)]})
+    return result
+
+
 class PhaseObserver:
     """Bounded per-boundary state plus at most 256 explicit query results."""
 
@@ -124,45 +168,14 @@ class PhaseObserver:
         key = (node, kind)
         if key not in self.states:
             ARCHIVE.require(len(self.states) < ARCHIVE.MAX_BOUNDARIES, "phase boundary cap exceeded")
-            self.states[key] = {"previous": None, "clean_from": None, "barriers": 0,
-                                "checked_callbacks": 0, "segment": 0, "saturated": False}
+            self.states[key] = new_state()
         state = self.states[key]
-        before, after = point["before"], point["after"]
-        reason = defect(point, state["previous"], kind)
-        state["saturated"] |= any(cursor is not None and cursor["saturated"]
-                                  for cursor in [before, after])
-        if state["saturated"]:
-            reason = "saturated_cursor"
-        state["checked_callbacks"] += 1
-        if reason:
-            state["barriers"] += 1
-            state["segment"] += 1
-            state["clean_from"] = None if after is None else after["input_frames"]
-        elif state["clean_from"] is None:
-            state["clean_from"] = before["input_frames"]
+        reason = track(state, point, kind)
         for query_key in self.by_callback.get((node, kind, point["sequence"]), []):
             offset = query_key[3]
-            result = {**self.queries[query_key], "status": "refused", "reason": reason,
-                      "center": None}
-            if reason is None:
-                if offset >= after["output_frames"] - before["output_frames"]:
-                    result["reason"] = "output_offset_out_of_range"
-                else:
-                    lo, hi = center_interval(before, point["processing_step"], offset)
-                    support_lo = before["next_input_frame"] + lo.numerator // lo.denominator - 15
-                    support_hi = before["next_input_frame"] + hi.numerator // hi.denominator + 16
-                    if support_lo < state["clean_from"] or support_hi >= after["input_frames"]:
-                        result["reason"] = "tainted_or_startup_support"
-                    else:
-                        result.update(status="mapped", reason=None,
-                                      segment=state["segment"], reset_generation=before["reset_generation"],
-                                      fir_output_frame=before["output_frames"] + offset,
-                                      center={"input_frame": before["next_input_frame"],
-                                              "relative_interval": [pair(lo), pair(hi)]})
-            self.results[query_key] = result
+            self.results[query_key] = {**self.queries[query_key], **local_result(point, state, reason, offset)}
         # Hold one point only. Archive.verify owns its strict sequence/schema
         # checks; results must not be released until its terminal checks pass.
-        state["previous"] = point
 
     def report(self, archive_report):
         ARCHIVE.require(archive_report["scalar_readback_complete"] is True and

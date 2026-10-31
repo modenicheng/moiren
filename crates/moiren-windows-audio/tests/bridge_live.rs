@@ -242,6 +242,7 @@ fn graph_follower_audio_never_implies_native_delivery_or_frame_age() {
                 };
                 ingress.write(
                     &ProcessContext {
+                        execution: None,
                         timeline_epoch: 1,
                         timeline_start,
                         frames: 8,

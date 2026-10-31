@@ -4,6 +4,7 @@ mod allocation;
 mod automation;
 #[path = "../common/mod.rs"]
 mod common;
+mod execution;
 mod graph;
 mod io;
 mod signals;

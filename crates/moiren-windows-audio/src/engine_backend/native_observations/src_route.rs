@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct PreparedSrcRoute {
     pub schema_version: u32,
     pub prepared_graph_revision: u64,
+    pub prepared_plan_revision: u64,
     #[serde(serialize_with = "serialize_node")]
     pub source: NodeId,
     #[serde(serialize_with = "serialize_node")]
@@ -58,7 +59,11 @@ impl RouteState {
 /// unused ports, nonidentity strips or desired controls. Missing metadata does
 /// not reject otherwise usable projects. This runs before any audio ownership.
 #[cfg(any(windows, test))]
-pub(crate) fn prepared_route(project: &EngineProject, revision: u64) -> Option<PreparedSrcRoute> {
+pub(crate) fn prepared_route(
+    project: &EngineProject,
+    revision: u64,
+    plan_revision: u64,
+) -> Option<PreparedSrcRoute> {
     let rate = project.processing.engine.processing_sr;
     if !moiren_engine::audio_config::SAMPLE_RATES
         .iter()
@@ -130,8 +135,9 @@ pub(crate) fn prepared_route(project: &EngineProject, revision: u64) -> Option<P
         return None;
     }
     Some(PreparedSrcRoute {
-        schema_version: 1,
+        schema_version: 2,
         prepared_graph_revision: revision,
+        prepared_plan_revision: plan_revision,
         source: source.id(),
         bus: bus.id(),
         sink: sink.id(),

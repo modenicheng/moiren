@@ -567,6 +567,7 @@ fn measure_capture<S: ProcessingSample>() {
         }])
         .unwrap();
     let ctx = ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: 0,
         frames: 64,

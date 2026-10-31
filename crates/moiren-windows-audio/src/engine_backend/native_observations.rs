@@ -793,6 +793,7 @@ mod tests {
                     };
                     sink.write(
                         &ProcessContext {
+                            execution: None,
                             timeline_epoch: 1,
                             timeline_start: block * 32,
                             frames: 32,

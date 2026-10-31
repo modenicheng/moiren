@@ -1,9 +1,12 @@
 //! Coherent bounded callback history; not a source clock or waveform verdict.
 use crate::resample::SrcCursor;
-use moiren_engine::{boundary::BoundaryReport, processor::ProcessContext};
+use moiren_engine::{
+    boundary::BoundaryReport,
+    processor::{ExecutionStamp, ProcessContext},
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
-const FIELDS: usize = 31;
+const FIELDS: usize = 34;
 pub const SRC_HISTORY_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -19,6 +22,7 @@ pub struct BoundarySrcHistory {
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct BoundarySrcCheckpoint {
     pub schema_version: u32,
+    pub execution: Option<ExecutionStamp>,
     /// Increases for every nonempty callback, including prime/fence waits.
     /// A skipped sequence is missing evidence, never interpolated history.
     pub sequence: u64,
@@ -55,6 +59,10 @@ mod tests {
     fn point(index: u64) -> BoundarySrcCheckpoint {
         let mut point = BoundarySrcCheckpoint::begin(
             &ProcessContext {
+                execution: Some(ExecutionStamp {
+                    plan_revision: index * 5,
+                    control_generation: index * 7,
+                }),
                 timeline_epoch: index,
                 timeline_start: index * 32,
                 frames: 32,
@@ -120,6 +128,13 @@ mod tests {
         while !thread.is_finished() {
             if let Some(point) = shared.snapshot() {
                 assert_eq!(point.timeline_epoch, point.sequence);
+                assert_eq!(
+                    point.execution,
+                    Some(ExecutionStamp {
+                        plan_revision: point.sequence * 5,
+                        control_generation: point.sequence * 7
+                    })
+                );
                 assert_eq!(point.timeline_start, point.sequence * 32);
                 assert_eq!(point.carrier_frames, point.sequence * 2);
                 assert_eq!(point.processing_step, Some(0.998));
@@ -211,7 +226,8 @@ impl BoundarySrcCheckpoint {
         cursor: Option<SrcCursor>,
     ) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
+            execution: context.execution,
             sequence: 0,
             timeline_epoch: context.timeline_epoch,
             timeline_start: context.timeline_start,
@@ -345,6 +361,9 @@ impl PublishedCheckpoint {
             point.xruns,
         ]);
         fields[30] = u64::from(point.engine_sample_rate);
+        if let Some(stamp) = point.execution {
+            fields[31..34].copy_from_slice(&[1, stamp.plan_revision, stamp.control_generation]);
+        }
         let index = ((point.sequence - 1) % SRC_HISTORY_CAPACITY as u64) as usize;
         for (slot, field) in self.fields[index].iter().zip(fields) {
             slot.store(field, SeqCst);
@@ -403,7 +422,11 @@ impl PublishedCheckpoint {
 
 fn decode(f: [u64; FIELDS]) -> BoundarySrcCheckpoint {
     BoundarySrcCheckpoint {
-        schema_version: 1,
+        schema_version: 2,
+        execution: (f[31] != 0).then_some(ExecutionStamp {
+            plan_revision: f[32],
+            control_generation: f[33],
+        }),
         sequence: f[0],
         timeline_epoch: f[1],
         timeline_start: f[2],

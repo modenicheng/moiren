@@ -423,6 +423,7 @@ mod tests {
             }])
             .unwrap();
         let ctx = ProcessContext {
+            execution: None,
             timeline_epoch: 1,
             timeline_start: 0,
             frames,

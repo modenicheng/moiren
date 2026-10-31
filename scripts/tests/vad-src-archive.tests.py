@@ -184,6 +184,28 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(result["trace_refusal"], "history_unavailable")
         self.assertEqual(result["route"]["status"], "invalidated_preparation")
 
+    def test_v4_retains_actual_execution_identity_without_authenticating_import(self):
+        summary, chunks = fixture()
+        route = prepared_route()
+        route["prepared"].update(schema_version=2, prepared_plan_revision=13)
+        summary["trace"].update(schema_version=4, route=route)
+        for record in chunks:
+            for boundary in record["chunk"]["boundaries"]:
+                for point in boundary["checkpoints"]:
+                    point.update(schema_version=2, execution={"plan_revision": 13, "control_generation": 0})
+        result = self.verify(summary, encode(summary, chunks))
+        self.assertTrue(result["scalar_readback_complete"])
+        self.assertEqual(result["route"]["prepared"]["prepared_plan_revision"], 13)
+        self.assertFalse(result["native_execution"])
+        point = chunks[0]["chunk"]["boundaries"][0]["checkpoints"][0]
+        point["execution"] = None
+        self.assertTrue(self.verify(summary, encode(summary, chunks))["scalar_readback_complete"])
+        for stamp in [{"plan_revision": True, "control_generation": 0},
+                      {"plan_revision": 13, "control_generation": -1}, {}, 0]:
+            point["execution"] = stamp
+            with self.subTest(stamp=stamp), self.assertRaises(ValueError):
+                self.verify(summary, encode(summary, chunks))
+
     def test_gap_and_original_refusal_are_not_upgraded(self):
         summary, chunks = fixture()
         del chunks[1]["chunk"]["boundaries"][0]

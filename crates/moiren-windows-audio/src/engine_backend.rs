@@ -408,6 +408,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             prepared: native_observations::src_route::prepared_route(
                 request.project,
                 request.graph_revision,
+                request.plan_revision,
             ),
             ..Default::default()
         });

@@ -197,6 +197,7 @@ fn prepare_backend<S: ProcessingSample>(
                 mode,
                 reuse: &job.reuse,
                 graph_revision: job.basis.graph,
+                plan_revision: job.plan_revision,
                 owner_generation: job.basis.owner,
                 resource_generation: job.basis.resources,
                 signal_host: signals,
