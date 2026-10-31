@@ -13,17 +13,67 @@ use crate::service::{
     InputSelection, MixerState, RequestId, RunLimit, SessionPhase, SessionSpec,
 };
 
+/// Whether an endpoint id names an input row the backend currently offers:
+/// present among its rows and (on WASAPI) not owned by one of our VAD
+/// exports, which are hidden from every selector. The row lists, the
+/// candidate spec, and the transport fingerprint share this one judgment so
+/// "available" cannot mean different things at different call sites.
+pub(crate) fn backend_offers_input(
+    catalog: &DeviceCatalog,
+    backend: AudioBackend,
+    endpoint_id: &str,
+) -> bool {
+    match backend {
+        AudioBackend::Wasapi => {
+            !catalog.vad_endpoints.values().any(|id| id == endpoint_id)
+                && catalog
+                    .inputs
+                    .iter()
+                    .any(|row| row.endpoint_id == endpoint_id)
+        }
+        AudioBackend::Asio => catalog
+            .asio_drivers
+            .iter()
+            .any(|row| row.endpoint_id == endpoint_id),
+    }
+}
+
+/// The output-row half of [`backend_offers_input`].
+pub(crate) fn backend_offers_output(
+    catalog: &DeviceCatalog,
+    backend: AudioBackend,
+    endpoint_id: &str,
+) -> bool {
+    match backend {
+        AudioBackend::Wasapi => {
+            !catalog.vad_endpoints.values().any(|id| id == endpoint_id)
+                && catalog
+                    .outputs
+                    .iter()
+                    .any(|row| row.endpoint_id == endpoint_id)
+        }
+        AudioBackend::Asio => catalog
+            .asio_drivers
+            .iter()
+            .any(|row| row.endpoint_id == endpoint_id),
+    }
+}
+
+/// Whether the (pid, creation time) key still names a process row; the
+/// creation time disambiguates pid reuse.
+fn process_available(catalog: &DeviceCatalog, pid: u32, creation_time_100ns: u64) -> bool {
+    catalog
+        .processes
+        .iter()
+        .any(|row| (row.pid, row.creation_time_100ns) == (pid, creation_time_100ns))
+}
+
 pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<DeviceRow> {
     match backend {
         AudioBackend::Wasapi => catalog
             .inputs
             .iter()
-            .filter(|row| {
-                !catalog
-                    .vad_endpoints
-                    .values()
-                    .any(|id| id == &row.endpoint_id)
-            })
+            .filter(|row| backend_offers_input(catalog, backend, &row.endpoint_id))
             .cloned()
             .collect(),
         AudioBackend::Asio => catalog.asio_drivers.clone(),
@@ -35,12 +85,7 @@ pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec
         AudioBackend::Wasapi => catalog
             .outputs
             .iter()
-            .filter(|row| {
-                !catalog
-                    .vad_endpoints
-                    .values()
-                    .any(|id| id == &row.endpoint_id)
-            })
+            .filter(|row| backend_offers_output(catalog, backend, &row.endpoint_id))
             .cloned()
             .collect(),
         AudioBackend::Asio => catalog.asio_drivers.clone(),
@@ -205,7 +250,27 @@ impl SelectionState {
 
 /// Memo key for [`UiState::can_start_transport`]: every input the
 /// validation consumes, cheap to copy and compare.
-type TransportCheckFingerprint = ((u64, u32, u32, bool, bool), bool);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TransportCheckFingerprint {
+    candidate_revision: u64,
+    sample_rate: u32,
+    snapshot_block_frames: u32,
+    f64_precision: bool,
+    /// The three latency profiles validate differently (they request
+    /// different device periods), so the value itself is keyed — folding
+    /// them into one "non-default" bit lets Compatible→Balanced→Low
+    /// switches replay a stale verdict.
+    latency_profile: crate::service::AudioLatencyProfile,
+    /// The UI's own block ceiling: the physical spec carries it (not the
+    /// snapshot's setting), and it is the block half of the validation on
+    /// that path.
+    max_block_frames: usize,
+    /// Whether the selected output and mode-matched source rows still exist
+    /// in the catalog. `RefreshCatalog` and device hot-plug change this
+    /// without bumping the candidate revision, so this is the memo's only
+    /// window on resource availability.
+    resources_available: bool,
+}
 
 /// Root gpui entity: owns the service handle and the latest projected state.
 /// The text projections and the display-level stale guard live in
@@ -232,10 +297,12 @@ pub struct UiState {
     request_id: Option<RequestId>,
     /// Memo for [`Self::can_start_transport`]: the toolbar asks per rebuild,
     /// and the answer clones the whole candidate graph to validate. The key
-    /// carries every input of the validation — candidate revision plus the
-    /// processing settings `configured_engine_project` consumes — so a
-    /// settings change without a graph edit still invalidates it.
-    transport_check: std::cell::Cell<Option<TransportCheckFingerprint>>,
+    /// ([`TransportCheckFingerprint`]) carries every input of the validation
+    /// — candidate revision, the processing settings and latency profile,
+    /// the UI block ceiling, and the selected resources' catalog
+    /// availability — so a settings or catalog change without a graph edit
+    /// still invalidates it.
+    transport_check: std::cell::Cell<Option<(TransportCheckFingerprint, bool)>>,
 }
 
 impl UiState {
@@ -464,24 +531,18 @@ impl UiState {
         let spec = self.candidate_config()?;
         let catalog = &self.snapshot.catalog;
         let backend = self.snapshot.audio_settings.backend;
-        if !output_rows(catalog, backend)
-            .iter()
-            .any(|row| row.endpoint_id == spec.output_endpoint_id)
-        {
+        if !backend_offers_output(catalog, backend, &spec.output_endpoint_id) {
             return None;
         }
         let available = match &spec.source {
             InputSelection::Tone { .. } => true,
-            InputSelection::Physical { endpoint_id } => input_rows(catalog, backend)
-                .iter()
-                .any(|row| &row.endpoint_id == endpoint_id),
+            InputSelection::Physical { endpoint_id } => {
+                backend_offers_input(catalog, backend, endpoint_id)
+            }
             InputSelection::Process {
                 pid,
                 creation_time_100ns,
-            } => catalog
-                .processes
-                .iter()
-                .any(|row| (row.pid, row.creation_time_100ns) == (*pid, *creation_time_100ns)),
+            } => process_available(catalog, *pid, *creation_time_100ns),
         };
         available.then_some(spec)
     }
@@ -539,16 +600,7 @@ impl UiState {
     }
 
     pub fn can_start_transport(&self) -> bool {
-        let fingerprint = (
-            self.snapshot.graph.candidate_revision,
-            self.snapshot.audio_settings.processing.sample_rate,
-            self.snapshot.audio_settings.processing.block_frames,
-            matches!(
-                self.snapshot.audio_settings.processing.precision,
-                moiren_engine::audio_config::ProcessingPrecision::F64
-            ),
-            self.snapshot.latency_profile == crate::service::AudioLatencyProfile::default(),
-        );
+        let fingerprint = self.transport_fingerprint();
         if let Some((seen, ok)) = self.transport_check.get()
             && seen == fingerprint
         {
@@ -557,6 +609,59 @@ impl UiState {
         let ok = self.transport_request().is_ok();
         self.transport_check.set(Some((fingerprint, ok)));
         ok
+    }
+
+    /// The memo key of [`Self::can_start_transport`], covering every input
+    /// its validation reads: the candidate graph (by revision), the
+    /// processing settings `configured_engine_project` validates, the
+    /// requested latency profile, the UI block ceiling the physical spec
+    /// carries, and the selected resources' catalog availability.
+    fn transport_fingerprint(&self) -> TransportCheckFingerprint {
+        TransportCheckFingerprint {
+            candidate_revision: self.snapshot.graph.candidate_revision,
+            sample_rate: self.snapshot.audio_settings.processing.sample_rate,
+            snapshot_block_frames: self.snapshot.audio_settings.processing.block_frames,
+            f64_precision: matches!(
+                self.snapshot.audio_settings.processing.precision,
+                moiren_engine::audio_config::ProcessingPrecision::F64
+            ),
+            latency_profile: self.snapshot.latency_profile,
+            max_block_frames: self.max_block_frames,
+            resources_available: self.selected_resources_available(),
+        }
+    }
+
+    /// Whether the selected output and the mode-matched source row are
+    /// present in the catalog, judged by the same
+    /// [`backend_offers_output`]/[`backend_offers_input`]/[`process_available`]
+    /// helpers [`Self::candidate_spec`] uses — the identifiers read here are
+    /// exactly the ones [`Self::candidate_config`] embeds in a spec.
+    /// Allocation-free so [`Self::can_start_transport`] can afford the probe
+    /// on every toolbar rebuild.
+    fn selected_resources_available(&self) -> bool {
+        let catalog = &self.snapshot.catalog;
+        let backend = self.snapshot.audio_settings.backend;
+        let output = self
+            .selection
+            .output_id
+            .as_deref()
+            .is_some_and(|id| backend_offers_output(catalog, backend, id));
+        let source = match self.source_mode {
+            SourceMode::Tone => true,
+            SourceMode::Input => self
+                .selection
+                .input_id
+                .as_deref()
+                .is_some_and(|id| backend_offers_input(catalog, backend, id)),
+            SourceMode::Application => {
+                self.selection
+                    .process_key
+                    .is_some_and(|(pid, creation_time_100ns)| {
+                        process_available(catalog, pid, creation_time_100ns)
+                    })
+            }
+        };
+        output && source
     }
 
     fn sync_graph_resources(&mut self, source: Option<InputSelection>, output: Option<String>) {
