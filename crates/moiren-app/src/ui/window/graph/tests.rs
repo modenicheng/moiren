@@ -1122,12 +1122,7 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
     }
     let before = view.read_with(cx, |shell, _| {
         let trace = shell.mixer.trace.borrow();
-        (
-            trace.graph_renders,
-            trace.toolbar_renders,
-            trace.status_renders,
-            trace.graph_frames,
-        )
+        (trace.graph_renders, trace.graph_frames)
     });
     for _ in 0..10 {
         cx.update(|window, cx| {
@@ -1141,28 +1136,20 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
             "graph meter demand must survive animation-only frames"
         );
         let trace = shell.mixer.trace.borrow();
-        (
-            trace.graph_renders,
-            trace.toolbar_renders,
-            trace.status_renders,
-            trace.graph_frames,
-        )
+        (trace.graph_renders, trace.graph_frames)
     });
     // Every drawn frame rebuilds the shell's root element (GPUI lays the
     // root out from scratch); the isolation contract is that this rebuild
-    // splices the cached page content and chrome instead of re-projecting
-    // the graph or re-rendering the toolbar and status bar.
+    // splices the cached page content instead of re-projecting the graph.
+    // The toolbar and status bar rebuild every frame by necessity: their
+    // window drag regions must re-register their hitboxes per frame (the
+    // splice does not replay window-control registrations).
     assert_eq!(
         after.0, before.0,
         "meter animation must not rebuild the cached graph page"
     );
-    assert_eq!(
-        (after.1, after.2),
-        (before.1, before.2),
-        "meter animation must not rebuild the cached toolbar or status bar"
-    );
     assert!(
-        after.3 >= before.3 + 10,
+        after.1 >= before.1 + 10,
         "the graph meter frame must actually pump per frame"
     );
 
