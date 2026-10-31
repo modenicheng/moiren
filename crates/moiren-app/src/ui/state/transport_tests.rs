@@ -37,26 +37,42 @@ fn bind_virtual(graph: &mut ServiceGraph, node: NodeId, direction: ExportDirecti
     graph.edit(GraphEdit::SetExports(exports)).unwrap();
 }
 
+fn full_catalog() -> DeviceCatalog {
+    let row = |id: &str| DeviceRow {
+        endpoint_id: id.into(),
+        name: id.into(),
+    };
+    DeviceCatalog {
+        inputs: vec![row("input")],
+        outputs: vec![row("output")],
+        default_input_endpoint_id: Some("input".into()),
+        default_output_endpoint_id: Some("output".into()),
+        ..Default::default()
+    }
+}
+
 fn ui(graph: ServiceGraph, physical_available: bool) -> (UiState, ServiceMailbox) {
     let mut context = crate::service::ServiceContext::default();
     context.graph = graph;
     if physical_available {
-        let row = |id: &str| DeviceRow {
-            endpoint_id: id.into(),
-            name: id.into(),
-        };
-        context.catalog = Arc::new(DeviceCatalog {
-            inputs: vec![row("input")],
-            outputs: vec![row("output")],
-            default_input_endpoint_id: Some("input".into()),
-            default_output_endpoint_id: Some("output".into()),
-            ..Default::default()
-        });
+        context.catalog = Arc::new(full_catalog());
     }
     let (handle, mailbox) =
         ServiceMailbox::with_snapshot(std::thread::current(), crate::service::snapshot(&context));
     let initial = handle.try_snapshot().unwrap();
     (UiState::new(handle, initial), mailbox)
+}
+
+fn publish_snapshot_change(
+    state: &mut UiState,
+    mailbox: &ServiceMailbox,
+    change: impl FnOnce(&mut AppSnapshot),
+) {
+    let mut snapshot = (*state.snapshot).clone();
+    change(&mut snapshot);
+    mailbox.publish(snapshot);
+    state.poll();
+    assert!(!state.pending_request);
 }
 
 fn publish_phase(state: &mut UiState, mailbox: &ServiceMailbox, phase: SessionPhase) {
@@ -323,4 +339,87 @@ fn nonprimary_unbound_io_rejects_otherwise_valid_physical_start() {
     state.toggle_transport();
     assert_eq!(mailbox.try_request(), None);
     assert!(state.dispatch_error.is_some());
+}
+
+#[test]
+fn non_default_latency_profiles_get_distinct_transport_fingerprints() {
+    use crate::service::AudioLatencyProfile;
+    let (mut state, mailbox) = ui(physical_graph(), true);
+    assert!(state.can_start_transport());
+
+    publish_snapshot_change(&mut state, &mailbox, |snapshot| {
+        snapshot.latency_profile = AudioLatencyProfile::Balanced;
+    });
+    let balanced = state.transport_fingerprint();
+    assert!(
+        state.can_start_transport(),
+        "switching to Balanced must revalidate, not replay the Compatible verdict"
+    );
+
+    publish_snapshot_change(&mut state, &mailbox, |snapshot| {
+        snapshot.latency_profile = AudioLatencyProfile::Low;
+    });
+    assert_ne!(
+        state.transport_fingerprint(),
+        balanced,
+        "the old key folded both non-default profiles into one 'non-default' bit, \
+         so a Balanced→Low switch could never invalidate the memo"
+    );
+    assert!(state.can_start_transport());
+}
+
+#[test]
+fn the_ui_block_ceiling_is_part_of_the_transport_fingerprint() {
+    let (mut state, _mailbox) = ui(physical_graph(), true);
+    assert!(state.can_start_transport());
+    let before = state.transport_fingerprint();
+    state.max_block_frames = 512;
+    assert_ne!(
+        state.transport_fingerprint(),
+        before,
+        "the physical spec validates this ceiling, so the key must carry it"
+    );
+}
+
+#[test]
+fn an_unrelated_snapshot_change_keeps_the_transport_fingerprint() {
+    let (mut state, mailbox) = ui(physical_graph(), true);
+    assert!(state.can_start_transport());
+    let before = state.transport_fingerprint();
+    publish_phase(&mut state, &mailbox, SessionPhase::Running);
+    assert_eq!(
+        state.transport_fingerprint(),
+        before,
+        "unrelated snapshot fields must not invalidate the memo"
+    );
+    assert!(state.can_start_transport());
+}
+
+#[test]
+fn catalog_refresh_without_a_graph_edit_revalidates_start_availability() {
+    let (mut state, mailbox) = ui(physical_graph(), true);
+    assert!(state.can_start_transport());
+
+    // Unplug the selected output: a pure catalog refresh never bumps the
+    // candidate revision, so only the availability probe can move the memo.
+    publish_snapshot_change(&mut state, &mailbox, |snapshot| {
+        snapshot.catalog = Arc::new(DeviceCatalog {
+            inputs: full_catalog().inputs,
+            ..Default::default()
+        });
+    });
+    assert!(
+        !state.can_start_transport(),
+        "a vanished output row must disable start without any graph edit"
+    );
+
+    // The device comes back: the memo must not keep start disabled until
+    // the next graph edit.
+    publish_snapshot_change(&mut state, &mailbox, |snapshot| {
+        snapshot.catalog = Arc::new(full_catalog());
+    });
+    assert!(
+        state.can_start_transport(),
+        "a restored output row must re-enable start without any graph edit"
+    );
 }
