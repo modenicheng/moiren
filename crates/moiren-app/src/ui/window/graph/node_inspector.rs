@@ -4,7 +4,9 @@ use super::*;
 use crate::service::{GraphEdit, InputSelection};
 use crate::ui::presentation::{db_text, dbfs_text, step_db};
 use crate::ui::widgets::fader::hslider;
-use crate::ui::window::mixer::{EditableValueFamily, gain_db_text, start_value_edit};
+use crate::ui::window::mixer::{
+    EditableValueFamily, gain_db_text, reset_clip_on_click, start_value_edit,
+};
 use controls::*;
 use moiren_core::graph::NodeKind;
 use moiren_engine::{
@@ -204,6 +206,7 @@ pub(in crate::ui::window) fn inspector(
             ))
         })
         .child(super::super::mixer::node_controls(
+            shell,
             entry,
             node.channels(),
             cx,
@@ -1319,14 +1322,10 @@ fn inspector_meter_track(
         .w_full()
         .h(px(if channels >= 2 { 15. } else { 9. }))
         .flex_none()
-        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            this.update(cx, |shell, cx| {
-                shell
-                    .state
-                    .update(cx, |state, _| state.node_meters.reset_clip(id));
-                cx.notify();
-            });
-        })
+        .on_mouse_down(
+            MouseButton::Left,
+            reset_clip_on_click(shell.state.clone(), this, id),
+        )
         .child(
             canvas(
                 move |bounds, window, _| {

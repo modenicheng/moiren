@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::{GraphEdit, GraphSnapshot};
+use crate::service::{GraphEdit, GraphSnapshot, MixerState};
 use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior};
 use rust_i18n::t;
 use std::cell::Cell;
@@ -405,6 +405,38 @@ pub(in crate::ui::window) fn start_value_edit(
             let handle = input.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
+    }
+}
+
+/// One strip edit (mute/solo/mode/dim) shared by the main mixer and the tray
+/// flyout: the edit applies through the live parameter path, then the hosting
+/// view is notified so its page repaints. `owner` is whichever view hosts the
+/// strip — each one notifies itself, so no surface changes whose render
+/// invalidation wakes.
+pub(in crate::ui::window) fn mixer_edit<O: 'static>(
+    state: Entity<UiState>,
+    owner: Entity<O>,
+    id: NodeId,
+    change: impl Fn(&mut MixerState) + 'static,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
+    move |_, _, cx| {
+        state.update(cx, |state, _| state.edit_mixer(id, &change));
+        owner.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// Clip-latch reset on a meter-surface press, shared by every meter surface
+/// (main strip, tray flyout, inspector track): one handler so the click
+/// semantics cannot drift between surfaces. The hosting view — not `state` —
+/// is notified, because the hot layer painting the meters belongs to it.
+pub(in crate::ui::window) fn reset_clip_on_click<O: 'static>(
+    state: Entity<UiState>,
+    owner: Entity<O>,
+    id: NodeId,
+) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) {
+    move |_, _, cx| {
+        state.update(cx, |state, _| state.node_meters.reset_clip(id));
+        owner.update(cx, |_, cx| cx.notify());
     }
 }
 
