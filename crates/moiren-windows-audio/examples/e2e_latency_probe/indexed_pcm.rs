@@ -423,6 +423,11 @@ pub fn analyze(
     }))
 }
 
+// The first SRC-model slice is a synthetic test artifact, not a CLI mode.
+#[cfg(test)]
+#[path = "indexed_pcm/src_model.rs"]
+mod src_model;
+
 #[cfg(test)]
 #[path = "indexed_pcm/tests.rs"]
 mod tests;

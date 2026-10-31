@@ -19,6 +19,22 @@ mod probe_logging;
 #[path = "e2e_latency_probe/process_recording.rs"]
 mod process_recording;
 
+// Import the real production FIR only into the synthetic test binary. Its two
+// crate-root dependencies are value-only stubs; no native client is constructed.
+#[cfg(test)]
+mod native {
+    pub type StereoFrame = [f64; 2];
+}
+#[cfg(test)]
+mod codec {
+    pub fn finite(value: f64) -> f64 {
+        if value.is_finite() { value } else { 0.0 }
+    }
+}
+#[cfg(test)]
+#[path = "../src/resample.rs"]
+mod resample;
+
 #[cfg(test)]
 #[path = "e2e_latency_probe/tests.rs"]
 mod tests;
