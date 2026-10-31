@@ -86,6 +86,11 @@ on/off659 library/622 probe tests, strict Clippy/fmt/release and independent
 source review pass; both acquired archives independently audit59/0. No PCM,
 physical floor or calibrated sub10ms conclusion follows:
 [exact144 receipt](../../docs/validation/2026-10-31-dawn-exact144.md).
+The subsequent one-variable Engine32/target945 then Engine32/target881 controls
+also finish35 seconds with actual144 and no reported native/cleanup failure;
+each archive independently audits62/0. Prime32 and final reset/recovery1 remain.
+881 is the current declared-policy model minimum, not a qualified default or
+physical theoretical minimum; sustained signal and physical quality remain open.
 
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.

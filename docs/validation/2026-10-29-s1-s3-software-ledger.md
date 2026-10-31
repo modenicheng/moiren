@@ -31,6 +31,11 @@ both have no native/cleanup error or reported xrun/drop/silence, retaining
 prime32 and final provider reset/recovery1. Each17-payload archive is verified
 and independently audited59/0. This is bounded admission/counter progress,
 not PCM continuity, physical latency, a default promotion or impossibility proof.
+The following one-variable sequence keeps945 while changing Engine64 to32,
+then separately lowers target945 to the Engine32 model minimum881. Both
+35-second native controls retain actual144, no native/cleanup error or reported
+fault, and separate initial-prime32/final-reset1. Each archive independently
+audits62/0. No declared gap/jitter is reduced or physical floor established.
 
 The [physical DAWN retirement control](2026-10-31-physical-soak-retirement.md)
 retains the actual256-frame admission and probe exit1/SET_GATE cleanup failure
