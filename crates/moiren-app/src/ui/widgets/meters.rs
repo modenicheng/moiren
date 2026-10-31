@@ -12,11 +12,20 @@ use gpui_kit::*;
 /// from a stereo projection of mono/multichannel data.
 pub(crate) fn channel_meter_width(channels: usize) -> f32 {
     let count = channels.max(1) as f32;
+    let (width, gap) = channel_track_layout(channels);
+    width * count + gap * (count - 1.)
+}
+
+/// Per-track width and gap for `channels` bars inside the shared 40px channel
+/// span. The total-width probe and the painter must agree, so both consume
+/// this one layout.
+fn channel_track_layout(channels: usize) -> (f32, f32) {
+    let count = channels.max(1) as f32;
     let gap = (8. / count).min(3.);
     let width = (28. / count)
         .clamp(2., 10.)
         .min((40. - gap * (count - 1.)) / count);
-    width * count + gap * (count - 1.)
+    (width, gap)
 }
 
 /// The clip lamp at the loud end of one meter track: above a vertical
@@ -59,11 +68,7 @@ pub(crate) fn paint_channel_meter(
     cx: &mut App,
 ) {
     use super::fader::paint_text;
-    let count = channels.max(1) as f32;
-    let gap = (8. / count).min(3.);
-    let width = (28. / count)
-        .clamp(2., 10.)
-        .min((40. - gap * (count - 1.)) / count);
+    let (width, gap) = channel_track_layout(channels);
     for index in 0..channels {
         let left = bounds.left() + px(index as f32 * (width + gap));
         let track = Bounds::new(
