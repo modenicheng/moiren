@@ -4,10 +4,11 @@
 //! paint without re-running its closures, so live bars must be painted by
 //! the hot layer at the frame the panel's prepaint registered geometry for.
 use super::*;
+use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
 use crate::ui::window::panel::{CachedPanel, PanelHost, cached_splice};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Copy)]
 struct Placement {
@@ -512,11 +513,9 @@ pub(in crate::ui::window) fn readout(shell: &StudioShell, id: NodeId) -> impl In
 pub(in crate::ui::window) struct MixerMeters {
     shell: WeakEntity<StudioShell>,
     geometry: Geometry,
-    /// One shaped peak readout per track, re-shaped only when its text
-    /// changes. The readout holds its value most of the time (peak hold),
-    /// and shaping every track's text every frame dominated the page's
-    /// per-frame budget at display refresh rates.
-    readout_cache: std::cell::RefCell<BTreeMap<NodeId, (String, Option<gpui_kit::ShapedLine>)>>,
+    /// Shared, bounded shaping cache for every strip's readout, keyed by
+    /// the exact text (see [`ReadoutShapes`]).
+    readouts: std::cell::RefCell<ReadoutShapes>,
 }
 
 impl MixerMeters {
@@ -524,8 +523,83 @@ impl MixerMeters {
         Self {
             shell,
             geometry,
-            readout_cache: std::cell::RefCell::new(BTreeMap::new()),
+            readouts: std::cell::RefCell::new(ReadoutShapes::default()),
         }
+    }
+
+    /// How many shaper runs the readout cache has needed, and how many
+    /// distinct texts it holds. Every run inserts exactly one entry, so the
+    /// pair pins "one shape per distinct text, everything else is a lookup".
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn readout_shape_stats(&self) -> (usize, usize) {
+        let shapes = self.readouts.borrow();
+        (shapes.census.shapes, shapes.lines.len())
+    }
+
+    /// The text a strip's readout last painted; `None` before its first paint.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn last_readout(&self, id: NodeId) -> Option<String> {
+        self.readouts.borrow().census.painted.get(&id).cloned()
+    }
+}
+
+/// The strip readouts' shaping cache, shared by every track and keyed by the
+/// exact text. Marker semantics make the readout's text change every frame
+/// while a peak falls, so the third machine round's per-track cache (one
+/// line per track, reshaped when its text changes) would have reshaped every
+/// track every frame during a fall. Keying by text instead turns the fall
+/// into one shape per distinct dB string and then lookups forever: at the
+/// readout's 0.1 dB display precision the honest texts number in the
+/// hundreds, and no per-node entry survives a deleted node, so the old
+/// per-track map's unbounded growth is gone with it. The key is the text
+/// alone because every shaping parameter at the only call site (mono font,
+/// 8 px, muted color) is a constant; if the readout ever becomes styleable,
+/// those parameters must join the key.
+#[derive(Default)]
+struct ReadoutShapes {
+    lines: HashMap<String, gpui_kit::ShapedLine>,
+    /// Test census: real shaper runs and the text each readout last painted.
+    #[cfg(feature = "gpui-test")]
+    census: ReadoutCensus,
+}
+
+#[cfg(feature = "gpui-test")]
+#[derive(Default)]
+struct ReadoutCensus {
+    shapes: usize,
+    painted: BTreeMap<NodeId, String>,
+}
+
+/// Far above the honest text population (~0.1 dB steps over the meter
+/// range); a pathological feed that exceeds it clears the cache and pays
+/// reshapes again instead of growing without bound.
+const READOUT_SHAPE_CACHE_CAP: usize = 2048;
+
+impl ReadoutShapes {
+    /// The shaped line for `text`, running the shaper only on a cache miss.
+    fn line(&mut self, text: &str, window: &mut Window) -> Option<&gpui_kit::ShapedLine> {
+        if !self.lines.contains_key(text) {
+            if self.lines.len() >= READOUT_SHAPE_CACHE_CAP {
+                self.lines.clear();
+            }
+            let line = window.text_system().shape_line(
+                text.into(),
+                px(8.),
+                &[TextRun {
+                    len: text.len(),
+                    font: font(theme::FONT_MONO),
+                    color: theme::TEXT_MUTED,
+                    ..Default::default()
+                }],
+                None,
+            );
+            self.lines.insert(text.to_owned(), line);
+            #[cfg(feature = "gpui-test")]
+            {
+                self.census.shapes += 1;
+            }
+        }
+        self.lines.get(text)
     }
 }
 
@@ -559,8 +633,25 @@ impl HotSurface for MixerMeters {
             return;
         };
         shell.update(cx, |shell, cx| {
-            paint_mixer_meter_frame(frame, shell, window, cx, &self.readout_cache)
+            paint_mixer_meter_frame(frame, shell, window, cx, &self.readouts)
         });
+    }
+}
+
+/// One strip readout's text for a frame of display levels: the loudest
+/// channel's held marker, spelled by the same
+/// [`crate::ui::presentation::dbfs_text`] the inspector's "Peak" row uses,
+/// so both surfaces read the same number at the same instant. The marker
+/// falls after its hold, so the readout decays with the bar instead of
+/// latching the retained raw peak, which only ever ratchets up and pins a
+/// transient's maximum for the whole subscription. `None` — no observation
+/// at all — stays an em dash.
+fn readout_text(levels: Option<&[DisplayLevel]>) -> String {
+    match levels {
+        Some(levels) => crate::ui::presentation::dbfs_text(
+            levels.iter().fold(0f32, |max, level| max.max(level.marker)),
+        ),
+        None => "\u{2014}".to_owned(),
     }
 }
 
@@ -569,7 +660,7 @@ fn paint_mixer_meter_frame(
     shell: &mut StudioShell,
     window: &mut Window,
     cx: &mut Context<StudioShell>,
-    readout_cache: &std::cell::RefCell<BTreeMap<NodeId, (String, Option<gpui_kit::ShapedLine>)>>,
+    readouts: &std::cell::RefCell<ReadoutShapes>,
 ) {
     #[cfg(feature = "gpui-test")]
     let began = std::time::Instant::now();
@@ -610,52 +701,43 @@ fn paint_mixer_meter_frame(
         });
     }
     for (&id, &placement) in &frame.readouts {
-        let peak = {
-            let state = shell.state.read(cx);
-            state
-                .node_meters
-                .raw_levels(id)
-                .map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max))
-        };
-        let text = peak
-            .map(|peak| {
-                if peak == 0. {
-                    "\u{2212}\u{221e}".to_owned()
+        // The readout rides the same levels its bars paint — the managed
+        // node observation first, the legacy capture-tap fallback for probe
+        // strips without a node topic — so the number can never disagree
+        // with the marker drawn directly above it.
+        let legacy = frame.tracks.get(&id).and_then(|&(_, _, legacy_input)| {
+            legacy_input.and_then(|input| {
+                if input {
+                    shell.meters.display_input()
                 } else {
-                    format!("{:.1}", 20. * peak.log10())
+                    shell.meters.display_output()
                 }
             })
-            .unwrap_or_else(|| "\u{2014}".to_owned());
+        });
+        let levels = {
+            let state = shell.state.read(cx);
+            state.node_meters.levels(id).or(legacy)
+        };
+        let text = readout_text(levels.as_ref().map(|levels| levels.as_slice()));
         window.with_content_mask(Some(placement.mask), |window| {
-            // Re-shape only when the text changed: the cache holds one entry
-            // per track, so during peak hold every frame replays the shaped
-            // line instead of re-running the shaper.
-            let mut cache = readout_cache.borrow_mut();
-            let entry = cache.entry(id).or_default();
-            if entry.0 != text {
-                entry.0 = text.clone();
-                entry.1 = Some(window.text_system().shape_line(
-                    text.into(),
-                    px(8.),
-                    &[TextRun {
-                        len: entry.0.len(),
-                        font: font(theme::FONT_MONO),
-                        color: theme::TEXT_MUTED,
-                        ..Default::default()
-                    }],
-                    None,
-                ));
-            }
-            if let Some(line) = &entry.1 {
-                let _ = line.paint(
-                    placement.bounds.origin,
-                    px(12.),
-                    TextAlign::Center,
-                    Some(placement.bounds.size.width),
-                    window,
-                    cx,
-                );
-            }
+            // Shape only when this exact text has never been shaped: during
+            // a peak hold nothing here runs, and while markers fall the
+            // shared text-keyed cache turns per-track reshapes into one
+            // lookup per track (see [`ReadoutShapes`]).
+            let mut shapes = readouts.borrow_mut();
+            #[cfg(feature = "gpui-test")]
+            shapes.census.painted.insert(id, text.clone());
+            let Some(line) = shapes.line(&text, window) else {
+                return;
+            };
+            let _ = line.paint(
+                placement.bounds.origin,
+                px(12.),
+                TextAlign::Center,
+                Some(placement.bounds.size.width),
+                window,
+                cx,
+            );
         });
     }
     #[cfg(feature = "gpui-test")]
@@ -670,8 +752,41 @@ fn paint_mixer_meter_frame(
 
 #[cfg(test)]
 mod tests {
-    use super::Placement;
+    use super::{Placement, readout_text};
+    use crate::ui::monitoring::DisplayLevel;
+    use crate::ui::presentation::dbfs_text;
     use gpui_kit::{Bounds, ContentMask, point, px, size};
+
+    fn level(marker: f32) -> DisplayLevel {
+        DisplayLevel {
+            bar: 0.,
+            marker,
+            rms: 0.,
+        }
+    }
+
+    #[test]
+    fn strip_readout_text_follows_the_marker_the_inspector_shows() {
+        assert_eq!(readout_text(None), "\u{2014}");
+        // Silence and a full-scale transient are spelled exactly like the
+        // inspector's "Peak" row at the same instant.
+        assert_eq!(readout_text(Some(&[level(0.)])), dbfs_text(0.));
+        assert_eq!(readout_text(Some(&[level(1.)])), dbfs_text(1.));
+        // The loudest channel wins, at that shared formatting.
+        assert_eq!(
+            readout_text(Some(&[level(0.25), level(0.75)])),
+            dbfs_text(0.75),
+        );
+        // A transient followed by silence walks the text back down with the
+        // marker instead of latching the all-time maximum.
+        let mut previous = readout_text(Some(&[level(1.)]));
+        for marker in [0.5f32, 0.1] {
+            let text = readout_text(Some(&[level(marker)]));
+            assert_ne!(text, previous, "the readout must follow the marker down");
+            assert_eq!(text, dbfs_text(marker));
+            previous = text;
+        }
+    }
 
     #[test]
     fn vertical_culling_keeps_clip_and_channel_label_extents() {

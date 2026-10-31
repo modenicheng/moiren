@@ -1233,6 +1233,182 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
     finish_service(runtime);
 }
 
+/// The strip readout must speak the inspector's marker semantics (audit
+/// SD-6): a full-scale transient followed by silence walks the number back
+/// down with the decaying marker instead of staying pinned at the retained
+/// raw peak's all-time maximum, and the text is spelled by the same
+/// `dbfs_text` the inspector's "Peak" row uses. The readout's shaping is
+/// shared across strips and keyed by text: held frames re-shape nothing,
+/// every distinct dB string shapes exactly once, and no per-node cache
+/// entry exists to outlive a deleted node (audit HC-7).
+#[gpui_kit::test]
+fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use crate::ui::presentation::dbfs_text;
+    use std::sync::atomic::Ordering;
+    let full_scale = dbfs_text(1.);
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::window::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The fake physical source runs full scale, so every visible strip's
+    // readout holds the same "+0.0 dBFS" text. Warm up until every demanded
+    // node is observed and painted at that held value.
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            let surface = shell.mixer_frame.read(cx).surface();
+            let surface = surface.borrow();
+            shell.node_meter_points.borrow().iter().all(|&id| {
+                shell
+                    .state
+                    .read(cx)
+                    .node_meters
+                    .channel_levels(id)
+                    .is_some()
+                    && surface
+                        .last_readout(id)
+                        .is_some_and(|text| text == full_scale)
+            }) && surface
+                .last_readout(node)
+                .is_some_and(|text| text == full_scale)
+        })
+    });
+    let (shapes_held, entries_held, paints_held) = view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer_frame.read(cx).surface();
+        let (shapes, entries) = surface.borrow().readout_shape_stats();
+        (shapes, entries, shell.mixer.trace.borrow().meter_paints)
+    });
+    assert_eq!(entries_held, shapes_held, "one entry per distinct text");
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer_frame.read(cx).surface();
+        let (shapes, entries) = surface.borrow().readout_shape_stats();
+        assert_eq!(
+            shapes, shapes_held,
+            "every strip holds the same text: held frames must replay the shaped line"
+        );
+        assert_eq!(
+            entries, shapes,
+            "each shaper run inserted exactly one distinct text"
+        );
+        assert!(
+            shell.mixer.trace.borrow().meter_paints > paints_held,
+            "held frames actually painted readouts"
+        );
+    });
+
+    // Silence the fader: publications continue (silent windows), the bar
+    // falls immediately, the marker holds its half second and then falls at
+    // the default Fast rate (40 dB/s). The readout must follow it down
+    // instead of staying latched at the transient's maximum.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_mixer(node, |state| state.muted = true)
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .is_some_and(|node| node.mixer.muted)
+        })
+    });
+    // Keep pumping across the hold and into the fall: a single frame after a
+    // long sleep would drain a backlog of stale pre-mute windows from the
+    // bounded queue and re-anchor the marker, instead of observing the decay
+    // the display sees at real frame rates.
+    let decay = std::time::Instant::now() + Duration::from_millis(1000);
+    while std::time::Instant::now() < decay {
+        std::thread::sleep(Duration::from_millis(30));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    let (shapes_fallen, readout, inspector) = view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer_frame.read(cx).surface();
+        let surface = surface.borrow();
+        let (shapes, entries) = surface.readout_shape_stats();
+        assert_eq!(
+            entries, shapes,
+            "the shared cache still holds one entry per text"
+        );
+        let marker = shell
+            .state
+            .read(cx)
+            .node_meters
+            .channel_levels(node)
+            .unwrap()[0]
+            .marker;
+        (
+            shapes,
+            surface.last_readout(node).unwrap(),
+            dbfs_text(marker),
+        )
+    });
+    assert!(
+        shapes_fallen > shapes_held,
+        "the falling marker must re-shape: the old raw-peak readout never changed again"
+    );
+    assert_eq!(
+        readout, inspector,
+        "the strip readout equals the inspector's Peak spelling at the same instant"
+    );
+    assert_ne!(
+        readout, full_scale,
+        "the transient's maximum is no longer pinned"
+    );
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     cx: &mut TestAppContext,
