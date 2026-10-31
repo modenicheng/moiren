@@ -1066,11 +1066,19 @@ mod tests {
         use moiren_engine::{audio_config::SampleFormat, node::DeviceMode};
         let mut request = config();
         assert_eq!(request.capture_device().mode, DeviceMode::Shared);
+        assert!(!request.request_minimum_period);
         request.capture_mode = DeviceMode::Exclusive;
-        let device = request.capture_device();
-        assert_eq!(device.mode, DeviceMode::Exclusive);
-        assert_eq!(device.sample_format, SampleFormat::Float32);
-        assert_eq!(device.period_frames, None);
+        for minimum in [false, true] {
+            request.request_minimum_period = minimum;
+            let prepared = request.clone();
+            assert_eq!(prepared.request_minimum_period, minimum);
+            let device = prepared.capture_device();
+            assert_eq!(device.mode, DeviceMode::Exclusive);
+            assert_eq!(device.sample_format, SampleFormat::Float32);
+            // The opt-in remains separate from explicit frame presets; native
+            // preparation must query the device rather than invent a period.
+            assert_eq!(device.period_frames, None);
+        }
     }
 
     fn info() -> MeasurementInfo {
