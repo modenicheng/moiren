@@ -117,6 +117,17 @@ Linux cross-target compilation pass. No provider/driver/RT/default or fixed
 incomplete-quality rule changes, native replay or physical result occurs.
 Actual native fail-fast and final-QUERY verification remain open.
 
+The [retired worker quality repair](2026-11-01-retired-worker-quality.md)
+checks twelve required raw schema5 worker counters alongside final QUERY.
+Any retained loss/silence/sequence/clock fault is latched under both routes;
+strict refuses and correctness retains failed quality. Missing, malformed,
+saturated, regressed or stale evidence is hard failure. Five regressions first
+fail, then pass; the final635-test probe suite, strict Clippy, formatting and
+Linux cross-target compilation pass. Final-only lifecycle increments remain
+unattributed, and poll-before-drained retention coherence is not repaired or
+proven by these synthetic snapshots. Complete quality stays explicitly false;
+native tail-fault verification and S1-S3 physical acceptance remain open.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie

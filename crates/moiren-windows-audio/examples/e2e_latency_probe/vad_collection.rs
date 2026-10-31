@@ -1237,7 +1237,7 @@ pub(super) fn collect(
     {
         append_failure(
             &mut guard.failures,
-            &format!("final provider QUERY: {error:#}"),
+            &format!("final provider quality: {error:#}"),
         );
     }
     let source_submitted_complete = reconcile_source_outcome_with_policy(
