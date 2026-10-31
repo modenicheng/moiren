@@ -280,7 +280,13 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         shell.inspector_open = false;
         cx.notify();
     });
-    cx.update(|window, cx| window.render_frame(cx));
+    cx.update(|window, cx| {
+        assert!(
+            !window.is_a11y_active(),
+            "this regression measures the accessibility-inactive cache path"
+        );
+        window.render_frame(cx);
+    });
     // Live publications must arm the animation loop before the steady-state
     // strip measurements begin.
     wait_until(Duration::from_secs(3), || {
