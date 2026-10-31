@@ -23,12 +23,29 @@ pub enum ActionIcon {
 }
 
 impl ActionIcon {
-    pub(crate) fn element(self) -> impl IntoElement {
-        // Kit's Icon resolves inherited text color before painting Svg. A bare
-        // Svg with no explicit color silently skips painting in this GPUI version.
-        // The asset path is a literal: every toolbar rebuild used to pay a
-        // format! allocation for a string that never varies per variant.
-        let path: &'static str = match self {
+    /// Every variant, so the asset regression test can enumerate all request
+    /// sites instead of chasing scattered call sites.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 13] = [
+        Self::Plus,
+        Self::Settings,
+        Self::Graph,
+        Self::Mixer,
+        Self::Matrix,
+        Self::Devices,
+        Self::Minimize,
+        Self::Maximize,
+        Self::Close,
+        Self::Cursor,
+        Self::HandMove,
+        Self::ZoomOut,
+        Self::ZoomIn,
+    ];
+
+    /// The asset path is a literal: every toolbar rebuild used to pay a
+    /// format! allocation for a string that never varies per variant.
+    pub(crate) fn path(self) -> &'static str {
+        match self {
             Self::Plus => "figma-actions/plus.svg",
             Self::Settings => "figma-actions/settings.svg",
             Self::Graph => "figma-actions/graph.svg",
@@ -42,9 +59,14 @@ impl ActionIcon {
             Self::HandMove => "icons/hand-move.svg",
             Self::ZoomOut => "icons/minus.svg",
             Self::ZoomIn => "icons/plus.svg",
-        };
+        }
+    }
+
+    pub(crate) fn element(self) -> impl IntoElement {
+        // Kit's Icon resolves inherited text color before painting Svg. A bare
+        // Svg with no explicit color silently skips painting in this GPUI version.
         Icon::default()
-            .path(path)
+            .path(self.path())
             .with_size(Size::Size(px(controls::ICON)))
     }
 }
@@ -84,7 +106,6 @@ impl AssetSource for ActionAssets {
                 "../../../../../assets/logos/moiren-2c-mark-light.svg"
             )),
             "icons/mic.svg" => Some(include_bytes!("../../../assets/icons/mic.svg")),
-            "icons/headphones.svg" => Some(include_bytes!("../../../assets/icons/headphones.svg")),
             "icons/activity.svg" => Some(include_bytes!("../../../assets/icons/activity.svg")),
             "icons/radio.svg" => Some(include_bytes!("../../../assets/icons/radio.svg")),
             "icons/sliders.svg" => Some(include_bytes!("../../../assets/icons/sliders.svg")),
@@ -93,7 +114,6 @@ impl AssetSource for ActionAssets {
             "icons/git-merge.svg" => Some(include_bytes!("../../../assets/icons/git-merge.svg")),
             "icons/clock.svg" => Some(include_bytes!("../../../assets/icons/clock.svg")),
             "icons/speaker.svg" => Some(include_bytes!("../../../assets/icons/speaker.svg")),
-            "icons/monitor.svg" => Some(include_bytes!("../../../assets/icons/monitor.svg")),
             "icons/route.svg" => Some(include_bytes!("../../../assets/icons/route.svg")),
             "icons/devices.svg" => Some(include_bytes!("../../../assets/icons/devices.svg")),
             "icons/chevron-left.svg" => {
@@ -192,6 +212,94 @@ mod tests {
                 ActionAssets.load(&path).ok().flatten().is_some(),
                 "unregistered toolbar icon asset: {path}"
             );
+        }
+    }
+
+    /// Reverse guard for the 2026-10 dead-asset prune (audit DC-3/DC-4): every
+    /// svg kept in the embedded asset trees must be reachable from a real
+    /// request site, and every enumerated request must resolve through this
+    /// source. An asset nobody asks for is shipped binary weight with no
+    /// consumer; re-add files together with the code path that paints them.
+    #[test]
+    fn every_icon_asset_has_a_request_path() {
+        use std::collections::HashSet;
+
+        use crate::ui::pages::node_catalog::NodeTemplate;
+
+        // Icon names painted by the canvas node cards come from the `NodeKind`
+        // match in ui/pages/graph_canvas.rs; keep this list in sync there.
+        // Names with the `figma-` prefix resolve to figma-nodes/, the rest to
+        // icons/ (same routing as graph_canvas_view/nodes.rs).
+        const CANVAS_NODE_ICONS: &[&str] = &[
+            "figma-input",
+            "figma-output",
+            "figma-bus",
+            "figma-fader",
+            "app",
+            "wave",
+            "radio",
+            "activity",
+            "clock",
+            "route",
+        ];
+        // Assets the node painter requests straight from figma-nodes/ without
+        // the name routing above: port anchors and the overflow marker.
+        const FIGMA_NODE_ASSETS: &[&str] = &["input-port", "output-port", "more"];
+        // Fixed paths outside the ActionIcon/canvas/catalog pipelines.
+        const FIXED_REQUESTS: &[&str] = &[
+            "icons/chevron-left.svg",  // sidebar collapse control
+            "icons/chevron-right.svg", // sidebar collapse control
+            "icons/zoom-scan.svg",     // inspector zoom-to-scan button
+            "brand/mark.svg",          // toolbar brand mark
+        ];
+
+        let mut used: HashSet<String> = ActionIcon::ALL
+            .iter()
+            .map(|icon| icon.path().to_string())
+            .collect();
+        used.extend(FIXED_REQUESTS.iter().map(|path| (*path).to_string()));
+        for name in CANVAS_NODE_ICONS {
+            let path = match name.strip_prefix("figma-") {
+                Some(rest) => format!("figma-nodes/{rest}.svg"),
+                None => format!("icons/{name}.svg"),
+            };
+            used.insert(path);
+        }
+        for asset in FIGMA_NODE_ASSETS {
+            used.insert(format!("figma-nodes/{asset}.svg"));
+        }
+        for template in NodeTemplate::ALL {
+            used.insert(format!("icons/{}.svg", template.icon()));
+        }
+
+        for path in &used {
+            assert!(
+                ActionAssets.load(path).ok().flatten().is_some(),
+                "icon request without a registered asset: {path}"
+            );
+        }
+
+        // Only embedded trees are checked; assets/logos feeds build.rs' icon
+        // pipeline and keeps its own provenance ledger.
+        for dir in ["icons", "figma-nodes", "figma-actions"] {
+            let entries = std::fs::read_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("assets")
+                    .join(dir),
+            )
+            .expect("embedded asset directory");
+            for entry in entries {
+                let name = entry.expect("asset entry").file_name();
+                let name = name.to_string_lossy();
+                if !name.ends_with(".svg") {
+                    continue;
+                }
+                let path = format!("{dir}/{name}");
+                assert!(
+                    used.contains(&path),
+                    "asset without a request path; delete it or register its consumer: {path}"
+                );
+            }
         }
     }
 }
