@@ -33,8 +33,14 @@ independently reruns17 focused tests,605 full example tests and strict Clippy
 on the frozen author tree, then verifies all four reviewed hashes after
 integration and reruns605 full example tests successfully. Author also retains
 formatting and Linux-target test compilation; compilation is not Linux test
-execution. Independent source review finds no blocking issue and flags the
-missing explicit polarity fixtures for a separate test-only follow-up.
+execution. Independent source review finds no blocking issue. Its explicit
+polarity coverage gap is closed separately by `5f2e7c2` (author `2dfded6`):
+whole-marker inversion preserves exact identity/coordinates, while each
+opposite-polarity quarter refuses even when the global score exceeds0.7.
+Only47 test lines change; no implementation or threshold changes and no new
+RED is claimed for already-correct behavior. Root independently passes19
+model tests after integration; author passes607 full example tests, strict
+Clippy, formatting and Linux-target test compilation on the follow-up tree.
 
 The synthetic production-SRC fixtures recover exact nonzero source indices
 where the nominal model refuses. They do not analyze or fit retained native
