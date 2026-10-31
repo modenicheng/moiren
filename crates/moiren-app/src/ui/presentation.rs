@@ -64,6 +64,10 @@ pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     }
 }
 
+/// Settings page used to render this directly; the live control-feedback path
+/// (`control_feedback`) owns the production wording now, so this stays only as
+/// the observation helper for the latency-projection state tests.
+#[cfg(test)]
 pub fn latency_apply_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     match snapshot.active_latency_profile {
         Some(active) if active == snapshot.latency_profile => {
