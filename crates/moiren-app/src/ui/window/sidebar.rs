@@ -511,3 +511,6 @@ fn page_inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement 
         Page::Devices => devices::inspector(shell, cx),
     }
 }
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;

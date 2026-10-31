@@ -173,7 +173,8 @@ fn build(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
             div()
                 .id("error-strip-message")
                 .text_color(theme::DANGER)
-                .child(message),
+                .child(message)
+                .gpui_test_observe(),
         );
     }
     list.child(
@@ -184,3 +185,6 @@ fn build(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     )
     .gpui_test_observe()
 }
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
