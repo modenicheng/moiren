@@ -249,7 +249,15 @@ mechanics are shared. Two shared helpers keep keys honest:
    (observed on the devices page's Exports list). Surfaces that must scroll
    freely stay live until this has a framework-level answer; the Exports
    tab deliberately keeps its rebuild-every-notify behavior.
-8. A hot surface receives its sibling panel's `SharedFrame` at construction.
+8. Window-control regions (`window_control_area(Drag)`) must live outside
+   cached subtrees. gpui-fast registers their hitboxes during prepaint and
+   clears them every frame, and the splice replays layout/paint/a11y but
+   not those registrations — a cached chrome dropped its drag regions from
+   the platform's hit test after the first cache hit, and the title bar
+   stopped dragging (observed on the Mixer and Graph pages 2026-10-31;
+   live rendering during an a11y activation masked it). The toolbar and
+   status bar are therefore live; their rebuild cost is trivial.
+10. A hot surface receives its sibling panel's `SharedFrame` at construction.
    Building a second frame of the same type compiles, runs, and paints
    nothing forever: the flyout shipped exactly this way (machine acceptance
    2026-10-31), its pump still running the frame loop against an

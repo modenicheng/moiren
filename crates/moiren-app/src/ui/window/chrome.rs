@@ -1,7 +1,7 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
 use std::sync::Arc;
 
@@ -259,27 +259,30 @@ impl CachedPanel for StatusbarPanel {
 }
 
 pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
-    // Chrome is cached on every page: both meter frames — not the shell —
-    // own the animation loops, so shell notifications here are real state
-    // changes and the cached tree rebuilds through its shell observer.
-    cached_splice(shell.toolbar_chrome.clone(), |entity| {
-        entity
-            .cached(
-                StyleRefinement::default()
-                    .w_full()
-                    .h(px(theme::TOOLBAR_HEIGHT))
-                    .flex_none(),
-            )
-            .into_any_element()
-    })
+    // Chrome is deliberately NOT cached: the toolbar and status bar carry
+    // the window drag regions (`window_control_area(Drag)`), whose hitboxes
+    // are registered during prepaint and cleared every frame. gpui-fast's
+    // splice replays layout/paint/a11y but not those registrations, so a
+    // cached chrome would drop its drag regions from the platform's hit
+    // test after the first cache hit — the title bar simply stopped
+    // dragging. Both bars are cheap to rebuild; the pages stay cached.
+    div()
+        .w_full()
+        .h(px(theme::TOOLBAR_HEIGHT))
+        .flex_none()
+        .child(shell.toolbar_chrome.clone())
+        .into_any_element()
 }
 
 pub(super) fn status_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
-    cached_splice(shell.status_chrome.clone(), |entity| {
-        entity
-            .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
-            .into_any_element()
-    })
+    // See `toolbar_for_page`: the status bar's drag region needs a fresh
+    // registration every frame.
+    div()
+        .w_full()
+        .h(px(28.))
+        .flex_none()
+        .child(shell.status_chrome.clone())
+        .into_any_element()
 }
 
 fn titlebar_drag_region(id: &'static str) -> impl IntoElement {
