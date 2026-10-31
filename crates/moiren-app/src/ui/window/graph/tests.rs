@@ -606,6 +606,86 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
 }
 
 #[gpui_kit::test]
+fn selected_node_level_demand_follows_the_inspector_meter_surface(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use std::sync::atomic::Ordering;
+
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec, test_backend::FakeBackend,
+    };
+    // A real running session keeps every published snapshot in the Running
+    // phase, so the demand can be exercised in every direction (a crafted
+    // snapshot is replaced by the live idle service on the first poll).
+    let backend = FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    let topic = snapshot.signal_topics.node_levels[&node].clone();
+    let state = cx.new(|_| UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    // On the Graph page the inspector renders the selected node's meter:
+    // the selection demands its level topic.
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(node);
+        shell.inspector_open = true;
+        shell.presentation.page = pages::Page::Graph;
+        shell.node_meter_points.borrow_mut().clear();
+        shell.update_node_meters(true, cx);
+    });
+    wait_until(Duration::from_secs(3), || topic.business_subscribers() != 0);
+    // The Matrix page's inspector paints routes, not node meters: with the
+    // pump gate still open and the node still selected, the demand must
+    // release there instead of riding the selection forever (SD-9).
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Matrix;
+        shell.node_meter_points.borrow_mut().clear();
+        shell.update_node_meters(true, cx);
+    });
+    // Drive open-gate pumps while waiting: the grace must expire because no
+    // surface on this page re-inserts the node, selection included.
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.update_node_meters(true, cx);
+        });
+        topic.business_subscribers() == 0
+    });
+    // Back on the Graph page the meter surface returns and takes the
+    // selection's demand with it.
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Graph;
+        shell.node_meter_points.borrow_mut().clear();
+        shell.update_node_meters(true, cx);
+    });
+    wait_until(Duration::from_secs(3), || topic.business_subscribers() != 0);
+
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_properties(
     cx: &mut gpui_kit::TestAppContext,
 ) {

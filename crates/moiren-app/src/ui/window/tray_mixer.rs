@@ -129,9 +129,12 @@ impl TrayMixer {
     /// desktop poll calls this while the flyout is at rest; the hot layer
     /// calls it per frame while motion lasts.
     pub(super) fn pump_meters(&mut self, cx: &mut Context<Self>) -> bool {
-        let visible: BTreeSet<NodeId> = self.faders.keys().copied().collect();
         self.state.update(cx, |state, _| {
-            state.node_meters.update(&state.snapshot, &visible)
+            // Iterate the fader rows straight through: collecting the visible
+            // set here would allocate on every pump tick (HC-14).
+            state
+                .node_meters
+                .update(&state.snapshot, self.faders.keys().copied())
         })
     }
 
