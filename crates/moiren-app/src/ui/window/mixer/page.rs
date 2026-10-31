@@ -9,7 +9,7 @@ use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
-use crate::ui::window::panel::{CachedPanel, PanelHost, cached_splice};
+use crate::ui::window::panel::{CachedPanel, PanelHost};
 use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Copy)]
@@ -411,20 +411,18 @@ pub(in crate::ui::window) fn page(
         };
         // The strip is cached behind a wrapper carrying its load-bearing
         // outer sizing (cached views lay out by their wrapper).
-        let strip = cached_splice(host.clone(), {
+        let strip = {
             let width = px(MixerPresentation::STRIP_WIDTH);
-            move |entity| {
-                entity
-                    .cached(
-                        StyleRefinement::default()
-                            .flex_none()
-                            .w(width)
-                            .h_full()
-                            .min_h_0(),
-                    )
-                    .into_any_element()
-            }
-        });
+            host.clone()
+                .cached(
+                    StyleRefinement::default()
+                        .flex_none()
+                        .w(width)
+                        .h_full()
+                        .min_h_0(),
+                )
+                .into_any_element()
+        };
         if matches!(node.kind(), NodeKind::Bus | NodeKind::Sink) {
             dock = dock.child(strip);
         } else {

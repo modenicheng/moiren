@@ -4,7 +4,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::GraphEdit;
 use crate::ui::presentation::{db_text, step_db};
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
 use moiren_core::graph::{PortId, SendParams};
 
@@ -61,11 +61,11 @@ pub(in crate::ui::window) fn page_for(
     _window: &Window,
     _cx: &Context<StudioShell>,
 ) -> AnyElement {
-    cached_splice(shell.matrix_panel.clone(), |entity| {
-        entity
-            .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
-            .into_any_element()
-    })
+    shell
+        .matrix_panel
+        .clone()
+        .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
+        .into_any_element()
 }
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {

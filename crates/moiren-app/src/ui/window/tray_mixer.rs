@@ -23,7 +23,7 @@ use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::mixer::{
     SliderSlot, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click, sync_faders,
 };
-use super::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
+use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
 use crate::service::{GraphNodeState, GraphSnapshot};
 use crate::ui::monitoring::DisplayLevel;
@@ -164,11 +164,12 @@ impl Render for TrayMixer {
             })
             .size_full()
             .relative()
-            .child(cached_splice(self.panel.clone(), |entity| {
-                entity
+            .child(
+                self.panel
+                    .clone()
                     .cached(StyleRefinement::default().size_full())
-                    .into_any_element()
-            }))
+                    .into_any_element(),
+            )
             .child(self.meter_layer.clone())
     }
 }

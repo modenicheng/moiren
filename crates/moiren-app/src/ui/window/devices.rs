@@ -1,7 +1,7 @@
 use super::*;
 use crate::ui::presentation::{output_name, source_name};
 use crate::ui::state::SourceMode;
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
 use rust_i18n::t;
 
@@ -115,11 +115,11 @@ pub(in crate::ui::window) fn page_for(
     if shell.device_tab == DeviceTab::Exports {
         return page(shell, cx);
     }
-    cached_splice(shell.devices_panel.clone(), |entity| {
-        entity
-            .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
-            .into_any_element()
-    })
+    shell
+        .devices_panel
+        .clone()
+        .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
+        .into_any_element()
 }
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {

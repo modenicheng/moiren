@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use super::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
+use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
 
 pub(in crate::ui::window) struct ErrorStripPanel;
@@ -58,11 +58,11 @@ pub(in crate::ui::window) type ErrorStripHost = PanelHost<ErrorStripPanel>;
 
 /// The panel's cached splice; mounted only while [`has_faults`] holds.
 pub(in crate::ui::window) fn for_shell(shell: &StudioShell, _window: &Window) -> AnyElement {
-    cached_splice(shell.error_strip.clone(), |entity| {
-        entity
-            .cached(StyleRefinement::default().w_full().flex_none())
-            .into_any_element()
-    })
+    shell
+        .error_strip
+        .clone()
+        .cached(StyleRefinement::default().w_full().flex_none())
+        .into_any_element()
 }
 
 /// The strip's tree, moved verbatim out of the shell root render.

@@ -8,7 +8,7 @@ use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 
 /// The inspector panel behind a [`PanelHost`]: rebuilt only when its inputs
 /// changed — the published snapshot, the selection, the active page, the
@@ -130,11 +130,11 @@ impl CachedPanel for InspectorPanel {
 
 /// The inspector panel's cached splice.
 fn inspector_panel_for(shell: &StudioShell, _window: &Window) -> AnyElement {
-    cached_splice(shell.inspector_panel.clone(), |entity| {
-        entity
-            .cached(StyleRefinement::default().size_full())
-            .into_any_element()
-    })
+    shell
+        .inspector_panel
+        .clone()
+        .cached(StyleRefinement::default().size_full())
+        .into_any_element()
 }
 
 /// The node-library panels behind [`PanelHost`]s: the icon rail and the
@@ -387,21 +387,21 @@ pub(super) fn library_host(
             "library-rail-width",
             !shell.sidebar_open,
             theme::LIBRARY_RAIL_WIDTH,
-            cached_splice(shell.library_rail_panel.clone(), |entity| {
-                entity
-                    .cached(StyleRefinement::default().size_full())
-                    .into_any_element()
-            }),
+            shell
+                .library_rail_panel
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
         ))
         .child(panel(
             "library-panel-width",
             shell.sidebar_open,
             theme::LIBRARY_WIDTH,
-            cached_splice(shell.library_panel.clone(), |entity| {
-                entity
-                    .cached(StyleRefinement::default().size_full())
-                    .into_any_element()
-            }),
+            shell
+                .library_panel
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
         ))
         .child(edge_handle(
             "library-toggle",
