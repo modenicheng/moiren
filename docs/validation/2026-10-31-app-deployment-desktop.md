@@ -92,8 +92,47 @@ SHA256 `F27684E060243E6983B1913BD691B5623AC7746B262C74FA295D11034F7C6C1E`.
 Root and an independent read-only audit verify all25 payload files plus
 manifest, exact member set, CRCs, lengths and hashes. Target originals remain.
 
-Next work is a targeted window/action-lifecycle diagnostic, not repeated blind
-UI Invoke retries. The separate opt-in MIC native-period probe control is
+## One-pass HWND and UIA diagnostic
+
+`desktop-e1a7c2f-process2` retains the same app, source, driver, graph and budgets.
+Only the helper adds exact process identity, top-level window inventory, fresh
+HWND binding, root/Settings runtime IDs and single-pass tree observations.
+Settings Invoke is submitted once; an exception causes observation, not a
+second action. The helper is32296 bytes, SHA256
+`109FE8F13FB5E3E0FE5E90BE6BDCECF1E25EAB9874241F7411517566976DD064`.
+Both author and root independently run PS5.1 parse/contract/wrong-host refusal
+fixtures. Cleanup and final acceptance remain identical to process1.
+
+The script runs UTC03:27:11.2667564 through03:27:27.8764063. App PID15476,
+creation time134378908325254895, session1 and HWND591536 remain identical at
+before-Start, after-Stop-button-found, pre-Settings and exception observation.
+Every inventory finds the same valid `Zed::Window`; every PrintWindow returns
+true and every fresh UIA root matches the owned PID/HWND. Node counts are
+21/21/21/1. The exact Settings button is exposed before Invoke, but the single
+Invoke throws ElementNotAvailable and the next tree contains only the root.
+No main HWND replacement or loss is observed at these sampled boundaries.
+This substantially narrows the stale-handle hypothesis, but does not prove
+every interleaving or the sole cause of the missing subtree.
+
+Native Start again reaches generation1/DAWN1056. No Apply is reached; the owned
+app again requires forced termination, source exits0, and final Completed=false.
+No diagnostic/cleanup error, remaining audio owner, boot change or endpoint
+volume/mute/default-role difference is retained. Original failure is unchanged.
+
+The local locked GPUI source clears a11y nodes/bounds/actions each frame, while
+cached prepaint/paint reuse omits that state. This provides a concrete separate
+candidate mechanism for missing cached controls. Historical3ac8484 already
+contains Mixer caching6737864, but not Graph-wide cachingfb4671f. A scoped
+accessibility-active cache bypass and genuine native regression are next;
+neither a fix nor complete causal explanation is claimed from source reading.
+
+Process2 archive is46091 bytes,31 payloads plus manifest, SHA256
+`C3837EF3C67EB34FF9B279CA81C03B459E6BFF5D6A86E450F3B281518816996C`.
+Root verifies CRCs, exact member set and every length/hash. After host-side
+verification, both terminal action-checked tasks are unregistered; target
+originals and archives remain. No periodic retry or task remains installed.
+
+The separate opt-in MIC native-period probe control is
 developed in an independent worktree. Smaller targets require actual period
 and delivery admission in both directions; no default or quality threshold is
 changed to obtain a pass. Full S1-S3 and calibrated sub-10-ms qualification
