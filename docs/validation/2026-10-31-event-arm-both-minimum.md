@@ -122,6 +122,13 @@ Analysis receipt SHA256:
 The create-new proposal/config/argv/input pins/stdout/stderr remain under
 `root-indexed-analysis`; its failure is retained unchanged.
 
+The subsequent [frozen complete-support model diagnostic](2026-10-31-both-minimum-src-batch.md)
+evaluates all29 original windows/all29 codes with an explicit6937296480
+aggregate charge. It finds29 distinct model-consistent source identities while
+preserving this nominal14/29 verdict, all9686 packet-policy violations and
+incomplete runtime quality. This supports transformation rather than proved
+marker absence, not actual SRC history, continuity or physical acceptance.
+
 ## Archive, decode and cleanup
 
 The44-payload archive plus manifest is2187324 bytes, SHA256

@@ -78,6 +78,19 @@ failure and both611 predecessor outcomes remain intact. No timer fix, default
 promotion, native final-QUERY verification, device floor or physical acceptance
 follows; S1-S3 remain incomplete.
 
+Its [complete-support offline model diagnostic](2026-10-31-both-minimum-src-batch.md)
+then freezes all29 existing windows/all29 exact codes and an explicit
+6937296480 aggregate charge under7000000000; each unchanged model call stays
+under256000000. One bounded local batch identifies29 distinct original codes
+with global duplicate refusal and scores0.8944-0.9902. All14 nominal successes
+agree, while the original14/29 refusal,9686 packet-policy violations and14
+unknown boundary observations remain unchanged. This supports transformation
+as a nominal-mismatch explanation, not whole-waveform continuity, actual
+SRC/servo history, source origin, quality acceptance or physical delay.
+The isolated44 tests and actual-repository19 model tests/strict Clippy pass;
+the isolated strict lint failure in unchanged imported test source remains
+recorded. No native replay or production/model/default change occurs.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie
