@@ -731,11 +731,14 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
     // pump is what updates the card meters' readings.
     let anchor = center + point(px(300.), px(200.));
     cx.simulate_mouse_down(anchor, MouseButton::Left, Modifiers::default());
-    let pump_frames = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().graph_frames)
+    let cadence = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |shell, _| {
+            let trace = shell.mixer.trace.borrow();
+            (trace.graph_frames, trace.graph_meter_paints)
+        })
     };
-    let mut pumped_rounds = 0;
-    let mut previous = pump_frames(&view, cx);
+    let mut painted_rounds = 0;
+    let mut previous = cadence(&view, cx);
     for step in 0..6 {
         cx.simulate_mouse_move(
             anchor + point(px(10. * (step as f32) + 10.), px(0.)),
@@ -749,18 +752,22 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
         view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
         });
-        let frames = pump_frames(&view, cx);
-        if frames > previous {
-            pumped_rounds += 1;
+        let (frames, paints) = cadence(&view, cx);
+        if paints > previous.1 {
+            painted_rounds += 1;
         }
-        previous = frames;
+        assert!(
+            frames > previous.0,
+            "the meter pump stalled during the box select (frame {step})"
+        );
+        previous = (frames, paints);
     }
     view.read_with(cx, |shell, _| {
         assert!(shell.selection_drag.is_some(), "the gesture must be held");
     });
     assert!(
-        pumped_rounds >= 5,
-        "the meter pump stalled during the box select: {pumped_rounds}/6 rounds advanced"
+        painted_rounds >= 5,
+        "the card meters stopped painting during the box select: {painted_rounds}/6 rounds painted"
     );
     // A stale platform visibility flag (fully occluded, then a fast alt-tab)
     // must not blank the meter updates mid-gesture: the drag proves the
@@ -770,7 +777,7 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
         shell.presentation.minimized = true;
         cx.notify();
     });
-    let mut previous = pump_frames(&view, cx);
+    let mut previous = cadence(&view, cx).0;
     let mut pumped_while_hidden = 0;
     for step in 0..4 {
         cx.simulate_mouse_move(
@@ -785,7 +792,7 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
         view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
         });
-        let frames = pump_frames(&view, cx);
+        let frames = cadence(&view, cx).0;
         if frames > previous {
             pumped_while_hidden += 1;
         }

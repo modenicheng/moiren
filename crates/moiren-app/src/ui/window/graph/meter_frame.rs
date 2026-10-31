@@ -218,10 +218,12 @@ fn paint_graph_meter_frame(
     window: &mut Window,
     cx: &mut Context<StudioShell>,
 ) {
-    // Band and connection drags paint overlays that must stay above the
-    // bars, and they rebuild the page every frame anyway, so the cached
-    // canvas already shows live bars.
-    if shell.selection_drag.is_some() || shell.connection_drag.is_some() {
+    // A connection drag rebuilds the page every move (the connection rides
+    // the panel key), so the cached canvas shows live bars and the overlay
+    // line must stay above them. A box select does NOT rebuild per move —
+    // the hot layer owns the bars for the gesture's whole duration,
+    // painting them under the band that follows this call.
+    if shell.connection_drag.is_some() {
         return;
     }
     window.with_content_mask(
