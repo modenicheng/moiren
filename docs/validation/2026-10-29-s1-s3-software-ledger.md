@@ -21,6 +21,16 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [capture retirement call-window receipt](2026-10-31-capture-stop-windows.md)
+records integrated585/22 full/focused checks and a single actual18d1552
+Playback480/MIC144 acquisition, with source/collection/cleanup complete and
+10109 stored packets. Independent memberwise/PCM/call-window audit passes64
+checks. Tail MIC silence1 and cleanup reset/recovery1 remain unqualified;
+sample-position timestamps around close/broadcast/native Stop do not identify
+the driver no-copy increment or exempt it. Matching trace retains one
+operation-unidentified revision mismatch. No period, default or quality gate
+changes, and no device-limited lower bound or physical result follows.
+
 The [bounded indexed-v2 identity diagnostic](2026-10-31-indexed-marker-analysis.md)
 keeps original source indices and explicit recorder windows, with root21/576
 focused/full probe checks and portable compilation. The retained native PCM
