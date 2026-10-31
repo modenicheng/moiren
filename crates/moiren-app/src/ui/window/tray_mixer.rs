@@ -91,14 +91,21 @@ impl TrayMixer {
         cx.on_release(|this, cx| this.release_desktop(cx)).detach();
         let this = cx.entity();
         let panel = cx.new(|cx| TrayPanelHost::new(this.clone(), cx));
-        let meters = std::rc::Rc::new(std::cell::RefCell::new(FlyoutMeters::new(this.downgrade())));
+        // One geometry frame shared by both halves of the pipeline: the
+        // strips' canvases publish into it and the hot surface reads it. Two
+        // separate frames would leave the flyout without any meter bars.
+        let geometry = SharedFrame::default();
+        let meters = std::rc::Rc::new(std::cell::RefCell::new(FlyoutMeters::new(
+            this.downgrade(),
+            geometry.clone(),
+        )));
         let meter_layer = cx.new(|_| FlyoutMeterLayer::new(meters));
         Self {
             state,
             desktop,
             faders: BTreeMap::new(),
             focus,
-            geometry: SharedFrame::default(),
+            geometry,
             panel,
             meter_layer,
         }
@@ -328,7 +335,14 @@ fn strip(
                         .text_size(px(theme::TEXT_SM))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::TEXT)
-                        .child(entry.label.clone()),
+                        // The main mixer's display name: an export binding,
+                        // the bound input device or output endpoint — never
+                        // the bare default label ("Input"/"Output").
+                        .child(crate::ui::state::display_label(
+                            &flyout.state.read(cx).snapshot,
+                            entry,
+                            kind,
+                        )),
                 )
                 .child(label(format!("{kind:?}"))),
         )
@@ -435,14 +449,34 @@ fn meter_track(flyout: &TrayMixer, id: NodeId) -> impl IntoElement {
 pub(in crate::ui::window) struct FlyoutMeters {
     flyout: WeakEntity<TrayMixer>,
     geometry: SharedFrame<MeterTracks>,
+    /// How many registered tracks this surface has painted. Test-visible
+    /// census: a frame with registered tracks but zero paints means the
+    /// layer is not drawing (the regression that muted the flyout).
+    painted_tracks: std::cell::Cell<usize>,
 }
 
 impl FlyoutMeters {
-    pub(in crate::ui::window) fn new(flyout: WeakEntity<TrayMixer>) -> Self {
+    pub(in crate::ui::window) fn new(
+        flyout: WeakEntity<TrayMixer>,
+        geometry: SharedFrame<MeterTracks>,
+    ) -> Self {
         Self {
             flyout,
-            geometry: SharedFrame::default(),
+            geometry,
+            painted_tracks: std::cell::Cell::new(0),
         }
+    }
+
+    /// Tracks the sibling panel registered for this surface. Empty means the
+    /// two halves of the pipeline drifted apart and the flyout has no meters.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn registered_tracks(&self) -> usize {
+        self.geometry.read().map_or(0, |frame| frame.iter().count())
+    }
+
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn painted_tracks(&self) -> usize {
+        self.painted_tracks.get()
     }
 }
 
@@ -479,6 +513,7 @@ impl HotSurface for FlyoutMeters {
                 window.with_content_mask(Some(mask), |window| {
                     paint_flyout_meter(bounds, levels, clips, window);
                 });
+                self.painted_tracks.set(self.painted_tracks.get() + 1);
             }
         });
     }

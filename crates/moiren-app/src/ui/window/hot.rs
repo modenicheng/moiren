@@ -79,6 +79,13 @@ impl<S: HotSurface> HotLayerView<S> {
     pub(in crate::ui::window) fn new(surface: Rc<RefCell<S>>) -> Self {
         Self { surface }
     }
+
+    /// The surface's cell, for tests that assert the pipeline between the
+    /// sibling panel's registered geometry and this layer's paint.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn surface(&self) -> Rc<RefCell<S>> {
+        self.surface.clone()
+    }
 }
 
 impl<S: HotSurface> Render for HotLayerView<S> {
