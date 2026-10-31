@@ -636,6 +636,7 @@ impl Render for StudioShell {
             self.mixer.trace.borrow_mut().shell_renders += 1;
         }
         self.finish_settings_save(cx);
+        self.finish_measured_process(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);

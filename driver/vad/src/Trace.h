@@ -5,7 +5,9 @@
 #include <WppRecorder.h>
 #include <evntrace.h>
 
-// Fixed in-flight recorder allocation; never log PCM, paths or user buffers.
+// Fixed in-flight recorder allocation; ordinary builds never log PCM or paths.
+// Explicit Playback-copy diagnostic builds additionally export three bounded
+// paired <=16-byte PCM witnesses for the owned deterministic test fixture only.
 #define WPP_TOTAL_BUFFER_SIZE PAGE_SIZE
 #define WPP_ERROR_PARTITION_SIZE (WPP_TOTAL_BUFFER_SIZE / 4)
 

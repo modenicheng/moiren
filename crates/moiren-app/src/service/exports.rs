@@ -5,6 +5,10 @@ use moiren_core::graph::{LogicalGraph, NodeId, NodeKind};
 use moiren_engine::node::VirtualEndpointId;
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+mod diagnostics;
+#[cfg(windows)]
+pub use diagnostics::ExportDiagnostics;
 mod reconcile;
 pub(crate) mod runtime;
 pub use reconcile::*;
@@ -13,10 +17,21 @@ mod tests;
 
 pub const MAX_EXPORTS: usize = 64;
 
+/// Historical probe evidence from an actual native Removed observation.
+/// It never supplies current presence, action authority or audio admission.
+#[cfg(feature = "vad-integration-probe")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportRetirementEvidence {
+    pub generation: u64,
+    pub native_stamp: [u64; 5],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportDirection {
+    /// Virtual speaker: other apps render here; Moiren receives it as graph input.
     Playback,
+    /// Virtual microphone: Moiren sends graph output; other apps capture from it.
     Microphone,
 }
 
@@ -107,9 +122,15 @@ pub struct ExportService {
     pub(super) authorizations: BTreeMap<VirtualEndpointId, bool>,
     pub(super) observations: BTreeMap<VirtualEndpointId, ExportObservation>,
     pub(super) windows_names: BTreeMap<VirtualEndpointId, WindowsEndpointNameObservation>,
+    #[cfg(windows)]
+    pub(super) diagnostics: BTreeMap<VirtualEndpointId, ExportDiagnostics>,
     /// Probe-only observations, never consulted for native action authority.
     #[cfg(feature = "vad-integration-probe")]
     pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,
+    #[cfg(feature = "vad-integration-probe")]
+    pub(super) observation_generations: BTreeMap<VirtualEndpointId, u64>,
+    #[cfg(feature = "vad-integration-probe")]
+    pub(super) native_retirements: BTreeMap<VirtualEndpointId, ExportRetirementEvidence>,
 }
 
 impl ExportService {
@@ -130,8 +151,15 @@ impl ExportService {
     /// Enabling a project export never calls this method or grants default use.
     pub fn set_available(&mut self, available: bool) {
         if !available {
+            self.windows_names.clear();
+            #[cfg(windows)]
+            self.diagnostics.clear();
             #[cfg(feature = "vad-integration-probe")]
             self.native_stamps.clear();
+            #[cfg(feature = "vad-integration-probe")]
+            self.observation_generations.clear();
+            #[cfg(feature = "vad-integration-probe")]
+            self.native_retirements.clear();
             for observation in self.observations.values_mut() {
                 // Keep actual resource/gate observations until the adapter
                 // closes them, but recovery must establish fresh admission.
@@ -167,9 +195,14 @@ impl ExportService {
                 "export activity or gate observation contradicts its resource state".into(),
             );
         }
-        // A newer unstamped observation must not inherit a previous raw stamp.
+        // An accepted replacement must not inherit earlier diagnostic evidence.
+        #[cfg(windows)]
+        self.diagnostics.remove(&observation.intent.endpoint_id);
         #[cfg(feature = "vad-integration-probe")]
         self.native_stamps.remove(&observation.intent.endpoint_id);
+        #[cfg(feature = "vad-integration-probe")]
+        self.observation_generations
+            .remove(&observation.intent.endpoint_id);
         self.observations
             .insert(observation.intent.endpoint_id, observation);
         Ok(())

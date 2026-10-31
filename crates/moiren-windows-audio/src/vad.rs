@@ -39,6 +39,15 @@ pub use pcm_bridge::{PcmBoundaryError, PcmMicrophoneBridge, PcmPlaybackBridge};
 pub use pcm_slots::PcmTicket;
 #[cfg(windows)]
 pub use provider::WindowsVadProvider;
+#[cfg(windows)]
+pub use provider::{
+    PublicationIdentity, PublicationSnapshot, VadExportDiagnosticProvenance, VadExportObservation,
+    VadPcmTelemetrySnapshot,
+};
+#[cfg(windows)]
+pub use provider::{
+    VadInputCaptureArtifact, VadInputCaptureHandle, VadInputCaptureIdentity, VadInputCapturePacket,
+};
 
 pub use protocol::{
     ABI_VERSION, CAP_AUDIO, CAP_CREATE_DEFERRED, CAP_PCM, CAP_POLICY_STAGED, CAP_RAW_PDO,

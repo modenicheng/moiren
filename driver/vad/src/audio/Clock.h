@@ -399,6 +399,18 @@ struct TimerDrivenStep {
     bool Valid;
 };
 
+inline uint64_t TimerDrivenPendingLimit(const TimerDrivenRing& ring)
+{
+    // One logical packet remains the callback's work limit. A single timer
+    // quantum of debt allows modest lateness to progress before a timely
+    // redue drains the residual; it is not an extra packet or an audio queue.
+    // Only sub-two-quantum packets need this allowance; larger packet/stall
+    // policy stays unchanged. Never accept time beyond retained mapped PCM.
+    const auto pending = static_cast<uint64_t>(ring.PacketFrames) +
+        (ring.PacketFrames < 2 * DefaultTimerSegmentFrames ? DefaultTimerSegmentFrames : 0);
+    return pending < ring.MappedFrames ? pending : ring.MappedFrames;
+}
+
 inline TimerDrivenStep PlanTimerDrivenStep(Clock& clock,
     const TimerDrivenRing& ring, uint64_t now)
 {
@@ -413,18 +425,24 @@ inline TimerDrivenStep PlanTimerDrivenStep(Clock& clock,
         TicksToFrames(now - clock.EpochQpc, clock.Frequency) : 0;
     const auto processed = ring.PresentedFrames - clock.BaseFrames;
     const auto frames = elapsed > processed ? elapsed - processed : 0;
-    if (frames > ring.PacketFrames) {
-        // The complete pending interval no longer fits the logical packet.
-        // Drop its time association instead of replaying old audio in a burst.
+    if (frames > TimerDrivenPendingLimit(ring)) {
+        // Work stays bounded even if Windows cannot service the redue. Beyond
+        // the finite debt allowance discard the old time association once.
         clock.BaseFrames = ring.PresentedFrames;
         clock.EpochQpc = now;
         clock.LimitFrames = ring.PresentedFrames + DefaultTimerSegmentFrames;
         return {RelativeDue(clock, clock.LimitFrames, now), 0, true, true};
     }
-    const auto next = ring.PresentedFrames + frames + DefaultTimerSegmentFrames;
+    const auto transfer = frames < ring.PacketFrames ? frames : ring.PacketFrames;
+    const auto next = ring.PresentedFrames + transfer + DefaultTimerSegmentFrames;
     clock.LimitFrames = next;
+    if (frames > transfer) {
+        // Retain the original sample/QPC association. Silently clamping time
+        // or rebasing while transferring would relabel stale PCM as current.
+        return {-1, static_cast<uint32_t>(transfer), false, true};
+    }
     const auto due = RelativeDue(clock, next, now);
-    return {due == 0 ? -1 : due, static_cast<uint32_t>(frames), false, true};
+    return {due == 0 ? -1 : due, static_cast<uint32_t>(transfer), false, true};
 }
 
 inline TimerDrivenSchedule ScheduleTimerDrivenQuantum(Clock& clock,

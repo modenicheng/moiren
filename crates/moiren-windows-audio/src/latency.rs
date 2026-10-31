@@ -1,7 +1,23 @@
 //! Bounded owner-local diagnostics. Queue and callback observations are not
 //! an end-to-end latency measurement. Quantiles are histogram upper bounds.
+pub(crate) mod bounded_history;
 mod budget;
+mod delivery;
+pub mod events;
+mod marker;
+pub mod packet_service;
+pub mod packets;
+pub mod qualification;
+pub mod queue;
 mod telemetry;
+
+pub use marker::{
+    MarkerAnalysisConfig, MarkerAnalysisError, MarkerCorrelation, MarkerGenerator,
+    MarkerRateCorrelation, MarkerRateSearchConfig, PreparedMarkerRateSearch, analyze_marker,
+    analyze_rate_aware_marker, frames_to_seconds,
+};
+pub mod transport;
+pub use delivery::{InputDeliveryRecorder, InputDeliverySnapshot};
 
 pub use budget::{
     LatencyBudgetError, LatencyBudgetPolicy, NativeStreamTiming, PreparedInputQueue,
@@ -14,8 +30,8 @@ pub use clock::QpcClock;
 
 use serde::Serialize;
 pub use telemetry::{
-    CallbackObservation, HistogramSnapshot, LatencyRecorder, LatencySnapshot, TRACE_CAPACITY,
-    TraceRecord, TraceSnapshot,
+    CallbackObservation, DeviceClockObservation, HistogramSnapshot, LatencyRecorder,
+    LatencySnapshot, TRACE_CAPACITY, TraceRecord, TraceSnapshot,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -46,3 +62,6 @@ pub fn qpc_ticks_to_100ns(ticks: u64, frequency: u64) -> Option<u64> {
     }
     u64::try_from(u128::from(ticks) * 10_000_000 / u128::from(frequency)).ok()
 }
+
+pub mod render;
+pub mod shared_period;

@@ -1,4 +1,7 @@
 //! Opt-in real service/VAD integration. No native client or driver opens by default.
+#[cfg(windows)]
+#[path = "vad_integration/input_capture.rs"]
+mod input_capture;
 #[cfg(any(windows, test))]
 #[path = "vad_integration/material.rs"]
 mod material;
@@ -10,6 +13,9 @@ mod progress;
 #[cfg(any(windows, test))]
 #[path = "vad_integration/project.rs"]
 mod project;
+#[cfg(any(windows, test))]
+#[path = "vad_integration/rename.rs"]
+mod rename;
 #[cfg(any(windows, test))]
 #[path = "vad_integration/report.rs"]
 mod report;
@@ -30,9 +36,16 @@ mod native;
 #[path = "vad_integration/target.rs"]
 mod target;
 
-const HELP: &str = "vad_integration --exercise [--pcm] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
+const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
+    [--rename-fixture-seed=POSITIVE_U64 (only --exercise --rename)]\n\
     [--soak-idle-seconds=1..28800] [--soak-pcm-seconds=1..28800]\n\
     [--soak-pcm-file=material.wav (48kHz stereo PCM16/Float32, >=1s)]\n\
+    [--input-capture-frames=1..480000 (explicit --exercise; not --rename)]\n\
+    Input capture: single-shot raw provider READ before decode, <=4MiB and\n\
+    <=4096 whole packets; first accepted packet locks native/admission identity.\n\
+    Identity change/capacity seals evidence without changing audio policy.\n\
+    provider-input.pcm + provider-input.json are written only after service join;\n\
+    empty means unknown, not silence. Raw capture is not waveform qualification.\n\
     Stage1: persisted v2 stereo VirtualPlayback -> Gain(0.5) -> VirtualMicrophone;\n\
     production service startup/discovery, Apply with no probe native clients,\n\
     Stop with closed gates and retained endpoints, then service exit/join.\n\
@@ -45,6 +58,27 @@ const HELP: &str = "vad_integration --exercise [--pcm] [--timeout-seconds=N] [--
     stream generation; re-admission is bounded to 5s and the existing phase limit.\n\
     Both gates must be open at successful hold/signal-phase completion.\n\
     --pcm defaults to a 90s overall watchdog and requires at least 60s if set.\n\
+    --rename: real service/native Playback then Microphone remove/recreate.\n\
+    Hold an initialized exclusive client (no Start/PCM), Stop the Engine, request\n\
+    rename and retain the historical strict Removing/unchanged identity/name\n\
+    expectation. Holding a native client is NOT a driver guarantee to defer\n\
+    removal. Any strict failure remains failed/unqualified (exit 1), while bounded\n\
+    diagnostics continue: release, record direct old Removed, fresh native init,\n\
+    exact PKEY_Device_FriendlyName readback, then Engine confirmation.\n\
+    DeviceDesc and DeviceInterface_FriendlyName are optional actual MMDevice\n\
+    property diagnostics in before/held/after; typed read errors are retained.\n\
+    They never replace or normalize the exact FriendlyName gate, and cannot\n\
+    alone identify Windows composition/cache causes; no parent/registry scan.\n\
+    Missing direct Removed, Absent or DTO/name success can never pass acceptance.\n\
+    --rename is exclusive with --pcm and all soak options; defaults to 90s and\n\
+    requires at least 60s if set. Failed readbacks and cleanup errors are retained.\n\
+    --rename-fixture-seed creates an explicit diagnostic baseline fixture only:\n\
+    each 16B ID is an 8B direction prefix (MrnVPlay/MrnVMic0) + 8B seed LE;\n\
+    baseline CREATE names include seed. Report records seed and project.moiren\n\
+    retains the original fixture. Both subsequent renames keep their stable IDs.\n\
+    Omitted seed leaves the default fixture unchanged. Reused seeds reproduce\n\
+    IDs, not necessarily fresh Windows instances. No random/automatic ID rotation\n\
+    or product workaround; this comparison alone cannot prove Windows caching.\n\
     Soak: one persisted graph, one App owner. Idle observes actual frame_end\n\
     throughout the requested interval, with two advances per one-second window.\n\
     PCM soak implies --pcm and keeps the same real native pair RUN; alternates\n\

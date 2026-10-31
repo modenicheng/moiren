@@ -367,6 +367,38 @@ fn export_row(
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
+        .child(
+            detail(&t!("Requested endpoint name"), status.intent.name.clone())
+                .id(SharedString::from(format!("export-requested-name-{id}")))
+                .aria_label(format!(
+                    "{}: {}",
+                    t!("Requested endpoint name"),
+                    status.intent.name
+                ))
+                .gpui_test_observe(),
+        )
+        .child(detail(
+            &t!("Provider-created name"),
+            status
+                .actual_name
+                .clone()
+                .unwrap_or_else(|| t!("Unknown / not present").into()),
+        ))
+        .child(detail(
+            &t!("Windows endpoint name"),
+            status
+                .windows_name
+                .as_ref()
+                .and_then(|observation| observation.name.clone())
+                .unwrap_or_else(|| t!("Unknown / not observed").into()),
+        ))
+        .child(detail(
+            &t!("Windows name match"),
+            crate::ui::presentation::windows_name_match_text(status),
+        ))
+        .when(status.rename_pending, |row| {
+            row.child(label(t!("Name pending; waiting for native recreation")))
+        })
         .child(label(format!(
             "{:?} / {} / {id}",
             status.intent.direction,

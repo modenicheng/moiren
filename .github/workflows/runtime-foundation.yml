@@ -107,6 +107,12 @@ jobs:
       - name: Test native-owner realtime contracts
         if: needs.changes.outputs.rtcheck == 'true'
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
+      # The Process-collection B path and the shared render preflight keep
+      # portable failure-first suites inside examples; `cargo test` alone does
+      # not execute example tests (they need an explicit --example).
+      - name: Test latency-probe and render-preflight example contracts
+        if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
+        run: cargo +stable test --locked -p moiren-windows-audio --example e2e_latency_probe --example shared_render_preflight
       - name: Test VAD probe contracts without devices
         if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
         run: cargo +stable test --locked -p moiren-windows-audio --features vad-probe --example vad_lifecycle --example vad_native --example vad_active_lifecycle

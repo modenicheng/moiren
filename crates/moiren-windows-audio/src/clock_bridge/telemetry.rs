@@ -1,12 +1,28 @@
-//! Approximate scalar snapshots, never a coherent audio/metadata transaction.
+//! Approximate counters plus independently coherent optional delivery/age DTOs.
+//! The complete snapshot is not a cross-owner audio/metadata transaction.
+#[path = "telemetry/live.rs"]
+mod live;
+#[cfg(test)]
+#[path = "telemetry/tests.rs"]
+mod tests;
+use super::QueuedFrameAge;
+use crate::latency::InputDeliverySnapshot;
+use live::{AgeSample, DeliverySample};
 use serde::Serialize;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed},
 };
 
-#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
 pub struct BridgeSnapshot {
+    /// Latest completed native packet/callback publication. None before native
+    /// publication (including graph followers), or during a concurrent write.
+    pub native_delivery: Option<InputDeliverySnapshot>,
+    /// Oldest pending qualified frame sampled before a nonempty read's queue
+    /// recovery/priming/transfer. Resets invalidate this sample immediately.
+    /// This diagnostic estimate is not physical end-to-end latency.
+    pub oldest_frame_age: Option<QueuedFrameAge>,
     pub captured_frames: u64,
     pub written_frames: u64,
     pub dropped_frames: u64,
@@ -28,6 +44,10 @@ pub struct BridgeSnapshot {
     /// the live policy, distinct from overflow and high-water recovery.
     pub age_discarded_frames: u64,
     pub age_recoveries: u64,
+    /// Entire acquired prefixes cleared for unknown or excessive host
+    /// publication residence; may also include fresh frames in that prefix.
+    pub ingress_elapsed_discarded_frames: u64,
+    pub ingress_elapsed_recoveries: u64,
     /// Successful output frames rendered with the bounded low-water correction.
     pub low_water_guard_frames: u64,
     pub underrun_frames: u64,
@@ -40,6 +60,11 @@ pub struct BridgeSnapshot {
     pub correction_ppm: f64,
 }
 pub(super) struct Counters {
+    pub packet_events: crate::latency::packets::PacketHistoryObserver,
+    pub queue_events: crate::latency::queue::QueueHistoryObserver,
+    pub delivery_events: crate::latency::events::EventHistoryObserver,
+    pub native_delivery: DeliverySample,
+    pub oldest_frame_age: AgeSample,
     pub captured_frames: AtomicU64,
     pub written_frames: AtomicU64,
     pub dropped_frames: AtomicU64,
@@ -56,6 +81,8 @@ pub(super) struct Counters {
     pub backlog_recoveries: AtomicU64,
     pub age_discarded_frames: AtomicU64,
     pub age_recoveries: AtomicU64,
+    pub ingress_elapsed_discarded_frames: AtomicU64,
+    pub ingress_elapsed_recoveries: AtomicU64,
     pub low_water_guard_frames: AtomicU64,
     pub underrun_frames: AtomicU64,
     pub last_underrun_at_output_frame: AtomicU64,
@@ -68,8 +95,18 @@ pub(super) struct Counters {
     pub producer_finished: AtomicBool,
 }
 impl Counters {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(
+        capacity: usize,
+        delivery_events: crate::latency::events::EventHistoryObserver,
+        queue_events: crate::latency::queue::QueueHistoryObserver,
+        packet_events: crate::latency::packets::PacketHistoryObserver,
+    ) -> Self {
         Self {
+            packet_events,
+            queue_events,
+            delivery_events,
+            native_delivery: DeliverySample::default(),
+            oldest_frame_age: AgeSample::default(),
             captured_frames: AtomicU64::new(0),
             written_frames: AtomicU64::new(0),
             dropped_frames: AtomicU64::new(0),
@@ -86,6 +123,8 @@ impl Counters {
             backlog_recoveries: AtomicU64::new(0),
             age_discarded_frames: AtomicU64::new(0),
             age_recoveries: AtomicU64::new(0),
+            ingress_elapsed_discarded_frames: AtomicU64::new(0),
+            ingress_elapsed_recoveries: AtomicU64::new(0),
             low_water_guard_frames: AtomicU64::new(0),
             underrun_frames: AtomicU64::new(0),
             last_underrun_at_output_frame: AtomicU64::new(0),
@@ -102,6 +141,21 @@ impl Counters {
 #[derive(Clone)]
 pub struct BridgeObserver(pub(super) Arc<Counters>);
 impl BridgeObserver {
+    /// Offered/accepted packet frontiers and SPSC publication brackets. These
+    /// are neither sample timestamps nor a counterfactual queue replay.
+    pub fn packet_history(&self) -> Option<crate::latency::packets::PacketHistorySnapshot> {
+        self.0.packet_events.snapshot()
+    }
+    /// Consumer-owned causal inventory boundaries, not a timestamped replay of
+    /// producer publications or a source sample-age estimate.
+    pub fn queue_history(&self) -> Option<crate::latency::queue::QueueHistorySnapshot> {
+        self.0.queue_events.snapshot()
+    }
+    /// Control-side bounded native callback history, separate from the
+    /// approximate aggregate snapshot. No graph read manufactures arrivals.
+    pub fn delivery_events(&self) -> Option<crate::latency::events::EventHistorySnapshot> {
+        self.0.delivery_events.snapshot()
+    }
     pub fn producer_finished(&self) -> bool {
         self.0.producer_finished.load(Relaxed)
     }
@@ -113,6 +167,8 @@ impl Counters {
     pub(super) fn snapshot(&self) -> BridgeSnapshot {
         let c = self;
         BridgeSnapshot {
+            native_delivery: c.native_delivery.snapshot(),
+            oldest_frame_age: c.oldest_frame_age.snapshot(),
             captured_frames: c.captured_frames.load(Relaxed),
             written_frames: c.written_frames.load(Relaxed),
             dropped_frames: c.dropped_frames.load(Relaxed),
@@ -129,6 +185,8 @@ impl Counters {
             backlog_recoveries: c.backlog_recoveries.load(Relaxed),
             age_discarded_frames: c.age_discarded_frames.load(Relaxed),
             age_recoveries: c.age_recoveries.load(Relaxed),
+            ingress_elapsed_discarded_frames: c.ingress_elapsed_discarded_frames.load(Relaxed),
+            ingress_elapsed_recoveries: c.ingress_elapsed_recoveries.load(Relaxed),
             low_water_guard_frames: c.low_water_guard_frames.load(Relaxed),
             underrun_frames: c.underrun_frames.load(Relaxed),
             last_underrun_at_output_frame: c.last_underrun_at_output_frame.load(Relaxed),

@@ -2,7 +2,325 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-10-27.
+verdict. Status updated 2026-10-31.
+
+## Latest physical checkpoint - 2026-10-31
+
+First-start MIC poll fix `9968505` requests half-packet wait (144frames ->1.5ms)
+only in the fresh admitted Paused window, preserving Running-only WRITE and
+all driver/buffer/default/recovery policies. Its actual same-fixture control
+`mic-startup-poll1` fails after4.7s: first retained Running startup silence0
+with3 host completions is followed by gate epoch1->2, driver silence2 at first
+fault/6live/7removed and cleanup slot2 `0x8007051A`. Source and runtime cleanup
+are incomplete; task/probe1 and all partial PCM are retained. Root verifies
+the28-payload archive; the nominal method identifies only1 of5 acknowledged
+source codes, with the other24 schedule codes not fully submitted. Neither
+missing detections nor1576 QPC-policy invalidations are proven losses. The
+new33781248-byte app is deployed side by side with help/monitor-help/offline
+smokes0, not new desktop/native acceptance. Host701 audio/622 probe tests,
+strict Clippy/fmt pass; no physical latency, stability or minimum is proven:
+[MIC startup poll control](../../docs/validation/2026-10-31-mic-startup-poll.md).
+
+The new Interactive/Limited exact `Playback -> unity Bus -> MIC` control
+`interactive-iobus1` completes source submission, collection and cleanup, with
+source480/MIC144 native frames and Engine32. Its acquired1456272-frame PCM is
+finite and nonzero, but quality fails: first MIC driver silence3 becomes9 and
+remains9 after removal. Host silence counters0 do not override driver silence.
+The unchanged exact-nominal method resolves only4/29 marker identities;
+25 missing detections and9616 packet-QPC policy invalidations are not proven
+marker/packet losses. The37-payload archive is root-verified, all four earlier
+loose artifacts match byte-for-byte, and independent acquired audit passes93/93
+after retaining an initial92/93 checker failure. The exact terminal task is
+removed after fresh guards; six default roles and12 render-master snapshots
+match, driver610/boot are unchanged and no owners/children remain. No physical
+output, calibrated latency, quality waiver or lower-default promotion follows:
+[interactive IO/Bus control](../../docs/validation/2026-10-31-interactive-iobus-control.md).
+
+The separate Interactive/Limited Shared-source control now retains nonzero
+Process Float32 PCM (287520 frames) and accepted provider PCM16 READ data
+(332640 frames), independently audited75/75. This is the existing
+`Playback -> Gain(0.5) -> MIC` holder, not exact S1; neither boundary records
+post-Gain MIC output. Capture is partial and the historical all-zero cause
+is not isolated by a matched session-only A/B. Six default roles and12 render
+master snapshots match; all four exact terminal tasks are removed after
+archive verification. No settings/default/budget or driver changes occur:
+[Shared VAD interactive control](../../docs/validation/2026-10-31-shared-vad-interactive-control.md).
+
+The separate physical target retains the earlier main-PR52-integrated app
+`5f9eb02` (main `74ef5dd`),33780736 bytes, SHA256
+`4B3DD61FA488F5BB5C36AA9D0124AB0912D55FE79F49CFC33EE18882E5AFBCDE`,
+staged side by side with earlier app copies, and explicitly enabled
+native-Playback/no-copy diagnostic driver `883a5be`: `oem204.inf`, version
+`3.1.1.610` (previous `2a5aee5`/609 is retained for rollback).
+Installed SYS SHA256 remains
+`94EAE9BC2F1611C38F050977F7E740A09FE8C5B8EB19BC8780A82036FD0D32C7`;
+driver source/build inputs are unchanged, excluding dated STATUS updates.
+Service Running/root PnP OK, exact installed SYS hash, target signatures and
+catalog members are verified. The 609,608 and older607 rollback packages remain;
+no reboot, trust/volume/default change or target build occurs. Native retries
+are authorized; older paused-retry statements below describe dated history.
+Only DAWN headphones may be used for audible runs. The driver acquisitions
+below add no physical render client. Fresh5f9 help/monitor-help/offline smokes
+pass without native audio; the earlier7023 desktop retry explicitly opens DAWN
+and is not relabelled as a new5f9 desktop result:
+[integrated5f9 deployment](../../docs/validation/2026-10-31-integrated5f9-deployment.md).
+
+The earlier current-app console1 retry fails Settings UIA before measured
+Apply; its forced termination and original evidence remain retained. The later
+actual74f and latest7023 desktop regressions complete generation1/2
+Start/restart/Stop,13 UIA Invokes, owner cleanup/reaping and normal app/source
+exit0 on pinned DAWN.
+Latest7023 retains47 payloads plus manifest, independently verified, and removes
+the exact terminal task after archival. Boot, six default roles and12 render
+endpoint master volume/mute snapshots match before/after; this is not proof
+about all session/channel/capture controls or transient settings. This closes
+that bounded current-binary control/lifecycle regression, not complete
+source-waveform, meter-frame visual, lower-budget S3 or physical quality
+acceptance:
+[latest7023 application deployment and desktop receipt](../../docs/validation/2026-10-31-app-deployment-desktop.md#main-pr51-integrated-app-and-latest7023-desktop-control).
+
+Probe `18d1552` additionally retains close-gate, stop-broadcast, worker-observed
+stop, actual native Stop and join call windows. The actual indexed-v2
+Playback480/MIC144 run completes collection/cleanup and stores10109 packets;
+fresh585 full/22 focused host tests and independent64-check archive audit pass.
+MIC tail silence1 and cleanup reset/recovery1 remain quality-incomplete.
+Recorder sample timestamps cannot identify the exact driver no-copy increment;
+one operation-unidentified trace revision mismatch remains. See the
+[stop-window receipt](../../docs/validation/2026-10-31-capture-stop-windows.md).
+
+The newer610 diagnostic directly retains the first actual MIC no-copy
+increment's original gate/state and matching event/Notify. A pre-Start inactive
+MIC attempt fails; the same-fixture retry completes10110 packets but remains
+quality-incomplete. Its sole silence0->1 increment has gate2 closed/Running;
+the existing callback sample, not the exact increment timestamp, falls after
+stop broadcast and before native Stop entry. Notify succeeds, but retained
+PCM packet identity is not independently proven. Root verifies deployment and
+both-run archive; independent native audit passes96 checks. The original91/1
+inventory-assertion RED and first run's temporary owned MMDevice catalog entry
+remain retained; default roles and preexisting render controls are unchanged.
+No counter, buffer, quality exemption or physical qualification changes:
+[no-copy witness receipt](../../docs/validation/2026-10-31-microphone-no-copy-witness.md).
+
+Probe-only `8b574cc` now preserves MIC service until native Stop/release/join;
+both external stops still broadcast before waiting. Physical retirement and
+installed610 driver stay unchanged. Integrated618 host tests and independent
+review pass. A single actual same-fixture run completes10110 packets and
+cleanup with final MIC silence0, retaining reset/recovery1 rather than erasing
+them. Root verifies the27-payload archive and frozen provenance. The current
+collector intentionally keeps quality_complete/qualified false; unknown15 is
+historical live-read coverage, not the cause of that fixed verdict. This is
+operational progress, not sustained waveform or physical latency acceptance:
+[native-first retirement receipt](../../docs/validation/2026-10-31-native-first-mic-retirement.md).
+
+The user permits an evidenced device-limited theoretical minimum only if
+sub-10-ms is demonstrated impossible under the current declared conditions.
+Neither that impossibility nor a calibrated physical minimum is established;
+quality gates and the distinction from software diagnostics remain unchanged.
+
+The later exact Input -> unity Bus -> DAWN Exclusive256 control retains
+actual period256 but fails final host cleanup with SET_GATE `0x8007051A`.
+Its17-payload failure archive is root-verified and independently audited49/0.
+Probe-only `a20dfe2` moves original Playback gate close before physical-path
+revocation/Stop; source review16/0 and root620 tests/Clippy/fmt/release pass.
+MIC/Process paths, installed610, buffers and defaults remain unchanged. One
+same256 native replay completes35 seconds with no native/cleanup error;
+separate128 refuses before Running against queried device minimum144.
+Both archives are verified; no physical delay or minimum is established:
+[physical retirement receipt](../../docs/validation/2026-10-31-physical-soak-retirement.md).
+
+Feature-gated `06b3daa` then permits explicit WASAPI Exclusive render144 for
+diagnostics, keeping feature-off behavior and app presets/defaults unchanged.
+Actual DAWN admits144 period/capacity; separate Engine64 target1152 and945
+controls each finish35 seconds without native/cleanup error or reported xrun,
+drop or silence. Prime32 and final reset/recovery1 are retained. Root feature-
+on/off659 library/622 probe tests, strict Clippy/fmt/release and independent
+source review pass; both acquired archives independently audit59/0. No PCM,
+physical floor or calibrated sub10ms conclusion follows:
+[exact144 receipt](../../docs/validation/2026-10-31-dawn-exact144.md).
+The subsequent one-variable Engine32/target945 then Engine32/target881 controls
+also finish35 seconds with actual144 and no reported native/cleanup failure;
+each archive independently audits62/0. Prime32 and final reset/recovery1 remain.
+881 is the current declared-policy model minimum, not a qualified default or
+physical theoretical minimum; sustained signal and physical quality remain open.
+The same881 budget subsequently completes305.004622s with a fresh300-second
+adjacent repeated-v1 changing-source schedule, no reported native/live fault and
+clean teardown. Source submission completion and the root-verified17-payload
+archive remain diagnostic only: no delivered PCM/calibration or physical bound
+is established. Independent acquired-evidence audit passes72/0. Driver610,
+default settings and quality gates are unchanged.
+The subsequent additive decode-call telemetry control keeps that305-second
+source/configuration but is not a successful soak: report observed duration0,
+live reset/recovery1 and recovery-prime32, QUERY dropped4, and four terminal
+PCM shutdown `0x8007051A` failures remain. Only an early original-owner call
+segment is eligible; its small maximum cannot describe the ambiguous suffix
+or physical latency. The17-payload archive is root-verified and independently
+audited53/53 with the initial52/53 harness assertion retained. Driver610 is
+unchanged; no error is waived or gap/jitter budget reduced:
+[decode-call receipt](../../docs/validation/2026-10-31-vad-decode-call-envelope.md).
+
+The frozen binary/settings then complete305.0073755s with only existing WPP
+enabled: no reported live reset/recovery/drop/xrun and clean native/host teardown.
+Eligible call envelopes retain maximum3.708ms, not physical latency or proven
+consumer delivery. Matching610 trace decode records123 events, reported loss/
+format errors/unknowns0, and no ClockRebase message; run1's fault is not reproduced
+or explained. Both audio and separate trace archives are integrity-verified.
+Controller0/probe1/wrapper1 retain an unqualified diagnostic, not a new cleanup
+failure. No PCM/calibration, gap/jitter reduction, default promotion or physical
+lower bound follows:
+[existing-WPP control](../../docs/validation/2026-10-31-vad-call-envelope-wpp-control.md).
+
+Direction remains virtual speaker/Playback -> Moiren Input/Source and
+virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
+A distinct existing Exclusive event Playback control now passes on the same
+609 driver: all four mono/stereo PCM16/Float32 cases return matching nonzero
+PCM. The actual stereo PCM16/480 case retains95040 nonzero native event-buffer
+frames and95520 nonzero post-copy READ frames with equal scanned source and
+destination regions. Matching exact native packet shape/layout does not make
+this a sharing-only comparison: waveform, prime, ownership and source pumping
+also differ from the earlier Shared fixture. No Engine/Bus/MIC/physical route
+or continuity/latency qualification follows. Session0 alone does not prevent
+this Exclusive control. Clean cleanup, unchanged volume/defaults, pinned source,
+verified archive and limitations are in the
+[Exclusive positive-control receipt](../../docs/validation/2026-10-31-exclusive-playback-control.md).
+
+Two subsequent exact Playback/Input -> Bus -> MIC/Output collections use the
+default Exclusive period, actual Float32/480 at both native ends. They retain
+nonzero microphone PCM and complete source submission, but both fail EngineHost
+shutdown with SET_GATE revision mismatch. A single existing-debug-logger repeat
+observes a transport close refusal after Pause and later successful lifecycle
+closure; decisive confirmation-query evidence is missing in those two earlier
+acquisitions. No guard is
+relaxed or failure called a pass. Verified archives, separate internal cleanup
+failure/external absence, waveform-analysis limits and next diagnostic boundary:
+[default-period IO/Bus receipt](../../docs/validation/2026-10-31-default-period-iobus.md).
+
+A third acquisition isolates the original probe plus logging only. Both
+decisive close confirmations now show same-stream generation1, gate2 -> 3,
+Paused and still open; refusal is correct, not successful concurrent closure.
+Native reset/retirement sequencing is the next investigation boundary, not a
+reason to relax gate guards. This run also retains a separate early Running
+MIC `silence_packets=1` quality fault. It is not a passing collection.
+Pins, verified archive, independent audit and limits:
+[close-confirmation receipt](../../docs/validation/2026-10-31-close-confirmation.md).
+
+A probe-only virtual-route retirement slice now closes gates before external
+Stop/reset, retaining both Stop broadcasts before every join and leaving the
+physical route unchanged. Software regressions/review pass; the isolated probe
+waits for an unrelated target app to exit, then one bounded native acquisition
+completes collection/cleanup with exit0 and Closed EngineHost. It is not a full
+quality pass: quality_complete=false, unknown observations and a MIC tail
+silence_packets=1 remain retained. Continuous quality and latency are open:
+[retirement-order checkpoint](../../docs/validation/2026-10-31-mic-retirement-order.md).
+
+The new READ-selected, bounded native-buffer observer records the actual
+consumption path and bytes before the original clearing. A retained first
+attempt loses MIC readiness before any source starts. An unchanged-fixture
+retry completes: the actual path is EVENT, two packets, not timer/Scratch.
+All 480000 sampled native frames are zero after the existing EOS handling
+and before clear. Event destination counters duplicate the same single read,
+not an independent paired-copy witness. First/last EOS flags are zero; middle
+EOS states are not individually retained. Original post-copy READ and provider
+captures also retain 480000 all-zero frames. Native sequences 2..1001 differ
+from READ/provider 1..1000; 999 logical packet IDs overlap, not exact sample
+alignment. Complete 26-fragment native and unchanged 15-fragment READ groups,
+source nonzero write witness, failure, cleanup and verified archive remain in
+the [native-consumption receipt](../../docs/validation/2026-10-31-native-playback-ingress.md).
+This narrows a zero observation to the consumed event buffer; it establishes
+neither a sole cause nor nonzero continuity/physical latency. Session 0 remains
+an unproven confound. App help/offline smoke passes separately; GUI/native app,
+exact S1-S3 and calibrated sub-10-ms acceptance remain open. The preceding
+READ-only observer checkpoint is retained in the
+[Playback-copy receipt](../../docs/validation/2026-10-31-playback-copy-boundary.md).
+
+The pause-fence repair serializes epoch publication with PCM queue draining
+and adds a stream-release fence without weakening the Rust cancellation guard.
+All13 MSVC host suites,8 WSL portable suites,54 pause-fence scenarios,93 Rust
+provider tests and final WDK analysis/INF validation pass. Bounded old/new
+native observations retain unchanged-epoch Pause on the old driver and epoch
+increments on the new one; both60-second holders complete without nested
+errors. The original fatal holder failure occurs in neither, so no causal
+native-fix or waveform-continuity claim follows. Exact deployment, rollback,
+verified archive and limitations are in the
+[pause-fence receipt](../../docs/validation/2026-10-31-vad-pause-fence.md).
+
+A separate source-process capture also retains all-zero native PCM without
+starting a Process monitor or DAWN render client. Exact source identity,
+nonzero-source submission within the active schedule and full cleanup are
+retained, but a nonzero Process positive control and sole root cause remain
+unproven. The active VAD holder fixture is not graph-free or exact S1. See the
+[source-side receipt](../../docs/validation/2026-10-31-source-process-control.md).
+
+A separately reviewed Microsoft-derived Process diagnostic records only
+-1/0/+1 PCM16 values at44.1kHz, not the intended changing waveform. All API
+stages complete, source submission remains within its active schedule and
+cleanup is clean; format differs from the earlier48kHz Float32 recorder, so
+this is not a matched implementation A/B or a demonstrated dither/session
+cause. Exact boundaries, tests and verified archive are in the
+[independent reference receipt](../../docs/validation/2026-10-31-ms-process-reference.md).
+
+An opt-in artifact from the actual provider READ, before decode/carrier/Engine,
+now retains480000stereo PCM16frames, all exactly zero. Of1000published packets,
+991transfer callbacks fall strictly inside the changing source's conservative
+Running-to-Stop window. This localizes this run's zero observation at or before
+READ, not solely in downstream Engine processing, but does not establish a sole
+driver/Windows/source cause or physical latency. The diagnostic adds no second
+READ/Process/physical client and leaves routing/defaults unchanged. Cleanup and
+memberwise archives are retained in the
+[provider input receipt](../../docs/validation/2026-10-31-provider-input-capture.md).
+
+A fixed-holder continuation now witnesses16nonzero Float32 bytes in the actual
+source GetBuffer destination, matching the encoded prefix before successful
+ReleaseBuffer with flags0. The subsequent provider READ still contains480000
+all-zero stereo PCM16frames: all1000callbacks follow Release, and990also satisfy
+the conservative source-active observation window. This narrows the unobserved interval
+between client Release and accepted READ, not to a sole driver/Windows cause.
+No waveform/latency/default gate changes. Exact implementation, bounds and
+cleanup are in the
+[source write receipt](../../docs/validation/2026-10-31-source-write-witness.md).
+
+A cheaper exact-client read-only control check observes session Active and
+session/endpoint master 1.0, both unmuted, after the first nonzero Release.
+The provider still retains 480000 all-zero PCM16 frames. Those master controls
+are not zero/muted at that instant; other gain/processing/transition causes
+remain unproven. No new client, volume write or default/driver change occurs.
+Exact snapshot timing, tests, cleanup and memberwise archive are in the
+[source controls receipt](../../docs/validation/2026-10-31-source-controls.md).
+
+Shared microphone controls now correlate a successful ACX notification with a
+nonzero post-copy native-buffer prefix in the same packet. Ordinary/RAW Shared
+clients still receive all-zero/SILENT PCM, including the explicit changing AC
+diagnostic. This narrows the observed boundary but proves neither a sole-driver
+nor a downstream-policy cause. Exact evidence and limitations are in the
+[Shared microphone receipt](../../docs/validation/2026-10-31-shared-microphone-direct.md).
+
+A VAD -> unity Bus -> DAWN Exclusive256 candidate with Engine64,
+target1152/capacity4800 and actual VAD period144 completes65 seconds with
+3,121,664 output frames,12,194 wakes and no output wait timeout. No waveform is
+acquired, so this is not continuity or physical-latency acceptance. Initial
+prime32 remains counted. See the
+[DAWN control receipt](../../docs/validation/2026-10-31-vad-dawn-continuous-control.md).
+
+The app's separate Process -> unity Bus -> DAWN Exclusive256 per-wake control
+confirms replacement and10 seconds of operation; final native counters are
+sampled after owner join, not copied from the last Running snapshot. It still
+retains one delivery-gap violation, an all-zero independent recording and a
+holder failure with nested cleanup `Cancelled`. A window-admission control
+separately refuses ambiguous overlapping packet/read envelopes. Neither control
+qualifies waveform delivery, and the operational per-wake result does not
+override the window refusal. Both holder idle requests end early, not at their
+requested180 seconds. See the
+[joined app receipt](../../docs/validation/2026-10-31-app-exclusive-joined.md).
+
+Earlier target768 controls, their failed acceptance gates and original
+archives remain in the
+[integration/capture-boundary receipt](../../docs/validation/2026-10-31-native-integration-capture-boundary.md).
+
+Directions are from Moiren's perspective: virtual speaker is input/Source;
+virtual microphone is output/Sink. Accepted ownership/direction/control-error
+foundations and bounded UTF-16 name staging are merged separately in PR43-45
+and PR47, not by merging draft PR26. PR47's final20CI checks pass; this is
+bounded safety coverage, not native endpoint-name propagation acceptance.
+No lower default, calibrated sub-10-ms result or VAD/Process winner is claimed.
 
 **Long-soak gate status (updated for the 2026-10-22 run, `cdd44a2`):** the
 eight-hour **idle** run passed for the first time — 28,730/28,800 verified
@@ -26,6 +344,116 @@ event-mode cases with half-period microphone pacing. The subsequent
 These are bounded target results, not stable-repeatability or complete product
 qualification: earlier timer runs aborted on real long-stall epoch mismatches,
 and a fresh-OS installation has not been qualified.
+
+## Short timer packet progress - 2026-10-29
+
+Local `9cba24b` fixes a reproduced source-level starvation:48/49-frame timer
+packets with1.1ms callbacks could continuously rebase with zero progress.
+Short packets now admit one bounded quantum of residual debt (capped by mapped
+frames), while every callback retains one-packet/three-span/one-transfer work
+bounds. Larger packets, event mode, queues and microphone freshness remain
+unchanged. Overload still quiesces and records loss; timely redue service and
+native PCM retention are not guaranteed by this software policy.
+
+All10 MSVC host suites, WDK analyzed build and native INF validation pass.
+Two independent final source reviews find no Important/Critical issue. The
+generated unsigned development package is neither installed nor deployed; no
+native audio or target qualification occurs. Hardware gates and prior run
+verdicts are unchanged. Exact RED/GREEN, bounds and final artifact hashes:
+[`2026-10-29-vad-short-timer-progress.md`](../../docs/validation/2026-10-29-vad-short-timer-progress.md).
+
+## Separate physical target - 2026-10-29
+
+The subsequently analyzed/test-signed package is installed on the separate
+physical `LAPTOP-NP49RG6H`, not the development host: `ROOT\MEDIA\0001`,
+`oem147.inf`, version `18.58.53.555`, service Running / PnP OK. Exact installed
+SYS hash, package verification and deployment history are retained in the
+[physical-target receipt](../../docs/validation/2026-10-29-physical-target-deployment.md).
+This supersedes only the earlier statement that the generated short-timer
+package was not deployed; it does not retroactively change that build receipt.
+
+Bounded native VAD IO/Bus recordings now contain changing PCM and complete
+collection/cleanup at explicit2048/1024 targets with independent capacity.
+They still fail independent-recorder continuity; the2048 case also retains
+provider faults. No stable lower preset or calibrated sub-10-ms physical
+result is established. The output remains muted and a common pre-route
+reference/calibration is not available. P1 and all unfinished long-soak/music
+gates remain unqualified. VM timing qualification stays deferred; these
+physical results do not erase its historical failures or prove naming
+propagation while a native external client holds an endpoint.
+
+The later [native recorder/Process follow-up](../../docs/validation/2026-10-29-native-process-followup.md)
+reproduces the independent recorder's raw first-packet discontinuity without a
+Process graph. Later packet adjacency has no observed mismatch; startup prefix
+integrity is still unknown, and the strict quality failure is not exempted.
+Native app parameter replacement now has separate bounded evidence, retaining
+later delivery-envelope violations. Neither finding changes the VAD provider,
+physical continuity, calibration or long-soak verdicts.
+
+The [packet-period / Engine-block matrix](../../docs/validation/2026-10-29-vad-period-block-matrix.md)
+observes144/480-frame playback packets with128/256-frame Engine blocks at
+target1024/capacity4800. Three operation/cleanup cases complete; all four fail
+recorder quality, and the fourth also retains microphone drop/silence and a
+diagnosed probe Running/timeline-availability conflation. Original failed
+receipts remain unchanged. No kernel fix, physical latency verdict, lower
+default or long-soak qualification follows from this bounded software route.
+
+Probe-only [progress-health repair](../../docs/validation/2026-10-29-vad-engine-progress-health.md)
+`f72e03c` now separates transient unknown timeline data from confirmed Running
+state, with pinned identity and bounded progress deadlines. Final509 probe
+tests pass. A new480-packet/128-block/target1024 native retest completes its
+schedule/collection/cleanup but still fails recorder continuity; no transient
+null recurs in this run. Installed driver and application are unchanged, build
+caches are retained, and physical/long-soak qualification remains open.
+
+### DAWN and interrupted software-route follow-up - 2026-10-30
+
+The later [DAWN app-output receipt](../../docs/validation/2026-10-30-dawn-vad-app-pcm.md)
+uses the authorized DAWN headphones rather than the muted Realtek output of
+the earlier physical receipt. Production VAD -> Bus -> DAWN PCM is retained;
+no independent calibrated physical reference or continuity qualification is
+established. No other speaker volume/mute or default role is changed.
+
+Probe-only [source-readiness coordination](../../docs/validation/2026-10-30-vad-source-readiness.md)
+waits for a bounded accepted-READ observation before starting its owned source.
+Three repaired repetitions record zero driver drops. A35-second physical-master
+diagnostic admits Exclusive256 / Engine32 / target768 / capacity4800 with zero
+retained active loss/reset/xrun counters, but acquires no PCM and does not qualify
+its declared delivery bound. No production default/provider/kernel change.
+
+The separate [pure-virtual follow-up](../../docs/validation/2026-10-30-vad-software-readiness-crash.md)
+retains cap1 overflow/reset failures and a cap8/target1024 completed30-second
+recording that still fails driver-silence/recorder-continuity gates. Cap8/target768
+refuses its budget; cap4/target768 is interrupted by a0x7E bugcheck and automatic
+reboot before results persist. Matched kernel symbols/images recover an access
+violation at `nvlddmkm+0x262fa6` in a System worker chain, without proving sole
+root cause or excluding earlier corruption/indirect Moiren involvement. No
+Moiren frame appears in that recovered stack. Native audio retries are paused,
+not treated as passed or repeated automatically.
+
+The final post-reboot audit retains the same installed SYS hash, service Running,
+root PnP OK and no dynamic child/app/probe/build process. All three exact terminal
+owned tasks are unregistered after verified archival; Cargo caches remain.
+P1, naming propagation, physical sub-10ms and outstanding long-soak/music gates
+remain unqualified. No new driver installation, system-setting change or
+speculative kernel patch follows from the crash.
+
+The offline [virtual-clock observability repair](../../docs/validation/2026-10-30-virtual-clock-loss.md)
+adds retained owner-level omitted-period/frame counters and mandatory final
+probe validation for the pure-virtual route. Native PCM loss and Engine periods
+omitted by the recovery cap remain distinct. This changes no kernel source,
+clock policy, default budget or hardware gate; native retries remain paused.
+
+The [cross-target/RT-harness follow-up](../../docs/validation/2026-10-30-native-helper-cfg.md)
+retains Linux/Miri compilation and private-clock test integration repairs,
+plus the final `c222df2` application/probe deployment. Installed SYS remains
+unchanged, Running /root PnP OK; no native audio retry or new hardware verdict.
+
+The [probe example-test cfg follow-up](../../docs/validation/2026-10-30-probe-test-cfg.md)
+repairs four Windows-only test-build helpers and deploys only the `9de94e4`
+probe after528+5 release tests and strict Clippy. App `c222df2` and installed
+SYS remain unchanged. Native retries stay paused; software checks do not
+close physical continuity, calibration or lower-budget qualification gates.
 
 ## Audit follow-up - 2026-10-21
 

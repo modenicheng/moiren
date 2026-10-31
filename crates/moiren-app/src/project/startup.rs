@@ -43,6 +43,7 @@ impl StartupDocuments {
             self.preferences.audio,
             self.preferences.latency_profile,
         );
+        context.transport_latency = self.preferences.transport_latency;
         context
             .exports
             .set_authorizations(&self.preferences.export_authorizations)?;

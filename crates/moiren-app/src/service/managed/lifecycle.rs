@@ -2,6 +2,29 @@ use super::*;
 
 impl ManagedDriver {
     pub(super) fn retire(&mut self, c: &mut ServiceContext) {
+        #[cfg(windows)]
+        let process_trace = self.retiring_process_trace(c);
+        // Pin the exact sessions before clearing the live registries. Handles
+        // retain counters, not audio resources; sample only after drop(host).
+        #[cfg(windows)]
+        let native = self.native_observations.as_ref().and_then(|registry| {
+            registry
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|value| value.retain_session())
+        });
+        #[cfg(windows)]
+        let backend = self
+            .professional_observations
+            .as_ref()
+            .and_then(|registry| {
+                registry
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.retain_session())
+            });
         self.exports_runtime.revoke();
         let generation = c.core.generation();
         log::info!(
@@ -16,8 +39,14 @@ impl ManagedDriver {
         c.signals.clear_node_levels();
         c.active_latency_profile = None;
         c.active_audio_settings = None;
+        c.active_transport_latency = None;
+        c.active_measured_process = None;
         #[cfg(windows)]
         {
+            if let Some(observations) = &self.native_observations {
+                *observations.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
+            c.native_observations = None;
             if let Some(observations) = &self.professional_observations {
                 *observations.lock().unwrap_or_else(|p| p.into_inner()) = None;
             }
@@ -26,8 +55,11 @@ impl ManagedDriver {
         self.edits.clear();
         self.clear_parameters(c);
         if let Some(owner) = self.owner.take() {
+            #[cfg(windows)]
+            let (host_revision, graph_revision) = owner.active_revision;
             let Owner {
                 host,
+                observer,
                 generation,
                 cleanup,
                 completion,
@@ -44,7 +76,32 @@ impl ManagedDriver {
                     target: "moiren::audio::service",
                     "audio owner cleanup finished: generation={generation:?}",
                 );
-                completion.send_or_dispose(Completion::Reaped(generation), drop);
+                // The observer survives the host join without retaining its
+                // native owner. Read the final cleanup result, not a pre-stop
+                // Running snapshot or the fact that Drop returned.
+                let cleanup = SessionCleanupObservation {
+                    generation,
+                    state: observer.read().state,
+                    #[cfg(windows)]
+                    process_trace: None,
+                    #[cfg(windows)]
+                    final_observations: if native.is_some() || backend.is_some() {
+                        Some(Arc::new(JoinedSessionObservations {
+                            graph_revision,
+                            host_revision,
+                            native: native.map(|handle| handle.snapshot()),
+                            backend: backend.map(|handle| handle.snapshot()),
+                        }))
+                    } else {
+                        None
+                    },
+                };
+                #[cfg(windows)]
+                let cleanup = SessionCleanupObservation {
+                    process_trace: process_trace.map(|trace| trace.finish(&cleanup.state)),
+                    ..cleanup
+                };
+                completion.send_or_dispose(Completion::Reaped(cleanup), drop);
             });
             // Reserved before opening the host, so stop never needs additional
             // storage and host Drop/join always runs on the cleanup worker.
@@ -69,14 +126,50 @@ impl ManagedDriver {
             self.apply = false;
             return;
         }
-        let settings = self
-            .apply_audio_settings
+        let requested = self
+            .apply_settings
             .as_ref()
             .expect("Apply captures the requested audio configuration")
             .clone();
+        #[cfg(windows)]
+        if let Some(profile) = &requested.measured_process
+            && let Err(error) = self.validate_windowed_apply(c, &requested, profile)
+        {
+            c.graph.record_error(error);
+            self.apply = false;
+            self.apply_settings = None;
+            return;
+        }
+        #[cfg(windows)]
+        if self.owner.is_none()
+            && let Some(candidate) = requested
+                .measured_process
+                .as_ref()
+                .and_then(|profile| profile.evaluated_candidate())
+        {
+            let origin = candidate.evidence().origin();
+            let validation = if requested.audio != origin.audio_settings
+                || requested.transport != origin.transport_latency
+                || requested.profile != origin.latency_profile
+            {
+                Err(
+                    "captured evaluated Process settings differ from the evaluated predecessor"
+                        .into(),
+                )
+            } else {
+                self.validate_evaluated_process(c, candidate)
+            };
+            if let Err(error) = validation {
+                c.graph.record_error(error);
+                self.apply = false;
+                self.apply_settings = None;
+                return;
+            }
+        }
+        let settings = requested.audio;
         let block = settings.processing.block_frames as usize;
         let project =
-            match preparation.configured_engine_project(block, &settings, c.latency_profile) {
+            match preparation.configured_engine_project(block, &settings, requested.profile) {
                 Ok(project) => project,
                 Err(error) => {
                     if self.owner.is_none() && self.cleaning == 0 {
@@ -87,6 +180,27 @@ impl ManagedDriver {
                     return;
                 }
             };
+        if let Some(profile) = &requested.measured_process {
+            if preparation.revision != profile.summary().request.graph_revision {
+                c.graph.record_error("measured Process graph revision changed; clear the profile or select fresh observations");
+                self.apply = false;
+                return;
+            }
+            let source = preparation
+                .nodes
+                .iter()
+                .find(|node| node.id == profile.summary().request.node)
+                .and_then(|node| node.source.as_ref());
+            if let Err(error) = source
+                .ok_or("measured Process source was removed")
+                .map_err(str::to_owned)
+                .and_then(|source| profile.validate_source(source))
+            {
+                c.graph.record_error(error);
+                self.apply = false;
+                return;
+            }
+        }
         // A failed PCM worker can drain while its PDO stays healthy/Present.
         // Waiting for transport admission before replacing that host would
         // strand Apply: only a fresh preparation can create its PCM session.
@@ -103,8 +217,14 @@ impl ManagedDriver {
         });
         if self.owner.as_ref().is_some_and(|o| {
             o.document != self.document
-                || o.profile != c.latency_profile
+                || o.profile != requested.profile
                 || o.audio_settings != settings
+                || o.transport_latency != requested.transport
+                || o.measured_process.as_ref().map(|profile| profile.summary())
+                    != requested
+                        .measured_process
+                        .as_ref()
+                        .map(|profile| profile.summary())
                 || o.exports != preparation.exports
                 || stranded_virtual_transport
         }) {
@@ -173,6 +293,9 @@ impl ManagedDriver {
                 }
             }
         } else if self.cleaning == 0 && !self.exiting {
+            if self.reject_failed_cleanup(c, false) {
+                return;
+            }
             let mut summary = match c
                 .graph
                 .managed_session_spec(c.core.desired(), c.core.run_limit())
@@ -188,18 +311,26 @@ impl ManagedDriver {
             if let Some(spec) = &mut summary {
                 spec.max_block_frames = block;
             }
-            if c.core.managed_graph_desired(summary).is_err() {
-                self.apply = false;
-                return;
-            }
             let Ok(cleanup) = c.try_reserve_cleanup() else {
                 return;
             };
             let Ok(completion) = self.queue().port().try_reserve() else {
                 return;
             };
+            // Backpressure must not consume the stopped candidate's Idle
+            // admission before the permits needed to open its owner exist.
+            if c.core.managed_graph_desired(summary).is_err() {
+                self.apply = false;
+                return;
+            }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.open_host(c.latency_profile, &settings, project)
+                self.open_host(
+                    requested.profile,
+                    &settings,
+                    &requested.transport,
+                    requested.measured_process.as_ref(),
+                    project,
+                )
             }))
             .unwrap_or_else(|_| {
                 Err(host::BackendError::Failed(
@@ -229,8 +360,10 @@ impl ManagedDriver {
                         observer,
                         generation,
                         document: self.document,
-                        profile: c.latency_profile,
+                        profile: requested.profile,
                         audio_settings: settings,
+                        transport_latency: requested.transport,
+                        measured_process: requested.measured_process,
                         exports: preparation.exports.clone(),
                         active_revision: (1, preparation.revision),
                         active_apply_id: 0,
@@ -263,6 +396,8 @@ impl ManagedDriver {
         &self,
         profile: AudioLatencyProfile,
         settings: &AudioSettings,
+        transport: &TransportLatencySettings,
+        measured: Option<&super::super::measured_process::MeasuredProcessProfile>,
         project: host::EngineProject,
     ) -> Result<AudioHost, host::BackendError> {
         log::info!(
@@ -284,7 +419,7 @@ impl ManagedDriver {
         );
         match settings.processing.precision {
             ProcessingPrecision::F32 => {
-                let backend = (self.factory)(profile, settings)?;
+                let backend = (self.factory)(profile, settings, transport, measured)?;
                 EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F32)
             }
             ProcessingPrecision::F64 => {
@@ -293,7 +428,7 @@ impl ManagedDriver {
                         "this driver has no f64 processing backend".into(),
                     )
                 })?;
-                let backend = factory(profile, settings)?;
+                let backend = factory(profile, settings, transport, measured)?;
                 EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F64)
             }
         }

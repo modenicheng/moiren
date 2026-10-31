@@ -189,7 +189,17 @@ fn project_import_keeps_local_authorization_and_startup_is_desired_before_first_
     let runtime =
         ServiceRuntime::spawn_with_startup(InspectStartup(checked.clone()), startup).unwrap();
     let handle = runtime.handle();
-    let snapshot = handle.try_snapshot().unwrap();
+    // try_snapshot yields None while the service thread holds the snapshot
+    // lock for a publish; wait for its first publish instead of racing it.
+    let mut snapshot = None;
+    for _ in 0..2_000 {
+        if let Some(published) = handle.try_snapshot() {
+            snapshot = Some(published);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let snapshot = snapshot.expect("service published a snapshot");
     assert_eq!(snapshot.graph.exports.len(), 1);
     assert_eq!(snapshot.graph.active_revision, None);
     assert_eq!(snapshot.phase, SessionPhase::Idle);

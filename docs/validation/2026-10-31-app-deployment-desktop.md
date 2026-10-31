@@ -1,0 +1,416 @@
+# Current application deployment and desktop retry - 2026-10-31
+
+## Direction and scope
+
+The endpoint direction remains the contract already merged in PR44:
+
+| Windows virtual endpoint | Moiren graph role | Other applications |
+| --- | --- | --- |
+| Virtual speaker / Playback | Input / Source | Output / render |
+| Virtual microphone / MIC | Output / Sink | Input / capture |
+
+Root main and the remote main ref both remain `6b4ffe6`. Foundations
+PR43/44/45/47 are merged; experimental PR26 is not merged wholesale.
+
+Four focused `vad_export` application library tests pass on experimental
+`e1a7c2f17749b2abb4f98a2c3fef36af67c6aed5`. They cover app-side input/output
+directions, wrong-shape rejection and atomic replacement/clearing of physical
+bindings. The current application tree is unchanged from `af70aa9`; this
+receipt refreshes binary provenance rather than claiming another routing fix.
+
+## Build and deployment
+
+The first application build using the shared root target fails with missing
+dependency APIs. The same tracked source passes the focused tests and release
+build using the existing worktree-local target, jobs2. No source repair or cache
+clean is performed. Incompatible shared artifacts are suspected, not established
+as the sole cause of the first failure.
+
+The release EXE is33697792 bytes, SHA256
+`72CB86DA667A7D098D6B98338BB8324CB720BCCFAB2A494D3A9F0F74A85A9D71`.
+It is copied side by side to the physical target at
+`D:\MoirenTest\20261031-app-e1a7c2f\bin\moiren-app.exe`.
+Target length/hash and source pin match. Help, monitor help and the exact
+offline gain0.25 output all exit0, with isolated APPDATA for accepted smokes.
+The first help attempt has valid stdout/empty stderr but no usable
+Start-Process exit status; it is retained, not counted as an accepted smoke.
+
+Installed driver609 remains Running, loaded-path SYS SHA256
+`C9F7FF8273239B97436DF75A5D9E7584347F54A79CCFA21E1889EE546E4C591F`.
+No driver install, reboot, cache cleanup, endpoint-volume/mute or default-role
+write occurs. Earlier app copies and driver rollback packages are retained.
+
+## Current binary native desktop attempt
+
+`desktop-e1a7c2f-process1` runs under the existing console session1 with a
+limited interactive token. SSH remains session0. A hidden production desktop
+uses isolated preferences and exactly `Process -> unity Bus -> DAWN`,
+48kHz/F32/Engine256. The separately owned changing-signal source explicitly
+renders only to the same authorized DAWN headphones. This is not an independent
+reference or a physical latency measurement.
+
+The helper is adapted from the historical successful desktop process5 test,
+with exact app/probe/catalog/driver pins. Review finds and fixes three harness
+risks before acquisition: catalog execution after failed preflight, cleanup
+exceptions/unbounded joins, and success being assigned before final cleanup
+and unchanged-state checks. PS5.1 parsing and a real wrong-host rejection
+fixture pass. An independent review checks the corrected script SHA256
+`6BCD83F8742B18721081479CAB89D36AA48D84F562DF3ECCFF06407CC437FA2F`.
+
+The task launches at UTC03:08:51; the script records its start at03:10:53.6825757
+and final receipt at03:11:10.8308212. Scheduler launch is not treated as script
+execution or audio-start time. The helper's `01-running.json` tree is actually
+saved before clicking Start; its filename is not Running evidence.
+
+The actual Start Invoke returns. Native logs then confirm generation1 Running,
+the pinned DAWN endpoint, Shared Float32 stereo48kHz, and1056 actual native
+buffer frames. These frames are not the Process input target or E2E latency.
+
+The next Settings Invoke throws `ElementNotAvailableException`. Logs at
+11:11:00.388 retain GPUI `WindowsWindow::drop` errors `0x80040102` and
+`0x80070578`. The failed tree has only a root window. Neither a stale HWND,
+an accessibility action defect nor a production lifecycle regression is yet
+established as the cause. No measured Apply, requested/active comparison or
+generation2 replacement is reached.
+
+WM_CLOSE does not exit the owned app within10s; bounded owned-process forced
+termination follows, exit-1. Source Stop/join exits0 after15.254419s with732000
+acknowledged source frames and an incomplete schedule. Final `Completed=false`,
+task result1, no remaining audio/build owners and no boot change. Render
+volume/mute/default-role snapshots are unchanged. Empty `CleanupErrors` does
+not mean graceful app shutdown or a joined final telemetry tally.
+
+This is a retained failed current-binary regression, not a replacement for or
+retraction of the historical `3ac8484` desktop requested/active PASS. Hidden UIA
+evidence is not visual acceptance; no PCM quality or latency pass follows.
+
+## Evidence and open gates
+
+Host evidence: `D:\coding\moiren-evidence\20261031-app-e1a7c2f`.
+The file-only archive `desktop-e1a7c2f-process1-evidence.zip` is35838 bytes,
+SHA256 `F27684E060243E6983B1913BD691B5623AC7746B262C74FA295D11034F7C6C1E`.
+Root and an independent read-only audit verify all25 payload files plus
+manifest, exact member set, CRCs, lengths and hashes. Target originals remain.
+
+## One-pass HWND and UIA diagnostic
+
+`desktop-e1a7c2f-process2` retains the same app, source, driver, graph and budgets.
+Only the helper adds exact process identity, top-level window inventory, fresh
+HWND binding, root/Settings runtime IDs and single-pass tree observations.
+Settings Invoke is submitted once; an exception causes observation, not a
+second action. The helper is32296 bytes, SHA256
+`109FE8F13FB5E3E0FE5E90BE6BDCECF1E25EAB9874241F7411517566976DD064`.
+Both author and root independently run PS5.1 parse/contract/wrong-host refusal
+fixtures. Cleanup and final acceptance remain identical to process1.
+
+The script runs UTC03:27:11.2667564 through03:27:27.8764063. App PID15476,
+creation time134378908325254895, session1 and HWND591536 remain identical at
+before-Start, after-Stop-button-found, pre-Settings and exception observation.
+Every inventory finds the same valid `Zed::Window`; every PrintWindow returns
+true and every fresh UIA root matches the owned PID/HWND. Node counts are
+21/21/21/1. The exact Settings button is exposed before Invoke, but the single
+Invoke throws ElementNotAvailable and the next tree contains only the root.
+No main HWND replacement or loss is observed at these sampled boundaries.
+This substantially narrows the stale-handle hypothesis, but does not prove
+every interleaving or the sole cause of the missing subtree.
+
+Native Start again reaches generation1/DAWN1056. No Apply is reached; the owned
+app again requires forced termination, source exits0, and final Completed=false.
+No diagnostic/cleanup error, remaining audio owner, boot change or endpoint
+volume/mute/default-role difference is retained. Original failure is unchanged.
+
+The local locked GPUI source clears a11y nodes/bounds/actions each frame, while
+cached prepaint/paint reuse omits that state. This provides a concrete separate
+candidate mechanism for missing cached controls. Historical3ac8484 already
+contains Mixer caching6737864, but not Graph-wide cachingfb4671f. A scoped
+accessibility-active cache bypass and genuine native regression are next;
+neither a fix nor complete causal explanation is claimed from source reading.
+
+Process2 archive is46091 bytes,31 payloads plus manifest, SHA256
+`C3837EF3C67EB34FF9B279CA81C03B459E6BFF5D6A86E450F3B281518816996C`.
+Root verifies CRCs, exact member set and every length/hash. After host-side
+verification, both terminal action-checked tasks are unregistered; target
+originals and archives remain. No periodic retry or task remains installed.
+
+The separate opt-in MIC native-period probe control is
+developed in an independent worktree. Smaller targets require actual period
+and delivery admission in both directions; no default or quality threshold is
+changed to obtain a pass. Full S1-S3 and calibrated sub-10-ms qualification
+remain open.
+
+## Accessibility-active cache bypass and actual desktop GREEN
+
+`bdf3766` integrates independently reviewed `421bc4e`. The four app cache
+entry points (toolbar, status, Graph controls and Mixer controls) bypass GPUI
+paint/layout caching only while `window.is_a11y_active()`. Their sizing/flex
+wrappers and inactive cache branches remain. No dependency, audio, driver or
+buffer default changes occur. Graph19, Mixer19 and measured Settings28 tests,
+strict app gpui-test all-target Clippy and formatting pass in the isolated
+author worktree; those tests explicitly cover the inactive performance path,
+not fabricated headless accessibility activation. Independent source review
+finds no blocking issue, while noting native geometry and activation coverage
+still require actual observations.
+
+Root builds the integrated release with jobs2 and a worktree-local target.
+The EXE is33715712 bytes, SHA256
+`61FA3D92357BC557CBF09299A4028456ABE9AA057AC04E13920889E9BCB338DF`,
+staged side by side at
+`D:\MoirenTest\20261031-app-a11y-cache\bin\moiren-app.exe`.
+Target size/hash, help, monitor-help and exact offline gain0.25 all pass with
+exit0. The inherited `EarlierHelpAttempt` receipt text describes the old
+e1a7c2f control, not an ambiguous attempt of this new binary; a separate
+provenance note clarifies this without overwriting the receipt.
+
+`desktop-a11y-process3` changes only app revision/hash and deploy/run identity
+from diagnostic2. Source/catalog/driver pins, graph, candidate, invocation,
+cleanup and final gate are unchanged. Root PS5.1 parsing, contract and real
+wrong-host refusal fixtures pass; an independent read-only helper safety
+review finds no blocker. Helper SHA256 is
+`FA73C8612FF1CE3D41454D1C984B423CC8EEDA92E2061AF885BA0D69706B945F`.
+
+The single limited console1 task launches UTC03:47:00; actual script execution
+is03:49:00.8354686 through03:49:32.2184778. The app logs actual Accessibility
+activation. PID9512, creation134378921421618925 and HWND722634 remain fixed
+at all four diagnostic boundaries; node counts are21/21/21/21, not a
+root-only failure. Settings Invoke returns, followed by Input buffers and
+actual measured Apply. Native logs show generation1 cleanup/reap, then
+generation2 Running on the same DAWN Shared Float32 stereo48k endpoint,
+actual native buffer1056. Exact requested/active strings match the owned
+Process PID5092/creation134378921419057287, selection1, target4096,
+capacity16384 and jitter96 at48kHz. This is a diagnostic candidate, not a
+lower-latency default or a latency measurement.
+
+Close, Stop, reopening Settings/Diagnostics and Quit all return. Native logs
+show generation2 cleanup/reap. App and source exit0 without forced termination;
+Completed=true and task result0. Cleanup/diagnostic error arrays and remaining
+owners are empty. Boot, render volume/mute and default roles remain unchanged;
+there is no driver installation, reboot or cache clean. After host archive
+verification, the exact terminal task is unregistered, with originals retained.
+
+Host evidence: `D:\coding\moiren-evidence\20261031-app-a11y-cache`.
+Archive `desktop-a11y-process3-evidence.zip` is67575 bytes,47 payload files
+plus manifest, SHA256
+`0157D759B35444757C26F2A21A1559C9FC36CFFCD90E1F87316EED272F69F7C4`.
+Root verifies CRCs, exact member set, manifest lengths/SHA256 and extracted
+bytes. The two preceding genuine native REDs remain retained unchanged.
+
+Independent archive audit passes31/31 checks, including all payload hashes,
+13 successful Invokes, matching requested/active source identity, both native
+owner retirement sequences and app/source exit0. Its JSON SHA256 is
+`86FEB941963BDA738AFFEC120EF6FDEE9C5D8D1D082000E41D2AE9B3FDDF45CB`.
+The after-Stop-button observation slightly precedes the native generation1
+started log; Apply returning also precedes asynchronous generation2 startup.
+UI state and Invoke returns are therefore not substituted for native Running
+timestamps. Native logs provide the independent state evidence. Endpoint
+equality is from before/after snapshots, not continuous settings monitoring.
+
+This is a same-scenario actual desktop regression GREEN consistent with the
+cache hypothesis; it does not prove every interleaving or render-frame tree.
+The helper retains PrintWindow requests, not frame-counter evidence or a
+visual screenshot acceptance. No waveform acquisition or calibrated physical
+latency acceptance follows. Sparse-source/source-origin limitations and the
+remaining S1-S3 quality/admission gates remain open.
+
+## Small mainline extraction and new platform build
+
+The independent mainline-only branch contains one67-addition/22-deletion
+commit across six app UI files, with no driver, audio, buffer or dependency
+change. PR49 head1c24c44 passes Ubuntu/Windows tests and strict Clippy,
+formatting and applicable workflow checks, then merges asd6067e7. Root main
+fast-forwards cleanly to that merge. Experimental integration9d537c7 merges
+the new main without importing the experimental branch into main. Existing
+measured-process work and unrelated graph-test timing changes stay preserved;
+the four accessibility cache paths are identical before and after this merge.
+
+The integration also includes the prior mainline PR46 gpui-pre-windows fork,
+locked ata35f60446110300f9d0856a99bcf2416d833e6ae. It skips hidden/minimized
+vsync invalidation. The old bdf3766 hidden-window native GREEN is therefore
+not substituted for current-platform native acceptance.
+
+Root builds9d537c7 release with jobs2 and a worktree-local target:33755136
+bytes, SHA256
+`A1630773CF76FCEE05B06D52D792CE3F1DB6D8A86967A5B17CA4A738B36C5F5D`.
+It deploys side by side to
+`D:\MoirenTest\20261031-app-main-9d537c7\bin\moiren-app.exe`.
+Target length/hash, help, monitor-help and exact offline gain0.25 output
+pass with exit0. This deployment smoke opens no native audio or GUI and is
+separate from the desktop acquisition. Driver609 and boot remain unchanged;
+no volume/mute/default write, installation or cache clean occurs.
+
+The subsequent task-scoped helper changes only provenance/deployment/run
+identity and one owned-window visibility handshake from process3. It starts
+hidden, binds the exact owned PID/HWND, requests ShowWindowAsync(4) exactly
+once, and polls at most5seconds for that HWND to be visible and noniconic.
+It records before/after foreground and refuses detected new app activation,
+with no SetForeground or activation fallback. This observation is not a
+continuous guarantee against transient foreground changes or a rendered-
+frame/visual acceptance. Original acquisition, quality guards and cleanup
+remain unchanged. Helper SHA256 is
+`D06A24B2287D45E79010030168C9E7280EBC7AFB312308FF72FDB95D339B1EB2`.
+PS5.1 parsing, retained contract, actual wrong-host refusal and an independent
+read-only safety review pass before the one limited interactive task launch.
+Host evidence root is `D:\coding\moiren-evidence\20261031-app-main-9d537c7`.
+
+`desktop-a11y-main4` actually executes UTC04:31:31.2782513 through
+04:32:03.4861776 after its UTC04:29:30 task launch. Task Running before
+script artifacts appear is not mistaken for a hung audio owner or retried.
+The owned app PID13380, creation134378946925279020 and HWND1114228 remain
+fixed across all four observations. The show request confirms visible/noniconic;
+foreground is66882 before and after, not the app HWND. Node counts are
+21/21/21/90, and all13 explicit UIA Invokes return successfully.
+
+Settings -> Input buffers -> measured Apply retains exact requested/active
+source PID5228/creation134378946922661609, selection1, target4096,
+capacity16384 and jitter96 at48kHz. Independent native logs show generation1
+Running, cleanup/reap, then generation2 Running; DAWN is Shared Float32
+stereo48kHz with actual native buffer1056. Stop retires/reaps generation2.
+Reopened Settings/Diagnostics and Quit complete. App/source exit0 without
+forced termination; Completed=true, task result0, cleanup/diagnostic errors
+and remaining owners are empty. This confirms this new-platform binary's
+bounded desktop scenario, not every accessibility frame or visual layout.
+
+Before/after render volume/mute/default roles and boot remain unchanged.
+The47-payload-plus-manifest ZIP is68580 bytes, SHA256
+`009616CC7CF320CA4B35B9DDF4D5909D0D38AC9F35672AB4C6779A77DE950A43`.
+Root verifies CRC, exact members and all lengths/hashes and extracts to
+`desktop-native4-verified`. Only after this verification, an exact task-action
+and successful-terminal check permits unregistering the one scheduled task.
+No probe/app owner or VAD child remains; root PnP is OK and driver609 Running.
+Target originals, old binaries and caches remain. No waveform or calibrated
+physical latency acceptance, lower default or S1-S3 completion follows.
+
+Independent memberwise/raw-log/UIA/catalog audit passes51 checks with0 failed;
+its JSON SHA256 is
+`36085DD217FD4E2F769140A4987073F48F3BB5A8C56A97E1A03E4CD061A2904A`.
+The source is intentionally stopped before its long schedule completes;
+submitted nonzero counters are not captured/recovered waveform evidence.
+Existing focus-without-accessibility-role INFO diagnostics remain in the log;
+successful Invokes do not prove every assistive-technology behavior. Root's
+post-merge app library suite passes595 with3 ignored, Graph19/Mixer19 and
+both exact graph/device-row VAD-direction regressions pass, and gpui-test
+all-target strict Clippy plus formatting pass.
+
+## Main PR50 integrated app, current-binary native regression
+
+Root main advances cleanly to `c47035c`, including PR50's graph meter overlay.
+Experimental merge `74f173f` preserves that mainline change without merging
+experimental PR26 into main. The correct routing remains virtual speaker/
+Playback = Moiren Input/Source; virtual microphone/MIC = Output/Sink. Fresh
+gpui-test checks at74f pass all20 graph tests (including the new meter-frame
+regression), the exact opposite-direction device-row test and formatting.
+This is a focused rerun, not a new full-library or full-Clippy receipt.
+
+Release app74f is33785344 bytes, SHA256
+`77208523C7CAB1BEDB5393424E8F120DBA4EB4E38DC38760E5916A1D39710935`.
+It is deployed side by side under `D:\MoirenTest\20261031-main74f-source-v2`.
+Target length/hash, help, monitor-help and exact offline gain0.25 pass before
+GUI/native acquisition. Driver609 remains unchanged. The same scenario retains
+the separately pinned old7f728 v1 source worker; this isolates the app update.
+
+Independent helper review confirms only deployment/run/revision/hash and source
+schedule-ID changes from desktop4. All functions, acquisition, no-activation
+handshake and finally acceptance are unchanged. PS5.1 parsing, retained contract
+and an actual wrong-host fixture pass. Helper SHA256 is
+`73FE488933E4CCD5A3FB70C8716A7C1A04376CB7D319E298956AC46525BF1BE3`.
+
+`desktop-main74f5` actually runs UTC04:54:42.971879 through04:55:14.496821.
+Scheduled-task Running state precedes script artifacts by about2minutes and is
+not mistaken for a reason to relaunch. Owned app5372, creation
+134378960841759004 and HWND853706 remain fixed. One ShowWindowAsync(4) confirms
+visible/noniconic, with foreground66882 unchanged before/after. Four UIA node
+counts are21/21/21/90 and all13 explicit Invokes return successfully.
+
+Requested/active Process source8484, creation134378960839309329, selection1,
+target4096/capacity16384/jitter96 match exactly. Native logs separately prove
+generation1 Running, its cleanup/reap, generation2 Running, then cleanup/reap
+after Stop. DAWN alone is opened Shared Float32 stereo48kHz, buffer1056.
+App/source exit0, task result0 and Completed=true; no forced/fallback termination,
+cleanup error, remaining owner or VAD child. Render volume/mute/default snapshots
+and boot remain unchanged. The exact terminal owned task is unregistered only
+after root archive verification; binaries, original artifacts and caches remain.
+Free space is C8.92GiB/D222.78GiB at cleanup; no cargo clean is warranted.
+
+Archive `desktop-main74f5-evidence.zip` is68080 bytes,47 payloads plus manifest,
+SHA256 `24A544750CE9A2729F9E653134AAC5D46B7A1DD9D4B17B932FDC80A0F7BA1AB9`.
+Root verifies CRC, exact membership and all original/extracted lengths/SHA256.
+Independent raw-log/UIA/catalog audit passes51 checks with0 failed; JSON SHA256
+is `E1D827D1C649660D542094D5F5BF61E8CC848F10BC779B48FFC41B975851C359`.
+Host evidence is `D:\coding\moiren-evidence\20261031-main74f-source-v2`.
+
+This is a bounded desktop-control/native-lifecycle regression on the current
+binary, not visual-frame acceptance of every meter. Source is deliberately
+stopped after about30seconds, before its299-marker schedule completes; this
+does not prove waveform continuity or complete schedule playback. Existing
+missing-accessibility-role INFO logs remain. Calibrated physical reference,
+continuous quality, lower-budget qualification and S1-S3 stay open.
+
+## Main PR51 integrated app and latest7023 desktop control
+
+Main `5c925ddfc02159a2a3d73a998b1ca6c9fc6c1e0c` includes PR51's exact
+bridge-write abandonment fix. Experimental source
+`7023b9a212e46d67bc3ff95ff76cdf6cd2e1f27b` includes that mainline change;
+this does not merge experimental PR26 wholesale into main. The earlier74f
+deployment and all preceding failures remain historical evidence above.
+
+Fresh release app7023 is33780736 bytes, SHA256
+`AB67439510570A6F758E4B1E2A051D985F8E67087D174895124D52F880160C1C`,
+deployed side by side at
+`D:\MoirenTest\20261031-latest7023-deployment\bin\moiren-app.exe`.
+Target size/hash, help, monitor-help and exact offline gain0.25 smokes pass
+with exit0 before the desktop acquisition. Installed driver610 remains
+`883a5be`, SYS SHA256
+`94EAE9BC2F1611C38F050977F7E740A09FE8C5B8EB19BC8780A82036FD0D32C7`.
+Driver source/build inputs are unchanged from that revision; only its dated
+STATUS documentation differs. No driver install, trust change or reboot is
+part of this app deployment/control.
+
+The helper changes only deployment/run identity and app/driver pins from the
+retained74f helper. It keeps the same source worker revision
+`7f7287982403468ec55aea1e4f909f03785f3d7c`, SHA256
+`410BE9F5419489B4EC7AC651F1E5435D13982D3D94316D9B5A46BD6FFEA44304`,
+at `D:\MoirenTest\20261031-mic-retirement-order\bin\e2e_latency_probe.exe`.
+Catalog pin, Process -> unity Bus -> DAWN graph, Engine256,13 native actions,
+one-shot nonactivating show, cleanup and final acceptance are unchanged.
+PS5.1 parse, retained contract and helper/launcher wrong-host fixtures pass.
+Frozen helper SHA256 is
+`DAEF74C3A729E68F670BE695077B04040ABF120AA1D510A321A8FC1853E6F8F1`.
+
+`desktop-latest7023-1` executes UTC09:33:20.7869812 through09:33:53.0056039.
+App PID14912/creation134379128020646644/session1 and HWND1181350 remain
+bound across the four observations, with UIA node counts21/21/21/90. All13
+actual Invokes return without an error. The after-Apply tree independently
+retains exact requested/active Process PID13644/creation134379128017736279,
+selection1, target4096/capacity16384/jitter96 at48kHz. Native logs separately
+show generation1 Running and cleanup/reap, generation2 Running, then normal
+Stop cleanup/reap. Actual DAWN output is Shared Float32 stereo48kHz with
+buffer1056 and no requested native period, not Exclusive256 or a minimum.
+
+Close, Stop, Settings/Diagnostics and Quit complete; app/source exit0,
+Completed=true and task result0. No forced/fallback termination, cleanup or
+diagnostic error, or remaining owner is recorded. After archive verification,
+the exact terminal task is removed; root PnP is OK and driver610 Running.
+Boot is unchanged. Before/after snapshots match all six default roles and12
+render endpoint master volume/mute values. This does not prove unchanged
+session/channel/capture controls or every transient setting. Isolated app
+preferences, project, window state and logs are intentionally written.
+
+Host evidence: `D:\coding\moiren-evidence\20261031-latest7023-deployment`.
+Archive `desktop-latest7023-1-evidence.zip` is68600 bytes,47 payloads plus
+manifest, SHA256
+`6CF27DD924C3B0293D3E45E4574C1936D3F61BC91682567919E0F59409D9A207`.
+Root and independent audit verify CRC, exact membership, every payload
+length/hash and all48 extracted members byte for byte. Independent receipt
+`desktop-latest7023-1-independent-acquired-archive-audit.json` has SHA256
+`88F99F8D51F8D3EAE621A0735E691682DDFFF3D598B3EFC8D7D1211B497C0F20`.
+Its PASS_WITH_LIMITS retains one encoding difference: the host loose
+`app-deployment.json` omits only the archive copy's three-byte UTF-8 BOM;
+parsed content and all remaining bytes match. Post-archive task cleanup is a
+separate retained receipt, not a ZIP member.
+
+This confirms the bounded current-app desktop-control/lifecycle scenario only.
+The source joins after30.6846186 seconds with its long schedule incomplete;
+ReleaseBuffer/nonzero submission counters are not captured waveform evidence.
+No complete native-counter export or independent PCM/reference is acquired.
+WaveformQualityComplete and PhysicalLatencyQualified remain false. No S1-S3
+completion, physical delay/minimum, sub10ms acceptance, default promotion,
+budget reduction or quality-gate change follows.

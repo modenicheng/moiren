@@ -1,5 +1,9 @@
 //! A fake at the native-IO boundary; the service, Engine host and job queues
 //! remain real in managed/tests.rs.
+#[cfg(windows)]
+#[path = "diagnostics_tests.rs"]
+mod diagnostics_tests;
+
 use super::*;
 use std::sync::{
     Mutex,
@@ -12,7 +16,7 @@ pub(crate) struct FakeAdapter {
     pub fail_remove: AtomicBool,
     pub uncertain_create: AtomicBool,
     pub transport_unavailable: AtomicBool,
-    defer_create: AtomicBool,
+    pub defer_create: AtomicBool,
     pub hold_open: AtomicBool,
     pub open_entered: AtomicBool,
     pub calls: Mutex<Vec<(String, Option<u64>, String)>>,
@@ -163,11 +167,18 @@ impl Adapter for FakeAdapter {
             .map(|record| NativeObservation {
                 intent: record.intent.clone(),
                 snapshot: (!self.uncertain_create.load(Ordering::Acquire)).then_some(record.stamp),
-                windows_name: None,
+                #[cfg(feature = "vad-integration-probe")]
+                native_removed: None,
                 resource: record.resource,
                 gate_open: record.gate,
                 allow_default: record.allow_default,
                 can_open: !self.transport_unavailable.load(Ordering::Acquire),
+                #[cfg(windows)]
+                diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: None,
             })
             .collect();
@@ -449,11 +460,18 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                     observations: vec![NativeObservation {
                         intent: intent.clone(),
                         snapshot: Some([1, 7, 1, 0, 5]),
-                        windows_name: None,
+                        #[cfg(feature = "vad-integration-probe")]
+                        native_removed: None,
                         resource: ExportResourceState::Present,
                         gate_open: false,
                         allow_default: false,
                         can_open: native_can_open(true, Some(snapshot)),
+                        #[cfg(windows)]
+                        diagnostics: None,
+                        #[cfg(windows)]
+                        diagnostic_provenance:
+                            moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                        windows_name: None,
                         error: None,
                     }],
                     errors: vec![],
@@ -506,11 +524,18 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
-                windows_name: None,
+                #[cfg(feature = "vad-integration-probe")]
+                native_removed: None,
                 resource: ExportResourceState::Present,
                 gate_open: true,
                 allow_default: false,
                 can_open: true,
+                #[cfg(windows)]
+                diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: Some("QUERY timed out; snapshot is last known".into()),
             }],
             errors: vec![],
@@ -553,11 +578,18 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
-                windows_name: None,
+                #[cfg(feature = "vad-integration-probe")]
+                native_removed: None,
                 resource: ExportResourceState::Present,
                 gate_open: false,
                 allow_default: false,
                 can_open: false,
+                #[cfg(windows)]
+                diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: None,
             }],
             errors: vec![],
@@ -597,11 +629,18 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                 observations: vec![NativeObservation {
                     intent: intent.clone(),
                     snapshot: Some([value as u64, 7, value as u64, 3, 5]),
-                    windows_name: None,
+                    #[cfg(feature = "vad-integration-probe")]
+                    native_removed: None,
                     resource: ExportResourceState::Absent,
                     gate_open: false,
                     allow_default: false,
                     can_open: false,
+                    #[cfg(windows)]
+                    diagnostics: None,
+                    #[cfg(windows)]
+                    diagnostic_provenance:
+                        moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                    windows_name: None,
                     error: None,
                 }],
                 errors: vec![],
@@ -644,6 +683,13 @@ fn windows_identity_projection_requires_current_healthy_native_identity() {
                 allow_default: false,
                 can_open: false,
                 error,
+                #[cfg(feature = "vad-integration-probe")]
+                native_removed: None,
+                #[cfg(windows)]
+                diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
             }],
             errors: vec![],
         };
@@ -655,8 +701,78 @@ fn windows_identity_projection_requires_current_healthy_native_identity() {
         assert!(!service.statuses(&graph)[0].gate_open);
         assert_eq!(service.statuses(&graph)[0].active_revision, None);
     }
+    #[cfg(windows)]
+    {
+        let mut cached = adapter_for_name_test(&intent);
+        cached.diagnostic_provenance =
+            moiren_windows_audio::vad::VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+        runtime.complete(
+            &mut service,
+            Ok(Batch {
+                observations: vec![cached],
+                errors: vec![],
+            }),
+        );
+        assert!(
+            service.windows_names.is_empty(),
+            "cached QUERY is not current name authority"
+        );
+        let mut invalid = adapter_for_name_test(&intent);
+        invalid.intent.channels = 0;
+        let errors = runtime.complete(
+            &mut service,
+            Ok(Batch {
+                observations: vec![invalid],
+                errors: vec![],
+            }),
+        );
+        assert!(!errors.is_empty());
+        assert!(
+            service.windows_names.is_empty(),
+            "rejected lifecycle observation cannot publish name evidence"
+        );
+    }
     runtime.complete(&mut service, Err("worker unavailable".into()));
     assert!(service.windows_names.is_empty());
+    service.windows_names.insert(
+        intent.endpoint_id,
+        WindowsEndpointNameObservation {
+            native_identity: [1, 7, 1],
+            observed_qpc_100ns: None,
+            mmdevice_id: Some("exact-id".into()),
+            name: Some("Exact name".into()),
+            error: None,
+        },
+    );
+    service.set_available(false);
+    assert!(
+        service.statuses(&graph)[0].windows_name.is_none(),
+        "unavailable adapter invalidates name evidence"
+    );
+}
+
+#[cfg(windows)]
+fn adapter_for_name_test(intent: &ExportIntent) -> NativeObservation {
+    NativeObservation {
+        intent: intent.clone(),
+        snapshot: Some([1, 7, 1, 0, 5]),
+        windows_name: Some(WindowsEndpointNameObservation {
+            native_identity: [1, 7, 1],
+            observed_qpc_100ns: None,
+            mmdevice_id: Some("exact-id".into()),
+            name: Some("Exact name".into()),
+            error: None,
+        }),
+        resource: ExportResourceState::Present,
+        gate_open: false,
+        allow_default: false,
+        can_open: false,
+        error: None,
+        #[cfg(feature = "vad-integration-probe")]
+        native_removed: None,
+        diagnostics: None,
+        diagnostic_provenance: moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+    }
 }
 
 #[cfg(feature = "vad-integration-probe")]
@@ -668,14 +784,160 @@ mod native_stamp {
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot,
-                windows_name: None,
+                #[cfg(feature = "vad-integration-probe")]
+                native_removed: None,
                 resource: ExportResourceState::Present,
                 gate_open: false,
                 allow_default: false,
                 can_open: true,
+                #[cfg(windows)]
+                diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: None,
             }],
             errors: vec![],
+        }
+    }
+
+    #[test]
+    fn current_accepted_generation_tracks_absence_separately_from_historical_removed() {
+        for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+            let (mut graph, mut intent) = runtime_graph();
+            intent.direction = direction;
+            graph.exports[0].direction = direction;
+            let mut runtime = Runtime::default();
+            let mut service = ExportService::default();
+            service.set_available(true);
+            let old = [11, 22, 33, 44, 55];
+            runtime.complete(&mut service, Ok(observed(&intent, Some(old))));
+            let baseline = service.statuses(&graph)[0].observation_generation.unwrap();
+            runtime.complete(&mut service, Ok(removed(&intent, old)));
+            let status = &service.statuses(&graph)[0];
+            let retirement = status.native_retirement.unwrap();
+            let first = status.observation_generation.unwrap();
+            assert!(first > baseline);
+            assert_eq!(status.resource, ExportResourceState::Absent);
+            #[cfg(windows)]
+            assert!(status.diagnostics.is_none());
+            assert_eq!(status.native_stamp, None);
+            assert!(!status.gate_open && status.active_revision.is_none());
+
+            runtime.complete(&mut service, Ok(removed(&intent, old)));
+            let status = &service.statuses(&graph)[0];
+            let second = status.observation_generation.unwrap();
+            assert!(second > first);
+            assert_eq!(status.native_retirement, Some(retirement));
+            assert_eq!(status.native_stamp, None);
+
+            let fresh = [12, 22, 34, 1, 1];
+            runtime.complete(&mut service, Ok(observed(&intent, Some(fresh))));
+            let status = &service.statuses(&graph)[0];
+            assert!(status.observation_generation.unwrap() > second);
+            assert_eq!(status.native_retirement, Some(retirement));
+            assert_eq!(status.native_stamp, Some(fresh));
+            assert!(!status.gate_open && status.active_revision.is_none());
+        }
+    }
+
+    #[test]
+    fn current_generation_is_cleared_by_missing_failed_rejected_or_unavailable_results() {
+        for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+            let (mut graph, mut intent) = runtime_graph();
+            intent.direction = direction;
+            graph.exports[0].direction = direction;
+            for failure in ["missing", "failed", "rejected", "unavailable", "adapter"] {
+                let mut runtime = Runtime::default();
+                let mut service = ExportService::default();
+                service.set_available(true);
+                let old = [11, 22, 33, 44, 55];
+                runtime.complete(&mut service, Ok(removed(&intent, old)));
+                let retirement = service.statuses(&graph)[0].native_retirement;
+                assert!(service.statuses(&graph)[0].observation_generation.is_some());
+                match failure {
+                    "missing" => {
+                        runtime.complete(
+                            &mut service,
+                            Ok(Batch {
+                                observations: vec![],
+                                errors: vec![],
+                            }),
+                        );
+                    }
+                    "failed" => {
+                        runtime.complete(&mut service, Err("worker failed".into()));
+                    }
+                    "rejected" => {
+                        let mut batch = removed(&intent, old);
+                        batch.observations[0].intent.channels = 3;
+                        runtime.complete(&mut service, Ok(batch));
+                    }
+                    "unavailable" => {
+                        let mut batch = observed(&intent, Some(old));
+                        batch.observations[0].resource = ExportResourceState::Unavailable;
+                        runtime.complete(&mut service, Ok(batch));
+                    }
+                    "adapter" => service.set_available(false),
+                    _ => unreachable!(),
+                }
+                let status = &service.statuses(&graph)[0];
+                assert_eq!(
+                    status.observation_generation, None,
+                    "{direction:?}/{failure}"
+                );
+                if failure != "adapter" {
+                    assert_eq!(status.native_retirement, retirement);
+                }
+                assert!(!status.gate_open && status.active_revision.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn stale_or_failed_native_results_cannot_republish_current_generation() {
+        for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+            let (mut graph, mut intent) = runtime_graph();
+            intent.direction = direction;
+            graph.exports[0].direction = direction;
+            for failure in [
+                "stale",
+                "query",
+                "absent_query",
+                "absent_gate",
+                "absent_open",
+            ] {
+                let mut runtime = Runtime::default();
+                let mut service = ExportService::default();
+                service.set_available(true);
+                let old = [11, 22, 33, 44, 55];
+                runtime.complete(&mut service, Ok(observed(&intent, Some(old))));
+                assert!(service.statuses(&graph)[0].observation_generation.is_some());
+                let mut batch = observed(&intent, Some(old));
+                match failure {
+                    "stale" => runtime.sequence = 0,
+                    "query" => batch.observations[0].error = Some("QUERY failed".into()),
+                    _ => {
+                        batch = removed(&intent, old);
+                        match failure {
+                            "absent_query" => {
+                                batch.observations[0].error = Some("QUERY failed".into());
+                            }
+                            "absent_gate" => batch.observations[0].gate_open = true,
+                            "absent_open" => batch.observations[0].can_open = true,
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                runtime.complete(&mut service, Ok(batch));
+                let status = &service.statuses(&graph)[0];
+                assert_eq!(
+                    status.observation_generation, None,
+                    "{direction:?}/{failure}"
+                );
+                assert!(!status.gate_open && status.active_revision.is_none());
+            }
         }
     }
 
@@ -848,5 +1110,149 @@ mod native_stamp {
         service.observe(observation).unwrap();
         assert_eq!(service.statuses(&graph)[0].native_stamp, None);
         assert!(!service.statuses(&graph)[0].gate_open);
+    }
+
+    #[test]
+    fn absent_projection_alone_is_not_direct_native_retirement_evidence() {
+        let (graph, intent) = runtime_graph();
+        let mut runtime = Runtime::default();
+        let mut service = ExportService::default();
+        service.set_available(true);
+        let stamp = [11, 22, 33, 44, 55];
+        runtime.complete(&mut service, Ok(observed(&intent, Some(stamp))));
+        let mut absent = observed(&intent, Some(stamp));
+        absent.observations[0].resource = ExportResourceState::Absent;
+        runtime.complete(&mut service, Ok(absent));
+        let status = &service.statuses(&graph)[0];
+        assert_eq!(status.resource, ExportResourceState::Absent);
+        assert_eq!(status.native_retirement, None);
+        assert_eq!(status.observation_generation, None);
+        assert_eq!(status.native_stamp, None);
+    }
+
+    #[test]
+    fn exact_native_removed_evidence_survives_replacement_without_authority() {
+        let (graph, intent) = runtime_graph();
+        let mut runtime = Runtime::default();
+        let mut service = ExportService::default();
+        service.set_available(true);
+        let old = [11, 22, 33, 44, 55];
+        runtime.complete(&mut service, Ok(observed(&intent, Some(old))));
+        let baseline_generation = service.observations[&intent.endpoint_id].generation;
+        let mut removed = observed(&intent, Some(old));
+        removed.observations[0].resource = ExportResourceState::Absent;
+        removed.observations[0].can_open = false;
+        removed.observations[0].native_removed = Some(old);
+        runtime.complete(&mut service, Ok(removed));
+        let retired = service.statuses(&graph)[0].native_retirement.unwrap();
+        assert!(retired.generation > baseline_generation);
+        assert_eq!(retired.native_stamp, old);
+        assert!(!service.statuses(&graph)[0].gate_open);
+        assert_eq!(service.statuses(&graph)[0].native_stamp, None);
+        let fresh = [12, 22, 34, 1, 1];
+        runtime.complete(&mut service, Ok(observed(&intent, Some(fresh))));
+        let status = &service.statuses(&graph)[0];
+        assert_eq!(status.native_retirement, Some(retired));
+        assert_eq!(status.native_stamp, Some(fresh));
+        assert!(!status.gate_open);
+        assert_eq!(status.active_revision, None);
+    }
+
+    fn removed(intent: &ExportIntent, stamp: DriverStamp) -> Batch {
+        let mut batch = observed(intent, Some(stamp));
+        let native = &mut batch.observations[0];
+        native.resource = ExportResourceState::Absent;
+        native.can_open = false;
+        native.native_removed = Some(stamp);
+        batch
+    }
+
+    #[test]
+    fn retirement_requires_exact_closed_error_free_native_evidence() {
+        let (graph, intent) = runtime_graph();
+        let old = [11, 22, 33, 44, 55];
+        let mutations: &[fn(&mut NativeObservation)] = &[
+            |n| n.native_removed = None,
+            |n| n.native_removed = Some([12, 22, 34, 44, 55]),
+            |n| n.snapshot = None,
+            |n| n.gate_open = true,
+            |n| n.can_open = true,
+            |n| n.resource = ExportResourceState::Removing,
+            |n| n.error = Some("cached after failed QUERY".into()),
+            |n| n.intent.channels = 3,
+            |n| {
+                n.snapshot = Some([0, 22, 33, 44, 55]);
+                n.native_removed = n.snapshot;
+            },
+        ];
+        for mutate in mutations {
+            let mut runtime = Runtime::default();
+            let mut service = ExportService::default();
+            service.set_available(true);
+            let mut batch = removed(&intent, old);
+            mutate(&mut batch.observations[0]);
+            runtime.complete(&mut service, Ok(batch));
+            assert_eq!(service.statuses(&graph)[0].native_retirement, None);
+        }
+    }
+
+    #[test]
+    fn retirement_is_historical_not_refreshed_by_repeated_removed_polls() {
+        let (graph, intent) = runtime_graph();
+        let mut runtime = Runtime::default();
+        let mut service = ExportService::default();
+        service.set_available(true);
+        let stamp = [11, 22, 33, 44, 55];
+        runtime.complete(&mut service, Ok(removed(&intent, stamp)));
+        let first = service.statuses(&graph)[0].native_retirement;
+        for _ in 0..5 {
+            runtime.complete(&mut service, Ok(removed(&intent, stamp)));
+            assert_eq!(service.statuses(&graph)[0].native_retirement, first);
+        }
+        runtime.complete(&mut service, Err("worker failed".into()));
+        assert_eq!(service.statuses(&graph)[0].native_retirement, first);
+        service.set_available(false);
+        assert_eq!(service.statuses(&graph)[0].native_retirement, None);
+        service.set_available(true);
+        runtime.complete(&mut service, Ok(removed(&intent, stamp)));
+        runtime.complete(
+            &mut service,
+            Ok(observed(&intent, Some([12, 23, 34, 0, 1]))),
+        );
+        assert_eq!(service.statuses(&graph)[0].native_retirement, None);
+    }
+
+    #[test]
+    fn retirement_history_is_bounded_across_documents() {
+        let (_, mut intent) = runtime_graph();
+        let mut runtime = Runtime::default();
+        let mut service = ExportService::default();
+        service.set_available(true);
+        for value in 1..=128 {
+            intent.endpoint_id = VirtualEndpointId::from_bytes([value; 16]);
+            runtime.complete(
+                &mut service,
+                Ok(removed(&intent, [value as u64, 7, value as u64, 0, 1])),
+            );
+            assert!(service.native_retirements.len() <= MAX_EXPORTS);
+        }
+        assert_eq!(service.native_retirements.len(), MAX_EXPORTS);
+        assert!(
+            !service
+                .native_retirements
+                .contains_key(&VirtualEndpointId::from_bytes([64; 16]))
+        );
+        assert!(
+            service
+                .native_retirements
+                .contains_key(&VirtualEndpointId::from_bytes([65; 16]))
+        );
+        assert!(
+            service
+                .native_retirements
+                .contains_key(&VirtualEndpointId::from_bytes([128; 16]))
+        );
+        assert!(service.observations.is_empty());
+        assert!(runtime.stamps.is_empty());
     }
 }

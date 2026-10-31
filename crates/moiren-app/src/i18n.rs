@@ -75,6 +75,26 @@ mod tests {
     }
 
     #[test]
+    fn vad_recovery_cap_translates_without_promising_latency() {
+        assert_eq!(
+            rust_i18n::t!("VAD recovery cap", locale = SIMPLIFIED_CHINESE),
+            "VAD 追赶周期上限"
+        );
+        assert_eq!(
+            rust_i18n::t!("Compatible (8 periods)", locale = SIMPLIFIED_CHINESE),
+            "兼容（8 周期）"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "%{periods} periods",
+                locale = SIMPLIFIED_CHINESE,
+                periods = 1
+            ),
+            "1 周期"
+        );
+    }
+
+    #[test]
     fn mixer_routes_translate_interpolation_and_meter_preferences() {
         assert_eq!(
             rust_i18n::t!(
@@ -90,5 +110,70 @@ mod tests {
             "峰值保持"
         );
         assert_eq!(rust_i18n::t!("No sends", locale = ENGLISH), "No sends");
+    }
+
+    #[test]
+    fn measured_input_actions_and_limits_translate_without_a_qualification_claim() {
+        assert_eq!(
+            rust_i18n::t!("Measured Process input", locale = SIMPLIFIED_CHINESE),
+            "实测进程输入"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Apply measured budget and restart",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "应用实测预算并重启音频"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Measured budget is active; physical latency remains unqualified.",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "实测预算已生效；物理端到端延迟仍未验收。"
+        );
+    }
+
+    #[test]
+    fn process_window_actions_translate_without_promising_admission_or_latency() {
+        assert_eq!(
+            rust_i18n::t!(
+                "Evaluate closed Process prefix",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "评估已闭合的进程历史前缀"
+        );
+        assert_eq!(
+            rust_i18n::t!("No violation in this window", locale = SIMPLIFIED_CHINESE),
+            "本窗口内未发现违规"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Not qualified: no sustained, waveform, sample-age or physical latency proof",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "未通过验收：不能证明持续运行、波形正确性、样本年龄或物理延迟"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Apply evaluated budget and start audio",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "应用已评估预算并启动音频"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Empirical whole-drain / gap / whole-wake",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "实测整批传输 / 间隔 / 整次唤醒"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "A stopped matching evaluated native candidate is required.",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "需要已停止且身份匹配的原生评估候选配置。"
+        );
     }
 }

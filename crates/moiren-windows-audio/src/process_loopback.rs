@@ -1,9 +1,21 @@
 //! Process-tree capture selection. Identity is resolved before owner startup and
 //! checked again by the owner; a recycled PID never silently changes the source.
 use crate::SessionDuration;
-use crate::capture::CaptureError;
-use serde::Serialize;
+use crate::capture::{CaptureError, PcmArtifactConfig};
+use serde::{Deserialize, Serialize};
 
+mod bridge;
+pub use bridge::ProcessBridgeOptions;
+mod measured;
+pub use measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
+mod replay;
+pub use replay::{
+    AssessedProcessReplay, LiveProcessPrefix, LiveProcessWindowReport, ObservedProcessTrace,
+    OfferedSupplyAssumption, ProcessReplayError, ProcessReplayReport, ProcessReplayStatus,
+    ProcessTraceArchive, ProcessTraceArtifact, ProcessTraceCollectionRefusal,
+    ProcessTraceCollector, ProcessTraceDocument, ProcessTraceOrigin, ReplayInventoryReport,
+    ReplayWindowAssessment, ReplayWindowPolicy, ReplayWindowStatus, ReplayWindowViolation,
+};
 #[cfg(windows)]
 pub(crate) mod activation;
 #[cfg(windows)]
@@ -16,10 +28,12 @@ pub use identity::inspect_process;
 pub(crate) use stream::{capture_format, process_loopback_stream_flags};
 #[cfg(windows)]
 pub use stream::{
-    prepare_process_capture_with_gate, start_process_capture, start_process_capture_with_stop,
+    prepare_process_capture_with_gate, prepare_process_capture_with_gate_returning_with_abort,
+    start_process_capture, start_process_capture_with_stop,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessIdentity {
     pub pid: u32,
     pub creation_time_100ns: u64,
@@ -33,6 +47,8 @@ impl ProcessIdentity {
 }
 #[derive(Debug, Clone)]
 pub struct ProcessLoopbackOptions {
+    pub artifact: Option<PcmArtifactConfig>,
+    pub bridge: ProcessBridgeOptions,
     pub latency_telemetry: crate::latency::TelemetryMode,
     pub target: ProcessIdentity,
     pub duration: SessionDuration,
@@ -45,6 +61,8 @@ impl ProcessLoopbackOptions {
         if self.target.pid == std::process::id() {
             return Err(CaptureError::FeedbackTarget);
         }
-        crate::capture::validate_duration(self.duration)
+        crate::capture::validate_duration(self.duration)?;
+        self.bridge.prepare()?;
+        Ok(())
     }
 }

@@ -196,8 +196,8 @@ impl SelectionState {
                         .into_iter()
                         .find(|r| r.endpoint_id == id)
                 })
-                .map(|r| InputSelection::Physical {
-                    endpoint_id: r.endpoint_id.clone(),
+                .map(|row| InputSelection::Physical {
+                    endpoint_id: row.endpoint_id,
                 }),
         }
     }
@@ -334,6 +334,10 @@ impl UiState {
             self.dispatch_error = Some(error.to_string());
             return;
         }
+        if let Err(error) = preferences.transport_latency.validate() {
+            self.dispatch_error = Some(error);
+            return;
+        }
         if self
             .try_dispatch(AppRequest::SetAudioSettings(preferences.audio.clone()))
             .is_err()
@@ -341,6 +345,14 @@ impl UiState {
             return;
         }
         self.max_block_frames = preferences.audio.processing.block_frames as usize;
+        if self
+            .try_dispatch(AppRequest::SetTransportLatency(
+                preferences.transport_latency,
+            ))
+            .is_err()
+        {
+            return;
+        }
         let _ = self.try_dispatch(AppRequest::SetLatencyProfile(preferences.latency_profile));
     }
 
@@ -673,12 +685,42 @@ pub fn display_label(
         NodeKind::Source => entry
             .source
             .as_ref()
-            .map(|source| source_name(snapshot, source))
+            .and_then(|source| {
+                (!snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .any(|export| export.enabled && export.binding == Some(entry.id)))
+                .then(|| source_name(snapshot, source))
+            })
+            .or_else(|| {
+                snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .find(|export| export.enabled && export.binding == Some(entry.id))
+                    .map(|export| export.name.clone())
+            })
             .unwrap_or_else(|| entry.label.clone()),
         NodeKind::Sink => entry
             .output_endpoint_id
             .as_ref()
-            .map(|endpoint| output_name(snapshot, endpoint))
+            .and_then(|endpoint| {
+                (!snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .any(|export| export.enabled && export.binding == Some(entry.id)))
+                .then(|| output_name(snapshot, endpoint))
+            })
+            .or_else(|| {
+                snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .find(|export| export.enabled && export.binding == Some(entry.id))
+                    .map(|export| export.name.clone())
+            })
             .unwrap_or_else(|| entry.label.clone()),
         _ => entry.label.clone(),
     }
@@ -717,3 +759,15 @@ mod tests;
 #[cfg(test)]
 #[path = "state/transport_tests.rs"]
 mod transport_tests;
+
+#[cfg(all(test, windows))]
+#[path = "state/boundary_tests.rs"]
+mod boundary_tests;
+
+#[cfg(all(test, windows))]
+#[path = "state/export_diagnostics_tests.rs"]
+mod export_diagnostics_tests;
+
+#[cfg(all(test, windows))]
+#[path = "state/native_live_tests.rs"]
+mod native_live_tests;

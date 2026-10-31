@@ -14,6 +14,7 @@ using HANDLE = void*;
 using PHANDLE = HANDLE*;
 using WDFDEVICE = void*;
 using GUID = unsigned;
+constexpr GUID TypedCategory = 0;
 constexpr NTSTATUS STATUS_SUCCESS = 0;
 constexpr NTSTATUS STATUS_INVALID_PARAMETER = -1;
 constexpr NTSTATUS RegistryFailure = -7;
@@ -54,6 +55,7 @@ struct Fixture {
     unsigned Freed = 0;
     unsigned Disabled = 0;
     bool FailRegistry = false;
+    PCWSTR ExpectedReference = VadAudioReference;
     WCHAR Link[2] = L"L";
 } F;
 
@@ -65,8 +67,8 @@ WDFDEVICE WdfDeviceWdmGetDeviceObject(WDFDEVICE device) { return device; }
 NTSTATUS IoRegisterDeviceInterface(WDFDEVICE, const GUID*, UNICODE_STRING* reference,
     UNICODE_STRING* link)
 {
-    Check(SameUnits(reference->Buffer, VadAudioReference),
-        "fixed interface identity remains unchanged");
+    Check(SameUnits(reference->Buffer, F.ExpectedReference),
+        "staging preserves the exact supplied interface identity");
     ++F.Registered;
     link->Buffer = F.Link;
     return STATUS_SUCCESS;
@@ -110,7 +112,25 @@ void RtlFreeUnicodeString(UNICODE_STRING* link)
     link->Buffer = nullptr;
 }
 
+// The native suite verifies the real property publication. This stub keeps
+// the portable test at the bounded REG_SZ staging boundary after integration.
+static NTSTATUS StageInterfaceName(const GUID&, UNICODE_STRING*,
+    const WCHAR (&)[MOIREN_VAD_MAX_NAME_UNITS], ULONG) { return STATUS_SUCCESS; }
+
 #include "interface-name-production.inc"
+
+static NTSTATUS StageForName(const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS],
+    UNICODE_STRING* link)
+{
+#ifdef MOIREN_INTERFACE_NAME_TYPED_STAGE
+    WCHAR reference[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(name, reference);
+    F.ExpectedReference = reference;
+    return StageInterface(nullptr, TypedCategory, L"association", 24, 0, name, reference, link);
+#else
+    return StageInterface(nullptr, TypedCategory, L"association", 24, 0, name, link);
+#endif
+}
 
 static void InvalidName(bool terminated)
 {
@@ -120,7 +140,7 @@ static void InvalidName(bool terminated)
     if (terminated) { name[0] = L'\0'; }
     F.ExpectedBytes = terminated ? sizeof(WCHAR) : sizeof(name);
     UNICODE_STRING link = {};
-    Check(StageInterface(nullptr, 0, L"association", 24, 0, name, &link) ==
+    Check(StageForName(name, &link) ==
         STATUS_INVALID_PARAMETER, "reject empty or unterminated name before registration");
     Check(F.Registered == 0 && F.Names == 0 && F.Handles == 0 && link.Buffer == nullptr,
         "invalid names never reach native DDIs or retain link ownership");
@@ -131,7 +151,7 @@ static void ValidName(const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS], ULONG byte
     F = {};
     F.ExpectedBytes = bytes;
     UNICODE_STRING link = {};
-    Check(StageInterface(nullptr, 0, L"association", 24, 0, name, &link) == STATUS_SUCCESS,
+    Check(StageForName(name, &link) == STATUS_SUCCESS,
         "valid bounded name stages successfully");
     Check(F.Registered == 1 && F.Names == 2 && F.Handles == 0 && F.Freed == 0,
         "both existing properties staged; success retains only the link");
@@ -155,7 +175,7 @@ int main()
     F = {};
     F.FailRegistry = true;
     UNICODE_STRING link = {};
-    Check(StageInterface(nullptr, 0, L"association", 24, 0, single, &link) == RegistryFailure,
+    Check(StageForName(single, &link) == RegistryFailure,
         "original registry failure is preserved");
     Check(F.Registered == 1 && F.Disabled == 1 && F.Freed == 1 && F.Handles == 0,
         "existing failure rollback still disables and frees the owned link");

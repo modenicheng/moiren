@@ -3,11 +3,84 @@ use crate::service::test_backend::{FakeBackend, State};
 use moiren_core::graph::NodeKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(windows)]
+#[path = "measured_tests.rs"]
+mod measured_tests;
+#[cfg(windows)]
+#[path = "process_trace_tests.rs"]
+mod process_trace_tests;
+#[path = "rename_tests.rs"]
+mod rename_tests;
+#[cfg(windows)]
+#[path = "retained_apply_tests.rs"]
+mod retained_apply_tests;
+#[path = "transport_tests.rs"]
+mod transport_tests;
+#[cfg(windows)]
+#[path = "windowed_tests.rs"]
+mod windowed_tests;
+
 struct Rig {
     driver: ManagedDriver,
     c: ServiceContext,
     pool: JobPool,
     state: Arc<State>,
+}
+
+#[cfg(windows)]
+#[test]
+fn observation_batching_never_retains_a_previous_native_owner() {
+    use crate::service::NativeSessionObservations;
+    use moiren_windows_audio::engine_backend::NativeObservationSnapshot;
+    let mut rig = Rig::new();
+    let generation = SessionGeneration(1);
+    let mut state = host::HostSnapshot {
+        host: host::HostState::Open,
+        execution: ExecutionState::Running,
+        desired_revision: 1,
+        active_revision: Some(1),
+        plan_revision: Some(1),
+        owner_generation: 1,
+        resource_generation: 1,
+        timeline: None,
+        update: UpdateState::Idle,
+        fault: None,
+        cleanup_error: None,
+    };
+    let cached = NativeSessionObservations {
+        generation,
+        observation: NativeObservationSnapshot {
+            owner_generation: 1,
+            running: true,
+            streams: Vec::new(),
+            bridges: Vec::new(),
+            boundary_probes: Vec::new(),
+            render_padding: Vec::new(),
+            process_delivery: Vec::new(),
+            virtual_clock: None,
+        },
+    };
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    rig.c.native_observations = Some(cached.clone());
+    let refreshed = rig.driver.observation_refreshed_at;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert_eq!(rig.c.native_observations, Some(cached.clone()));
+    assert_eq!(rig.driver.observation_refreshed_at, refreshed);
+    state.owner_generation = 2;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert!(
+        rig.c.native_observations.is_none(),
+        "same app generation must not expose an old native owner"
+    );
+    assert_ne!(rig.driver.observation_refreshed_at, refreshed);
+    rig.c.native_observations = Some(cached.clone());
+    state.execution = ExecutionState::WaitingForResources;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert!(rig.c.native_observations.is_none());
+    rig.c.native_observations = Some(cached);
+    state.execution = ExecutionState::Running;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert!(rig.c.native_observations.is_none());
 }
 
 #[test]
@@ -638,7 +711,7 @@ fn nondefault_f32_and_f64_settings_support_export_admission_after_confirmation()
     ] {
         let (mut rig, _) = export_rig();
         let backend = FakeBackend(rig.state.clone());
-        rig.driver.f64_factory = Some(Arc::new(move |_, _| Ok(Box::new(backend.clone()))));
+        rig.driver.f64_factory = Some(Arc::new(move |_, _, _, _| Ok(Box::new(backend.clone()))));
         let mut settings = AudioSettings::default();
         settings.processing.precision = precision;
         settings.processing.sample_rate = 44_100;

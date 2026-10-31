@@ -11,20 +11,27 @@ pub enum ProjectClock {
 }
 
 mod boundary;
+mod budget;
 mod clock;
+mod clock_observation;
 mod provider;
+mod reprime;
 
 pub use boundary::{
-    BoundaryProbe, BoundaryProbeSample, VirtualMicrophoneSink, VirtualPlaybackSource,
+    BoundaryProbe, BoundaryProbeSample, PlaybackBoundaryEvents, VirtualMicrophoneSink,
+    VirtualPlaybackSource,
 };
+pub use budget::{PreparedVirtualBudget, VirtualBufferOptions};
 #[allow(unused_imports)]
-pub use clock::{ClockError, ClockSchedule, ClockTick};
+pub use clock::{ClockError, ClockSchedule, ClockTick, DEBT_CAP_PERIODS};
+pub use clock_observation::{VirtualClockCounters, VirtualClockProbe, VirtualClockSnapshot};
 #[allow(unused_imports)]
 pub use provider::{
     PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,
     VirtualBoundaryRequest, VirtualResourceSession, VirtualSessions, bind_microphone_sink,
     bind_playback_source,
 };
+pub use reprime::PreparedMicrophoneReprime;
 
 #[cfg(windows)]
 mod owner;

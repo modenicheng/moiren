@@ -862,6 +862,48 @@ fn preferences_restore_every_latency_profile_and_default_older_documents() {
 }
 
 #[test]
+fn preferences_persist_transport_latency_and_startup_keeps_it_requested() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+
+    let directory = TestDirectory::new();
+    let path = directory.file("transport-preferences.json");
+    let transport = TransportLatencySettings {
+        process: Some(ExpertInputBuffer {
+            capacity_frames: 2048,
+            target_frames: 512,
+            jitter_frames: 32,
+            max_packet_frames: 128,
+            max_gap_frames: 128,
+            ..Default::default()
+        }),
+        vad: Some(ExpertInputBuffer {
+            capacity_frames: 4096,
+            target_frames: 1024,
+            jitter_frames: 64,
+            max_packet_frames: 240,
+            max_gap_frames: 256,
+            ..Default::default()
+        }),
+        vad_recovery_cap_periods: Some(1),
+        ..Default::default()
+    };
+    let preferences = AppPreferences {
+        transport_latency: transport,
+        ..Default::default()
+    };
+
+    save_preferences_at(&path, &preferences).unwrap();
+    let restored = load_preferences_at(&path).unwrap();
+    assert_eq!(restored.transport_latency, transport);
+
+    let startup = StartupDocuments::load_at(&path).unwrap();
+    let context = startup.into_context().unwrap();
+    assert_eq!(context.transport_latency, transport);
+    assert_eq!(context.active_transport_latency, None);
+    assert_eq!(context.core.phase(), crate::service::SessionPhase::Idle);
+}
+
+#[test]
 fn unbound_candidate_graph_saves_without_creating_an_active_session() {
     let directory = TestDirectory::new();
     let path = directory.file("unbound.moiren");

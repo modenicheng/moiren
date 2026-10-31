@@ -242,6 +242,8 @@ fn device_rows_project_vad_in_app_direction_without_reversing_physical_devices()
             enabled: true,
             binding: None,
         },
+        actual_name: None,
+        rename_pending: false,
         windows_name: Some(WindowsEndpointNameObservation {
             native_identity: [1, 2, 3],
             observed_qpc_100ns: None,
@@ -253,8 +255,14 @@ fn device_rows_project_vad_in_app_direction_without_reversing_physical_devices()
         allow_default: false,
         gate_open: false,
         active_revision: None,
+        #[cfg(windows)]
+        diagnostics: None,
         #[cfg(feature = "vad-integration-probe")]
         native_stamp: None,
+        #[cfg(feature = "vad-integration-probe")]
+        observation_generation: None,
+        #[cfg(feature = "vad-integration-probe")]
+        native_retirement: None,
     });
     let ids = |rows: Vec<DeviceRow>| rows.into_iter().map(|r| r.endpoint_id).collect::<Vec<_>>();
     assert_eq!(

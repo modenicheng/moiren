@@ -155,6 +155,10 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
     if (stream->Timer != nullptr) {
         (void)WdfTimerStop(stream->Timer, TRUE);
     }
+    auto child = VadChild(stream->Device);
+    // Hold the passive submission drain before publishing a new epoch: a
+    // freshly stamped Paused request must not enter this stop's purge.
+    VadPcmDrainGuard drain(child->Shared, child->Index);
     KeAcquireSpinLock(&stream->State, &irql);
     if (reset) {
         // Shared by ReleaseHardware, FreeRtPackets and cleanup. The epoch must
@@ -165,6 +169,10 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
         stream->TimerRing.RingFrameOffset = 0;
         stream->TimerRing.PresentedFrames = 0;
         stream->TimerRing.SegmentSequence = 0;
+    } else {
+        // Pause cancels PCM too, but must preserve packet numbering and the
+        // completed packet's capture timestamp rather than ResetPacketClock.
+        VadPcmDiscontinuity(stream->Device, stream->Generation, true);
     }
     // Deliberately not QuiesceStreamBuffers: across a pause (reset=false) a
     // packet completed before the stop must still deliver its capture time, so
@@ -176,8 +184,7 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
     KeReleaseSpinLock(&stream->State, irql);
     VadAudioDescribeStream(stream->Device, stream->Generation,
         stream->BlockAlign, stream->PacketFrames, MOIREN_VAD_STREAM_PAUSED);
-    auto child = VadChild(stream->Device);
-    VadPcmPurge(child->Shared, child->Index, true);
+    drain.Purge(true);
 }
 
 VAD_PAGE void VadAudioStopDeviceLocked(VAD_AUDIO_DEVICE* device)
@@ -207,6 +214,135 @@ static void Schedule(VAD_AUDIO_STREAM* stream, uint64_t now)
     (void)WdfTimerStart(stream->Timer, schedule.Due);
 }
 
+// State is held. The batch contains detached post-copy evidence, never an MDL.
+static vad::audio::CaptureNotifyObservation RecordEventCaptureCopy(VAD_AUDIO_STREAM* stream, ULONG index,
+    uint64_t sequence, uint64_t qpc, const VAD_PCM_BATCH& batch)
+{
+    vad::audio::CaptureNotifyObservation notification = {};
+    auto child = VadChild(stream->Device);
+    auto shared = child->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[child->Index];
+    if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
+        notification = {slot.AdmissionGeneration, sequence, qpc, stream->PacketCount, 0, true, false};
+        auto& diagnostic = shared->CaptureDiagnostics[child->Index];
+        diagnostic.RecordNoCopyEvent(stream->Generation, notification, index,
+            stream->PacketSize, stream->Packets[index].RtPacketSize,
+            stream->Packets[index].RtPacketOffset, stream->LastCaptureStart);
+        if (batch.CaptureCopied && batch.CapturePrefix.Bytes != 0) {
+            diagnostic.RecordCopy(stream->Generation,
+                reinterpret_cast<uint64_t>(stream->Stream),
+                {batch.CaptureGateEpoch, sequence, batch.CaptureRequestSequence, qpc,
+                    stream->PacketCount, stream->PacketSize, stream->Packets[index].RtPacketSize,
+                    stream->Packets[index].RtPacketOffset, 0, batch.CapturePrefix, true});
+        }
+        notification.NonzeroCopy = diagnostic.NeedsNonzeroNotify(notification);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    return notification;
+}
+
+// Called at the original notification boundary, after PCM completion and with
+// State released. Keep the pre-completion gate, not a later gate's identity.
+static void NotifyPacketComplete(VAD_AUDIO_STREAM* stream, uint64_t packet, uint64_t qpc,
+    vad::audio::CaptureNotifyObservation observation)
+{
+    // Only the selected first nonzero event packet needs these two samples.
+    // No buffer access, extra lock or policy change precedes the actual call.
+    const auto enterQpc = observation.NonzeroCopy ?
+        static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart) : 0;
+    const auto status = AcxRtStreamNotifyPacketComplete(stream->Stream, packet, qpc);
+    const auto returnQpc = observation.NonzeroCopy ?
+        static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart) : 0;
+    if (!observation.Observed) { return; }
+    observation.Status = static_cast<uint32_t>(status);
+    auto child = VadChild(stream->Device);
+    auto shared = child->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[child->Index];
+    if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
+        shared->CaptureDiagnostics[child->Index].RecordNotify(
+            stream->Generation, observation, enterQpc, returnQpc);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+static vad::NativePlaybackLayout NativePlaybackLayoutFor(VAD_AUDIO_STREAM* stream)
+{
+    vad::NativePlaybackLayout layout = {};
+    layout.Path = stream->PacketCount == 1 ? vad::NativePlaybackPath::TimerCopy :
+        vad::NativePlaybackPath::EventRead;
+    layout.PacketCount = stream->PacketCount; layout.PacketSize = stream->PacketSize;
+    layout.PacketFrames = stream->PacketFrames; layout.AllocationBytes = stream->AllocationBytes;
+    layout.MappedBytes = stream->PacketCount == 1 ? stream->TimerRing.MappedBytes : 0;
+    layout.MappedFrames = stream->PacketCount == 1 ? stream->TimerRing.MappedFrames : 0;
+    for (ULONG i = 0; i < stream->PacketCount && i < 2; ++i) {
+        layout.RtPacketSize[i] = stream->Packets[i].RtPacketSize;
+        layout.RtPacketOffset[i] = stream->Packets[i].RtPacketOffset;
+    }
+    return layout;
+}
+
+// Called under existing Shared + State locks, never by a capture/MIC copy.
+static void RecordNativePlaybackLocked(VAD_AUDIO_STREAM* stream, vad::NativePlaybackScan scan,
+    const void* native, const void* destination)
+{
+    const auto child = VadChild(stream->Device);
+    const auto& slot = child->Shared->Slots[child->Index];
+    if (slot.Id != child->Id || slot.StreamGeneration != stream->Generation ||
+        slot.Intent != MOIREN_VAD_INTENT_PLAYBACK) { return; }
+    auto& d = child->Shared->NativePlaybackDiagnostics[child->Index];
+    const auto identity = vad::PlaybackCopyIdentity::From(slot, stream->PacketFrames, stream->BlockAlign);
+    const bool admitted = slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0 &&
+        slot.GateOpen != 0 && slot.StreamState == MOIREN_VAD_STREAM_RUNNING;
+    d.SealCurrent(identity, admitted);
+    if (!admitted || d.Seal != vad::NativePlaybackSeal::None) { return; }
+    if (!d.Observed) {
+        // A transient system/format-probe stream must not consume the one-shot
+        // native record. The accepted READ witness chooses this exact epoch.
+        const auto& read = child->Shared->PlaybackCopyDiagnostics[child->Index];
+        if (!read.Observed || !read.Identity.Same(identity)) { return; }
+        d.SelectingRead = read.FirstScan;
+    }
+    d.Observe(identity, NativePlaybackLayoutFor(stream), scan, native, destination, [] {
+        LARGE_INTEGER frequency;
+        const auto qpc = KeQueryPerformanceCounter(&frequency);
+        return vad::PlaybackCopyTime{static_cast<uint64_t>(qpc.QuadPart),
+            static_cast<uint64_t>(frequency.QuadPart)};
+    });
+}
+
+// Replace only this opt-in event call's VadPcmTransfer wrapper. Keep its same
+// rundown and single Shared-lock boundary; do not add another lock to the DPC.
+static void RecordEventNativePlayback(VAD_AUDIO_STREAM* stream, ULONG index, void* buffer,
+    uint64_t sequence, uint64_t qpc, VAD_PCM_BATCH* batch)
+{
+    NT_ASSERT(batch->Shared == nullptr && batch->Completions.Count == 0);
+    const auto child = VadChild(stream->Device);
+    const auto shared = child->Shared;
+    if (!ExAcquireRundownProtection(&shared->PcmRundown)) { return; }
+    batch->Shared = shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[child->Index];
+    if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
+        const auto offset = index == 0 ? stream->Packets[0].RtPacketOffset : 0;
+        const bool eosApplied = stream->HasEos && stream->EosPacket == static_cast<ULONG>(sequence);
+        // Observation is after the original EOS truncation, not before it.
+        RecordNativePlaybackLocked(stream, {sequence, sequence, 0, qpc, 0, 0,
+            offset, offset, stream->PacketFrames, index, 0,
+            (stream->HasEos ? 1u : 0u) | (eosApplied ? 2u : 0u),
+            stream->EosPacket, stream->EosLength}, buffer, buffer);
+        VadPcmTransferLocked(shared, child->Index, buffer, stream->PacketFrames,
+            stream->BlockAlign, sequence, qpc, batch);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+#endif
+
 // State is held. The endpoint lock spans epoch validation and each bounded
 // copy; gate closure therefore cannot acknowledge revocation while stale
 // scratch is being copied. Requests retrieved here complete in this DPC.
@@ -235,8 +371,26 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
             auto scratch = static_cast<PUCHAR>(stream->TimerScratch) + span.PacketByteOffset;
             if (stream->Capture) {
                 RtlCopyMemory(native, scratch, span.ByteCount);
+                auto& diagnostic = shared->CaptureDiagnostics[child->Index];
+                if (stream->TimerPacket.CaptureCopied && diagnostic.NeedsCopy()) {
+                    diagnostic.RecordCopy(stream->Generation,
+                        reinterpret_cast<uint64_t>(stream->Stream),
+                        {stream->TimerPacket.GateEpoch, segment.PacketSequence,
+                            stream->TimerPacket.RequestSequence, now, stream->PacketCount,
+                            stream->PacketSize, stream->Packets[0].RtPacketSize,
+                            span.RingByteOffset, span.PacketByteOffset,
+                            vad::audio::CapturePrefix::ReadBack(scratch, native, span.ByteCount), true});
+                }
             } else {
                 RtlCopyMemory(scratch, native, span.ByteCount);
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+                const auto relative = span.PacketByteOffset - segment.PacketOffsetFrames * stream->BlockAlign;
+                RecordNativePlaybackLocked(stream, {segment.Sequence, segment.PacketSequence,
+                    segment.StartFrame + relative / stream->BlockAlign, now, 0, 0,
+                    span.RingByteOffset, span.PacketByteOffset, span.ByteCount / stream->BlockAlign,
+                    0, 0, 0, 0, 0},
+                    native, scratch);
+#endif
             }
         },
         [&](const vad::audio::TimerDrivenCopySpan& span) {
@@ -247,6 +401,10 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
             VadPcmTransferLocked(shared, child->Index, stream->TimerScratch,
                 stream->PacketFrames, stream->BlockAlign,
                 segment.PacketSequence, now, batch);
+            if (stream->Capture) {
+                stream->TimerPacket.CaptureCopied = batch->CaptureCopied;
+                stream->TimerPacket.RequestSequence = batch->CaptureRequestSequence;
+            }
         });
     NT_ASSERT(copied);
     UNREFERENCED_PARAMETER(copied);
@@ -254,12 +412,14 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
 }
 
 // State is held. One callback consumes at most one logical packet of elapsed
-// time, split only at logical/native boundaries. Longer stalls discard time;
-// ordinary timer jitter must not repeatedly erase an incomplete PCM packet.
+// time, split only at logical/native boundaries. Short packets admit one timer
+// quantum of residual debt and redue without relabeling PCM; longer stalls
+// discard time. Ordinary jitter must not repeatedly erase incomplete PCM.
 _IRQL_requires_(DISPATCH_LEVEL)
 static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
     VAD_PCM_BATCH* batch)
 {
+    const auto clockBefore = stream->Clock;
     const auto schedule = vad::audio::PlanTimerDrivenStep(
         stream->Clock, stream->TimerRing, now);
     if (!schedule.Valid) {
@@ -268,7 +428,13 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
         return;
     }
     if (schedule.Rebased) {
-        VadPcmDiscontinuity(stream->Device, stream->Generation);
+        const auto observation = vad::audio::ObserveClockRebase(
+            vad::audio::ClockRebaseReason::TimerStall, clockBefore,
+            stream->Clock, now, stream->PacketFrames, stream->PacketCount,
+            stream->CompletedPackets, stream->TimerRing.PresentedFrames,
+            vad::audio::TimerDrivenPendingLimit(stream->TimerRing));
+        VadAudioRebaseDiscontinuity(stream->Device, stream->Generation,
+            reinterpret_cast<uint64_t>(stream->Stream), observation);
         QuiesceStreamBuffers(stream);
     }
     ULONG remaining = schedule.Frames;
@@ -294,6 +460,7 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
 _Use_decl_annotations_
 VOID VadAudioTimer(WDFTIMER timer)
 {
+    const auto dpcQpc = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
     VAD_PCM_BATCH batch = {};
     auto timerContext = VadAudioTimerContext(timer);
     auto stream = timerContext->Stream;
@@ -302,11 +469,16 @@ VOID VadAudioTimer(WDFTIMER timer)
     }
     KIRQL irql;
     KeAcquireSpinLock(&stream->State, &irql);
+    const auto stateQpc = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
     if (!stream->Running || stream->Packets == nullptr || stream->PacketCount == 0) {
         KeReleaseSpinLock(&stream->State, irql);
         return;
     }
     const auto now = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
+    batch.Callback = {dpcQpc, stateQpc,
+        stream->PacketCount == 1 ? 0 : vad::audio::FrameQpc(stream->Clock,
+            (stream->CompletedPackets + 1) * stream->PacketFrames),
+        reinterpret_cast<uint64_t>(stream->Stream), stream->Clock.Frequency};
     if (!VadAudioIsStreamCurrent(stream->Device, stream->Generation)) {
         vad::audio::PauseClock(stream->Clock, now);
         stream->Running = FALSE;
@@ -330,20 +502,28 @@ VOID VadAudioTimer(WDFTIMER timer)
     const ULONG index = static_cast<ULONG>(stream->CompletedPackets % stream->PacketCount);
     const auto packet = stream->CompletedPackets;
     ++stream->CompletedPackets;
+    const auto clockBefore = stream->Clock;
     const auto schedule = vad::audio::SchedulePacket(stream->Clock,
         stream->CompletedPackets, stream->PacketFrames, now);
     stream->LastCaptureStart = schedule.CompletedStartQpc;
     if (schedule.Rebased) {
         // Invalidate queued old-epoch PCM before it can reach a resumed packet.
-        VadPcmDiscontinuity(stream->Device, stream->Generation);
+        const auto observation = vad::audio::ObserveClockRebase(
+            vad::audio::ClockRebaseReason::EventDeadline, clockBefore,
+            stream->Clock, now, stream->PacketFrames, stream->PacketCount,
+            stream->CompletedPackets, stream->TimerRing.PresentedFrames);
+        VadAudioRebaseDiscontinuity(stream->Device, stream->Generation,
+            reinterpret_cast<uint64_t>(stream->Stream), observation);
         stream->RenderReadyMask = 0;
         ZeroPackets(stream);
     }
+    vad::audio::CaptureNotifyObservation notification = {};
     auto buffer = PacketAddress(stream, index);
     if (stream->Capture) {
         RtlZeroMemory(buffer, stream->PacketSize);
         VadPcmTransfer(stream->Device, stream->Generation, buffer,
             stream->PacketFrames, stream->BlockAlign, packet, now, &batch);
+        notification = RecordEventCaptureCopy(stream, index, packet, now, batch);
     } else {
         const ULONG ready = 1u << index;
         if ((stream->RenderReadyMask & ready) != 0) {
@@ -351,8 +531,12 @@ VOID VadAudioTimer(WDFTIMER timer)
                 RtlZeroMemory(static_cast<PUCHAR>(buffer) + stream->EosLength,
                     stream->PacketSize - stream->EosLength);
             }
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+            RecordEventNativePlayback(stream, index, buffer, packet, now, &batch);
+#else
             VadPcmTransfer(stream->Device, stream->Generation, buffer,
                 stream->PacketFrames, stream->BlockAlign, packet, now, &batch);
+#endif
         }
         // Discard after the bounded copy. A reused/underflow packet is silence.
         RtlZeroMemory(buffer, stream->PacketSize);
@@ -361,7 +545,7 @@ VOID VadAudioTimer(WDFTIMER timer)
     (void)WdfTimerStart(stream->Timer, schedule.Due);
     KeReleaseSpinLock(&stream->State, irql);
     VadPcmComplete(&batch);
-    (void)AcxRtStreamNotifyPacketComplete(stream->Stream, packet, now);
+    NotifyPacketComplete(stream, packet, now, notification);
 }
 
 // WDF deletes children before the stream's cleanup. Its timer cleanup is called
@@ -499,6 +683,7 @@ NTSTATUS VadAudioStreamRun(ACXSTREAM stream)
     }
     VadAudioDescribeStream(context->Device, context->Generation,
         context->BlockAlign, context->PacketFrames, MOIREN_VAD_STREAM_RUNNING);
+    VadAudioRecordRun(context->Device, context->Generation, now);
     Schedule(context, now);
     KeReleaseSpinLock(&context->State, irql);
     return STATUS_SUCCESS;
@@ -591,6 +776,40 @@ NTSTATUS VadAudioGetCurrentPacket(ACXSTREAM stream, PULONG current)
     return STATUS_SUCCESS;
 }
 
+// State is held, so the selected native packet cannot be reused during this
+// bounded readback. The shared gate is the query's gate, not inferred copy provenance.
+static void RecordCapturePacket(VAD_AUDIO_STREAM* stream, NTSTATUS status,
+    uint64_t deliveredBefore, ULONG packet, uint64_t packetStartQpc)
+{
+    if (!stream->Capture) { return; }
+    auto child = VadChild(stream->Device);
+    auto shared = child->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[child->Index];
+    auto& diagnostic = shared->CaptureDiagnostics[child->Index];
+    if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation &&
+        diagnostic.NeedsPacket(static_cast<uint32_t>(status))) {
+        vad::audio::CapturePacketObservation observation = {};
+        observation.GateEpoch = slot.AdmissionGeneration;
+        observation.Completed = stream->CompletedPackets;
+        observation.DeliveredBefore = deliveredBefore;
+        observation.DeliveredAfter = stream->DeliveredPackets;
+        observation.PacketStartQpc = packetStartQpc;
+        observation.Status = static_cast<uint32_t>(status);
+        observation.Packet = packet;
+        observation.PacketCount = stream->PacketCount;
+        if (NT_SUCCESS(status)) {
+            observation.Index = packet % stream->PacketCount;
+            observation.OffsetBytes = stream->Packets[observation.Index].RtPacketOffset;
+            observation.Prefix = vad::audio::CaptureReadPrefix::Read(
+                PacketAddress(stream, observation.Index), stream->PacketSize);
+        }
+        diagnostic.RecordPacket(stream->Generation, observation);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
 _Use_decl_annotations_
 NTSTATUS VadAudioGetCapturePacket(ACXSTREAM stream, PULONG last,
     PULONGLONG qpc, PBOOLEAN more)
@@ -602,6 +821,7 @@ NTSTATUS VadAudioGetCapturePacket(ACXSTREAM stream, PULONG last,
     *more = FALSE;
     KIRQL irql;
     KeAcquireSpinLock(&context->State, &irql);
+    const auto deliveredBefore = context->DeliveredPackets;
     uint32_t packet = 0;
     NTSTATUS status = STATUS_DEVICE_NOT_READY;
     if (context->PacketCount != 0 &&
@@ -615,6 +835,7 @@ NTSTATUS VadAudioGetCapturePacket(ACXSTREAM stream, PULONG last,
         *qpc = context->LastCaptureStart;
         status = STATUS_SUCCESS;
     }
+    RecordCapturePacket(context, status, deliveredBefore, *last, *qpc);
     KeReleaseSpinLock(&context->State, irql);
     return status;
 }
@@ -632,6 +853,19 @@ NTSTATUS VadAudioGetPosition(ACXSTREAM stream, PULONGLONG blocks,
         context->TimerRing.PresentedFrames : vad::audio::Position(context->Clock, now);
     *blocks = frames;
     *qpc = now;
+    if (context->Capture && context->Packets != nullptr && context->PacketCount != 0) {
+        auto child = VadChild(context->Device);
+        KIRQL sharedIrql;
+        KeAcquireSpinLock(&child->Shared->Lock, &sharedIrql);
+        const auto& slot = child->Shared->Slots[child->Index];
+        auto& diagnostic = child->Shared->CaptureDiagnostics[child->Index];
+        if (slot.Id == child->Id && slot.StreamGeneration == context->Generation) {
+            diagnostic.RecordPosition(context->Generation,
+                reinterpret_cast<uint64_t>(context->Stream),
+                {slot.AdmissionGeneration, frames, now, context->PacketCount, true});
+        }
+        KeReleaseSpinLock(&child->Shared->Lock, sharedIrql);
+    }
     KeReleaseSpinLock(&context->State, irql);
     return STATUS_SUCCESS;
 }

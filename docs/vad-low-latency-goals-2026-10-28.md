@@ -12,7 +12,10 @@ The canonical driver qualification verdict remains in
 
 - Make the minimum `Input -> Bus -> Output` route as low-latency as possible,
   aiming for measured end-to-end latency below 10 ms with stable, real output.
-  The graph contains no additional DSP or deliberate delay nodes.
+  The graph contains no additional DSP or deliberate delay nodes. Per the
+  2026-10-31 user amendment, if this is demonstrated impossible under the
+  current device conditions, pursue the defensible theoretical minimum and
+  best achievable stable setting instead, with the evidence limits below.
 - Do not trade continuity for a better number: count silence, short reads,
   dropped/duplicated frames, discontinuities, resets, and correlation failures.
 - Users must be able to change a VAD endpoint's displayed name. Preserve the
@@ -22,10 +25,45 @@ The canonical driver qualification verdict remains in
 - Build and prepare on the development host; install and debug the kernel
   driver only on the separate test target. The existing VMware guest is the
   functional driver target, not permission to install the driver on the host.
-- Keep each implementation/test/documentation slice atomic and push promptly.
+- Keep each implementation/test/documentation slice atomic locally. Per the
+  2026-10-29 user update, batch pushes at meaningful verified integration
+  checkpoints to avoid triggering CI for every small commit.
   Do not stage unrelated screenshots, JSON, or other user work.
 - The VM has a roughly 64 GB system disk. Delete obsolete, owned scratch
   artifacts after verified archival; do not accumulate build trees or binaries.
+
+### 2026-10-31 target-device fallback
+
+Sub-10-ms remains the preferred objective, not a reason to stop useful
+development or repeatedly retest an unrelated limitation. The user accepts
+the minimum achievable under the current device conditions only after the
+sub-10-ms limitation is evidenced; no such impossibility is established yet.
+
+- Declare the exact device, driver, source path, native mode/rate/period,
+  graph, load, measurement endpoints and uncertainty for every conclusion.
+  Keep VAD/Process and internal-software/physical results separate. A result
+  for one mode/device/path is not a result for every supported configuration.
+- Distinguish a justified theoretical lower bound, the minimum observed stable
+  configuration and the unresolved gap between them. Do not call the current
+  best run the theoretical minimum or add overlapping nominal buffer/period
+  quantities as if they were independently measured pipeline delays.
+- Support an irreducible limiting boundary with calibrated measurement and/or
+  a validated device/driver timing constraint for the declared configuration.
+  Account for uncertainty and demonstrate which remaining controls can or
+  cannot reduce it. One failed shallow-buffer run, API minimum period, current
+  Shared default, VM jitter or incomplete calibration does not prove that
+  sub-10-ms physical latency is impossible.
+- Reduce removable queue/phase/processing overhead one admitted configuration
+  at a time. If a lower bound is not defensible, report the best stable result
+  and remaining unknowns rather than manufacturing an impossibility verdict.
+- Keep real non-silent output, continuity, cleanup and sustained-load gates
+  unchanged. Correctness-mode jitter grace is diagnostic only; it neither
+  permits production audio latency nor hides underruns, loss or resets.
+- Once the evidence-gated fallback applies, report achieved p50/p95/p99/max,
+  uncertainty, the lower bound, remaining gap and owning boundary. A result
+  above10ms may meet this conditional device-limited objective, but must never
+  be labelled a sub-10-ms pass. Do not silently enlarge a buffer or move the
+  measurement boundary to produce a better claim.
 
 ## Inspected state
 
@@ -159,7 +197,8 @@ topology in core and preparation/runtime contracts in engine.
 
 - Commit/push this requirement and audit record separately from code.
 - Before each implementation slice, check worktree state; stage explicit paths,
-  run relevant checks, commit, push and verify the remote hash.
+  run relevant checks and commit locally. Batch remote updates at verified
+  integration checkpoints, then verify the remote hash.
 - Before deployment, record host/guest builds, loaded package/SYS hash, binary
   hash, active settings, installed-driver status and free space.
 
@@ -252,8 +291,10 @@ test driver on the development host to bypass this constraint.
 - Require no unexplained steady-state drops, underruns, resets, silent holes or
   signal-analysis failures. Expected fault-injection loss is a separate verdict.
 - If native client/device cadence prevents the target, retain the best stable
-  setting and report the measured floor and owning boundary. Do not hide failure
-  by increasing buffer size or changing a threshold in the same experiment.
+  setting and apply the evidence-gated target-device fallback above. Report the
+  measured floor, justified lower bound, remaining gap and owning boundary.
+  Do not hide failure by increasing buffer size or changing a threshold in the
+  same experiment.
 - Run focused Rust/driver tests per slice; complete relevant fmt/check/test,
   strict Clippy and Windows/Ubuntu/Miri CI before integration. Kernel changes
   additionally require WDK analyzed build, INF checks and a new target package.

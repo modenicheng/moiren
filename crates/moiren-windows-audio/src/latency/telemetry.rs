@@ -91,9 +91,21 @@ pub struct CallbackObservation {
     pub submitted_frames: u64,
 }
 
+/// Native device position paired with the QPC returned by IAudioClock.
+/// These fields are diagnostic samples, not a physical loopback measurement.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DeviceClockObservation {
+    pub position_units: u64,
+    pub qpc_100ns: u64,
+    pub hresult: i32,
+}
+
+/// Schema-2 diagnostic output. Rust consumers constructing or destructuring
+/// this record must account for the optional `device_clock` field.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TraceRecord {
     pub wake_qpc_100ns: u64,
+    pub device_clock: Option<DeviceClockObservation>,
     pub demand_frames: u64,
     pub padding_before_frames: Option<u32>,
     pub submitted_frames: u64,
@@ -173,6 +185,16 @@ impl LatencyRecorder {
         }
     }
     pub fn record(&mut self, observation: CallbackObservation) {
+        self.record_with_device_clock(observation, None);
+    }
+
+    /// Record a callback and its paired native clock without expanding the
+    /// stable callback observation API used by other transports.
+    pub fn record_with_device_clock(
+        &mut self,
+        observation: CallbackObservation,
+        device_clock: Option<DeviceClockObservation>,
+    ) {
         if self.mode == TelemetryMode::Disabled {
             return;
         }
@@ -207,6 +229,7 @@ impl LatencyRecorder {
             } else {
                 self.trace[self.trace_len] = TraceRecord {
                     wake_qpc_100ns: wake,
+                    device_clock,
                     demand_frames: observation.demand_frames,
                     padding_before_frames: observation.padding_before_frames,
                     submitted_frames: observation.submitted_frames,
@@ -220,7 +243,7 @@ impl LatencyRecorder {
     /// valid trace records have no place in a callback; an empty trace is free.
     pub fn snapshot(&self) -> LatencySnapshot {
         LatencySnapshot {
-            schema_version: 1,
+            schema_version: 2,
             mode: self.mode,
             measurement_method: MeasurementMethod::Unknown,
             wake_interval_100ns: self.wake_interval.snapshot(),

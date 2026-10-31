@@ -49,6 +49,20 @@ impl AppHandle {
             AppRequest::SetAudioSettings(settings) => settings
                 .validate()
                 .map_err(|_| DispatchError::InvalidConfig)?,
+            AppRequest::SetTransportLatency(settings) => settings
+                .validate()
+                .map_err(|_| DispatchError::InvalidConfig)?,
+            AppRequest::ApplyMeasuredProcessBridge(request) => request
+                .validate()
+                .map_err(|_| DispatchError::InvalidConfig)?,
+            AppRequest::ApplyWindowedProcessBridge { request, policy } => {
+                request
+                    .validate()
+                    .map_err(|_| DispatchError::InvalidConfig)?;
+                policy
+                    .validate()
+                    .map_err(|_| DispatchError::InvalidConfig)?;
+            }
             AppRequest::SetGainPan { gain, pan } if !model::valid_gain_pan(*gain, *pan) => {
                 return Err(DispatchError::InvalidConfig);
             }

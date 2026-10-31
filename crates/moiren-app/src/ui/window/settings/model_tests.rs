@@ -6,6 +6,7 @@ fn draft(audio: AudioSettings) -> Draft {
         audio,
         crate::service::AudioLatencyProfile::Compatible,
         Density::Comfortable,
+        Default::default(),
     )
 }
 
@@ -32,7 +33,7 @@ fn stale_device_draft_preserves_new_defaults_and_other_device_overrides() {
         },
     );
     let merged = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap()
         .audio;
     assert_eq!(merged.processing, current.processing);
@@ -64,7 +65,7 @@ fn stale_global_draft_preserves_new_and_removed_device_overrides() {
         },
     );
     let merged = global
-        .submission(&current, global.profile, global.density)
+        .submission(&current, global.profile, global.density, Default::default())
         .unwrap()
         .audio;
     assert_eq!(merged.input.sample_rate, Some(96_000));
@@ -90,7 +91,7 @@ fn reset_removes_only_the_edited_override_and_uses_latest_defaults() {
         .input_overrides
         .insert("b".into(), StreamSettings::default());
     let merged = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap()
         .audio;
     assert!(!merged.input_overrides.contains_key("a"));
@@ -112,7 +113,7 @@ fn conflicting_full_device_override_is_rejected_without_losing_draft() {
         },
     );
     let error = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .err()
         .unwrap();
     assert!(error.starts_with("Input override for a changed elsewhere"));
@@ -129,12 +130,12 @@ fn failed_submission_rebase_does_not_turn_unedited_defaults_into_owned_edits() {
     let mut current = original;
     current.output.sample_rate = Some(88_200);
     let first = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap();
     assert_eq!(first.audio.output.sample_rate, Some(88_200));
     current.output.sample_rate = Some(96_000);
     let retry = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap();
     assert_eq!(retry.audio.output.sample_rate, Some(96_000));
     assert_eq!(retry.audio.output_overrides["a"].buffer_frames, Some(64));
@@ -172,4 +173,418 @@ fn stream_summaries_show_wasapi_mode_and_asio_driver_owned_encoding() {
     assert!(asio.contains("Driver encoding"));
     assert!(!asio.contains("PCM"));
     assert!(!asio.contains("Exclusive"));
+}
+
+#[test]
+fn transport_draft_rebases_independent_inputs_and_rejects_same_input_conflicts() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let mut edited = draft(AudioSettings::default());
+    edited.transport.process = Some(ExpertInputBuffer::default());
+    let current = TransportLatencySettings {
+        vad: Some(ExpertInputBuffer {
+            target_frames: 1024,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let merged = edited
+        .submission(&edited.audio, edited.profile, edited.density, current)
+        .unwrap();
+    assert_eq!(merged.transport.process, edited.transport.process);
+    assert_eq!(merged.transport.vad, current.vad);
+    let conflict = TransportLatencySettings {
+        process: Some(ExpertInputBuffer {
+            target_frames: 4096,
+            ..Default::default()
+        }),
+        ..current
+    };
+    assert!(
+        edited
+            .submission(&edited.audio, edited.profile, edited.density, conflict)
+            .is_err()
+    );
+    assert_eq!(edited.transport.process.unwrap().target_frames, 2048);
+    assert!(edited.dirty());
+}
+
+#[test]
+fn vad_recovery_cap_rebases_independently_and_conflicts_without_losing_draft() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let mut edited = draft(AudioSettings::default());
+    edited.transport.vad_recovery_cap_periods = Some(1);
+    let current = TransportLatencySettings {
+        process: Some(ExpertInputBuffer::default()),
+        vad: Some(ExpertInputBuffer::default()),
+        ..Default::default()
+    };
+    let merged = edited
+        .submission(&edited.audio, edited.profile, edited.density, current)
+        .unwrap();
+    assert_eq!(merged.transport.vad_recovery_cap_periods, Some(1));
+    assert_eq!(merged.transport.process, current.process);
+    assert_eq!(merged.transport.vad, current.vad);
+    assert!(merged.save_transport);
+    let conflict = TransportLatencySettings {
+        vad_recovery_cap_periods: Some(2),
+        ..current
+    };
+    let error = edited
+        .submission(&edited.audio, edited.profile, edited.density, conflict)
+        .err()
+        .unwrap();
+    assert!(error.contains("VAD recovery cap"), "{error}");
+    assert_eq!(edited.transport.vad_recovery_cap_periods, Some(1));
+    assert!(edited.dirty());
+
+    let mut independent = draft(AudioSettings::default());
+    independent.transport.vad = Some(ExpertInputBuffer::default());
+    let merged = independent
+        .submission(
+            &independent.audio,
+            independent.profile,
+            independent.density,
+            conflict,
+        )
+        .unwrap();
+    assert_eq!(merged.transport.vad_recovery_cap_periods, Some(2));
+}
+
+#[test]
+fn vad_summary_distinguishes_compatible_and_explicit_recovery_intent() {
+    use crate::service::TransportLatencySettings;
+    let compatible = super::transport::vad_summary(TransportLatencySettings::default());
+    assert!(
+        compatible.contains("Compatible (8 periods)"),
+        "{compatible}"
+    );
+    let explicit = super::transport::vad_summary(TransportLatencySettings {
+        vad_recovery_cap_periods: Some(1),
+        ..Default::default()
+    });
+    assert!(
+        explicit.contains("virtual-clock recovery cap: 1 periods"),
+        "{explicit}"
+    );
+    assert!(!explicit.contains("8 periods"), "{explicit}");
+    assert!(!explicit.contains("ms"), "{explicit}");
+}
+
+#[test]
+fn device_draft_does_not_overwrite_new_transport_intent_and_commit_tracks_it() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let mut device = draft(AudioSettings::default());
+    device_stream_mut(&mut device.audio, Direction::Input, "microphone").buffer_frames = Some(128);
+    let transport = TransportLatencySettings {
+        process: Some(ExpertInputBuffer::default()),
+        ..Default::default()
+    };
+    let merged = device
+        .submission(
+            &AudioSettings::default(),
+            device.profile,
+            device.density,
+            transport,
+        )
+        .unwrap();
+    assert_eq!(merged.transport, transport);
+    device.transport = merged.transport;
+    device.committed();
+    assert!(!device.dirty());
+    device.transport.process = None;
+    assert!(device.dirty());
+}
+
+fn measured(selection_id: u64) -> crate::service::MeasuredProcessSummary {
+    use crate::service::{MeasuredProcessRequest, MeasuredProcessSummary, SessionGeneration};
+    let snapshot = crate::service::snapshot(&Default::default());
+    MeasuredProcessSummary {
+        selection_id,
+        request: MeasuredProcessRequest {
+            node: snapshot.graph.graph.nodes()[0].id(),
+            session_generation: SessionGeneration(7),
+            native_owner_generation: 11,
+            graph_revision: 3,
+            capacity_frames: 4096,
+            target_frames: 512,
+            jitter_frames: 96,
+        },
+        process_pid: 42,
+        process_creation_time_100ns: 123,
+        observed_window: None,
+        delivery: crate::service::measured_process::MeasuredDeliveryBound {
+            sample_rate: 48_000,
+            max_packet_frames: 480,
+            max_gap_frames: 480,
+        },
+    }
+}
+
+fn running_settings() -> crate::service::AppSnapshot {
+    let mut snapshot = crate::service::snapshot(&Default::default());
+    snapshot.phase = crate::service::SessionPhase::Running;
+    snapshot.active_audio_settings = Some(snapshot.audio_settings.clone());
+    snapshot.active_transport_latency = Some(snapshot.transport_latency);
+    snapshot.active_latency_profile = Some(snapshot.latency_profile);
+    snapshot
+}
+
+#[test]
+fn measured_process_summary_identifies_override_instead_of_compatible_default() {
+    let selection = measured(17);
+    let text = super::process_input_summary(None, Some(&selection));
+    for fact in [
+        "Measured",
+        "source node",
+        "PID 42",
+        "created 123",
+        "target 512",
+        "capacity 4096",
+        "jitter 96",
+        "session 7",
+        "owner 11",
+        "revision 3",
+        "selection 17",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in {text:?}");
+    }
+    assert!(!text.contains("Compatible"));
+    assert_eq!(super::process_input_summary(None, None), "Compatible");
+}
+
+#[test]
+fn measured_capture_rebases_current_selection_not_the_old_desktop_draft() {
+    let editor = draft(AudioSettings::default());
+    let mut snapshot = running_settings();
+    snapshot.measured_process = Some(measured(17));
+    snapshot.active_measured_process = Some(measured(16));
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    assert_eq!(captured.measured_process, snapshot.measured_process);
+    assert!(captured.matches_requested(&snapshot));
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
+fn measured_capture_expects_transport_save_to_clear_desired_override() {
+    let mut editor = draft(AudioSettings::default());
+    editor.transport.vad = Some(crate::service::ExpertInputBuffer::default());
+    let mut snapshot = running_settings();
+    snapshot.measured_process = Some(measured(17));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    assert!(captured.measured_process.is_none());
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.transport_latency = captured.transport;
+    snapshot.active_transport_latency = Some(captured.transport);
+    snapshot.measured_process = None;
+    assert!(captured.matches_requested(&snapshot));
+    assert!(
+        !captured.matches_active(&snapshot),
+        "old measured owner is not the saved request"
+    );
+    snapshot.active_measured_process = None;
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
+fn measured_restart_cannot_confirm_a_new_selection_over_the_captured_request() {
+    let editor = draft(AudioSettings::default());
+    let mut snapshot = running_settings();
+    snapshot.measured_process = Some(measured(17));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    snapshot.measured_process = Some(measured(18));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    assert!(!captured.matches_requested(&snapshot));
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.measured_process = captured.measured_process.clone();
+    snapshot.active_measured_process = captured.measured_process.clone();
+    assert!(captured.matches_requested(&snapshot));
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
+fn ingress_elapsed_draft_rebases_independently_and_preserves_conflicting_edits() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let settings = |elapsed| {
+        serde_json::from_value::<TransportLatencySettings>(serde_json::json!({
+            "process_max_ingress_elapsed_100ns": elapsed
+        }))
+        .unwrap()
+    };
+    let mut edited = draft(AudioSettings::default());
+    edited.transport = settings(100_000_u64);
+    let current = TransportLatencySettings {
+        process: Some(ExpertInputBuffer::default()),
+        vad_recovery_cap_periods: Some(2),
+        ..Default::default()
+    };
+    let merged = edited
+        .submission(&edited.audio, edited.profile, edited.density, current)
+        .unwrap();
+    assert_eq!(merged.transport.process, current.process);
+    assert_eq!(merged.transport.vad_recovery_cap_periods, Some(2));
+    assert_eq!(
+        serde_json::to_value(merged.transport).unwrap()["process_max_ingress_elapsed_100ns"],
+        100_000
+    );
+    assert!(merged.save_transport);
+
+    let conflict = settings(200_000_u64);
+    let error = edited
+        .submission(&edited.audio, edited.profile, edited.density, conflict)
+        .err()
+        .unwrap();
+    assert!(error.contains("ingress"), "{error}");
+    assert_eq!(
+        serde_json::to_value(edited.transport).unwrap()["process_max_ingress_elapsed_100ns"],
+        100_000
+    );
+    assert!(edited.dirty());
+
+    let mut independent = draft(AudioSettings::default());
+    independent.transport.process = Some(ExpertInputBuffer::default());
+    let merged = independent
+        .submission(
+            &independent.audio,
+            independent.profile,
+            independent.density,
+            conflict,
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(merged.transport).unwrap()["process_max_ingress_elapsed_100ns"],
+        200_000
+    );
+    assert_eq!(merged.transport.process, independent.transport.process);
+}
+
+#[test]
+fn ingress_elapsed_restart_confirmation_requires_the_active_policy() {
+    use crate::service::TransportLatencySettings;
+    let mut editor = draft(AudioSettings::default());
+    editor.transport = serde_json::from_value::<TransportLatencySettings>(serde_json::json!({
+        "process_max_ingress_elapsed_100ns": 100_000
+    }))
+    .unwrap();
+    let mut snapshot = running_settings();
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    snapshot.transport_latency = captured.transport;
+    assert!(captured.matches_requested(&snapshot));
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.active_transport_latency = Some(captured.transport);
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
+fn ingress_elapsed_selector_retains_arbitrary_integer_limits_and_disabled_choice() {
+    let expected = [
+        None,
+        Some(100_000),
+        Some(200_000),
+        Some(500_000),
+        Some(1_000_000),
+        Some(2_500_000),
+        Some(10_000_000),
+    ];
+    for current in [None, Some(1), Some(100_000), Some(123_456), Some(u64::MAX)] {
+        let choices = super::transport::ingress_elapsed_choices(current);
+        for value in expected.into_iter().chain([current]) {
+            assert_eq!(
+                choices
+                    .iter()
+                    .filter(|(option, _)| *option == value)
+                    .count(),
+                1,
+                "missing or duplicate {value:?}: {choices:?}"
+            );
+        }
+        if let Some(current) = current.filter(|value| !expected.contains(&Some(*value))) {
+            let title = &choices
+                .iter()
+                .find(|(value, _)| *value == Some(current))
+                .unwrap()
+                .1;
+            assert!(title.contains(&current.to_string()), "{title}");
+            assert!(title.contains("100 ns"), "{title}");
+        }
+    }
+}
+
+#[test]
+fn ingress_elapsed_process_summary_keeps_measured_identity_and_exact_limit() {
+    use crate::service::TransportLatencySettings;
+    for measured in [None, Some(measured(17))] {
+        for limit in [None, Some(1), Some(123_456), Some(u64::MAX)] {
+            let settings = TransportLatencySettings {
+                process_max_ingress_elapsed_100ns: limit,
+                ..Default::default()
+            };
+            let summary = super::transport::process_summary(settings, measured.as_ref());
+            assert!(
+                summary.contains(&super::process_input_summary(
+                    settings.process,
+                    measured.as_ref()
+                )),
+                "{summary}"
+            );
+            assert!(summary.contains("host ingress elapsed limit"), "{summary}");
+            match limit {
+                Some(limit) => {
+                    assert!(summary.contains(&limit.to_string()), "{summary}");
+                    assert!(summary.contains("100 ns"), "{summary}");
+                }
+                None => assert!(summary.contains("Disabled"), "{summary}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn ingress_elapsed_localization_preserves_publication_origin_and_integer_units() {
+    use rust_i18n::t;
+    // Explicit locales leave parallel headless click tests' locale unchanged.
+    assert_eq!(
+        t!("Process host ingress elapsed limit", locale = "zh-CN"),
+        "进程输入发布起算的主机时间上限"
+    );
+    let ticks = (1_u64 << 53) + 1;
+    let limit = t!("%{ticks} x 100 ns", locale = "zh-CN", ticks = ticks);
+    assert_eq!(limit, format!("{ticks} x 100 ns"));
+    assert_eq!(
+        t!(
+            "%{input}; host ingress elapsed limit: %{limit}",
+            locale = "zh-CN",
+            input = "Compatible",
+            limit = limit
+        ),
+        format!("Compatible；主机发布起算时间上限：{ticks} x 100 ns")
+    );
+    assert_eq!(
+        t!("%{milliseconds} ms", locale = "zh-CN", milliseconds = 10),
+        "10 ms"
+    );
+    let caveat = t!(
+        "Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy.",
+        locale = "zh-CN"
+    );
+    for fact in [
+        "数据包开始发布",
+        "并非源样本年龄或物理延迟",
+        "较新的帧",
+        "实测准入不支持",
+    ] {
+        assert!(caveat.contains(fact), "{caveat}");
+    }
+    assert_eq!(
+        t!(
+            "%{input}; host ingress elapsed limit: %{limit}",
+            locale = "en",
+            input = "Compatible",
+            limit = "Disabled"
+        ),
+        "Compatible; host ingress elapsed limit: Disabled"
+    );
 }

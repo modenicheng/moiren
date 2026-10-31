@@ -18,6 +18,8 @@ pub struct ExportView {
     pub removing: bool,
     pub error: Option<String>,
     pub transport_prepared: bool,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
 }
 
 pub(super) struct EndpointRecord {
@@ -29,6 +31,8 @@ pub(super) struct EndpointRecord {
     removal_accepted: bool,
     pub sessions: Vec<Arc<SessionState>>,
     pub error: Option<String>,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
 }
 
 pub(super) trait EndpointControl {
@@ -172,6 +176,8 @@ impl<C: EndpointControl> Lifecycle<C> {
                 removal_accepted: false,
                 sessions: Vec::new(),
                 error: None,
+                telemetry: None,
+                diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
             },
         );
         let result = self.control.create(&spec);
@@ -196,6 +202,10 @@ impl<C: EndpointControl> Lifecycle<C> {
 
     pub fn poll(&mut self) -> Vec<ExportView> {
         for record in self.endpoints.values_mut() {
+            record.diagnostic_provenance = VadExportDiagnosticProvenance::Fresh;
+            for session in &record.sessions {
+                record.telemetry = Some(session.telemetry_snapshot());
+            }
             record
                 .sessions
                 .retain(|session| !session.drained.load(Ordering::Acquire));
@@ -254,6 +264,8 @@ impl<C: EndpointControl> Lifecycle<C> {
                         }
                     }
                     Err(error) => {
+                        record.diagnostic_provenance =
+                            VadExportDiagnosticProvenance::CachedAfterQueryFailure;
                         record.error = Some(error.to_string());
                         for session in &record.sessions {
                             session.revoke();
@@ -270,6 +282,12 @@ impl<C: EndpointControl> Lifecycle<C> {
                 removing: record.removing,
                 error: record.error.clone(),
                 transport_prepared: record.sessions.iter().any(|s| s.prepared()),
+                telemetry: record
+                    .sessions
+                    .last()
+                    .map(|session| session.telemetry_snapshot())
+                    .or(record.telemetry),
+                diagnostic_provenance: record.diagnostic_provenance,
             })
             .collect()
     }

@@ -150,6 +150,29 @@ static void NativeStreamAndGateAreIndependent()
     assert(!slot.AudioReady && !slot.GateOpen);
 }
 
+static void PcmCanQueueBeforeNativeRunButCannotTransferWhilePaused()
+{
+    vad::Slot slot = {};
+    slot.Id = 5;
+    slot.Session = 8;
+    slot.State = MOIREN_VAD_STATE_PRESENT;
+    slot.Intent = MOIREN_VAD_INTENT_PLAYBACK;
+    slot.Channels = 2;
+    slot.AudioReady = slot.GateOpen = 1;
+    slot.AdmissionGeneration = 4;
+    slot.StreamGeneration = 6;
+    slot.StreamState = MOIREN_VAD_STREAM_PAUSED;
+    MOIREN_VAD_PCM_HEADER header = {80, 2, 5, 8, 5, 6, 4, 0, 0, 2, 480, 2, 0};
+
+    assert(vad::CanQueuePcm(slot, header));
+    assert(!vad::SameStream(slot, header));
+    slot.StreamState = MOIREN_VAD_STREAM_RUNNING;
+    assert(vad::CanQueuePcm(slot, header));
+    assert(vad::SameStream(slot, header));
+    vad::CloseGate(slot);
+    assert(!vad::CanQueuePcm(slot, header));
+}
+
 static void DirectIoShapesAreBounded()
 {
     const uint32_t formats[] = {MOIREN_VAD_FORMAT_PCM16, MOIREN_VAD_FORMAT_FLOAT32};
@@ -451,6 +474,7 @@ int main()
     AdmissionAndWire();
     ClosedGenerationCannotReadmitOldStream();
     NativeStreamAndGateAreIndependent();
+    PcmCanQueueBeforeNativeRunButCannotTransferWhilePaused();
     DirectIoShapesAreBounded();
     DistinctEndpointsHaveDistinctCircuitInstances();
     CircuitIdentityRetainsEveryStableBitAndDirection();

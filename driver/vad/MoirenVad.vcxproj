@@ -28,8 +28,12 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
+    <MoirenVadPlaybackCopyDiagnostic Condition="'$(MoirenVadPlaybackCopyDiagnostic)' == ''">0</MoirenVadPlaybackCopyDiagnostic>
     <OutDir>$(ProjectDir)build\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)build\obj\$(Platform)\$(Configuration)\</IntDir>
+    <!-- Never reuse production objects or packages for the opt-in PCM observer. -->
+    <OutDir Condition="'$(MoirenVadPlaybackCopyDiagnostic)' == '1'">$(ProjectDir)build\playback-copy-1\bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir Condition="'$(MoirenVadPlaybackCopyDiagnostic)' == '1'">$(ProjectDir)build\playback-copy-1\obj\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>MoirenVad</TargetName>
     <SignMode>Off</SignMode>
     <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
@@ -41,7 +45,7 @@
       <WppKernelMode>true</WppKernelMode>
       <WppScanConfigurationData>src\Trace.h</WppScanConfigurationData>
       <AdditionalIncludeDirectories>$(DDK_INC_PATH)\acx\km\1.1;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>MOIREN_VAD_KERNEL;ACX_VERSION_MAJOR=1;ACX_VERSION_MINOR=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MOIREN_VAD_KERNEL;MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC=$(MoirenVadPlaybackCopyDiagnostic);ACX_VERSION_MAJOR=1;ACX_VERSION_MINOR=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -67,6 +71,10 @@
     <ClInclude Include="src\Driver.h" />
     <ClInclude Include="src\InterfaceName.h" />
     <ClInclude Include="src\Lifecycle.h" />
+    <ClInclude Include="src\PcmDiagnostics.h" />
+    <ClInclude Include="src\PlaybackCopyDiagnostic.h" />
+    <ClInclude Include="src\NativePlaybackDiagnostic.h" />
+    <ClInclude Include="src\audio\CaptureDiagnostic.h" />
     <ClInclude Include="src\audio\CircuitIdentity.h" />
     <ClInclude Include="src\Trace.h" />
     <ClInclude Include="include\moiren_vad.h" />
@@ -74,4 +82,8 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="ValidatePlaybackCopyDiagnostic" BeforeTargets="PrepareForBuild;ClCompile">
+    <Error Condition="'$(MoirenVadPlaybackCopyDiagnostic)' != '0' And '$(MoirenVadPlaybackCopyDiagnostic)' != '1'"
+           Text="MoirenVadPlaybackCopyDiagnostic must be 0 or 1" />
+  </Target>
 </Project>

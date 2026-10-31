@@ -28,16 +28,27 @@ impl AuxiliaryOwner for VirtualAuxiliary {
     }
 }
 
+pub(super) struct PreparedVirtualIo {
+    pub sessions: VirtualSessions,
+    pub sinks: Vec<NodeId>,
+    pub observations: Vec<VirtualObservation>,
+    pub probes: Vec<VirtualProbe>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare<S: ProcessingSample>(
     request: &PrepareRequest<'_>,
     provider: Option<&dyn VirtualBoundaryProvider>,
     rate: u32,
+    max_demand_frames: u32,
+    buffer: crate::virtual_owner::VirtualBufferOptions,
     bindings: &mut NodeBindings<S>,
     cancel: &CancellationToken,
-) -> Result<(VirtualSessions, Vec<NodeId>, Vec<VirtualObservation>), BackendError> {
+) -> Result<PreparedVirtualIo, BackendError> {
     let mut sessions = VirtualSessions::default();
     let mut sinks = Vec::new();
     let mut observations = Vec::new();
+    let mut probes = Vec::new();
     let config = request.project.processing;
     for (&node, config_node) in &request.project.nodes {
         if cancel.is_cancelled() {
@@ -64,26 +75,49 @@ pub(super) fn prepare<S: ProcessingSample>(
             channels,
             engine_sample_rate: rate,
             max_block_frames: config.engine.max_block_frames,
+            max_demand_frames,
+            buffer,
             audio_byte_budget: config.audio_byte_budget,
             owner_generation: request.owner_generation,
         };
-        if playback {
-            let (source, _) = bind_playback_source(provider, boundary, cancel, &mut sessions)?;
+        let probe = if playback {
+            let (source, probe) = bind_playback_source(provider, boundary, cancel, &mut sessions)?;
             bindings.bind_source(node, source).map_err(unsupported)?;
+            probe
         } else {
-            let (sink, _) = bind_microphone_sink(provider, boundary, cancel, &mut sessions)?;
+            let (sink, probe) = bind_microphone_sink(provider, boundary, cancel, &mut sessions)?;
             bindings.bind_sink(node, sink).map_err(unsupported)?;
             sinks.push(node);
-        }
+            probe
+        };
+        probes.push((
+            node,
+            if playback {
+                NativeStreamKind::VirtualPlayback
+            } else {
+                NativeStreamKind::VirtualMicrophone
+            },
+            probe,
+        ));
         observations.push(virtual_observation(node, playback, device, channels));
     }
     if cancel.is_cancelled() {
         return Err(BackendError::Cancelled);
     }
-    Ok((sessions, sinks, observations))
+    Ok(PreparedVirtualIo {
+        sessions,
+        sinks,
+        observations,
+        probes,
+    })
 }
 
 pub(super) type VirtualObservation = (ProfessionalStreamObservation, Arc<Counters>);
+pub(super) type VirtualProbe = (
+    NodeId,
+    NativeStreamKind,
+    Arc<crate::virtual_owner::BoundaryProbe>,
+);
 
 fn virtual_observation(
     node: NodeId,
@@ -108,8 +142,12 @@ fn virtual_observation(
             dropped_frames: 0,
             silent_frames: 0,
             native_callbacks: 0,
+            native_wait_wakes: 0,
+            native_written_frames: 0,
+            native_wait_timeouts: 0,
             native_dropped_frames: 0,
             native_silent_frames: 0,
+            native_capture_quality: None,
             driver_latency: None,
         },
         Arc::default(),

@@ -1,8 +1,16 @@
 //! Ordered PCM pumping: four playback reads, one just-in-time microphone write.
 //! IO is injectable so completion ordering and resets are tested without a driver.
 use super::*;
+use crate::latency::packet_service::PacketStampOrigin;
 use crate::vad::{PcmPacketStamp, SAMPLE_RATE};
 use std::time::Instant;
+
+fn pcm_error(error: ClientError) -> BackendError {
+    match error {
+        ClientError::Cancelled => BackendError::Cancelled,
+        error => client_error(error),
+    }
+}
 
 pub(super) trait PcmIo {
     fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), ClientError>;
@@ -26,17 +34,36 @@ impl PcmIo for PcmOwner {
 }
 
 #[derive(Default)]
-pub(super) struct PacketOrder(Option<PcmPacketStamp>);
+pub(super) struct PacketOrder(Option<(u64, PcmPacketStamp)>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacketProgress {
+    First,
+    Contiguous,
+    Gap { missing_slots: u64 },
+    Stale,
+}
+
 impl PacketOrder {
-    fn accept(&mut self, stamp: PcmPacketStamp) -> bool {
-        if self
-            .0
-            .is_some_and(|last| stamp.sequence <= last.sequence || stamp.qpc < last.qpc)
-        {
-            return false;
-        }
-        self.0 = Some(stamp);
-        true
+    fn accept(&mut self, epoch: u64, stamp: PcmPacketStamp) -> PacketProgress {
+        let progress = match self.0.filter(|(last_epoch, _)| *last_epoch == epoch) {
+            None => PacketProgress::First,
+            Some((_, last)) if stamp.sequence <= last.sequence || stamp.qpc < last.qpc => {
+                return PacketProgress::Stale;
+            }
+            Some((_, last)) => {
+                // Strictly increasing sequence makes both subtractions safe,
+                // including MAX. Never infer the unobserved initial prefix.
+                let missing_slots = stamp.sequence - last.sequence - 1;
+                if missing_slots == 0 {
+                    PacketProgress::Contiguous
+                } else {
+                    PacketProgress::Gap { missing_slots }
+                }
+            }
+        };
+        self.0 = Some((epoch, stamp));
+        progress
     }
 }
 
@@ -52,9 +79,20 @@ pub(super) struct MicrophonePump {
     /// carrier has not yet reached `reprime_frames` (see `arm_reprime`).
     reprime_deadline: Option<Instant>,
     reprime_frames: usize,
+    reprime_wait: Duration,
 }
 
 impl MicrophonePump {
+    pub(super) fn prepared(policy: crate::virtual_owner::PreparedMicrophoneReprime) -> Self {
+        let mut pump = Self::new(policy.packet_frames);
+        pump.reprime_frames = policy.required_frames as usize;
+        pump.reprime_wait = Duration::new(
+            policy.max_wait_100ns / 10_000_000,
+            ((policy.max_wait_100ns % 10_000_000) * 100) as u32,
+        );
+        pump
+    }
+
     pub(super) fn new(packet_frames: u32) -> Self {
         Self {
             order: PacketOrder::default(),
@@ -72,6 +110,10 @@ impl MicrophonePump {
             last_observed: None,
             reprime_deadline: None,
             reprime_frames: usize::try_from(packet_frames).unwrap_or(0) * 2,
+            reprime_wait: Duration::from_nanos(
+                (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE)),
+            ) * 5
+                / 2,
         }
     }
 
@@ -79,14 +121,17 @@ impl MicrophonePump {
     /// while production roughly equals device-clock consumption: the level
     /// cannot rebuild on servo authority alone (+/-2000 ppm is ~96 frames/s
     /// against a 480-frame packet cadence), so every packet would carry a
-    /// silent tail for ~20 s. Instead the first fresh submission waits,
-    /// bounded by 2.5 native periods, until the carrier holds two packets of
-    /// margin; the device absorbs the bounded wait itself (the late WRITE
-    /// completes as a counted drop) and resumption is silent-free. Fresh
-    /// streams do not re-prime: their first packet starts the native phase
-    /// immediately.
-    pub(super) fn arm_reprime(&mut self, now: Instant) {
-        self.reprime_deadline = Some(now + self.period * 5 / 2);
+    /// silent tail for ~20 s. Hold the first fresh submission for the prepared
+    /// whole-Engine-wake margin, with one finite deadline. Missing production
+    /// still falls back to counted silence; native drops remain counted too.
+    /// This is recovery readiness, not a physical latency guarantee. Fresh
+    /// streams keep their immediate first submission and native phase.
+    pub(super) fn arm_reprime(&mut self, now: Instant) -> Result<(), BackendError> {
+        self.reprime_deadline =
+            Some(now.checked_add(self.reprime_wait).ok_or_else(|| {
+                BackendError::Failed("microphone re-prime deadline overflow".into())
+            })?);
+        Ok(())
     }
 
     fn remaining(&self, now: Instant) -> Option<Duration> {
@@ -149,6 +194,8 @@ pub(super) fn quiesce_playback(
     if epoch == *observed {
         return true;
     }
+    state.telemetry.epoch_reset(epoch);
+    state.telemetry.publication.invalidate();
     retire();
     state
         .producer_quiesced_epoch
@@ -174,6 +221,7 @@ pub(super) fn quiesce_microphone(
     if epoch == *observed {
         return true;
     }
+    state.telemetry.epoch_reset(epoch);
     if state.producer_quiesced_epoch.load(Ordering::Acquire) != epoch {
         return false;
     }
@@ -188,6 +236,7 @@ pub(super) fn quiesce_microphone(
     true
 }
 
+#[cfg(test)]
 pub(super) fn playback<C: PcmIo>(
     owner: &mut C,
     bridge: &mut PcmPlaybackBridge,
@@ -196,11 +245,31 @@ pub(super) fn playback<C: PcmIo>(
     state: &SessionState,
     epoch: u64,
 ) -> Result<PumpState, BackendError> {
+    playback_recorded(owner, bridge, tickets, order, state, epoch, None)
+}
+
+pub(super) fn playback_recorded<C: PcmIo>(
+    owner: &mut C,
+    bridge: &mut PcmPlaybackBridge,
+    tickets: &mut Vec<PcmTicket>,
+    order: &mut PacketOrder,
+    state: &SessionState,
+    epoch: u64,
+    mut capture: Option<&mut input_capture::CaptureWorker>,
+) -> Result<PumpState, BackendError> {
     if !epoch_ready(state, epoch) {
+        state.telemetry.publication.invalidate();
+        if let Some(capture) = capture.as_mut() {
+            capture.epoch_excluded();
+        }
         return Ok(PumpState::Reset);
     }
     while let Some(ticket) = tickets.first().copied() {
         if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            state.telemetry.publication.invalidate();
+            if let Some(capture) = capture.as_mut() {
+                capture.epoch_excluded();
+            }
             return Ok(PumpState::Reset);
         }
         // A kernel quota completion is terminal for the ticket but transient
@@ -217,18 +286,96 @@ pub(super) fn playback<C: PcmIo>(
                 tickets.remove(0);
                 break;
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         };
         match completion {
             Some(PcmCompletion::Render { stamp, pcm }) => {
+                // Existing ABI READ stamp is the driver's transfer callback,
+                // not this packet's first audio sample. Observe collection
+                // before decode/order handling, including stale completions.
+                state
+                    .telemetry
+                    .service_stamp(PacketStampOrigin::DriverTransfer, stamp.qpc);
                 if state.reset_epoch.load(Ordering::Acquire) != epoch {
+                    state.telemetry.publication.invalidate();
+                    if let Some(capture) = capture.as_mut() {
+                        capture.epoch_excluded();
+                    }
                     return Ok(PumpState::Reset);
                 }
                 #[cfg(test)]
                 tests::before_playback_publish();
-                if order.accept(stamp) && !bridge.decode_packet(pcm)? {
+                if !epoch_ready(state, epoch) {
+                    state.telemetry.publication.invalidate();
+                    if let Some(capture) = capture.as_mut() {
+                        capture.epoch_excluded();
+                    }
+                    return Ok(PumpState::Reset);
+                }
+                state.telemetry.completion(bridge.packet_frames());
+                let accepted = match order.accept(epoch, stamp) {
+                    PacketProgress::Stale => {
+                        state.telemetry.publication.stale();
+                        if let Some(capture) = capture.as_mut() {
+                            capture.stale();
+                        }
+                        state.telemetry.stale_packet();
+                        false
+                    }
+                    PacketProgress::Gap { missing_slots } => {
+                        state.telemetry.publication.missing(missing_slots);
+                        // READ stamps describe native playback slots. A hole
+                        // does not prove non-silent PCM loss and is not a reset.
+                        state.telemetry.sequence_gap(missing_slots);
+                        true
+                    }
+                    PacketProgress::First | PacketProgress::Contiguous => true,
+                };
+                let record = if accepted {
+                    capture
+                        .as_mut()
+                        .and_then(|capture| capture.before_decode(state, epoch, stamp, pcm))
+                } else {
+                    None
+                };
+                let decoded = if accepted {
+                    let valid_before = publication_current(state, epoch);
+                    let before = state.telemetry.publication_clock();
+                    #[cfg(test)]
+                    tests::before_decode_call();
+                    let decoded = bridge.decode_packet(pcm);
+                    let after = state.telemetry.publication_clock();
+                    #[cfg(test)]
+                    tests::after_playback_publish();
+                    // Observe revocation/reset after the existing write, but
+                    // never add a drop/retry or alter its result/error policy.
+                    let valid_after = publication_current(state, epoch);
+                    state.telemetry.publication.record(
+                        before,
+                        after,
+                        decoded.as_ref().copied().map_err(|_| ()),
+                        bridge.packet_frames(),
+                        stamp.sequence,
+                        valid_before && valid_after,
+                    );
+                    decoded
+                } else {
+                    Ok(true)
+                };
+                if let Some(capture) = capture.as_mut() {
+                    capture.published(
+                        record,
+                        match &decoded {
+                            Ok(true) => "published",
+                            Ok(false) => "carrier_full",
+                            Err(_) => "decode_error",
+                        },
+                    );
+                }
+                if !decoded? {
                     // Only the consumer can discard this SPSC carrier. Ask its
                     // prepared boundary to drop the stale queue before replay.
+                    state.telemetry.carrier_drop();
                     state.reset_epoch.fetch_add(1, Ordering::AcqRel);
                     return Ok(PumpState::Reset);
                 }
@@ -246,16 +393,23 @@ pub(super) fn playback<C: PcmIo>(
         if state.reset_epoch.load(Ordering::Acquire) != epoch {
             return Ok(PumpState::Reset);
         }
+        state
+            .telemetry
+            .submission_attempt(bridge.packet_frames(), 0);
         match owner.read() {
-            Ok(ticket) => tickets.push(ticket),
+            Ok(ticket) => {
+                state.telemetry.submission_accepted();
+                tickets.push(ticket);
+            }
             Err(ClientError::KernelPcmQuotaFull) => {
+                state.telemetry.quota_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=pcm_kernel_quota_deferred endpoint=playback stage=read"
                 );
                 break;
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         }
     }
     Ok(PumpState::Current)
@@ -283,6 +437,7 @@ pub(super) fn microphone<C: PcmIo>(
         let completion = match owner.complete(ticket) {
             Ok(completion) => completion,
             Err(ClientError::KernelPcmQuotaFull) => {
+                state.telemetry.quota_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=pcm_kernel_quota_deferred endpoint=microphone stage=complete"
@@ -290,13 +445,24 @@ pub(super) fn microphone<C: PcmIo>(
                 tickets.remove(0);
                 break;
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         };
         let (stamp, dropped) = match completion {
             Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
+                state
+                    .telemetry
+                    .service_stamp(PacketStampOrigin::HostSubmission, stamp.qpc);
+                state.telemetry.completion(bridge.packet_frames());
                 (stamp, false)
             }
             Some(PcmCompletion::CaptureDropped { stamp }) => {
+                // Echoed host submission stamp; a discarded WRITE still has
+                // a service interval, never successful PCM delivery evidence.
+                state
+                    .telemetry
+                    .service_stamp(PacketStampOrigin::HostSubmission, stamp.qpc);
+                state.telemetry.completion(bridge.packet_frames());
+                state.telemetry.driver_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=microphone_request_expired epoch={epoch} stamp={stamp:?}",
@@ -314,7 +480,9 @@ pub(super) fn microphone<C: PcmIo>(
         if !pump.observe(state, epoch, collected_at) {
             return Ok(PumpState::Reset);
         }
-        if !pump.order.accept(stamp) {
+        // WRITE completion echoes a host submission sequence, not the native
+        // packet cursor. Keep order validation, never report native slot loss.
+        if pump.order.accept(epoch, stamp) == PacketProgress::Stale {
             return Err(BackendError::Failed(
                 "microphone completion sequence regressed".into(),
             ));
@@ -346,7 +514,7 @@ pub(super) fn microphone<C: PcmIo>(
             return Ok(PumpState::Reset);
         }
         // Bounded re-prime after a hard reset: hold the first fresh
-        // submission until the carrier holds two packets of margin or the
+        // submission until the carrier holds the prepared recovery margin or the
         // deadline expires; wait_for_microphone yields in 1 ms slices.
         let reprime_hold = match pump.reprime_deadline {
             Some(deadline) => bridge.available_frames() < pump.reprime_frames && now() < deadline,
@@ -358,13 +526,19 @@ pub(super) fn microphone<C: PcmIo>(
         pump.reprime_deadline = None;
         // Do not consume the carrier or encode until the phase is due. The
         // unchanged PcmOwner samples its real QPC only when submitting this PCM.
-        let packet = bridge.encode_packet()?;
+        let packet_frames = bridge.packet_frames();
+        let (packet, silence_frames) = bridge.encode_packet_with_metrics()?;
+        state
+            .telemetry
+            .submission_attempt(packet_frames, silence_frames);
         if !pump.observe(state, epoch, now()) {
+            state.telemetry.carrier_drop();
             return Ok(PumpState::Reset);
         }
         let submitted_at = now();
         match owner.write(packet) {
             Ok(ticket) => {
+                state.telemetry.submission_accepted();
                 tickets.push(ticket);
                 pump.last_phase = pump
                     .next_submit
@@ -376,12 +550,13 @@ pub(super) fn microphone<C: PcmIo>(
             // semantics), never a session fault. The phase stays due, so the
             // next pass encodes the next packet immediately.
             Err(ClientError::KernelPcmQuotaFull) => {
+                state.telemetry.quota_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=pcm_kernel_quota_dropped endpoint=microphone stage=write"
                 );
             }
-            Err(error) => return Err(client_error(error)),
+            Err(error) => return Err(pcm_error(error)),
         }
     }
     Ok(PumpState::Current)
@@ -407,7 +582,7 @@ pub(super) fn wait_for_microphone<C: PcmIo>(
                     .unwrap_or(POLL_INTERVAL)
                     .min(POLL_INTERVAL),
             )
-            .map_err(client_error)?;
+            .map_err(pcm_error)?;
     } else if let Some(remaining) = pump
         .remaining(now)
         .filter(|remaining| !remaining.is_zero())
@@ -437,7 +612,7 @@ pub(super) fn wait_for_activity<C: PcmIo>(
     if let Some(&ticket) = tickets.first() {
         owner
             .wait_activity(ticket, POLL_INTERVAL)
-            .map_err(client_error)?;
+            .map_err(pcm_error)?;
     }
     Ok(())
 }
@@ -446,6 +621,16 @@ fn epoch_ready(state: &SessionState, epoch: u64) -> bool {
     state.reset_epoch.load(Ordering::Acquire) == epoch
         && state.producer_quiesced_epoch.load(Ordering::Acquire) == epoch
         && state.consumer_quiesced_epoch.load(Ordering::Acquire) == epoch
+}
+
+fn publication_current(state: &SessionState, epoch: u64) -> bool {
+    epoch_ready(state, epoch)
+        && state.admitted()
+        && state.telemetry.publication.matches(
+            epoch,
+            state.admitted_ticket.load(Ordering::Acquire),
+            state.admitted_revision.load(Ordering::Acquire),
+        )
 }
 
 #[cfg(test)]

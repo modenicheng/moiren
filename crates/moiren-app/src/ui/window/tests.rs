@@ -7,6 +7,8 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, point, px};
 use std::time::Duration;
 
+mod ingress_elapsed;
+
 #[gpui_kit::test]
 fn toolbar_reserves_draggable_space_outside_interactive_controls(
     cx: &mut gpui_kit::TestAppContext,
@@ -483,6 +485,7 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         assert!(window.try_find("settings-restart").is_none());
     });
     view.update(cx, |shell, cx| {
+        shell.settings.global.transport.vad_recovery_cap_periods = Some(3);
         assert!(shell.settings.global.dirty());
         assert_eq!(
             shell
@@ -504,6 +507,11 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         let state = shell.state.read(cx);
         assert_eq!(state.snapshot.phase, crate::service::SessionPhase::Idle);
         assert!(state.snapshot.active_audio_settings.is_none());
+        assert!(state.snapshot.active_transport_latency.is_none());
+        assert_eq!(
+            state.snapshot.transport_latency.vad_recovery_cap_periods,
+            Some(3)
+        );
         assert_eq!(state.snapshot.audio_settings.backend, AudioBackend::Asio);
         assert_eq!(
             state.snapshot.audio_settings.processing.precision,
@@ -520,6 +528,13 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
             .processing
             .sample_rate,
         44_100
+    );
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .transport_latency
+            .vad_recovery_cap_periods,
+        Some(3)
     );
     cx.update(|window, cx| {
         window.click("settings-appearance", cx);
@@ -663,6 +678,7 @@ struct SettingsConfirmationDriver {
     log: std::sync::Arc<std::sync::Mutex<Vec<crate::service::AppRequest>>>,
     confirm: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_session: bool,
     initialized: bool,
     awaiting: bool,
 }
@@ -680,12 +696,22 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             AppRequest::SetAudioSettings(settings) => {
                 context.set_audio_settings(settings);
             }
+            AppRequest::SetTransportLatency(settings) => {
+                context.set_transport_latency(settings);
+            }
             AppRequest::SetLatencyProfile(profile) => context.latency_profile = profile,
             AppRequest::ApplyGraph => {
                 if self.fail.load(std::sync::atomic::Ordering::Acquire) {
-                    context
-                        .graph
-                        .record_error("Device format rejected by test driver");
+                    let error = "Device format rejected by test driver";
+                    context.graph.record_error(error);
+                    if self.fail_session {
+                        let generation = context.core.generation();
+                        context.core.failed(generation, error.into());
+                        context.core.owner_reaped(generation);
+                        context.active_audio_settings = None;
+                        context.active_transport_latency = None;
+                        context.active_latency_profile = None;
+                    }
                 } else {
                     let revision = context.graph.snapshot().candidate_revision;
                     context.graph.preparing(context.core.generation(), revision);
@@ -720,6 +746,7 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             context.graph.preparing(generation, revision);
             context.graph.running(generation, revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
+            context.active_transport_latency = Some(context.transport_latency);
             context.active_latency_profile = Some(context.latency_profile);
         }
         if self.awaiting && self.confirm.load(std::sync::atomic::Ordering::Acquire) {
@@ -727,6 +754,7 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             let revision = context.graph.snapshot().candidate_revision;
             context.graph.running(context.core.generation(), revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
+            context.active_transport_latency = Some(context.transport_latency);
             context.active_latency_profile = Some(context.latency_profile);
         }
     }
@@ -763,6 +791,7 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
         log: log.clone(),
         confirm: confirm.clone(),
         fail: fail.clone(),
+        fail_session: false,
         initialized: false,
         awaiting: false,
     })
@@ -896,6 +925,261 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
             .processing
             .sample_rate,
         44_100
+    );
+    finish_service(runtime);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[gpui_kit::test]
+fn vad_recovery_cap_click_save_and_restart_wait_for_active_confirmation(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::AppRequest;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    cx.update(gpui_kit::init);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let confirm = Arc::new(AtomicBool::new(false));
+    let runtime = ServiceRuntime::spawn_with_driver(SettingsConfirmationDriver {
+        log: log.clone(),
+        confirm: confirm.clone(),
+        fail: Arc::new(AtomicBool::new(false)),
+        fail_session: false,
+        initialized: false,
+        awaiting: false,
+    })
+    .unwrap();
+    let handle = runtime.handle();
+    let snapshot = wait_for(Duration::from_secs(2), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == crate::service::SessionPhase::Running)
+    });
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    let path = settings_test_path("vad-recovery-cap");
+    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.click("settings-transport", cx);
+        for _ in 0..24 {
+            let target = window.find("vad-recovery-cap-1");
+            let viewport = window.find("settings-scroll").bounds();
+            if target.visible()
+                && target.bounds().origin.y + target.bounds().size.height
+                    < viewport.origin.y + viewport.size.height - px(12.)
+            {
+                break;
+            }
+            window.scroll(
+                "settings-scroll",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-180.))),
+                cx,
+            );
+        }
+        assert!(window.try_find("vad-expert-fields").is_none());
+        window.click("vad-recovery-cap-1", cx);
+    });
+    view.update(cx, |shell, cx| {
+        assert_eq!(
+            shell.settings.global.transport.vad_recovery_cap_periods,
+            Some(1)
+        );
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .transport_latency
+                .vad_recovery_cap_periods,
+            None
+        );
+    });
+    cx.update(|window, cx| window.click("settings-save", cx));
+    settle_settings(&view, cx);
+    assert!(
+        !log.lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, AppRequest::ApplyGraph))
+    );
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .transport_latency
+            .vad_recovery_cap_periods,
+        Some(1)
+    );
+    view.update(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_transport_latency
+                .unwrap()
+                .vad_recovery_cap_periods,
+            None
+        );
+    });
+    cx.update(|window, cx| {
+        window.click("vad-recovery-cap-2", cx);
+        window.click("settings-restart", cx);
+    });
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.poll();
+            })
+        });
+        cx.update(|window, cx| window.render_frame(cx));
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, AppRequest::ApplyGraph))
+    });
+    view.update(cx, |shell, cx| {
+        assert!(shell.settings.global.pending.is_some());
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .transport_latency
+                .vad_recovery_cap_periods,
+            Some(2)
+        );
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_transport_latency
+                .unwrap()
+                .vad_recovery_cap_periods,
+            None
+        );
+        assert_eq!(
+            shell.preferences.transport_latency.vad_recovery_cap_periods,
+            Some(1)
+        );
+    });
+    confirm.store(true, Ordering::Release);
+    settle_settings(&view, cx);
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .transport_latency
+            .vad_recovery_cap_periods,
+        Some(2)
+    );
+    view.update(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_transport_latency
+                .unwrap()
+                .vad_recovery_cap_periods,
+            Some(2)
+        );
+        assert!(!shell.settings.global.dirty());
+    });
+    finish_service(runtime);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[gpui_kit::test]
+fn rejected_transport_restart_keeps_draft_and_saved_preferences_unchanged(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
+
+    cx.update(gpui_kit::init);
+    let confirm = Arc::new(AtomicBool::new(false));
+    let fail = Arc::new(AtomicBool::new(true));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let runtime = ServiceRuntime::spawn_with_driver(SettingsConfirmationDriver {
+        log: log.clone(),
+        confirm: confirm.clone(),
+        fail: fail.clone(),
+        fail_session: true,
+        initialized: false,
+        awaiting: false,
+    })
+    .unwrap();
+    let handle = runtime.handle();
+    let snapshot = wait_for(Duration::from_secs(2), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == crate::service::SessionPhase::Running)
+    });
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    let path = settings_test_path("transport-rejection");
+    crate::project::save_preferences_at(&path, &crate::project::AppPreferences::default()).unwrap();
+    view.update(cx, |shell, cx| {
+        shell.preferences = crate::project::AppPreferences::default();
+        shell.settings.global = shell.current_settings_draft(cx);
+        shell.settings.device = shell.current_settings_draft(cx);
+        shell.preferences_path = Some(path.clone());
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.render_frame(cx);
+    });
+
+    view.update(cx, |shell, cx| {
+        shell.settings.global.transport.process = Some(crate::service::ExpertInputBuffer {
+            target_frames: 1024,
+            ..Default::default()
+        });
+        shell.settings.global.transport.vad_recovery_cap_periods = Some(1);
+        shell.save_audio_settings(super::settings::Editor::Global, true, cx);
+        assert!(shell.settings.global.pending.is_some());
+        assert!(shell.settings.global.pending.as_ref().unwrap().restart);
+    });
+    settle_settings(&view, cx);
+
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, crate::service::AppRequest::ApplyGraph)),
+        "restart request was not dispatched: {:?}",
+        *log.lock().unwrap()
+    );
+    view.update(cx, |shell, cx| {
+        let draft = &shell.settings.global;
+        let state = shell.state.read(cx);
+        assert!(draft.dirty());
+        assert!(draft.transport.process.is_some());
+        assert_eq!(draft.transport.vad_recovery_cap_periods, Some(1));
+        assert!(draft.error.is_some());
+        assert_eq!(state.snapshot.phase, crate::service::SessionPhase::Failed);
+        assert_eq!(state.snapshot.active_transport_latency, None);
+        assert_eq!(state.snapshot.transport_latency, draft.transport);
+        assert_eq!(shell.preferences.transport_latency, Default::default());
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let feedback = window.find("settings-feedback");
+        assert!(feedback.visible());
+        assert!(feedback.label().unwrap().contains("Device format rejected"));
+    });
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .transport_latency,
+        Default::default()
     );
     finish_service(runtime);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();

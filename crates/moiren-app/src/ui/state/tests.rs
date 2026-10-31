@@ -278,8 +278,12 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
                 dropped_frames: 9,
                 silent_frames: 11,
                 native_callbacks: 100,
+                native_wait_wakes: 0,
+                native_wait_timeouts: 0,
+                native_written_frames: 0,
                 native_dropped_frames: 3,
                 native_silent_frames: 5,
+                native_capture_quality: None,
                 driver_latency: Some(moiren_windows_audio::native::NativeLatency {
                     input_frames: 32,
                     output_frames: 64,
@@ -518,5 +522,157 @@ fn running_projection_edits_candidate_nodes_instead_of_legacy_session_pair() {
         }
     }
     assert!(state.snapshot.control.pending_gain_pan.is_none());
+    finish_service(runtime);
+}
+#[test]
+fn restored_transport_intent_remains_pending_without_starting_and_invalid_restore_is_atomic() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let runtime = spawn_service();
+    let handle = runtime.handle();
+    let mut state = UiState::new(handle.clone(), initial_projection(&handle));
+    let mut preferences = crate::project::AppPreferences {
+        transport_latency: TransportLatencySettings {
+            process: Some(ExpertInputBuffer::default()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    state.restore_preferences(&preferences);
+    wait_until(std::time::Duration::from_secs(2), || {
+        state.poll();
+        !state.pending_request
+    });
+    assert_eq!(
+        state.snapshot.transport_latency,
+        preferences.transport_latency
+    );
+    assert_eq!(state.snapshot.active_transport_latency, None);
+    assert_eq!(state.snapshot.phase, SessionPhase::Idle);
+    let consumed = state.snapshot.consumed_request_id;
+    preferences
+        .transport_latency
+        .process
+        .as_mut()
+        .unwrap()
+        .capacity_frames = 0;
+    preferences.audio.processing.block_frames = 512;
+    state.restore_preferences(&preferences);
+    assert!(state.dispatch_error.is_some());
+    assert_eq!(state.max_block_frames, 256);
+    assert_eq!(state.snapshot.consumed_request_id, consumed);
+    assert!(!state.pending_request);
+    finish_service(runtime);
+}
+
+#[cfg(windows)]
+#[test]
+fn native_timing_projection_hides_stopped_and_stale_owner_observations() {
+    use crate::service::{NativeSessionObservations, SessionGeneration};
+    use moiren_windows_audio::{
+        engine_backend::{
+            NativeBridgeObservation, NativeObservationSnapshot, NativeStreamKind,
+            NativeStreamObservation,
+        },
+        latency::{
+            NativeStreamTiming, PreparedInputQueue, PreparedRenderQueue,
+            shared_period::SharedPeriodReport,
+        },
+    };
+    let runtime = spawn_service();
+    let handle = runtime.handle();
+    let mut snapshot = (*initial_projection(&handle)).clone();
+    snapshot.phase = SessionPhase::Running;
+    snapshot.generation = SessionGeneration(8);
+    let node = snapshot.graph.graph.nodes()[0].id();
+    snapshot.native_observations = Some(NativeSessionObservations {
+        generation: SessionGeneration(8),
+        observation: NativeObservationSnapshot {
+            virtual_clock: None,
+            process_delivery: Vec::new(),
+            render_padding: Vec::new(),
+            owner_generation: 3,
+            running: true,
+            streams: vec![NativeStreamObservation {
+                node,
+                kind: NativeStreamKind::MasterOutput,
+                timing: Some(NativeStreamTiming {
+                    sample_rate: 48_000,
+                    period_frames: Some(336),
+                    capacity_frames: 960,
+                }),
+                shared_period: Some(SharedPeriodReport {
+                    desired_period_ms: Some(5.0),
+                    actual_period_frames: Some(336),
+                    ..Default::default()
+                }),
+                render_queue: Some(PreparedRenderQueue {
+                    capacity_frames: 960,
+                    target_frames: 480,
+                    deadline_budget_frames: Some(96),
+                }),
+                input_queue: Some(PreparedInputQueue::compatible()),
+                virtual_budget: None,
+            }],
+            boundary_probes: vec![],
+            bridges: vec![NativeBridgeObservation {
+                queue_history: None,
+                packet_history: None,
+                node,
+                counters: moiren_windows_audio::clock_bridge::BridgeSnapshot {
+                    underrun_frames: 4,
+                    dropped_frames: 8,
+                    resets: 1,
+                    backlog_recoveries: 1,
+                    ..Default::default()
+                },
+            }],
+        },
+    });
+    let mut state = UiState::new(handle.clone(), Arc::new(snapshot));
+    assert!(
+        crate::ui::presentation::native_timing_rows(&state.snapshot)[0]
+            .1
+            .contains("336 frames (7.00 ms)")
+    );
+    assert!(
+        crate::ui::presentation::native_timing_rows(&state.snapshot)
+            .iter()
+            .any(|(_, value)| value == "5.00 ms requested")
+    );
+    assert!(
+        crate::ui::presentation::native_timing_rows(&state.snapshot)
+            .iter()
+            .any(|(label, value)| {
+                label == "1 Master output: effective prepared render queue"
+                    && value == "Target 480 / capacity 960 frames"
+            })
+    );
+    assert!(
+        crate::ui::presentation::native_timing_rows(&state.snapshot)
+            .iter()
+            .any(|(label, value)| {
+                label == "1 Master output: effective prepared bridge queue"
+                    && value == "Prime 2048 / capacity 8192 frames"
+            })
+    );
+    assert!(
+        crate::ui::presentation::native_timing_rows(&state.snapshot)
+            .iter()
+            .any(|(label, value)| {
+                label == "Stream 1: faults / recovery"
+                    && value == "Underrun 4 / dropped 8 frames; resets 1 / backlog recoveries 1"
+            })
+    );
+    Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(9);
+    assert_eq!(
+        crate::ui::presentation::native_timing_rows(&state.snapshot),
+        vec![("Actual native timing".into(), "—".into())]
+    );
+    Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(8);
+    Arc::make_mut(&mut state.snapshot).phase = SessionPhase::Idle;
+    assert_eq!(
+        crate::ui::presentation::native_timing_rows(&state.snapshot)[0].1,
+        "—"
+    );
     finish_service(runtime);
 }

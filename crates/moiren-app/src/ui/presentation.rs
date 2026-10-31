@@ -4,8 +4,17 @@
 use crate::service::{AppSnapshot, SessionPhase};
 #[cfg(windows)]
 use crate::service::{AudioBackend, SessionGeneration};
+#[cfg(windows)]
+use moiren_windows_audio::engine_backend::NativeStreamKind;
 use rust_i18n::t;
 use std::borrow::Cow;
+
+mod export_diagnostics;
+mod process_trace;
+pub use export_diagnostics::{export_diagnostic_rows, windows_name_match_text};
+pub use process_trace::process_trace_rows;
+#[cfg(windows)]
+mod native_live;
 
 /// Display-level stale guard mirroring the service's write-side filter. The
 /// owner identity is not published to the UI, so this deliberately checks only
@@ -18,6 +27,18 @@ pub(crate) fn fresh_observation(
     running: bool,
 ) -> bool {
     phase == SessionPhase::Running && generation == status_generation && running
+}
+
+#[cfg(windows)]
+fn native_stream_kind_text(kind: NativeStreamKind) -> Cow<'static, str> {
+    match kind {
+        NativeStreamKind::MasterOutput => t!("Master output"),
+        NativeStreamKind::FollowerOutput => t!("Follower output"),
+        NativeStreamKind::PhysicalInput => t!("Physical input"),
+        NativeStreamKind::ProcessInput => t!("Application input"),
+        NativeStreamKind::VirtualPlayback => t!("Virtual playback"),
+        NativeStreamKind::VirtualMicrophone => t!("Virtual microphone"),
+    }
 }
 
 /// The measured `(sample rate, buffer frames)` of the fresh master output
@@ -80,6 +101,7 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
     let _ = snapshot;
     #[cfg(windows)]
     {
+        let mut rows = Vec::new();
         if let Some(status) = snapshot
             .professional_observations
             .as_ref()
@@ -92,7 +114,6 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                 )
             })
         {
-            let mut rows = Vec::new();
             if let Some(settings) = &snapshot.active_audio_settings {
                 rows.push((
                     t!("Processing").to_string(),
@@ -178,6 +199,179 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                     ));
                 }
             }
+        }
+        if let Some(status) = snapshot.native_observations.as_ref().filter(|status| {
+            fresh_observation(
+                snapshot.phase,
+                snapshot.generation,
+                status.generation,
+                status.observation.running,
+            )
+        }) {
+            for (index, stream) in status.observation.streams.iter().enumerate() {
+                let kind = native_stream_kind_text(stream.kind);
+                let prefix = format!("{} {kind}", index + 1);
+                rows.push((
+                    t!("%{prefix}: actual timing", prefix = prefix).to_string(),
+                    stream
+                        .timing
+                        .map(|timing| {
+                            let period = timing
+                                .period_frames
+                                .map(|frames| {
+                                    format!(
+                                        "{frames} frames ({:.2} ms)",
+                                        f64::from(frames) * 1000. / f64::from(timing.sample_rate)
+                                    )
+                                })
+                                .unwrap_or_else(|| t!("period unknown").to_string());
+                            t!(
+                                "%{rate} Hz; %{period}; capacity %{capacity} frames",
+                                rate = timing.sample_rate,
+                                period = period,
+                                capacity = timing.capacity_frames,
+                            )
+                            .to_string()
+                        })
+                        .unwrap_or_else(|| t!("Virtual capture; no hardware period").to_string()),
+                ));
+                if let Some(period) = stream.shared_period {
+                    rows.push((
+                        t!("%{prefix}: period request", prefix = prefix).to_string(),
+                        period
+                            .desired_period_ms
+                            .map(|ms| t!("%{ms} ms requested", ms = format!("{ms:.2}")).to_string())
+                            .unwrap_or_else(|| t!("Device default requested").to_string()),
+                    ));
+                    // The initialization value is {:?} debug output and stays in English.
+                    rows.push((
+                        t!("%{prefix}: initialization", prefix = prefix).to_string(),
+                        format!(
+                            "{:?}; fallback {}",
+                            period.initialization_api,
+                            period
+                                .fallback_reason
+                                .map(|reason| format!("{reason:?}"))
+                                .unwrap_or_else(|| "none".into())
+                        ),
+                    ));
+                }
+                if let Some(queue) = stream.render_queue {
+                    rows.push((
+                        t!(
+                            "%{prefix}: effective prepared render queue",
+                            prefix = prefix
+                        )
+                        .to_string(),
+                        t!(
+                            "Target %{target} / capacity %{capacity} frames",
+                            target = queue.target_frames,
+                            capacity = queue.capacity_frames,
+                        )
+                        .to_string(),
+                    ));
+                }
+                if let Some(queue) = stream.input_queue {
+                    rows.push((
+                        t!(
+                            "%{prefix}: effective prepared bridge queue",
+                            prefix = prefix
+                        )
+                        .to_string(),
+                        t!(
+                            "Prime %{prime} / capacity %{capacity} frames",
+                            prime = queue.prime_frames,
+                            capacity = queue.capacity_frames,
+                        )
+                        .to_string(),
+                    ));
+                }
+            }
+            for bridge in &status.observation.bridges {
+                let prefix = status
+                    .observation
+                    .streams
+                    .iter()
+                    .position(|stream| stream.node == bridge.node)
+                    .map(|index| t!("Stream %{index}", index = index + 1).to_string())
+                    .unwrap_or_else(|| t!("Unmapped stream").to_string());
+                rows.push((
+                    t!("%{prefix}: live queue / clock", prefix = prefix).to_string(),
+                    format!(
+                        "{} frames; {:+.1} ppm",
+                        bridge.counters.fill_frames, bridge.counters.correction_ppm
+                    ),
+                ));
+                rows.push((
+                    t!("%{prefix}: faults / recovery", prefix = prefix).to_string(),
+                    t!(
+                        "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}",
+                        underrun = bridge.counters.underrun_frames,
+                        dropped = bridge.counters.dropped_frames,
+                        resets = bridge.counters.resets,
+                        recoveries = bridge.counters.backlog_recoveries,
+                    )
+                    .to_string(),
+                ));
+            }
+            for probe in &status.observation.boundary_probes {
+                let stream = status
+                    .observation
+                    .streams
+                    .iter()
+                    .position(|stream| stream.node == probe.node && stream.kind == probe.kind)
+                    .map(|index| (index + 1).to_string())
+                    .unwrap_or_else(|| t!("Unmapped stream").to_string());
+                let prefix = format!("{stream} {}", native_stream_kind_text(probe.kind));
+                rows.push((
+                    t!("%{prefix}: prepared boundary capacity", prefix = prefix).to_string(),
+                    t!(
+                        "%{frames} native frames at 48 kHz (storage headroom)",
+                        frames = probe.capacity_frames,
+                    )
+                    .to_string(),
+                ));
+                // Preparation's total target and RT's residual occupancy use
+                // different observation points; neither is physical latency.
+                rows.push((
+                    t!(
+                        "%{prefix}: total pre-transfer content target",
+                        prefix = prefix
+                    )
+                    .to_string(),
+                    probe
+                        .target_frames
+                        .map(|frames| {
+                            t!("%{frames} native frames at 48 kHz", frames = frames).to_string()
+                        })
+                        .unwrap_or_else(|| t!("Unknown").to_string()),
+                ));
+                rows.push((
+                    t!(
+                        "%{prefix}: post-transfer occupancy / correction",
+                        prefix = prefix
+                    )
+                    .to_string(),
+                    t!(
+                        "%{frames} native frames at 48 kHz; applied %{ppm} ppm",
+                        frames = probe.level_frames,
+                        ppm = format!("{:+.3}", f64::from(probe.applied_milli_ppm) / 1000.0),
+                    )
+                    .to_string(),
+                ));
+                rows.push((
+                    t!("%{prefix}: cumulative boundary events", prefix = prefix).to_string(),
+                    t!(
+                        "Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)",
+                        xruns = probe.xruns,
+                        soft = probe.soft_events,
+                    )
+                    .to_string(),
+                ));
+            }
+            native_live::append_rows(&mut rows, &status.observation);
+        }
+        if !rows.is_empty() {
             return rows;
         }
     }

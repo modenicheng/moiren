@@ -1,6 +1,7 @@
 //! Apartment-local native clients only; never creates a driver control owner.
 use super::{
     identity,
+    rename::{PropertyReadError, PropertyReadback},
     soak::{CapturePosition, ClockProgress, NativeDiagnostics},
     validation::{self, Candidate},
 };
@@ -10,6 +11,7 @@ use moiren_windows_audio::vad::{
 };
 use serde::Serialize;
 use std::{
+    cell::Cell,
     marker::PhantomData,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     rc::Rc,
@@ -19,7 +21,8 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{HANDLE, S_OK, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Devices::FunctionDiscovery::{PKEY_Device_DeviceDesc, PKEY_DeviceInterface_FriendlyName},
+        Foundation::{HANDLE, PROPERTYKEY, S_OK, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
             AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_BUFFER_ERROR,
@@ -31,12 +34,16 @@ use windows::{
         System::{
             Com::{
                 CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+                STGM_READ, StructuredStorage::PROPVARIANT,
             },
             Threading::{CreateEventW, WaitForSingleObject},
         },
     },
     core::{GUID, HSTRING, Interface},
 };
+
+#[path = "native/topology.rs"]
+mod topology;
 
 struct Apartment(PhantomData<Rc<()>>);
 impl Apartment {
@@ -77,6 +84,167 @@ pub(super) struct Pair {
     pub identity: IdentityEvidence,
     // Fields drop in declaration order: COM objects must precede the apartment.
     _apartment: Apartment,
+}
+
+/// One initialized exclusive WASAPI client. It deliberately never calls Start:
+/// it observes native ownership independently of PCM quality. COM ownership is
+/// not a driver guarantee to defer PDO removal; the driver may revoke a stream.
+/// Only this opt-in path retains an MMDevice for Windows property readback.
+pub(super) struct HeldClient {
+    stream: Stream,
+    device: IMMDevice,
+    identity: super::rename::NativeName,
+    topology_pending: Cell<bool>,
+    // All COM references above must be released before CoUninitialize.
+    _apartment: Apartment,
+}
+
+impl HeldClient {
+    pub fn prepare(
+        stable: StableEndpointId,
+        intent: Intent,
+        deadline: Instant,
+    ) -> anyhow::Result<Self> {
+        let apartment = Apartment::new()?;
+        let interfaces = discover_present_interfaces()?;
+        ensure!(
+            interfaces.len() == 1,
+            "rename requires exactly one present VAD root"
+        );
+        let root = identity::root_instance(&interfaces[0])?;
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+        let candidate = loop {
+            ensure!(
+                Instant::now() < deadline,
+                "rename MMDevice enumeration timed out"
+            );
+            let (candidates, errors) = identity::candidates(&enumerator)?;
+            if let Some(candidate) = validation::select(&candidates, stable, intent, &root)? {
+                break candidate.clone();
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "rename MMDevice not present; topology errors: {errors:?}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        let device = exact_device(&enumerator, &candidate, stable, &root)?;
+        let stream = Stream::prepare(&device, intent)?;
+        let windows_friendly_name = windows_friendly_name(&device)?;
+        let device_desc = optional_property(&device, &PKEY_Device_DeviceDesc);
+        let device_interface_friendly_name =
+            optional_property(&device, &PKEY_DeviceInterface_FriendlyName);
+        ensure!(
+            Instant::now() < deadline,
+            "rename native initialization exceeded deadline"
+        );
+        Ok(Self {
+            stream,
+            device,
+            identity: super::rename::NativeName {
+                root_instance: root,
+                stable_id: stable.to_string(),
+                direction: format!("{intent:?}"),
+                mmdevice_id: candidate.id,
+                adapter_instance: candidate.raw_instance,
+                windows_friendly_name,
+                device_desc,
+                device_interface_friendly_name,
+                topology: None,
+            },
+            topology_pending: Cell::new(true),
+            _apartment: apartment,
+        })
+    }
+
+    pub fn observe(&self) -> anyhow::Result<super::rename::NativeName> {
+        let mut observed = self.identity.clone();
+        // GetId and a newly opened read-only property store use the held actual
+        // MMDevice. No cached provider name participates in this observation.
+        observed.mmdevice_id = identity::take_string(unsafe { self.device.GetId()? })?;
+        observed.windows_friendly_name = windows_friendly_name(&self.device)?;
+        observed.device_desc = optional_property(&self.device, &PKEY_Device_DeviceDesc);
+        observed.device_interface_friendly_name =
+            optional_property(&self.device, &PKEY_DeviceInterface_FriendlyName);
+        // Collect only for baseline/fresh first observations. No topology/COM
+        // reference survives this call; while-held polls do not repeat it or
+        // misrepresent a saved baseline as a current topology observation.
+        observed.topology =
+            topology::collect_once(&self.topology_pending, || topology::collect(&self.device));
+        Ok(observed)
+    }
+
+    pub fn release(mut self) -> anyhow::Result<()> {
+        let stopped = self.stream.stop();
+        // Drop every native reference even if Stop fails; do not postpone release
+        // until a successful service rename or hide the original Stop error.
+        drop(self);
+        stopped
+    }
+}
+
+fn optional_property(device: &IMMDevice, key: &PROPERTYKEY) -> PropertyReadback {
+    // Reopen this actual MMDevice's read-only store for each observation. Never
+    // fill a missing property from provider specs, a parent or the held cache.
+    let read = || {
+        let store = unsafe { device.OpenPropertyStore(STGM_READ) }.map_err(|error| {
+            PropertyReadError::OpenPropertyStore {
+                hresult: error.code().0,
+                message: error.to_string(),
+            }
+        })?;
+        let property =
+            unsafe { store.GetValue(key) }.map_err(|error| PropertyReadError::GetValue {
+                hresult: error.code().0,
+                message: error.to_string(),
+            })?;
+        property_text(&property)
+    };
+    match read() {
+        Ok(value) => PropertyReadback::Value { value },
+        Err(error) => PropertyReadback::Error { error },
+    }
+}
+
+fn property_text(property: &PROPVARIANT) -> Result<String, PropertyReadError> {
+    use windows::Win32::System::Variant::VT_LPWSTR;
+    let vartype = property.vt();
+    if vartype != VT_LPWSTR {
+        return Err(PropertyReadError::UnexpectedType { vartype: vartype.0 });
+    }
+    // SAFETY: the VARTYPE was checked before accessing the string union. The
+    // PROPVARIANT keeps its COM-owned string alive until the exact UTF-16 copy
+    // completes; its normal Drop then clears it, including error paths.
+    unsafe {
+        let pointer = property.Anonymous.Anonymous.Anonymous.pwszVal;
+        if pointer.is_null() {
+            return Err(PropertyReadError::NullString);
+        }
+        String::from_utf16(pointer.as_wide()).map_err(|error| PropertyReadError::InvalidUtf16 {
+            message: error.to_string(),
+        })
+    }
+}
+
+fn windows_friendly_name(device: &IMMDevice) -> anyhow::Result<String> {
+    use windows::Win32::{
+        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
+        System::{Com::STGM_READ, Variant::VT_LPWSTR},
+    };
+    // SAFETY: apartment-local IMMDevice; the PROPVARIANT owns its string until
+    // the strict UTF-16 copy finishes. Its Drop clears the COM allocation.
+    unsafe {
+        let store = device.OpenPropertyStore(STGM_READ)?;
+        let property = store.GetValue(&PKEY_Device_FriendlyName)?;
+        ensure!(
+            property.Anonymous.Anonymous.vt == VT_LPWSTR,
+            "Windows FriendlyName is not VT_LPWSTR"
+        );
+        let pointer = property.Anonymous.Anonymous.Anonymous.pwszVal;
+        ensure!(!pointer.is_null(), "Windows FriendlyName is null");
+        Ok(String::from_utf16(pointer.as_wide())?)
+    }
 }
 
 impl Pair {
@@ -508,5 +676,73 @@ impl Stream {
 impl Drop for Stream {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use windows::{
+        Win32::System::{
+            Com::{
+                CoTaskMemAlloc,
+                StructuredStorage::{PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0},
+            },
+            Variant::{VT_LPWSTR, VT_UI4},
+        },
+        core::PWSTR,
+    };
+
+    fn string_property(units: &[u16]) -> PROPVARIANT {
+        assert_eq!(units.last(), Some(&0));
+        // The synthetic property owns a COM-task allocation, so its normal
+        // PROPVARIANT Drop clears exactly the allocation used by this test.
+        let pointer = unsafe { CoTaskMemAlloc(std::mem::size_of_val(units)) }.cast::<u16>();
+        assert!(!pointer.is_null());
+        unsafe { std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len()) };
+        PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_LPWSTR,
+                    Anonymous: PROPVARIANT_0_0_0 {
+                        pwszVal: PWSTR(pointer),
+                    },
+                    ..Default::default()
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn optional_property_copies_exact_utf16_without_friendly_name_substitution() {
+        let units: Vec<_> = "Description (Adapter) ".encode_utf16().chain([0]).collect();
+        let property = string_property(&units);
+        assert_eq!(property_text(&property).unwrap(), "Description (Adapter) ");
+        assert_eq!(property_text(&string_property(&[0])).unwrap(), "");
+    }
+
+    #[test]
+    fn optional_property_keeps_missing_wrong_type_null_and_invalid_utf16_errors() {
+        assert_eq!(
+            property_text(&PROPVARIANT::default()),
+            Err(PropertyReadError::UnexpectedType { vartype: 0 })
+        );
+        assert_eq!(
+            property_text(&PROPVARIANT::from(7u32)),
+            Err(PropertyReadError::UnexpectedType { vartype: VT_UI4.0 })
+        );
+        let null = PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_LPWSTR,
+                    ..Default::default()
+                }),
+            },
+        };
+        assert_eq!(property_text(&null), Err(PropertyReadError::NullString));
+        assert!(matches!(
+            property_text(&string_property(&[0xd800, 0])),
+            Err(PropertyReadError::InvalidUtf16 { .. })
+        ));
     }
 }

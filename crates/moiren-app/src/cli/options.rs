@@ -1,0 +1,282 @@
+use anyhow::{Context, Result, bail, ensure};
+
+use crate::service::{
+    AudioSettings, DeliveryProvenance, ExpertInputBuffer, ProcessWindowPolicy, ProcessingPrecision,
+    TransportLatencySettings,
+};
+use moiren_engine::node::DeviceMode;
+
+#[derive(Debug, Clone)]
+pub(super) struct MonitorOptions {
+    pub pid: Option<u32>,
+    pub output: Option<String>,
+    pub seconds: u16,
+    pub measure_seconds: Option<u16>,
+    pub startup_timeout_ms: u64,
+    pub audio: AudioSettings,
+    target: Option<u32>,
+    capacity: Option<u32>,
+    jitter: Option<u32>,
+    packet: Option<u32>,
+    gap: Option<u32>,
+    age: Option<u64>,
+    ingress_elapsed: Option<u64>,
+    window_max_initial_unserved: Option<u64>,
+    window_max_initial_prime_discarded: Option<u64>,
+    window_min_output_frames: Option<u64>,
+    window_min_output_reads: Option<u64>,
+    window_min_output_span: Option<u64>,
+}
+
+impl Default for MonitorOptions {
+    fn default() -> Self {
+        Self {
+            pid: None,
+            output: None,
+            seconds: 30,
+            measure_seconds: None,
+            startup_timeout_ms: 15000,
+            audio: AudioSettings::default(),
+            target: None,
+            capacity: None,
+            jitter: None,
+            packet: None,
+            gap: None,
+            age: None,
+            ingress_elapsed: None,
+            window_max_initial_unserved: None,
+            window_max_initial_prime_discarded: None,
+            window_min_output_frames: None,
+            window_min_output_reads: None,
+            window_min_output_span: None,
+        }
+    }
+}
+
+impl MonitorOptions {
+    pub fn window_policy(&self) -> Result<Option<ProcessWindowPolicy>> {
+        let supplied = [
+            self.window_max_initial_unserved,
+            self.window_max_initial_prime_discarded,
+            self.window_min_output_frames,
+            self.window_min_output_reads,
+            self.window_min_output_span,
+        ]
+        .iter()
+        .filter(|field| field.is_some())
+        .count();
+        if supplied == 0 {
+            return Ok(None);
+        }
+        ensure!(
+            supplied == 5,
+            "Process window policy requires all five --window-* thresholds together"
+        );
+        ensure!(
+            self.measured_target()?.is_some(),
+            "Process window policy requires --measure-seconds and target, capacity and jitter together"
+        );
+        let policy = ProcessWindowPolicy {
+            max_initial_unserved_frames: self
+                .window_max_initial_unserved
+                .expect("complete window tuple"),
+            max_initial_prime_discarded_frames: self
+                .window_max_initial_prime_discarded
+                .expect("complete window tuple"),
+            min_output_frames: self
+                .window_min_output_frames
+                .expect("complete window tuple"),
+            min_output_reads: self.window_min_output_reads.expect("complete window tuple"),
+            min_output_span_100ns: self.window_min_output_span.expect("complete window tuple"),
+        };
+        policy.validate().map_err(anyhow::Error::msg)?;
+        Ok(Some(policy))
+    }
+
+    pub fn set(&mut self, flag: &str, value: &str) -> Result<()> {
+        let number = || {
+            value
+                .parse::<u32>()
+                .with_context(|| format!("invalid {flag} value"))
+        };
+        let window_number = || {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("invalid {flag} value"))
+        };
+        match flag {
+            "--process" => self.pid = Some(number()?),
+            "--output" => self.output = Some(value.into()),
+            "--seconds" => self.seconds = value.parse().context("invalid --seconds value")?,
+            "--measure-seconds" => {
+                self.measure_seconds =
+                    Some(value.parse().context("invalid --measure-seconds value")?)
+            }
+            "--startup-timeout-ms" => {
+                self.startup_timeout_ms = value.parse().context("invalid startup timeout")?
+            }
+            "--engine-block-frames" => self.audio.processing.block_frames = number()?,
+            "--output-buffer-frames" => self.audio.output.buffer_frames = Some(number()?),
+            "--output-mode" => {
+                self.audio.output.mode = match value {
+                    "shared" => DeviceMode::Shared,
+                    "exclusive" => DeviceMode::Exclusive,
+                    _ => bail!("--output-mode must be shared or exclusive"),
+                }
+            }
+            "--precision" => {
+                self.audio.processing.precision = match value {
+                    "f32" => ProcessingPrecision::F32,
+                    "f64" => ProcessingPrecision::F64,
+                    _ => bail!("--precision must be f32 or f64"),
+                }
+            }
+            "--target-frames" => self.target = Some(number()?),
+            "--capacity-frames" => self.capacity = Some(number()?),
+            "--jitter-frames" => self.jitter = Some(number()?),
+            "--max-packet-frames" => self.packet = Some(number()?),
+            "--max-gap-frames" => self.gap = Some(number()?),
+            "--window-max-initial-unserved-frames" => {
+                self.window_max_initial_unserved = Some(window_number()?)
+            }
+            "--window-max-initial-prime-discarded-frames" => {
+                self.window_max_initial_prime_discarded = Some(window_number()?)
+            }
+            "--window-min-output-frames" => self.window_min_output_frames = Some(window_number()?),
+            "--window-min-output-reads" => self.window_min_output_reads = Some(window_number()?),
+            "--window-min-output-span-100ns" => {
+                self.window_min_output_span = Some(window_number()?)
+            }
+            "--age-limit-100ns" => {
+                self.age = Some(value.parse().context("invalid sample-age limit")?)
+            }
+            "--max-ingress-elapsed-100ns" => {
+                let limit = value
+                    .parse::<u64>()
+                    .context("invalid --max-ingress-elapsed-100ns value")?;
+                ensure!(limit > 0, "--max-ingress-elapsed-100ns must be positive");
+                self.ingress_elapsed = Some(limit);
+            }
+            _ => bail!("unknown monitor option: {flag}; use monitor --help"),
+        }
+        Ok(())
+    }
+
+    pub fn measured_target(&self) -> Result<Option<(u32, u32, u32)>> {
+        let Some(seconds) = self.measure_seconds else {
+            return Ok(None);
+        };
+        ensure!(
+            (1..=60).contains(&seconds),
+            "--measure-seconds must be 1..60"
+        );
+        ensure!(
+            self.ingress_elapsed.is_none(),
+            "measured Process budget does not support a host ingress elapsed limit"
+        );
+        ensure!(
+            self.packet.is_none() && self.gap.is_none(),
+            "measured Process budget requires no packet/gap bounds; delivery is observed during the baseline"
+        );
+        ensure!(
+            self.age.is_none(),
+            "Process sample-age enforcement unsupported: packet timestamps do not establish sample age"
+        );
+        let (Some(capacity), Some(target), Some(jitter)) =
+            (self.capacity, self.target, self.jitter)
+        else {
+            bail!(
+                "measured Process budget requires target, capacity and jitter together with --measure-seconds"
+            );
+        };
+        ensure!(
+            (4..=262_144).contains(&capacity)
+                && target >= 2
+                && target < capacity
+                && jitter < capacity,
+            "measured Process budget requires capacity in 4..262144, 2 <= target < capacity and jitter < capacity"
+        );
+        // Only request shape is known before observation; actual delivery and
+        // complete consumer-demand admission belong to owner preparation.
+        Ok(Some((capacity, target, jitter)))
+    }
+
+    pub fn transport(&self) -> Result<TransportLatencySettings> {
+        self.window_policy()?;
+        if self.measured_target()?.is_some() {
+            // Start the observation phase with the unchanged compatible policy,
+            // never guessed Empirical bounds or the unadmitted requested target.
+            return Ok(TransportLatencySettings::default());
+        }
+        let fields = [
+            self.target,
+            self.capacity,
+            self.jitter,
+            self.packet,
+            self.gap,
+        ];
+        let supplied = fields.iter().filter(|field| field.is_some()).count();
+        ensure!(
+            supplied == 0 || supplied == fields.len(),
+            "explicit Process budget requires target, capacity, jitter, max-packet and max-gap together"
+        );
+        let mut settings = TransportLatencySettings {
+            process_max_ingress_elapsed_100ns: self.ingress_elapsed,
+            ..Default::default()
+        };
+        if supplied != 0 {
+            settings.process = Some(ExpertInputBuffer {
+                target_frames: self.target.expect("complete tuple"),
+                capacity_frames: self.capacity.expect("complete tuple"),
+                jitter_frames: self.jitter.expect("complete tuple"),
+                max_packet_frames: self.packet.expect("complete tuple"),
+                max_gap_frames: self.gap.expect("complete tuple"),
+                age_limit_100ns: self.age,
+                provenance: DeliveryProvenance::Declared,
+            });
+        }
+        // Compatible must not silently discard unsupported age intent either.
+        if supplied == 0 && self.age.is_some() {
+            bail!(
+                "Process sample-age enforcement unsupported: packet timestamps do not establish sample age"
+            );
+        }
+        settings.validate().map_err(anyhow::Error::msg)?;
+        Ok(settings)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.pid
+                .is_some_and(|pid| pid != 0 && pid != std::process::id()),
+            "--process requires a nonzero PID other than Moiren itself"
+        );
+        ensure!(
+            self.output
+                .as_ref()
+                .is_some_and(|output| !output.trim().is_empty()
+                    && !output.contains('\0')
+                    && output.len() <= 32768),
+            "--output requires an explicit endpoint identity"
+        );
+        ensure!(
+            (1..=600).contains(&self.seconds),
+            "--seconds must be 1..600"
+        );
+        ensure!(
+            (1..=30000).contains(&self.startup_timeout_ms),
+            "--startup-timeout-ms must be 1..30000"
+        );
+        self.audio.validate()?;
+        ensure!(
+            self.age.is_none(),
+            "Process sample-age enforcement unsupported: packet timestamps do not establish sample age"
+        );
+        let transport = self.transport()?;
+        #[cfg(windows)]
+        transport.process_options().prepare()?;
+        #[cfg(not(windows))]
+        let _ = transport;
+        Ok(())
+    }
+}

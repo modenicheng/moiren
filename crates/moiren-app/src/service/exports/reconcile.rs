@@ -50,16 +50,31 @@ pub struct ExportReconcilePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportStatus {
     pub intent: ExportIntent,
-    /// Exact Windows MMDevice evidence for the current native endpoint identity.
+    /// Name retained from the provider CREATE specification, not Windows readback.
+    pub actual_name: Option<String>,
+    /// Exact Windows MMDevice FriendlyName evidence for the current native identity.
     pub windows_name: Option<WindowsEndpointNameObservation>,
+    /// True until the provider has observed recreation with the requested CREATE name.
+    /// This is not evidence that Windows exposes the same FriendlyName.
+    pub rename_pending: bool,
     pub resource: ExportResourceState,
     pub allow_default: bool,
     pub gate_open: bool,
     pub active_revision: Option<u64>,
+    /// Detached provider evidence; it does not participate in readiness.
+    #[cfg(windows)]
+    pub diagnostics: Option<ExportDiagnostics>,
     /// Last validated native [pdo, session, endpoint, stream, gate] observation.
     /// Read-only probe evidence; it grants no readiness or gate authority.
     #[cfg(feature = "vad-integration-probe")]
     pub native_stamp: Option<[u64; 5]>,
+    /// Current accepted lifecycle result, including Absent without a provider.
+    /// Probe-only evidence; never grants presence, readiness or gate authority.
+    #[cfg(feature = "vad-integration-probe")]
+    pub observation_generation: Option<u64>,
+    /// Last confirmed native removal, not a current lifecycle observation.
+    #[cfg(feature = "vad-integration-probe")]
+    pub native_retirement: Option<ExportRetirementEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +192,22 @@ impl ExportService {
             .into_values()
             .map(|intent| {
                 let observed = self.observations.get(&intent.endpoint_id);
+                let provider_name = observed
+                    .filter(|value| {
+                        self.available
+                            && matches!(
+                                value.resource,
+                                ExportResourceState::Present | ExportResourceState::Removing
+                            )
+                    })
+                    .map(|value| value.intent.name.clone());
+                let windows_name = self.windows_names.get(&intent.endpoint_id).cloned();
+                let rename_pending =
+                    intent.enabled && provider_name.as_deref() != Some(&intent.name);
                 ExportStatus {
+                    rename_pending,
+                    actual_name: provider_name,
+                    windows_name,
                     resource: if self.available {
                         observed.map_or(ExportResourceState::Absent, |value| value.resource)
                     } else {
@@ -188,9 +218,31 @@ impl ExportService {
                     active_revision: observed
                         .filter(|value| self.available && confirms_active(value, graph))
                         .and_then(|value| value.active_revision),
-                    windows_name: self.windows_names.get(&intent.endpoint_id).cloned(),
+                    #[cfg(windows)]
+                    diagnostics: self
+                        .diagnostics
+                        .get(&intent.endpoint_id)
+                        .filter(|diagnostics| {
+                            self.available
+                                && observed.is_some_and(|value| {
+                                    value.generation == diagnostics.generation
+                                        && !matches!(
+                                            value.resource,
+                                            ExportResourceState::Absent
+                                                | ExportResourceState::Unavailable
+                                        )
+                                })
+                        })
+                        .cloned(),
                     #[cfg(feature = "vad-integration-probe")]
                     native_stamp: self.native_stamps.get(&intent.endpoint_id).copied(),
+                    #[cfg(feature = "vad-integration-probe")]
+                    observation_generation: self
+                        .observation_generations
+                        .get(&intent.endpoint_id)
+                        .copied(),
+                    #[cfg(feature = "vad-integration-probe")]
+                    native_retirement: self.native_retirements.get(&intent.endpoint_id).copied(),
                     intent,
                 }
             })

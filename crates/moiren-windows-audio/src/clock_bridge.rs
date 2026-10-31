@@ -1,15 +1,20 @@
 //! Backend-owned capture clock adaptation. The graph sees stereo f32 at its
 //! prepared Engine rate; native layout and clock correction stay here.
-use crate::latency::clock::QpcClock;
+use crate::latency::QpcClock;
 use rtrb::RingBuffer;
 use std::sync::Arc;
 use thiserror::Error;
 
+#[path = "clock_bridge/ingress.rs"]
 mod ingress;
+#[path = "clock_bridge/rate.rs"]
 mod rate;
 pub use rate::RateClock;
+#[path = "clock_bridge/source.rs"]
 mod source;
+#[path = "clock_bridge/telemetry.rs"]
 mod telemetry;
+#[path = "clock_bridge/timing.rs"]
 mod timing;
 pub use ingress::{CaptureIngress, CapturePacket};
 pub use source::ClockSource;
@@ -44,6 +49,8 @@ pub struct ClockBridgeConfig {
     /// Optional age limit for live native input. This is deliberately an
     /// explicit owner-local policy; offline FIFO consumers leave it unset.
     pub age_limit_100ns: Option<u64>,
+    /// Host publication residence only; not native source/sample age.
+    pub max_ingress_elapsed_100ns: Option<u64>,
 }
 impl Default for ClockBridgeConfig {
     fn default() -> Self {
@@ -59,10 +66,25 @@ impl Default for ClockBridgeConfig {
             max_correction_ppm: 2000.0,
             byte_budget: 8 * 1024 * 1024,
             age_limit_100ns: None,
+            max_ingress_elapsed_100ns: None,
         }
     }
 }
 impl ClockBridgeConfig {
+    /// Samples and per-frame timing/generation metadata share one bounded ring.
+    pub(crate) fn storage_bytes(self) -> Result<usize, ClockBridgeError> {
+        self.capacity_frames
+            .checked_mul(size_of::<Frame>())
+            .and_then(|bytes| {
+                bytes.checked_add(crate::latency::queue::queue_history_storage_bytes())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(crate::latency::packets::packet_history_storage_bytes())
+            })
+            .filter(|&bytes| bytes <= isize::MAX as usize && bytes <= self.byte_budget)
+            .ok_or(ClockBridgeError::BudgetExceeded)
+    }
+
     pub fn with_prepared_input(
         input_sample_rate: u32,
         input_channels: usize,
@@ -137,6 +159,7 @@ struct Frame {
     generation: u64,
     packet_stamp: Option<timing::PacketStamp>,
     packet_offset_frames: u64,
+    ingress_started_100ns: Option<std::num::NonZeroU64>,
 }
 
 /// Non-RT preparation. Every endpoint has one owner; all allocation and final
@@ -158,21 +181,33 @@ pub(crate) fn capture_bridge_with_clock(
         || config.target_fill_frames >= config.capacity_frames
         || !config.prepared_input_valid()
         || config.age_limit_100ns == Some(0)
+        || config.max_ingress_elapsed_100ns == Some(0)
         || !config.max_correction_ppm.is_finite()
         || !(0.0..=2000.0).contains(&config.max_correction_ppm)
     {
         return Err(ClockBridgeError::InvalidConfig);
     }
-    config
-        .capacity_frames
-        .checked_mul(size_of::<Frame>())
-        .filter(|&n| n <= isize::MAX as usize && n <= config.byte_budget)
-        .ok_or(ClockBridgeError::BudgetExceeded)?;
-    let counters = Arc::new(Counters::new(config.capacity_frames));
+    config.storage_bytes()?;
+    let (delivery_writer, delivery_events) = crate::latency::events::event_history();
+    let (queue_writer, queue_events) = crate::latency::queue::queue_history();
+    let (packet_writer, packet_events) = crate::latency::packets::packet_history();
+    let counters = Arc::new(Counters::new(
+        config.capacity_frames,
+        delivery_events,
+        queue_events,
+        packet_events,
+    ));
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
     Ok((
-        CaptureIngress::new(tx, config, Arc::clone(&counters)),
-        ClockSource::new(rx, config, Arc::clone(&counters), age_clock),
+        CaptureIngress::new(
+            tx,
+            config,
+            Arc::clone(&counters),
+            delivery_writer,
+            packet_writer,
+            age_clock,
+        ),
+        ClockSource::new(rx, config, Arc::clone(&counters), age_clock, queue_writer),
         BridgeObserver(counters),
     ))
 }

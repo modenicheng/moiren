@@ -29,7 +29,8 @@ NTSTATUS VadAudioConfigureInit(PWDFDEVICE_INIT init)
 
 VAD_PAGE _Use_decl_annotations_
 NTSTATUS VadAudioInitialize(WDFDEVICE child, uint32_t intent, uint32_t channels,
-    const MOIREN_VAD_ENDPOINT_ID& stableId)
+    const MOIREN_VAD_ENDPOINT_ID& stableId,
+    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS])
 {
     PAGED_CODE();
     if (!vad::ValidEndpoint(intent, channels)) {
@@ -47,6 +48,7 @@ NTSTATUS VadAudioInitialize(WDFDEVICE child, uint32_t intent, uint32_t channels,
     device->Intent = intent;
     device->Channels = channels;
     device->Identity = vad::audio::CircuitInstanceIdentity(stableId, intent);
+    vad::EndpointReference(name, device->Reference);
     KeInitializeMutex(&device->Lifecycle, 0);
     KeInitializeSpinLock(&device->State);
     ACX_DEVICE_CONFIG config;

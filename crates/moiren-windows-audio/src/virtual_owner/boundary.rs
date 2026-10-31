@@ -8,7 +8,7 @@ use moiren_engine::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
 use crate::NATIVE_SAMPLE_RATE;
@@ -20,25 +20,121 @@ const SRC_HEADROOM_FRAMES: usize = 32;
 /// and regressions.
 #[derive(Debug, Default)]
 pub struct BoundaryProbe {
+    capacity_frames: AtomicU32,
+    /// Zero means adaptation has no prepared content target.
+    target_frames: AtomicU32,
     level_frames: AtomicU32,
     /// Servo correction applied to this carrier, in thousandths of a ppm.
     /// Positive drains the queue faster.
     applied_milli_ppm: AtomicI32,
     xruns: AtomicU64,
     soft_events: AtomicU64,
+    playback_events_version: AtomicU64,
+    initial_prime_muted_frames: AtomicU64,
+    recovery_prime_muted_frames: AtomicU64,
+    short_read_callbacks: AtomicU64,
+    initial_prime_complete: AtomicBool,
+    playback_events_saturated: AtomicBool,
+}
+
+/// Source-local classification, not a collector startup/steady-state decision.
+/// Muting is counted in Engine output frames; short reads count carrier calls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PlaybackBoundaryEvents {
+    pub initial_prime_muted_frames: u64,
+    /// The source has finished its initial mute, including multi-callback
+    /// primes. Published coherently with the classified counters; recovery
+    /// primes and epoch resets never turn completed startup back into pending.
+    pub initial_prime_complete: bool,
+    pub recovery_prime_muted_frames: u64,
+    pub short_read_callbacks: u64,
+    /// At least one classified counter exhausted u64. Values never wrap to zero.
+    pub saturated: bool,
 }
 
 /// Latest probe sample. `level_frames` is queued content (occupancy, not
 /// free space) for both directions.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BoundaryProbeSample {
+    /// Prepared carrier capacity in native 48 kHz frames; zero until attached.
+    /// Frame counts saturate at u32::MAX, as does the live occupancy sample.
+    pub capacity_frames: u32,
+    /// Effective TOTAL carrier content target immediately before graph
+    /// transfer, in native frames. None means drift adaptation is not prepared.
+    /// Preparation writes this metadata; RT observations and resets never do.
+    pub target_frames: Option<u32>,
     pub level_frames: u32,
     pub applied_milli_ppm: i32,
     pub xruns: u64,
     pub soft_events: u64,
+    /// None before a playback carrier read, for microphone probes, or while a
+    /// one-attempt classified snapshot is unavailable. Never an inferred zero.
+    pub playback_events: Option<PlaybackBoundaryEvents>,
 }
 
 impl BoundaryProbe {
+    /// The attached playback source is the unique writer. Fixed scalar work,
+    /// no CAS retry: readers either see one complete publication or unknown.
+    fn observe_playback_events(
+        &self,
+        initial: u64,
+        recovery: u64,
+        short_reads: u64,
+        initial_prime_complete: bool,
+    ) {
+        let version = self.playback_events_version.load(Ordering::SeqCst);
+        let Some(next) = version.checked_add(2).filter(|_| version.is_multiple_of(2)) else {
+            self.playback_events_version
+                .store(u64::MAX, Ordering::SeqCst);
+            return;
+        };
+        self.playback_events_version
+            .store(version + 1, Ordering::SeqCst);
+        for (counter, delta) in [
+            (&self.initial_prime_muted_frames, initial),
+            (&self.recovery_prime_muted_frames, recovery),
+            (&self.short_read_callbacks, short_reads),
+        ] {
+            let previous = counter.load(Ordering::SeqCst);
+            let value = previous.checked_add(delta).unwrap_or_else(|| {
+                self.playback_events_saturated.store(true, Ordering::SeqCst);
+                u64::MAX
+            });
+            counter.store(value, Ordering::SeqCst);
+        }
+        self.initial_prime_complete
+            .store(initial_prime_complete, Ordering::SeqCst);
+        self.playback_events_version.store(next, Ordering::SeqCst);
+    }
+
+    fn playback_events_snapshot(&self) -> Option<PlaybackBoundaryEvents> {
+        let before = self.playback_events_version.load(Ordering::SeqCst);
+        if before == 0 || !before.is_multiple_of(2) {
+            return None;
+        }
+        let events = PlaybackBoundaryEvents {
+            initial_prime_muted_frames: self.initial_prime_muted_frames.load(Ordering::SeqCst),
+            initial_prime_complete: self.initial_prime_complete.load(Ordering::SeqCst),
+            recovery_prime_muted_frames: self.recovery_prime_muted_frames.load(Ordering::SeqCst),
+            short_read_callbacks: self.short_read_callbacks.load(Ordering::SeqCst),
+            saturated: self.playback_events_saturated.load(Ordering::SeqCst),
+        };
+        (self.playback_events_version.load(Ordering::SeqCst) == before).then_some(events)
+    }
+
+    /// Preparation only. Both builder orders publish the final carrier
+    /// geometry before streaming, without pretending to observe live content.
+    fn prepare(&self, capacity_frames: usize, target_frames: Option<usize>) {
+        self.capacity_frames.store(
+            u32::try_from(capacity_frames).unwrap_or(u32::MAX),
+            Ordering::Relaxed,
+        );
+        self.target_frames.store(
+            target_frames.map_or(0, |target| u32::try_from(target).unwrap_or(u32::MAX)),
+            Ordering::Relaxed,
+        );
+    }
+
     /// Realtime path: relaxed stores and adds only.
     fn observe(&self, level_frames: usize, applied_ppm: f64, xruns: u64, soft_events: u64) {
         self.level_frames.store(
@@ -54,21 +150,32 @@ impl BoundaryProbe {
 
     /// Control side: sample the latest snapshot.
     pub fn snapshot(&self) -> BoundaryProbeSample {
+        let target = self.target_frames.load(Ordering::Relaxed);
         BoundaryProbeSample {
+            capacity_frames: self.capacity_frames.load(Ordering::Relaxed),
+            target_frames: (target != 0).then_some(target),
             level_frames: self.level_frames.load(Ordering::Relaxed),
             applied_milli_ppm: self.applied_milli_ppm.load(Ordering::Relaxed),
             xruns: self.xruns.load(Ordering::Relaxed),
             soft_events: self.soft_events.load(Ordering::Relaxed),
+            playback_events: self.playback_events_snapshot(),
         }
     }
 }
 
-/// Reuses the existing carrier: reserve a worst-case transfer, then center the
-/// remaining headroom. This is not an additional audio queue or a latency claim.
+/// Reuses the carrier, reserving one worst-case transfer before observing the
+/// residual. The legacy policy centers headroom; explicit targets name content.
+/// Neither policy introduces another audio queue or a latency claim.
 struct ClockDrift {
     servo: FollowerServo,
     transfer: usize,
     primed: bool,
+    reference: DriftReference,
+}
+
+enum DriftReference {
+    Legacy,
+    Content,
 }
 
 struct EpochHandshake {
@@ -86,6 +193,33 @@ impl ClockDrift {
             servo: FollowerServo::new(FollowerServo::start_target(headroom, capacity - transfer)),
             transfer,
             primed: false,
+            reference: DriftReference::Legacy,
+        })
+    }
+    fn with_target(
+        capacity: usize,
+        transfer: usize,
+        native_target_frames: usize,
+    ) -> Result<Self, BackendError> {
+        let residual = native_target_frames
+            .checked_sub(transfer)
+            .filter(|&frames| frames >= SRC_HEADROOM_FRAMES)
+            .ok_or_else(invalid_layout)?;
+        if native_target_frames
+            .checked_add(transfer)
+            .is_none_or(|frames| frames > capacity)
+            || native_target_frames >= capacity
+        {
+            return Err(invalid_layout());
+        }
+        Ok(Self {
+            // correction() reserves a transfer from the observation too.
+            // Keeping both in the same coordinates makes the total requested
+            // content neutral and the playback prime threshold exactly target.
+            servo: FollowerServo::new(residual),
+            transfer,
+            primed: false,
+            reference: DriftReference::Content,
         })
     }
     fn reset(&mut self) {
@@ -95,13 +229,44 @@ impl ClockDrift {
     fn correction(&mut self, available: usize) -> f64 {
         self.servo.observe(available.saturating_sub(self.transfer))
     }
+    fn target_level(&self) -> usize {
+        // Both constructors admit this sum against the carrier capacity.
+        self.transfer + self.servo.target()
+    }
+    fn microphone_content_target(&self, capacity: usize) -> usize {
+        match self.reference {
+            DriftReference::Legacy => capacity - self.target_level(),
+            DriftReference::Content => self.target_level(),
+        }
+    }
+    fn microphone_correction(&mut self, capacity: usize, free: usize) -> f64 {
+        match self.reference {
+            DriftReference::Legacy => -self.correction(free),
+            // Positive SRC correction consumes Engine input faster, producing
+            // fewer native frames. Excess microphone content must drain.
+            DriftReference::Content => self.correction(capacity - free),
+        }
+    }
+    fn microphone_applied_ppm(&self) -> f64 {
+        match self.reference {
+            DriftReference::Legacy => -self.servo.correction(),
+            DriftReference::Content => self.servo.correction(),
+        }
+    }
 }
 
 fn drift_transfer(frames: usize, rate: u32) -> Result<usize, BackendError> {
     // Covers both +2000 ppm consumption and the inverse -2000 ppm output
     // ratio, plus the existing FIR lookahead, at every accepted Engine rate.
-    let native =
-        (frames as u128 * u128::from(NATIVE_SAMPLE_RATE) * 1000).div_ceil(u128::from(rate) * 998);
+    let scaled = (frames as u128)
+        .checked_mul(u128::from(NATIVE_SAMPLE_RATE))
+        .and_then(|frames| frames.checked_mul(1000))
+        .ok_or_else(invalid_layout)?;
+    let denominator = u128::from(rate)
+        .checked_mul(998)
+        .filter(|&value| value > 0)
+        .ok_or_else(invalid_layout)?;
+    let native = scaled.div_ceil(denominator);
     usize::try_from(native)
         .ok()
         .and_then(|n| n.checked_add(SRC_HEADROOM_FRAMES))
@@ -216,6 +381,13 @@ pub struct VirtualPlaybackSource {
     probe: Option<Arc<BoundaryProbe>>,
     /// Frames of exact-zero recovery edge remaining after a prime (re)arm.
     resume_mute: usize,
+    /// This source lifetime's first prime is startup; epoch resets and
+    /// starvation never turn a subsequent prime into another initial prime.
+    playback_primed_once: bool,
+    resume_mute_is_initial: bool,
+    /// Set only when the original mute actually finishes. An interrupted
+    /// initial prime cannot be completed by a later recovery or epoch reset.
+    initial_prime_completed: bool,
 }
 
 impl VirtualPlaybackSource {
@@ -263,13 +435,27 @@ impl VirtualPlaybackSource {
             handshake: None,
             probe: None,
             resume_mute: 0,
+            playback_primed_once: false,
+            resume_mute_is_initial: false,
+            initial_prime_completed: false,
         })
     }
 
-    /// Attach the control-side carrier probe; snapshots land once per block.
+    /// Attach the control-side probe and publish prepared geometry off RT.
+    /// Live occupancy snapshots land once per completed transfer.
     pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
         self.probe = Some(probe);
+        self.prepare_probe();
         self
+    }
+
+    fn prepare_probe(&self) {
+        if let Some(probe) = &self.probe {
+            probe.prepare(
+                self.carrier.capacity_frames(),
+                self.drift.as_ref().map(ClockDrift::target_level),
+            );
+        }
     }
 
     /// Off-RT opt-in for independently paced native and Engine callbacks.
@@ -282,9 +468,40 @@ impl VirtualPlaybackSource {
     /// of 4800 frames therefore holds roughly 50 ms, plus FIR lookahead; this
     /// safety reference is NOT a negotiated latency-profile budget. Admission
     /// against actual native packet/jitter timing remains a provider concern.
-    pub fn with_clock_drift(mut self) -> Result<Self, BackendError> {
+    pub fn with_clock_drift(self) -> Result<Self, BackendError> {
         let transfer = drift_transfer(self.max_block_frames, self.engine_sample_rate)?;
         let drift = ClockDrift::new(self.carrier.capacity_frames(), transfer)?;
+        self.prepare_clock_drift(drift)
+    }
+
+    /// Prepare drift adaptation off RT with an explicit native content target.
+    ///
+    /// `native_target_frames` is total queued carrier content at 48 kHz,
+    /// observed immediately before a graph read. Playback primes at this
+    /// threshold. It excludes the FIR's retained history and is independent
+    /// of carrier capacity; the probe samples occupancy after the read.
+    ///
+    /// Admission requires at least the worst corrected max-block transfer
+    /// (including SRC lookahead) plus `SRC_HEADROOM_FRAMES`, and room for
+    /// another worst transfer above the target. Invalid targets and insufficient
+    /// preparation budgets are rejected before allocating staging or FIR.
+    /// Native packet/jitter admission belongs to the provider: this target is
+    /// neither a negotiated period nor a measured end-to-end latency.
+    pub fn with_clock_drift_target(
+        self,
+        native_target_frames: usize,
+    ) -> Result<Self, BackendError> {
+        let transfer = drift_transfer(self.max_block_frames, self.engine_sample_rate)?;
+        let drift = ClockDrift::with_target(
+            self.carrier.capacity_frames(),
+            transfer,
+            native_target_frames,
+        )?;
+        self.prepare_clock_drift(drift)
+    }
+
+    fn prepare_clock_drift(mut self, drift: ClockDrift) -> Result<Self, BackendError> {
+        let transfer = drift.transfer;
         let carrier_bytes = validate_carrier(self.carrier.capacity_frames(), transfer)?;
         let capacity = Some(src_capacity(transfer)?);
         let scratch = staging(
@@ -297,6 +514,7 @@ impl VirtualPlaybackSource {
         self.scratch = scratch;
         self.resampler = src;
         self.drift = Some(drift);
+        self.prepare_probe();
         Ok(self)
     }
 
@@ -393,7 +611,7 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
         if let Some(drift) = &mut self.drift {
             let available = self.carrier.available_frames();
             if !drift.primed {
-                if available < drift.transfer + drift.servo.target() {
+                if available < drift.target_level() {
                     output.clear();
                     return short(output.frames());
                 }
@@ -403,6 +621,8 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 // first FIR length is the honest recovery edge: counted as
                 // silence downstream, never as corrupted content.
                 self.resume_mute = SRC_HEADROOM_FRAMES;
+                self.resume_mute_is_initial = !self.playback_primed_once;
+                self.playback_primed_once = true;
             }
             self.resampler
                 .as_mut()
@@ -488,7 +708,25 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 output.clear();
                 return short(output.frames());
             }
+            if self.drift.is_none()
+                || (self.playback_primed_once
+                    && self.resume_mute_is_initial
+                    && self.resume_mute == 0)
+            {
+                self.initial_prime_completed = true;
+            }
             if let Some(probe) = &self.probe {
+                let (initial, recovery) = if self.resume_mute_is_initial {
+                    (muted as u64, 0)
+                } else {
+                    (0, muted as u64)
+                };
+                probe.observe_playback_events(
+                    initial,
+                    recovery,
+                    u64::from(transferred < required_input),
+                    self.initial_prime_completed,
+                );
                 probe.observe(
                     self.carrier.available_frames(),
                     self.drift
@@ -515,7 +753,14 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
             output.clear();
             return short(output.frames());
         }
+        self.initial_prime_completed = true;
         if let Some(probe) = &self.probe {
+            probe.observe_playback_events(
+                0,
+                0,
+                u64::from(report.transferred_frames < required_input),
+                self.initial_prime_completed,
+            );
             probe.observe(self.carrier.available_frames(), 0.0, report.xruns, 0);
         }
         report
@@ -583,10 +828,24 @@ impl VirtualMicrophoneSink {
         })
     }
 
-    /// Attach the control-side carrier probe; snapshots land once per block.
+    /// Attach the control-side probe and publish prepared geometry off RT.
+    /// Live occupancy snapshots land once per completed transfer.
     pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
         self.probe = Some(probe);
+        self.prepare_probe();
         self
+    }
+
+    fn prepare_probe(&self) {
+        if let Some(probe) = &self.probe {
+            let capacity = self.carrier.capacity_frames();
+            probe.prepare(
+                capacity,
+                self.drift
+                    .as_ref()
+                    .map(|drift| drift.microphone_content_target(capacity)),
+            );
+        }
     }
 
     /// Off-RT packet-phase/drift adaptation without an additional carrier.
@@ -594,9 +853,36 @@ impl VirtualMicrophoneSink {
     /// FIR must produce faster, not consume Engine input faster.
     /// Uses the same ring-derived, unqualified residency policy as
     /// [`VirtualPlaybackSource::with_clock_drift`], with no extra audio queue.
-    pub fn with_clock_drift(mut self) -> Result<Self, BackendError> {
+    pub fn with_clock_drift(self) -> Result<Self, BackendError> {
         let transfer = drift_transfer(self.max_block_frames, self.engine_sample_rate)?;
         let drift = ClockDrift::new(self.carrier.capacity_frames(), transfer)?;
+        self.prepare_clock_drift(drift)
+    }
+
+    /// Prepare drift adaptation off RT with a total native content target.
+    ///
+    /// Uses the same units and transfer reserves as
+    /// [`VirtualPlaybackSource::with_clock_drift_target`], observing queued
+    /// content immediately before graph publication (`capacity - free_space`).
+    /// Excess content increases SRC consumption of Engine input and reduces
+    /// native publication. The probe observes occupancy after publication.
+    /// This does not prefill or delay microphone publication; freshness,
+    /// drop-new backpressure and the epoch handshake retain their semantics.
+    pub fn with_clock_drift_target(
+        self,
+        native_target_frames: usize,
+    ) -> Result<Self, BackendError> {
+        let transfer = drift_transfer(self.max_block_frames, self.engine_sample_rate)?;
+        let drift = ClockDrift::with_target(
+            self.carrier.capacity_frames(),
+            transfer,
+            native_target_frames,
+        )?;
+        self.prepare_clock_drift(drift)
+    }
+
+    fn prepare_clock_drift(mut self, drift: ClockDrift) -> Result<Self, BackendError> {
+        let transfer = drift.transfer;
         let carrier_bytes = validate_carrier(self.carrier.capacity_frames(), transfer)?;
         let capacity = Some(src_capacity(self.max_block_frames)?);
         let scratch = staging(
@@ -609,6 +895,7 @@ impl VirtualMicrophoneSink {
         self.scratch = scratch;
         self.resampler = src;
         self.drift = Some(drift);
+        self.prepare_probe();
         Ok(self)
     }
 
@@ -712,7 +999,10 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             self.resampler
                 .as_mut()
                 .expect("drift FIR prepared")
-                .set_correction_ppm(-drift.correction(self.carrier.available_frames()));
+                .set_correction_ppm(drift.microphone_correction(
+                    self.carrier.capacity_frames(),
+                    self.carrier.available_frames(),
+                ));
         }
         if let Some(src) = &mut self.resampler {
             if input.frames() > 0 && self.carrier.available_frames() == 0 {
@@ -725,10 +1015,9 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 if let Some(probe) = &self.probe {
                     probe.observe(
                         self.carrier.capacity_frames(),
-                        -self
-                            .drift
+                        self.drift
                             .as_ref()
-                            .map_or(0.0, |drift| drift.servo.correction()),
+                            .map_or(0.0, ClockDrift::microphone_applied_ppm),
                         1,
                         1,
                     );
@@ -787,10 +1076,9 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             if let Some(probe) = &self.probe {
                 probe.observe(
                     self.carrier.capacity_frames() - self.carrier.available_frames(),
-                    -self
-                        .drift
+                    self.drift
                         .as_ref()
-                        .map_or(0.0, |drift| drift.servo.correction()),
+                        .map_or(0.0, ClockDrift::microphone_applied_ppm),
                     report.xruns,
                     u64::from(!complete),
                 );
@@ -827,3 +1115,6 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod target_tests;

@@ -1,4 +1,14 @@
 use super::*;
+
+#[path = "sequence_tests.rs"]
+mod sequence_tests;
+
+#[path = "input_capture_tests.rs"]
+mod input_capture_tests;
+#[path = "reprime_tests.rs"]
+mod reprime_tests;
+#[path = "startup_poll_tests.rs"]
+mod startup_poll_tests;
 use crate::vad::{SampleFormat, pcm_slots::SlotBook};
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
 use moiren_engine::{
@@ -41,6 +51,8 @@ impl FakeClock {
 
 thread_local! {
     static BEFORE_PLAYBACK_PUBLISH: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    static AFTER_PLAYBACK_PUBLISH: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    static BEFORE_DECODE_CALL: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
 }
 
 pub(super) fn before_playback_publish() {
@@ -49,6 +61,51 @@ pub(super) fn before_playback_publish() {
             hook();
         }
     });
+}
+
+pub(super) fn after_playback_publish() {
+    AFTER_PLAYBACK_PUBLISH.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+pub(super) fn before_decode_call() {
+    BEFORE_DECODE_CALL.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[test]
+fn publication_telemetry_reader_exit_never_claims_carrier_publication() {
+    let state = state();
+    bind_publication(&state);
+    let mut io = FakeIo::default();
+    let mut tickets = pending_reads(&mut io);
+    let (writer, reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bridge =
+        PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer).unwrap();
+    BEFORE_DECODE_CALL.with(|hook| *hook.borrow_mut() = Some(Box::new(move || drop(reader))));
+    io.slots[tickets[0].slot].ready = true;
+    assert_eq!(
+        playback(
+            &mut io,
+            &mut bridge,
+            &mut tickets,
+            &mut PacketOrder::default(),
+            &state,
+            0
+        )
+        .unwrap(),
+        PumpState::Reset
+    );
+    let snapshot = state.telemetry.snapshot().playback_publication.unwrap();
+    assert_eq!(snapshot.successful_decode_calls, 0);
+    assert_eq!(snapshot.carrier_full_packets, 1);
+    assert_eq!(snapshot.carrier_publication_effect_known, None);
 }
 
 struct Slot {
@@ -201,6 +258,256 @@ impl PcmIo for FakeIo {
 }
 fn state() -> SessionState {
     SessionState::new(Arc::new(Admission::new()))
+}
+
+#[test]
+fn publication_telemetry_counts_only_accepted_decode_calls_not_stale_placeholders() {
+    let state = state();
+    let mut io = FakeIo::default();
+    let mut tickets = pending_reads(&mut io);
+    let (writer, mut reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bridge =
+        PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer).unwrap();
+    for ticket in tickets.iter().take(2) {
+        io.slots[ticket.slot].ready = true;
+        io.slots[ticket.slot].stamp = PcmPacketStamp {
+            sequence: 1,
+            qpc: 1,
+        };
+    }
+    assert_eq!(
+        playback(
+            &mut io,
+            &mut bridge,
+            &mut tickets,
+            &mut PacketOrder::default(),
+            &state,
+            0
+        )
+        .unwrap(),
+        PumpState::Current
+    );
+    let snapshot = serde_json::to_value(state.telemetry.snapshot()).unwrap();
+    assert_eq!(
+        snapshot["playback_publication"]["successful_decode_calls"],
+        1
+    );
+    assert_eq!(snapshot["playback_publication"]["decode_ok_frames"], 1);
+    assert_eq!(snapshot["playback_publication"]["stale_packets"], 1);
+    assert_eq!(snapshot["completed_packets"], 2);
+    let mut samples = [0.; 4];
+    assert_eq!(
+        reader
+            .read_interleaved(&mut samples)
+            .unwrap()
+            .transferred_frames,
+        1
+    );
+    assert_eq!(samples, [1., 1., 0., 0.]);
+}
+
+fn bind_publication(state: &SessionState) {
+    state.active.store(true, Ordering::Release);
+    let ticket = state.admission.set(Some(1));
+    state.admitted_ticket.store(ticket, Ordering::Release);
+    state.admitted_revision.store(1, Ordering::Release);
+    state
+        .telemetry
+        .publication
+        .bind(super::super::telemetry::PublicationIdentity {
+            native_stamp: [1, 2, 3, 4, 5],
+            reset_epoch: 0,
+            admission_ticket: ticket,
+            active_revision: 1,
+            format: SampleFormat::Float32 as u32,
+            channels: 2,
+            packet_frames: 1,
+        });
+}
+
+#[test]
+fn publication_telemetry_real_pump_keeps_full_and_decode_errors_out_of_success_count() {
+    for malformed in [false, true] {
+        let state = state();
+        bind_publication(&state);
+        let mut io = FakeIo::default();
+        let mut tickets = pending_reads(&mut io);
+        let (mut writer, _reader) = audio_bridge(2, 2, 4096).unwrap();
+        if !malformed {
+            assert!(writer.write_interleaved_exact(&[1.; 4]).unwrap());
+        }
+        let mut bridge =
+            PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer)
+                .unwrap();
+        let first = &mut io.slots[tickets[0].slot];
+        first.ready = true;
+        if malformed {
+            first.packet.pop();
+        }
+        super::super::telemetry::publication::set_test_ticks(&[Some(100), Some(110)]);
+        let result = playback(
+            &mut io,
+            &mut bridge,
+            &mut tickets,
+            &mut PacketOrder::default(),
+            &state,
+            0,
+        );
+        if malformed {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), PumpState::Reset);
+        }
+        let snapshot = state.telemetry.snapshot();
+        let s = snapshot.playback_publication.unwrap();
+        assert_eq!(s.successful_decode_calls, 0);
+        assert_eq!(s.valid_call_intervals, 0);
+        assert_eq!(s.carrier_full_packets, u64::from(!malformed));
+        assert_eq!(s.decode_error_packets, u64::from(malformed));
+        assert_eq!(snapshot.completed_packets, 1);
+        assert_eq!(snapshot.carrier_dropped_packets, u64::from(!malformed));
+    }
+}
+
+#[test]
+fn publication_telemetry_real_pump_delayed_publication_and_post_write_revocation_are_distinct() {
+    let state = Arc::new(state());
+    bind_publication(&state);
+    let mut io = FakeIo::default();
+    let mut tickets = pending_reads(&mut io);
+    let (writer, mut reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bridge =
+        PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer).unwrap();
+    let mut order = PacketOrder::default();
+    for (index, ticks) in [(0, [Some(100), Some(110)]), (1, [Some(120), Some(10_000)])] {
+        io.slots[tickets[0].slot].ready = true;
+        super::super::telemetry::publication::set_test_ticks(&ticks);
+        playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0).unwrap();
+        assert_eq!(state.telemetry.snapshot().completed_packets, index + 1);
+    }
+    let s = state.telemetry.snapshot().playback_publication.unwrap();
+    let frequency = s.qpc_frequency_hz.unwrap();
+    let expected = (9_900u128 * 10_000_000).div_ceil(u128::from(frequency));
+    assert_eq!(s.max_call_interval_100ns, Some(expected as u64));
+    assert_eq!(s.valid_call_intervals, 1);
+    let revoke = state.clone();
+    AFTER_PLAYBACK_PUBLISH
+        .with(|hook| *hook.borrow_mut() = Some(Box::new(move || revoke.revoke())));
+    io.slots[tickets[0].slot].ready = true;
+    super::super::telemetry::publication::set_test_ticks(&[Some(11_000), Some(11_010)]);
+    assert_eq!(
+        playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0).unwrap(),
+        PumpState::Current
+    );
+    let s = state.telemetry.snapshot().playback_publication.unwrap();
+    assert_eq!(
+        s.successful_decode_calls, 3,
+        "do not erase a write that really happened"
+    );
+    assert_eq!(s.ambiguous_packets, 1);
+    assert_eq!(s.valid_call_intervals, 1);
+    assert!(s.invalidated);
+    let mut samples = [0.; 6];
+    assert_eq!(
+        reader
+            .read_interleaved(&mut samples)
+            .unwrap()
+            .transferred_frames,
+        3
+    );
+    assert_eq!(samples, [1., 1., 2., 2., 3., 3.]);
+}
+
+#[test]
+fn publication_telemetry_real_pump_epoch_race_does_not_change_audio_reset_decision() {
+    let state = Arc::new(state());
+    bind_publication(&state);
+    let mut io = FakeIo::default();
+    let mut tickets = pending_reads(&mut io);
+    let (writer, mut reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bridge =
+        PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer).unwrap();
+    let mut order = PacketOrder::default();
+    let reset = state.clone();
+    AFTER_PLAYBACK_PUBLISH.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            reset.reset_epoch.store(1, Ordering::Release);
+        }))
+    });
+    io.slots[tickets[0].slot].ready = true;
+    super::super::telemetry::publication::set_test_ticks(&[Some(100), Some(110)]);
+    assert_eq!(
+        playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0).unwrap(),
+        PumpState::Reset
+    );
+    let s = state.telemetry.snapshot().playback_publication.unwrap();
+    assert_eq!(s.successful_decode_calls, 1);
+    assert_eq!(s.ambiguous_packets, 1);
+    assert_eq!(s.valid_call_intervals, 0);
+    let mut samples = [0.; 2];
+    assert_eq!(
+        reader
+            .read_interleaved(&mut samples)
+            .unwrap()
+            .transferred_frames,
+        1
+    );
+    assert_eq!(samples, [1., 1.]);
+}
+
+#[test]
+fn publication_telemetry_actual_pump_adds_no_allocation_or_deallocation() {
+    let state = state();
+    bind_publication(&state);
+    let mut io = FakeIo::default();
+    // Avoid refill-side FakeIo Vec allocation; the real owner uses prepared
+    // slots. Keep one ready front packet and three pending slots after it.
+    io.collected.reserve(crate::vad::REQUEST_SLOTS);
+    let mut tickets = pending_reads(&mut io);
+    io.defer_reads = 1;
+    io.slots[tickets[0].slot].ready = true;
+    let (writer, mut reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bridge =
+        PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer).unwrap();
+    let mut order = PacketOrder::default();
+    super::super::telemetry::publication::set_test_ticks(&[Some(100), Some(110)]);
+    let result = crate::test_allocation::assert_allocates_nothing(|| {
+        playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0)
+    });
+    assert_eq!(result.unwrap(), PumpState::Current);
+    assert_eq!(
+        state
+            .telemetry
+            .snapshot()
+            .playback_publication
+            .unwrap()
+            .successful_decode_calls,
+        1
+    );
+    let mut samples = [0.; 2];
+    assert_eq!(
+        reader
+            .read_interleaved(&mut samples)
+            .unwrap()
+            .transferred_frames,
+        1
+    );
+    assert_eq!(samples, [1., 1.]);
+}
+
+#[test]
+fn pcm_cancel_keeps_terminal_cancellation_typed_until_transport_checks_lifecycle() {
+    assert!(matches!(
+        pcm_error(ClientError::Cancelled),
+        BackendError::Cancelled
+    ));
+    let code = windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED.to_hresult();
+    let error = pcm_error(ClientError::windows(
+        "GetOverlappedResult(VAD PCM)",
+        windows::core::Error::from_hresult(code),
+    ));
+    assert!(matches!(error, BackendError::ResourceUnavailable(_)));
+    assert!(error.to_string().contains("GetOverlappedResult(VAD PCM)"));
 }
 fn pending_reads(io: &mut FakeIo) -> Vec<PcmTicket> {
     (0..crate::vad::REQUEST_SLOTS)
@@ -939,6 +1246,27 @@ fn microphone_submits_one_packet_and_replenishes_only_after_completion() {
 }
 
 #[test]
+fn microphone_pump_records_native_submission_completion_and_silence_metrics() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+
+    let initial = f.state.telemetry.snapshot();
+    assert_eq!(initial.packet_frames, 480);
+    assert_eq!(initial.submission_attempts, 1);
+    assert_eq!(initial.submitted_packets, 1);
+    assert_eq!(initial.completed_packets, 0);
+    assert_eq!(initial.silence_packets, 1);
+    assert_eq!(initial.silence_frames, 480);
+
+    f.collect(false);
+    let completed = f.state.telemetry.snapshot();
+    assert_eq!(completed.completed_packets, 1);
+    assert_eq!(completed.completion_interval_observations, 0);
+    assert_eq!(completed.microphone_submission_service.observations, 1);
+    assert_eq!(completed.playback_transfer_service.observations, 0);
+}
+
+#[test]
 fn playback_defers_kernel_quota_reads_without_failing_the_session() {
     let mut io = FakeIo {
         defer_reads: 1,
@@ -1335,7 +1663,7 @@ fn microphone_reprime_after_a_hard_reset_waits_for_two_packets_or_the_deadline()
     let mut f = MicrophoneFixture::new(480);
     f.cycle().unwrap();
     f.io.drain(&mut f.tickets);
-    f.pump.arm_reprime(f.clock.now());
+    f.pump.arm_reprime(f.clock.now()).unwrap();
     // One packet of margin is not enough: the first fresh submission waits.
     f.writer.write_interleaved_exact(&vec![1.; 960]).unwrap();
     assert_eq!(f.cycle().unwrap(), PumpState::Current);
@@ -1357,7 +1685,7 @@ fn microphone_reprime_after_a_hard_reset_waits_for_two_packets_or_the_deadline()
     let mut f = MicrophoneFixture::new(480);
     f.cycle().unwrap();
     f.io.drain(&mut f.tickets);
-    f.pump.arm_reprime(f.clock.now());
+    f.pump.arm_reprime(f.clock.now()).unwrap();
     f.writer.write_interleaved_exact(&vec![7.; 1920]).unwrap();
     assert_eq!(f.cycle().unwrap(), PumpState::Current);
     assert_eq!(f.io.written.len(), 2);
@@ -1494,6 +1822,10 @@ fn microphone_dropped_completion_rearms_from_collection_without_catch_up() {
     }
     let collected = f.clock.now();
     f.collect(true);
+    let dropped = f.state.telemetry.snapshot();
+    assert_eq!(dropped.driver_dropped_packets, 1);
+    assert_eq!(dropped.microphone_submission_service.observations, 1);
+    assert_eq!(dropped.playback_transfer_service.observations, 0);
     assert_eq!(
         f.pump.next_submit,
         Some(collected + Duration::from_millis(5))
@@ -1516,6 +1848,14 @@ fn microphone_dropped_completion_rearms_from_collection_without_catch_up() {
     assert_eq!(
         f.pump.next_submit,
         Some(f.clock.now() + Duration::from_millis(5))
+    );
+    assert_eq!(
+        f.state
+            .telemetry
+            .snapshot()
+            .microphone_submission_service
+            .observations,
+        2
     );
 }
 

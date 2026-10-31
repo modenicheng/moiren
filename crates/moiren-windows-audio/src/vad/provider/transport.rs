@@ -2,10 +2,58 @@
 //! only the lifecycle adapter can open a native gate.
 use super::{lifecycle::EndpointControl, *};
 
+pub(super) fn microphone_running(
+    current: super::super::EndpointSnapshot,
+    state: &SessionState,
+) -> bool {
+    current.stream_state() == StreamState::Running && current.gate_open() && state.admitted()
+}
+
+pub(super) fn wait_for_microphone_poll(
+    current: super::super::EndpointSnapshot,
+    capabilities: super::super::Capabilities,
+    state: &SessionState,
+    transport_started: bool,
+    observed_reset: u64,
+    sleep: impl FnOnce(Duration),
+) {
+    // Only the fresh admitted first-start Paused observation gets a shorter
+    // poll. No owner or WRITE is prepared here; the next QUERY must still
+    // authorize Running. Recovery and steady-state event waits stay unchanged.
+    let first_paused = !transport_started
+        && observed_reset == 0
+        && state.reset_epoch.load(Ordering::Acquire) == 0
+        && state.producer_quiesced_epoch.load(Ordering::Acquire) == 0
+        && state.consumer_quiesced_epoch.load(Ordering::Acquire) == 0
+        && state.admitted()
+        && current.intent() == Intent::Microphone
+        && current.stream_state() == StreamState::Paused;
+    let wait = if first_paused && let Ok(shape) = current.pcm_shape(capabilities) {
+        Duration::from_nanos(
+            (u64::from(shape.frames()) * 1_000_000_000)
+                .div_ceil(u64::from(super::super::SAMPLE_RATE) * 2),
+        )
+        .min(POLL_INTERVAL)
+    } else {
+        POLL_INTERVAL
+    };
+    sleep(wait);
+}
+
+#[cfg(test)]
 pub(super) fn poll<C: EndpointControl>(
     control: &mut C,
     previous: super::super::EndpointSnapshot,
     state: &SessionState,
+) -> Result<(super::super::EndpointSnapshot, bool), BackendError> {
+    poll_with_started_transport(control, previous, state, true)
+}
+
+pub(super) fn poll_with_started_transport<C: EndpointControl>(
+    control: &mut C,
+    previous: super::super::EndpointSnapshot,
+    state: &SessionState,
+    transport_started: bool,
 ) -> Result<(super::super::EndpointSnapshot, bool), BackendError> {
     let queried = control.query(previous)?;
     if queried.dropped_packets() != previous.dropped_packets()
@@ -17,7 +65,12 @@ pub(super) fn poll<C: EndpointControl>(
         );
     }
     let admitted_before = state.admitted();
-    if queried.stream_generation() != previous.stream_generation() {
+    // Before the first PCM owner exists, the native client is still completing
+    // its initial stream transition. There is no retired owner to fence yet,
+    // so any stamp change in this one startup window is not recovery. Once an
+    // owner has been created, every subsequent change remains a real reset.
+    let initial_stream_start = !transport_started;
+    if queried.stream_generation() != previous.stream_generation() && !initial_stream_start {
         state.revoke();
     }
     if queried.stream_generation() != previous.stream_generation()
@@ -54,9 +107,16 @@ pub(super) fn poll<C: EndpointControl>(
     // observes a difference. This only requests a reset: the PCM owner must be
     // retired and the producer/consumer handshake must finish before reuse.
     let observed = result.as_ref().copied().unwrap_or(queried);
-    let changed = observed.stream_generation() != previous.stream_generation()
-        || observed.gate_epoch() != previous.gate_epoch();
+    let stream_changed = observed.stream_generation() != previous.stream_generation();
+    // Opening a freshly admitted gate advances GateEpoch, but there is no old
+    // PCM owner to fence yet. Count later gate changes as recovery; otherwise
+    // every normal Engine activation starts with a false epoch reset.
+    let opening_gate = !previous.gate_open() && observed.gate_open();
+    let changed = (stream_changed
+        || (observed.gate_epoch() != previous.gate_epoch() && !opening_gate))
+        && !initial_stream_start;
     if changed {
+        state.telemetry.recovery();
         state.reset_epoch.fetch_add(1, Ordering::AcqRel);
     }
     let current = result?;
@@ -74,15 +134,42 @@ pub(super) fn after_io_error<C: EndpointControl>(
     state: &SessionState,
     error: BackendError,
 ) -> Result<super::super::EndpointSnapshot, BackendError> {
-    let (current, changed) = poll(control, previous, state)?;
+    // Only a collected terminal PCM cancellation can be explained by a gate
+    // transition or explicit stop. A device/protocol/timeout fault stays a
+    // fault even if shutdown races it; never turn all retirement errors green.
+    if error != BackendError::Cancelled {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_io_fault endpoint={:?} previous={previous:?} cancel={} admitted={} error={error:?}",
+            previous.key(),
+            state.cancel.load(Ordering::Acquire),
+            state.admitted(),
+        );
+        return Err(error);
+    }
+    // A normal stop can race completion collection after the last loop check.
+    // Do not require an error-recovery QUERY once shutdown has been requested:
+    // run_* still closes the gate, retires all PCM owners and finishes drains.
+    if state.cancel.load(Ordering::Acquire) {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_pcm_cancel endpoint={:?} previous={previous:?} phase=stopping drained={}",
+            previous.key(),
+            state.drained.load(Ordering::Acquire),
+        );
+        return Ok(previous);
+    }
+    let (current, changed) = poll_with_started_transport(control, previous, state, true)?;
     log::debug!(
         target: "moiren::audio::vad",
-        "event=transport_io_error endpoint={:?} previous={previous:?} current={current:?} epoch_changed={changed} admitted={} error={error:?}",
+        "event=transport_io_error endpoint={:?} previous={previous:?} current={current:?} epoch_changed={changed} cancel={} admitted={} error={error:?}",
         current.key(),
+        state.cancel.load(Ordering::Acquire),
         state.admitted(),
     );
-    // Gate/stream transitions cancel pending PCM by design. Rebuild its slots
-    // from the observed epoch; a same-epoch native failure remains a fault.
+    // Native Pause/Closed alone does not prove caller stop intent. Without
+    // cancellation, a revoked gate/admission or an observed epoch change,
+    // retain the fault instead of restarting same-generation PCM silently.
     if changed || !current.gate_open() || !state.admitted() {
         Ok(current)
     } else {

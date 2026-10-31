@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'interface_name')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence', 'playback_copy', 'playback_copy_disabled', 'native_playback', 'native_playback_disabled')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,11 +15,119 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'interface_name') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence', 'playback_copy', 'playback_copy_disabled', 'native_playback', 'native_playback_disabled') } else { @($Test) })) {
+    $sourceName = $testName
+    $defines = @()
+    if ($testName -in @('native_playback', 'native_playback_disabled')) {
+        & python (Join-Path $PSScriptRoot 'tests\extract-native-playback.py') $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Native playback extraction failed ($LASTEXITCODE)." }
+        $sourceName = 'native_playback'
+        if ($testName -eq 'native_playback') { $defines = @('/DMOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC=1') }
+    }
+    if ($testName -in @('playback_copy', 'playback_copy_disabled')) {
+        & python (Join-Path $PSScriptRoot 'tests\extract-playback-copy.py') $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Playback copy extraction failed ($LASTEXITCODE)." }
+        $sourceName = 'playback_copy'
+        if ($testName -eq 'playback_copy') { $defines = @('/DMOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC=1') }
+    }
+    if ($testName -eq 'pause_fence') {
+        & python (Join-Path $PSScriptRoot 'tests\extract-pause-fence.py') $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Pause fence extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'capture_boundary') {
+        & python (Join-Path $PSScriptRoot 'tests\extract-capture-boundary.py') $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Capture boundary extraction failed ($LASTEXITCODE)." }
+    }
     if ($testName -eq 'interface_name') {
         & python (Join-Path $PSScriptRoot 'tests\extract-interface-name.py') `
             (Join-Path $PSScriptRoot 'src\Policy.cpp') (Join-Path $buildRoot 'interface-name-production.inc')
         if ($LASTEXITCODE -ne 0) { throw "Interface-name source extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'interface_name_native') {
+        # Compile publication/rollback from Policy.cpp, stubbing only DDI edges.
+        @'
+import importlib.util
+from pathlib import Path
+import re
+import sys
+sys.dont_write_bytecode = True
+root, output = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('extract', root / 'tests/extract-cleanup.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+source = root / 'src/Policy.cpp'
+text = source.read_text(encoding='utf-8')
+parts = re.findall(r'static const GUID \w+Category\s*=\s*\{[^;]+;', text)
+header = root / 'src/InterfaceName.h'
+if header.exists():
+    parts.append('#include "' + header.as_posix() + '"')
+reference = root / 'src/EndpointReference.h'
+if reference.exists():
+    parts.append('#include "' + reference.as_posix() + '"')
+functions = ['SnapshotPolicy', 'CreateKey', 'SetValue']
+if re.search(r'\bStageInterfaceName\s*\(', text):
+    functions.append('StageInterfaceName')
+functions += ['StageInterface', 'VadReleasePolicy', 'PreparePolicy', 'VadPreparePolicy']
+patterns = tuple((name, r'(?:static\s+)?(?:NTSTATUS|void)\s+' + name +
+    r'\s*\([^;{}]*\)\s*\{') for name in functions)
+parts.append(module.extract(text, source.as_posix(), patterns))
+(output / 'interface-name-native-production.inc').write_text('\n'.join(parts), encoding='utf-8')
+'@ | & python - $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Interface-name source extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'clock_diagnostics' -and
+        (Test-Path (Join-Path $PSScriptRoot 'src\audio\ClockDiagnostic.h'))) {
+        # Reuse the brace-aware extractor; test the actual callback/epoch glue.
+        @'
+import importlib.util
+from pathlib import Path
+import sys
+sys.dont_write_bytecode = True
+root, output = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('extract', root / 'tests/extract-cleanup.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+parts = []
+for relative, functions in (
+    ('src/Children.cpp', ('VadAudioRebaseDiscontinuity',)),
+    ('src/audio/Streams.cpp', ('TimerDrivenTick', 'VadAudioTimer')),
+    ('src/Control.cpp', ('TracePendingClockDiagnostic',)),
+):
+    source = root / relative
+    patterns = tuple((name, r'(?:static\s+)?(?:void|VOID)\s+' + name +
+        r'\s*\([^;{}]*\)\s*\{') for name in functions)
+    parts.append(module.extract(source.read_text(encoding='utf-8'), source.as_posix(), patterns))
+(output / 'clock-production.inc').write_text('\n'.join(parts), encoding='utf-8')
+'@ | & python - $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Clock source extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'diagnostics' -or $testName -eq 'unserved_diagnostics') {
+        & python (Join-Path $PSScriptRoot 'tests\extract-cleanup.py') --kind pcm `
+            (Join-Path $PSScriptRoot 'src\Pcm.cpp') (Join-Path $buildRoot 'pcm-production.inc')
+        if ($LASTEXITCODE -ne 0) { throw "PCM source extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'unserved_diagnostics') {
+        @'
+import importlib.util
+from pathlib import Path
+import sys
+sys.dont_write_bytecode = True
+root, output = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('extract', root / 'tests/extract-cleanup.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+parts = []
+for relative, functions in (
+    ('src/Pcm.cpp', ('ReserveRequest', 'VadPcmSubmit')),
+    ('src/Control.cpp', ('TracePendingUnservedDiagnostics',)),
+):
+    source = root / relative
+    patterns = tuple((name, r'(?:static\s+)?(?:NTSTATUS|void)\s+' + name +
+        r'\s*\([^;{}]*\)\s*\{') for name in functions)
+    parts.append(module.extract(source.read_text(encoding='utf-8'), source.as_posix(), patterns))
+(output / 'unserved-production.inc').write_text('\n'.join(parts), encoding='utf-8')
+'@ | & python - $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Unserved source extraction failed ($LASTEXITCODE)." }
     }
     if ($testName -eq 'cleanup') {
         # Compile the real cleanup functions against host DDI stubs, not a copy.
@@ -32,12 +140,12 @@ foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownershi
             (Join-Path $PSScriptRoot 'src\Children.cpp') (Join-Path $buildRoot 'removal-production.inc')
         if ($LASTEXITCODE -ne 0) { throw "Removal source extraction failed ($LASTEXITCODE)." }
     }
-    & $compiler /nologo /std:c++17 /W4 /WX /EHsc /MT `
+    & $compiler /nologo /std:c++17 /W4 /WX /EHsc /MT @defines `
         "/I$buildRoot" `
         "/I$tools\include" "/I$sdk\Include\10.0.28000.0\ucrt" `
         "/I$sdk\Include\10.0.28000.0\shared" "/I$sdk\Include\10.0.28000.0\um" `
         "/Fo$buildRoot\$testName.obj" "/Fe$buildRoot\$testName.exe" `
-        (Join-Path $PSScriptRoot "tests\$testName.cpp") /link `
+        (Join-Path $PSScriptRoot "tests\$sourceName.cpp") /link `
         "/LIBPATH:$tools\lib\x64" "/LIBPATH:$sdk\Lib\10.0.28000.0\ucrt\x64" `
         "/LIBPATH:$sdk\Lib\10.0.28000.0\um\x64"
     if ($LASTEXITCODE -ne 0) { throw "$testName host test compile failed ($LASTEXITCODE)." }

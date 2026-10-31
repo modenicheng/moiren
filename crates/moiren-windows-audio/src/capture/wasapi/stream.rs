@@ -1,12 +1,19 @@
 //! Native service/bridge lifecycle shared by physical and virtual capture.
+#[cfg(test)]
+#[path = "stream_live_tests.rs"]
+mod live_tests;
 use super::{
-    Startup, Wake, api, handle, packet::transfer_packet, preparation::CapturePreparation,
+    Startup, Wake, api, handle,
+    packet::{PROCESS_PACKET_SAFETY_BOUND_BYTES, PacketBound, transfer_packet},
+    preparation::CapturePreparation,
     wait_target,
 };
 use crate::{
     Activation, ActivationGate, SessionDuration,
-    capture::{CaptureError, CaptureReport, CaptureStatus},
-    latency::{CallbackObservation, LatencyRecorder, TelemetryMode, clock::QpcClock},
+    capture::{CaptureBufferSizeQuery, CaptureError, CaptureReport, CaptureSource, CaptureStatus},
+    latency::{
+        CallbackObservation, InputDeliveryRecorder, LatencyRecorder, TelemetryMode, clock::QpcClock,
+    },
     owner::{Mmcss, Streaming},
 };
 use std::{
@@ -17,10 +24,13 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use windows::Win32::{
-    Foundation::HANDLE,
-    Media::Audio::{IAudioCaptureClient, IAudioClient},
-    System::Threading::SetEvent,
+use windows::{
+    Win32::{
+        Foundation::{HANDLE, S_OK},
+        Media::Audio::{IAudioCaptureClient, IAudioClient},
+        System::Threading::SetEvent,
+    },
+    core::Interface,
 };
 
 pub(crate) struct StreamInput<'a> {
@@ -34,15 +44,20 @@ pub(crate) struct StreamInput<'a> {
     pub started: &'a AtomicBool,
     pub sample_rate: u32,
     pub channels: usize,
+    pub artifact: Option<crate::capture::PcmArtifactConfig>,
 }
 pub(crate) fn run(
     input: StreamInput<'_>,
     sender: &SyncSender<Result<Startup, CaptureError>>,
     report: &mut CaptureReport,
+    bridge: crate::clock_bridge::ClockBridgeConfig,
 ) -> Result<CaptureStatus, CaptureError> {
     run_prepared(
         input,
-        &CapturePreparation::Immediate(sender.clone()),
+        &CapturePreparation::Configured {
+            sender: sender.clone(),
+            config: bridge,
+        },
         report,
     )
 }
@@ -51,16 +66,79 @@ pub(super) fn run_prepared(
     preparation: &CapturePreparation,
     report: &mut CaptureReport,
 ) -> Result<CaptureStatus, CaptureError> {
-    let capacity = api("GetBufferSize(capture)", unsafe {
-        input.client.GetBufferSize()
-    })?;
-    if capacity == 0 || u64::from(capacity) * input.channels as u64 * 4 > 8 * 1024 * 1024 {
-        return Err(CaptureError::BufferBudget);
+    if report.source == CaptureSource::ProcessLoopback {
+        report.process_packet_safety_bound_bytes = Some(PROCESS_PACKET_SAFETY_BOUND_BYTES as u64);
     }
-    report.buffer_frames = Some(capacity);
+    // The generated binding hides nonnegative HRESULTs and zeroes its output.
+    // Call the same ABI directly once so a refused Process client preserves
+    // both the status and the output instead of looking like a budget choice.
+    // The poison is deliberately outside the unchanged 8 MiB safety bound.
+    let initial_frames = u32::MAX;
+    let mut capacity = initial_frames;
+    // SAFETY: this live owner-local client supplies its IAudioClient vtable;
+    // capacity is a valid UINT32 output for the duration of this one call.
+    let status =
+        unsafe { (input.client.vtable().GetBufferSize)(input.client.as_raw(), &mut capacity) };
+    let query = CaptureBufferSizeQuery {
+        hresult: status.0,
+        initial_frames,
+        raw_frames: capacity,
+        output_changed: capacity != initial_frames,
+        raw_bytes: u64::try_from(input.channels)
+            .ok()
+            .and_then(|channels| channels.checked_mul(4))
+            .and_then(|frame_bytes| u64::from(capacity).checked_mul(frame_bytes)),
+    };
+    report.buffer_size_query = Some(query);
+    if status.is_err() {
+        return Err(CaptureError::Api {
+            stage: "GetBufferSize(capture)",
+            hresult: status.0,
+        });
+    }
+    if status != S_OK {
+        return Err(CaptureError::InvalidBufferSize {
+            hresult: query.hresult,
+            raw_frames: query.raw_frames,
+            raw_bytes: query.raw_bytes,
+            output_changed: query.output_changed,
+        });
+    }
+    let packet_bound = if report.source == CaptureSource::ProcessLoopback {
+        // A successful virtual-client query is retained as raw evidence only,
+        // including zero, implausible, plausible, and unchanged output. Process
+        // packets have a separate fixed safety contract, not a capacity fallback.
+        // Chromium also defers its Process query until the first sample-ready
+        // event because of a Windows bug (crbug.com/411452039):
+        // src@623c32009e03672597ac3967474a7f8e8a87b1ce,
+        // media/audio/win/audio_low_latency_input_win.cc:1972-1982.
+        // Keep native timing unknown instead; never Start ahead of our gate to
+        // obtain a trustworthy capacity. The independent bridge is preallocated.
+        report.buffer_frames = None;
+        PacketBound::ProcessSafety
+    } else {
+        if !query.output_changed
+            || capacity == 0
+            || query
+                .raw_bytes
+                .is_none_or(|bytes| bytes == 0 || bytes > 8 * 1024 * 1024)
+        {
+            return Err(CaptureError::InvalidBufferSize {
+                hresult: query.hresult,
+                raw_frames: query.raw_frames,
+                raw_bytes: query.raw_bytes,
+                output_changed: query.output_changed,
+            });
+        }
+        report.buffer_frames = Some(capacity);
+        PacketBound::NativeCapacity(capacity)
+    };
     report.stream_latency_100ns = unsafe { input.client.GetStreamLatency() }.ok();
     let mut telemetry = LatencyRecorder::new(input.latency_telemetry);
-    let clock = QpcClock::prepare(input.latency_telemetry);
+    // Scalar live observations need QPC even when trace collection is disabled.
+    // Preparing frequency stays off RT; the recorder's selected mode is intact.
+    let clock = QpcClock::prepare(TelemetryMode::Summary);
+    let mut delivery = InputDeliveryRecorder::new(report.delivery_bound)?;
     report.sample_rate = Some(input.sample_rate);
     report.channels = Some(input.channels);
     let capture: IAudioCaptureClient =
@@ -71,16 +149,11 @@ pub(super) fn run_prepared(
         Wake::TargetExited => return Err(CaptureError::TargetExited),
         Wake::Audio | Wake::Timeout => {}
     }
-    let mut ingress = preparation.prepare(
-        crate::latency::NativeStreamTiming {
-            sample_rate: input.sample_rate,
-            period_frames: report.shared_period.actual_period_frames,
-            capacity_frames: capacity,
-        },
-        input.channels,
-        report,
-        clock,
-    )?;
+    // Allocate bounded evidence before publishing the startup bridge. A
+    // rejected artifact configuration must never look like a live capture to
+    // the control side.
+    report.prepare_artifact(input.artifact, input.sample_rate, input.channels)?;
+    let mut ingress = preparation.prepare(input.sample_rate, input.channels, report, clock)?;
     let activation = input.gate.wait_with_target(input.target)?;
     // A process can exit during preparation. Stop still wins over that exit.
     match wait_target(handle(input.stop), input.audio, input.target, 0)? {
@@ -125,37 +198,63 @@ pub(super) fn run_prepared(
             let mut native_frames = 0u64;
             let mut accepted_frames = 0u64;
             // Stop and process-exit checks also bound a continuously busy producer.
-            while input.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
-                match wait_target(handle(input.stop), input.audio, input.target, 0)? {
-                    Wake::Stop => return Ok(CaptureStatus::Stopped),
-                    Wake::TargetExited => return Ok(CaptureStatus::TargetExited),
-                    Wake::Audio | Wake::Timeout => {}
+            // A terminating drain may already have released packets. Publish
+            // them before propagating its outcome; partial service bursts do
+            // not establish a steady native period.
+            let drained = (|| -> Result<Option<CaptureStatus>, CaptureError> {
+                while input.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
+                    match wait_target(handle(input.stop), input.audio, input.target, 0)? {
+                        Wake::Stop => return Ok(Some(CaptureStatus::Stopped)),
+                        Wake::TargetExited => return Ok(Some(CaptureStatus::TargetExited)),
+                        Wake::Audio | Wake::Timeout => {}
+                    }
+                    if api("GetNextPacketSize(capture)", unsafe {
+                        capture.GetNextPacketSize()
+                    })? == 0
+                    {
+                        break;
+                    }
+                    let transfer = transfer_packet(
+                        &capture,
+                        packet_bound,
+                        &mut ingress,
+                        report.artifact_recorder.as_mut(),
+                        report.evidence_recorder.as_mut(),
+                    )?;
+                    if transfer.native_frames == 0 {
+                        break;
+                    }
+                    delivery.packet(
+                        transfer.native_frames,
+                        clock.as_ref().and_then(QpcClock::now),
+                    );
+                    native_frames = native_frames.saturating_add(u64::from(transfer.native_frames));
+                    accepted_frames =
+                        accepted_frames.saturating_add(transfer.accepted_frames as u64);
+                    report.packets += 1;
+                    ingress.publish_native_delivery(delivery.snapshot());
                 }
-                if api("GetNextPacketSize(capture)", unsafe {
-                    capture.GetNextPacketSize()
-                })? == 0
-                {
-                    break;
-                }
-                let transfer = transfer_packet(&capture, capacity, &mut ingress)?;
-                if transfer.native_frames == 0 {
-                    break;
-                }
-                native_frames = native_frames.saturating_add(u64::from(transfer.native_frames));
-                accepted_frames = accepted_frames.saturating_add(transfer.accepted_frames as u64);
-                report.packets += 1;
-            }
+                Ok(None)
+            })();
+            let completed_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
+            delivery.callback_burst(native_frames);
+            ingress.record_native_delivery_event(native_frames, completed_qpc_100ns);
+            ingress.publish_native_delivery(delivery.snapshot());
             telemetry.record(CallbackObservation {
                 wake_qpc_100ns,
-                completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
+                completed_qpc_100ns,
                 demand_frames: native_frames,
                 padding_before_frames: None,
                 submitted_frames: accepted_frames,
             });
+            if let Some(status) = drained? {
+                return Ok(status);
+            }
         }
         Ok(CaptureStatus::Completed)
     })();
     report.elapsed_seconds = started.elapsed().as_secs_f64();
+    report.delivery = delivery.snapshot();
     // Wake peer before retiring producer or releasing COM, including target exit.
     let peer_stop = api("SetEvent(capture peer stop)", unsafe {
         SetEvent(handle(input.stop))
@@ -188,5 +287,6 @@ pub(crate) fn finish(
             let _ = sender.try_send(Err(error));
         }
     }
+    report.finish_artifact();
     report
 }

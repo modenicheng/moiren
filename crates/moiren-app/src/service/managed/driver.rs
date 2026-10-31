@@ -2,8 +2,28 @@
 use super::*;
 
 impl ServiceDriver for ManagedDriver {
-    fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
+    fn request(&mut self, c: &mut ServiceContext, pool: &mut JobPool, request: AppRequest) {
+        // Every later control request supersedes a pending window selection.
+        // The worker still owns its reserved completion and no audio resource.
+        #[cfg(windows)]
+        if !matches!(&request, AppRequest::RefreshCatalog) {
+            self.window_evaluation = None;
+        }
+        #[cfg(not(windows))]
+        let _ = &pool;
         match request {
+            AppRequest::ApplyWindowedProcessBridge { request, policy } => {
+                #[cfg(windows)]
+                if let Err(error) = self.begin_windowed_process(c, pool, request, policy) {
+                    c.graph.record_error(error);
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = (request, policy);
+                    c.graph
+                        .record_error("observed Process windows require Windows");
+                }
+            }
             AppRequest::SetExportAuthorizations(values) => {
                 let previous = c.exports.authorizations.clone();
                 if let Err(error) = c.exports.set_authorizations(&values) {
@@ -21,7 +41,7 @@ impl ServiceDriver for ManagedDriver {
                         })
                     }) {
                         self.apply = false;
-                        self.apply_audio_settings = None;
+                        self.apply_settings = None;
                         let _ = c.core.stop();
                         self.retire(c);
                     }
@@ -39,13 +59,39 @@ impl ServiceDriver for ManagedDriver {
                     self.edits.clear();
                     c.graph.clear_pending();
                     self.apply = false;
-                    self.apply_audio_settings = None;
+                    self.apply_settings = None;
                 }
                 Err(error) => c.graph.record_error(error),
             },
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
+            }
+            AppRequest::SetTransportLatency(settings) => {
+                c.set_transport_latency(settings);
+            }
+            AppRequest::ApplyMeasuredProcessBridge(request) => {
+                match self.select_measured_process(c, request) {
+                    Ok(()) => {
+                        self.automatic_startup = false;
+                        self.auto_apply_deadline = None;
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        self.apply = true;
+                    }
+                    Err(error) => c.graph.record_error(error),
+                }
+            }
+            #[cfg(windows)]
+            AppRequest::ApplyEvaluatedProcessBridge(candidate) => {
+                match self.select_evaluated_process(c, &candidate) {
+                    Ok(()) => {
+                        self.automatic_startup = false;
+                        self.auto_apply_deadline = None;
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        self.apply = true;
+                    }
+                    Err(error) => c.graph.record_error(error),
+                }
             }
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
@@ -66,26 +112,28 @@ impl ServiceDriver for ManagedDriver {
                     c.graph.record_error(error);
                 } else if c.core.managed_desired(spec).is_ok() {
                     c.audio_settings = settings;
-                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                    self.apply_settings = Some(ApplySettings::capture(c));
                     self.apply = true;
                 }
             }
             AppRequest::ApplyGraph => {
                 self.automatic_startup = false;
                 self.auto_apply_deadline = None;
-                self.apply_audio_settings = Some(c.audio_settings.clone());
+                self.apply_settings = Some(ApplySettings::capture(c));
                 self.apply = true;
             }
             AppRequest::Stop => {
+                c.measured_process = None;
                 self.automatic_startup = false;
                 self.apply = false;
-                self.apply_audio_settings = None;
+                self.apply_settings = None;
                 self.auto_apply_deadline = None;
                 let _ = c.core.stop();
                 self.retire(c);
             }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
+                    c.measured_process = None;
                     self.exports_runtime.revoke();
                     self.document = self
                         .document
@@ -159,8 +207,8 @@ impl ServiceDriver for ManagedDriver {
             && deadline <= Instant::now()
         {
             self.auto_apply_deadline = None;
-            self.apply_audio_settings
-                .get_or_insert_with(|| c.audio_settings.clone());
+            self.apply_settings
+                .get_or_insert_with(|| ApplySettings::capture(c));
             self.apply = true;
         }
         if self.apply {
@@ -168,7 +216,9 @@ impl ServiceDriver for ManagedDriver {
         }
         if let Some(owner) = self.owner.as_ref() {
             let snapshot = owner.observer.read();
-            self.poll_observations(c, &snapshot, owner.generation);
+            self.poll_observations(c, &snapshot.state, owner.generation);
+            #[cfg(windows)]
+            self.poll_process_trace(c, &snapshot);
             self.poll_execution(c, &snapshot);
             self.poll_edits(c);
             self.poll_parameters(c);
@@ -181,9 +231,13 @@ impl ServiceDriver for ManagedDriver {
         update_vad_catalog(c);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
+        #[cfg(windows)]
+        {
+            self.window_evaluation = None;
+        }
         self.exiting = true;
         self.apply = false;
-        self.apply_audio_settings = None;
+        self.apply_settings = None;
         self.auto_apply_deadline = None;
         self.retire(c);
     }
@@ -233,27 +287,87 @@ fn update_vad_catalog(context: &mut ServiceContext) {
 }
 
 impl ManagedDriver {
+    pub(super) fn reject_failed_cleanup(
+        &mut self,
+        c: &mut ServiceContext,
+        just_reaped: bool,
+    ) -> bool {
+        let Some(cleanup) = c.last_cleanup.as_ref() else {
+            return false;
+        };
+        let state = &cleanup.state;
+        if state.host == host::HostState::Closed
+            && state.cleanup_error.is_none()
+            && state.fault.is_none()
+        {
+            return false;
+        }
+        let measured = self
+            .apply_settings
+            .as_ref()
+            .is_some_and(|settings| settings.measured_process.is_some());
+        // A measured baseline needs a clean receipt. Declared replacement may
+        // recover the modeled PCM disconnect, but no other queued work survives
+        // a cleanup failure. Once Closed, a later explicit declared request can
+        // retry without erasing the receipt or requiring a service restart.
+        if state.host == host::HostState::Closed
+            && !measured
+            && (!just_reaped
+                || (state.fault.is_none()
+                    && matches!(
+                        state.cleanup_error,
+                        Some(host::BackendError::ResourceUnavailable(_))
+                    )))
+        {
+            return false;
+        }
+        let error = format!(
+            "audio owner cleanup failed: generation={} host={:?}, cleanup_error={:?}, fault={:?}",
+            cleanup.generation.0, state.host, state.cleanup_error, state.fault,
+        );
+        // Keep the measured draft and original receipt for review; cancelling
+        // queued work must not silently turn it into a declared replacement.
+        self.apply = false;
+        self.apply_settings = None;
+        self.auto_apply_deadline = None;
+        self.automatic_startup = false;
+        c.core.failed(c.core.generation(), error.clone());
+        c.graph.record_error(error);
+        true
+    }
+
     /// Drain owner-reaping and catalog-refresh completions from the cleanup
     /// worker.
-    fn poll_completions(&mut self, c: &mut ServiceContext, budget: RoundBudget) {
+    pub(super) fn poll_completions(&mut self, c: &mut ServiceContext, budget: RoundBudget) {
         for _ in 0..budget.completions {
             let Some(completion) = self.queue().try_recv() else {
                 break;
             };
             match completion {
+                #[cfg(windows)]
+                Completion::WindowEvaluated { id, result } => {
+                    self.finish_windowed_process(c, id, result);
+                }
                 Completion::Exports(result) => {
                     for error in self.exports_runtime.complete(&mut c.exports, result) {
                         c.graph.record_error(error);
                     }
                 }
-                Completion::Reaped(generation) => {
+                Completion::Reaped(cleanup) => {
                     self.cleaning -= 1;
+                    let generation = cleanup.generation;
                     log::info!(
                         target: "moiren::audio::service",
                         "audio owner reaped: generation={generation:?} cleaning={}",
                         self.cleaning,
                     );
                     c.core.owner_reaped(generation);
+                    #[cfg(windows)]
+                    {
+                        c.process_trace_status = None;
+                    }
+                    c.last_cleanup = Some(cleanup);
+                    self.reject_failed_cleanup(c, true);
                 }
                 Completion::Catalog(result) => {
                     self.catalog.finished();
@@ -273,7 +387,7 @@ impl ManagedDriver {
                                     c.audio_settings.backend,
                                 ) {
                                     let _ = c.graph.configure_session(&spec);
-                                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                                    self.apply_settings = Some(ApplySettings::capture(c));
                                     self.apply = true;
                                 }
                                 // Known divergence: managed automatic startup
@@ -363,30 +477,54 @@ impl ManagedDriver {
     /// Publish native and professional observations, filtered by the running
     /// owner generation. Refreshes are tick-batched at 1 Hz: the raw counters
     /// advance every audio block, while the UI renders only static timing
-    /// rows. Generation and running-state transitions stay prompt through the
-    /// snapshot-side freshness filters rather than this cadence.
+    /// rows. Owner/execution transitions bypass this cadence and invalidate
+    /// stale native snapshots before they can be published again.
     #[cfg(windows)]
-    fn poll_observations(
+    pub(super) fn poll_observations(
         &mut self,
         c: &mut ServiceContext,
-        snapshot: &host::ProjectSnapshot,
+        state: &host::HostSnapshot,
         generation: SessionGeneration,
     ) {
         let now = std::time::Instant::now();
-        let due = self
-            .observation_refreshed_at
-            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1));
+        let identity = (generation, state.owner_generation, state.execution);
+        // Recovery can replace a native owner inside one app generation.
+        // Invalidate stale DTOs before the cadence guard, not one second later.
+        let fresh = |observed_generation, running, owner_generation| {
+            observed_generation == generation
+                && running
+                && owner_generation == state.owner_generation
+                && state.execution == ExecutionState::Running
+        };
+        if c.native_observations.as_ref().is_some_and(|value| {
+            !fresh(
+                value.generation,
+                value.observation.running,
+                value.observation.owner_generation,
+            )
+        }) {
+            c.native_observations = None;
+        }
+        if c.professional_observations.as_ref().is_some_and(|value| {
+            !fresh(
+                value.generation,
+                value.observation.running,
+                value.observation.owner_generation,
+            )
+        }) {
+            c.professional_observations = None;
+        }
+        let due = self.observation_identity != Some(identity)
+            || self
+                .observation_refreshed_at
+                .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1));
         if !due {
             return;
         }
         self.observation_refreshed_at = Some(now);
+        self.observation_identity = Some(identity);
         // Write-side stale guard: an observation counts only while its own
         // owner generation still runs.
-        let fresh = |running: bool, owner_generation: u64| {
-            running
-                && owner_generation == snapshot.state.owner_generation
-                && snapshot.state.execution == ExecutionState::Running
-        };
         c.professional_observations = self
             .professional_observations
             .as_ref()
@@ -397,17 +535,44 @@ impl ManagedDriver {
                     .as_ref()
                     .and_then(|value| value.snapshot())
             })
-            .filter(|observation| fresh(observation.running, observation.owner_generation))
+            .filter(|observation| {
+                fresh(
+                    generation,
+                    observation.running,
+                    observation.owner_generation,
+                )
+            })
             .map(|observation| ProfessionalSessionObservations {
+                generation,
+                observation,
+            });
+        c.native_observations = self
+            .native_observations
+            .as_ref()
+            .and_then(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.snapshot())
+            })
+            .filter(|observation| {
+                fresh(
+                    generation,
+                    observation.running,
+                    observation.owner_generation,
+                )
+            })
+            .map(|observation| NativeSessionObservations {
                 generation,
                 observation,
             });
     }
     #[cfg(not(windows))]
-    fn poll_observations(
+    pub(super) fn poll_observations(
         &mut self,
         _c: &mut ServiceContext,
-        _snapshot: &host::ProjectSnapshot,
+        _state: &host::HostSnapshot,
         _generation: SessionGeneration,
     ) {
     }
@@ -446,6 +611,11 @@ impl ManagedDriver {
             // to a device buffer request when no explicit buffer is set.
             c.active_latency_profile = Some(owner.profile);
             c.active_audio_settings = Some(owner.audio_settings.clone());
+            c.active_transport_latency = Some(owner.transport_latency);
+            c.active_measured_process = owner
+                .measured_process
+                .as_ref()
+                .map(|profile| profile.summary().clone());
             if owner.started.is_none() {
                 log::info!(
                     target: "moiren::audio::service",
@@ -470,6 +640,8 @@ impl ManagedDriver {
         } else {
             c.active_latency_profile = None;
             c.active_audio_settings = None;
+            c.active_transport_latency = None;
+            c.active_measured_process = None;
             c.graph.stopped();
         }
         if let UpdateState::Blocked { reason, .. } = &snapshot.state.update {

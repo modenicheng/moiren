@@ -2,6 +2,10 @@
 use super::{
     ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters, timing::PacketTiming,
 };
+use crate::latency::{
+    QpcClock,
+    packets::{PacketHistoryWriter, PacketPublicationOrigin, PacketPublicationSample},
+};
 use crate::stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR};
 use rtrb::Producer;
 use std::sync::{Arc, atomic::Ordering::Relaxed};
@@ -14,6 +18,11 @@ pub struct CapturePacket {
     pub qpc_100ns: u64,
 }
 pub struct CaptureIngress {
+    packet_events: PacketHistoryWriter,
+    publication_clock: Option<QpcClock>,
+    publication_clock_high_water_100ns: Option<u64>,
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    delivery_events: crate::latency::events::EventHistoryWriter,
     tx: Producer<Frame>,
     config: ClockBridgeConfig,
     generation: u64,
@@ -26,8 +35,15 @@ impl CaptureIngress {
         tx: Producer<Frame>,
         config: ClockBridgeConfig,
         counters: Arc<Counters>,
+        delivery_events: crate::latency::events::EventHistoryWriter,
+        packet_events: PacketHistoryWriter,
+        publication_clock: Option<QpcClock>,
     ) -> Self {
         Self {
+            packet_events,
+            publication_clock,
+            publication_clock_high_water_100ns: None,
+            delivery_events,
             tx,
             config,
             generation: 1,
@@ -40,6 +56,23 @@ impl CaptureIngress {
         self.config.input_channels
     }
 
+    /// Native owner only, after successful packet release or callback drain.
+    /// The mutable ingress is the sole delivery publisher; graph writes never
+    /// manufacture native packet arrival observations.
+    #[cfg(any(windows, test))]
+    pub(crate) fn publish_native_delivery(
+        &mut self,
+        sample: crate::latency::InputDeliverySnapshot,
+    ) {
+        self.counters.native_delivery.publish(sample);
+    }
+
+    /// One completed native drain, not one packet or per-sample timestamp.
+    #[cfg(any(windows, test))]
+    pub(crate) fn record_native_delivery_event(&mut self, frames: u64, qpc_100ns: Option<u64>) {
+        self.delivery_events.record(frames, qpc_100ns);
+    }
+
     /// SILENT packets carry no readable payload (contract documented on
     /// `capture_packet::borrow_capture_packet`). Overflow accepts a whole-frame
     /// prefix and drops the new tail; the next packet starts a fresh generation.
@@ -47,6 +80,21 @@ impl CaptureIngress {
         &mut self,
         bytes: &[u8],
         packet: CapturePacket,
+    ) -> Result<usize, ClockBridgeError> {
+        let clock = self.publication_clock;
+        self.push_packet_with_publication_clock(bytes, packet, || {
+            clock.as_ref().and_then(QpcClock::now)
+        })
+    }
+
+    /// Bracket the actual ring publication with a prepared host clock. Called
+    /// twice per valid nonempty packet, never per sample; sample/device stamps
+    /// remain separate. Injectable for deterministic software verification.
+    pub fn push_packet_with_publication_clock(
+        &mut self,
+        bytes: &[u8],
+        packet: CapturePacket,
+        mut clock: impl FnMut() -> Option<u64>,
     ) -> Result<usize, ClockBridgeError> {
         let silent = packet.flags & SILENT != 0;
         let width = self.config.input_channels * 4;
@@ -95,6 +143,16 @@ impl CaptureIngress {
                 .silent_frames
                 .fetch_add(packet.frames as u64, Relaxed);
         }
+        let before = clock();
+        let ingress_started_100ns = before
+            .filter(|&now| {
+                self.publication_clock_high_water_100ns
+                    .is_none_or(|previous| now >= previous)
+            })
+            .and_then(std::num::NonZeroU64::new);
+        self.publication_clock_high_water_100ns = self
+            .publication_clock_high_water_100ns
+            .max(before.filter(|&now| now != 0));
         let accepted = if self.tx.is_abandoned() {
             0
         } else {
@@ -140,9 +198,25 @@ impl CaptureIngress {
                     generation,
                     packet_stamp,
                     packet_offset_frames: frame as u64,
+                    ingress_started_100ns,
                 }
             }));
         }
+        let after = clock();
+        // Completion cannot retroactively qualify frames already published,
+        // but it fences the next packet against a regressed start observation.
+        self.publication_clock_high_water_100ns = self
+            .publication_clock_high_water_100ns
+            .max(after.filter(|&now| now != 0));
+        self.packet_events.record(PacketPublicationSample {
+            offered_frames: packet.frames as u64,
+            accepted_frames: accepted as u64,
+            qpc_before_100ns: before,
+            qpc_after_100ns: after,
+            origin: PacketPublicationOrigin::NativeCapture,
+            buffer_generation: self.generation,
+            flags: packet.flags,
+        });
         self.counters
             .nonfinite_samples
             .fetch_add(nonfinite, Relaxed);
@@ -219,7 +293,17 @@ impl moiren_engine::boundary::RtAudioSink<f32> for CaptureIngress {
                 generation,
                 packet_stamp: None,
                 packet_offset_frames: frame as u64,
+                ingress_started_100ns: None,
             }));
+        }
+        if input.frames() > 0 {
+            self.packet_events.record(PacketPublicationSample {
+                offered_frames: input.frames() as u64,
+                accepted_frames: accepted as u64,
+                origin: PacketPublicationOrigin::GraphOutput,
+                buffer_generation: self.generation,
+                ..Default::default()
+            });
         }
         self.counters
             .captured_frames

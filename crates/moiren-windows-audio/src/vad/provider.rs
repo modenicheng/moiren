@@ -36,10 +36,72 @@ const PCM_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const PCM_RETIRE_QUICK_DRAIN: Duration = Duration::from_millis(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+mod input_capture;
 mod lifecycle;
 mod pcm_worker;
+mod telemetry;
 mod transport;
+pub use input_capture::{
+    VadInputCaptureArtifact, VadInputCaptureHandle, VadInputCaptureIdentity, VadInputCapturePacket,
+};
 use lifecycle::{Admission, ExportSpec, ExportView, Lifecycle};
+use telemetry::PcmTelemetry;
+pub use telemetry::{PublicationIdentity, PublicationSnapshot, VadPcmTelemetrySnapshot};
+
+/// Distinguishes current provider measurements from values retained after a
+/// failed QUERY. The app service uses this only to avoid relabeling evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VadExportDiagnosticProvenance {
+    Fresh,
+    CachedAfterQueryFailure,
+}
+
+/// Control-plane state for one VAD export.
+///
+/// This is a detached snapshot: callers may retain it without holding the
+/// provider lock, and a missing snapshot means that CREATE is still uncertain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VadExportObservation {
+    pub endpoint_id: VirtualEndpointId,
+    pub spec_name: String,
+    pub intent: Intent,
+    pub channels: Channels,
+    pub allow_default: bool,
+    pub snapshot: Option<super::EndpointSnapshot>,
+    pub removing: bool,
+    pub transport_prepared: bool,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub error: Option<String>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
+}
+
+impl From<ExportView> for VadExportObservation {
+    fn from(view: ExportView) -> Self {
+        let ExportView {
+            spec,
+            snapshot,
+            removing,
+            transport_prepared,
+            telemetry,
+            error,
+            diagnostic_provenance,
+            ..
+        } = view;
+        Self {
+            endpoint_id: spec.id,
+            spec_name: spec.name,
+            intent: spec.intent,
+            channels: spec.channels,
+            allow_default: spec.allow_default,
+            snapshot,
+            removing,
+            transport_prepared,
+            telemetry,
+            error,
+            diagnostic_provenance,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct TransportEndpoint {
@@ -55,15 +117,32 @@ pub struct WindowsVadProvider {
     name_observer: Mutex<NameObserver>,
     name_reader: Mutex<super::endpoint_name::WindowsEndpointNameReader>,
     name_clock: Mutex<super::endpoint_name::WindowsObserverClock>,
+    input_capture: Option<Arc<input_capture::CaptureShared>>,
 }
 
 impl WindowsVadProvider {
     pub fn discover() -> Result<Arc<Self>, BackendError> {
+        Self::discover_configured(None)
+    }
+
+    /// One explicit Playback/Source diagnostic; the returned handle owns no
+    /// provider/control reference. All native IO still uses this one provider.
+    pub fn discover_with_input_capture(
+        endpoint: VirtualEndpointId,
+        frames: u32,
+    ) -> Result<(Arc<Self>, VadInputCaptureHandle), BackendError> {
+        let (capture, handle) = input_capture::CaptureShared::new(endpoint, frames)?;
+        Ok((Self::discover_configured(Some(capture))?, handle))
+    }
+
+    fn discover_configured(
+        capture: Option<Arc<input_capture::CaptureShared>>,
+    ) -> Result<Arc<Self>, BackendError> {
         let interfaces = discover_present_interfaces()
             .map_err(|error| BackendError::ResourceUnavailable(error.to_string()))?;
         let mut last_error = None;
         for interface in interfaces {
-            match Self::from_interface(&interface) {
+            match Self::from_interface_configured(&interface, capture.clone()) {
                 Ok(provider) => return Ok(provider),
                 Err(error) => last_error = Some(error),
             }
@@ -74,6 +153,13 @@ impl WindowsVadProvider {
     }
 
     pub fn from_interface(interface: &DeviceInterface) -> Result<Arc<Self>, BackendError> {
+        Self::from_interface_configured(interface, None)
+    }
+
+    fn from_interface_configured(
+        interface: &DeviceInterface,
+        input_capture: Option<Arc<input_capture::CaptureShared>>,
+    ) -> Result<Arc<Self>, BackendError> {
         let control = ControlClient::connect(interface).map_err(client_error)?;
         control
             .capabilities()
@@ -87,6 +173,7 @@ impl WindowsVadProvider {
                 interface.clone(),
             )),
             name_clock: Mutex::new(super::endpoint_name::WindowsObserverClock::new()),
+            input_capture,
         }))
     }
 
@@ -118,8 +205,14 @@ impl WindowsVadProvider {
 
     /// Poll actual driver state, retaining uncertain/removing records. Call
     /// only from the lifecycle worker, never the service pump or Engine render.
-    pub fn export_observations(&self) -> Vec<ExportView> {
-        self.state.lock().unwrap_or_else(|p| p.into_inner()).poll()
+    pub fn export_observations(&self) -> Vec<VadExportObservation> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .poll()
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     /// Explicitly read Windows endpoint names on a control worker.
@@ -197,9 +290,15 @@ impl WindowsVadProvider {
                     continue;
                 }
                 if snapshot.gate_open() {
-                    self.set_export_gate(view.spec.id, lifecycle::stamp(snapshot), false, 0, 0)?;
+                    self.set_export_gate(
+                        view.endpoint_id,
+                        lifecycle::stamp(snapshot),
+                        false,
+                        0,
+                        0,
+                    )?;
                 } else if snapshot.state() != PdoState::Removing {
-                    self.retire_export(view.spec.id, lifecycle::stamp(snapshot))?;
+                    self.retire_export(view.endpoint_id, lifecycle::stamp(snapshot))?;
                 }
             }
             if std::time::Instant::now() >= deadline {
@@ -285,15 +384,29 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
         let (writer, reader) = audio_bridge(2, capacity, request.audio_byte_budget)
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
         let (control, endpoint, state) = self.endpoint(request, Intent::Playback, cancel)?;
-        let session = VadSession::spawn(
+        let capture = match self
+            .input_capture
+            .as_ref()
+            .map(|capture| capture.reserve(request.endpoint_id))
+            .transpose()
+        {
+            Ok(capture) => capture.flatten(),
+            Err(error) => {
+                state.drained.store(true, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let session = VadSession::spawn_captured(
             WorkerConfig::Playback {
                 control,
                 endpoint,
                 channels,
                 writer,
                 byte_budget: request.audio_byte_budget,
+                buffer: request.buffer,
             },
             state,
+            capture,
         )?;
         Ok(PreparedVirtualPlayback {
             carrier: reader,
@@ -310,6 +423,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
         request: VirtualBoundaryRequest,
         cancel: &CancellationToken,
     ) -> Result<PreparedVirtualMicrophone, BackendError> {
+        let budget = request.prepared_budget()?;
         let capacity = carrier_capacity(request)?;
         let channels = Channels::try_from(request.channels as u32)
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
@@ -324,6 +438,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
                 channels,
                 reader,
                 byte_budget: request.audio_byte_budget,
+                budget,
             },
             state,
         )?;
@@ -350,6 +465,13 @@ fn carrier_capacity(request: VirtualBoundaryRequest) -> Result<usize, BackendErr
     }
     let native_frames = (request.max_block_frames as u64 * 48_000)
         .div_ceil(u64::from(request.engine_sample_rate)) as usize;
+    if let Some(queue) = request
+        .buffer
+        .prepare(request.engine_sample_rate, request.max_demand_frames)
+        .map_err(|error| BackendError::Unsupported(error.to_string()))?
+    {
+        return Ok(queue.capacity_frames as usize);
+    }
     Ok((native_frames + 32).max(super::MAX_PACKET_FRAMES as usize))
 }
 
@@ -360,6 +482,7 @@ enum WorkerConfig {
         channels: Channels,
         writer: AudioWriter<f32>,
         byte_budget: usize,
+        buffer: crate::virtual_owner::VirtualBufferOptions,
     },
     Microphone {
         control: ControlClient,
@@ -367,6 +490,7 @@ enum WorkerConfig {
         channels: Channels,
         reader: AudioReader<f32>,
         byte_budget: usize,
+        budget: crate::virtual_owner::PreparedVirtualBudget,
     },
 }
 
@@ -382,6 +506,7 @@ struct SessionState {
     admitted_ticket: AtomicU64,
     admitted_revision: AtomicU64,
     admission: Arc<Admission>,
+    telemetry: Arc<PcmTelemetry>,
 }
 
 impl SessionState {
@@ -398,6 +523,7 @@ impl SessionState {
             admitted_ticket: AtomicU64::new(0),
             admitted_revision: AtomicU64::new(0),
             admission,
+            telemetry: Arc::new(PcmTelemetry::default()),
         }
     }
     fn prepared(&self) -> bool {
@@ -415,26 +541,44 @@ impl SessionState {
     fn revoke(&self) {
         self.admitted_revision.store(0, Ordering::Release);
     }
+
+    fn telemetry_snapshot(&self) -> VadPcmTelemetrySnapshot {
+        self.telemetry.snapshot()
+    }
 }
 
 struct VadSession {
     state: Arc<SessionState>,
     worker: Option<JoinHandle<()>>,
+    capture: Option<Arc<input_capture::CaptureShared>>,
 }
 
 impl VadSession {
     fn spawn(config: WorkerConfig, state: Arc<SessionState>) -> Result<Self, BackendError> {
+        Self::spawn_captured(config, state, None)
+    }
+
+    fn spawn_captured(
+        config: WorkerConfig,
+        state: Arc<SessionState>,
+        capture: Option<input_capture::CaptureWorker>,
+    ) -> Result<Self, BackendError> {
+        let capture_shared = capture.as_ref().map(|capture| capture.shared());
         let worker_state = state.clone();
         let worker = thread::Builder::new()
             .name("moiren-vad-pcm".into())
-            .spawn(move || run_worker(config, worker_state))
+            .spawn(move || run_worker(config, worker_state, capture))
             .map_err(|error| {
                 state.drained.store(true, Ordering::Release);
+                if let Some(capture) = &capture_shared {
+                    capture.spawn_failed();
+                }
                 BackendError::Failed(format!("start VAD worker: {error}"))
             })?;
         Ok(Self {
             state,
             worker: Some(worker),
+            capture: capture_shared,
         })
     }
 
@@ -488,7 +632,11 @@ impl VirtualResourceSession for VadSession {
     fn stop_and_join(mut self: Box<Self>) -> Result<(), BackendError> {
         self.cancel();
         if let Some(worker) = self.worker.take() {
-            worker.join().map_err(|_| BackendError::WorkerPanicked)?;
+            let result = worker.join();
+            if let Some(capture) = &self.capture {
+                capture.joined(result.is_err());
+            }
+            result.map_err(|_| BackendError::WorkerPanicked)?;
         }
         match self.status() {
             OwnerStatus::Failed(error) => Err(error),
@@ -503,29 +651,39 @@ impl Drop for VadSession {
         // Its control-side owner must still cancel and drain this worker.
         self.cancel();
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            let result = worker.join();
+            if let Some(capture) = &self.capture {
+                capture.joined(result.is_err());
+            }
         }
     }
 }
 
-fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
+fn run_worker(
+    config: WorkerConfig,
+    state: Arc<SessionState>,
+    mut capture: Option<input_capture::CaptureWorker>,
+) {
     // Match the physical paths' scheduling class: this thread paces bounded
     // PCM IO against native deadlines. Registration failure is non-fatal.
     let _mmcss = crate::owner::Mmcss::audio();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match config {
+    let playback = matches!(&config, WorkerConfig::Playback { .. });
+    let result = catch_worker_result(&state, playback, || match config {
         WorkerConfig::Playback {
             control,
             endpoint,
             channels,
             writer,
             byte_budget,
+            buffer,
         } => run_playback(
             control,
             endpoint,
             channels,
             Some(writer),
-            byte_budget,
+            (byte_budget, buffer),
             &state,
+            capture.as_mut(),
         ),
         WorkerConfig::Microphone {
             control,
@@ -533,17 +691,21 @@ fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
             channels,
             reader,
             byte_budget,
+            budget,
         } => run_microphone(
             control,
             endpoint,
             channels,
             Some(reader),
             byte_budget,
+            budget,
             &state,
         ),
-    }))
-    .unwrap_or(Err(BackendError::WorkerPanicked));
+    });
     state.revoke();
+    if let Some(capture) = capture.as_mut() {
+        capture.finished(&result);
+    }
     if let Err(error) = result {
         *state
             .failure
@@ -555,13 +717,29 @@ fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
     state.drained.store(true, Ordering::Release);
 }
 
+fn catch_worker_result(
+    state: &SessionState,
+    playback: bool,
+    run: impl FnOnce() -> Result<(), BackendError>,
+) -> Result<(), BackendError> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+        .unwrap_or(Err(BackendError::WorkerPanicked));
+    // The outer boundary also covers unwinding past run_playback's cleanup.
+    // Drained below is still not a control-side worker-join witness.
+    if playback {
+        state.telemetry.publication.invalidate();
+    }
+    result
+}
+
 fn run_playback(
     mut control: ControlClient,
     endpoint: TransportEndpoint,
     channels: Channels,
     mut writer: Option<AudioWriter<f32>>,
-    byte_budget: usize,
+    (byte_budget, buffer): (usize, crate::virtual_owner::VirtualBufferOptions),
     state: &SessionState,
+    mut capture: Option<&mut input_capture::CaptureWorker>,
 ) -> Result<(), BackendError> {
     let mut current = endpoint.snapshot;
     let mut owner: Option<PcmOwner> = None;
@@ -572,12 +750,21 @@ fn run_playback(
     // A newly prepared carrier belongs to epoch zero, even when a reset was
     // requested before this worker started. Never skip that first handshake.
     let mut observed_reset = 0;
+    let mut transport_started = false;
     let result = (|| {
         while !state.cancel.load(std::sync::atomic::Ordering::Acquire) {
             if state.active.load(std::sync::atomic::Ordering::Acquire) {
                 state.status.store(1, std::sync::atomic::Ordering::Release);
-                let (queried, _) = transport::poll(&mut control, current, state)?;
+                let (queried, _) = transport::poll_with_started_transport(
+                    &mut control,
+                    current,
+                    state,
+                    transport_started,
+                )?;
                 current = queried;
+                if let Some(capture) = capture.as_mut() {
+                    capture.observe(current, state);
+                }
                 if !pcm_worker::quiesce_playback(state, &mut observed_reset, || {
                     teardown_playback(
                         &mut retired,
@@ -590,14 +777,23 @@ fn run_playback(
                     thread::sleep(POLL_INTERVAL);
                     continue;
                 }
-                if current.stream_state() == StreamState::Running
-                    && current.gate_open()
+                if matches!(
+                    current.stream_state(),
+                    StreamState::Paused | StreamState::Running
+                ) && current.gate_open()
                     && state.admitted()
                 {
                     if owner.is_none() {
+                        // Latch admission before creating the owner. Later atomic
+                        // revisions must never relabel this owner's borrowed PCM.
+                        let admission_ticket = state.admitted_ticket.load(Ordering::Acquire);
+                        let active_revision = state.admitted_revision.load(Ordering::Acquire);
                         let shape = current
                             .pcm_shape(control.capabilities())
                             .map_err(|e| client_error(e.into()))?;
+                        buffer
+                            .admit_native_packet(shape.frames())
+                            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
                         bridge = Some(PcmPlaybackBridge::new(
                             channels,
                             shape.format(),
@@ -606,16 +802,45 @@ fn run_playback(
                             writer.take().expect("playback carrier is free"),
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
+                        // Latch the actual owner and its original admission.
+                        // Reopening even an identical native stamp breaks the
+                        // diagnostic segment; never relabel borrowed old PCM.
+                        state
+                            .telemetry
+                            .publication
+                            .bind(telemetry::PublicationIdentity {
+                                native_stamp: lifecycle::stamp(current),
+                                reset_epoch: observed_reset,
+                                admission_ticket,
+                                active_revision,
+                                format: shape.format() as u32,
+                                channels: shape.channels() as u32,
+                                packet_frames: shape.frames(),
+                            });
+                        if let Some(capture) = capture.as_mut() {
+                            capture.bind(input_capture::VadInputCaptureIdentity {
+                                stable_id: current.stable_id().to_le_bytes(),
+                                native_stamp: lifecycle::stamp(current),
+                                reset_epoch: observed_reset,
+                                admission_ticket,
+                                active_revision,
+                                format: shape.format() as u32,
+                                channels: shape.channels() as u32,
+                                packet_frames: shape.frames(),
+                            });
+                        }
+                        transport_started = true;
                         tickets.clear();
                         order = pcm_worker::PacketOrder::default();
                     }
-                    match pcm_worker::playback(
+                    match pcm_worker::playback_recorded(
                         owner.as_mut().expect("playback owner"),
                         bridge.as_mut().expect("playback bridge"),
                         &mut tickets,
                         &mut order,
                         state,
                         observed_reset,
+                        capture.as_deref_mut(),
                     ) {
                         Ok(pcm_worker::PumpState::Current) => {
                             if let Err(error) = pcm_worker::wait_for_activity(
@@ -674,7 +899,7 @@ fn run_playback(
         Ok(())
     })();
     state.revoke();
-    let close_result = close_worker_gate(&mut control, &mut current);
+    let close_result = close_worker_gate(&mut control, &mut current, Intent::Playback);
     teardown_playback(
         &mut retired,
         &mut owner,
@@ -682,14 +907,14 @@ fn run_playback(
         &mut writer,
         &mut tickets,
     );
-    retired.finish();
-    result.and(close_result)
+    let drain_result = retired.finish();
+    combine_worker_results(combine_worker_results(result, close_result), drain_result)
 }
 
 /// Parked retired PCM owners whose cancelled requests the driver has not yet
 /// completed. Stack-allocated inside each transport worker; `poll` runs once
-/// per pump iteration and is a no-op when empty. No thread, lock, or heap
-/// allocation exists anywhere on this path.
+/// per pump iteration and is a no-op when empty. Parking adds no thread or
+/// allocation; terminal fault formatting may allocate on this non-RT worker.
 ///
 /// Capacity two bounds the pathological case: a fresh retire while two
 /// generations of requests are still stuck falls back to the bounded blocking
@@ -699,6 +924,7 @@ fn run_playback(
 struct RetiredPcm {
     parked: [(Option<ResidualPcm>, u64); RETIRE_PARK_SLOTS],
     next_age: u64,
+    failure: Option<BackendError>,
 }
 
 const RETIRE_PARK_SLOTS: usize = 2;
@@ -708,6 +934,7 @@ impl RetiredPcm {
         Self {
             parked: std::array::from_fn(|_| (None, 0)),
             next_age: 0,
+            failure: None,
         }
     }
 
@@ -731,9 +958,17 @@ impl RetiredPcm {
         if owner.retire(PCM_RETIRE_QUICK_DRAIN, &mut residual) {
             return;
         }
-        let Some(residual) = residual else {
+        let Some(mut residual) = residual else {
             return;
         };
+        if let Some(error) = residual.take_shutdown_failure() {
+            self.retain_failure(error);
+        }
+        if residual.pending() == 0 {
+            // A terminal fault is still a cleanup failure, but has already
+            // relinquished every request. Do not park a fully drained owner.
+            return;
+        }
         if let Some(index) = self.parked.iter().position(|(slot, _)| slot.is_none()) {
             self.parked[index] = (Some(residual), age);
         } else {
@@ -748,7 +983,12 @@ impl RetiredPcm {
                     "event=pcm_retire_park_full endpoint={endpoint} oldest_pending={}",
                     oldest.pending()
                 );
-                if !oldest.drain(PCM_SHUTDOWN_TIMEOUT) {
+                oldest.drain(PCM_SHUTDOWN_TIMEOUT);
+                if let Some(error) = oldest.take_shutdown_failure() {
+                    self.retain_failure(error);
+                }
+                if oldest.pending() != 0 {
+                    self.retain_failure(ClientError::DeadlineExceeded);
                     log::warn!(
                         target: "moiren::audio::vad",
                         "event=pcm_retire_park_full_timeout endpoint={endpoint}"
@@ -772,19 +1012,29 @@ impl RetiredPcm {
     /// Non-blocking collect pass over every parked residual.
     fn poll(&mut self) {
         for (slot, _) in &mut self.parked {
-            if let Some(residual) = slot
-                && residual.drain(Duration::ZERO)
-            {
-                *slot = None;
+            if let Some(residual) = slot {
+                residual.drain(Duration::ZERO);
+                if let Some(error) = residual.take_shutdown_failure() {
+                    self.failure.get_or_insert_with(|| client_error(error));
+                }
+                if residual.pending() == 0 {
+                    *slot = None;
+                }
             }
         }
     }
 
     /// Worker-exit drain: bounded collect, then Drop's final safety drain.
-    fn finish(&mut self) {
+    fn finish(&mut self) -> Result<(), BackendError> {
         for (slot, _) in &mut self.parked {
             if let Some(mut residual) = slot.take() {
-                if !residual.drain(PCM_SHUTDOWN_TIMEOUT) {
+                residual.drain(PCM_SHUTDOWN_TIMEOUT);
+                if let Some(error) = residual.take_shutdown_failure() {
+                    self.failure.get_or_insert_with(|| client_error(error));
+                }
+                if residual.pending() != 0 {
+                    self.failure
+                        .get_or_insert_with(|| client_error(ClientError::DeadlineExceeded));
                     log::warn!(
                         target: "moiren::audio::vad",
                         "event=pcm_retire_exit_timeout pending={}",
@@ -794,6 +1044,13 @@ impl RetiredPcm {
                 let _ = residual;
             }
         }
+        self.failure.take().map_or(Ok(()), Err)
+    }
+
+    fn retain_failure(&mut self, error: ClientError) {
+        // Bound retained worker evidence to the first cleanup failure. Each
+        // owner already retains all four distinct terminal slot outcomes.
+        self.failure.get_or_insert_with(|| client_error(error));
     }
 }
 
@@ -819,6 +1076,7 @@ fn run_microphone(
     channels: Channels,
     mut reader: Option<AudioReader<f32>>,
     byte_budget: usize,
+    budget: crate::virtual_owner::PreparedVirtualBudget,
     state: &SessionState,
 ) -> Result<(), BackendError> {
     let mut current = endpoint.snapshot;
@@ -827,13 +1085,19 @@ fn run_microphone(
     let mut tickets = Vec::with_capacity(super::REQUEST_SLOTS);
     let mut pump = None;
     let mut observed_reset = 0;
+    let mut transport_started = false;
     let mut reprime_after_reset = false;
     let mut retired = RetiredPcm::new();
     let result = (|| {
         while !state.cancel.load(std::sync::atomic::Ordering::Acquire) {
             if state.active.load(std::sync::atomic::Ordering::Acquire) {
                 state.status.store(1, std::sync::atomic::Ordering::Release);
-                let (queried, _) = transport::poll(&mut control, current, state)?;
+                let (queried, _) = transport::poll_with_started_transport(
+                    &mut control,
+                    current,
+                    state,
+                    transport_started,
+                )?;
                 current = queried;
                 if state.reset_epoch.load(Ordering::Acquire) != observed_reset {
                     teardown_microphone(
@@ -857,14 +1121,24 @@ fn run_microphone(
                     // MicrophonePump::arm_reprime).
                     reprime_after_reset = true;
                 }
-                if current.stream_state() == StreamState::Running
-                    && current.gate_open()
-                    && state.admitted()
-                {
+                if transport::microphone_running(current, state) {
                     if owner.is_none() {
                         let shape = current
                             .pcm_shape(control.capabilities())
                             .map_err(|e| client_error(e.into()))?;
+                        let capacity = u32::try_from(
+                            reader
+                                .as_ref()
+                                .expect("microphone carrier is free")
+                                .capacity_frames(),
+                        )
+                        .map_err(|_| {
+                            BackendError::Unsupported("microphone carrier capacity overflow".into())
+                        })?;
+                        let reprime = budget
+                            .microphone_reprime(shape.frames(), capacity)
+                            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+                        log::debug!(target: "moiren::audio::vad", "event=microphone_reprime_budget admitted={reprime:?}");
                         bridge = Some(PcmMicrophoneBridge::new(
                             channels,
                             shape.format(),
@@ -873,10 +1147,11 @@ fn run_microphone(
                             reader.take().expect("microphone carrier is free"),
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
+                        transport_started = true;
                         tickets.clear();
-                        let mut fresh = pcm_worker::MicrophonePump::new(shape.frames());
+                        let mut fresh = pcm_worker::MicrophonePump::prepared(reprime);
                         if reprime_after_reset {
-                            fresh.arm_reprime(Instant::now());
+                            fresh.arm_reprime(Instant::now())?;
                             reprime_after_reset = false;
                         }
                         pump = Some(fresh);
@@ -945,12 +1220,19 @@ fn run_microphone(
                 );
             }
             retired.poll();
-            thread::sleep(POLL_INTERVAL);
+            transport::wait_for_microphone_poll(
+                current,
+                control.capabilities(),
+                state,
+                transport_started,
+                observed_reset,
+                thread::sleep,
+            );
         }
         Ok(())
     })();
     state.revoke();
-    let close_result = close_worker_gate(&mut control, &mut current);
+    let close_result = close_worker_gate(&mut control, &mut current, Intent::Microphone);
     teardown_microphone(
         &mut retired,
         &mut owner,
@@ -958,8 +1240,21 @@ fn run_microphone(
         &mut reader,
         &mut tickets,
     );
-    retired.finish();
-    result.and(close_result)
+    let drain_result = retired.finish();
+    combine_worker_results(combine_worker_results(result, close_result), drain_result)
+}
+
+fn combine_worker_results(
+    result: Result<(), BackendError>,
+    cleanup: Result<(), BackendError>,
+) -> Result<(), BackendError> {
+    match (result, cleanup) {
+        (Err(work), Err(cleanup)) => Err(BackendError::Failed(format!(
+            "VAD worker: {work}; VAD cleanup: {cleanup}"
+        ))),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 fn teardown_microphone(
@@ -983,12 +1278,28 @@ fn teardown_microphone(
 fn close_worker_gate(
     control: &mut ControlClient,
     current: &mut super::EndpointSnapshot,
+    caller_intent: Intent,
 ) -> Result<(), BackendError> {
     // Closing during shutdown is safe for the latest native stream, but opening
     // is never allowed to refresh its expected snapshot this way.
-    *current = control.query(current.key()).map_err(client_error)?;
+    let queried = control.query(current.key());
+    log::debug!(
+        target: "moiren::audio::vad",
+        "event=worker_gate_close_query caller_intent={caller_intent:?} previous={current:?} result={queried:?}"
+    );
+    *current = queried.map_err(client_error)?;
     if current.gate_open() {
-        *current = control.close_gate(*current).map_err(client_error)?;
+        let closed = control.close_gate(*current);
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=worker_gate_close_result caller_intent={caller_intent:?} previous={current:?} result={closed:?}"
+        );
+        *current = closed.map_err(client_error)?;
+    } else {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=worker_gate_close_result caller_intent={caller_intent:?} decision=already_closed snapshot={current:?}"
+        );
     }
     Ok(())
 }
@@ -996,6 +1307,94 @@ fn close_worker_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_telemetry_worker_panic_retains_calls_and_invalidates_original_owner() {
+        let state = SessionState::new(Arc::new(Admission::new()));
+        state.telemetry.publication.bind(PublicationIdentity {
+            native_stamp: [1, 2, 3, 4, 5],
+            reset_epoch: 0,
+            admission_ticket: 2,
+            active_revision: 1,
+            format: 1,
+            channels: 2,
+            packet_frames: 144,
+        });
+        let result = catch_worker_result(&state, true, || {
+            state
+                .telemetry
+                .publication
+                .record(Some(10), Some(11), Ok(true), 144, 1, true);
+            panic!("publication worker regression");
+        });
+        assert_eq!(result, Err(BackendError::WorkerPanicked));
+        let snapshot = state.telemetry.publication.snapshot().unwrap();
+        assert_eq!(snapshot.successful_decode_calls, 1);
+        assert_eq!(snapshot.decode_ok_frames, 144);
+        assert!(snapshot.invalidated);
+        assert_eq!(snapshot.carrier_publication_effect_known, None);
+        assert_eq!(snapshot.complete_delivery_coverage, None);
+    }
+
+    #[test]
+    fn pcm_cancel_worker_completion_retains_both_work_and_gate_cleanup_faults() {
+        let work = BackendError::ResourceUnavailable("distinct PCM work failure".into());
+        let close = BackendError::ResourceUnavailable("distinct close gate failure".into());
+        let combined = combine_worker_results(Err(work.clone()), Err(close.clone())).unwrap_err();
+        assert!(combined.to_string().contains("distinct PCM work failure"));
+        assert!(combined.to_string().contains("distinct close gate failure"));
+        assert_eq!(combine_worker_results(Err(work.clone()), Ok(())), Err(work));
+        assert_eq!(
+            combine_worker_results(Ok(()), Err(close.clone())),
+            Err(close)
+        );
+        assert_eq!(combine_worker_results(Ok(()), Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn pcm_cancel_retired_owner_keeps_terminal_cleanup_fault_until_worker_finish() {
+        let mut retired = RetiredPcm::new();
+        retired.retain_failure(ClientError::Io {
+            operation: "VAD PCM shutdown terminal failures",
+            source: std::io::Error::other("slot=2 HRESULT=0x80070005"),
+        });
+        retired.poll();
+        let error = retired
+            .finish()
+            .expect_err("drained storage must not erase cleanup failure");
+        assert!(error.to_string().contains("slot=2 HRESULT=0x80070005"));
+    }
+
+    #[test]
+    fn export_observation_is_a_detached_public_control_snapshot() {
+        let endpoint_id = VirtualEndpointId::from_bytes([0x42; 16]);
+        let observation = VadExportObservation::from(ExportView {
+            spec: ExportSpec {
+                id: endpoint_id,
+                intent: Intent::Playback,
+                channels: Channels::Stereo,
+                name: "Probe playback".into(),
+                allow_default: false,
+            },
+            snapshot: None,
+            removing: true,
+            error: Some("CREATE timeout".into()),
+            transport_prepared: false,
+            telemetry: Some(VadPcmTelemetrySnapshot {
+                schema_version: 2,
+                submission_attempts: 3,
+                ..VadPcmTelemetrySnapshot::default()
+            }),
+            diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
+        });
+
+        assert_eq!(observation.endpoint_id, endpoint_id);
+        assert_eq!(observation.spec_name, "Probe playback");
+        assert!(observation.snapshot.is_none());
+        assert!(!observation.transport_prepared);
+        assert_eq!(observation.telemetry.unwrap().submission_attempts, 3);
+        assert_eq!(observation.error.as_deref(), Some("CREATE timeout"));
+    }
 
     #[test]
     fn park_full_eviction_selects_the_oldest_generation_not_the_lowest_slot() {

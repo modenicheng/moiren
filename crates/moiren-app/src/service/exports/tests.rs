@@ -48,6 +48,7 @@ fn enabled_intent_plans_creation_without_granting_default_or_claiming_activity()
         service.statuses(&snapshot)[0].resource,
         ExportResourceState::Unavailable
     );
+    assert_eq!(service.statuses(&snapshot)[0].windows_name, None);
     service.set_available(true);
     assert_eq!(
         service.reconcile(&snapshot).actions,

@@ -5,10 +5,20 @@ use crate::process_loopback::ProcessIdentity;
 use serde::Serialize;
 use thiserror::Error;
 
+mod artifact;
+mod evidence;
+pub use artifact::{
+    PcmArtifact, PcmArtifactConfig, PcmArtifactError, PcmArtifactMetadata, PcmRecorder,
+};
+pub use evidence::{
+    PcmEvidenceConfig, PcmEvidenceError, PcmEvidenceFrame, PcmEvidencePacket, PcmEvidenceReader,
+    PcmEvidenceSummary, PcmEvidenceWriter, pcm_evidence_stream,
+};
+
 #[cfg(windows)]
 pub(crate) mod wasapi;
 #[cfg(windows)]
-pub use wasapi::{CaptureSession, PreparedCapture};
+pub use wasapi::{CapturePreparationAbortFailure, CaptureSession, PreparedCapture};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CaptureError {
@@ -27,6 +37,25 @@ pub enum CaptureError {
     InvalidPacket,
     #[error("native capture buffer exceeds the 8 MiB preparation budget")]
     BufferBudget,
+    #[error(
+        "native capture buffer query refused: expected S_OK and a written, nonzero capacity within the 8 MiB preparation budget (HRESULT 0x{hresult:08X}, raw_frames={raw_frames}, raw_bytes={raw_bytes:?}, output_changed={output_changed})"
+    )]
+    InvalidBufferSize {
+        hresult: i32,
+        raw_frames: u32,
+        raw_bytes: Option<u64>,
+        output_changed: bool,
+    },
+    #[error(
+        "Process capture packet exceeds its {limit_bytes}-byte processing safety bound (frames={frames}, frame_bytes={frame_bytes}, packet_bytes={packet_bytes:?}, release_hresult={release_hresult:?}); this bound is not native capacity or delivery timing"
+    )]
+    ProcessPacketBound {
+        frames: u32,
+        frame_bytes: usize,
+        packet_bytes: Option<usize>,
+        limit_bytes: usize,
+        release_hresult: Option<i32>,
+    },
     #[error(transparent)]
     Bridge(#[from] ClockBridgeError),
     #[error("{stage} failed (HRESULT 0x{hresult:08X})")]
@@ -35,6 +64,10 @@ pub enum CaptureError {
     WorkerSpawn { code: Option<i32> },
     #[error("capture worker panicked")]
     WorkerPanicked,
+    #[error("PCM artifact preparation failed: {0}")]
+    PcmArtifact(#[from] PcmArtifactError),
+    #[error("PCM evidence preparation or copy failed: {0}")]
+    PcmEvidence(#[from] PcmEvidenceError),
     #[error(transparent)]
     SharedPeriod(#[from] crate::format::SharedPeriodError),
     #[error(transparent)]
@@ -43,6 +76,10 @@ pub enum CaptureError {
     StartupLost,
     #[error("process capture requires a nonzero PID and creation time")]
     InvalidProcess,
+    #[error(
+        "Process Loopback sample-age enforcement unsupported: sample age is unknown; nominal queue duration is not sample age"
+    )]
+    ProcessAgeUnsupported,
     #[error("target process identity changed since selection")]
     ProcessIdentityChanged,
     #[error("target process tree contains this audio host and would capture its own output")]
@@ -56,6 +93,10 @@ pub enum CaptureError {
 }
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
+    /// Optional bounded PCM evidence retained by the capture owner. The
+    /// backing storage is allocated before Start and only receives packet
+    /// copies while the WASAPI lease is valid.
+    pub artifact: Option<PcmArtifactConfig>,
     pub latency_telemetry: crate::latency::TelemetryMode,
     pub shared_period: crate::format::SharedPeriodPolicy,
     pub endpoint_id: String,
@@ -91,12 +132,41 @@ pub enum CaptureStatus {
     TargetExited,
     Failed,
 }
+/// Raw GetBufferSize evidence, retained even when no capacity is admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CaptureBufferSizeQuery {
+    pub hresult: i32,
+    /// Poison value supplied before the call; an unchanged output is not proof
+    /// that the callee wrote it, even if the returned HRESULT is S_OK.
+    pub initial_frames: u32,
+    pub raw_frames: u32,
+    pub output_changed: bool,
+    /// Checked raw_frames * channels * sizeof(f32), not an allocation size.
+    pub raw_bytes: Option<u64>,
+}
 #[derive(Debug, Serialize)]
 pub struct CaptureReport {
+    #[serde(skip)]
+    pub artifact: Option<PcmArtifact>,
+    pub artifact_metadata: Option<PcmArtifactMetadata>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub(crate) artifact_recorder: Option<PcmRecorder>,
+    pub evidence_metadata: Option<PcmEvidenceSummary>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub(crate) evidence_recorder: Option<PcmEvidenceWriter>,
+    pub delivery_bound: Option<crate::latency::transport::InputDeliveryTiming>,
+    pub delivery: crate::latency::InputDeliverySnapshot,
     pub input_queue: Option<crate::latency::PreparedInputQueue>,
+    /// Version 12 retains artifact position-check applicability and timestamp
+    /// errors. Process device position does not establish sample continuity.
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
     pub shared_period: crate::format::SharedPeriodReport,
+    /// Explicit owned-MIC Exclusive minimum request evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclusive_period: Option<crate::native::ExclusivePeriodEvidence>,
     pub stream_latency_100ns: Option<i64>,
     pub source: CaptureSource,
     pub endpoint_id: Option<String>,
@@ -108,7 +178,14 @@ pub struct CaptureReport {
     pub elapsed_seconds: f64,
     pub sample_rate: Option<u32>,
     pub channels: Option<usize>,
+    /// Trusted native capacity, unavailable for pre-event Process Loopback.
     pub buffer_frames: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_size_query: Option<CaptureBufferSizeQuery>,
+    /// Fixed host-side packet processing safety limit, never an observed
+    /// native capacity, queue target, delivery reserve, or period.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_packet_safety_bound_bytes: Option<u64>,
     pub stream_started: bool,
     pub stop_succeeded: bool,
     pub stop_hresult: Option<i32>,
@@ -121,13 +198,21 @@ pub struct CaptureReport {
 }
 #[cfg(windows)]
 impl CaptureReport {
-    pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
+    pub fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 7,
+            schema_version: 12,
+            artifact: None,
+            artifact_metadata: None,
+            artifact_recorder: None,
+            evidence_metadata: None,
+            evidence_recorder: None,
+            delivery_bound: None,
+            delivery: Default::default(),
             input_queue: None,
             latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
                 .snapshot(),
             shared_period: crate::format::SharedPeriodReport::default(),
+            exclusive_period: None,
             stream_latency_100ns: None,
             source,
             endpoint_id: None,
@@ -140,6 +225,8 @@ impl CaptureReport {
             sample_rate: None,
             channels: None,
             buffer_frames: None,
+            buffer_size_query: None,
+            process_packet_safety_bound_bytes: None,
             stream_started: false,
             stop_succeeded: false,
             stop_hresult: None,
@@ -149,6 +236,47 @@ impl CaptureReport {
             timeout_wakes: 0,
             packets: 0,
             failure: None,
+        }
+    }
+
+    pub(crate) fn attach_artifact(&mut self, artifact: PcmArtifact) {
+        self.artifact_metadata = Some(artifact.metadata());
+        self.artifact = Some(artifact);
+    }
+
+    pub(crate) fn prepare_artifact(
+        &mut self,
+        config: Option<PcmArtifactConfig>,
+        sample_rate: u32,
+        channels: usize,
+    ) -> Result<(), CaptureError> {
+        self.artifact_recorder = config
+            .map(|config| {
+                // Match bridge/evidence semantics: Process positions are not
+                // a hardware clock, nor are converted-rate physical positions.
+                let detect_position_gaps = self.source == CaptureSource::Physical
+                    && self
+                        .shared_period
+                        .mix_format
+                        .is_none_or(|mix| mix.sample_rate == sample_rate);
+                PcmRecorder::new_with_position_gaps(
+                    config,
+                    sample_rate,
+                    channels,
+                    detect_position_gaps,
+                )
+            })
+            .transpose()?;
+        Ok(())
+    }
+
+    pub(crate) fn finish_artifact(&mut self) {
+        if let Some(recorder) = self.artifact_recorder.take() {
+            self.attach_artifact(recorder.finish());
+        }
+        if let Some(evidence) = self.evidence_recorder.as_mut() {
+            evidence.close();
+            self.evidence_metadata = Some(evidence.snapshot());
         }
     }
 }
