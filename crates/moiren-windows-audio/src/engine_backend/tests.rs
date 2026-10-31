@@ -81,6 +81,72 @@ fn virtual_mono_does_not_require_a_physical_master() {
 }
 
 #[test]
+fn direct_exclusive_render_144_requires_probe_feature_and_preserves_other_guards() {
+    let mut project = virtual_project(2, 48_000);
+    let (sink, config) = project
+        .nodes
+        .iter_mut()
+        .find(|(_, config)| matches!(config, NodeConfig::Output(_)))
+        .unwrap();
+    let sink = *sink;
+    let NodeConfig::Output(output) = config else {
+        unreachable!()
+    };
+    output.target = OutputTarget::Physical(EndpointSelector::PinnedEndpoint {
+        endpoint_id: "not-opened".into(),
+        stable_id: None,
+    });
+    output.device = DeviceOptions {
+        mode: DeviceMode::Exclusive,
+        period_frames: Some(144),
+        clock_role: ClockRole::Master,
+        ..Default::default()
+    };
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    assert_eq!(
+        validate(&request(&project, &host), true).is_ok(),
+        cfg!(feature = "vad-probe")
+    );
+    for period in [143, 145, 160, 192, 480] {
+        let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
+            unreachable!()
+        };
+        output.device.period_frames = Some(period);
+        assert!(validate(&request(&project, &host), true).is_err());
+    }
+    let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
+        unreachable!()
+    };
+    output.device.period_frames = Some(144);
+    output.device.mode = DeviceMode::Shared;
+    assert!(validate(&request(&project, &host), true).is_err());
+    let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
+        unreachable!()
+    };
+    output.device.mode = DeviceMode::Exclusive;
+    output.device.backend = AudioBackend::Asio;
+    assert!(validate(&request(&project, &host), true).is_err());
+
+    let mut capture = virtual_project(2, 48_000);
+    let NodeConfig::Input(input) = capture
+        .nodes
+        .values_mut()
+        .find(|config| matches!(config, NodeConfig::Input(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    input.source = InputSource::Physical(EndpointSelector::PinnedEndpoint {
+        endpoint_id: "not-opened".into(),
+        stable_id: None,
+    });
+    input.device.mode = DeviceMode::Exclusive;
+    input.device.period_frames = Some(144);
+    assert!(validate(&request(&capture, &host), true).is_err());
+}
+
+#[test]
 fn small_virtual_target_prepares_and_repays_only_the_configured_recovery_burst() {
     use crate::latency::transport::{
         DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,

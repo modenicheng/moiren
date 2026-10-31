@@ -56,6 +56,22 @@ pub struct WasapiOptions {
     pub exclusive_period_evidence: Option<ExclusivePeriodEvidenceHandle>,
 }
 
+pub(crate) fn native_period_request_supported(device: DeviceOptions, input: bool) -> bool {
+    // Diagnostic-only exact render request; never widen the app's presets or
+    // admit this period for Shared, capture, ASIO or a default library build.
+    if cfg!(feature = "vad-probe")
+        && !input
+        && device.backend == moiren_engine::audio_config::AudioBackend::Wasapi
+        && device.mode == DeviceMode::Exclusive
+        && device.period_frames == Some(144)
+    {
+        return true;
+    }
+    device
+        .period_frames
+        .is_none_or(|frames| (64..=4096).contains(&frames) && frames.is_power_of_two())
+}
+
 fn capture_packet_frames(
     mode: DeviceMode,
     next_packet: impl FnOnce() -> windows::core::Result<u32>,
@@ -334,10 +350,7 @@ impl WasapiStream {
         if options.endpoint_id.trim().is_empty()
             || options.endpoint_id.contains('\0')
             || !(8_000..=384_000).contains(&options.sample_rate)
-            || options
-                .device
-                .period_frames
-                .is_some_and(|f| !(64..=4096).contains(&f) || !f.is_power_of_two())
+            || !native_period_request_supported(options.device, options.input)
         {
             return Err(unsupported(
                 "invalid WASAPI endpoint, rate or buffer request",
@@ -1654,6 +1667,59 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
     use windows::core::PCWSTR;
+
+    #[test]
+    fn native_explicit_render_144_requires_exclusive_probe_and_not_capture_or_asio() {
+        let device = DeviceOptions {
+            mode: DeviceMode::Exclusive,
+            period_frames: Some(144),
+            ..Default::default()
+        };
+        assert_eq!(
+            native_period_request_supported(device, false),
+            cfg!(feature = "vad-probe")
+        );
+        assert!(!native_period_request_supported(device, true));
+        assert!(!native_period_request_supported(
+            DeviceOptions {
+                mode: DeviceMode::Shared,
+                ..device
+            },
+            false
+        ));
+        assert!(!native_period_request_supported(
+            DeviceOptions {
+                backend: moiren_engine::audio_config::AudioBackend::Asio,
+                ..device
+            },
+            false
+        ));
+        for period in [0, 143, 145, 160, 192, 480, 8192] {
+            assert!(!native_period_request_supported(
+                DeviceOptions {
+                    period_frames: Some(period),
+                    ..device
+                },
+                false
+            ));
+        }
+        assert_eq!(
+            exclusive_request_duration(
+                &WasapiOptions {
+                    endpoint_id: "not-opened".into(),
+                    sample_rate: 48_000,
+                    device,
+                    input: false,
+                    exclusive_period_evidence: None,
+                },
+                100_000,
+                30_000,
+                48_000
+            )
+            .unwrap(),
+            30_000
+        );
+    }
 
     fn minimum_period_evidence() -> ExclusivePeriodEvidenceHandle {
         Arc::new(std::sync::Mutex::new(ExclusivePeriodEvidence {

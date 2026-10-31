@@ -20,8 +20,11 @@ impl PhysicalRenderRequest {
     pub fn validate(self, queue: RenderQueuePolicy) -> Result<()> {
         if let Some(period) = self.period_frames {
             ensure!(
-                BUFFER_SIZES.contains(&period),
-                "--render-period-frames must be a power of two in 64..=4096"
+                BUFFER_SIZES.contains(&period)
+                    || (cfg!(feature = "vad-probe")
+                        && period == 144
+                        && self.mode == Some(DeviceMode::Exclusive)),
+                "--render-period-frames must be a power of two in 64..=4096, or explicit Exclusive 144 with vad-probe"
             );
         }
         ensure!(
@@ -183,6 +186,67 @@ mod tests {
         };
         assert!(request(DeviceMode::Exclusive).validate(target).is_err());
         assert!(request(DeviceMode::Shared).validate(target).is_ok());
+    }
+
+    #[test]
+    fn physical_render_144_is_explicit_exclusive_only_and_never_accepts_alignment() {
+        let request = PhysicalRenderRequest {
+            mode: Some(DeviceMode::Exclusive),
+            period_frames: Some(144),
+        };
+        assert_eq!(
+            request.validate(RenderQueuePolicy::FullCapacity).is_ok(),
+            cfg!(feature = "vad-probe")
+        );
+        for mode in [None, Some(DeviceMode::Shared)] {
+            assert!(
+                PhysicalRenderRequest { mode, ..request }
+                    .validate(RenderQueuePolicy::FullCapacity)
+                    .is_err()
+            );
+        }
+        assert!(
+            request
+                .validate(RenderQueuePolicy::Target {
+                    frames: 144,
+                    wake_margin_frames: 96,
+                    callback_budget_frames: 48,
+                })
+                .is_err()
+        );
+        let observed = NativeStreamTiming {
+            sample_rate: 48_000,
+            period_frames: Some(144),
+            capacity_frames: 144,
+        };
+        assert!(request.validate_observed(observed, None).is_ok());
+        for observed in [
+            NativeStreamTiming {
+                period_frames: Some(160),
+                capacity_frames: 160,
+                ..observed
+            },
+            NativeStreamTiming {
+                capacity_frames: 256,
+                ..observed
+            },
+            NativeStreamTiming {
+                period_frames: None,
+                ..observed
+            },
+        ] {
+            assert!(request.validate_observed(observed, None).is_err());
+        }
+        for period in [143, 145, 160, 192, 480] {
+            assert!(
+                PhysicalRenderRequest {
+                    period_frames: Some(period),
+                    ..request
+                }
+                .validate(RenderQueuePolicy::FullCapacity)
+                .is_err()
+            );
+        }
     }
 
     #[test]

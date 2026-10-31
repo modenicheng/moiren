@@ -91,9 +91,10 @@ pub(super) fn validate(
         if device
             .hardware_sample_rate
             .is_some_and(|rate| !SAMPLE_RATES.contains(&rate))
-            || device
-                .period_frames
-                .is_some_and(|frames| !(64..=4096).contains(&frames) || !frames.is_power_of_two())
+            || !crate::wasapi::native_period_request_supported(
+                device,
+                matches!(config, NodeConfig::Input(_)),
+            )
         {
             return Err(unsupported(
                 "unsupported requested native rate or buffer size",

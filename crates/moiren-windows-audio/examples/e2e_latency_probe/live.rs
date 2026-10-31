@@ -436,7 +436,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
              --vad-microphone-minimum-period separately requests the owned MIC recorder minimum; requires schema2 Exclusive collection.\n\
              Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
-             --render-mode shared|exclusive --render-period-frames 64|128|256|512|1024|2048|4096\n\
+             --render-mode shared|exclusive --render-period-frames 64|128|144|256|512|1024|2048|4096\n\
+             144 requires explicit Exclusive and vad-probe; exact native acceptance is still required.\n\
              selects physical output only in both probe paths; omission preserves existing defaults.\n\
              Explicit periods refuse unknown/mismatched observations or Shared fallback; Exclusive requires capacity rendering.\n\
              Explicit input capacity/jitter/packet/gap flags require --input-target-frames; omission preserves compatibility.\n\
@@ -2227,6 +2228,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn physical_render_parser_144_requires_explicit_exclusive_and_probe_feature() {
+        let directory = temp_dir("physical-render-144");
+        for source in ["process-loopback", "vad-playback"] {
+            for mode in [None, Some("shared"), Some("exclusive")] {
+                let mut args = physical_render_args(&directory, source);
+                args.extend(["--render-period-frames".into(), "144".into()]);
+                if let Some(mode) = mode {
+                    args.extend(["--render-mode".into(), mode.into()]);
+                }
+                let options = parse(args).unwrap();
+                assert_eq!(
+                    validate(&options).is_ok(),
+                    mode == Some("exclusive") && cfg!(feature = "vad-probe")
+                );
+            }
+        }
+        assert!(!directory.exists(), "validation must not create artifacts");
     }
 
     #[test]
