@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::state::{SourceMode, output_name, source_name};
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use controls::*;
 use rust_i18n::t;
 
@@ -108,31 +108,17 @@ impl CachedPanel for DevicesPanel {
 /// rebuild-every-notify behavior it always had.
 pub(in crate::ui::window) fn page_for(
     shell: &StudioShell,
-    window: &Window,
+    _window: &Window,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     if shell.device_tab == DeviceTab::Exports {
         return page(shell, cx);
     }
-    cached_or_live(
-        shell.devices_panel.clone(),
-        window,
-        // The page root carries `flex_1` for the workspace row; the cached
-        // wrapper must inherit it, or the scroll areas collapse to content.
-        |entity| {
-            entity
-                .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
-                .into_any_element()
-        },
-        |entity| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .child(entity)
-                .into_any_element()
-        },
-    )
+    cached_splice(shell.devices_panel.clone(), |entity| {
+        entity
+            .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
+            .into_any_element()
+    })
 }
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {

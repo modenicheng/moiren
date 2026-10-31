@@ -6,7 +6,7 @@
 use super::*;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
-use crate::ui::window::panel::{CachedPanel, PanelHost, cached_or_live};
+use crate::ui::window::panel::{CachedPanel, PanelHost, cached_splice};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
@@ -366,7 +366,7 @@ fn strip_probe_candidate(
 /// per-strip cached panels, with the meter hot layer as a sibling above them.
 pub(in crate::ui::window) fn page(
     shell: &StudioShell,
-    window: &Window,
+    _window: &Window,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let graph = &shell.state.read(cx).snapshot.graph;
@@ -408,25 +408,20 @@ pub(in crate::ui::window) fn page(
         };
         // The strip is cached behind a wrapper carrying its load-bearing
         // outer sizing (cached views lay out by their wrapper).
-        let strip = cached_or_live(
-            host.clone(),
-            window,
-            {
-                let width = px(MixerPresentation::STRIP_WIDTH);
-                move |entity| {
-                    entity
-                        .cached(
-                            StyleRefinement::default()
-                                .flex_none()
-                                .w(width)
-                                .h_full()
-                                .min_h_0(),
-                        )
-                        .into_any_element()
-                }
-            },
-            |entity| entity.into_any_element(),
-        );
+        let strip = cached_splice(host.clone(), {
+            let width = px(MixerPresentation::STRIP_WIDTH);
+            move |entity| {
+                entity
+                    .cached(
+                        StyleRefinement::default()
+                            .flex_none()
+                            .w(width)
+                            .h_full()
+                            .min_h_0(),
+                    )
+                    .into_any_element()
+            }
+        });
         if matches!(node.kind(), NodeKind::Bus | NodeKind::Sink) {
             dock = dock.child(strip);
         } else {

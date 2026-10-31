@@ -8,7 +8,7 @@ use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 
 /// The inspector panel behind a [`PanelHost`]: rebuilt only when its inputs
 /// changed — the published snapshot, the selection, the active editing
@@ -94,17 +94,12 @@ impl CachedPanel for InspectorPanel {
 }
 
 /// The inspector panel's cached splice.
-fn inspector_panel_for(shell: &StudioShell, window: &Window) -> AnyElement {
-    cached_or_live(
-        shell.inspector_panel.clone(),
-        window,
-        |entity| {
-            entity
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element()
-        },
-        |entity| div().size_full().child(entity).into_any_element(),
-    )
+fn inspector_panel_for(shell: &StudioShell, _window: &Window) -> AnyElement {
+    cached_splice(shell.inspector_panel.clone(), |entity| {
+        entity
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
+    })
 }
 
 /// The node-library panels behind [`PanelHost`]s: the icon rail and the
@@ -256,10 +251,7 @@ fn paint_inspector_meter(
     let bar_width = bounds.size.width - px(6.);
     for channel in 0..count {
         let top = bounds.top() + (row_height + gap) * channel as f32;
-        let track = Bounds::new(
-            point(bounds.left(), top),
-            size(bar_width, row_height),
-        );
+        let track = Bounds::new(point(bounds.left(), top), size(bar_width, row_height));
         match levels.as_ref().and_then(|levels| levels.get(channel)) {
             Some(level) => crate::ui::widgets::meters::paint_meter_fill_horizontal(
                 track,
@@ -316,7 +308,7 @@ pub(super) fn inspector_host(
 /// closed, so the two springs swap one for the other in the same motion.
 pub(super) fn library_host(
     shell: &StudioShell,
-    window: &Window,
+    _window: &Window,
     cx: &Context<StudioShell>,
 ) -> Stateful<Div> {
     let this = cx.entity();
@@ -330,31 +322,21 @@ pub(super) fn library_host(
             "library-rail-width",
             !shell.sidebar_open,
             theme::LIBRARY_RAIL_WIDTH,
-            cached_or_live(
-                shell.library_rail_panel.clone(),
-                window,
-                |entity| {
-                    entity
-                        .cached(StyleRefinement::default().size_full())
-                        .into_any_element()
-                },
-                |entity| div().size_full().child(entity).into_any_element(),
-            ),
+            cached_splice(shell.library_rail_panel.clone(), |entity| {
+                entity
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element()
+            }),
         ))
         .child(panel(
             "library-panel-width",
             shell.sidebar_open,
             theme::LIBRARY_WIDTH,
-            cached_or_live(
-                shell.library_panel.clone(),
-                window,
-                |entity| {
-                    entity
-                        .cached(StyleRefinement::default().size_full())
-                        .into_any_element()
-                },
-                |entity| div().size_full().child(entity).into_any_element(),
-            ),
+            cached_splice(shell.library_panel.clone(), |entity| {
+                entity
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element()
+            }),
         ))
         .child(edge_handle(
             "library-toggle",

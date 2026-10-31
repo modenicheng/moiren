@@ -40,7 +40,14 @@ pub(crate) fn paint_clip_lamp(
             size(px(3.), track.size.height),
         ),
     };
-    window.paint_quad(fill(lamp, if clipped { theme::DANGER } else { theme::BORDER }));
+    window.paint_quad(fill(
+        lamp,
+        if clipped {
+            theme::DANGER
+        } else {
+            theme::BORDER
+        },
+    ));
 }
 
 pub(crate) fn paint_channel_meter(

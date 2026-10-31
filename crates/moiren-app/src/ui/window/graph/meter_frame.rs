@@ -5,7 +5,7 @@
 //! the hot layer at the frame the canvas prepaint published.
 use super::*;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
-use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_or_live};
+use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_splice};
 use pages::graph_canvas::CanvasFrame;
 use std::rc::Rc;
 
@@ -105,17 +105,12 @@ impl CachedPanel for GraphPanel {
     }
 }
 
-pub(in crate::ui::window) fn page(shell: &StudioShell, window: &Window) -> AnyElement {
-    let controls = cached_or_live(
-        shell.graph_controls.clone(),
-        window,
-        |entity| {
-            entity
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element()
-        },
-        |entity| div().size_full().child(entity).into_any_element(),
-    );
+pub(in crate::ui::window) fn page(shell: &StudioShell, _window: &Window) -> AnyElement {
+    let controls = cached_splice(shell.graph_controls.clone(), |entity| {
+        entity
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
+    });
     div()
         .relative()
         .flex()

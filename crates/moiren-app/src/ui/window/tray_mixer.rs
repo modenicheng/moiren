@@ -21,7 +21,7 @@ use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
-use super::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
+use super::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use super::*;
 use crate::service::{GraphNodeState, GraphSnapshot, MixerState};
 use crate::ui::monitoring::DisplayLevel;
@@ -148,7 +148,7 @@ impl TrayMixer {
 }
 
 impl Render for TrayMixer {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("tray-mixer")
             .track_focus(&self.focus)
@@ -159,16 +159,11 @@ impl Render for TrayMixer {
             })
             .size_full()
             .relative()
-            .child(cached_or_live(
-                self.panel.clone(),
-                window,
-                |entity| {
-                    entity
-                        .cached(StyleRefinement::default().size_full())
-                        .into_any_element()
-                },
-                |entity| div().size_full().child(entity).into_any_element(),
-            ))
+            .child(cached_splice(self.panel.clone(), |entity| {
+                entity
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element()
+            }))
             .child(self.meter_layer.clone())
     }
 }
@@ -545,12 +540,7 @@ fn paint_flyout_meter(
             Some(level) => paint_meter_fill(track, *level, theme::BORDER, window),
             None => window.paint_quad(fill(track, theme::BORDER)),
         }
-        crate::ui::widgets::meters::paint_clip_lamp(
-            track,
-            Axis::Vertical,
-            clips[channel],
-            window,
-        );
+        crate::ui::widgets::meters::paint_clip_lamp(track, Axis::Vertical, clips[channel], window);
     }
 }
 

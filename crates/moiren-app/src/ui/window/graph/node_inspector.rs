@@ -189,7 +189,12 @@ pub(in crate::ui::window) fn inspector(
         ))
         // Live bars are the sidebar hot surface's job; this painting-free
         // canvas only registers where this node's meter tracks sit.
-        .child(inspector_meter_track(shell, cx.entity(), id, node.channels()))
+        .child(inspector_meter_track(
+            shell,
+            cx.entity(),
+            id,
+            node.channels(),
+        ))
         .when(node.channels() == 2, |view| {
             view.child(super::super::mixer::strip_controls::balance(
                 shell,
@@ -1316,14 +1321,17 @@ fn inspector_meter_track(
         .flex_none()
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |shell, cx| {
-                shell.state.update(cx, |state, _| state.node_meters.reset_clip(id));
+                shell
+                    .state
+                    .update(cx, |state, _| state.node_meters.reset_clip(id));
                 cx.notify();
             });
         })
         .child(
             canvas(
                 move |bounds, window, _| {
-                    geometry.update(|geometry| geometry.register(id, bounds, window.content_mask()));
+                    geometry
+                        .update(|geometry| geometry.register(id, bounds, window.content_mask()));
                 },
                 |_, _, _, _| {},
             )

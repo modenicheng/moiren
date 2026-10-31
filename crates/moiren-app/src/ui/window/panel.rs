@@ -273,21 +273,17 @@ impl<P: CachedPanel> Render for PanelHost<P> {
     }
 }
 
-/// Splice a cached panel entity, or render it live while accessibility is
-/// active. GPUI's cache replays paint/layout but not the per-frame
-/// accessibility tree, so an active accessibility client needs the entity's
-/// subtree rebuilt into each frame's tree.
-pub(in crate::ui::window) fn cached_or_live<E: 'static>(
+/// Splice a cached panel entity. Accessibility needs no live escape hatch:
+/// gpui-fast's splice machinery gates on a11y staleness itself — on
+/// activation it rebuilds until the a11y nodes are recorded, then replays
+/// them from the cache's records — so forcing live rebuilds here only
+/// melted the whole window whenever a platform client probed accessibility
+/// (every alt-tab through certain setups does).
+pub(in crate::ui::window) fn cached_splice<E: 'static>(
     entity: Entity<E>,
-    window: &Window,
     cached: impl FnOnce(Entity<E>) -> AnyElement,
-    live: impl FnOnce(Entity<E>) -> AnyElement,
 ) -> AnyElement {
-    if window.is_a11y_active() {
-        live(entity)
-    } else {
-        cached(entity)
-    }
+    cached(entity)
 }
 
 #[cfg(test)]

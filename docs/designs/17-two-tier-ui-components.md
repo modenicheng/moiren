@@ -42,18 +42,16 @@ half is done); the painting carriers and everything around them are not.
 1. **Semantic key + shell observer + diff + conditional notify** — written
    twice, line-for-line parallel, already drifted apart in field sets:
    `MixerControls` and `GraphControls`.
-2. **a11y bypass wrapper** — the `is_a11y_active()` fallback is copied four
-   times (toolbar, statusbar, both `page()` functions).
-3. **Meter demand clearing** — three copies (both controls' render plus the
-   shell root's non-meter-page branch).
-4. **`CachedChrome`** — no key at all; every shell notify rebuilds, held safe
-   only by the server-side elapsed quantization (`service/mod.rs`) and the
-   "meter frames never notify the shell" convention.
-5. **`PreparedFrame` slot vs `Geometry` register** — two different answers to
-   the same question: the cached subtree cannot hand per-frame geometry to
-   its sibling, so something must be shared out of band.
-6. **Model-entity pools** — revision-gated (`mixer/model.rs`) and
-   snapshot-retain (`graph/compressor.rs`) variants.
+2. **a11y bypass wrapper** — REMOVED 2026-10-31, third machine round: the
+   live-under-a11y escape hatch was written against stock-gpui semantics,
+   but gpui-fast's splice gates on a11y staleness itself (`a11y::stale`) —
+   it rebuilds until the a11y nodes are recorded and then replays them from
+   the cache's records. The forced live rebuilds instead melted the whole
+   window whenever a platform client probed accessibility (an alt-tab
+   through certain setups does): every panel rebuilt per frame, the page
+   dropped frames, and the Mixer burned ~3× a core until the window was
+   recreated. Panels stay cached under a11y now; `cached_or_live` became
+   `cached_splice`.
 
 ### Uncovered surfaces
 
@@ -211,7 +209,9 @@ pub(super) trait CachedPanel: 'static + Sized {
 
 A single `PanelHost<P>` entity implements, once: the shell observer → capture
 key → diff → conditional notify; the render-time key refresh (self-healing);
-the a11y fallback (via one shared `cached_or_live()` helper, replacing four
+the a11y live path (one shared `cached_or_live()` helper, replacing four;
+the helper's live branch itself was removed once gpui-fast's splice proved
+to serve a11y from the cache — see hazard note above)
 copies); the `on_rebuild` hook (replacing three demand-clear copies); the
 nested-model subscription pool (replacing the mixer slider map and the graph
 search observer); and a per-panel rebuild counter for the test harness.
@@ -396,7 +396,9 @@ Each step lands separately, workspace suite green, with
 
 - No framework or scene-graph replacement (`16-render-architecture.md`,
   "Assessment").
-- No accessibility-tree caching (upstream gpui limitation; the live-tree
+- No accessibility-tree caching (RESOLVED: gpui-fast serves a11y nodes
+  from the cache's records and gates on staleness itself; the
+  live-tree
   fallback stands).
 - Keys remain per-page declarations; the model does not derive them.
 - The root still rebuilds its element every drawn frame. The tiers keep that

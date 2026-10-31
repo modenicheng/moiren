@@ -4,7 +4,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::GraphEdit;
 use crate::ui::presentation::{db_text, step_db};
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use controls::*;
 use moiren_core::graph::{PortId, SendParams};
 
@@ -48,28 +48,14 @@ impl CachedPanel for MatrixPanel {
 /// The matrix page's cached splice.
 pub(in crate::ui::window) fn page_for(
     shell: &StudioShell,
-    window: &Window,
+    _window: &Window,
     _cx: &Context<StudioShell>,
 ) -> AnyElement {
-    cached_or_live(
-        shell.matrix_panel.clone(),
-        window,
-        // The page root carries `flex_1` for the workspace row; the cached
-        // wrapper must inherit it, or the scroll areas collapse to content.
-        |entity| {
-            entity
-                .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
-                .into_any_element()
-        },
-        |entity| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .child(entity)
-                .into_any_element()
-        },
-    )
+    cached_splice(shell.matrix_panel.clone(), |entity| {
+        entity
+            .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
+            .into_any_element()
+    })
 }
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {

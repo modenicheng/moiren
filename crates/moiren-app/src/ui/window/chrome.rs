@@ -1,7 +1,7 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use controls::*;
 use std::sync::Arc;
 
@@ -258,52 +258,28 @@ impl CachedPanel for StatusbarPanel {
     }
 }
 
-pub(super) fn toolbar_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
+pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
     // Chrome is cached on every page: both meter frames — not the shell —
     // own the animation loops, so shell notifications here are real state
     // changes and the cached tree rebuilds through its shell observer.
-    cached_or_live(
-        shell.toolbar_chrome.clone(),
-        window,
-        |entity| {
-            entity
-                .cached(
-                    StyleRefinement::default()
-                        .w_full()
-                        .h(px(theme::TOOLBAR_HEIGHT))
-                        .flex_none(),
-                )
-                .into_any_element()
-        },
-        |entity| {
-            div()
-                .w_full()
-                .h(px(theme::TOOLBAR_HEIGHT))
-                .flex_none()
-                .child(entity)
-                .into_any_element()
-        },
-    )
+    cached_splice(shell.toolbar_chrome.clone(), |entity| {
+        entity
+            .cached(
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(theme::TOOLBAR_HEIGHT))
+                    .flex_none(),
+            )
+            .into_any_element()
+    })
 }
 
-pub(super) fn status_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
-    cached_or_live(
-        shell.status_chrome.clone(),
-        window,
-        |entity| {
-            entity
-                .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
-                .into_any_element()
-        },
-        |entity| {
-            div()
-                .w_full()
-                .h(px(28.))
-                .flex_none()
-                .child(entity)
-                .into_any_element()
-        },
-    )
+pub(super) fn status_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
+    cached_splice(shell.status_chrome.clone(), |entity| {
+        entity
+            .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
+            .into_any_element()
+    })
 }
 
 fn titlebar_drag_region(id: &'static str) -> impl IntoElement {

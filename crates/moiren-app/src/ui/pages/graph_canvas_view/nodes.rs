@@ -180,11 +180,11 @@ pub(in crate::ui) fn paint_meter_bars(
             );
         }
         crate::ui::widgets::meters::paint_clip_lamp(
-                track,
-                gpui_kit::Axis::Horizontal,
-                clip,
-                window,
-            );
+            track,
+            gpui_kit::Axis::Horizontal,
+            clip,
+            window,
+        );
     }
 }
 

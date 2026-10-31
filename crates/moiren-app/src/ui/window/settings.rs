@@ -1,6 +1,6 @@
 use rust_i18n::t;
 
-use super::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
+use super::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use super::*;
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
@@ -60,33 +60,20 @@ impl CachedPanel for SettingsPanel {
 
 /// The settings overlay's cached splice; mounted only while settings are
 /// open (the shell's own `.when`).
-pub(in crate::ui::window) fn overlay_for(shell: &StudioShell, window: &Window) -> AnyElement {
+pub(in crate::ui::window) fn overlay_for(shell: &StudioShell, _window: &Window) -> AnyElement {
     // The cached wrapper is laid out as a root; the overlay must keep
     // covering the window without taking flex-column layout space.
-    cached_or_live(
-        shell.settings_panel.clone(),
-        window,
-        |entity| {
-            entity
-                .cached(
-                    StyleRefinement::default()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full(),
-                )
-                .into_any_element()
-        },
-        |entity| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .child(entity)
-                .into_any_element()
-        },
-    )
+    cached_splice(shell.settings_panel.clone(), |entity| {
+        entity
+            .cached(
+                StyleRefinement::default()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+            .into_any_element()
+    })
 }
 
 pub(super) fn overlay(
