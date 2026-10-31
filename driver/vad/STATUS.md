@@ -34,10 +34,20 @@ default Exclusive period, actual Float32/480 at both native ends. They retain
 nonzero microphone PCM and complete source submission, but both fail EngineHost
 shutdown with SET_GATE revision mismatch. A single existing-debug-logger repeat
 observes a transport close refusal after Pause and later successful lifecycle
-closure; decisive confirmation-query evidence is still missing. No guard is
+closure; decisive confirmation-query evidence is missing in those two earlier
+acquisitions. No guard is
 relaxed or failure called a pass. Verified archives, separate internal cleanup
 failure/external absence, waveform-analysis limits and next diagnostic boundary:
 [default-period IO/Bus receipt](../../docs/validation/2026-10-31-default-period-iobus.md).
+
+A third acquisition isolates the original probe plus logging only. Both
+decisive close confirmations now show same-stream generation1, gate2 -> 3,
+Paused and still open; refusal is correct, not successful concurrent closure.
+Native reset/retirement sequencing is the next investigation boundary, not a
+reason to relax gate guards. This run also retains a separate early Running
+MIC `silence_packets=1` quality fault. It is not a passing collection.
+Pins, verified archive, independent audit and limits:
+[close-confirmation receipt](../../docs/validation/2026-10-31-close-confirmation.md).
 
 The new READ-selected, bounded native-buffer observer records the actual
 consumption path and bytes before the original clearing. A retained first
