@@ -578,13 +578,11 @@ fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    let mid = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
     let after = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
-    eprintln!("DELTA first={} second={}", mid - before, after - mid);
     assert_eq!(
         after - before,
         1,
@@ -905,20 +903,12 @@ fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppC
     cx.update(|window, cx| window.draw(cx).clear(cx));
     // A real layout change the strip key does not mention: the window is
     // shortened, so every strip's height (and its fader track) changes.
-    let strips_before_resize =
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
     cx.simulate_resize(size(px(1440.), px(640.)));
     view.update(cx, |_, cx| cx.notify());
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    let strips_after_resize =
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
-    eprintln!(
-        "RESIZE-REBUILDS {}",
-        strips_after_resize - strips_before_resize
-    );
     let (thumb_x, thumb_y, _track_height) = view.update(cx, |shell, cx| {
         let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
         (
