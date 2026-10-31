@@ -722,7 +722,10 @@ impl VirtualPlaybackSource {
             // marginal for ~20 s of servo-only recovery - but, unlike the
             // old reset, no carrier content is discarded, no epoch moves,
             // and the servo and FIR state survive the rebuild.
-            if transferred == 0
+            // Short upsampled segments can be produced entirely from FIR
+            // history: a zero-demand read is not carrier starvation.
+            if required_input > 0
+                && transferred == 0
                 && let Some(drift) = &mut self.drift
             {
                 drift.primed = false;

@@ -71,6 +71,6 @@ pub(crate) mod negotiation;
 
 // One counting allocator per library-test binary, shared by bounded hot-path
 // regressions. Integration-test binaries install their own copy.
-#[cfg(all(windows, test))]
+#[cfg(test)]
 #[path = "../tests/common/alloc_guard.rs"]
 pub(crate) mod test_allocation;

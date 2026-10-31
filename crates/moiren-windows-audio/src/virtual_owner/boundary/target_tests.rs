@@ -8,6 +8,8 @@ use moiren_engine::{
 mod cascade_fixture;
 #[path = "phase_tests/fixture.rs"]
 mod phase_fixture;
+#[path = "phase_tests/zero_refill.rs"]
+mod zero_refill;
 
 const BUDGET: usize = 1 << 20;
 

@@ -5,6 +5,15 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [playback SRC zero-refill receipt](2026-11-01-src-zero-refill.md) repairs
+a separate audio defect: a short upsampled segment produced from retained FIR
+history no longer rearms prime merely because its successful zero-demand
+carrier read transfers zero. Actual compiled unity-Bus/control segmentation
+reproduces the old silent output. Five regressions preserve real starvation,
+epoch fencing and RT allocation guards; final workspace tests pass3044 with10
+ignored. Budgets/defaults/quality gates are unchanged, and no native waveform
+or physical acceptance follows.
+
 The [raw capture owner-reopen receipt](2026-11-01-input-owner-reopen.md) repairs
 a separate segment-attribution defect: a second actual owner bind now seals
 retained raw evidence even when every scalar identity field matches. Original
