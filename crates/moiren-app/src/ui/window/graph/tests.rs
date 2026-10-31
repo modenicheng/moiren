@@ -730,6 +730,34 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
             "the band crossing the node must select it"
         );
     });
+    // The selection highlight is cached-canvas content: every selection
+    // change must rebuild the page within the gesture's frames — the tint
+    // may not wait for the next publish.
+    let renders = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().graph_renders);
+    // Shrink the band back to the anchor: the node leaves the selection.
+    // The rebuild rides two effect passes (shell notify -> host notify ->
+    // render), so give the cycle two frames.
+    cx.simulate_mouse_move(
+        anchor + point(px(8.), px(8.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, _| {
+        assert!(
+            shell.selected_nodes.is_empty(),
+            "the shrunken band must deselect"
+        );
+        assert!(
+            shell.mixer.trace.borrow().graph_renders > renders,
+            "a selection change must rebuild the cached page immediately"
+        );
+    });
     // Release: the loop stands down again.
     cx.simulate_mouse_up(finish, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| assert!(shell.selection_drag.is_none()));

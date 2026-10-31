@@ -307,6 +307,25 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                         drag.moved = true;
                         shell.background_click = None;
                     }
+                    // Apply the live selection here, in the event phase: the
+                    // cached page rebuilds on this notify, and a notify raised
+                    // from the hot layer's paint would never reach it.
+                    let (moved, anchor, current, additive) =
+                        (drag.moved, drag.anchor, drag.current, drag.additive);
+                    let frame = shell.graph_canvas_frame.read();
+                    if moved && let Some(frame) = frame {
+                        let a = frame.local_position(anchor);
+                        let b = frame.local_position(current);
+                        let min = frame.camera.canvas_to_world((a.0.min(b.0), a.1.min(b.1)));
+                        let max = frame.camera.canvas_to_world((a.0.max(b.0), a.1.max(b.1)));
+                        let world_rect = Bounds {
+                            origin: point(min.0, min.1),
+                            size: size(max.0 - min.0, max.1 - min.1),
+                        };
+                        if shell.apply_box_select(world_rect, &frame.world.nodes, additive, cx) {
+                            cx.notify();
+                        }
+                    }
                 }
                 if let Some((id, gx, gy)) = shell.node_drag {
                     shell.camera.adjusted = true;

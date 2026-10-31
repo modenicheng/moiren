@@ -187,12 +187,12 @@ fn paint_box_select_band(
     frame: &CanvasFrame,
     shell: &mut StudioShell,
     window: &mut Window,
-    cx: &mut Context<StudioShell>,
+    _cx: &mut Context<StudioShell>,
 ) {
     let Some(drag) = shell.selection_drag.as_ref() else {
         return;
     };
-    let (anchor, current, moved, additive) = (drag.anchor, drag.current, drag.moved, drag.additive);
+    let (anchor, current) = (drag.anchor, drag.current);
     let a = frame.local_position(anchor);
     let b = frame.local_position(current);
     let left = a.0.min(b.0);
@@ -210,18 +210,6 @@ fn paint_box_select_band(
         border_color: theme::PRIMARY,
         border_style: BorderStyle::default(),
     });
-    if !moved {
-        return;
-    }
-    let min = frame.camera.canvas_to_world((left, top));
-    let max = frame.camera.canvas_to_world((a.0.max(b.0), a.1.max(b.1)));
-    let world_rect = Bounds {
-        origin: point(min.0, min.1),
-        size: size(max.0 - min.0, max.1 - min.1),
-    };
-    if shell.apply_box_select(world_rect, &frame.world.nodes, additive, cx) {
-        cx.notify();
-    }
 }
 
 fn paint_graph_meter_frame(
