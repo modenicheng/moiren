@@ -1792,3 +1792,136 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
     });
     finish_service(runtime);
 }
+
+/// HC-9: meter demand must follow the user's camera. Zooming until only one
+/// node is on screen must drop the off-screen node from the demand set,
+/// release its level subscription once the grace elapses, keep the on-screen
+/// node subscribed, and restore both when the camera returns to fit.
+#[gpui_kit::test]
+fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let (near, far) = (
+        snapshot.graph.graph.nodes()[0].id(),
+        snapshot.graph.graph.nodes()[1].id(),
+    );
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        // Park the second node far from the default layout so a 1:1 camera
+        // centered on the first node leaves it thousands of pixels outside.
+        shell.node_positions.insert(far, (40_000., 40_000.));
+        cx.notify();
+    });
+    render(cx);
+    settle_panels(cx);
+    // The fit camera shows every node, so both topics are demanded and their
+    // subscriptions go live on the running session's publications.
+    let topics = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.update(cx, |shell, cx| {
+            let snapshot = &shell.state.read(cx).snapshot;
+            (
+                snapshot.signal_topics.node_levels[&near].clone(),
+                snapshot.signal_topics.node_levels[&far].clone(),
+            )
+        })
+    };
+    let (near_topic, far_topic) = topics(&view, cx);
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.update_node_meters(true, cx);
+        });
+        near_topic.business_subscribers() > 0 && far_topic.business_subscribers() > 0
+    });
+    // Zoom 1:1 onto the first node's card. The interaction handlers all end
+    // in a camera mutation plus notify; driving the shell camera directly
+    // exercises the same rebuild path.
+    let bounds = render(cx);
+    let (pan_x, pan_y) = view.update(cx, |shell, cx| {
+        let world = CanvasWorld::positioned(&shell.state.read(cx).snapshot, &shell.node_positions);
+        let card = pages::graph_canvas::NodeLayout::new(&world.nodes[0]).card;
+        (
+            f32::from(bounds.size.width) / 2. - (card.origin.x + card.size.width / 2.),
+            f32::from(bounds.size.height) / 2. - (card.origin.y + card.size.height / 2.),
+        )
+    });
+    view.update(cx, |shell, cx| {
+        shell.camera = Camera {
+            pan_x,
+            pan_y,
+            zoom: 1.,
+            adjusted: true,
+        };
+        cx.notify();
+    });
+    render(cx);
+    view.read_with(cx, |shell, _| {
+        let points = shell.node_meter_points.borrow();
+        assert!(points.contains(&near), "on-screen node stays demanded");
+        assert!(
+            !points.contains(&far),
+            "off-screen node must leave the demand set on the zoomed rebuild"
+        );
+    });
+    // Past the 750 ms subscription grace the off-screen node's topic must
+    // hold no business subscribers while the on-screen node keeps its
+    // subscription polled. Drive pumps in the wait loop because the closure
+    // sees no display frames.
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.update_node_meters(true, cx);
+        });
+        far_topic.business_subscribers() == 0 && near_topic.business_subscribers() > 0
+    });
+    // Back to fit: the auto-fit camera shows every node again and both
+    // subscriptions return.
+    view.update(cx, |shell, cx| {
+        shell.camera.adjusted = false;
+        cx.notify();
+    });
+    render(cx);
+    let (near_topic, far_topic) = topics(&view, cx);
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.update_node_meters(true, cx);
+        });
+        near_topic.business_subscribers() > 0 && far_topic.business_subscribers() > 0
+    });
+    finish_service(runtime);
+}
