@@ -465,7 +465,7 @@ impl Desktop {
         if let Some(shell) = self.shell.clone() {
             let saved = shell.update(cx, |shell, cx| {
                 shell.finish_project_load(cx);
-                let meters_changed = !shell.meter_animation_active(cx) && shell.pump_meters(cx);
+                let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
                 if (changed || meters_changed || restored) && !iconic {
                     cx.notify();
                 }

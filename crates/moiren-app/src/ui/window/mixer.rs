@@ -25,7 +25,7 @@ use model::{StripDrag, reorder};
 use routing::{inputs, sends};
 
 impl StudioShell {
-    pub(super) fn update_node_meters(&mut self, visible: bool, cx: &App) -> bool {
+    pub(super) fn update_node_meters(&mut self, visible: bool, cx: &mut Context<Self>) -> bool {
         let mut nodes = if visible {
             self.node_meter_points.borrow().clone()
         } else {
@@ -45,78 +45,16 @@ impl StudioShell {
         {
             nodes.insert(selected);
         }
-        self.node_meters
-            .update(&self.state.read(cx).snapshot, &nodes)
+        let preferences = self.preferences.meters;
+        self.state.update(cx, |state, _| {
+            state.node_meters.set_preferences(preferences);
+            state.node_meters.update(&state.snapshot, &nodes)
+        })
     }
 }
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
-
-pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    let state = shell.state.read(cx);
-    let graph = &state.snapshot.graph;
-    let mut channels = div()
-        .id("mixer-strips")
-        .flex()
-        .flex_1()
-        .min_w_0()
-        .min_h_0()
-        .track_scroll(&shell.mixer_scroll)
-        .overflow_x_scroll()
-        .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
-    let mut dock = div().flex().flex_none().min_w_full().h_full().justify_end();
-    let dock_container = div()
-        .id("mixer-dock")
-        .flex()
-        .flex_none()
-        .w(px(MixerPresentation::DOCK_WIDTH))
-        .max_w(relative(0.55))
-        .min_h_0()
-        .border_l_1()
-        .border_color(theme::BORDER_STRONG)
-        .overflow_x_scroll()
-        .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
-    for id in &shell.mixer.order {
-        let Ok(node) = graph.graph.get_node(*id) else {
-            continue;
-        };
-        let entry = graph.node(*id).expect("service metadata");
-        let strip = strip(shell, entry, node.kind(), node.channels(), cx);
-        if matches!(node.kind(), NodeKind::Bus | NodeKind::Sink) {
-            dock = dock.child(strip);
-        } else {
-            channels = channels.child(strip);
-        }
-    }
-    div()
-        .id("mixer-page")
-        .size_full()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h_0()
-        .overflow_hidden()
-        .child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .child(channels.gpui_test_observe())
-                .child(dock_container.child(dock).gpui_test_observe()),
-        )
-        .gpui_test_observe()
-        .into_any_element()
-}
 
 pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
     match kind {
@@ -345,20 +283,9 @@ fn meter(
 ) -> impl IntoElement {
     let state = shell.state.read(cx);
     let input = kind == NodeKind::Source;
-    let eligible = matches!(kind, NodeKind::Source | NodeKind::Sink)
-        && shell
-            .observation_nodes
-            .is_some_and(|(generation, source, sink)| {
-                generation == state.snapshot.generation
-                    && entry.id == if input { source } else { sink }
-            })
-        && state.snapshot.desired.as_ref().is_some_and(|active| {
-            if input {
-                entry.source.as_ref() == Some(&active.source)
-            } else {
-                entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
-            }
-        });
+    // The key projects this same predicate (`meter_frame::meter_probe_eligible`);
+    // compute it through the shared helper so the two cannot drift.
+    let eligible = meter_frame::meter_probe_eligible(shell, &state.snapshot, entry, kind);
     let managed = state
         .snapshot
         .signal_topics
@@ -373,32 +300,42 @@ fn meter(
             let id = entry.id;
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
-                    shell.node_meters.reset_clip(id);
+                    shell.state.update(cx, |state, _| state.node_meters.reset_clip(id));
                     cx.notify();
                 })
             }
         })
         .relative()
-        .when(managed, |view| {
+        // The managed-visibility canvas is mounted unconditionally and
+        // registers only when its condition and the content mask hold: a
+        // rebuild of the strip must refresh (or clear) exactly its own
+        // registration, because per-strip panels no longer run a
+        // whole-table reset over their siblings.
+        .child({
             let points = shell.node_meter_points.clone();
             let id = entry.id;
-            view.child(
-                canvas(
-                    move |bounds, window, _| {
-                        let intersection = bounds.intersect(&window.content_mask().bounds);
-                        if intersection.size.width > px(0.) && intersection.size.height > px(0.) {
-                            points.borrow_mut().insert(id);
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
+            canvas(
+                move |bounds, window, _| {
+                    let intersection = bounds.intersect(&window.content_mask().bounds);
+                    if managed
+                        && intersection.size.width > px(0.)
+                        && intersection.size.height > px(0.)
+                    {
+                        points.borrow_mut().insert(id);
+                    }
+                },
+                |_, _, _, _| {},
             )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
         })
         .when(eligible, |view| {
+            // The eligible strip owns the shared probe flag while mounted;
+            // an eligibility or identity transition resets the flags in
+            // `refresh_observation_nodes` and the new owners re-register on
+            // their rebuild in the same layout pass.
             view.child(meter_probe(shell.meter_points.clone(), input))
         })
         .child(meter_frame::track(shell, entry.id, channels, eligible.then_some(input)))

@@ -5,23 +5,39 @@
 //! perceptual value space and edit path (see `mixer::model`): drag Changes
 //! dispatch coalesced, the release's final value always lands, and the wheel
 //! and double-click gestures edit immediately, as do mute/solo clicks.
-//! Escape closes the window.
+//!
+//! The strips are a cached panel ([`TrayPanel`]) and the live meter bars a
+//! hot surface ([`FlyoutMeters`]) over them — the same two-tier split as the
+//! main window's pages (design 17). Meter observations pump the
+//! application's one `NodeMeters` table (shared with the main window
+//! through `UiState`), so both windows see identical ballistics. Escape
+//! closes the window.
 
 use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use super::controls::{button, heading, label};
 use super::desktop::Desktop;
+use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
+use super::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use super::*;
 use crate::service::{GraphNodeState, GraphSnapshot, MixerState};
-use crate::ui::monitoring::NodeMeters;
+use crate::ui::monitoring::DisplayLevel;
 use crate::ui::presentation::db_text;
+use crate::ui::shared_frame::SharedFrame;
 use crate::ui::widgets::fader::fader;
+use crate::ui::widgets::meters::paint_meter_fill;
 use moiren_core::graph::{NodeId, NodeKind};
 
 const STRIP_WIDTH: f32 = 104.;
 const FLYOUT_HEIGHT: f32 = 372.;
+const METER_BAR_WIDTH: f32 = 7.;
+const METER_HEIGHT: f32 = 176.;
+/// The clip lamp sits above the bars (the loud end), the same convention as
+/// the main mixer: 3 px lamp, 7 px gap.
+const METER_LAMP_HEIGHT: f32 = 10.;
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
@@ -55,9 +71,13 @@ pub(super) fn preferred_size(strips: usize) -> Size<Pixels> {
 pub(super) struct TrayMixer {
     state: Entity<UiState>,
     desktop: Option<WeakEntity<Desktop>>,
-    node_meters: NodeMeters,
     faders: BTreeMap<NodeId, SliderSlot>,
     focus: FocusHandle,
+    /// Where each strip's meter track sits, registered by the strips'
+    /// canvases during a rebuild and read by the hot layer at paint time.
+    geometry: SharedFrame<MeterTracks>,
+    panel: Entity<TrayPanelHost>,
+    meter_layer: Entity<FlyoutMeterLayer>,
 }
 
 impl TrayMixer {
@@ -71,18 +91,25 @@ impl TrayMixer {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         cx.on_release(|this, cx| this.release_desktop(cx)).detach();
-        let mut node_meters = NodeMeters::new(state.read(cx).handle.clone());
-        node_meters.set_preferences(
-            crate::project::load_preferences()
-                .unwrap_or_default()
-                .meters,
-        );
+        let this = cx.entity();
+        let panel = cx.new(|cx| TrayPanelHost::new(TrayPanel, this.clone(), cx));
+        // One geometry frame shared by both halves of the pipeline: the
+        // strips' canvases publish into it and the hot surface reads it. Two
+        // separate frames would leave the flyout without any meter bars.
+        let geometry = SharedFrame::default();
+        let meters = std::rc::Rc::new(std::cell::RefCell::new(FlyoutMeters::new(
+            this.downgrade(),
+            geometry.clone(),
+        )));
+        let meter_layer = cx.new(|_| FlyoutMeterLayer::new(meters));
         Self {
-            node_meters,
             state,
             desktop,
             faders: BTreeMap::new(),
             focus,
+            geometry,
+            panel,
+            meter_layer,
         }
     }
 
@@ -97,12 +124,15 @@ impl TrayMixer {
         }
     }
 
-    /// Advance meter observations once; every rendered strip counts as
-    /// visible because the flyout shows no other content.
-    pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
-        let visible: std::collections::BTreeSet<NodeId> = self.faders.keys().copied().collect();
-        self.node_meters
-            .update(&self.state.read(cx).snapshot, &visible)
+    /// Advance the shared meter observations once; every rendered strip
+    /// counts as visible because the flyout shows no other content. The
+    /// desktop poll calls this while the flyout is at rest; the hot layer
+    /// calls it per frame while motion lasts.
+    pub(super) fn pump_meters(&mut self, cx: &mut Context<Self>) -> bool {
+        let visible: BTreeSet<NodeId> = self.faders.keys().copied().collect();
+        self.state.update(cx, |state, _| {
+            state.node_meters.update(&state.snapshot, &visible)
+        })
     }
 
     fn sync_faders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -118,17 +148,55 @@ impl TrayMixer {
 }
 
 impl Render for TrayMixer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_faders(window, cx);
-        // Frame-driven meters while motion lasts; the desktop poll both
-        // covers snapshot changes and re-arms these frames once fresh data
-        // lifts a strip off the scale bottom, so silence costs no vsync.
-        self.pump_meters(cx);
-        if !self.node_meters.at_rest() {
-            window.request_animation_frame();
-        }
+    fn render(&mut self, _window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("tray-mixer")
+            .track_focus(&self.focus)
+            .on_key_down(|event: &KeyDownEvent, window: &mut Window, _: &mut App| {
+                if event.keystroke.key == "escape" {
+                    window.remove_window();
+                }
+            })
+            .size_full()
+            .relative()
+            .child(cached_splice(self.panel.clone(), |entity| {
+                entity
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element()
+            }))
+            .child(self.meter_layer.clone())
+    }
+}
 
-        let state = self.state.read(cx);
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct TrayKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+}
+
+/// The flyout's strip panel: faders, mute/solo, and readouts, rebuilt only
+/// when the published snapshot changes.
+pub(in crate::ui::window) struct TrayPanel;
+
+pub(in crate::ui::window) type TrayPanelHost = PanelHost<TrayPanel>;
+
+impl CachedPanel for TrayPanel {
+    type Owner = TrayMixer;
+    type Key = TrayKey;
+
+    fn key(&self, owner: &Self::Owner, cx: &App) -> Self::Key {
+        Self::Key {
+            snapshot: PublishRef::new(Arc::clone(&owner.state.read(cx).snapshot)),
+        }
+    }
+
+    fn render(
+        &self,
+        owner: &mut Self::Owner,
+        window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement {
+        owner.sync_faders(window, cx);
+        let state = owner.state.read(cx);
         let graph = &state.snapshot.graph;
         let ids = strip_ids(graph);
         let empty = ids.is_empty();
@@ -144,17 +212,10 @@ impl Render for TrayMixer {
             let (Ok(node), Some(entry)) = (graph.graph.get_node(id), graph.node(id)) else {
                 continue;
             };
-            strips = strips.child(strip(self, entry, node.kind(), cx));
+            strips = strips.child(strip(owner, entry, node.kind(), cx));
         }
 
         div()
-            .id("tray-mixer")
-            .track_focus(&self.focus)
-            .on_key_down(|event: &KeyDownEvent, window: &mut Window, _: &mut App| {
-                if event.keystroke.key == "escape" {
-                    window.remove_window();
-                }
-            })
             .size_full()
             .flex()
             .flex_col()
@@ -175,7 +236,7 @@ impl Render for TrayMixer {
                     .border_color(theme::BORDER)
                     .child(heading(t!("Mixer")))
                     .child(div().flex_1())
-                    .child(open_button(self, cx)),
+                    .child(open_button(cx)),
             )
             .child(if empty {
                 div()
@@ -189,17 +250,44 @@ impl Render for TrayMixer {
             } else {
                 strips.into_any_element()
             })
+            .into_any_element()
+    }
+
+    fn on_rebuild(&self, owner: &mut Self::Owner) {
+        // Geometry is registered by the strip canvases during this same
+        // layout pass; stale placements must not survive a rebuild.
+        owner.geometry.reset();
+    }
+
+    fn observe_nested(
+        &self,
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
+        // SliderState is a model entity, not a Render view in the dispatch
+        // tree; its notifications cannot invalidate this cached ancestor by
+        // themselves.
+        let sliders = owner.read_with(cx, |owner, _| {
+            owner
+                .faders
+                .values()
+                .map(|slot| slot.state.clone())
+                .collect::<Vec<_>>()
+        });
+        sliders
+            .into_iter()
+            .map(|slider| cx.observe(&slider, |host, _, cx| host.notify_nested(cx)))
+            .collect()
     }
 }
 
-fn open_button(flyout: &TrayMixer, cx: &Context<TrayMixer>) -> impl IntoElement {
+fn open_button(cx: &Context<TrayMixer>) -> impl IntoElement {
     let this = cx.entity();
-    let desktop = flyout.desktop.clone();
     button("tray-mixer-open", t!("Open"))
         .variant(ButtonVariant::Ghost)
         .on_click(move |_, _, cx| {
-            this.update(cx, |_, cx| {
-                if let Some(desktop) = desktop.clone() {
+            this.update(cx, |flyout, cx| {
+                if let Some(desktop) = flyout.desktop.clone() {
                     let _ = desktop.update(cx, |desktop, cx| {
                         if let Err(error) = desktop.show_window(cx) {
                             eprintln!("Moiren show window: {error}");
@@ -219,8 +307,6 @@ fn strip(
 ) -> impl IntoElement {
     let id = entry.id;
     let color = node_kind_color(kind);
-    let levels = flyout.node_meters.levels(id);
-    let clips = flyout.node_meters.clips(id);
     div()
         .id(SharedString::from(format!("tray-strip-{id:?}")))
         .flex()
@@ -248,7 +334,14 @@ fn strip(
                         .text_size(px(theme::TEXT_SM))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::TEXT)
-                        .child(entry.label.clone()),
+                        // The main mixer's display name: an export binding,
+                        // the bound input device or output endpoint — never
+                        // the bare default label ("Input"/"Output").
+                        .child(crate::ui::state::display_label(
+                            &flyout.state.read(cx).snapshot,
+                            entry,
+                            kind,
+                        )),
                 )
                 .child(label(format!("{kind:?}"))),
         )
@@ -268,14 +361,14 @@ fn strip(
                     &flyout.faders[&id].behavior,
                     cx,
                 )))
-                .child(crate::ui::widgets::meters::compact_stereo_meter(
-                    levels, clips,
-                ))
+                .child(meter_track(flyout, id))
                 .on_mouse_down(MouseButton::Left, {
                     let this = cx.entity();
                     move |_, _, cx| {
                         this.update(cx, |flyout, cx| {
-                            flyout.node_meters.reset_clip(id);
+                            flyout
+                                .state
+                                .update(cx, |state, _| state.node_meters.reset_clip(id));
                             cx.notify();
                         });
                     }
@@ -333,6 +426,122 @@ fn strip(
                 .gpui_test_observe(),
         )
         .gpui_test_observe()
+}
+
+/// The strip's meter footprint: a painting-free canvas that registers the
+/// track's bounds for the hot layer, sized like the DOM meter it replaced.
+fn meter_track(flyout: &TrayMixer, id: NodeId) -> impl IntoElement {
+    let geometry = flyout.geometry.clone();
+    canvas(
+        move |bounds, window, _| {
+            geometry.update(|geometry| geometry.register(id, bounds, window.content_mask()));
+        },
+        |_, _, _, _| {},
+    )
+    .w(px(METER_BAR_WIDTH * 2. + 2.))
+    .h(px(METER_HEIGHT + METER_LAMP_HEIGHT))
+    .flex_none()
+}
+
+/// The flyout's hot surface: live bars over the cached strips, painting from
+/// the geometry the strips registered and the shared observations.
+pub(in crate::ui::window) struct FlyoutMeters {
+    flyout: WeakEntity<TrayMixer>,
+    geometry: SharedFrame<MeterTracks>,
+    /// How many registered tracks this surface has painted. Test-visible
+    /// census: a frame with registered tracks but zero paints means the
+    /// layer is not drawing (the regression that muted the flyout).
+    painted_tracks: std::cell::Cell<usize>,
+}
+
+impl FlyoutMeters {
+    pub(in crate::ui::window) fn new(
+        flyout: WeakEntity<TrayMixer>,
+        geometry: SharedFrame<MeterTracks>,
+    ) -> Self {
+        Self {
+            flyout,
+            geometry,
+            painted_tracks: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Tracks the sibling panel registered for this surface. Empty means the
+    /// two halves of the pipeline drifted apart and the flyout has no meters.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn registered_tracks(&self) -> usize {
+        self.geometry.read().map_or(0, |frame| frame.iter().count())
+    }
+
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn painted_tracks(&self) -> usize {
+        self.painted_tracks.get()
+    }
+}
+
+pub(in crate::ui::window) type FlyoutMeterLayer = HotLayerView<FlyoutMeters>;
+
+impl HotSurface for FlyoutMeters {
+    type Frame = MeterTracks;
+
+    fn pump(&mut self, _window: &mut Window, cx: &mut App) -> bool {
+        let Some(flyout) = self.flyout.upgrade() else {
+            return false;
+        };
+        flyout.update(cx, |flyout, cx| {
+            flyout.pump_meters(cx);
+            let state = flyout.state.read(cx);
+            state.snapshot.phase == SessionPhase::Running && !state.node_meters.at_rest()
+        })
+    }
+
+    fn frame(&self) -> &SharedFrame<MeterTracks> {
+        &self.geometry
+    }
+
+    fn paint(&self, frame: &MeterTracks, window: &mut Window, cx: &mut App) {
+        let Some(flyout) = self.flyout.upgrade() else {
+            return;
+        };
+        flyout.update(cx, |flyout, cx| {
+            for (id, bounds, mask) in frame.iter() {
+                let (levels, clips) = {
+                    let state = flyout.state.read(cx);
+                    (state.node_meters.levels(id), state.node_meters.clips(id))
+                };
+                window.with_content_mask(Some(mask), |window| {
+                    paint_flyout_meter(bounds, levels, clips, window);
+                });
+                self.painted_tracks.set(self.painted_tracks.get() + 1);
+            }
+        });
+    }
+}
+
+/// Two slim bars with a clip lamp above each — the flyout's meter
+/// footprint, painting the same `meter_spans` segmentation as every other
+/// surface (design 17 D1) under the main mixer's clip convention: the lamp
+/// sits at the loud end of the track and lights while a clip latches;
+/// clicking the strip resets it.
+fn paint_flyout_meter(
+    bounds: Bounds<Pixels>,
+    levels: Option<[DisplayLevel; 2]>,
+    clips: [bool; 2],
+    window: &mut Window,
+) {
+    let bar_width = px(METER_BAR_WIDTH);
+    for (channel, clip) in clips.iter().enumerate() {
+        let left = bounds.left() + px(channel as f32 * (METER_BAR_WIDTH + 2.));
+        let track = Bounds::new(
+            point(left, bounds.top() + px(METER_LAMP_HEIGHT)),
+            size(bar_width, px(METER_HEIGHT)),
+        );
+        match levels.as_ref().and_then(|levels| levels.get(channel)) {
+            Some(level) => paint_meter_fill(track, *level, theme::BORDER, window),
+            None => window.paint_quad(fill(track, theme::BORDER)),
+        }
+        crate::ui::widgets::meters::paint_clip_lamp(track, Axis::Vertical, *clip, window);
+    }
 }
 
 /// Strip edit; it applies itself through the live parameter path.

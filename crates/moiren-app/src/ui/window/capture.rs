@@ -199,9 +199,10 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         capture(cx, directory.join(format!("mixer-{name}.png")));
                     }
                     shell.update(cx, |shell, cx| {
-                        let snapshot = &shell.state.read(cx).snapshot;
+                        let state = shell.state.read(cx);
+                        let snapshot = &state.snapshot;
                         eprintln!("Native capture: phase={:?}, live={}, visible={}, nodes={}", snapshot.phase,
-                            snapshot.graph.nodes.iter().filter(|node| shell.node_meters.channel_levels(node.id).is_some()).count(),
+                            snapshot.graph.nodes.iter().filter(|node| state.node_meters.channel_levels(node.id).is_some()).count(),
                             shell.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
                     });
                     if std::env::var_os("MOIREN_CAPTURE_STATES").is_some() {
@@ -238,12 +239,13 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             .await;
                         if page == Page::Mixer {
                             shell.update(cx, |shell, cx| {
-                                let snapshot = &shell.state.read(cx).snapshot;
+                                let state = shell.state.read(cx);
+                                let snapshot = &state.snapshot;
                                 let live = snapshot
                                     .graph
                                     .nodes
                                     .iter()
-                                    .filter(|node| shell.node_meters.levels(node.id).is_some())
+                                    .filter(|node| state.node_meters.levels(node.id).is_some())
                                     .count();
                                 eprintln!(
                                     "Native mixer meters: {live}/{} live, {} visible, {} topics, phase {:?}",

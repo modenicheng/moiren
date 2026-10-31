@@ -38,7 +38,15 @@ impl FaderScale {
                 return top + ((high - db) / (high - low)).clamp(0., 1.) as f32 * (bottom - top);
             }
         }
-        0.97
+        // Below the last tick the scale is the amplitude-linear tail of
+        // [`Self::gain`] (gain = floor * (1 - position) / 0.03), and this
+        // must be its exact inverse: a flat clamp here would collapse every
+        // sub-floor gain onto the -72 dB tick, and each confirmed publish
+        // would then yank a thumb the user had dragged below it back up —
+        // fighting the drag until the pointer overshoots the rail and the
+        // rail clamp lands the fader on digital silence.
+        let floor = 10f64.powf(-72. / 20.);
+        1. - (gain / floor * 0.03).min(1.) as f32
     }
 
     pub fn gain(position: f32) -> f64 {
@@ -434,8 +442,31 @@ mod tests {
     fn silence_is_distinct_from_finite_values_below_the_last_tick() {
         assert_eq!(FaderScale::position(0.), 1.);
         assert_eq!(FaderScale::gain(1.), 0.);
-        assert_eq!(FaderScale::position(1e-5), 0.97);
+        // The tail inverts gain()'s amplitude-linear segment exactly, so a
+        // sub-floor gain maps onto its own position below the -72 dB tick.
+        let floor = 10f64.powf(-72. / 20.);
+        assert!(
+            (f64::from(FaderScale::position(1e-5)) - (1. - (1e-5 / floor * 0.03))).abs() < 1e-6
+        );
         assert!(FaderScale::gain(0.99) > 0.);
+    }
+
+    #[test]
+    fn tail_positions_round_trip_through_the_amplitude_linear_segment() {
+        // Every sub-floor gain must survive the write-back round trip: the
+        // thumb a user dragged below -72 dB is where the next snapshot puts
+        // it again, instead of collapsing onto the tick and fighting the
+        // drag until the rail clamp lands on digital silence.
+        for step in 1..24 {
+            let position = 0.97 + 0.03 * (step as f32) / 24.;
+            let gain = FaderScale::gain(position);
+            assert!(gain > 0., "tail position {position} must stay finite");
+            let round = FaderScale::position(gain);
+            assert!(
+                (round - position).abs() < 1e-6,
+                "tail round trip moved {position} to {round}"
+            );
+        }
     }
 
     #[test]

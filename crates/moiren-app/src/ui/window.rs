@@ -129,7 +129,6 @@ pub struct StudioShell {
     export_controls: devices::ExportControls,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     meters: MeterSubscriptions,
-    node_meters: super::monitoring::NodeMeters,
     node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
     gain_slider: Entity<base::slider::SliderState>,
@@ -164,20 +163,35 @@ pub struct StudioShell {
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
+    exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
     mixer_geometry: mixer::meter_frame::Geometry,
-    mixer_controls: Entity<mixer::meter_frame::MixerControls>,
-    toolbar_chrome: Entity<chrome::CachedChrome>,
-    status_chrome: Entity<chrome::CachedChrome>,
-    mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
-    graph_meter_frame: Entity<graph::meter_frame::GraphMeterFrame>,
-    graph_controls: Entity<graph::meter_frame::GraphControls>,
+    toolbar_chrome: Entity<chrome::ToolbarChrome>,
+    status_chrome: Entity<chrome::StatusbarChrome>,
+    mixer_frame: Entity<mixer::meter_frame::MixerMeterLayer>,
+    graph_meter_frame: Entity<graph::meter_frame::GraphMeterLayer>,
+    graph_controls: Entity<graph::meter_frame::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
     graph_canvas_frame: pages::graph_canvas_view::PreparedFrame,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
+    /// Why this window currently needs display-rate frames (design 17 Tier
+    /// H): sources register while active, and the control-side poll is the
+    /// complement.
+    frame_demand: hot::FrameDemand,
+    /// Where the inspector's meter tracks sit; registered by the inspector's
+    /// canvases each frame and read by the sidebar hot layer.
+    inspector_meters: sidebar::InspectorMeterFrame,
+    inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
+    error_strip: Entity<error_strip::ErrorStripHost>,
+    matrix_panel: Entity<matrix::MatrixPanelHost>,
+    devices_panel: Entity<devices::DevicesPanelHost>,
+    settings_panel: Entity<settings::SettingsPanelHost>,
+    inspector_panel: Entity<sidebar::InspectorPanelHost>,
+    library_panel: Entity<sidebar::LibraryPanelHost>,
+    library_rail_panel: Entity<sidebar::LibraryRailPanelHost>,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
@@ -292,7 +306,6 @@ impl StudioShell {
         )
         .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
-        let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
         let density = match preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
@@ -301,31 +314,57 @@ impl StudioShell {
         let settings = settings::SettingsEditor::new(&preferences, cx);
         let export_controls = devices::ExportControls::new(window, cx);
         let mixer_geometry = mixer::meter_frame::Geometry::default();
+        let graph_canvas_frame = pages::graph_canvas_view::PreparedFrame::default();
         let shell_entity = cx.entity();
-        let mixer_controls = cx.new(|child_cx| {
-            mixer::meter_frame::MixerControls::new(
-                shell_entity.clone(),
-                mixer_geometry.clone(),
-                child_cx,
-            )
-        });
-        let mixer_frame = cx.new(|_| {
-            mixer::meter_frame::MixerMeterFrame::new(
+        let mixer_meters = std::rc::Rc::new(std::cell::RefCell::new(
+            mixer::meter_frame::MixerMeters::new(shell_entity.downgrade(), mixer_geometry.clone()),
+        ));
+        let mixer_frame = cx.new(|_| mixer::meter_frame::MixerMeterLayer::new(mixer_meters));
+        let graph_meters = std::rc::Rc::new(std::cell::RefCell::new(
+            graph::meter_frame::GraphMeters::new(
                 shell_entity.downgrade(),
-                mixer_geometry.clone(),
-            )
+                graph_canvas_frame.clone(),
+            ),
+        ));
+        let graph_meter_frame = cx.new(|_| graph::meter_frame::GraphMeterLayer::new(graph_meters));
+        let inspector_meters = sidebar::InspectorMeterFrame::default();
+        let inspector_meter_layer = cx.new(|_| {
+            sidebar::InspectorMeterLayer::new(std::rc::Rc::new(std::cell::RefCell::new(
+                sidebar::InspectorMeters::new(shell_entity.downgrade(), inspector_meters.clone()),
+            )))
         });
-        let graph_meter_frame =
-            cx.new(|_| graph::meter_frame::GraphMeterFrame::new(shell_entity.downgrade()));
+        let error_strip = cx.new(|cx| {
+            error_strip::ErrorStripHost::new(error_strip::ErrorStripPanel, shell_entity.clone(), cx)
+        });
+        let matrix_panel = cx
+            .new(|cx| matrix::MatrixPanelHost::new(matrix::MatrixPanel, shell_entity.clone(), cx));
+        let devices_panel = cx.new(|cx| {
+            devices::DevicesPanelHost::new(devices::DevicesPanel, shell_entity.clone(), cx)
+        });
+        let settings_panel = cx.new(|cx| {
+            settings::SettingsPanelHost::new(settings::SettingsPanel, shell_entity.clone(), cx)
+        });
+        let inspector_panel = cx.new(|cx| {
+            sidebar::InspectorPanelHost::new(sidebar::InspectorPanel, shell_entity.clone(), cx)
+        });
+        let library_panel = cx.new(|cx| {
+            sidebar::LibraryPanelHost::new(sidebar::LibraryPanel, shell_entity.clone(), cx)
+        });
+        let library_rail_panel = cx.new(|cx| {
+            sidebar::LibraryRailPanelHost::new(sidebar::LibraryRailPanel, shell_entity.clone(), cx)
+        });
         let graph_controls = cx.new(|child_cx| {
-            graph::meter_frame::GraphControls::new(
+            graph::meter_frame::GraphPanelHost::new(
+                graph::meter_frame::GraphPanel,
                 shell_entity.clone(),
-                node_search.clone(),
                 child_cx,
             )
         });
-        let toolbar_chrome = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), true, cx));
-        let status_chrome = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), false, cx));
+        let toolbar_chrome =
+            cx.new(|cx| chrome::ToolbarChrome::new(chrome::ToolbarPanel, shell_entity.clone(), cx));
+        let status_chrome = cx.new(|cx| {
+            chrome::StatusbarChrome::new(chrome::StatusbarPanel, shell_entity.clone(), cx)
+        });
         let mut shell = Self {
             state,
             settings_open: false,
@@ -345,7 +384,6 @@ impl StudioShell {
             export_controls,
             selected_route: None,
             meters,
-            node_meters,
             node_meter_points: Default::default(),
             gain_slider,
             pan_slider,
@@ -371,17 +409,27 @@ impl StudioShell {
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
+            exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
             mixer_geometry,
-            mixer_controls,
             toolbar_chrome,
             status_chrome,
             mixer_frame,
             graph_meter_frame,
             graph_controls,
-            graph_canvas_frame: Default::default(),
+            graph_canvas_frame,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
+            frame_demand: Default::default(),
+            inspector_meters,
+            inspector_meter_layer,
+            error_strip,
+            matrix_panel,
+            devices_panel,
+            settings_panel,
+            inspector_panel,
+            library_panel,
+            library_rail_panel,
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
@@ -460,8 +508,7 @@ impl StudioShell {
                             changed
                         });
                         shell.finish_project_load(cx);
-                        let meters_changed =
-                            !shell.meter_animation_active(cx) && shell.pump_meters(cx);
+                        let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
                         if changed || meters_changed {
                             cx.notify();
                         }
@@ -475,10 +522,12 @@ impl StudioShell {
         .detach();
     }
 
-    /// Whether any meter observation is on screen right now. While true the
-    /// render loop requests animation frames so meter motion runs at the
-    /// display refresh rate.
-    fn meters_frame_active(&self, cx: &App) -> bool {
+    /// Whether the window may animate right now: visible, presented, settings
+    /// closed, session running, and on a page that mounts meter hot layers.
+    /// Page membership stands in for mounting — the Graph and Mixer pages are
+    /// where meter layers exist — because leftover meter demand on a page
+    /// with no hot layer must not starve the control-side poll.
+    fn frames_eligible(&self, cx: &App) -> bool {
         let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
@@ -487,41 +536,96 @@ impl StudioShell {
             && snapshot.phase == SessionPhase::Running
     }
 
-    /// Whether any observed meter still moves: decaying ballistics, a held
-    /// peak marker, or fresh readings above the scale bottom all keep the
-    /// display short of rest. While false the vsync loop stands down and the
-    /// control-side poll alone keeps the observations current, so a fully
-    /// silent session costs no animation frames at all.
-    fn meters_in_motion(&self) -> bool {
-        !self.meters.at_rest() || !self.node_meters.at_rest()
+    /// Whether the window should keep taking display-rate frames: something
+    /// registered demand with the arbiter and the window may animate. While
+    /// false the vsync loop stands down and the control-side poll alone keeps
+    /// the observations current, so a fully silent session costs no animation
+    /// frames at all.
+    fn frames_wanted(&self, cx: &App) -> bool {
+        // A graph gesture bypasses the meter eligibility gate: the canvas is
+        // interactive whether or not a session runs and every meter rests.
+        self.drag_active() || (self.frames_eligible(cx) && self.frame_demand.any())
     }
 
-    /// Whether the animation-frame loop is currently driving meter pumps;
-    /// the control-side poll may skip pumping only while this holds.
-    fn meter_animation_active(&self, cx: &App) -> bool {
-        self.meters_frame_active(cx) && self.meters_in_motion()
+    /// Whether a graph canvas gesture is in flight (rubber band, pan, node
+    /// or connection drag).
+    fn drag_active(&self) -> bool {
+        self.selection_drag.is_some()
+            || self.pan_grab.is_some()
+            || self.node_drag.is_some()
+            || self.connection_drag.is_some()
+    }
+
+    /// Whether any observed meter still moves: decaying ballistics, a held
+    /// peak marker, or fresh readings above the scale bottom all keep the
+    /// display short of rest.
+    fn meters_in_motion(&self, cx: &App) -> bool {
+        !self.meters.at_rest() || !self.state.read(cx).node_meters.at_rest()
     }
 
     /// Refresh every meter observation once: reads the latest windows,
     /// advances display ballistics, and reconciles subscriptions with the
     /// current visibility. Called per display frame while
-    /// [`Self::meter_animation_active`] holds, and from the slower
+    /// [`Self::frames_wanted`] holds, and from the slower
     /// control-side loops otherwise. Returns whether a display-bearing
     /// reading changed — raw levels, status, or a freshly latched clip;
     /// ballistics motion alone does not, because animation frames (not
     /// notify) carry it.
-    pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
-        self.meters.set_preferences(self.preferences.meters);
-        self.node_meters.set_preferences(self.preferences.meters);
-        let visible = self.meters_frame_active(cx);
+    pub(super) fn pump_meters(&mut self, cx: &mut Context<Self>) -> bool {
+        // A gesture in flight proves the window is interactive even when the
+        // platform's visibility flag is stale (a full occlusion followed by
+        // a fast alt-tab can leave it false): the meter updates must not
+        // blank out mid-drag, or the readings freeze at the publication
+        // cadence.
+        let visible = self.frames_eligible(cx) || self.drag_active();
         let points = self.meter_points.get();
+        // The legacy monitor meters only display where the strip has no node
+        // level topic: a managed strip's meter comes from NodeMeters, and
+        // the pre-fader capture tap carries signal even when the fader is
+        // muted. Subscribing it for a display nobody sees kept the whole
+        // page's frame loop armed forever — the Graph page mounts no such
+        // probes and stands down, the Mixer page burned a core.
+        let (input_shown, output_shown) = self.legacy_meters_shown(cx, points);
         let meter_changed = self.meters.update_points(
             &self.state.read(cx).snapshot,
-            visible && points.0,
-            visible && points.1,
+            visible && input_shown,
+            visible && output_shown,
         );
         let node_meter_changed = self.update_node_meters(visible, cx);
+        // Re-derive the arbiter's meter demand from the fresh ballistics: the
+        // loop continues while anything moves, and the control-side poll
+        // takes over the moment everything rests.
+        self.frame_demand
+            .set(hot::METER_MOTION, self.meters_in_motion(cx));
+        self.sync_drag_demand();
         meter_changed || node_meter_changed
+    }
+
+    /// Re-derive the gesture demand source from the in-flight graph
+    /// gestures. Called from the pump and at gesture boundaries: the
+    /// mouse-down handlers must arm the loop immediately, not at the next
+    /// control poll.
+    pub(in crate::ui::window) fn sync_drag_demand(&mut self) {
+        self.frame_demand.set(hot::DRAG, self.drag_active());
+    }
+
+    /// Whether the legacy input/output monitor meters actually display: their
+    /// probe is mounted on screen AND the strip's node level topic is
+    /// missing, so the meter paint falls back to the legacy reading. A
+    /// managed strip renders from NodeMeters alone.
+    fn legacy_meters_shown(&self, cx: &App, points: (bool, bool)) -> (bool, bool) {
+        let managed = |id: moiren_core::graph::NodeId| {
+            self.state
+                .read(cx)
+                .snapshot
+                .signal_topics
+                .node_levels
+                .contains_key(&id)
+        };
+        match self.observation_nodes {
+            Some((_, source, sink)) => (points.0 && !managed(source), points.1 && !managed(sink)),
+            None => (false, false),
+        }
     }
 
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -612,10 +716,13 @@ mod desktop;
 pub use capture::run_ui_capture;
 mod controls;
 mod devices;
+mod error_strip;
 mod graph;
+mod hot;
 mod matrix;
 mod mixer;
 mod native;
+mod panel;
 mod project;
 mod settings;
 mod sidebar;
@@ -699,142 +806,8 @@ impl Render for StudioShell {
             self.pan_slider
                 .update(cx, |s, cx| s.set_value(pan, window, cx));
         }
-        let error_strip = {
-            let state = self.state.read(cx);
-            let faults = state.snapshot.graph.faults.clone();
-            let other = state
-                .dispatch_error
-                .as_ref()
-                .or(state.snapshot.error.as_ref())
-                .or(state.snapshot.catalog_error.as_ref())
-                .cloned();
-            (!faults.is_empty() || other.is_some()).then(|| {
-                let log_path = crate::logging::log_path()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| t!("Application file logging is unavailable").into());
-                let this = cx.entity();
-                let graph = state.snapshot.graph.clone();
-                let mut list = div()
-                    .id("error-strip")
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .px(px(theme::SPACE_4))
-                    .py(px(theme::SPACE_2))
-                    .bg(theme::soft(theme::DANGER))
-                    .text_size(px(theme::TEXT_SM));
-                for (index, fault) in faults.iter().enumerate() {
-                    let subject = fault.subject;
-                    let location = match subject {
-                        crate::service::GraphSubject::Node(node) => {
-                            graph.node(node).map(|node| node.label.clone())
-                        }
-                        crate::service::GraphSubject::Route(source, destination) => {
-                            let port_label = |port: &moiren_core::graph::PortId| {
-                                graph
-                                    .graph
-                                    .nodes()
-                                    .iter()
-                                    .find(|node| {
-                                        node.inputs()
-                                            .iter()
-                                            .chain(node.outputs())
-                                            .any(|candidate| candidate.id() == *port)
-                                    })
-                                    .map(|node| node.id())
-                                    .and_then(|owner| {
-                                        graph.node(owner).map(|node| node.label.clone())
-                                    })
-                            };
-                            let source = port_label(&source);
-                            let destination = port_label(&destination);
-                            match (source, destination) {
-                                (Some(source), Some(destination)) => {
-                                    Some(format!("{source} → {destination}"))
-                                }
-                                _ => None,
-                            }
-                        }
-                        crate::service::GraphSubject::Graph => None,
-                    };
-                    let mut row = div()
-                        .id(SharedString::from(format!("fault-{index}")))
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .when(subject != crate::service::GraphSubject::Graph, |row| {
-                            row.cursor_pointer().on_click({
-                                let this = this.clone();
-                                move |_, _, cx| {
-                                    this.update(cx, |shell, cx| {
-                                        shell.inspector_open = true;
-                                        match subject {
-                                            crate::service::GraphSubject::Node(node) => {
-                                                shell.selected_route = None;
-                                                shell.selected_node = Some(node);
-                                            }
-                                            crate::service::GraphSubject::Route(
-                                                source,
-                                                destination,
-                                            ) => {
-                                                shell.selected_node = None;
-                                                shell.selected_route = Some((source, destination));
-                                            }
-                                            crate::service::GraphSubject::Graph => {}
-                                        }
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                        });
-                    row = row
-                        .child(
-                            div()
-                                .text_color(theme::DANGER)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                // Causes and hints are English catalog keys
-                                // produced by the service; translation happens
-                                // here so a locale switch re-renders stored
-                                // faults, and unknown prose passes through.
-                                .child(t!("Error: %{cause}", cause = t!(fault.cause.as_str()))),
-                        )
-                        .when_some(location, |row, location| {
-                            row.child(
-                                div().text_color(theme::TEXT).child(t!(
-                                    "Channel: %{location}",
-                                    location = location.as_str()
-                                )),
-                            )
-                        })
-                        .when_some(fault.hint.as_deref(), |row, hint: &str| {
-                            row.child(
-                                div()
-                                    .text_color(theme::TEXT)
-                                    .child(t!("Hint: %{hint}", hint = t!(hint))),
-                            )
-                        });
-                    list = list.child(row.gpui_test_observe());
-                }
-                if let Some(error) = other {
-                    // Dispatch/persistence diagnostics may be plain prose; a
-                    // catalog miss renders the source text unchanged.
-                    let message = t!(error.as_str()).into_owned();
-                    list = list.child(
-                        div()
-                            .id("error-strip-message")
-                            .text_color(theme::DANGER)
-                            .child(message),
-                    );
-                }
-                list.child(
-                    div()
-                        .pt(px(2.))
-                        .text_color(theme::TEXT)
-                        .child(t!("Diagnostics: %{log_path}", log_path = log_path)),
-                )
-                .gpui_test_observe()
-            })
-        };
+        let error_strip =
+            error_strip::has_faults(self, cx).then(|| error_strip::for_shell(self, window));
         div()
             .id("studio-shell")
             .relative()
@@ -857,11 +830,11 @@ impl Render for StudioShell {
                     .min_w_0()
                     .child(match self.presentation.page {
                         Page::Graph => graph::meter_frame::page(self, window),
-                        Page::Mixer => mixer::meter_frame::page(self, window),
-                        Page::Matrix => matrix::page(self, cx),
-                        Page::Devices => devices::page(self, cx),
+                        Page::Mixer => mixer::meter_frame::page(self, window, cx),
+                        Page::Matrix => matrix::page_for(self, window, cx),
+                        Page::Devices => devices::page_for(self, window, cx),
                     })
-                    .child(sidebar::inspector_host(self, cx)),
+                    .child(sidebar::inspector_host(self, window, cx)),
             )
             .child(chrome::status_for_page(self, window))
             // Clicking anywhere outside an open inline editor commits it, so
@@ -882,7 +855,7 @@ impl Render for StudioShell {
             })
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
-                v.child(settings::overlay(self, window, cx))
+                v.child(settings::overlay_for(self, window))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);
@@ -995,6 +968,7 @@ impl StudioShell {
 
     fn refresh_observation_nodes(&mut self, cx: &App) {
         use moiren_core::graph::NodeKind;
+        let before = self.observation_nodes;
         let snapshot = &self.state.read(cx).snapshot;
         if snapshot.phase != SessionPhase::Running
             || self
@@ -1014,6 +988,13 @@ impl StudioShell {
             self.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));
+        }
+        if before != self.observation_nodes {
+            // The probe flags belonged to the previous owners' canvases,
+            // which mount only while eligible. The new owners re-register on
+            // their rebuild in this same layout pass — eligibility rides in
+            // their strip keys — so clearing here leaves no stale window.
+            self.meter_points.set((false, false));
         }
     }
 }

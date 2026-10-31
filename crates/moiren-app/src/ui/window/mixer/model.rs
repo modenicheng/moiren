@@ -12,6 +12,19 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub order: Vec<NodeId>,
     pub faders: BTreeMap<NodeId, SliderSlot>,
     pub sends: BTreeMap<EdgeId, SliderSlot>,
+    /// One cached panel host per strip (design 17's per-item split): a
+    /// publish during a fader drag rebuilds only the strip whose content
+    /// changed. Created and retained by [`StudioShell::sync_mixer_controls`].
+    pub strips: BTreeMap<NodeId, Entity<super::meter_frame::StripPanelHost>>,
+    /// The inspector's channel-strip fader row gets its own slider slot per
+    /// node: the kit's `SliderState` stores the pointer-mapping bounds of
+    /// whichever view registered last, so the strip's vertical fader and the
+    /// inspector's horizontal row cannot share one state — the row's
+    /// horizontal bounds would own the strip's vertical drag and slam it to
+    /// a rail (the selected-strip -inf lock). Two slots, one snapshot: both
+    /// dispatch the same edits and the published graph reconciles them,
+    /// exactly like the tray flyout's own slot set.
+    pub inspector_faders: BTreeMap<NodeId, SliderSlot>,
     pub send_inputs: BTreeMap<EdgeId, Entity<component::input::InputState>>,
     pub editing_send: Option<EdgeId>,
     /// Click-to-type editors for the fader dB readouts; the strip readout
@@ -399,7 +412,11 @@ fn sync_value_inputs<K: Ord + Clone + 'static>(
             .detach();
             input
         });
-        if editing != Some(&id) {
+        // InputState::set_value notifies unconditionally, even for
+        // identical text — writing every publish would wake every panel
+        // that observes its editors. Skip the write when the text is
+        // already current.
+        if editing != Some(&id) && input.read(cx).value() != text {
             input.update(cx, |input, cx| input.set_value(text, window, cx));
         }
     }
@@ -667,7 +684,15 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                     match event {
                         base::slider::SliderEvent::Change(value) => {
                             drag_flag.set(true);
-                            if let Some(send) = gate.change(value.end(), Instant::now()) {
+                            let value = value.end();
+                            // A degenerate pointer mapping (zero state bounds
+                            // before the first layout) yields NaN; dispatching
+                            // it would produce an invalid gain and strand the
+                            // thumb until the next write-back.
+                            if !value.is_finite() {
+                                return;
+                            }
+                            if let Some(send) = gate.change(value, Instant::now()) {
                                 dispatch_edit(&ui, &drag_edit, send, cx);
                             }
                         }
@@ -675,6 +700,9 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             drag_flag.set(false);
                             gate.release();
                             let value = value.end();
+                            if !value.is_finite() {
+                                return;
+                            }
                             // The release always lands — unless a wheel or
                             // double-click commit already moved the slider
                             // past it: those handlers paint before the
@@ -785,11 +813,35 @@ impl StudioShell {
                 self.mixer.order.push(node.id);
             }
         }
+        // One cached strip panel per node; the page splices them as siblings.
+        // Created after the slider maps are synced so the panel's nested
+        // observers find their entities on the first rebuild.
+        self.mixer.strips.retain(|id, _| graph.node(*id).is_some());
+        for node in &graph.nodes {
+            let id = node.id;
+            self.mixer.strips.entry(id).or_insert_with(|| {
+                let panel = super::meter_frame::StripPanel { id };
+                let shell = cx.entity();
+                cx.new(|child_cx| super::meter_frame::StripPanelHost::new(panel, shell, child_cx))
+            });
+        }
         sync_faders(
             window,
             cx,
             &self.state,
             &mut self.mixer.faders,
+            fader_rows(&graph),
+        );
+        // The inspector's fader row mirrors the snapshot through its own
+        // slots; the strip's slots stay untouched by the inspector's drags.
+        self.mixer
+            .inspector_faders
+            .retain(|id, _| graph.node(*id).is_some());
+        sync_faders(
+            window,
+            cx,
+            &self.state,
+            &mut self.mixer.inspector_faders,
             fader_rows(&graph),
         );
         for edge in graph.graph.edges() {
@@ -813,8 +865,10 @@ impl StudioShell {
                 .detach();
                 input
             });
-            if self.mixer.editing_send != Some(id) {
-                let text = gain_db_text(edge.params().gain);
+            // InputState::set_value notifies even for identical text; skip
+            // the write when the readout is already current.
+            let text = gain_db_text(edge.params().gain);
+            if self.mixer.editing_send != Some(id) && input.read(cx).value() != text {
                 input.update(cx, |input, cx| input.set_value(text, window, cx));
             }
         }

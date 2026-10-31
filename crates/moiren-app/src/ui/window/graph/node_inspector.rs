@@ -4,7 +4,6 @@ use super::*;
 use crate::service::{GraphEdit, InputSelection};
 use crate::ui::presentation::{db_text, dbfs_text, step_db};
 use crate::ui::widgets::fader::hslider;
-use crate::ui::widgets::meters::compact_horizontal_meter;
 use crate::ui::window::mixer::{EditableValueFamily, gain_db_text, start_value_edit};
 use controls::*;
 use moiren_core::graph::NodeKind;
@@ -184,14 +183,17 @@ pub(in crate::ui::window) fn inspector(
             }),
         ))
         .child(hslider(
-            &shell.mixer.faders[&id].state,
-            &shell.mixer.faders[&id].behavior,
+            &shell.mixer.inspector_faders[&id].state,
+            &shell.mixer.inspector_faders[&id].behavior,
             cx,
         ))
-        .child(compact_horizontal_meter(
-            shell.node_meters.channel_levels(id),
+        // Live bars are the sidebar hot surface's job; this painting-free
+        // canvas only registers where this node's meter tracks sit.
+        .child(inspector_meter_track(
+            shell,
+            cx.entity(),
+            id,
             node.channels(),
-            shell.node_meters.channel_clips(id),
         ))
         .when(node.channels() == 2, |view| {
             view.child(super::super::mixer::strip_controls::balance(
@@ -582,7 +584,7 @@ fn node_observation(
         .contains_key(&node.id());
     let eligible = running && managed;
     let status = if eligible {
-        let meter_status = shell.node_meters.status(node.id());
+        let meter_status = shell.state.read(cx).node_meters.status(node.id());
         t!(meter_status.label()).to_string()
     } else if managed {
         t!("Not running").to_string()
@@ -609,7 +611,7 @@ fn node_observation(
         )));
     }
     if let Some(levels) = eligible
-        .then(|| shell.node_meters.channel_levels(node.id()))
+        .then(|| shell.state.read(cx).node_meters.channel_levels(node.id()))
         .flatten()
     {
         let mut readings = div().id("node-observation-levels").flex().flex_col();
@@ -1299,4 +1301,40 @@ impl StudioShell {
             cx.notify();
         }
     }
+}
+
+/// The inspector's meter footprint: a painting-free canvas that registers
+/// where this node's meter tracks sit, for the sidebar hot surface to paint
+/// live bars at. Sized like the DOM meter it replaced.
+fn inspector_meter_track(
+    shell: &StudioShell,
+    this: Entity<StudioShell>,
+    id: moiren_core::graph::NodeId,
+    channels: usize,
+) -> impl IntoElement {
+    let geometry = shell.inspector_meters.clone();
+    // Clicking the meter resets the clip latch, like every meter surface.
+    div()
+        .id(SharedString::from(format!("inspector-meter-{id:?}")))
+        .w_full()
+        .h(px(if channels >= 2 { 15. } else { 9. }))
+        .flex_none()
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            this.update(cx, |shell, cx| {
+                shell
+                    .state
+                    .update(cx, |state, _| state.node_meters.reset_clip(id));
+                cx.notify();
+            });
+        })
+        .child(
+            canvas(
+                move |bounds, window, _| {
+                    geometry
+                        .update(|geometry| geometry.register(id, bounds, window.content_mask()));
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
 }

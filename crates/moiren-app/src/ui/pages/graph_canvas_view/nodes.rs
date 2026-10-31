@@ -149,40 +149,53 @@ fn paint_track(
     );
 }
 
-/// One node card's meter tracks and live bars, in window space. Shared by the
-/// cached canvas paint and the meter frame's overlay paint so both draw
-/// identical geometry; callers own the card content mask.
+/// One node card's meter tracks and live bars, in window space. The zone
+/// segmentation, dark RMS tail, held marker, and clip latch are the same
+/// `meter_spans` math every other meter surface paints (design 17 D1); only
+/// the surface differs. Shared by the cached canvas paint and the hot
+/// layer's overlay paint so both draw identical geometry; callers own the
+/// card content mask.
 pub(in crate::ui) fn paint_meter_bars(
     frame: &CanvasFrame,
     layout: &NodeLayout,
-    tint: Hsla,
-    peaks: Option<[f32; 2]>,
+    reading: Option<&super::NodeMeterReading>,
     window: &mut Window,
 ) {
     for channel in 0..2 {
         let mut meter = layout.meter;
         meter.origin.y += channel as f32 * 3. * layout.scale;
-        rounded(
-            frame.window_rect(meter),
-            theme::WINDOW_BG,
-            layout.scale,
+        // The clip lamp reserves the last 3 world units of the row — the
+        // same loud-end indicator every meter surface uses; the fill never
+        // changes background for clipping.
+        meter.size.width -= 3. * layout.scale;
+        let track = frame.window_rect(meter);
+        let clip = reading.is_some_and(|reading| reading.clips[channel]);
+        rounded(track, theme::WINDOW_BG, layout.scale, window);
+        if let Some(level) = reading.and_then(|reading| reading.levels.get(channel)) {
+            crate::ui::widgets::meters::paint_meter_fill_horizontal(
+                track,
+                *level,
+                theme::WINDOW_BG,
+                window,
+            );
+        }
+        crate::ui::widgets::meters::paint_clip_lamp(
+            track,
+            gpui_kit::Axis::Horizontal,
+            clip,
             window,
         );
-        if let Some(peaks) = peaks {
-            meter.size.width *= crate::ui::widgets::meters::meter_height(peaks[channel]);
-            rounded(frame.window_rect(meter), tint, layout.scale, window);
-        }
     }
 }
 
-/// `peaks` is read at paint time, not baked into the projected world, so
-/// meter motion repaints without re-projecting the graph.
+/// The reading is taken at paint time, not baked into the projected world,
+/// so meter motion repaints without re-projecting the graph.
 pub(super) fn paint_node(
     frame: &CanvasFrame,
     node: &CanvasNode,
     layout: &NodeLayout,
     selected: bool,
-    peaks: Option<[f32; 2]>,
+    reading: Option<&super::NodeMeterReading>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -272,7 +285,7 @@ pub(super) fn paint_node(
             theme::TEXT_MUTED,
             cx,
         );
-        paint_meter_bars(frame, layout, tint, peaks, window);
+        paint_meter_bars(frame, layout, reading, window);
         let gain_db = if node.gain <= 0. {
             -60.
         } else {

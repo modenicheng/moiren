@@ -575,7 +575,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
         // here; the selected node must end up demanded either way.
         shell.update_node_meters(true, cx);
         assert_eq!(
-            shell.node_meters.status(node),
+            shell.state.read(cx).node_meters.status(node),
             crate::ui::monitoring::MeterStatus::NoPublisher,
             "selected node keeps its subscription polled"
         );
@@ -586,7 +586,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
         shell.selected_node = None;
         shell.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
-        assert!(shell.node_meters.levels(node).is_none());
+        assert!(shell.state.read(cx).node_meters.levels(node).is_none());
     });
     view.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| state.poll());
@@ -658,6 +658,276 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
     cx.update(|window, _| {
         assert!(window.find("node-name-display").visible());
         assert!(window.try_find("disconnect-route").is_none());
+    });
+    finish_service(runtime);
+}
+
+/// The rubber band is frame-driven: the canvas prepaint paints it and
+/// applies its hits once per frame. With every meter at rest and no session
+/// running, the meter demand is idle — the gesture itself must arm the
+/// frame loop, or box select freezes until the next elapsed-time publish.
+/// With signal playing, starting a box select must not degrade the card
+/// meters to the elapsed-publication cadence: the drag arms frames, and the
+/// hot layer keeps pumping the ballistics every frame while the gesture
+/// holds.
+#[gpui_kit::test]
+fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = crate::ui::window::test_harness::shell_with_state(cx, state);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.compact = false;
+        cx.notify();
+    });
+    render(cx);
+    crate::ui::window::test_harness::settle_panels(cx);
+    let frame = canvas_frame(&view, cx);
+    let center = node_position(&frame, 0);
+    // Signal is flowing: the loop runs on meter motion alone.
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        render(cx);
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
+    });
+    // Start the box select away from the card and hold it: the hot layer's
+    // pump must keep advancing every frame while the gesture holds — the
+    // pump is what updates the card meters' readings.
+    let anchor = center + point(px(300.), px(200.));
+    cx.simulate_mouse_down(anchor, MouseButton::Left, Modifiers::default());
+    let cadence = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |shell, _| {
+            let trace = shell.mixer.trace.borrow();
+            (trace.graph_frames, trace.graph_meter_paints)
+        })
+    };
+    let mut painted_rounds = 0;
+    let mut previous = cadence(&view, cx);
+    for step in 0..6 {
+        cx.simulate_mouse_move(
+            anchor + point(px(10. * (step as f32) + 10.), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        let (frames, paints) = cadence(&view, cx);
+        if paints > previous.1 {
+            painted_rounds += 1;
+        }
+        assert!(
+            frames > previous.0,
+            "the meter pump stalled during the box select (frame {step})"
+        );
+        previous = (frames, paints);
+    }
+    view.read_with(cx, |shell, _| {
+        assert!(shell.selection_drag.is_some(), "the gesture must be held");
+    });
+    assert!(
+        painted_rounds >= 5,
+        "the card meters stopped painting during the box select: {painted_rounds}/6 rounds painted"
+    );
+    // A stale platform visibility flag (fully occluded, then a fast alt-tab)
+    // must not blank the meter updates mid-gesture: the drag proves the
+    // window is interactive.
+    view.update(cx, |shell, cx| {
+        shell.presentation.visible = false;
+        shell.presentation.minimized = true;
+        cx.notify();
+    });
+    let mut previous = cadence(&view, cx).0;
+    let mut pumped_while_hidden = 0;
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            anchor + point(px(80. + 10. * (step as f32)), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        let frames = cadence(&view, cx).0;
+        if frames > previous {
+            pumped_while_hidden += 1;
+        }
+        previous = frames;
+    }
+    view.read_with(cx, |shell, cx| {
+        assert!(
+            shell.selection_drag.is_some(),
+            "the gesture must still hold"
+        );
+        assert!(
+            shell.state.read(cx).node_meters.status(node)
+                != crate::ui::monitoring::MeterStatus::Hidden,
+            "the node meters must not drop their subscriptions mid-gesture"
+        );
+    });
+    assert!(
+        pumped_while_hidden >= 3,
+        "the pump stalled while the visibility flag was stale: {pumped_while_hidden}/4 rounds"
+    );
+    cx.simulate_mouse_up(
+        anchor + point(px(120.), px(0.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.compact = false;
+        cx.notify();
+    });
+    render(cx);
+    // The sidebar/inspector close springs animate; let them finish before
+    // measuring the at-rest frame loop.
+    crate::ui::window::test_harness::settle_panels(cx);
+    let frame = canvas_frame(&view, cx);
+    let node = frame.world.nodes[0].node_id.expect("projected node id");
+    let center = node_position(&frame, 0);
+    // At rest: no session, meters parked — the loop must be standing down
+    // (any spring tail from the initial layout dies within a few frames).
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+    });
+    let mut rest_frames = 0;
+    for _ in 0..6 {
+        cx.update(|window, cx| {
+            rest_frames = window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    cx.update(|window, cx| assert_eq!(window.simulate_next_frame(cx), 0));
+    // Background press: the gesture arms the loop immediately.
+    let anchor = center - point(px(120.), px(60.));
+    cx.simulate_mouse_down(anchor, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| {
+        assert!(
+            window.simulate_next_frame(cx) > 0,
+            "the box-select gesture must arm the frame loop"
+        );
+        window.draw(cx).clear(cx);
+    });
+    // Drag the band across the node: the prepaint applies the hits.
+    let finish = center + point(px(120.), px(60.));
+    cx.simulate_mouse_move(
+        anchor + point(px(60.), px(30.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.simulate_mouse_move(finish, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.selected_nodes.contains(&node),
+            "the band crossing the node must select it"
+        );
+    });
+    // The selection highlight is cached-canvas content: every selection
+    // change must rebuild the page within the gesture's frames — the tint
+    // may not wait for the next publish.
+    let renders = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().graph_renders);
+    // Shrink the band back to the anchor: the node leaves the selection.
+    // The rebuild rides two effect passes (shell notify -> host notify ->
+    // render), so give the cycle two frames.
+    cx.simulate_mouse_move(
+        anchor + point(px(8.), px(8.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, _| {
+        assert!(
+            shell.selected_nodes.is_empty(),
+            "the shrunken band must deselect"
+        );
+        assert!(
+            shell.mixer.trace.borrow().graph_renders > renders,
+            "a selection change must rebuild the cached page immediately"
+        );
+    });
+    // Release: the loop stands down again.
+    cx.simulate_mouse_up(finish, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, _| assert!(shell.selection_drag.is_none()));
+    for _ in 0..6 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    cx.update(|window, cx| {
+        assert_eq!(
+            window.simulate_next_frame(cx),
+            0,
+            "the frame loop must stand down when the gesture ends"
+        );
     });
     finish_service(runtime);
 }
@@ -1107,7 +1377,9 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
     });
     // The panels' opening springs animate against the shell; let them settle
     // before measuring so only the meter frame can request frames.
@@ -1120,12 +1392,7 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
     }
     let before = view.read_with(cx, |shell, _| {
         let trace = shell.mixer.trace.borrow();
-        (
-            trace.graph_renders,
-            trace.toolbar_renders,
-            trace.status_renders,
-            trace.graph_frames,
-        )
+        (trace.graph_renders, trace.graph_frames)
     });
     for _ in 0..10 {
         cx.update(|window, cx| {
@@ -1139,28 +1406,20 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
             "graph meter demand must survive animation-only frames"
         );
         let trace = shell.mixer.trace.borrow();
-        (
-            trace.graph_renders,
-            trace.toolbar_renders,
-            trace.status_renders,
-            trace.graph_frames,
-        )
+        (trace.graph_renders, trace.graph_frames)
     });
     // Every drawn frame rebuilds the shell's root element (GPUI lays the
     // root out from scratch); the isolation contract is that this rebuild
-    // splices the cached page content and chrome instead of re-projecting
-    // the graph or re-rendering the toolbar and status bar.
+    // splices the cached page content instead of re-projecting the graph.
+    // The toolbar and status bar rebuild every frame by necessity: their
+    // window drag regions must re-register their hitboxes per frame (the
+    // splice does not replay window-control registrations).
     assert_eq!(
         after.0, before.0,
         "meter animation must not rebuild the cached graph page"
     );
-    assert_eq!(
-        (after.1, after.2),
-        (before.1, before.2),
-        "meter animation must not rebuild the cached toolbar or status bar"
-    );
     assert!(
-        after.3 >= before.3 + 10,
+        after.1 >= before.1 + 10,
         "the graph meter frame must actually pump per frame"
     );
 
@@ -1245,9 +1504,10 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| {
-            shell.node_meters.raw_levels(node).is_some()
-                && shell.node_meters.channel_levels(node).is_some()
+        view.read_with(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state.node_meters.raw_levels(node).is_some()
+                && state.node_meters.channel_levels(node).is_some()
         })
     });
     // The panels' opening springs animate against the shell; let them settle
@@ -1267,10 +1527,11 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    let (bar_before, paints_before, renders_before) = view.read_with(cx, |shell, _| {
+    let (bar_before, paints_before, renders_before) = view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
         let trace = shell.mixer.trace.borrow();
         (
-            shell.node_meters.channel_levels(node).unwrap()[0].bar,
+            state.node_meters.channel_levels(node).unwrap()[0].bar,
             trace.graph_meter_paints,
             trace.graph_renders,
         )
@@ -1282,7 +1543,8 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             window.draw(cx).clear(cx);
         });
     }
-    view.read_with(cx, |shell, _| {
+    view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
         let trace = shell.mixer.trace.borrow();
         assert!(
             trace.graph_meter_paints >= paints_before + 10,
@@ -1293,7 +1555,7 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             "bar motion must not rebuild the cached graph page"
         );
         assert!(
-            shell.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
+            state.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
             "the repainted bars must follow the decaying ballistics"
         );
     });
