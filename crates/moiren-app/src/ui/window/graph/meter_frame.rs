@@ -207,7 +207,7 @@ fn paint_box_select_band(
         corner_radii: 2f32.into(),
         background: transparent_black().into(),
         border_widths: 1f32.into(),
-        border_color: theme::TEXT_MUTED,
+        border_color: theme::PRIMARY,
         border_style: BorderStyle::default(),
     });
     if !moved {
