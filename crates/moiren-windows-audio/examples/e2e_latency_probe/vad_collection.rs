@@ -774,31 +774,41 @@ fn retire_with_route(
     mut step: impl FnMut(Retirement) -> Result<()>,
     failures: &mut Option<String>,
 ) {
-    // Retain active evidence first, then revoke shared admission without a
-    // native QUERY before either native Stop can cancel active PCM. Broadcast
-    // both stops before joins or gate IO. A microphone recorder must also
-    // release its client before removal of the export it was recording.
+    // Retain active evidence before revoking admission. On the pure virtual
+    // route, close both gates before native Stop/reset can advance an open
+    // gate's epoch; those later transitions cannot reopen a closed gate. Even
+    // a failed close must not skip either stop broadcast or any join. Physical
+    // retirement keeps its existing order. The recorder releases its MIC
+    // client before that export is removed, and both stops precede all joins.
     let microphone = route == super::vad_route::RouteKind::Microphone;
-    for stage in [
-        Retirement::Observe,
-        Retirement::ObserveFinal,
-        Retirement::Invalidate,
-        Retirement::StopSource,
-        Retirement::StopMeasurement,
-        Retirement::JoinSource,
-        Retirement::CloseGate,
-        Retirement::ShutdownHost,
-        if microphone {
-            Retirement::FinishMeasurement
-        } else {
-            Retirement::Retire
-        },
-        if microphone {
-            Retirement::Retire
-        } else {
-            Retirement::FinishMeasurement
-        },
-    ] {
+    let stages = if microphone {
+        [
+            Retirement::Observe,
+            Retirement::ObserveFinal,
+            Retirement::Invalidate,
+            Retirement::CloseGate,
+            Retirement::StopSource,
+            Retirement::StopMeasurement,
+            Retirement::ShutdownHost,
+            Retirement::JoinSource,
+            Retirement::FinishMeasurement,
+            Retirement::Retire,
+        ]
+    } else {
+        [
+            Retirement::Observe,
+            Retirement::ObserveFinal,
+            Retirement::Invalidate,
+            Retirement::StopSource,
+            Retirement::StopMeasurement,
+            Retirement::JoinSource,
+            Retirement::CloseGate,
+            Retirement::ShutdownHost,
+            Retirement::Retire,
+            Retirement::FinishMeasurement,
+        ]
+    };
+    for stage in stages {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(stage)))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("cleanup stage panicked")));
         if let Err(error) = result {
@@ -3964,8 +3974,13 @@ mod tests {
             &mut failure,
         );
         let index = |stage| events.iter().position(|event| *event == stage).unwrap();
+        assert!(index(Retirement::ObserveFinal) < index(Retirement::CloseGate));
+        assert!(index(Retirement::Invalidate) < index(Retirement::CloseGate));
+        assert!(index(Retirement::CloseGate) < index(Retirement::StopSource));
+        assert!(index(Retirement::CloseGate) < index(Retirement::StopMeasurement));
         assert!(index(Retirement::StopSource) < index(Retirement::JoinSource));
         assert!(index(Retirement::StopMeasurement) < index(Retirement::JoinSource));
+        assert!(index(Retirement::ShutdownHost) < index(Retirement::JoinSource));
         assert!(index(Retirement::ShutdownHost) < index(Retirement::FinishMeasurement));
         assert!(index(Retirement::Invalidate) < index(Retirement::StopSource));
         assert!(index(Retirement::Invalidate) < index(Retirement::StopMeasurement));
@@ -3974,6 +3989,79 @@ mod tests {
         for stage in events {
             assert!(failure.as_ref().unwrap().contains(&format!("{stage:?}")));
         }
+    }
+
+    #[test]
+    fn microphone_retirement_closes_before_native_stop_epoch_race() {
+        use super::super::vad_route::RouteKind;
+        let mut open = [true; 2];
+        let mut epoch = [1_u64; 2];
+        let mut stops = [false; 2];
+        let mut invalidated = false;
+        let mut events = Vec::new();
+        let mut failures = None;
+        // The real scheduler drives this interleave: a native Pause publishes
+        // epoch 2, another reset publishes 3, both retaining an open gate.
+        // This is a scheduling model, not a replacement for finish_close's
+        // actual same-stream/closed confirmation tests in the audio library.
+        retire_with_route(
+            RouteKind::Microphone,
+            |stage| {
+                events.push(stage);
+                match stage {
+                    Retirement::Observe | Retirement::ObserveFinal => {
+                        ensure!(open == [true; 2] && !invalidated, "lost active observation");
+                    }
+                    Retirement::Invalidate => invalidated = true,
+                    Retirement::CloseGate => {
+                        ensure!(invalidated, "close before admission revoke");
+                        for index in 0..2 {
+                            open[index] = false;
+                            epoch[index] += 1;
+                        }
+                    }
+                    Retirement::StopSource | Retirement::StopMeasurement => {
+                        let index = usize::from(stage == Retirement::StopMeasurement);
+                        stops[index] = true;
+                        ensure!(invalidated, "native stop before admission revoke");
+                        epoch[index] += 1;
+                        let requested = epoch[index];
+                        epoch[index] += 1;
+                        ensure!(
+                            !open[index],
+                            "native stop close race: gate{requested}->{} still open; rejected_still_open",
+                            epoch[index]
+                        );
+                    }
+                    Retirement::ShutdownHost
+                    | Retirement::JoinSource
+                    | Retirement::FinishMeasurement => {
+                        ensure!(stops == [true; 2], "join before both stop broadcasts");
+                    }
+                    Retirement::Retire => {}
+                }
+                Ok(())
+            },
+            &mut failures,
+        );
+        assert!(failures.is_none(), "{failures:?}");
+        assert_eq!(epoch, [4; 2]);
+        assert_eq!(open, [false; 2]);
+        assert_eq!(
+            events,
+            [
+                Retirement::Observe,
+                Retirement::ObserveFinal,
+                Retirement::Invalidate,
+                Retirement::CloseGate,
+                Retirement::StopSource,
+                Retirement::StopMeasurement,
+                Retirement::ShutdownHost,
+                Retirement::JoinSource,
+                Retirement::FinishMeasurement,
+                Retirement::Retire,
+            ]
+        );
     }
 
     #[test]
@@ -4312,6 +4400,7 @@ mod tests {
 
     #[test]
     fn collection_cleanup_unwind_broadcast_precedes_a_blocked_sink() {
+        use super::super::vad_route::RouteKind;
         use std::sync::{
             Arc, Mutex,
             atomic::{AtomicBool, Ordering},
@@ -4323,10 +4412,12 @@ mod tests {
             Arc<Mutex<Vec<Retirement>>>,
             Option<mpsc::Receiver<()>>,
             mpsc::Sender<()>,
+            RouteKind,
         );
         impl Drop for FakeGuard {
             fn drop(&mut self) {
-                retire(
+                retire_with_route(
+                    self.3,
                     |stage| {
                         self.0.lock().unwrap().push(stage);
                         if stage == Retirement::Observe {
@@ -4334,7 +4425,11 @@ mod tests {
                         }
                         if stage == Retirement::FinishMeasurement {
                             self.2.send(()).unwrap();
-                            self.1.take().unwrap().recv().unwrap();
+                            self.1
+                                .take()
+                                .unwrap()
+                                .recv_timeout(Duration::from_secs(2))
+                                .unwrap();
                         }
                         Ok(())
                     },
@@ -4342,48 +4437,134 @@ mod tests {
                 );
             }
         }
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let (release, wait) = mpsc::channel();
-        let (at_sink_tx, at_sink_rx) = mpsc::channel();
-        let observed = events.clone();
-        let finished = Arc::new(AtomicBool::new(false));
-        let worker_finished = finished.clone();
-        let worker = std::thread::spawn(move || {
-            let _ = std::panic::catch_unwind(|| {
-                let _guard = FakeGuard(observed, Some(wait), at_sink_tx);
-                panic!("injected partial setup unwind");
+        for route in [RouteKind::Physical, RouteKind::Microphone] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let (release, wait) = mpsc::channel();
+            let (at_sink_tx, at_sink_rx) = mpsc::channel();
+            let observed = events.clone();
+            let finished = Arc::new(AtomicBool::new(false));
+            let worker_finished = finished.clone();
+            let worker = std::thread::spawn(move || {
+                let _ = std::panic::catch_unwind(|| {
+                    let _guard = FakeGuard(observed, Some(wait), at_sink_tx, route);
+                    panic!("injected partial setup unwind");
+                });
+                worker_finished.store(true, Ordering::Release);
             });
-            worker_finished.store(true, Ordering::Release);
-        });
-        let reached_sink = at_sink_rx.recv_timeout(Duration::from_secs(2));
-        let snapshot = events.lock().unwrap().clone();
-        let still_joining = !finished.load(Ordering::Acquire);
-        // Always release/join the private fake before asserting, including on
-        // regression failure; the test itself never leaves a detached worker.
-        let _ = release.send(());
-        worker.join().unwrap();
-        assert!(reached_sink.is_ok() && still_joining);
-        assert_eq!(
-            &snapshot[..6],
-            &[
-                Retirement::Observe,
-                Retirement::ObserveFinal,
-                Retirement::Invalidate,
-                Retirement::StopSource,
-                Retirement::StopMeasurement,
-                Retirement::JoinSource
-            ]
-        );
-        assert!(
-            snapshot
-                .iter()
-                .position(|stage| *stage == Retirement::Retire)
-                .unwrap()
-                < snapshot
+            let reached_sink = at_sink_rx.recv_timeout(Duration::from_secs(2));
+            let snapshot = events.lock().unwrap().clone();
+            let still_joining = !finished.load(Ordering::Acquire);
+            // Always release/join the private fake before asserting, including
+            // on failure. The sink handshake also has its own finite timeout.
+            let _ = release.send(());
+            worker.join().unwrap();
+            assert!(reached_sink.is_ok() && still_joining, "{route:?}");
+            let index = |stage| snapshot.iter().position(|event| *event == stage).unwrap();
+            for join in [
+                Retirement::ShutdownHost,
+                Retirement::JoinSource,
+                Retirement::FinishMeasurement,
+            ] {
+                assert!(index(Retirement::StopSource) < index(join), "{route:?}");
+                assert!(
+                    index(Retirement::StopMeasurement) < index(join),
+                    "{route:?}"
+                );
+            }
+            let final_events = events.lock().unwrap().clone();
+            let final_index = |stage| {
+                final_events
                     .iter()
-                    .position(|stage| *stage == Retirement::FinishMeasurement)
+                    .position(|event| *event == stage)
                     .unwrap()
-        );
+            };
+            if route == RouteKind::Microphone {
+                assert!(index(Retirement::CloseGate) < index(Retirement::StopSource));
+                assert!(
+                    final_index(Retirement::FinishMeasurement) < final_index(Retirement::Retire)
+                );
+            } else {
+                assert!(index(Retirement::Retire) < index(Retirement::FinishMeasurement));
+            }
+        }
+    }
+
+    #[test]
+    fn microphone_retirement_broadcasts_before_blocked_host_join() {
+        use super::super::vad_route::RouteKind;
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        for close_failure in 0..3 {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let observed = events.clone();
+            let finished = Arc::new(AtomicBool::new(false));
+            let worker_finished = finished.clone();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mut failures = Some("original collection failure".into());
+                retire_with_route(
+                    RouteKind::Microphone,
+                    |stage| {
+                        observed.lock().unwrap().push(stage);
+                        if stage == Retirement::CloseGate {
+                            assert!(close_failure != 2, "injected early close panic");
+                            ensure!(close_failure != 1, "injected early close failure");
+                        }
+                        if stage == Retirement::ShutdownHost {
+                            entered_tx.send(()).unwrap();
+                            release_rx
+                                .recv_timeout(Duration::from_secs(2))
+                                .context("bounded fake host join timed out")?;
+                        }
+                        Ok(())
+                    },
+                    &mut failures,
+                );
+                worker_finished.store(true, Ordering::Release);
+                failures
+            });
+            let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+            let at_join = events.lock().unwrap().clone();
+            let still_joining = !finished.load(Ordering::Acquire);
+            // Unconditionally release and join before checking the transcript,
+            // including when the scheduler never reached the expected stage.
+            let _ = release_tx.send(());
+            let failures = worker.join().unwrap().unwrap();
+            assert!(
+                entered.is_ok() && still_joining,
+                "close_failure={close_failure}"
+            );
+            assert_eq!(
+                at_join,
+                [
+                    Retirement::Observe,
+                    Retirement::ObserveFinal,
+                    Retirement::Invalidate,
+                    Retirement::CloseGate,
+                    Retirement::StopSource,
+                    Retirement::StopMeasurement,
+                    Retirement::ShutdownHost,
+                ]
+            );
+            assert_eq!(
+                &events.lock().unwrap()[7..],
+                &[
+                    Retirement::JoinSource,
+                    Retirement::FinishMeasurement,
+                    Retirement::Retire,
+                ]
+            );
+            assert!(failures.contains("original collection failure"));
+            match close_failure {
+                1 => assert!(failures.contains("CloseGate: injected early close failure")),
+                2 => assert!(failures.contains("CloseGate: cleanup stage panicked")),
+                _ => assert_eq!(failures, "original collection failure"),
+            }
+        }
     }
 
     #[test]
@@ -4665,7 +4846,11 @@ mod tests {
                             ensure!(invalidated, "native stop before explicit retirement intent");
                             stops += 1;
                         }
-                        Retirement::JoinSource => ensure!(stops == 2, "join before both stops"),
+                        Retirement::ShutdownHost
+                        | Retirement::JoinSource
+                        | Retirement::FinishMeasurement => {
+                            ensure!(stops == 2, "join before both stops");
+                        }
                         _ => {}
                     }
                     Ok(())
@@ -4689,29 +4874,53 @@ mod tests {
     fn retirement_intent_errors_and_panics_never_skip_broadcast_or_drain() {
         use super::super::vad_route::RouteKind;
         for route in [RouteKind::Physical, RouteKind::Microphone] {
-            let mut expected = vec![
-                Retirement::Observe,
-                Retirement::ObserveFinal,
-                Retirement::Invalidate,
-                Retirement::StopSource,
-                Retirement::StopMeasurement,
-                Retirement::JoinSource,
-                Retirement::CloseGate,
-                Retirement::ShutdownHost,
-            ];
-            if route == RouteKind::Microphone {
-                expected.extend([Retirement::FinishMeasurement, Retirement::Retire]);
+            let expected = if route == RouteKind::Microphone {
+                vec![
+                    Retirement::Observe,
+                    Retirement::ObserveFinal,
+                    Retirement::Invalidate,
+                    Retirement::CloseGate,
+                    Retirement::StopSource,
+                    Retirement::StopMeasurement,
+                    Retirement::ShutdownHost,
+                    Retirement::JoinSource,
+                    Retirement::FinishMeasurement,
+                    Retirement::Retire,
+                ]
             } else {
-                expected.extend([Retirement::Retire, Retirement::FinishMeasurement]);
-            }
+                vec![
+                    Retirement::Observe,
+                    Retirement::ObserveFinal,
+                    Retirement::Invalidate,
+                    Retirement::StopSource,
+                    Retirement::StopMeasurement,
+                    Retirement::JoinSource,
+                    Retirement::CloseGate,
+                    Retirement::ShutdownHost,
+                    Retirement::Retire,
+                    Retirement::FinishMeasurement,
+                ]
+            };
             for failed_stage in &expected {
                 for panics in [false, true] {
                     let mut events = Vec::new();
+                    let mut stop_attempts = 0;
                     let mut failures = Some("original collection failure".into());
                     retire_with_route(
                         route,
                         |stage| {
                             events.push(stage);
+                            match stage {
+                                Retirement::StopSource | Retirement::StopMeasurement => {
+                                    stop_attempts += 1;
+                                }
+                                Retirement::ShutdownHost
+                                | Retirement::JoinSource
+                                | Retirement::FinishMeasurement => {
+                                    assert_eq!(stop_attempts, 2, "join before both stop attempts");
+                                }
+                                _ => {}
+                            }
                             if stage == *failed_stage {
                                 assert!(!panics, "injected {stage:?} panic");
                                 anyhow::bail!("injected {stage:?} failure");
@@ -4724,6 +4933,7 @@ mod tests {
                         events, expected,
                         "{route:?}, {failed_stage:?}, panic={panics}"
                     );
+                    assert_eq!(stop_attempts, 2);
                     let text = failures.unwrap();
                     assert!(text.contains("original collection failure"));
                     assert!(text.contains(&format!("{failed_stage:?}")));
