@@ -240,6 +240,44 @@ mechanics are shared. Two shared helpers keep keys honest:
    (observed on the devices page's Exports list). Surfaces that must scroll
    freely stay live until this has a framework-level answer; the Exports
    tab deliberately keeps its rebuild-every-notify behavior.
+8. A hot surface receives its sibling panel's `SharedFrame` at construction.
+   Building a second frame of the same type compiles, runs, and paints
+   nothing forever: the flyout shipped exactly this way (machine acceptance
+   2026-10-31), its pump still running the frame loop against an
+   always-empty track table. The pipeline has no runtime way to notice; the
+   regression test asserts the surface sees and paints every registered
+   track.
+
+## Machine-acceptance follow-ups (2026-10-31)
+
+Findings from the first real-machine pass over the implemented design,
+each with its fix landed on the same branch:
+
+- **Flyout without meter bars, CPU high while it showed nothing.** The
+  hazard-8 disconnect. Fixed by constructing one `SharedFrame` and handing
+  clones to both the strips and the hot surface.
+- **Flyout strips showed the bare default labels ("Input"/"Output").** The
+  flyout rendered `entry.label` where the main mixer renders
+  `display_label` (export binding, input device, output endpoint). The
+  flyout now uses the same helper, so both surfaces name a strip
+  identically.
+- **Mixer fader drag stuttered; the flyout's stayed smooth.** Every
+  `SliderState` notification invalidated the whole cached panel, so a
+  sustained drag paid a full strip-tree rebuild per display frame — cheap
+  on a three-strip flyout, over budget on a full mixer page. `PanelHost`
+  now gates nested-model notifications (faders, sends, inline editors,
+  search inputs) behind a leading-edge throttle: the first notification of
+  a burst rebuilds immediately, the tail coalesces into one trailing
+  rebuild a dispatch interval later, and release/wheel paths repaint
+  through their own publishes regardless. The interval matches
+  `FADER_DISPATCH_INTERVAL`, so a drag never rebuilds the panel faster
+  than its service confirmations actually change it.
+
+Known remaining cost, accepted for now: during a drag the confirmed
+publishes (30/s) still rebuild the whole panel because the strip's dB
+readout is panel content keyed on the graph snapshot. If that ever reads
+as stutter, the escape hatch is per-strip panels (siblings, one
+`PanelHost` per strip) — not nested caches.
 
 ## Deletions
 
