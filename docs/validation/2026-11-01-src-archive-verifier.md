@@ -122,3 +122,8 @@ No native acquisition/replay, remote audio, driver/system-control writes,
 speaker rendering, reboot, push, subagent or memory update occurs. Only the
 focused implementation paths are committed locally; unrelated `gate.log`
 is preserved.
+
+The subsequent [callback-local phase interval slice](2026-11-01-src-phase.md)
+uses an optional checkpoint observer behind full archive validation. It adds
+reset/fault-aware scalar arithmetic/support queries, while this reader's
+default scalar-only report and all native/quality limitations remain unchanged.

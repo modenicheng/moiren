@@ -4,6 +4,9 @@ use moiren_engine::{
     buffer::{BufferArena, BufferSlotLayout, PortAccess, PreparedIo, ProcessIo},
 };
 
+#[path = "phase_tests/fixture.rs"]
+mod phase_fixture;
+
 const BUDGET: usize = 1 << 20;
 
 #[test]

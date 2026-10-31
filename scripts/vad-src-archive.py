@@ -165,7 +165,7 @@ def prepare(summary, boundary_limit):
     return trace, stream, states
 
 
-def accept_chunk(chunk, trace, states, expected_sequence):
+def accept_chunk(chunk, trace, states, expected_sequence, checkpoint_observer):
     shape(chunk, "schema_version owner_generation sequence boundaries", "chunk")
     require(integer(chunk["schema_version"], "chunk schema") == 1, "unsupported chunk schema")
     require(integer(chunk["owner_generation"], "chunk owner") == trace["owner_generation"],
@@ -196,11 +196,13 @@ def accept_chunk(chunk, trace, states, expected_sequence):
             state["callbacks_with_mute"] += point["muted_frames"] > 0
             state["callbacks_with_unknown_or_saturated_cursor"] += any(
                 cursor is None or cursor["saturated"] for cursor in [point["before"], point["after"]])
+            if checkpoint_observer is not None:
+                checkpoint_observer(key[0], key[1], point)
     return count
 
 
 def verify(summary, source, *, record_limit=MAX_RECORD_BYTES, stream_limit=MAX_STREAM_BYTES,
-           boundary_limit=MAX_BOUNDARIES):
+           boundary_limit=MAX_BOUNDARIES, checkpoint_observer=None):
     integer(record_limit, "record cap", 1, MAX_RECORD_BYTES)
     integer(stream_limit, "stream cap", 1, MAX_STREAM_BYTES)
     integer(boundary_limit, "boundary cap", 1, MAX_BOUNDARIES)
@@ -224,7 +226,7 @@ def verify(summary, source, *, record_limit=MAX_RECORD_BYTES, stream_limit=MAX_S
         require(type(record) is dict, "invalid stream record")
         if record.get("record") == "chunk":
             shape(record, "record chunk", "chunk record")
-            checkpoints += accept_chunk(record["chunk"], trace, states, chunks + 1)
+            checkpoints += accept_chunk(record["chunk"], trace, states, chunks + 1, checkpoint_observer)
             chunks += 1
         else:
             shape(record, "record summary", "terminal record")

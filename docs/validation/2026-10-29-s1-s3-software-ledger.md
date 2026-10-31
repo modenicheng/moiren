@@ -155,6 +155,15 @@ refuse ambiguity; original refusals remain visible. Actual time-varying mapping,
 common source/recorder reference and native/physical qualification remain open.
 No audio/RT/servo/default or quality threshold changes occur; S1-S3 stay active.
 
+The [reset/fault-aware callback-local FIR phase slice](2026-11-01-src-phase.md)
+then derives bounded split-center intervals from actual applied steps, with
+frontier/after-phase checks and explicit reset/mute/fault/history-support
+barriers. Five rates/two directions yield5,156 actual test-boundary checkpoints;
+223,826 clean-support per-output intervals contain separate FIR cursor samples,
+while666 startup/muted/support queries refuse. Native/source/recorder reference,
+end-to-end correspondence and waveform/physical qualification remain open.
+Audio/RT/DSP/defaults and historical refusals are unchanged; S1-S3 stay active.
+
 The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
 strictly associates first-copy/native0 and first-nonzero/native228 witnesses
 with raw WASAPI packets1/229 at the same callback/completion QPC labels. The
