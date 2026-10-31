@@ -1,8 +1,10 @@
-//! Cached controls behind a [`PanelHost`] and the display-rate meter layer
-//! behind a [`HotLayerView`]: the meter canvas is a sibling, never a
-//! descendant of the cached subtree — gpui-fast replays a cached panel's
-//! paint without re-running its closures, so live bars must be painted by
-//! the hot layer at the frame the panel's prepaint registered geometry for.
+//! The Mixer page assembly: strip panels with their key projection, the
+//! track/readout meters, and the display-rate meter layer. Cached controls
+//! sit behind a [`PanelHost`] and the meter layer behind a
+//! [`HotLayerView`]: the meter canvas is a sibling, never a descendant of
+//! the cached subtree — gpui-fast replays a cached panel's paint without
+//! re-running its closures, so live bars must be painted by the hot layer
+//! at the frame the panel's prepaint registered geometry for.
 use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
@@ -614,12 +616,12 @@ impl HotSurface for MixerMeters {
         };
         shell.update(cx, |shell, cx| {
             #[cfg(feature = "gpui-test")]
-            shell.mixer.trace.borrow_mut().begin(true);
+            shell.trace.borrow_mut().begin(true);
             #[cfg(feature = "gpui-test")]
             let began = std::time::Instant::now();
             shell.pump_meters(cx);
             #[cfg(feature = "gpui-test")]
-            shell.mixer.trace.borrow_mut().add(began.elapsed());
+            shell.trace.borrow_mut().add(began.elapsed());
             shell.frames_wanted(cx)
         })
     }
@@ -742,7 +744,7 @@ fn paint_mixer_meter_frame(
     }
     #[cfg(feature = "gpui-test")]
     {
-        let mut trace = shell.mixer.trace.borrow_mut();
+        let mut trace = shell.trace.borrow_mut();
         trace.levels(levels_fingerprint);
         trace.meter_paints += 1;
         trace.add(began.elapsed());

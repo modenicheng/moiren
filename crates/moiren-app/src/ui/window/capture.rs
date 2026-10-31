@@ -173,9 +173,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         // cadence. Keep the historical three-second default reproducible.
                         cx.background_executor().timer(Duration::from_secs(1)).await;
                         #[cfg(feature = "ui-profiler")]
-                        let mut frames = cx.update(|cx| mixer::performance::PlatformTrace::new(cx, window.window_id()));
+                        let mut frames = cx.update(|cx| performance::PlatformTrace::new(cx, window.window_id()));
                         let before = shell.read_with(cx, |shell, _| {
-                            let mut trace = shell.mixer.trace.borrow_mut();
+                            let mut trace = shell.trace.borrow_mut();
                             trace.start_sample();
                             (trace.strip_renders, trace.meter_paints)
                         });
@@ -191,7 +191,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         #[cfg(feature = "ui-profiler")]
                         frames.write(&directory.join(format!("platform-{name}.json"))).unwrap();
                         shell.read_with(cx, |shell, _| {
-                            let trace = shell.mixer.trace.borrow();
+                            let trace = shell.trace.borrow();
                             eprintln!("Steady {name}: strip renders={}, meter paints={}",
                                 trace.strip_renders - before.0, trace.meter_paints - before.1);
                             trace.write(&directory.join(format!("meter-{name}.json"))).unwrap();

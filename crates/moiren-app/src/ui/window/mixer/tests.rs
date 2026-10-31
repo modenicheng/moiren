@@ -308,7 +308,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         });
     }
     let before = view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         (trace.strip_renders, trace.meter_paints)
     });
     cx.update(|window, _| {
@@ -324,7 +324,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         });
     }
     let after = view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         assert!(
             shell.node_meter_points.borrow().contains(&node),
             "cached meter demand must survive"
@@ -353,7 +353,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders),
+        view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders),
         after.0,
         "control polling must not invalidate unchanged strips"
     );
@@ -364,14 +364,14 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders) > after.0);
+    assert!(view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders) > after.0);
 
-    let controls_before = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    let controls_before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
     let fader = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
     cx.update(|window, cx| fader.update(cx, |slider, cx| slider.set_value(0.25, window, cx)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders) > controls_before,
+        view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders) > controls_before,
         "slider state notifications must invalidate cached thumb geometry"
     );
 
@@ -572,7 +572,7 @@ fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
     // Land the publish without rendering: `render_frame` refreshes the whole
     // window and would rebuild every panel regardless of the caches.
     wait_until(Duration::from_secs(2), || muted(&view, cx));
-    let before = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
     cx.update(|window, cx| {
         assert!(!window.is_a11y_active(), "measuring the cached path");
         window.simulate_next_frame(cx);
@@ -582,7 +582,7 @@ fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    let after = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
     assert_eq!(
         after - before,
         1,
@@ -1273,7 +1273,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
     });
     let (bar_before, strips_before, paints_before) = view.read_with(cx, |shell, cx| {
         let state = shell.state.read(cx);
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         (
             state.node_meters.channel_levels(node).unwrap()[0].bar,
             trace.strip_renders,
@@ -1287,7 +1287,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
     });
     view.read_with(cx, |shell, cx| {
         let state = shell.state.read(cx);
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         assert!(
             state.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
             "cached controls must not freeze display ballistics between publications"
@@ -1434,7 +1434,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
     let (shapes_held, entries_held, paints_held) = view.read_with(cx, |shell, cx| {
         let surface = shell.mixer_frame.read(cx).surface();
         let (shapes, entries) = surface.borrow().readout_shape_stats();
-        (shapes, entries, shell.mixer.trace.borrow().meter_paints)
+        (shapes, entries, shell.trace.borrow().meter_paints)
     });
     assert_eq!(entries_held, shapes_held, "one entry per distinct text");
     for _ in 0..2 {
@@ -1455,7 +1455,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
             "each shaper run inserted exactly one distinct text"
         );
         assert!(
-            shell.mixer.trace.borrow().meter_paints > paints_held,
+            shell.trace.borrow().meter_paints > paints_held,
             "held frames actually painted readouts"
         );
     });

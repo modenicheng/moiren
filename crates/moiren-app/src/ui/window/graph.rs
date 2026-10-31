@@ -5,8 +5,8 @@ use super::*;
 mod compressor;
 mod library;
 pub(super) use compressor::CompressorControls;
-pub(super) mod meter_frame;
 mod node_inspector;
+pub(super) mod page;
 pub(super) use library::PendingNodeSpawn;
 pub(in crate::ui::window) use library::{library, library_rail};
 pub(in crate::ui::window) use node_inspector::inspector;
@@ -178,9 +178,9 @@ impl StudioShell {
 }
 
 /// The graph page's cached content: canvas, library, editing toolbar. The
-/// shell renders this through [`super::meter_frame::page`], which caches it
-/// behind [`meter_frame::ControlsKey`] and adds the animation-owner meter
-/// frame as a sibling.
+/// shell renders this through [`page::page`], which caches it behind
+/// [`page::ControlsKey`] and adds the animation-owner meter frame as a
+/// sibling.
 pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     // Meter bar readings are not baked in: the canvas paint consults the
@@ -209,7 +209,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
             .map(|edge| format!("{:?}", edge.id()))
     });
     let this = cx.entity();
-    let node_levels = meter_frame::node_levels(&this);
+    let node_levels = page::node_levels(&this);
 
     // Canvas view with interaction plumbed to the shell entity.
     let on_zoom = {

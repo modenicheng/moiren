@@ -15,7 +15,7 @@ pub(in crate::ui::window) struct MixerPresentation {
     /// One cached panel host per strip (design 17's per-item split): a
     /// publish during a fader drag rebuilds only the strip whose content
     /// changed. Created and retained by [`StudioShell::sync_mixer_controls`].
-    pub strips: BTreeMap<NodeId, Entity<super::meter_frame::StripPanelHost>>,
+    pub strips: BTreeMap<NodeId, Entity<super::page::StripPanelHost>>,
     /// The inspector's channel-strip fader row gets its own slider slot per
     /// node: the kit's `SliderState` stores the pointer-mapping bounds of
     /// whichever view registered last, so the strip's vertical fader and the
@@ -46,8 +46,6 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub inputs_collapsed: bool,
     pub sends_collapsed: bool,
     synced_revision: Option<u64>,
-    #[cfg(feature = "gpui-test")]
-    pub trace: std::cell::RefCell<super::performance::MeterTrace>,
 }
 
 /// Per-slider bookkeeping kept next to its entity: the dragging flag lets the
@@ -888,9 +886,9 @@ impl StudioShell {
         for node in &graph.nodes {
             let id = node.id;
             self.mixer.strips.entry(id).or_insert_with(|| {
-                let panel = super::meter_frame::StripPanel { id };
+                let panel = super::page::StripPanel { id };
                 let shell = cx.entity();
-                cx.new(|child_cx| super::meter_frame::StripPanelHost::new(panel, shell, child_cx))
+                cx.new(|child_cx| super::page::StripPanelHost::new(panel, shell, child_cx))
             });
         }
         sync_faders(

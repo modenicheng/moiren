@@ -8,7 +8,7 @@ use std::sync::Arc;
 pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     #[cfg(feature = "gpui-test")]
     {
-        shell.mixer.trace.borrow_mut().toolbar_renders += 1;
+        shell.trace.borrow_mut().toolbar_renders += 1;
     }
     let this = cx.entity();
     let state = shell.state.read(cx);
@@ -247,7 +247,7 @@ impl CachedPanel for StatusbarPanel {
     ) -> AnyElement {
         #[cfg(feature = "gpui-test")]
         {
-            shell.mixer.trace.borrow_mut().status_renders += 1;
+            shell.trace.borrow_mut().status_renders += 1;
         }
         // A cached view is laid out as a root. Give the original flex row its
         // allocated width explicitly, not its intrinsic content width.

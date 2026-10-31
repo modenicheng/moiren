@@ -5,10 +5,8 @@ use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 use rust_i18n::t;
 
-pub(super) mod meter_frame;
 mod model;
-#[cfg(feature = "gpui-test")]
-pub(super) mod performance;
+pub(super) mod page;
 mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
@@ -94,7 +92,7 @@ fn strip(
 ) -> impl IntoElement {
     #[cfg(feature = "gpui-test")]
     {
-        shell.mixer.trace.borrow_mut().strip_renders += 1;
+        shell.trace.borrow_mut().strip_renders += 1;
     }
     let id = entry.id;
     let selected = shell.selected_node == Some(id);
@@ -288,9 +286,9 @@ fn meter(
 ) -> impl IntoElement {
     let state = shell.state.read(cx);
     let input = kind == NodeKind::Source;
-    // The key projects this same predicate (`meter_frame::meter_probe_eligible`);
+    // The key projects this same predicate (`page::meter_probe_eligible`);
     // compute it through the shared helper so the two cannot drift.
-    let eligible = meter_frame::meter_probe_eligible(shell, &state.snapshot, entry, kind);
+    let eligible = page::meter_probe_eligible(shell, &state.snapshot, entry, kind);
     let managed = state
         .snapshot
         .signal_topics
@@ -338,11 +336,11 @@ fn meter(
             // their rebuild in the same layout pass.
             view.child(meter_probe(shell.meter_points.clone(), input))
         })
-        .child(meter_frame::track(shell, entry.id, channels, eligible.then_some(input)))
+        .child(page::track(shell, entry.id, channels, eligible.then_some(input)))
         .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
             .absolute().bottom(px(-28.)).left(px(-10.)).w(px(48.)).h(px(12.)).line_height(px(12.))
             .text_center().font_family(theme::FONT_MONO).text_size(px(8.)).text_color(theme::TEXT_MUTED)
-            .child(meter_frame::readout(shell, entry.id))
+            .child(page::readout(shell, entry.id))
             .gpui_test_observe())
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
             t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.").into_owned()

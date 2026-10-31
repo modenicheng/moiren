@@ -1,8 +1,9 @@
-//! Cached page content behind a [`PanelHost`] and the display-rate meter
-//! layer behind a [`HotLayerView`]: the meter canvas is a sibling, never a
-//! descendant of the cached subtree — gpui-fast replays a cached panel's
-//! paint without re-running its closures, so live bars must be painted by
-//! the hot layer at the frame the canvas prepaint published.
+//! The Graph page assembly: cached page content behind a [`PanelHost`] and
+//! the display-rate meter layer behind a [`HotLayerView`]: the meter canvas
+//! is a sibling, never a descendant of the cached subtree — gpui-fast
+//! replays a cached panel's paint without re-running its closures, so live
+//! bars must be painted by the hot layer at the frame the canvas prepaint
+//! published.
 use super::*;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
 use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_splice};
@@ -75,7 +76,7 @@ impl CachedPanel for GraphPanel {
     ) -> AnyElement {
         #[cfg(feature = "gpui-test")]
         {
-            shell.mixer.trace.borrow_mut().graph_renders += 1;
+            shell.trace.borrow_mut().graph_renders += 1;
         }
         super::page(shell, window, cx)
     }
@@ -148,13 +149,13 @@ impl HotSurface for GraphMeters {
         };
         shell.update(cx, |shell, cx| {
             #[cfg(feature = "gpui-test")]
-            shell.mixer.trace.borrow_mut().begin(true);
+            shell.trace.borrow_mut().begin(true);
             #[cfg(feature = "gpui-test")]
             let began = std::time::Instant::now();
             shell.pump_meters(cx);
             #[cfg(feature = "gpui-test")]
             {
-                let mut trace = shell.mixer.trace.borrow_mut();
+                let mut trace = shell.trace.borrow_mut();
                 trace.add(began.elapsed());
                 trace.graph_frames += 1;
                 trace.finish(shell.node_meter_points.borrow().len());
@@ -278,7 +279,7 @@ fn paint_graph_meter_frame(
     );
     #[cfg(feature = "gpui-test")]
     {
-        shell.mixer.trace.borrow_mut().graph_meter_paints += 1;
+        shell.trace.borrow_mut().graph_meter_paints += 1;
     }
 }
 
