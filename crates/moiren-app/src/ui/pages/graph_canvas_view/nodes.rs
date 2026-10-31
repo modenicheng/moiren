@@ -149,6 +149,32 @@ fn paint_track(
     );
 }
 
+/// One node card's meter tracks and live bars, in window space. Shared by the
+/// cached canvas paint and the meter frame's overlay paint so both draw
+/// identical geometry; callers own the card content mask.
+pub(in crate::ui) fn paint_meter_bars(
+    frame: &CanvasFrame,
+    layout: &NodeLayout,
+    tint: Hsla,
+    peaks: Option<[f32; 2]>,
+    window: &mut Window,
+) {
+    for channel in 0..2 {
+        let mut meter = layout.meter;
+        meter.origin.y += channel as f32 * 3. * layout.scale;
+        rounded(
+            frame.window_rect(meter),
+            theme::WINDOW_BG,
+            layout.scale,
+            window,
+        );
+        if let Some(peaks) = peaks {
+            meter.size.width *= crate::ui::widgets::meters::meter_height(peaks[channel]);
+            rounded(frame.window_rect(meter), tint, layout.scale, window);
+        }
+    }
+}
+
 /// `peaks` is read at paint time, not baked into the projected world, so
 /// meter motion repaints without re-projecting the graph.
 pub(super) fn paint_node(
@@ -246,20 +272,7 @@ pub(super) fn paint_node(
             theme::TEXT_MUTED,
             cx,
         );
-        for channel in 0..2 {
-            let mut meter = layout.meter;
-            meter.origin.y += channel as f32 * 3. * layout.scale;
-            rounded(
-                frame.window_rect(meter),
-                theme::WINDOW_BG,
-                layout.scale,
-                window,
-            );
-            if let Some(peaks) = peaks {
-                meter.size.width *= crate::ui::widgets::meters::meter_height(peaks[channel]);
-                rounded(frame.window_rect(meter), tint, layout.scale, window);
-            }
-        }
+        paint_meter_bars(frame, layout, tint, peaks, window);
         let gain_db = if node.gain <= 0. {
             -60.
         } else {

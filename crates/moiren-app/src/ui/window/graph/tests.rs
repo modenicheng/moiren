@@ -1194,3 +1194,108 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
     });
     finish_service(runtime);
 }
+
+/// A cached view replays last frame's paint operations on cache hits, so the
+/// bars the cached canvas painted stand still there. The meter frame's
+/// overlay must repaint them from live ballistics on every animation-only
+/// frame: its paint counter advances with the pump, the cached page stays
+/// flat, and the display ballistics keep decaying into what it paints.
+#[gpui_kit::test]
+fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let backend_state = backend.0.clone();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, _| {
+            shell.node_meters.raw_levels(node).is_some()
+                && shell.node_meters.channel_levels(node).is_some()
+        })
+    });
+    // The panels' opening springs animate against the shell; let them settle
+    // before measuring so only the meter frame can request frames.
+    std::thread::sleep(Duration::from_millis(900));
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    // Stop the source so the measured fall is display ballistics, not fresh
+    // publications resetting the bar upward.
+    backend_state.pause_audio.store(true, Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(20));
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let (bar_before, paints_before, renders_before) = view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        (
+            shell.node_meters.channel_levels(node).unwrap()[0].bar,
+            trace.graph_meter_paints,
+            trace.graph_renders,
+        )
+    });
+    std::thread::sleep(Duration::from_millis(30));
+    for _ in 0..10 {
+        cx.update(|window, cx| {
+            assert!(window.simulate_next_frame(cx) > 0);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        assert!(
+            trace.graph_meter_paints >= paints_before + 10,
+            "the meter frame must repaint the node bars per animation frame"
+        );
+        assert_eq!(
+            trace.graph_renders, renders_before,
+            "bar motion must not rebuild the cached graph page"
+        );
+        assert!(
+            shell.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
+            "the repainted bars must follow the decaying ballistics"
+        );
+    });
+    finish_service(runtime);
+}

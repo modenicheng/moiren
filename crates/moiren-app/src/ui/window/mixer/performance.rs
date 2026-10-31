@@ -16,6 +16,9 @@ pub(in crate::ui::window) struct MeterTrace {
     pub graph_frames: usize,
     /// Graph page content (cached controls) renders.
     pub graph_renders: usize,
+    /// Graph meter-frame overlay paints; on a healthy page these advance per
+    /// animation frame while `graph_renders` stays flat.
+    pub graph_meter_paints: usize,
     /// StudioShell root renders; on a healthy page this stays flat while
     /// meter animation frames flow.
     pub shell_renders: usize,
@@ -25,7 +28,7 @@ pub(in crate::ui::window) struct MeterTrace {
     active: bool,
     frames: Vec<(f64, f64, usize)>,
     dropped: usize,
-    sample_counts: (usize, usize, usize, usize, usize, usize, usize),
+    sample_counts: (usize, usize, usize, usize, usize, usize, usize, usize),
     level_changes: usize,
     previous_levels: Option<u64>,
 }
@@ -45,6 +48,7 @@ impl MeterTrace {
             self.graph_frames,
             self.shell_renders,
             self.graph_renders,
+            self.graph_meter_paints,
         );
         self.level_changes = 0;
         self.previous_levels = None;
@@ -107,6 +111,7 @@ impl MeterTrace {
                 "graph_frames": self.graph_frames - self.sample_counts.4,
                 "shell_renders": self.shell_renders - self.sample_counts.5,
                 "graph_renders": self.graph_renders - self.sample_counts.6,
+                "graph_meter_paints": self.graph_meter_paints - self.sample_counts.7,
                 "level_changes": self.level_changes,
             }))?,
         )?;

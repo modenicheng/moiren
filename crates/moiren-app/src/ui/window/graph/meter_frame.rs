@@ -152,6 +152,7 @@ impl GraphMeterFrame {
 impl Render for GraphMeterFrame {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let pump_shell = self.shell.clone();
+        let paint_shell = self.shell.clone();
         // No hitbox: the canvas, its input overlay, and the editing toolbar
         // underneath keep their pointer routing untouched.
         canvas(
@@ -177,7 +178,74 @@ impl Render for GraphMeterFrame {
                     }
                 });
             },
-            |_, _, _, _| {},
+            // A cached view replays last frame's paint operations instead of
+            // re-running its paint closures, so the bars the cached canvas
+            // painted stand still between cache rebuilds. Repaint them here,
+            // above the cached page, at the frame the canvas prepaint shared.
+            move |_, _, window, cx| {
+                let Some(shell) = paint_shell.upgrade() else {
+                    return;
+                };
+                shell.update(cx, |shell, _cx| {
+                    // Band and connection drags paint overlays that must stay
+                    // above the bars, and they rebuild the page every frame
+                    // anyway, so the cached canvas already shows live bars.
+                    if shell.selection_drag.is_some() || shell.connection_drag.is_some() {
+                        return;
+                    }
+                    let frame = shell.graph_canvas_frame.borrow().as_ref().cloned();
+                    let Some(frame) = frame else {
+                        return;
+                    };
+                    window.with_content_mask(
+                        Some(ContentMask {
+                            bounds: frame.bounds,
+                        }),
+                        |window| {
+                            for (index, node) in frame.world.nodes.iter().enumerate() {
+                                let Some(id) = node.node_id else {
+                                    continue;
+                                };
+                                let layout = &frame.nodes[index];
+                                if !layout.card.intersects(&frame.viewport()) {
+                                    continue;
+                                }
+                                // The canvas paints cards in frame order, later
+                                // ones on top. A later card overlapping this
+                                // node's meter tracks would be cut into by the
+                                // overlay's opaque tracks, so leave those bars
+                                // to the cached canvas until the next rebuild.
+                                let covered = frame.world.nodes[index + 1..]
+                                    .iter()
+                                    .zip(&frame.nodes[index + 1..])
+                                    .any(|(_, later)| later.card.intersects(&layout.meter));
+                                if covered {
+                                    continue;
+                                }
+                                let levels = shell.node_meters.levels(id);
+                                window.with_content_mask(
+                                    Some(ContentMask {
+                                        bounds: frame.window_rect(layout.card),
+                                    }),
+                                    |window| {
+                                        pages::graph_canvas_view::paint_meter_bars(
+                                            &frame,
+                                            layout,
+                                            node.tint(),
+                                            levels.map(|levels| [levels[0].bar, levels[1].bar]),
+                                            window,
+                                        );
+                                    },
+                                );
+                            }
+                        },
+                    );
+                    #[cfg(feature = "gpui-test")]
+                    {
+                        shell.mixer.trace.borrow_mut().graph_meter_paints += 1;
+                    }
+                });
+            },
         )
         .absolute()
         .top_0()
