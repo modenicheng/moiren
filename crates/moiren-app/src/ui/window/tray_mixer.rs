@@ -20,10 +20,12 @@ use std::sync::Arc;
 use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::hot::{HotLayerView, HotSurface, MeterTracks};
-use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
+use super::mixer::{
+    SliderSlot, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click, sync_faders,
+};
 use super::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use super::*;
-use crate::service::{GraphNodeState, GraphSnapshot, MixerState};
+use crate::service::{GraphNodeState, GraphSnapshot};
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::presentation::db_text;
 use crate::ui::shared_frame::SharedFrame;
@@ -365,17 +367,10 @@ fn strip(
                     cx,
                 )))
                 .child(meter_track(flyout, id))
-                .on_mouse_down(MouseButton::Left, {
-                    let this = cx.entity();
-                    move |_, _, cx| {
-                        this.update(cx, |flyout, cx| {
-                            flyout
-                                .state
-                                .update(cx, |state, _| state.node_meters.reset_clip(id));
-                            cx.notify();
-                        });
-                    }
-                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    reset_clip_on_click(flyout.state.clone(), cx.entity(), id),
+                )
                 .gpui_test_observe(),
         )
         .child(
@@ -544,18 +539,5 @@ fn paint_flyout_meter(
             None => window.paint_quad(fill(track, theme::BORDER)),
         }
         crate::ui::widgets::meters::paint_clip_lamp(track, Axis::Vertical, *clip, window);
-    }
-}
-
-/// Strip edit; it applies itself through the live parameter path.
-fn mixer_edit(
-    state: Entity<UiState>,
-    this: Entity<TrayMixer>,
-    id: NodeId,
-    change: impl Fn(&mut MixerState) + 'static,
-) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
-    move |_, _, cx| {
-        state.update(cx, |state, _| state.edit_mixer(id, &change));
-        this.update(cx, |_, cx| cx.notify());
     }
 }

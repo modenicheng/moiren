@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::{GraphNodeState, MixerState};
+use crate::service::GraphNodeState;
 use crate::ui::presentation::db_text;
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
@@ -18,8 +18,8 @@ use component::menu::ContextMenuExt;
 // coalesced sync/commit entry points are visible across the window.
 pub(super) use model::{
     EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text,
-    commit_active_editor, commit_closure, fader_rows, gain_db_text, start_value_edit, sync_faders,
-    sync_slider_range,
+    commit_active_editor, commit_closure, fader_rows, gain_db_text, mixer_edit,
+    reset_clip_on_click, start_value_edit, sync_faders, sync_slider_range,
 };
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
@@ -204,7 +204,7 @@ fn strip(
                 .child(inputs(shell, entry, cx))
                 .child(sends(shell, id, cx))
                 .child(strip_controls::balance(shell, entry, channels, cx))
-                .child(node_controls(entry, channels, cx))
+                .child(node_controls(shell, entry, channels, cx))
                 .child({
                     let editing = shell.mixer.editing_value == Some(id);
                     editable_value(
@@ -279,21 +279,6 @@ fn strip(
 
 pub(super) use strip_controls::node_controls;
 
-fn mixer_edit(
-    this: Entity<StudioShell>,
-    id: NodeId,
-    change: impl Fn(&mut MixerState) + 'static,
-) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
-    move |_, _, cx| {
-        this.update(cx, |shell, cx| {
-            shell
-                .state
-                .update(cx, |state, _| state.edit_mixer(id, &change));
-            cx.notify();
-        })
-    }
-}
-
 fn meter(
     shell: &StudioShell,
     entry: &GraphNodeState,
@@ -316,14 +301,9 @@ fn meter(
         .flex_none()
         .id(SharedString::from(format!("meter-reset-{:?}", entry.id)))
         .on_mouse_down(MouseButton::Left, {
-            let this = cx.entity();
+            let state = shell.state.clone();
             let id = entry.id;
-            move |_, _, cx| {
-                this.update(cx, |shell, cx| {
-                    shell.state.update(cx, |state, _| state.node_meters.reset_clip(id));
-                    cx.notify();
-                })
-            }
+            reset_clip_on_click(state, cx.entity(), id)
         })
         .relative()
         // The managed-visibility canvas is mounted unconditionally and

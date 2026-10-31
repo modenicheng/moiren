@@ -68,6 +68,7 @@ fn group_cell(
 }
 
 pub(in crate::ui::window) fn node_controls(
+    shell: &StudioShell,
     entry: &GraphNodeState,
     channels: usize,
     cx: &Context<StudioShell>,
@@ -75,6 +76,10 @@ pub(in crate::ui::window) fn node_controls(
     let id = entry.id;
     let requested = entry.mixer;
     let metrics = ControlSize::Small.metrics(Density::default());
+    // The shared edit handler carries both entities it touches: the strip's
+    // state edits land on `UiState`, the invalidation on the hosting shell.
+    let this = cx.entity();
+    let state = shell.state.clone();
     div()
         .flex()
         .flex_col()
@@ -100,14 +105,24 @@ pub(in crate::ui::window) fn node_controls(
                             "M",
                             requested.muted,
                             t!("Mute this channel"),
-                            mixer_edit(cx.entity(), id, |state| state.muted = !state.muted),
+                            mixer_edit(
+                                state.clone(),
+                                this.clone(),
+                                id,
+                                |state| state.muted = !state.muted,
+                            ),
                         )))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-solo-{id:?}")),
                             "S",
                             requested.solo,
                             t!("Solo this channel and its connected signal path"),
-                            mixer_edit(cx.entity(), id, |state| state.solo = !state.solo),
+                            mixer_edit(
+                                state.clone(),
+                                this.clone(),
+                                id,
+                                |state| state.solo = !state.solo,
+                            ),
                         ))
                         .border_l_1()
                         .border_color(theme::BORDER)),
@@ -126,7 +141,7 @@ pub(in crate::ui::window) fn node_controls(
                             } else {
                                 t!("Cycle normal, mono average, individual channels, and reverse channel order")
                             },
-                            mixer_edit(cx.entity(), id, move |state| {
+                            mixer_edit(state.clone(), this.clone(), id, move |state| {
                                 *state = state.next_mode(channels)
                             }),
                         ))
@@ -137,7 +152,9 @@ pub(in crate::ui::window) fn node_controls(
                             "DIM",
                             requested.dimmed,
                             t!("Dim attenuates the post-fader signal by 12 dB"),
-                            mixer_edit(cx.entity(), id, |state| state.dimmed = !state.dimmed),
+                            mixer_edit(state.clone(), this.clone(), id, |state| {
+                                state.dimmed = !state.dimmed
+                            }),
                         ))
                         .border_l_1()
                         .border_t_1()
