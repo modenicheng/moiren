@@ -37,7 +37,7 @@ struct VAD_AUDIO_STREAM {
     ULONG TimerScratchBytes = 1920;
     TimerDrivenRing TimerRing = {};
     TimerPcmPacket TimerPacket = {};
-    Clock Clock = {48000, 1000, 0, 480, true};
+    vad::audio::Clock Clock = {48000, 1000, 0, 480, true};
     uint64_t CompletedPackets = 0;
     uint64_t DeliveredPackets = 0;
     uint64_t LastCaptureStart = 0;
@@ -568,6 +568,264 @@ static void FirstNonzeroCopyHasItsOwnNotifyResult(NTSTATUS result)
     FixtureQpc = 1001; FixtureQpcStep = 0; NotifyStatus = STATUS_SUCCESS;
 }
 
+static void FirstNoCopyIncrementHasPassiveWitness()
+{
+    Fixture f;
+    auto& slot = f.Shared.Slots[0];
+    slot.GateOpen = 0;
+    f.Requests.Count = 0;
+    f.Batch.Shared = &f.Shared;
+    f.Batch.Callback = {900, 950, 990, 77, 48000};
+    f.Native.fill(19);
+    KIRQL previous;
+    KeAcquireSpinLock(&f.Shared.Lock, &previous);
+    const auto clocks = FixtureQpcCalls;
+    VadPcmTransferLocked(&f.Shared, 0, f.Native.data(), 480, 4, 9, 1000, &f.Batch);
+    KeReleaseSpinLock(&f.Shared.Lock, previous);
+    Check(slot.SilencePackets == 1 && f.Native[0] == 0 && f.Native[1919] == 0 &&
+        FixtureQpcCalls == clocks, "actual closed-gate no-copy keeps zero/count and takes no new clock");
+    TraceLock = &f.Shared.Lock; TraceEvents = 0; TraceEnabled = true;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+    Check(TraceEvents == 2 &&
+        std::strstr(TraceRecords[0].Format, "Capture no-copy state") != nullptr &&
+        std::strstr(TraceRecords[1].Format, "Capture no-copy timing") != nullptr,
+        "actual silence increment must retain fixed passive no-copy identity/state/timing evidence");
+}
+
+static void TransferWithoutWrite(Fixture& f, uint64_t sequence = 9, uint64_t qpc = 1000)
+{
+    f.Requests.Count = 0;
+    f.Batch = {};
+    f.Batch.Shared = &f.Shared;
+    f.Batch.Callback = {900, 950, 990, 77, 48000};
+    KIRQL previous;
+    KeAcquireSpinLock(&f.Shared.Lock, &previous);
+    VadPcmTransferLocked(&f.Shared, 0, f.Native.data(), 480, 4, sequence, qpc, &f.Batch);
+    KeReleaseSpinLock(&f.Shared.Lock, previous);
+}
+
+static void NoCopyGateStateAndCounterWrap()
+{
+    for (unsigned open = 0; open < 2; ++open) {
+        Fixture f;
+        auto& slot = f.Shared.Slots[0];
+        slot.GateOpen = open;
+        slot.SilencePackets = ~uint64_t{0};
+        f.Native.fill(29);
+        const auto clocks = FixtureQpcCalls;
+        TransferWithoutWrite(f);
+        auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+        const auto& item = diagnostic.FirstNoCopy;
+        Check(item.Observed && item.EndpointId == 5 && item.SessionEpoch == 6 &&
+            item.StreamGeneration == 3 && item.GateEpoch == 7 && item.NativeSequence == 9 &&
+            item.CallbackQpc == 1000 && item.Frequency == 48000 &&
+            item.SilenceBefore == ~uint64_t{0} && item.SilenceAfter == 0 &&
+            slot.SilencePackets == 0 && item.GateOpen == open && item.AudioReady == 1 &&
+            item.State == MOIREN_VAD_STATE_PRESENT && item.StreamState == MOIREN_VAD_STREAM_RUNNING &&
+            item.SampleFormat == MOIREN_VAD_FORMAT_PCM16 && item.Channels == 2 && item.Frames == 480 &&
+            !item.EventObserved && !item.NotifyObserved && item.PacketCount == 0 &&
+            f.Native[0] == 0 && f.Native[1919] == 0 && FixtureQpcCalls == clocks,
+            "first actual increment preserves open/closed state and unsigned counter wrap without a clock");
+        vad::CloseGate(slot);
+        vad::InvalidatePcmEpoch(slot, true);
+        TransferWithoutWrite(f, 10, 1100);
+        Check(slot.SilencePackets == 1 && item.GateEpoch == 7 && item.NativeSequence == 9 &&
+            item.SilenceAfter == 0, "later paused/closed no-copy increments do not rearm first evidence");
+        Check(vad::FinishLifetime(slot, slot.Id) && slot.SilencePackets == 1 &&
+            item.SampleFormat == MOIREN_VAD_FORMAT_PCM16 && item.Frames == 480,
+            "actual lifetime cleanup retains cumulative counter and the original diagnostic shape");
+        TraceLock = &f.Shared.Lock; TraceEvents = 0; TraceEnabled = false;
+        TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+        Check(TraceEvents == 0 && diagnostic.ReportNoCopy,
+            "disabled passive tracing must not consume first no-copy evidence");
+        TraceEnabled = true;
+        TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+        Check(TraceEvents == 2 && TraceRecords[0].Values[3] == 7 &&
+            TraceRecords[0].Values[7] == open && TraceRecords[0].Values[11] == 480 &&
+            TraceRecords[1].Values[5] == 1000 && TraceRecords[1].Values[6] == 48000 &&
+            TraceRecords[1].Values[7] == ~uint64_t{0} && TraceRecords[1].Values[8] == 0,
+            "passive export preserves historical state/shape, timing and wrapped before/after counters");
+        TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+        Check(TraceEvents == 2 && !diagnostic.ReportNoCopy && item.Observed,
+            "passive drain consumes only pending bits, never the historical first witness");
+    }
+}
+
+static void NoCopyDoesNotMeanZeroWriteOrPlayback()
+{
+    Fixture zero;
+    zero.Segment();
+    Check(zero.Batch.CaptureCopied && zero.Batch.Completions.Count == 1 &&
+        zero.Batch.Completions.Entries[0].Status == STATUS_SUCCESS &&
+        zero.Shared.Slots[0].SilencePackets == 0 &&
+        !zero.Shared.CaptureDiagnostics[0].FirstNoCopy.Observed,
+        "successful zero WRITE is PCM content, never a no-copy increment");
+    Fixture playback;
+    playback.Shared.Slots[0].Intent = MOIREN_VAD_INTENT_PLAYBACK;
+    playback.Native.fill(31);
+    TransferWithoutWrite(playback);
+    Check(playback.Shared.Slots[0].DroppedPackets == 1 &&
+        playback.Shared.Slots[0].SilencePackets == 0 && playback.Native[0] == 31 &&
+        !playback.Shared.CaptureDiagnostics[0].FirstNoCopy.Observed,
+        "Playback remains Moiren Input/Source, never a MIC silence witness");
+    for (unsigned inactive = 0; inactive < 2; ++inactive) {
+        Fixture f;
+        if (inactive == 0) { f.Shared.Slots[0].AudioReady = 0; }
+        else { f.Shared.Slots[0].State = MOIREN_VAD_STATE_REMOVED; }
+        f.Native.fill(17);
+        TransferWithoutWrite(f);
+        Check(f.Native[0] == 0 && f.Shared.Slots[0].SilencePackets == 0 &&
+            !f.Shared.CaptureDiagnostics[0].FirstNoCopy.Observed,
+            "existing zero-only inactive path is not falsely reported as an increment");
+    }
+}
+
+static void NoCopyGenerationResetRetainsCumulativeCounter()
+{
+    Fixture f;
+    auto& slot = f.Shared.Slots[0];
+    auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    slot.SilencePackets = 41;
+    TransferWithoutWrite(f);
+    diagnostic.Reset(++slot.StreamGeneration); // Actual helper used by Acquire, not a fake reset.
+    f.Stream.Generation = slot.StreamGeneration;
+    Check(slot.SilencePackets == 42 && !diagnostic.FirstNoCopy.Observed &&
+        !diagnostic.ReportNoCopy && !diagnostic.ReportNoCopyEvent && !diagnostic.ReportNoCopyNotify,
+        "generation reset clears witnesses and pending bits but never the cumulative slot counter");
+    TransferWithoutWrite(f, 0, 1200);
+    Check(diagnostic.FirstNoCopy.StreamGeneration == 4 && diagnostic.FirstNoCopy.SilenceBefore == 42 &&
+        diagnostic.FirstNoCopy.SilenceAfter == 43, "new generation latches its own cumulative transition");
+    TraceLock = &f.Shared.Lock; TraceEvents = 0; TraceEnabled = true;
+    auto stale = vad::Snapshot(slot); --stale.StreamGeneration;
+    TracePendingCaptureDiagnostic(&f.Shared, stale);
+    Check(TraceEvents == 0 && diagnostic.ReportNoCopy, "stale QUERY cannot drain new generation evidence");
+    Check(vad::FinishLifetime(slot, slot.Id), "actual slot lifetime completes");
+    uint64_t nextId = slot.Id;
+    Check(vad::Reserve(f.Shared.Slots, 8, nextId, MOIREN_VAD_INTENT_MICROPHONE, 2) == 0 &&
+        slot.SilencePackets == 0, "actual new CREATE reserve is where cumulative counters clear");
+}
+
+static void NoCopyExactEventAndNotify(NTSTATUS result)
+{
+    Fixture f;
+    auto& slot = f.Shared.Slots[0];
+    auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    f.Stream.PacketCount = 2;
+    f.Packets[1].RtPacketSize = 1920;
+    f.Packets[1].RtPacketOffset = 64;
+    f.Stream.LastCaptureStart = 970;
+    TransferWithoutWrite(f, 9, 1000);
+    TraceLock = &f.Shared.Lock; TraceEvents = 0; TraceEnabled = true;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+    Check(TraceEvents == 2, "increment can be drained before the event boundary runs");
+    ++slot.AdmissionGeneration; // A control close may run after transfer releases Shared.
+    slot.GateOpen = 0;
+    KIRQL previous;
+    KeAcquireSpinLock(&f.Stream.State, &previous);
+    const auto notification = RecordEventCaptureCopy(&f.Stream, 1, 9, 1000, f.Batch);
+    KeReleaseSpinLock(&f.Stream.State, previous);
+    const auto& item = diagnostic.FirstNoCopy;
+    Check(item.EventObserved && item.GateEpoch == 7 && item.EventGateEpoch == 8 &&
+        item.PacketCount == 2 && item.Index == 1 && item.PacketBytes == 1920 &&
+        item.NativePacketBytes == 1920 && item.PacketOffsetBytes == 64 && item.PacketStartQpc == 970,
+        "exact event binds actual packet layout without relabeling the earlier transfer gate");
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+    Check(TraceEvents == 3 && std::strstr(TraceRecords[2].Format, "Capture no-copy event") != nullptr &&
+        TraceRecords[2].Values[3] == 7 && TraceRecords[2].Values[6] == 8 &&
+        TraceRecords[2].Values[7] == 970 && TraceRecords[2].Values[12] == 64,
+        "event coordinates publish once even if the increment was already drained");
+    NotifyStatus = result; NotifyCalls = 0;
+    const auto clocks = FixtureQpcCalls;
+    AdvanceGateDuringNotify = true;
+    NotifyPacketComplete(&f.Stream, 9, 1000, notification);
+    AdvanceGateDuringNotify = false;
+    Check(NotifyCalls == 1 && NotifiedPacket == 9 && NotifiedQpc == 1000 &&
+        slot.AdmissionGeneration == 9 && item.GateEpoch == 7 && item.EventGateEpoch == 8 &&
+        item.NotifyObserved && item.NotifyStatus == static_cast<uint32_t>(result) &&
+        FixtureQpcCalls == clocks, "actual notify status survives another gate advance with no new clock");
+    TraceEnabled = false;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+    Check(TraceEvents == 3 && diagnostic.ReportNoCopyNotify, "disabled trace retains late notify result");
+    TraceEnabled = true;
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+    Check(TraceEvents == 5 && std::strstr(TraceRecords[3].Format, "Capture no-copy notify") != nullptr &&
+        TraceRecords[3].Values[3] == 7 && TraceRecords[3].Values[6] == 8 &&
+        static_cast<uint32_t>(TraceRecords[3].Values[9]) == static_cast<uint32_t>(result),
+        "actual status publishes separately from existing first success/failure notification evidence");
+    TracePendingCaptureDiagnostic(&f.Shared, vad::Snapshot(slot));
+    Check(TraceEvents == 5 && !diagnostic.ReportNoCopyNotify, "each late fragment drains only once");
+    NotifyStatus = result == STATUS_SUCCESS ? STATUS_DEVICE_NOT_READY : STATUS_SUCCESS;
+    NotifyPacketComplete(&f.Stream, 9, 1000, notification);
+    Check(NotifyCalls == 2 && item.NotifyStatus == static_cast<uint32_t>(result) &&
+        !diagnostic.ReportNoCopyNotify, "first same-packet result never changes actual notify count or rearms");
+    NotifyStatus = STATUS_SUCCESS;
+}
+
+static void NoCopyRejectsOtherEventsAndNotifications()
+{
+    Fixture f;
+    auto& diagnostic = f.Shared.CaptureDiagnostics[0];
+    f.Stream.PacketCount = 2;
+    TransferWithoutWrite(f, 9, 1000);
+    const CaptureNotifyObservation exact = {7, 9, 1000, 2, 0, true, false};
+    diagnostic.RecordNotify(3, exact, 0, 0);
+    Check(!diagnostic.FirstNoCopy.NotifyObserved, "notify alone cannot invent event layout");
+    for (unsigned field = 0; field < 6; ++field) {
+        auto mismatch = exact;
+        auto generation = uint64_t{3};
+        uint32_t index = 1;
+        switch (field) {
+        case 0: ++generation; break;
+        case 1: ++mismatch.NativeSequence; break;
+        case 2: ++mismatch.CompletionQpc; break;
+        case 3: mismatch.PacketCount = 1; break;
+        case 4: mismatch.Observed = false; break;
+        default: index = 0; break;
+        }
+        diagnostic.RecordNoCopyEvent(generation, mismatch, index, 1920, 1920, 0, 970);
+        Check(!diagnostic.FirstNoCopy.EventObserved, "mismatched or timer event cannot bind no-copy");
+    }
+    const auto actual = RecordEventCaptureCopy(&f.Stream, 1, 9, 1000, f.Batch);
+    Check(diagnostic.FirstNoCopy.EventObserved, "real event wrapper accepts the exact no-copy packet");
+    for (unsigned field = 0; field < 6; ++field) {
+        auto mismatch = actual;
+        auto generation = uint64_t{3};
+        switch (field) {
+        case 0: ++generation; break;
+        case 1: ++mismatch.GateEpoch; break;
+        case 2: ++mismatch.NativeSequence; break;
+        case 3: ++mismatch.CompletionQpc; break;
+        case 4: mismatch.PacketCount = 1; break;
+        default: mismatch.Observed = false; break;
+        }
+        diagnostic.RecordNotify(generation, mismatch, 0, 0);
+        Check(!diagnostic.FirstNoCopy.NotifyObserved, "other notify identity or generation cannot attach");
+    }
+    ReplaceGenerationDuringNotify = true;
+    NotifyPacketComplete(&f.Stream, 9, 1000, actual);
+    ReplaceGenerationDuringNotify = false;
+    Check(diagnostic.Generation == 4 && !diagnostic.FirstNoCopy.Observed &&
+        !diagnostic.ReportNoCopyNotify, "reset during actual ACX call discards its retired result");
+}
+
+static void NoCopyTimerIsNotEventAndUnknownFrequencyStaysUnknown()
+{
+    Fixture timer;
+    timer.Requests.Count = 0;
+    const auto clocks = FixtureQpcCalls;
+    timer.Segment(); // Actual timer-to-Scratch no-copy path.
+    const auto& item = timer.Shared.CaptureDiagnostics[0].FirstNoCopy;
+    Check(item.Observed && item.NativeSequence == 0 && item.CallbackQpc == 1000 &&
+        item.Frequency == 0 && !item.EventObserved && !item.NotifyObserved &&
+        item.PacketCount == 0 && FixtureQpcCalls == clocks,
+        "real timer copy records no fabricated event/notify/layout/frequency and reads no new clock");
+    // Even a mistaken event call with actual timer shape cannot associate it.
+    const auto notification = RecordEventCaptureCopy(&timer.Stream, 0, 0, 1000, timer.Batch);
+    Check(!item.EventObserved, "one-buffer timer must not be promoted to an event witness");
+    timer.Shared.CaptureDiagnostics[0].RecordNotify(3, notification, 0, 0);
+    Check(!item.NotifyObserved, "timer cannot acquire no-copy notify evidence");
+}
+
 static void NonzeroNotifyDoesNotCrossIdentityOrGeneration()
 {
     Fixture f;
@@ -604,6 +862,14 @@ static void NonzeroNotifyDoesNotCrossIdentityOrGeneration()
 
 int main()
 {
+    FirstNoCopyIncrementHasPassiveWitness();
+    NoCopyGateStateAndCounterWrap();
+    NoCopyDoesNotMeanZeroWriteOrPlayback();
+    NoCopyGenerationResetRetainsCumulativeCounter();
+    NoCopyExactEventAndNotify(STATUS_SUCCESS);
+    NoCopyExactEventAndNotify(STATUS_DEVICE_NOT_READY);
+    NoCopyRejectsOtherEventsAndNotifications();
+    NoCopyTimerIsNotEventAndUnknownFrequencyStaysUnknown();
     RealTimerCopyWithoutRebase();
     RealWrapAndFailedWrite();
     EventCopyResetAndPassivePublication();
@@ -616,7 +882,8 @@ int main()
     NonzeroNotifyDoesNotCrossIdentityOrGeneration();
     std::printf("PASS: real PCM-to-Scratch-to-ring, zero/nonzero, no-rebase, wrap, "
         "generation reset, event copy, actual query/notify results, same-copy notify success/failure QPC "
-        "and passive publication; record=%zu bytes\n",
-        sizeof(CaptureDiagnostic));
+        "and passive publication; 8 no-copy scenarios (gate/counter/copy/generation/event/notify/timer/drain); "
+        "record=%zu bytes no-copy=%zu bytes\n",
+        sizeof(CaptureDiagnostic), sizeof(CaptureNoCopyObservation));
 }
 #endif

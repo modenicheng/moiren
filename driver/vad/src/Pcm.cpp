@@ -412,7 +412,14 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                         unservedReasons != 0 ? unservedReasons :
                             static_cast<uint16_t>(vad::UnservedNoCurrent));
                 }
+                const auto silenceBefore = slot.SilencePackets;
                 ++slot.SilencePackets;
+                shared->CaptureDiagnostics[index].RecordNoCopy(
+                    {slot.Id, slot.Session, slot.StreamGeneration, slot.AdmissionGeneration,
+                        sequence, qpc, batch->Callback.Frequency, silenceBefore, slot.SilencePackets,
+                        0, 0, slot.State, slot.StreamState, slot.GateOpen, slot.AudioReady,
+                        slot.SampleFormat, slot.Channels, frames,
+                        0, 0, 0, 0, 0, 0, false, false, false});
             } else {
                 ++slot.DroppedPackets;
             }

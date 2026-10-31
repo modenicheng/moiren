@@ -27,7 +27,7 @@ for relative, functions in (
     patterns = tuple(
         (name, r"(?:static\s+)?(?:void|NTSTATUS|PVOID|vad::audio::CaptureNotifyObservation)\s+" +
          name + r"\s*\([^;{}]*\)\s*\{")
-        for name in functions if re.search(r"\b" + name + r"\s*\(", text)
+        for name in functions
     )
     parts.append(module.extract(text, source.as_posix(), patterns))
 (output / "capture-boundary-production.inc").write_text("\n".join(parts), encoding="utf-8")

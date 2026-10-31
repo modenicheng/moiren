@@ -100,6 +100,39 @@ struct CaptureNonzeroNotifyObservation {
     bool Observed;
 };
 
+// The first actual MIC no-copy increment, not a PCM-content or client-delivery
+// observation. Original transfer identity/state survive gate close and Stop.
+struct CaptureNoCopyObservation {
+    uint64_t EndpointId;
+    uint64_t SessionEpoch;
+    uint64_t StreamGeneration;
+    uint64_t GateEpoch;
+    uint64_t NativeSequence;
+    uint64_t CallbackQpc;
+    uint64_t Frequency; // Existing callback frequency; zero remains unknown.
+    uint64_t SilenceBefore;
+    uint64_t SilenceAfter;
+    uint64_t PacketStartQpc;
+    uint64_t EventGateEpoch; // May advance after transfer; never relabel GateEpoch.
+    uint32_t State;
+    uint32_t StreamState;
+    uint32_t GateOpen;
+    uint32_t AudioReady;
+    uint32_t SampleFormat;
+    uint32_t Channels;
+    uint32_t Frames;
+    uint32_t PacketCount;
+    uint32_t Index;
+    uint32_t PacketBytes;
+    uint32_t NativePacketBytes;
+    uint32_t PacketOffsetBytes;
+    uint32_t NotifyStatus;
+    bool Observed;
+    bool EventObserved;
+    bool NotifyObserved;
+};
+static_assert(sizeof(CaptureNoCopyObservation) <= 160, "fixed first no-copy witness");
+
 // Existing State/Shared locks protect these fixed first witnesses. No RT trace,
 // allocation, full-packet scan, scheduling change or public ABI is involved.
 struct CaptureDiagnostic {
@@ -114,6 +147,7 @@ struct CaptureDiagnostic {
     CaptureNotifyObservation FirstNotifySuccess;
     CaptureNotifyObservation FirstNotifyFailure;
     CaptureNonzeroNotifyObservation NonzeroNotify;
+    CaptureNoCopyObservation FirstNoCopy;
     bool ReportCopy;
     bool ReportNonzero;
     bool ReportPosition;
@@ -123,8 +157,38 @@ struct CaptureDiagnostic {
     bool ReportNotifySuccess;
     bool ReportNotifyFailure;
     bool ReportNonzeroNotify;
+    bool ReportNoCopy;
+    bool ReportNoCopyEvent;
+    bool ReportNoCopyNotify;
 
     void Reset(uint64_t generation) { *this = {}; Generation = generation; }
+    void RecordNoCopy(CaptureNoCopyObservation observation)
+    {
+        if (observation.StreamGeneration != Generation || FirstNoCopy.Observed) { return; }
+        observation.Observed = true;
+        FirstNoCopy = observation;
+        ReportNoCopy = true;
+    }
+    void RecordNoCopyEvent(uint64_t generation, const CaptureNotifyObservation& notification,
+        uint32_t index, uint32_t packetBytes, uint32_t nativeBytes,
+        uint32_t offsetBytes, uint64_t packetStartQpc)
+    {
+        auto& item = FirstNoCopy;
+        if (generation != Generation || !item.Observed || item.EventObserved ||
+            !notification.Observed || notification.PacketCount <= 1 ||
+            notification.NativeSequence != item.NativeSequence ||
+            notification.CompletionQpc != item.CallbackQpc ||
+            index != notification.NativeSequence % notification.PacketCount) { return; }
+        item.EventGateEpoch = notification.GateEpoch;
+        item.PacketCount = notification.PacketCount;
+        item.Index = index;
+        item.PacketBytes = packetBytes;
+        item.NativePacketBytes = nativeBytes;
+        item.PacketOffsetBytes = offsetBytes;
+        item.PacketStartQpc = packetStartQpc;
+        item.EventObserved = true;
+        ReportNoCopyEvent = true;
+    }
     bool NeedsCopy() const { return !FirstCopy.Observed || !FirstNonzero.Observed; }
     void RecordCopy(uint64_t generation, uint64_t stream, CaptureCopyObservation observation)
     {
@@ -187,6 +251,16 @@ struct CaptureDiagnostic {
         uint64_t enterQpc, uint64_t returnQpc)
     {
         if (generation != Generation || !observation.Observed) { return; }
+        auto& noCopy = FirstNoCopy;
+        if (noCopy.EventObserved && !noCopy.NotifyObserved &&
+            observation.GateEpoch == noCopy.EventGateEpoch &&
+            observation.NativeSequence == noCopy.NativeSequence &&
+            observation.CompletionQpc == noCopy.CallbackQpc &&
+            observation.PacketCount == noCopy.PacketCount) {
+            noCopy.NotifyStatus = observation.Status;
+            noCopy.NotifyObserved = true;
+            ReportNoCopyNotify = true;
+        }
         if (observation.NonzeroCopy && NeedsNonzeroNotify(observation)) {
             // The copy witness already owns native/request/gate/copy QPC. Match
             // all identities before attaching the result of this exact call.
@@ -214,8 +288,9 @@ struct CaptureDiagnostic {
         ReportPacket = ReportNonzeroPacket = ReportPacketRefusal = false;
         ReportNotifySuccess = ReportNotifyFailure = false;
         ReportNonzeroNotify = false;
+        ReportNoCopy = ReportNoCopyEvent = ReportNoCopyNotify = false;
         return snapshot;
     }
 };
-static_assert(sizeof(CaptureDiagnostic) <= 576, "fixed capture boundary diagnostic budget");
+static_assert(sizeof(CaptureDiagnostic) <= 768, "fixed capture boundary diagnostic budget");
 }

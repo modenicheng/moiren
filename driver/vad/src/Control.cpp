@@ -118,6 +118,36 @@ static void TracePendingCaptureDiagnostic(VAD_SHARED* shared,
         }
     }
     KeReleaseSpinLock(&shared->Lock, irql);
+    const auto& noCopy = diagnostic.FirstNoCopy;
+    if (diagnostic.ReportNoCopy) {
+        // Actual increment under Shared->Lock. No PCM or consumer-delivery claim;
+        // zero frequency means unavailable, and later gates never relabel this one.
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture no-copy state endpoint=%I64u session=%I64u generation=%I64u gate=%I64u native=%I64u state=%u stream_state=%u gate_open=%u audio_ready=%u format=%u channels=%u frames=%u",
+            noCopy.EndpointId, noCopy.SessionEpoch, noCopy.StreamGeneration, noCopy.GateEpoch,
+            noCopy.NativeSequence, noCopy.State, noCopy.StreamState, noCopy.GateOpen,
+            noCopy.AudioReady, noCopy.SampleFormat, noCopy.Channels, noCopy.Frames);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture no-copy timing endpoint=%I64u session=%I64u generation=%I64u gate=%I64u native=%I64u callback_qpc=%I64u frequency=%I64u silence_before=%I64u silence_after=%I64u",
+            noCopy.EndpointId, noCopy.SessionEpoch, noCopy.StreamGeneration, noCopy.GateEpoch,
+            noCopy.NativeSequence, noCopy.CallbackQpc, noCopy.Frequency,
+            noCopy.SilenceBefore, noCopy.SilenceAfter);
+    }
+    if (diagnostic.ReportNoCopyEvent) {
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture no-copy event endpoint=%I64u session=%I64u generation=%I64u gate=%I64u native=%I64u callback_qpc=%I64u event_gate=%I64u packet_qpc=%I64u packets=%u index=%u packet_bytes=%u native_bytes=%u offset=%u",
+            noCopy.EndpointId, noCopy.SessionEpoch, noCopy.StreamGeneration, noCopy.GateEpoch,
+            noCopy.NativeSequence, noCopy.CallbackQpc, noCopy.EventGateEpoch, noCopy.PacketStartQpc,
+            noCopy.PacketCount, noCopy.Index, noCopy.PacketBytes, noCopy.NativePacketBytes,
+            noCopy.PacketOffsetBytes);
+    }
+    if (diagnostic.ReportNoCopyNotify) {
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Capture no-copy notify endpoint=%I64u session=%I64u generation=%I64u gate=%I64u native=%I64u callback_qpc=%I64u event_gate=%I64u packets=%u index=%u status=%!STATUS!",
+            noCopy.EndpointId, noCopy.SessionEpoch, noCopy.StreamGeneration, noCopy.GateEpoch,
+            noCopy.NativeSequence, noCopy.CallbackQpc, noCopy.EventGateEpoch,
+            noCopy.PacketCount, noCopy.Index, static_cast<NTSTATUS>(noCopy.NotifyStatus));
+    }
     const vad::audio::CaptureCopyObservation* copies[] = {
         &diagnostic.FirstCopy, &diagnostic.FirstNonzero};
     const bool pending[] = {diagnostic.ReportCopy, diagnostic.ReportNonzero};

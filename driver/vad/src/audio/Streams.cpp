@@ -225,8 +225,11 @@ static vad::audio::CaptureNotifyObservation RecordEventCaptureCopy(VAD_AUDIO_STR
     KeAcquireSpinLock(&shared->Lock, &irql);
     const auto& slot = shared->Slots[child->Index];
     if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
-        notification = {slot.AdmissionGeneration, sequence, qpc, stream->PacketCount, 0, true};
+        notification = {slot.AdmissionGeneration, sequence, qpc, stream->PacketCount, 0, true, false};
         auto& diagnostic = shared->CaptureDiagnostics[child->Index];
+        diagnostic.RecordNoCopyEvent(stream->Generation, notification, index,
+            stream->PacketSize, stream->Packets[index].RtPacketSize,
+            stream->Packets[index].RtPacketOffset, stream->LastCaptureStart);
         if (batch.CaptureCopied && batch.CapturePrefix.Bytes != 0) {
             diagnostic.RecordCopy(stream->Generation,
                 reinterpret_cast<uint64_t>(stream->Stream),
