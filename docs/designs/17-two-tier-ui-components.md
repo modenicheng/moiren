@@ -1,6 +1,6 @@
 # Design 17: Two-tier UI components — hot surfaces and cached panels
 
-Status: implemented (2026-10-31, commits 6c38f30..70ef4bc). User decisions
+Status: implemented (2026-10-31, commits 6c38f30..dc9b38a). User decisions
 D1–D3 confirmed 2026-10-31. Validation: the full gpui-test suite, the
 workspace gates, and an `ui_capture` run — meter motion on the Mixer page
 rebuilds zero strips while the hot layers paint at display rate (190
@@ -103,36 +103,42 @@ prevents the next occurrence except discipline.
 
 ## Tier H — `HotSurface`: per-frame painting
 
+The signatures below are the landed shapes (`ui/window/hot.rs`,
+`ui/shared_frame.rs`); where later machine-acceptance rounds revised the
+mechanics, the follow-up sections at the end of this document win.
+
 ```rust
 /// One per-window answer to "does this window need display-rate frames".
 /// Ballistics motion, active drags, spring animations, and pending scroll
 /// register here. The 33 ms poll is the complement: the at-rest pump that
 /// keeps observations current and re-arms the loop when fresh data moves a
 /// layer (#37/#40 semantics, preserved).
-pub(super) struct FrameDemand { /* registered sources */ }
+pub(in crate::ui::window) struct FrameDemand { /* registered sources */ }
 
-pub(super) trait HotSurface: 'static {
-    /// Geometry shared with the sibling cached panel.
+pub(in crate::ui::window) trait HotSurface: 'static + Sized {
+    /// Geometry the sibling cached panel published for this frame.
     type Frame;
-    /// Drain fresh observations once per painted frame. Runs inside the
-    /// shell update. Returns whether anything display-bearing changed.
-    fn pump(&mut self, shell: &mut StudioShell, cx: &mut Context<StudioShell>) -> bool;
-    /// Whether this surface's content is still moving. Registers with the
-    /// arbiter; window-level eligibility is supplied by the mount site.
-    fn wants_frames(&self, shell: &StudioShell, cx: &App) -> bool;
-    /// The geometry the sibling cached panel's prepaint last wrote.
+    /// Drain fresh observations once per painted frame (the layer canvas's
+    /// prepaint) and register the owning window's frame demand. Returns
+    /// whether the window should take another display-rate frame: motion,
+    /// not visibility, sustains the loop, and the control-side poll is the
+    /// complement — it keeps observations current at rest and re-arms the
+    /// frames once fresh data moves a layer.
+    fn pump(&mut self, window: &mut Window, cx: &mut App) -> bool;
+    /// The geometry the sibling cached panel last published.
     fn frame(&self) -> &SharedFrame<Self::Frame>;
     /// Paint the live layer above the cached panel. Reads observations at
-    /// paint time; must not mutate shell state.
-    fn paint(&self, frame: &Self::Frame, shell: &StudioShell, window: &mut Window, cx: &mut App);
+    /// paint time; aside from test traces, must not mutate state.
+    fn paint(&self, frame: &Self::Frame, window: &mut Window, cx: &mut App);
 }
 ```
 
 One generic view renders the standard overlay for every surface: a
-hitbox-free `canvas`, absolute over the page; its prepaint pumps inside the
-shell update and requests the next animation frame iff the mount site's
-window predicate (visible, not minimized, settings closed, session running)
-holds and the surface reports motion; its paint calls the surface with the
+hitbox-free `canvas`, absolute over the page; its prepaint pumps once per
+painted frame and requests the next animation frame iff the surface reports
+motion — window-level eligibility stays with the mount site, which simply
+does not mount the layer when its window predicate (visible, not minimized,
+settings closed, session running) fails; its paint calls the surface with the
 shared frame. The two `MeterFrame` structs become short `HotSurface` impls —
 the pump/gate/continue skeleton, the no-hitbox placement, and the trace
 hooks exist exactly once.
@@ -167,8 +173,6 @@ inspector). `NodeLevelsFn` widens from bar heights to
 canvas consume identical data. Graph cards lose their tint-colored bars by
 design (D1).
 
-
-
 The clip indicator itself is one painter for every surface
 (`paint_clip_lamp`): a small lamp at the loud end of the track — above a
 vertical track, right of a horizontal one — lit red while a clip latches,
@@ -176,6 +180,7 @@ dim otherwise, with click-to-reset on the surrounding element (mixer
 strips, inspector meters, flyout strips). The graph cards' meter fill
 never changes background for clipping; they carry the same lamp, and the
 flyout's under-bar dot and the inspector's corner dot are gone.
+
 ### Flyout (D2) and inspector meter (D3)
 
 - The flyout becomes a `CachedPanel` (strip controls) plus one `HotSurface`
@@ -190,29 +195,48 @@ flyout's under-bar dot and the inspector's corner dot are gone.
 
 ## Tier C — `CachedPanel`: semantic-key caching
 
+The sketch below is the landed shape (`ui/window/panel.rs`); the second
+acceptance round added per-instance panels and keyed render — see "The
+cache splits per item" below.
+
 ```rust
-pub(super) trait CachedPanel: 'static + Sized {
+pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
+    /// The state entity this panel projects. Most panels project the main
+    /// window's `StudioShell`; the tray flyout projects its own root view.
+    type Owner: 'static;
     /// Inputs the panel's tree consumes. Elapsed time and audio observations
     /// must never appear here.
     type Key: PartialEq + 'static;
-    fn key(shell: &StudioShell, cx: &App) -> Self::Key;
+    /// Capture the key from the owner. Runs on every owner notification and
+    /// on every rebuild.
+    fn key(&self, owner: &Self::Owner, cx: &App) -> Self::Key;
     /// Build the tree. Pure function of `Self::Key`: between key changes the
     /// cached subtree replays last frame's paint.
-    fn render(shell: &mut StudioShell, window: &mut Window, cx: &mut Context<StudioShell>) -> AnyElement;
-    /// Per-rebuild side state: re-register meter demand, reset geometry scratch.
-    fn on_rebuild(shell: &mut StudioShell) {}
+    fn render(
+        &self,
+        owner: &mut Self::Owner,
+        window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement;
+    /// Per-rebuild side state: re-register meter demand, reset geometry
+    /// scratch.
+    fn on_rebuild(&self, owner: &mut Self::Owner) {}
     /// Nested model entities (sliders, search inputs) whose notifications
     /// cannot invalidate this cached ancestor by themselves.
-    fn observe_nested(shell: &StudioShell, cx: &mut Context<PanelHost<Self>>) {}
+    fn observe_nested(
+        &self,
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription>;
 }
 ```
 
 A single `PanelHost<P>` entity implements, once: the shell observer → capture
 key → diff → conditional notify; the render-time key refresh (self-healing);
-the a11y live path (one shared `cached_or_live()` helper, replacing four;
-the helper's live branch itself was removed once gpui-fast's splice proved
-to serve a11y from the cache — see hazard note above)
-copies); the `on_rebuild` hook (replacing three demand-clear copies); the
+the a11y path (one shared `cached_splice()` helper, replacing four
+hand-maintained copies; the helper's live branch itself was removed once
+gpui-fast's splice proved to serve a11y from the cache — see the hazard
+note above); the `on_rebuild` hook (replacing three demand-clear copies); the
 nested-model subscription pool (replacing the mixer slider map and the graph
 search observer); and a per-panel rebuild counter for the test harness.
 
@@ -222,11 +246,12 @@ mechanics are shared. Two shared helpers keep keys honest:
 - `ArcSnapshot<T>` — an `Arc` wrapper whose `PartialEq` tries pointer
   identity before walking the value. Every `Arc<GraphSnapshot>` field in a
   key uses it; the current per-notify full-graph deep comparison disappears.
-- Chrome joins the tier with a key of (snapshot identity, page, compact,
-  menu/focus flags), replacing the notify-all `CachedChrome`. Its rebuild
-  rate stays "snapshot changed" (at least once per second while running, via
-  the quantized elapsed), matching today; the "meter frames never notify the
-  shell" convention remains the reason that rate is honest.
+- Chrome joins the tier with keyed panels — the toolbar keys on (snapshot
+  identity, page, compact, project name, pending request), the status bar on
+  publish identity alone — replacing the notify-all `CachedChrome`. Its
+  rebuild rate stays "snapshot changed" (at least once per second while
+  running, via the quantized elapsed), matching today; the "meter frames
+  never notify the shell" convention remains the reason that rate is honest.
 
 ## Invariants and hazard checklist
 
@@ -255,9 +280,11 @@ mechanics are shared. Two shared helpers keep keys honest:
    not those registrations — a cached chrome dropped its drag regions from
    the platform's hit test after the first cache hit, and the title bar
    stopped dragging (observed on the Mixer and Graph pages 2026-10-31;
-   live rendering during an a11y activation masked it). The toolbar and
-   status bar are therefore live; their rebuild cost is trivial.
-10. A hot surface receives its sibling panel's `SharedFrame` at construction.
+   live rendering during an a11y activation masked it). The two bars
+   therefore keep their keyed `PanelHost` renders but drop the `.cached()`
+   splice, whose replay would lose the per-frame prepaint registrations;
+   their rebuild cost is trivial.
+9. A hot surface receives its sibling panel's `SharedFrame` at construction.
    Building a second frame of the same type compiles, runs, and paints
    nothing forever: the flyout shipped exactly this way (machine acceptance
    2026-10-31), its pump still running the frame loop against an
@@ -271,7 +298,7 @@ Findings from the first real-machine pass over the implemented design,
 each with its fix landed on the same branch:
 
 - **Flyout without meter bars, CPU high while it showed nothing.** The
-  hazard-8 disconnect. Fixed by constructing one `SharedFrame` and handing
+  hazard-9 disconnect. Fixed by constructing one `SharedFrame` and handing
   clones to both the strips and the hot surface.
 - **Flyout strips showed the bare default labels ("Input"/"Output").** The
   flyout rendered `entry.label` where the main mixer renders
@@ -323,10 +350,18 @@ changes. Three changes landed together:
   nested subscriptions moved from `render` to the owner observer, which
   also captures the initial key at construction.
 
-`UiState` now derives the observation source/sink pair itself (in `poll`,
-a write-only entity — nothing that renders reads a notified entity for
-it), replacing the render-ordered `refresh_observation_nodes` whose value
-was always one publish stale at key-capture time. `SharedFrame`'s
+Strip keys also stopped reading render-ordered shell state: probe
+candidacy in a strip key is a snapshot-side predicate
+(`strip_probe_candidate` — the session runs and the node matches the
+desired spec's source/output endpoint). Keys are captured in the
+notification effect, before the shell's render-time
+`refresh_observation_nodes` runs, so a candidacy read from that state
+would pin a stale key until the next notify; the render-ordered
+derivation remains only for the canvas mounts, whose full
+`meter_probe_eligible` predicate runs at render where the observation is
+fresh. An `observation_nodes` change additionally clears `meter_points`,
+so the new owners re-register on their rebuild in the same layout pass and
+no stale probe window survives the handover. `SharedFrame`'s
 update-on-empty is a documented no-op, so per-strip rebuilds create the
 accumulating geometry frame when missing instead of resetting it — a
 whole-table reset here would wipe siblings that are not rebuilding.
@@ -363,8 +398,9 @@ peak hold (most of the time) frames replay the shaped line.
 
 - `compact_stereo_meter`, `meter_bar`, and the flyout's DOM rebuild path.
 - `TrayMixer`'s private `NodeMeters` (a second ballistics state for the same
-  nodes): the flyout shares the shell's `NodeMeters`, promoted to an entity
-  both windows observe; per-window demand feeds the same `seen` table.
+  nodes): the flyout now reads the shell's `NodeMeters` — the single
+  `UiState` field both windows reach through their shared `Entity<UiState>`;
+  per-window demand feeds the same `seen` table.
 - The three hand-maintained continuation sites and every inlined
   `meters_frame_active && meters_in_motion` expression (replaced by the
   arbiter and the generic view).
@@ -379,7 +415,8 @@ peak hold (most of the time) frames replay the shaped line.
 Each step lands separately, workspace suite green, with
 `MeterTrace`/`ui_capture` evidence per step.
 
-1. **Tier C machinery** — `PanelHost`, `ArcSnapshot`, `cached_or_live`; the
+1. **Tier C machinery** — `PanelHost`, `ArcSnapshot`, `cached_splice` (then
+   named `cached_or_live`); the
    mixer, graph, and chrome panels move onto it. Acceptance: rebuild
    counters behave identically (strip/graph/toolbar/status flat during
    motion-only frames); no visual change.
@@ -405,8 +442,7 @@ Each step lands separately, workspace suite green, with
 - No framework or scene-graph replacement (`16-render-architecture.md`,
   "Assessment").
 - No accessibility-tree caching (RESOLVED: gpui-fast serves a11y nodes
-  from the cache's records and gates on staleness itself; the
-  live-tree
+  from the cache's records and gates on staleness itself; the live-tree
   fallback stands).
 - Keys remain per-page declarations; the model does not derive them.
 - The root still rebuilds its element every drawn frame. The tiers keep that
@@ -419,7 +455,8 @@ Each step lands separately, workspace suite green, with
   here.
 - `docs/audit/2026-10-27/04-app.md` — APP-3 (meter segmentation duplication);
   `05-cross-crate-workspace.md` — X-1 (RT→UI level topic directory
-  duplication, addressed alongside the shared `NodeMeters`).
+  duplication): the UI consumption side converged with the shared
+  `NodeMeters`, but the engine vs app directories themselves remain open.
 - Counters: `ui/window/mixer/performance.rs`; capture harness:
   `examples/ui_capture.rs` with `MOIREN_CAPTURE_METERS=1` and the
   `ui-profiler` feature.

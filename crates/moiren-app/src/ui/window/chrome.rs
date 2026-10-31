@@ -259,13 +259,15 @@ impl CachedPanel for StatusbarPanel {
 }
 
 pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
-    // Chrome is deliberately NOT cached: the toolbar and status bar carry
-    // the window drag regions (`window_control_area(Drag)`), whose hitboxes
-    // are registered during prepaint and cleared every frame. gpui-fast's
-    // splice replays layout/paint/a11y but not those registrations, so a
-    // cached chrome would drop its drag regions from the platform's hit
-    // test after the first cache hit — the title bar simply stopped
-    // dragging. Both bars are cheap to rebuild; the pages stay cached.
+    // The chrome keeps its keyed `PanelHost` render dedup (`ToolbarChrome`
+    // / `StatusbarChrome` above) but is deliberately NOT `.cached()`-spliced:
+    // the toolbar and status bar carry the window drag regions
+    // (`window_control_area(Drag)`), whose hitboxes are registered during
+    // prepaint and cleared every frame. gpui-fast's splice replays
+    // layout/paint/a11y but not those registrations, so a spliced chrome
+    // would drop its drag regions from the platform's hit test after the
+    // first cache hit — the title bar simply stopped dragging. Both bars
+    // are cheap to rebuild; the pages stay cached.
     div()
         .w_full()
         .h(px(theme::TOOLBAR_HEIGHT))
