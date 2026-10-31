@@ -56,7 +56,21 @@ pub(in crate::ui::window) struct MixerPresentation {
 pub(in crate::ui::window) struct SliderSlot {
     pub state: Entity<base::slider::SliderState>,
     pub dragging: Rc<Cell<bool>>,
+    cancelled: Rc<Cell<bool>>,
     pub behavior: SliderBehavior,
+}
+
+impl SliderSlot {
+    /// Cancels an in-flight pointer drag: the write-back stand-down lifts
+    /// immediately and the gesture's tail — the coalesced pending value and
+    /// the release's stale pointer value — is dropped instead of landing as
+    /// fresh edits. Used when a journal step (undo) lands under a live drag:
+    /// without this, the suppressed write-back hides the undone value and
+    /// the release then overwrites it (audit SD-7).
+    pub(in crate::ui::window) fn cancel_drag(&self) {
+        self.dragging.set(false);
+        self.cancelled.set(true);
+    }
 }
 
 /// Drag Changes reach the service at most once per interval; the release
@@ -678,6 +692,7 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
         let slot = sliders.entry(id.clone()).or_insert_with(|| {
             let edit = Rc::new(edit);
             let dragging = Rc::new(Cell::new(false));
+            let cancelled = Rc::new(Cell::new(false));
             let slider = cx.new(|_| {
                 base::slider::SliderState::new()
                     .min(range[0])
@@ -687,6 +702,7 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
             });
             let ui = state.clone();
             let drag_flag = dragging.clone();
+            let cancel_flag = cancelled.clone();
             let drag_edit = edit.clone();
             let mut gate = DispatchGate::default();
             cx.subscribe(
@@ -695,6 +711,10 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                     match event {
                         base::slider::SliderEvent::Change(value) => {
                             drag_flag.set(true);
+                            // Pointer movement after a cancel reopens the
+                            // drag: these edits are the user's own again,
+                            // stacked on whatever the journal step landed.
+                            cancel_flag.set(false);
                             let value = value.end();
                             // A degenerate pointer mapping (zero state bounds
                             // before the first layout) yields NaN; dispatching
@@ -711,7 +731,11 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             drag_flag.set(false);
                             gate.release();
                             let value = value.end();
-                            if !value.is_finite() {
+                            // A cancelled drag's release carries only the
+                            // stale pointer tail: the journal already moved
+                            // on, and landing it would overwrite the undone
+                            // value (audit SD-7).
+                            if !value.is_finite() || cancel_flag.take() {
                                 return;
                             }
                             // The release always lands — unless a wheel or
@@ -732,6 +756,7 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
             SliderSlot {
                 state: slider.clone(),
                 dragging,
+                cancelled,
                 behavior: behavior(&id, state.clone(), edit, slider),
             }
         });

@@ -945,6 +945,32 @@ impl StudioShell {
         inputs
     }
 
+    /// Every mixer-style slider slot the shell owns in one walk: the strip
+    /// faders, the sends, the inspector's fader rows, and the compressor
+    /// parameters (the tray flyout keeps its own slots in its own window,
+    /// whose shortcuts never reach this shell). [`Self::cancel_active_drags`]
+    /// consumes this single walk so a new slot family cannot land in one
+    /// enumeration site and keep its drags un-cancellable — the same
+    /// single-walk rule as [`Self::text_input_entities`].
+    fn slider_slots(&self) -> impl Iterator<Item = &mixer::SliderSlot> {
+        self.mixer
+            .faders
+            .values()
+            .chain(self.mixer.sends.values())
+            .chain(self.mixer.inspector_faders.values())
+            .chain(self.compressor.sliders.values())
+    }
+
+    /// Cancels every in-flight slider drag so a journal step cannot be
+    /// overwritten by its gesture (audit SD-7).
+    fn cancel_active_drags(&self) {
+        for slot in self.slider_slots() {
+            if slot.dragging.get() {
+                slot.cancel_drag();
+            }
+        }
+    }
+
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
     /// modal settings keep the shortcut for themselves.
     fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {
@@ -966,6 +992,12 @@ impl StudioShell {
         {
             return;
         }
+        // Undo outranks an in-flight fader drag (audit SD-7): the drag holds
+        // the write-back down, so the undone value would stay invisible until
+        // release and the release would then land the stale pointer value
+        // over it. Cancelling first reopens the write-back and drops the
+        // gesture's tail; moving the pointer again starts a fresh drag.
+        self.cancel_active_drags();
         self.state.update(cx, |state, _| {
             state.dispatch(if redo {
                 AppRequest::RedoGraph
