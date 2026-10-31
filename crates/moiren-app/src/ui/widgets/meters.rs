@@ -138,10 +138,10 @@ fn meter_marker_position(marker: f32) -> f32 {
 
 /// One colored layer of a meter bar, spanning `bottom`..`bottom + height` in
 /// the 0..1 track space.
-struct MeterSpan {
-    bottom: f32,
-    height: f32,
-    color: Hsla,
+pub(crate) struct MeterSpan {
+    pub(crate) bottom: f32,
+    pub(crate) height: f32,
+    pub(crate) color: Hsla,
 }
 
 /// Layers for one channel: the bright segment fill covers the RMS body, and
@@ -149,8 +149,9 @@ struct MeterSpan {
 /// sustained reading stays light and transients show as the dark tail.
 /// Zone boundaries use the compact digital reference: −6 dBFS
 /// (green→yellow) and 0 dBFS (yellow→red). This is the single source for the
-/// segmentation strategy: the canvas meter paints the same spans with quads.
-fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
+/// segmentation strategy: every meter surface — the mixer canvas, the DOM
+/// bars, and the graph cards — paints these spans in its own orientation.
+pub(crate) fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     let bar_amount = meter_height(level.bar);
     let mut spans = Vec::with_capacity(4);
     let green_top = meter_height(10f32.powf(-6. / 20.));

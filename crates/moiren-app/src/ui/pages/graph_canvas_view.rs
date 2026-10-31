@@ -1,6 +1,5 @@
 //! Graph painting and input consume the same prepaint frame and viewport clip.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -11,6 +10,8 @@ use rust_i18n::t;
 use super::graph_canvas::{
     Camera, CanvasFrame, CanvasNode, CanvasWorld, HitTarget, PortDirection, PortTarget, WireCurve,
 };
+use crate::ui::monitoring::DisplayLevel;
+use crate::ui::shared_frame::SharedFrame;
 use crate::ui::theme;
 use crate::ui::window::TestObserve;
 
@@ -22,11 +23,22 @@ type CameraFitFn = dyn Fn(&Camera, Size<Pixels>, &mut Window, &mut App);
 type SelectFn = dyn Fn(&str, &mut Window, &mut App);
 type ZoomFn = dyn Fn((f32, Point<Pixels>), &mut Window, &mut App);
 type BoxSelectFn = dyn Fn(Option<Bounds<f32>>, &mut Window, &mut App);
-pub(in crate::ui) type NodeLevelsFn = dyn Fn(moiren_core::graph::NodeId, &App) -> Option<[f32; 2]>;
+
+/// One node's live meter reading: display ballistics plus the latched clip
+/// state, read at paint time so meter motion repaints without re-projecting
+/// the graph.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::ui) struct NodeMeterReading {
+    pub levels: [DisplayLevel; 2],
+    pub clips: [bool; 2],
+}
+
+pub(in crate::ui) type NodeLevelsFn =
+    dyn Fn(moiren_core::graph::NodeId, &App) -> Option<NodeMeterReading>;
 /// The frame the canvas prepaint projected most recently. Shell-owned so the
-/// page's meter frame can repaint bars over the cached canvas between cache
+/// page's hot layer can repaint bars over the cached canvas between cache
 /// rebuilds, exactly like the canvas painted them.
-pub(in crate::ui) type PreparedFrame = Rc<RefCell<Option<Rc<CanvasFrame>>>>;
+pub(in crate::ui) type PreparedFrame = SharedFrame<CanvasFrame>;
 
 pub(in crate::ui) use nodes::paint_meter_bars;
 
@@ -138,7 +150,7 @@ fn paint_canvas_layer(
                         node,
                         layout,
                         selected_nodes.iter().any(|selected| selected == &node.id),
-                        node.node_id.and_then(|id| node_levels(id, cx)),
+                        node.node_id.and_then(|id| node_levels(id, cx)).as_ref(),
                         window,
                         cx,
                     );
@@ -271,8 +283,7 @@ fn overview(prepared: PreparedFrame) -> impl IntoElement {
             canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, _| {
-                    let prepared = prepared.borrow();
-                    let Some(frame) = prepared.as_ref() else {
+                    let Some(frame) = prepared.read() else {
                         return;
                     };
                     let overview = frame.overview(size(
@@ -354,7 +365,7 @@ pub fn graph_canvas_view(
                     let prepared = prepared.clone();
                     move |bounds, window, cx| {
                         let frame = Rc::new(CanvasFrame::new(world.clone(), camera, bounds));
-                        *prepared.borrow_mut() = Some(frame.clone());
+                        prepared.publish(Rc::clone(&frame));
                         on_camera_fit(&frame.camera, bounds.size, window, cx);
                         if let Some((anchor, current)) = selection_box {
                             let a = frame.local_position(anchor);
@@ -438,7 +449,7 @@ pub fn graph_canvas_view(
                 .on_drop({
                     let prepared = prepared.clone();
                     move |template: &super::node_catalog::NodeTemplate, window, cx| {
-                        if let Some(frame) = prepared.borrow().as_ref() {
+                        if let Some(frame) = prepared.read() {
                             let position = window.mouse_position();
                             let local = frame
                                 .local_position((f32::from(position.x), f32::from(position.y)));
@@ -455,8 +466,7 @@ pub fn graph_canvas_view(
                     let on_background_down = on_background_down.clone();
                     move |event, window, cx| {
                         window.focus(&focus, cx);
-                        let frame = prepared.borrow().clone();
-                        let Some(frame) = frame else {
+                        let Some(frame) = prepared.read() else {
                             return;
                         };
                         match frame
@@ -484,7 +494,7 @@ pub fn graph_canvas_view(
                     let on_background_down = on_background_down.clone();
                     move |event, window, cx| {
                         window.focus(&right_focus, cx);
-                        if let Some(frame) = prepared.borrow().as_ref() {
+                        if let Some(frame) = prepared.read() {
                             on_background_down((event.clone(), frame.bounds), window, cx);
                         }
                     }
@@ -492,7 +502,7 @@ pub fn graph_canvas_view(
                 .on_mouse_down(MouseButton::Middle, {
                     let prepared = prepared.clone();
                     move |event, window, cx| {
-                        if let Some(frame) = prepared.borrow().as_ref() {
+                        if let Some(frame) = prepared.read() {
                             on_background_down((event.clone(), frame.bounds), window, cx);
                         }
                     }
@@ -501,7 +511,7 @@ pub fn graph_canvas_view(
                     let input_move = input_move.clone();
                     let prepared = prepared.clone();
                     move |event, window, cx| {
-                        if let Some(frame) = prepared.borrow().as_ref() {
+                        if let Some(frame) = prepared.read() {
                             on_connection_move(
                                 frame.camera.canvas_to_world(frame.local_position((
                                     f32::from(event.position.x),
@@ -519,7 +529,7 @@ pub fn graph_canvas_view(
                     let prepared = prepared.clone();
                     let on_port_up = on_port_up.clone();
                     move |event, window, cx| {
-                        let port = prepared.borrow().as_ref().and_then(|frame| {
+                        let port = prepared.read().and_then(|frame| {
                             match frame.hit_test((
                                 f32::from(event.position.x),
                                 f32::from(event.position.y),
@@ -558,8 +568,7 @@ pub fn graph_canvas_view(
                     let prepared = prepared.clone();
                     let on_zoom = on_zoom.clone();
                     move |event: &ScrollWheelEvent, window, cx| {
-                        let frame = prepared.borrow().clone();
-                        let Some(frame) = frame else {
+                        let Some(frame) = prepared.read() else {
                             return;
                         };
                         #[cfg(windows)]
@@ -592,8 +601,7 @@ pub fn graph_canvas_view(
                 .on_pinch({
                     let prepared = prepared.clone();
                     move |event: &PinchEvent, window, cx| {
-                        let frame = prepared.borrow().clone();
-                        if let Some(frame) = frame {
+                        if let Some(frame) = prepared.read() {
                             let factor = crate::ui::scroll_policy::pinch_zoom_factor(event.delta);
                             let anchor = frame.local_position((
                                 f32::from(event.position.x),

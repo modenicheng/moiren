@@ -169,8 +169,8 @@ pub struct StudioShell {
     mixer_controls: Entity<mixer::meter_frame::MixerPanelHost>,
     toolbar_chrome: Entity<chrome::ToolbarChrome>,
     status_chrome: Entity<chrome::StatusbarChrome>,
-    mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
-    graph_meter_frame: Entity<graph::meter_frame::GraphMeterFrame>,
+    mixer_frame: Entity<mixer::meter_frame::MixerMeterLayer>,
+    graph_meter_frame: Entity<graph::meter_frame::GraphMeterLayer>,
     graph_controls: Entity<graph::meter_frame::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
@@ -178,6 +178,10 @@ pub struct StudioShell {
     graph_canvas_frame: pages::graph_canvas_view::PreparedFrame,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
+    /// Why this window currently needs display-rate frames (design 17 Tier
+    /// H): sources register while active, and the control-side poll is the
+    /// complement.
+    frame_demand: hot::FrameDemand,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
@@ -301,18 +305,23 @@ impl StudioShell {
         let settings = settings::SettingsEditor::new(&preferences, cx);
         let export_controls = devices::ExportControls::new(window, cx);
         let mixer_geometry = mixer::meter_frame::Geometry::default();
+        let graph_canvas_frame = pages::graph_canvas_view::PreparedFrame::default();
         let shell_entity = cx.entity();
         let mixer_controls = cx.new(|child_cx| {
             mixer::meter_frame::MixerPanelHost::new(shell_entity.clone(), child_cx)
         });
+        let mixer_meters = std::rc::Rc::new(std::cell::RefCell::new(
+            mixer::meter_frame::MixerMeters::new(mixer_geometry.clone()),
+        ));
         let mixer_frame = cx.new(|_| {
-            mixer::meter_frame::MixerMeterFrame::new(
-                shell_entity.downgrade(),
-                mixer_geometry.clone(),
-            )
+            mixer::meter_frame::MixerMeterLayer::new(shell_entity.downgrade(), mixer_meters)
         });
-        let graph_meter_frame =
-            cx.new(|_| graph::meter_frame::GraphMeterFrame::new(shell_entity.downgrade()));
+        let graph_meters = std::rc::Rc::new(std::cell::RefCell::new(
+            graph::meter_frame::GraphMeters::new(graph_canvas_frame.clone()),
+        ));
+        let graph_meter_frame = cx.new(|_| {
+            graph::meter_frame::GraphMeterLayer::new(shell_entity.downgrade(), graph_meters)
+        });
         let graph_controls = cx.new(|child_cx| {
             graph::meter_frame::GraphPanelHost::new(shell_entity.clone(), child_cx)
         });
@@ -371,9 +380,10 @@ impl StudioShell {
             mixer_frame,
             graph_meter_frame,
             graph_controls,
-            graph_canvas_frame: Default::default(),
+            graph_canvas_frame,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
+            frame_demand: Default::default(),
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
@@ -452,8 +462,7 @@ impl StudioShell {
                             changed
                         });
                         shell.finish_project_load(cx);
-                        let meters_changed =
-                            !shell.meter_animation_active(cx) && shell.pump_meters(cx);
+                        let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
                         if changed || meters_changed {
                             cx.notify();
                         }
@@ -467,10 +476,12 @@ impl StudioShell {
         .detach();
     }
 
-    /// Whether any meter observation is on screen right now. While true the
-    /// render loop requests animation frames so meter motion runs at the
-    /// display refresh rate.
-    fn meters_frame_active(&self, cx: &App) -> bool {
+    /// Whether the window may animate right now: visible, presented, settings
+    /// closed, session running, and on a page that mounts meter hot layers.
+    /// Page membership stands in for mounting — the Graph and Mixer pages are
+    /// where meter layers exist — because leftover meter demand on a page
+    /// with no hot layer must not starve the control-side poll.
+    fn frames_eligible(&self, cx: &App) -> bool {
         let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
@@ -479,25 +490,26 @@ impl StudioShell {
             && snapshot.phase == SessionPhase::Running
     }
 
-    /// Whether any observed meter still moves: decaying ballistics, a held
-    /// peak marker, or fresh readings above the scale bottom all keep the
-    /// display short of rest. While false the vsync loop stands down and the
-    /// control-side poll alone keeps the observations current, so a fully
-    /// silent session costs no animation frames at all.
-    fn meters_in_motion(&self) -> bool {
-        !self.meters.at_rest() || !self.node_meters.at_rest()
+    /// Whether the window should keep taking display-rate frames: something
+    /// registered demand with the arbiter and the window may animate. While
+    /// false the vsync loop stands down and the control-side poll alone keeps
+    /// the observations current, so a fully silent session costs no animation
+    /// frames at all.
+    fn frames_wanted(&self, cx: &App) -> bool {
+        self.frames_eligible(cx) && self.frame_demand.any()
     }
 
-    /// Whether the animation-frame loop is currently driving meter pumps;
-    /// the control-side poll may skip pumping only while this holds.
-    fn meter_animation_active(&self, cx: &App) -> bool {
-        self.meters_frame_active(cx) && self.meters_in_motion()
+    /// Whether any observed meter still moves: decaying ballistics, a held
+    /// peak marker, or fresh readings above the scale bottom all keep the
+    /// display short of rest.
+    fn meters_in_motion(&self) -> bool {
+        !self.meters.at_rest() || !self.node_meters.at_rest()
     }
 
     /// Refresh every meter observation once: reads the latest windows,
     /// advances display ballistics, and reconciles subscriptions with the
     /// current visibility. Called per display frame while
-    /// [`Self::meter_animation_active`] holds, and from the slower
+    /// [`Self::frames_wanted`] holds, and from the slower
     /// control-side loops otherwise. Returns whether a display-bearing
     /// reading changed — raw levels, status, or a freshly latched clip;
     /// ballistics motion alone does not, because animation frames (not
@@ -505,7 +517,7 @@ impl StudioShell {
     pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
         self.meters.set_preferences(self.preferences.meters);
         self.node_meters.set_preferences(self.preferences.meters);
-        let visible = self.meters_frame_active(cx);
+        let visible = self.frames_eligible(cx);
         let points = self.meter_points.get();
         let meter_changed = self.meters.update_points(
             &self.state.read(cx).snapshot,
@@ -513,6 +525,11 @@ impl StudioShell {
             visible && points.1,
         );
         let node_meter_changed = self.update_node_meters(visible, cx);
+        // Re-derive the arbiter's meter demand from the fresh ballistics: the
+        // loop continues while anything moves, and the control-side poll
+        // takes over the moment everything rests.
+        self.frame_demand
+            .set(hot::METER_MOTION, self.meters_in_motion());
         meter_changed || node_meter_changed
     }
 
@@ -605,6 +622,7 @@ pub use capture::run_ui_capture;
 mod controls;
 mod devices;
 mod graph;
+mod hot;
 mod matrix;
 mod mixer;
 mod native;

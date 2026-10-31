@@ -7,6 +7,7 @@ pub mod monitoring;
 mod pages;
 pub mod presentation;
 mod scroll_policy;
+mod shared_frame;
 mod state;
 mod theme;
 #[cfg(windows)]

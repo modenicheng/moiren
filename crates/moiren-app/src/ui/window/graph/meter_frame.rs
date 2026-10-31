@@ -1,10 +1,10 @@
-//! Cached canvas controls and the animation-owner meter frame for the graph
-//! page, mirroring the Mixer's render isolation: the page content (canvas,
-//! library, editing toolbar) is cached behind a semantic key, while a
-//! hitbox-free sibling view pumps observations and owns the frame loop. A
-//! drawn frame rebuilds the shell's root element, so without this cache the
-//! world projection and every interaction closure would rebuild per frame.
+//! Cached page content behind a [`PanelHost`] and the display-rate meter
+//! layer behind a [`HotLayerView`]: the meter canvas is a sibling, never a
+//! descendant of the cached subtree — gpui-fast replays a cached panel's
+//! paint without re-running its closures, so live bars must be painted by
+//! the hot layer at the frame the canvas prepaint published.
 use super::*;
+use crate::ui::window::hot::{HotLayerView, HotSurface};
 use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_or_live};
 use std::rc::Rc;
 
@@ -126,131 +126,134 @@ pub(in crate::ui::window) fn page(shell: &StudioShell, window: &Window) -> AnyEl
         .into_any_element()
 }
 
-pub(in crate::ui::window) struct GraphMeterFrame {
-    shell: WeakEntity<StudioShell>,
+/// The Graph page's hot surface: live bars over the cached canvas, painting
+/// from the frame the canvas prepaint published and the observations of the
+/// current frame.
+pub(in crate::ui::window) struct GraphMeters {
+    frame: pages::graph_canvas_view::PreparedFrame,
 }
 
-impl GraphMeterFrame {
-    pub fn new(shell: WeakEntity<StudioShell>) -> Self {
-        Self { shell }
+impl GraphMeters {
+    pub(in crate::ui::window) fn new(frame: pages::graph_canvas_view::PreparedFrame) -> Self {
+        Self { frame }
     }
 }
 
-impl Render for GraphMeterFrame {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let pump_shell = self.shell.clone();
-        let paint_shell = self.shell.clone();
-        // No hitbox: the canvas, its input overlay, and the editing toolbar
-        // underneath keep their pointer routing untouched.
-        canvas(
-            move |_, window, cx| {
-                let _ = pump_shell.update(cx, |shell, cx| {
-                    #[cfg(feature = "gpui-test")]
-                    shell.mixer.trace.borrow_mut().begin(true);
-                    #[cfg(feature = "gpui-test")]
-                    let began = std::time::Instant::now();
-                    shell.pump_meters(cx);
-                    // Motion, not visibility, sustains the loop: at rest the
-                    // control-side poll keeps the observations current and
-                    // re-arms the frames once fresh data moves a layer.
-                    if shell.meters_frame_active(cx) && shell.meters_in_motion() {
-                        window.request_animation_frame();
-                    }
-                    #[cfg(feature = "gpui-test")]
-                    {
-                        let mut trace = shell.mixer.trace.borrow_mut();
-                        trace.add(began.elapsed());
-                        trace.graph_frames += 1;
-                        trace.finish(shell.node_meter_points.borrow().len());
-                    }
-                });
-            },
-            // A cached view replays last frame's paint operations instead of
-            // re-running its paint closures, so the bars the cached canvas
-            // painted stand still between cache rebuilds. Repaint them here,
-            // above the cached page, at the frame the canvas prepaint shared.
-            move |_, _, window, cx| {
-                let Some(shell) = paint_shell.upgrade() else {
-                    return;
-                };
-                shell.update(cx, |shell, _cx| {
-                    // Band and connection drags paint overlays that must stay
-                    // above the bars, and they rebuild the page every frame
-                    // anyway, so the cached canvas already shows live bars.
-                    if shell.selection_drag.is_some() || shell.connection_drag.is_some() {
-                        return;
-                    }
-                    let frame = shell.graph_canvas_frame.borrow().as_ref().cloned();
-                    let Some(frame) = frame else {
-                        return;
+pub(in crate::ui::window) type GraphMeterLayer = HotLayerView<GraphMeters>;
+
+impl HotSurface for GraphMeters {
+    type Frame = pages::graph_canvas::CanvasFrame;
+
+    fn pump(&mut self, shell: &mut StudioShell, cx: &mut Context<StudioShell>) -> bool {
+        #[cfg(feature = "gpui-test")]
+        shell.mixer.trace.borrow_mut().begin(true);
+        #[cfg(feature = "gpui-test")]
+        let began = std::time::Instant::now();
+        let changed = shell.pump_meters(cx);
+        #[cfg(feature = "gpui-test")]
+        {
+            let mut trace = shell.mixer.trace.borrow_mut();
+            trace.add(began.elapsed());
+            trace.graph_frames += 1;
+            trace.finish(shell.node_meter_points.borrow().len());
+        }
+        changed
+    }
+
+    fn frame(&self) -> &pages::graph_canvas_view::PreparedFrame {
+        &self.frame
+    }
+
+    fn paint(
+        &self,
+        frame: &pages::graph_canvas::CanvasFrame,
+        shell: &mut StudioShell,
+        window: &mut Window,
+        _cx: &mut Context<StudioShell>,
+    ) {
+        // Band and connection drags paint overlays that must stay above the
+        // bars, and they rebuild the page every frame anyway, so the cached
+        // canvas already shows live bars.
+        if shell.selection_drag.is_some() || shell.connection_drag.is_some() {
+            return;
+        }
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: frame.bounds,
+            }),
+            |window| {
+                for (index, node) in frame.world.nodes.iter().enumerate() {
+                    let Some(id) = node.node_id else {
+                        continue;
                     };
+                    let layout = &frame.nodes[index];
+                    if !layout.card.intersects(&frame.viewport()) {
+                        continue;
+                    }
+                    // The canvas paints cards in frame order, later ones on
+                    // top. A later card overlapping this node's meter tracks
+                    // would be cut into by the overlay's opaque tracks, so
+                    // leave those bars to the cached canvas until the next
+                    // rebuild.
+                    let covered = frame.world.nodes[index + 1..]
+                        .iter()
+                        .zip(&frame.nodes[index + 1..])
+                        .any(|(_, later)| later.card.intersects(&layout.meter));
+                    if covered {
+                        continue;
+                    }
+                    let reading = shell.node_meters.levels(id).map(|levels| {
+                        let clips = shell.node_meters.channel_clips(id);
+                        pages::graph_canvas_view::NodeMeterReading {
+                            levels,
+                            clips: [
+                                clips.first().copied().unwrap_or(false),
+                                clips.get(1).copied().unwrap_or(false),
+                            ],
+                        }
+                    });
                     window.with_content_mask(
                         Some(ContentMask {
-                            bounds: frame.bounds,
+                            bounds: frame.window_rect(layout.card),
                         }),
                         |window| {
-                            for (index, node) in frame.world.nodes.iter().enumerate() {
-                                let Some(id) = node.node_id else {
-                                    continue;
-                                };
-                                let layout = &frame.nodes[index];
-                                if !layout.card.intersects(&frame.viewport()) {
-                                    continue;
-                                }
-                                // The canvas paints cards in frame order, later
-                                // ones on top. A later card overlapping this
-                                // node's meter tracks would be cut into by the
-                                // overlay's opaque tracks, so leave those bars
-                                // to the cached canvas until the next rebuild.
-                                let covered = frame.world.nodes[index + 1..]
-                                    .iter()
-                                    .zip(&frame.nodes[index + 1..])
-                                    .any(|(_, later)| later.card.intersects(&layout.meter));
-                                if covered {
-                                    continue;
-                                }
-                                let levels = shell.node_meters.levels(id);
-                                window.with_content_mask(
-                                    Some(ContentMask {
-                                        bounds: frame.window_rect(layout.card),
-                                    }),
-                                    |window| {
-                                        pages::graph_canvas_view::paint_meter_bars(
-                                            &frame,
-                                            layout,
-                                            node.tint(),
-                                            levels.map(|levels| [levels[0].bar, levels[1].bar]),
-                                            window,
-                                        );
-                                    },
-                                );
-                            }
+                            pages::graph_canvas_view::paint_meter_bars(
+                                frame,
+                                layout,
+                                reading.as_ref(),
+                                window,
+                            );
                         },
                     );
-                    #[cfg(feature = "gpui-test")]
-                    {
-                        shell.mixer.trace.borrow_mut().graph_meter_paints += 1;
-                    }
-                });
+                }
             },
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
+        );
+        #[cfg(feature = "gpui-test")]
+        {
+            shell.mixer.trace.borrow_mut().graph_meter_paints += 1;
+        }
     }
 }
 
 /// The shell's live meter readings for the canvas paint closure: display
-/// ballistics for one node, as bar heights. `None` keeps the track empty.
+/// ballistics plus latched clips for one node, read at paint time so meter
+/// motion repaints without re-projecting the graph. `None` keeps tracks empty.
 pub(in crate::ui::window) fn node_levels(
     this: &Entity<StudioShell>,
 ) -> Rc<pages::graph_canvas_view::NodeLevelsFn> {
     let this = this.clone();
     Rc::new(move |id, cx: &App| {
-        this.read(cx)
+        let shell = this.read(cx);
+        let clips = shell.node_meters.channel_clips(id);
+        shell
             .node_meters
             .levels(id)
-            .map(|levels| levels.map(|level| level.bar))
+            .map(|levels| pages::graph_canvas_view::NodeMeterReading {
+                levels,
+                clips: [
+                    clips.first().copied().unwrap_or(false),
+                    clips.get(1).copied().unwrap_or(false),
+                ],
+            })
     })
 }

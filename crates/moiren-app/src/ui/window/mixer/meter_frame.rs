@@ -1,9 +1,13 @@
-//! Cache controls separately from the display-rate meter canvas. The canvas
-//! is a sibling, not a descendant: GPUI invalidates ancestors of an animated
-//! view, which would otherwise invalidate the controls' prepaint/paint cache.
+//! Cached controls behind a [`PanelHost`] and the display-rate meter layer
+//! behind a [`HotLayerView`]: the meter canvas is a sibling, never a
+//! descendant of the cached subtree — gpui-fast replays a cached panel's
+//! paint without re-running its closures, so live bars must be painted by
+//! the hot layer at the frame the panel's prepaint registered geometry for.
 use super::*;
+use crate::ui::shared_frame::SharedFrame;
+use crate::ui::window::hot::{HotLayerView, HotSurface};
 use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_or_live};
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
 struct Placement {
@@ -24,20 +28,21 @@ impl Placement {
     }
 }
 
-#[derive(Default)]
-struct MeterGeometry {
+#[derive(Clone, Default)]
+pub(in crate::ui::window) struct MeterGeometry {
     tracks: BTreeMap<NodeId, (Placement, usize, Option<bool>)>,
     readouts: BTreeMap<NodeId, Placement>,
 }
 
-#[derive(Clone, Default)]
-pub(in crate::ui::window) struct Geometry(Rc<RefCell<MeterGeometry>>);
+/// Where the strip's meter tracks and readouts sit, registered by the
+/// cached strip's canvases during a rebuild and read by the hot layer at
+/// paint time. Stale by design between rebuilds.
+pub(in crate::ui::window) type Geometry = SharedFrame<MeterGeometry>;
 
 #[cfg(all(test, feature = "gpui-test"))]
 impl Geometry {
     pub(super) fn track_bounds(&self, id: NodeId) -> Option<Bounds<Pixels>> {
-        self.0
-            .borrow()
+        self.read()?
             .tracks
             .get(&id)
             .map(|(placement, _, _)| placement.bounds)
@@ -127,7 +132,7 @@ impl CachedPanel for MixerPanel {
     fn on_rebuild(shell: &mut StudioShell) {
         // Geometry is registered by the strip canvases during this same
         // layout pass; stale placements must not survive a rebuild.
-        *shell.mixer_geometry.0.borrow_mut() = MeterGeometry::default();
+        shell.mixer_geometry.reset();
         // Fresh visibility demand: the strip canvases re-register the meters
         // their content mask shows during this same layout pass.
         shell.meter_points.set((false, false));
@@ -195,17 +200,19 @@ pub(in crate::ui::window) fn track(
         .child(
             canvas(
                 move |bounds, window, _| {
-                    geometry.0.borrow_mut().tracks.insert(
-                        id,
-                        (
-                            Placement {
-                                bounds,
-                                mask: window.content_mask(),
-                            },
-                            channels,
-                            legacy_input,
-                        ),
-                    );
+                    geometry.update(|geometry| {
+                        geometry.tracks.insert(
+                            id,
+                            (
+                                Placement {
+                                    bounds,
+                                    mask: window.content_mask(),
+                                },
+                                channels,
+                                legacy_input,
+                            ),
+                        );
+                    });
                 },
                 |_, _, _, _| {},
             )
@@ -217,146 +224,142 @@ pub(in crate::ui::window) fn readout(shell: &StudioShell, id: NodeId) -> impl In
     let geometry = shell.mixer_geometry.clone();
     canvas(
         move |bounds, window, _| {
-            geometry.0.borrow_mut().readouts.insert(
-                id,
-                Placement {
-                    bounds,
-                    mask: window.content_mask(),
-                },
-            );
+            geometry.update(|geometry| {
+                geometry.readouts.insert(
+                    id,
+                    Placement {
+                        bounds,
+                        mask: window.content_mask(),
+                    },
+                );
+            });
         },
         |_, _, _, _| {},
     )
     .size_full()
 }
 
-pub(in crate::ui::window) struct MixerMeterFrame {
-    shell: WeakEntity<StudioShell>,
+/// The Mixer page's hot surface: live bars and peak readouts over the
+/// cached strip tree, painting from the geometry the strips registered and
+/// the observations of the current frame.
+pub(in crate::ui::window) struct MixerMeters {
     geometry: Geometry,
 }
 
-impl MixerMeterFrame {
-    pub fn new(shell: WeakEntity<StudioShell>, geometry: Geometry) -> Self {
-        Self { shell, geometry }
+impl MixerMeters {
+    pub(in crate::ui::window) fn new(geometry: Geometry) -> Self {
+        Self { geometry }
     }
 }
 
-impl Render for MixerMeterFrame {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let shell = self.shell.clone();
-        let geometry = self.geometry.clone();
-        // No hitbox: faders, clip reset, tooltips and context menus continue
-        // to use the unchanged controls underneath this painting-only layer.
-        let pump_shell = self.shell.clone();
-        canvas(
-            move |_, window, cx| {
-                let _ = pump_shell.update(cx, |shell, cx| {
-                    #[cfg(feature = "gpui-test")]
-                    shell.mixer.trace.borrow_mut().begin(true);
-                    #[cfg(feature = "gpui-test")]
-                    let began = std::time::Instant::now();
-                    shell.pump_meters(cx);
-                    // Motion, not visibility, sustains the loop: at rest the
-                    // control-side poll keeps the strips current and re-arms
-                    // the frames once fresh data moves a layer.
-                    if shell.meters_frame_active(cx) && shell.meters_in_motion() {
-                        window.request_animation_frame();
+pub(in crate::ui::window) type MixerMeterLayer = HotLayerView<MixerMeters>;
+
+impl HotSurface for MixerMeters {
+    type Frame = MeterGeometry;
+
+    fn pump(&mut self, shell: &mut StudioShell, cx: &mut Context<StudioShell>) -> bool {
+        #[cfg(feature = "gpui-test")]
+        shell.mixer.trace.borrow_mut().begin(true);
+        #[cfg(feature = "gpui-test")]
+        let began = std::time::Instant::now();
+        let changed = shell.pump_meters(cx);
+        #[cfg(feature = "gpui-test")]
+        shell.mixer.trace.borrow_mut().add(began.elapsed());
+        changed
+    }
+
+    fn frame(&self) -> &Geometry {
+        &self.geometry
+    }
+
+    fn paint(
+        &self,
+        frame: &MeterGeometry,
+        shell: &mut StudioShell,
+        window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) {
+        #[cfg(feature = "gpui-test")]
+        let began = std::time::Instant::now();
+        #[cfg(feature = "gpui-test")]
+        let mut levels_fingerprint = 0u64;
+        for (&id, &(placement, channels, legacy_input)) in &frame.tracks {
+            if !placement.decorations_visible() {
+                continue;
+            }
+            let legacy = legacy_input.and_then(|input| {
+                if input {
+                    shell.meters.display_input()
+                } else {
+                    shell.meters.display_output()
+                }
+            });
+            let levels = shell
+                .node_meters
+                .channel_levels(id)
+                .or_else(|| legacy.as_ref().map(|levels| levels.as_slice()));
+            #[cfg(feature = "gpui-test")]
+            for level in levels.into_iter().flatten() {
+                levels_fingerprint = levels_fingerprint.rotate_left(7)
+                    ^ u64::from(level.bar.to_bits())
+                    ^ (u64::from(level.rms.to_bits()) << 32)
+                    ^ u64::from(level.marker.to_bits());
+            }
+            window.with_content_mask(Some(placement.mask), |window| {
+                crate::ui::widgets::meters::paint_channel_meter(
+                    placement.bounds,
+                    levels,
+                    channels,
+                    shell.node_meters.channel_clips(id),
+                    window,
+                    cx,
+                );
+            });
+        }
+        for (&id, &placement) in &frame.readouts {
+            let peak = shell
+                .node_meters
+                .raw_levels(id)
+                .map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max));
+            let text = peak
+                .map(|peak| {
+                    if peak == 0. {
+                        "\u{2212}\u{221e}".to_owned()
+                    } else {
+                        format!("{:.1}", 20. * peak.log10())
                     }
-                    #[cfg(feature = "gpui-test")]
-                    shell.mixer.trace.borrow_mut().add(began.elapsed());
-                });
-            },
-            move |_, _, window, cx| {
-                let Some(shell) = shell.upgrade() else { return };
-                shell.update(cx, |shell, cx| {
-                    #[cfg(feature = "gpui-test")]
-                    let began = std::time::Instant::now();
-                    #[cfg(feature = "gpui-test")]
-                    let mut levels_fingerprint = 0u64;
-                    let geometry = geometry.0.borrow();
-                    for (&id, &(placement, channels, legacy_input)) in &geometry.tracks {
-                        if !placement.decorations_visible() {
-                            continue;
-                        }
-                        let legacy = legacy_input.and_then(|input| {
-                            if input {
-                                shell.meters.display_input()
-                            } else {
-                                shell.meters.display_output()
-                            }
-                        });
-                        let levels = shell
-                            .node_meters
-                            .channel_levels(id)
-                            .or_else(|| legacy.as_ref().map(|levels| levels.as_slice()));
-                        #[cfg(feature = "gpui-test")]
-                        for level in levels.into_iter().flatten() {
-                            levels_fingerprint = levels_fingerprint.rotate_left(7)
-                                ^ u64::from(level.bar.to_bits())
-                                ^ (u64::from(level.rms.to_bits()) << 32)
-                                ^ u64::from(level.marker.to_bits());
-                        }
-                        window.with_content_mask(Some(placement.mask), |window| {
-                            crate::ui::widgets::meters::paint_channel_meter(
-                                placement.bounds,
-                                levels,
-                                channels,
-                                shell.node_meters.channel_clips(id),
-                                window,
-                                cx,
-                            );
-                        });
-                    }
-                    for (&id, &placement) in &geometry.readouts {
-                        let peak = shell.node_meters.raw_levels(id).map(|levels| {
-                            levels.iter().map(|level| level.peak).fold(0f32, f32::max)
-                        });
-                        let text = peak
-                            .map(|peak| {
-                                if peak == 0. {
-                                    "\u{2212}\u{221e}".to_owned()
-                                } else {
-                                    format!("{:.1}", 20. * peak.log10())
-                                }
-                            })
-                            .unwrap_or_else(|| "\u{2014}".to_owned());
-                        window.with_content_mask(Some(placement.mask), |window| {
-                            let line = window.text_system().shape_line(
-                                text.clone().into(),
-                                px(8.),
-                                &[TextRun {
-                                    len: text.len(),
-                                    font: font(theme::FONT_MONO),
-                                    color: theme::TEXT_MUTED,
-                                    ..Default::default()
-                                }],
-                                None,
-                            );
-                            let _ = line.paint(
-                                placement.bounds.origin,
-                                px(12.),
-                                TextAlign::Center,
-                                Some(placement.bounds.size.width),
-                                window,
-                                cx,
-                            );
-                        });
-                    }
-                    #[cfg(feature = "gpui-test")]
-                    {
-                        let mut trace = shell.mixer.trace.borrow_mut();
-                        trace.levels(levels_fingerprint);
-                        trace.meter_paints += 1;
-                        trace.add(began.elapsed());
-                        trace.finish(shell.node_meter_points.borrow().len());
-                    }
-                });
-            },
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
+                })
+                .unwrap_or_else(|| "\u{2014}".to_owned());
+            window.with_content_mask(Some(placement.mask), |window| {
+                let line = window.text_system().shape_line(
+                    text.clone().into(),
+                    px(8.),
+                    &[TextRun {
+                        len: text.len(),
+                        font: font(theme::FONT_MONO),
+                        color: theme::TEXT_MUTED,
+                        ..Default::default()
+                    }],
+                    None,
+                );
+                let _ = line.paint(
+                    placement.bounds.origin,
+                    px(12.),
+                    TextAlign::Center,
+                    Some(placement.bounds.size.width),
+                    window,
+                    cx,
+                );
+            });
+        }
+        #[cfg(feature = "gpui-test")]
+        {
+            let mut trace = shell.mixer.trace.borrow_mut();
+            trace.levels(levels_fingerprint);
+            trace.meter_paints += 1;
+            trace.add(began.elapsed());
+            trace.finish(shell.node_meter_points.borrow().len());
+        }
     }
 }
 

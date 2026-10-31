@@ -52,13 +52,11 @@ pub(in crate::ui::window) trait HotSurface: 'static + Sized {
     /// Drain fresh observations once per painted frame, inside the shell
     /// update. Returns whether anything display-bearing changed — raw
     /// readings, status, or a freshly latched clip; ballistics motion alone
-    /// does not, because animation frames (not notify) carry it.
+    /// does not, because animation frames (not notify) carry it. Pumping is
+    /// also what registers motion with the frame-demand arbiter: the pump
+    /// path is the single writer, so several surfaces on one window can
+    /// never fight over the same source.
     fn pump(&mut self, shell: &mut StudioShell, cx: &mut Context<StudioShell>) -> bool;
-
-    /// Whether this surface's content is still moving and wants another
-    /// display-rate frame. Registers with the frame-demand arbiter via the
-    /// shell; window-level eligibility is the shell's, not the surface's.
-    fn wants_frames(&self, shell: &StudioShell, cx: &App) -> bool;
 
     /// The geometry the sibling cached panel last published.
     fn frame(&self) -> &SharedFrame<Self::Frame>;
