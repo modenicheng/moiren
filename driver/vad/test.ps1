@@ -90,7 +90,7 @@ spec.loader.exec_module(module)
 parts = []
 for relative, functions in (
     ('src/Children.cpp', ('VadAudioRebaseDiscontinuity',)),
-    ('src/audio/Streams.cpp', ('TimerDrivenTick', 'VadAudioTimer')),
+    ('src/audio/Streams.cpp', ('ArmEventTimer', 'Schedule', 'TimerDrivenTick', 'VadAudioTimer')),
     ('src/Control.cpp', ('TracePendingClockDiagnostic',)),
 ):
     source = root / relative

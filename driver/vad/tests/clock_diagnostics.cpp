@@ -95,7 +95,7 @@ static void PureFirstRebase()
         before, before, 10199999, 480, 2, 1, 0);
     Check(exact.LatenessTicks == 0 && early.LatenessTicks == 0,
         "deadline equality and early observations never underflow lateness");
-    Check(sizeof(ClockDiagnostic) <= 256, "fixed endpoint diagnostic budget");
+    Check(sizeof(ClockDiagnostic) <= 320, "fixed endpoint diagnostic budget");
 }
 
 // These are the production callback and shared-lock bodies, not a second
@@ -125,13 +125,14 @@ struct VAD_AUDIO_STREAM {
     SpinLock State;
     uint64_t Generation = 3;
     void* Stream = reinterpret_cast<void*>(77);
-    uint64_t Timer = 1;
+    void* Timer = reinterpret_cast<void*>(1);
     void* Packets = this;
     ULONG PacketCount = 2;
     ULONG PacketFrames = 480;
     ULONG PacketSize = 1920;
     ULONG BlockAlign = 4;
     Clock Clock = RunningClock();
+    EventTimerArm EventArm = {};
     TimerDrivenRing TimerRing = {};
     uint64_t CompletedPackets = 0;
     uint64_t DeliveredPackets = 0;
@@ -149,7 +150,7 @@ using WDFTIMER = TimerContext*;
 struct VAD_PCM_BATCH { vad::CallbackBoundary Callback = {}; };
 static KIRQL CurrentIrql = PASSIVE_LEVEL;
 static uint64_t CallbackQpc = 0;
-static std::array<uint64_t, 3> CallbackSamples = {};
+static std::array<uint64_t, 5> CallbackSamples = {};
 static unsigned SampleIndex = 0;
 static bool ScriptSamples = false;
 static vad::CallbackBoundary LastCallback = {};
@@ -165,7 +166,7 @@ struct TraceRecord {
     std::array<uint64_t, 14> Values = {};
     size_t Count = 0;
 };
-static std::array<TraceRecord, 3> TraceRecords = {};
+static std::array<TraceRecord, 4> TraceRecords = {};
 static SpinLock* TraceLock = nullptr;
 #define WPP_LEVEL_FLAGS_ENABLED(level, flags) TraceEnabled
 constexpr unsigned TRACE_LEVEL_INFORMATION = 4;
@@ -177,7 +178,7 @@ static void VadTrace(unsigned, unsigned, const char* format, Args... args)
     Check(CurrentIrql == PASSIVE_LEVEL && TraceLock != nullptr && !TraceLock->Held,
         "WPP emission is passive and outside the shared lock");
     Check(sizeof...(Args) <= 14, "each decodable WPP fragment has at most 14 arguments");
-    Check(TraceEvents < TraceRecords.size(), "first diagnostic emits at most three fragments");
+    Check(TraceEvents < TraceRecords.size(), "first diagnostic emits at most four fragments");
     auto& record = TraceRecords[TraceEvents];
     record.Format = format;
     record.Count = sizeof...(Args);
@@ -233,7 +234,7 @@ static void VadPcmComplete(VAD_PCM_BATCH*)
 }
 static CaptureNotifyObservation RecordEventCaptureCopy(VAD_AUDIO_STREAM*, ULONG, uint64_t, uint64_t,
     const VAD_PCM_BATCH&) { return {}; }
-static int WdfTimerStart(uint64_t, long long due) { ++Starts; LastDue = due; return 0; }
+static int WdfTimerStart(void*, long long due) { ++Starts; LastDue = due; return 0; }
 static int AcxRtStreamNotifyPacketComplete(void*, uint64_t, uint64_t)
 {
     Check(CurrentIrql == PASSIVE_LEVEL, "ACX notification stays outside spin locks");
@@ -245,7 +246,6 @@ static void NotifyPacketComplete(VAD_AUDIO_STREAM* stream, uint64_t packet, uint
 {
     (void)AcxRtStreamNotifyPacketComplete(stream->Stream, packet, qpc);
 }
-static void Schedule(VAD_AUDIO_STREAM*, uint64_t) { ++Starts; }
 static void VadAudioRebaseDiscontinuity(WDFDEVICE child, uint64_t generation,
     uint64_t stream, const ClockRebaseObservation& observation);
 #include "clock-production.inc"
@@ -347,7 +347,8 @@ static void ProductionCallSites()
         std::strstr(TraceRecords[2].Format, "Clock rebase after endpoint=") != nullptr &&
         TraceRecords[0].Count == 13 && TraceRecords[1].Count == 14 && TraceRecords[2].Count == 14,
         "cause and before/after fragments have explicit names and bounded decoding fields");
-    for (const auto& record : TraceRecords) {
+    for (size_t index = 0; index < TraceEvents; ++index) {
+        const auto& record = TraceRecords[index];
         Check(record.Values[0] == slot.Id && record.Values[1] == slot.Session &&
             record.Values[2] == 4 && record.Values[3] == 77 &&
             record.Values[4] == stalled.First.CallbackQpc,
@@ -375,13 +376,13 @@ static void ProductionCallbackBoundary()
     TimerContext timer = {&stream};
     // DPC dispatch is 10 ticks late; State is acquired another 20 ticks later.
     // Keep the original scheduling QPC distinct so the test detects reuse.
-    CallbackSamples = {10100010, 10100030, 10100031};
+    CallbackSamples = {10100010, 10100030, 10100031, 10100032, 10100033};
     SampleIndex = 0;
     ScriptSamples = true;
     Transfers = 0;
     VadAudioTimer(&timer);
     ScriptSamples = false;
-    Check(SampleIndex == 3 && Transfers == 1 &&
+    Check(SampleIndex == 5 && Transfers == 1 &&
         LastCallback.DpcQpc == 10100010 && LastCallback.StateQpc == 10100030 &&
         LastCallback.DeadlineQpc == 10100000 && LastCallback.Stream == 77 &&
         LastCallback.Frequency == 10000000 && stream.CompletedPackets == 1,
@@ -484,7 +485,7 @@ static void ProductionRetainedMicDeadline()
         stream.Clock = {10000000, 1266763785574, 0, 308016, true};
         TimerContext timer = {&stream};
         CallbackSamples = {delayedEntry ? callback - 2 : servicedDeadline,
-            callback - 1, callback};
+            callback - 1, callback, callback + 1, callback + 2};
         SampleIndex = 0;
         ScriptSamples = true;
         Starts = Notifications = Transfers = 0;
@@ -492,7 +493,7 @@ static void ProductionRetainedMicDeadline()
         ScriptSamples = false;
 
         const auto evidence = shared.ClockDiagnostics[0].TakeUnreported();
-        Check(SampleIndex == 3 && evidence.ReportFirst &&
+        Check(SampleIndex == 5 && evidence.ReportFirst &&
             evidence.First.Reason == ClockRebaseReason::EventDeadline &&
             evidence.First.CallbackQpc == callback &&
             evidence.First.DeadlineFrame == 308160 &&
@@ -520,6 +521,84 @@ static void ProductionRetainedMicDeadline()
     }
 }
 
+static void ProductionArmBoundary()
+{
+    Shared shared = {};
+    Child child = {&shared};
+    auto& slot = shared.Slots[0];
+    slot.Id = 5;
+    slot.Session = 9;
+    slot.StreamGeneration = 3;
+    slot.AdmissionGeneration = slot.GateOpen = slot.AudioReady = 1;
+    slot.State = MOIREN_VAD_STATE_PRESENT;
+    slot.StreamState = MOIREN_VAD_STREAM_RUNNING;
+    shared.ClockDiagnostics[0].Reset(3);
+    VAD_AUDIO_STREAM stream = {};
+    stream.Device = &child;
+    stream.Capture = true;
+    TimerContext timer = {&stream};
+    Starts = 0;
+    SampleIndex = 0;
+    CallbackSamples = {10000023, 10000025};
+    ScriptSamples = true;
+    Schedule(&stream, 10000000);
+    ScriptSamples = false;
+    Check(Starts == 1 && LastDue == -100000 && SampleIndex == 2,
+        "event arm preserves actual relative due intent and one WDF start");
+    CallbackQpc = 10200023;
+    VadAudioTimer(&timer);
+    const auto evidence = shared.ClockDiagnostics[0].TakeUnreported();
+    auto snapshot = vad::Snapshot(slot);
+    TraceLock = &shared.Lock;
+    TraceEvents = 0;
+    TraceEnabled = true;
+    // Republish this one observation using the actual passive control body.
+    shared.ClockDiagnostics[0].ReportFirst = true;
+    TracePendingClockDiagnostic(&shared, snapshot);
+    Check(evidence.ReportFirst && TraceEvents == 4 &&
+        std::strstr(TraceRecords[3].Format, "Clock dispatch boundary endpoint=") != nullptr &&
+        TraceRecords[3].Count == 13 &&
+        TraceRecords[3].Values[5] == 10000000 &&
+        TraceRecords[3].Values[6] == 10000023 &&
+        TraceRecords[3].Values[7] == 10000025 &&
+        TraceRecords[3].Values[8] == static_cast<uint64_t>(-100000LL) &&
+        TraceRecords[3].Values[9] == 10100000 &&
+        TraceRecords[3].Values[10] == 10000000 &&
+        TraceRecords[3].Values[11] == 10200023 &&
+        TraceRecords[3].Values[12] == 10200023,
+        "first rebase retains PRECEDING actual arm/epoch/deadline plus callback boundaries");
+    Check(Starts == 2 && LastDue == -100000,
+        "arm evidence neither reschedules nor alters the requested due time");
+    TracePendingClockDiagnostic(&shared, snapshot);
+    Check(TraceEvents == 4, "dispatch evidence drains once with the first rebase");
+
+    // A stopped callback cannot overwrite the preceding arm or read new clocks.
+    const auto arm = stream.EventArm;
+    stream.Running = false;
+    CallbackSamples = {10300000, 10300001};
+    SampleIndex = 0;
+    ScriptSamples = true;
+    VadAudioTimer(&timer);
+    ScriptSamples = false;
+    Check(SampleIndex == 2 && Starts == 2 && stream.EventArm.BeforeQpc == arm.BeforeQpc &&
+        stream.EventArm.AfterQpc == arm.AfterQpc,
+        "stopped callback leaves the arm and scheduling untouched");
+
+    stream.Running = true;
+    stream.PacketCount = 1;
+    stream.CompletedPackets = 0;
+    stream.Clock = RunningClock();
+    Check(InitializeTimerDrivenRing(stream.TimerRing, 1920, 4, 4096), "timer arm control ring");
+    CallbackSamples = {10100000, 10100001, 10100002};
+    SampleIndex = 0;
+    ScriptSamples = true;
+    VadAudioTimer(&timer);
+    ScriptSamples = false;
+    Check(SampleIndex == 3 && Starts == 3 && stream.EventArm.BeforeQpc == arm.BeforeQpc &&
+        stream.EventArm.AfterQpc == arm.AfterQpc,
+        "single-packet timer callback adds no arm clock reads or event snapshot changes");
+}
+
 int main()
 {
     PureFirstRebase();
@@ -527,6 +606,7 @@ int main()
     ProductionCallbackBoundary();
     ProductionShortTimerProgressAndStall();
     ProductionRetainedMicDeadline();
+    ProductionArmBoundary();
     std::printf("PASS: first event/timer rebase, real callback/epoch causality, "
         "retained MIC144/State-wait contrast, lateness, generation reset, passive WPP; "
         "fixed diagnostic=%zu bytes\n", sizeof(ClockDiagnostic));

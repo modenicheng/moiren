@@ -62,6 +62,8 @@ struct VAD_AUDIO_STREAM {
     ULONG TimerScratchBytes;
     uint64_t Generation;
     vad::audio::Clock Clock;
+    // State-protected last event arm, replaced only after WdfTimerStart returns.
+    vad::audio::EventTimerArm EventArm;
     uint64_t CompletedPackets;
     uint64_t DeliveredPackets;
     uint64_t LastCaptureStart;

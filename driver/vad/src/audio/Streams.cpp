@@ -195,6 +195,18 @@ VAD_PAGE void VadAudioStopDeviceLocked(VAD_AUDIO_DEVICE* device)
     }
 }
 
+static void ArmEventTimer(VAD_AUDIO_STREAM* stream, long long due, uint64_t planningQpc)
+{
+    // State excludes the next callback until this bounded snapshot is complete.
+    // Preserve the exact relative due intent: observing rearm is not a timer fix.
+    const auto deadline = vad::audio::FrameQpc(stream->Clock,
+        (stream->CompletedPackets + 1) * stream->PacketFrames);
+    const auto before = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
+    (void)WdfTimerStart(stream->Timer, due);
+    const auto after = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
+    stream->EventArm = {planningQpc, before, after, due, deadline, stream->Clock.EpochQpc};
+}
+
 static void Schedule(VAD_AUDIO_STREAM* stream, uint64_t now)
 {
     if (stream->Timer == nullptr || !stream->Running) {
@@ -211,7 +223,7 @@ static void Schedule(VAD_AUDIO_STREAM* stream, uint64_t now)
     }
     const auto schedule = vad::audio::SchedulePacket(stream->Clock,
         stream->CompletedPackets, stream->PacketFrames, now);
-    (void)WdfTimerStart(stream->Timer, schedule.Due);
+    ArmEventTimer(stream, schedule.Due, now);
 }
 
 // State is held. The batch contains detached post-copy evidence, never an MDL.
@@ -508,10 +520,13 @@ VOID VadAudioTimer(WDFTIMER timer)
     stream->LastCaptureStart = schedule.CompletedStartQpc;
     if (schedule.Rebased) {
         // Invalidate queued old-epoch PCM before it can reach a resumed packet.
-        const auto observation = vad::audio::ObserveClockRebase(
+        auto observation = vad::audio::ObserveClockRebase(
             vad::audio::ClockRebaseReason::EventDeadline, clockBefore,
             stream->Clock, now, stream->PacketFrames, stream->PacketCount,
             stream->CompletedPackets, stream->TimerRing.PresentedFrames);
+        // Copy the PRECEDING arm before this callback rearms in the new epoch.
+        // Entry/State observations alone cannot rule out a late previous rearm.
+        observation.Dispatch = {stream->EventArm, dpcQpc, stateQpc};
         VadAudioRebaseDiscontinuity(stream->Device, stream->Generation,
             reinterpret_cast<uint64_t>(stream->Stream), observation);
         stream->RenderReadyMask = 0;
@@ -542,7 +557,7 @@ VOID VadAudioTimer(WDFTIMER timer)
         RtlZeroMemory(buffer, stream->PacketSize);
         stream->RenderReadyMask &= ~ready;
     }
-    (void)WdfTimerStart(stream->Timer, schedule.Due);
+    ArmEventTimer(stream, schedule.Due, now);
     KeReleaseSpinLock(&stream->State, irql);
     VadPcmComplete(&batch);
     NotifyPacketComplete(stream, packet, now, notification);

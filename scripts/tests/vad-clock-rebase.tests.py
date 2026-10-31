@@ -47,6 +47,15 @@ def text(lines):
                      for line in lines)
 
 
+def dispatch_fixture():
+    return ("Clock dispatch boundary endpoint=26 session=1266750799707 generation=1 "
+            "stream=46173801378424 callback_qpc=1266827998581 "
+            "arm_plan_qpc=1266827925574 arm_before_qpc=1266827925580 "
+            "arm_after_qpc=1266827925581 due_hns=-30000 "
+            "serviced_deadline_qpc=1266827955574 arm_epoch_qpc=1266763785574 "
+            "dpc_qpc=1266827998579 state_qpc=1266827998580")
+
+
 class ClockRebaseEvidence(unittest.TestCase):
     def test_matches_native_tuple_and_separates_two_deadlines(self):
         report = analyze(text(fixture()))
@@ -166,6 +175,38 @@ class ClockRebaseEvidence(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertFalse(output.exists())
             self.assertIn(b"REFUSED:", result.stderr)
+
+    def test_old_trace_has_no_manufactured_preceding_arm(self):
+        report = analyze(text(fixture()))
+        self.assertEqual(report["associations"][0]["dispatch_boundary"], {"available": False})
+
+    def test_optional_dispatch_fragment_matches_epoch_and_actual_arm(self):
+        report = analyze(text([dispatch_fixture(), *fixture()]))
+        dispatch = report["associations"][0]["dispatch_boundary"]
+        self.assertTrue(dispatch["available"])
+        self.assertTrue(dispatch["clock_association_valid"])
+        self.assertEqual(dispatch["due_hns"], -30000)
+        self.assertEqual(dispatch["entry_after_serviced_deadline_ticks"], 43005)
+        self.assertEqual(dispatch["state_wait_ticks"], 1)
+        self.assertEqual(dispatch["arm_before_qpc"], 1266827925580)
+        self.assertNotIn("scheduler_dispatch_delay", dispatch)
+
+    def test_dispatch_unavailable_clock_is_retained_not_fabricated(self):
+        for old, new in (("arm_epoch_qpc=1266763785574", "arm_epoch_qpc=0"),
+                         ("arm_after_qpc=1266827925581", "arm_after_qpc=1"),
+                         ("due_hns=-30000", "due_hns=0")):
+            with self.subTest(mutation=new):
+                report = analyze(text([*fixture(), dispatch_fixture().replace(old, new)]))
+                dispatch = report["associations"][0]["dispatch_boundary"]
+                self.assertTrue(dispatch["available"])
+                self.assertFalse(dispatch["clock_association_valid"])
+                self.assertNotIn("state_wait_ticks", dispatch)
+
+    def test_duplicate_or_wrong_identity_dispatch_fragment_is_refused(self):
+        for fragments in ([dispatch_fixture(), dispatch_fixture()],
+                          [dispatch_fixture().replace("stream=46173801378424", "stream=99")]):
+            with self.subTest(fragments=fragments), self.assertRaises(ValueError):
+                analyze(text([*fixture(), *fragments]))
 
 
 if __name__ == "__main__":

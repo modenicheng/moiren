@@ -37,7 +37,7 @@ for relative, names in (
         # The exact event branch includes the real hook, transfer and clearing;
         # no second model of the consumed-buffer ordering is used by the test.
         start = text.index("    auto buffer = PacketAddress(stream, index);")
-        end = text.index("    (void)WdfTimerStart(stream->Timer, schedule.Due);", start)
+        end = text.index("    ArmEventTimer(stream, schedule.Due, now);", start)
         parts.append("static void ActualEventTransfer(VAD_AUDIO_STREAM* stream, ULONG index, "
             "uint64_t packet, uint64_t now, VAD_PCM_BATCH& batch) {\n"
             "vad::audio::CaptureNotifyObservation notification = {};\n" + text[start:end] +

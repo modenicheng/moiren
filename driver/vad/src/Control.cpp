@@ -98,6 +98,18 @@ static void TracePendingClockDiagnostic(VAD_SHARED* shared,
         after.GateOpen, after.StreamState, item.After.Frequency,
         item.After.EpochQpc, item.After.BaseFrames, item.After.LimitFrames,
         static_cast<ULONG>(item.After.Running));
+    if (item.Reason == vad::audio::ClockRebaseReason::EventDeadline) {
+        const auto& dispatch = item.Dispatch;
+        const auto& arm = dispatch.Arm;
+        // A zero/foreign epoch or regressed clock remains unavailable evidence.
+        // This records requested relative timing, not kernel timer expiration.
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Clock dispatch boundary endpoint=%I64u session=%I64u generation=%I64u stream=%I64u callback_qpc=%I64u arm_plan_qpc=%I64u arm_before_qpc=%I64u arm_after_qpc=%I64u due_hns=%I64d serviced_deadline_qpc=%I64u arm_epoch_qpc=%I64u dpc_qpc=%I64u state_qpc=%I64u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+            diagnostic.Stream, item.CallbackQpc, arm.PlanningQpc, arm.BeforeQpc,
+            arm.AfterQpc, arm.Due, arm.DeadlineQpc, arm.EpochQpc,
+            dispatch.DpcQpc, dispatch.StateQpc);
+    }
 }
 
 static void TracePendingCaptureDiagnostic(VAD_SHARED* shared,

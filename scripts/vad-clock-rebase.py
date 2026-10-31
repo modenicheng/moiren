@@ -22,6 +22,9 @@ FIELDS = {
     "slot_gen gate open state freq epoch base limit running".split(),
     "Clock rebase after": CLOCK_KEY +
     "slot_gen gate open state freq epoch base limit running".split(),
+    "Clock dispatch boundary": CLOCK_KEY +
+    "arm_plan_qpc arm_before_qpc arm_after_qpc due_hns serviced_deadline_qpc "
+    "arm_epoch_qpc dpc_qpc state_qpc".split(),
     "Capture no-copy state": CAPTURE_KEY +
     "state stream_state gate_open audio_ready format channels frames".split(),
     "Capture no-copy timing": CAPTURE_KEY +
@@ -47,7 +50,7 @@ def fragments(text):
     groups = ({}, {})
     for line_number, line in enumerate(text.splitlines(), 1):
         message = line.split("[vad]", 1)[-1].strip()
-        if not message.startswith(("Clock rebase ", "Capture no-copy ")):
+        if not message.startswith(("Clock rebase ", "Clock dispatch ", "Capture no-copy ")):
             continue
         label = next((name for name in FIELDS if message.startswith(name + " ")), None)
         require(label is not None, f"line {line_number}: unknown witness fragment")
@@ -57,10 +60,12 @@ def fragments(text):
             name, value = token.split("=", 1)
             require(name not in fields, f"line {line_number}: duplicate field {name}")
             if name != "status":
-                require(re.fullmatch(r"[0-9]+", value) is not None,
+                pattern = r"-?[0-9]+" if name == "due_hns" else r"[0-9]+"
+                require(re.fullmatch(pattern, value) is not None,
                         f"line {line_number}: invalid integer {name}")
                 value = int(value)
-                require(value <= U64_MAX, f"line {line_number}: overflow {name}")
+                minimum, maximum = (-(1 << 63), (1 << 63) - 1) if name == "due_hns" else (0, U64_MAX)
+                require(minimum <= value <= maximum, f"line {line_number}: overflow {name}")
             fields[name] = value
         require(set(fields) == set(FIELDS[label]), f"line {line_number}: unexpected schema")
         is_capture = label.startswith("Capture")
@@ -72,11 +77,31 @@ def fragments(text):
         group[part] = fields
     require(groups[0] and groups[1], "missing rebase/no-copy witnesses")
     for group in groups[0].values():
-        require(set(group) == {"cause", "before", "after"}, "incomplete rebase triplet")
+        require(set(group) in ({"cause", "before", "after"},
+                               {"cause", "before", "after", "boundary"}),
+                "incomplete rebase triplet")
     for group in groups[1].values():
         require(set(group) == {"state", "timing", "event", "notify"},
                 "incomplete no-copy quartet")
     return groups
+
+
+def dispatch_boundary(clock, serviced):
+    if "boundary" not in clock:
+        return {"available": False}
+    boundary, cause, before = (clock[name] for name in ("boundary", "cause", "before"))
+    raw = {name: boundary[name] for name in FIELDS["Clock dispatch boundary"]
+           if name not in CLOCK_KEY}
+    valid = (before["epoch"] == boundary["arm_epoch_qpc"] and
+             0 < boundary["arm_plan_qpc"] <= boundary["arm_before_qpc"] <=
+             boundary["arm_after_qpc"] <= boundary["dpc_qpc"] <=
+             boundary["state_qpc"] <= cause["callback_qpc"] and
+             boundary["due_hns"] < 0 and serviced == boundary["serviced_deadline_qpc"])
+    result = {"available": True, "clock_association_valid": valid, **raw}
+    if valid:
+        result["state_wait_ticks"] = boundary["state_qpc"] - boundary["dpc_qpc"]
+        result["entry_after_serviced_deadline_ticks"] = max(boundary["dpc_qpc"] - serviced, 0)
+    return result
 
 
 def associate(clock, capture):
@@ -132,6 +157,7 @@ def associate(clock, capture):
         "serviced_deadline_qpc_derived": serviced,
         "serviced_deadline_lateness_ticks_derived": callback - serviced,
         "silence_before": timing["silence_before"], "silence_after": timing["silence_after"],
+        "dispatch_boundary": dispatch_boundary(clock, serviced),
     }
 
 
@@ -149,7 +175,7 @@ def analyze(text):
         associations.append(associate(clock, capture))
         used.add(capture_key)
     require(len(used) == len(captures), "unmatched no-copy witnesses")
-    return {"schema_version": 1, "qualified": False, "all_interval_trace_complete": False,
+    return {"schema_version": 2, "qualified": False, "all_interval_trace_complete": False,
             "meaning": "same-callback native EventDeadline rebase and first silence; "
                        "not scheduler cause, full trace coverage or audio/physical acceptance",
             "associations": associations}

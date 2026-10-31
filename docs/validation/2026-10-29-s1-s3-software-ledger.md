@@ -21,6 +21,14 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The additive [event timer arm boundary](2026-10-31-event-timer-arm-boundary.md)
+retains the preceding actual event rearm call interval/due intent and clock
+epoch with first-rebase entry/State QPC. This addresses the missing distinction
+between late rearm and late callback entry without changing due policy or
+weakening rebase safety. Two QPC observations per event arm are real diagnostic
+overhead. Legacy trace2 explicitly lacks these new fields; no target install,
+native result, stable floor or physical qualification is implied.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie

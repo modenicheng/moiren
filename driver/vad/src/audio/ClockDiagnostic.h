@@ -13,6 +13,21 @@ struct ClockEndpointState {
     uint32_t StreamState;
 };
 
+struct EventTimerArm {
+    uint64_t PlanningQpc;
+    uint64_t BeforeQpc;
+    uint64_t AfterQpc;
+    long long Due;
+    uint64_t DeadlineQpc;
+    uint64_t EpochQpc;
+};
+
+struct ClockDispatchBoundary {
+    EventTimerArm Arm;
+    uint64_t DpcQpc;
+    uint64_t StateQpc;
+};
+
 inline ClockEndpointState ObserveClockEndpoint(const vad::Slot& slot)
 {
     return {slot.StreamGeneration, slot.AdmissionGeneration,
@@ -31,6 +46,7 @@ struct ClockRebaseObservation {
     uint32_t PacketFrames;
     uint32_t PacketCount;
     ClockRebaseReason Reason;
+    ClockDispatchBoundary Dispatch;
 };
 
 inline ClockRebaseObservation ObserveClockRebase(ClockRebaseReason reason,
@@ -49,7 +65,7 @@ inline ClockRebaseObservation ObserveClockRebase(ClockRebaseReason reason,
     const auto deadline = FrameQpc(before, frame);
     return {before, after, callbackQpc, frame, deadline,
         callbackQpc > deadline ? callbackQpc - deadline : 0,
-        completedPackets, presentedFrames, packetFrames, packetCount, reason};
+        completedPackets, presentedFrames, packetFrames, packetCount, reason, {}};
 }
 
 struct ClockDiagnostic {
@@ -83,5 +99,5 @@ struct ClockDiagnostic {
         return snapshot;
     }
 };
-static_assert(sizeof(ClockDiagnostic) <= 256, "fixed per-endpoint clock diagnostic budget");
+static_assert(sizeof(ClockDiagnostic) <= 320, "fixed per-endpoint clock diagnostic budget");
 }
