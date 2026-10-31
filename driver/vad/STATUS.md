@@ -17,6 +17,18 @@ physical render client.
 
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
+A distinct existing Exclusive event Playback control now passes on the same
+609 driver: all four mono/stereo PCM16/Float32 cases return matching nonzero
+PCM. The actual stereo PCM16/480 case retains95040 nonzero native event-buffer
+frames and95520 nonzero post-copy READ frames with equal scanned source and
+destination regions. Matching exact native packet shape/layout does not make
+this a sharing-only comparison: waveform, prime, ownership and source pumping
+also differ from the earlier Shared fixture. No Engine/Bus/MIC/physical route
+or continuity/latency qualification follows. Session0 alone does not prevent
+this Exclusive control. Clean cleanup, unchanged volume/defaults, pinned source,
+verified archive and limitations are in the
+[Exclusive positive-control receipt](../../docs/validation/2026-10-31-exclusive-playback-control.md).
+
 The new READ-selected, bounded native-buffer observer records the actual
 consumption path and bytes before the original clearing. A retained first
 attempt loses MIC readiness before any source starts. An unchanged-fixture
