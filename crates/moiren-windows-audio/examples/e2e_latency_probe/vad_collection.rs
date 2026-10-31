@@ -4380,6 +4380,56 @@ mod tests {
     }
 
     #[test]
+    fn provider_live_quality_faults_abort_strict_and_remain_recorded_in_correctness() {
+        for microphone in [false, true] {
+            for (section, counter) in [
+                ("telemetry", "silence_packets"),
+                ("telemetry", "silence_frames"),
+                ("snapshot", "dropped_packets"),
+                ("snapshot", "silence_packets"),
+            ] {
+                for policy in [ValidationPolicy::default(), correctness()] {
+                    let admitted = microphone_health();
+                    let mut current = admitted.clone();
+                    let mut report = microphone_health_report();
+                    let provider = if microphone {
+                        current.microphone.as_mut().unwrap().quality_faults = 1;
+                        report.vad_microphone_provider.as_mut().unwrap()
+                    } else {
+                        report.vad_provider.as_mut().unwrap()
+                    };
+                    provider[section][counter] = 1.into();
+                    current.quality_faults = 1;
+                    let raw_playback = report.vad_provider.clone();
+                    let raw_microphone = report.vad_microphone_provider.clone();
+                    let mut quality = Quality::default();
+                    let mut first = None;
+                    let result = validate_health_with_policy(
+                        &current,
+                        &admitted,
+                        &report,
+                        &mut first,
+                        policy,
+                        &mut quality,
+                    );
+                    assert_eq!(result.is_ok(), policy.is_correctness());
+                    assert!(quality.failure.is_some());
+                    assert_eq!(first.is_none(), policy.is_correctness());
+                    let retained = quality.first_observations.as_ref().unwrap();
+                    assert_eq!(retained["provider"], raw_playback.as_ref().unwrap().clone());
+                    assert_eq!(
+                        retained["microphone_provider"],
+                        raw_microphone.as_ref().unwrap().clone()
+                    );
+                    assert_eq!(report.vad_provider, raw_playback);
+                    assert_eq!(report.vad_microphone_provider, raw_microphone);
+                    assert_eq!(quality.boundary_evidence()["quality_complete"], false);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn microphone_route_correctness_never_relaxes_raw_resets_or_missing_probe() {
         let admitted = microphone_health();
         let report = microphone_health_report();

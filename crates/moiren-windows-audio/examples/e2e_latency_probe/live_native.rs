@@ -1836,13 +1836,15 @@ fn endpoint_health(
 ) -> vad_collection::EndpointHealth {
     let snapshot = view.and_then(|view| view.snapshot);
     let telemetry = view.and_then(|view| view.telemetry);
-    let quality_faults = telemetry.map_or(0, |value| {
+    let worker_faults = telemetry.map_or(0, |value| {
         [
             value.dropped_packets,
             value.driver_dropped_packets,
             value.quota_dropped_packets,
             value.carrier_dropped_packets,
             value.stale_packets,
+            value.silence_packets,
+            value.silence_frames,
             value.epoch_resets,
             value.recovery_events,
             value.completion_clock_regressions,
@@ -1850,6 +1852,14 @@ fn endpoint_health(
         ]
         .into_iter()
         .fold(0u64, u64::saturating_add)
+    });
+    // QUERY and worker telemetry cover different loss/silence boundaries and
+    // can overlap. This mixed-unit total is only a nonzero fault gate, never
+    // a count of distinct packets/frames. Keep the raw observations unchanged.
+    let quality_faults = snapshot.map_or(worker_faults, |snapshot| {
+        worker_faults
+            .saturating_add(snapshot.dropped_packets())
+            .saturating_add(snapshot.silence_packets())
     });
     vad_collection::EndpointHealth {
         stamp: snapshot.map(snapshot_stamp),
@@ -2431,6 +2441,24 @@ mod tests {
         stream_generation: u64,
         gate_epoch: u64,
     ) -> VadExportObservation {
+        endpoint_view_with_driver_quality(
+            intent,
+            state,
+            gate_open,
+            stream_generation,
+            gate_epoch,
+            [0, 0],
+        )
+    }
+
+    fn endpoint_view_with_driver_quality(
+        intent: Intent,
+        state: StreamState,
+        gate_open: bool,
+        stream_generation: u64,
+        gate_epoch: u64,
+        driver_quality: [u64; 2],
+    ) -> VadExportObservation {
         let id = VirtualEndpointId::from_bytes([intent as u8; 16]);
         let mut caps = [0u8; 64];
         for (offset, value) in [
@@ -2471,6 +2499,8 @@ mod tests {
             (48, 13),
             (56, stream_generation),
             (64, gate_epoch),
+            (104, driver_quality[0]),
+            (112, driver_quality[1]),
         ] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
@@ -3249,6 +3279,76 @@ mod tests {
                 45
             );
             view.telemetry.as_mut().unwrap().dropped_packets = u64::MAX;
+            assert_eq!(
+                endpoint_health(Some(&view), view.endpoint_id, intent).quality_faults,
+                u64::MAX
+            );
+        }
+    }
+
+    #[test]
+    fn endpoint_live_quality_never_omits_provider_or_driver_silence_and_loss() {
+        for intent in [Intent::Playback, Intent::Microphone] {
+            for case in 0..4 {
+                let mut view = endpoint_view_with_driver_quality(
+                    intent,
+                    StreamState::Running,
+                    true,
+                    17,
+                    19,
+                    match case {
+                        2 => [1, 0],
+                        3 => [0, 1],
+                        _ => [0, 0],
+                    },
+                );
+                match case {
+                    0 => view.telemetry.as_mut().unwrap().silence_packets = 1,
+                    1 => view.telemetry.as_mut().unwrap().silence_frames = 1,
+                    _ => {}
+                }
+                let before = view.clone();
+                let endpoint = endpoint_health(Some(&view), view.endpoint_id, intent);
+                assert!(endpoint.provider_ready && endpoint.quality_known);
+                assert_ne!(endpoint.quality_faults, 0, "{intent:?} case {case}");
+                let mut health = vad_collection::Health {
+                    route: vad_route::RouteKind::Physical,
+                    stamp: endpoint.stamp,
+                    shape: endpoint.shape.clone(),
+                    provider_ready: true,
+                    revision: Some(1),
+                    generations: [7, 8],
+                    engine_running: true,
+                    native_generation: Some(7),
+                    native_running: true,
+                    quality_known: true,
+                    ..Default::default()
+                };
+                health.require_present().unwrap();
+                if intent == Intent::Playback {
+                    health.quality_faults = endpoint.quality_faults;
+                } else {
+                    health.route = vad_route::RouteKind::Microphone;
+                    health.microphone = Some(endpoint);
+                }
+                assert!(health.require_present().is_err(), "{intent:?} case {case}");
+                assert_eq!(view, before, "gate must not rewrite raw counters");
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_live_quality_saturates_with_independent_query_and_worker_faults() {
+        for intent in [Intent::Playback, Intent::Microphone] {
+            let mut view = endpoint_view_with_driver_quality(
+                intent,
+                StreamState::Running,
+                true,
+                17,
+                19,
+                [u64::MAX, 1],
+            );
+            view.telemetry.as_mut().unwrap().silence_frames = 1;
             assert_eq!(
                 endpoint_health(Some(&view), view.endpoint_id, intent).quality_faults,
                 u64::MAX

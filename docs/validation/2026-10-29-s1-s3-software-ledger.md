@@ -105,6 +105,18 @@ argument follows. Collector/boundary receipts explicitly hardcode incomplete
 quality, so14 unknown boundary polls are not its sole cause. PCM/clock quality,
 native final-QUERY verification and physical acceptance remain open.
 
+The [live provider loss/silence gate repair](2026-11-01-live-provider-quality.md)
+closes a concrete strict-policy omission: endpoint health previously omitted
+worker silence packets/frames and current driver QUERY loss/silence, allowing
+that live observation to pass until later checks. The control-side saturating
+nonzero gate now includes both boundaries for Playback and MIC; it remains a
+mixed-unit predicate, never distinct frame/packet loss. Two typed regressions
+first fail, then pass; policy composition retains raw faults in correctness
+while strict refuses. The630-test probe suite, strict Clippy, formatting and
+Linux cross-target compilation pass. No provider/driver/RT/default or fixed
+incomplete-quality rule changes, native replay or physical result occurs.
+Actual native fail-fast and final-QUERY verification remain open.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie
