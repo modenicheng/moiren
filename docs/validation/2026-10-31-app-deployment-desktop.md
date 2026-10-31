@@ -210,3 +210,82 @@ The helper retains PrintWindow requests, not frame-counter evidence or a
 visual screenshot acceptance. No waveform acquisition or calibrated physical
 latency acceptance follows. Sparse-source/source-origin limitations and the
 remaining S1-S3 quality/admission gates remain open.
+
+## Small mainline extraction and new platform build
+
+The independent mainline-only branch contains one67-addition/22-deletion
+commit across six app UI files, with no driver, audio, buffer or dependency
+change. PR49 head1c24c44 passes Ubuntu/Windows tests and strict Clippy,
+formatting and applicable workflow checks, then merges asd6067e7. Root main
+fast-forwards cleanly to that merge. Experimental integration9d537c7 merges
+the new main without importing the experimental branch into main. Existing
+measured-process work and unrelated graph-test timing changes stay preserved;
+the four accessibility cache paths are identical before and after this merge.
+
+The integration also includes the prior mainline PR46 gpui-pre-windows fork,
+locked ata35f60446110300f9d0856a99bcf2416d833e6ae. It skips hidden/minimized
+vsync invalidation. The old bdf3766 hidden-window native GREEN is therefore
+not substituted for current-platform native acceptance.
+
+Root builds9d537c7 release with jobs2 and a worktree-local target:33755136
+bytes, SHA256
+`A1630773CF76FCEE05B06D52D792CE3F1DB6D8A86967A5B17CA4A738B36C5F5D`.
+It deploys side by side to
+`D:\MoirenTest\20261031-app-main-9d537c7\bin\moiren-app.exe`.
+Target length/hash, help, monitor-help and exact offline gain0.25 output
+pass with exit0. This deployment smoke opens no native audio or GUI and is
+separate from the desktop acquisition. Driver609 and boot remain unchanged;
+no volume/mute/default write, installation or cache clean occurs.
+
+The subsequent task-scoped helper changes only provenance/deployment/run
+identity and one owned-window visibility handshake from process3. It starts
+hidden, binds the exact owned PID/HWND, requests ShowWindowAsync(4) exactly
+once, and polls at most5seconds for that HWND to be visible and noniconic.
+It records before/after foreground and refuses detected new app activation,
+with no SetForeground or activation fallback. This observation is not a
+continuous guarantee against transient foreground changes or a rendered-
+frame/visual acceptance. Original acquisition, quality guards and cleanup
+remain unchanged. Helper SHA256 is
+`D06A24B2287D45E79010030168C9E7280EBC7AFB312308FF72FDB95D339B1EB2`.
+PS5.1 parsing, retained contract, actual wrong-host refusal and an independent
+read-only safety review pass before the one limited interactive task launch.
+Host evidence root is `D:\coding\moiren-evidence\20261031-app-main-9d537c7`.
+
+`desktop-a11y-main4` actually executes UTC04:31:31.2782513 through
+04:32:03.4861776 after its UTC04:29:30 task launch. Task Running before
+script artifacts appear is not mistaken for a hung audio owner or retried.
+The owned app PID13380, creation134378946925279020 and HWND1114228 remain
+fixed across all four observations. The show request confirms visible/noniconic;
+foreground is66882 before and after, not the app HWND. Node counts are
+21/21/21/90, and all13 explicit UIA Invokes return successfully.
+
+Settings -> Input buffers -> measured Apply retains exact requested/active
+source PID5228/creation134378946922661609, selection1, target4096,
+capacity16384 and jitter96 at48kHz. Independent native logs show generation1
+Running, cleanup/reap, then generation2 Running; DAWN is Shared Float32
+stereo48kHz with actual native buffer1056. Stop retires/reaps generation2.
+Reopened Settings/Diagnostics and Quit complete. App/source exit0 without
+forced termination; Completed=true, task result0, cleanup/diagnostic errors
+and remaining owners are empty. This confirms this new-platform binary's
+bounded desktop scenario, not every accessibility frame or visual layout.
+
+Before/after render volume/mute/default roles and boot remain unchanged.
+The47-payload-plus-manifest ZIP is68580 bytes, SHA256
+`009616CC7CF320CA4B35B9DDF4D5909D0D38AC9F35672AB4C6779A77DE950A43`.
+Root verifies CRC, exact members and all lengths/hashes and extracts to
+`desktop-native4-verified`. Only after this verification, an exact task-action
+and successful-terminal check permits unregistering the one scheduled task.
+No probe/app owner or VAD child remains; root PnP is OK and driver609 Running.
+Target originals, old binaries and caches remain. No waveform or calibrated
+physical latency acceptance, lower default or S1-S3 completion follows.
+
+Independent memberwise/raw-log/UIA/catalog audit passes51 checks with0 failed;
+its JSON SHA256 is
+`36085DD217FD4E2F769140A4987073F48F3BB5A8C56A97E1A03E4CD061A2904A`.
+The source is intentionally stopped before its long schedule completes;
+submitted nonzero counters are not captured/recovered waveform evidence.
+Existing focus-without-accessibility-role INFO diagnostics remain in the log;
+successful Invokes do not prove every assistive-technology behavior. Root's
+post-merge app library suite passes595 with3 ignored, Graph19/Mixer19 and
+both exact graph/device-row VAD-direction regressions pass, and gpui-test
+all-target strict Clippy plus formatting pass.
