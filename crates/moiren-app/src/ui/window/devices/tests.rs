@@ -262,3 +262,148 @@ fn quick_bind_prefers_an_unoccupied_match_and_falls_back_to_steal() {
         Some(only)
     );
 }
+
+#[cfg(feature = "gpui-test")]
+use gpui_kit::{Entity, VisualTestContext};
+
+/// One cached-path frame: notified views re-render, unnotified cached
+/// subtrees replay their paint. `render_frame` refreshes the whole window and
+/// would rebuild every panel regardless of the caches.
+#[cfg(feature = "gpui-test")]
+fn cached_frame(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+}
+
+#[cfg(feature = "gpui-test")]
+fn devices_rebuilds(view: &Entity<super::super::StudioShell>, cx: &mut VisualTestContext) -> usize {
+    view.read_with(cx, |shell, cx| shell.devices_panel.read(cx).rebuild_count())
+}
+
+/// Delivers a snapshot the way the service does — a fresh Arc behind a shell
+/// notification — without a full-window `render_frame`, which rebuilds every
+/// panel regardless of the caches.
+#[cfg(feature = "gpui-test")]
+fn publish_snapshot(
+    view: &Entity<super::super::StudioShell>,
+    cx: &mut VisualTestContext,
+    change: impl FnOnce(&mut crate::service::AppSnapshot),
+) {
+    view.update(cx, |shell, cx| {
+        let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+        change(&mut snapshot);
+        shell.state.update(cx, |state, _| {
+            state.snapshot = std::sync::Arc::new(snapshot)
+        });
+        cx.notify();
+    });
+    cached_frame(cx);
+}
+
+/// The devices page never renders the graph selection: a selection edit plus
+/// the shell notifications it emits must leave the panel on its cached paint,
+/// and the replayed paint must hold across further key-neutral notifications.
+#[cfg(feature = "gpui-test")]
+#[gpui_kit::test]
+fn devices_panel_stays_cached_across_key_neutral_shell_notifications(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::ui::window::test_harness::{finish_service, settle_panels, test_shell};
+    use gpui_kit::size;
+    use gpui_kit::test::TestWindowExt;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.set_page(super::super::pages::Page::Devices, cx);
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let page = cx.update(|window, _| window.find("devices-page").bounds());
+    let before = devices_rebuilds(&view, cx);
+
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert_eq!(
+        devices_rebuilds(&view, cx),
+        before,
+        "a selection edit must not reach the devices panel"
+    );
+    assert_eq!(
+        cx.update(|window, _| window.find("devices-page").bounds()),
+        page,
+        "the cached paint must not move"
+    );
+
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(
+        devices_rebuilds(&view, cx),
+        before,
+        "a key-neutral notification must replay the cached paint"
+    );
+    finish_service(runtime);
+}
+
+/// The devices key carries publish identity, so a catalog publish must paint
+/// its new rows on that notification alone and hold them across follow-up
+/// notifications that carry no publish.
+#[cfg(feature = "gpui-test")]
+#[gpui_kit::test]
+fn devices_panel_repaints_a_published_catalog_row_exactly_once(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::DeviceRow;
+    use crate::ui::window::test_harness::{finish_service, settle_panels, test_shell};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{px, size};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.set_page(super::super::pages::Page::Devices, cx);
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    assert!(
+        cx.update(|window, _| window.try_find("device-row-probe-speakers").is_none()),
+        "the probe row must not exist before the publish"
+    );
+    let before = devices_rebuilds(&view, cx);
+
+    publish_snapshot(&view, cx, |snapshot| {
+        use moiren_engine::audio_config::AudioBackend;
+        snapshot.audio_settings.backend = AudioBackend::Wasapi;
+        std::sync::Arc::make_mut(&mut snapshot.catalog)
+            .outputs
+            .push(DeviceRow {
+                endpoint_id: "probe-speakers".into(),
+                name: "Probe speakers".into(),
+            });
+    });
+    assert_eq!(
+        devices_rebuilds(&view, cx),
+        before + 1,
+        "the catalog publish must rebuild the panel exactly once"
+    );
+    let row = cx.update(|window, _| window.find("device-row-probe-speakers").bounds());
+    assert!(
+        row.size.width > px(0.),
+        "the published row must be laid out"
+    );
+
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(
+        devices_rebuilds(&view, cx),
+        before + 1,
+        "a notification without a publish must replay the cached rows"
+    );
+    assert_eq!(
+        cx.update(|window, _| window.find("device-row-probe-speakers").bounds()),
+        row,
+        "the replayed paint must not move the published row"
+    );
+    finish_service(runtime);
+}

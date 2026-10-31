@@ -541,3 +541,6 @@ pub(super) fn stream_summary(backend: AudioBackend, stream: StreamSettings) -> S
             .unwrap_or_else(|| t!("Driver default").into())
     )
 }
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
