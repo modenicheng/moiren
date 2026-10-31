@@ -189,6 +189,14 @@ pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
 /// The locale rides outside the key on purpose: every panel renders `t!`
 /// strings, so a language switch must rebuild all of them regardless of what
 /// each key happens to capture.
+///
+/// Callers splice the host entity directly (`entity.cached(refinement)`).
+/// Accessibility needs no live escape hatch: gpui-fast's splice machinery
+/// gates on a11y staleness itself — on activation it rebuilds until the a11y
+/// nodes are recorded, then replays them from the cache's records — so
+/// forcing live rebuilds at the splice only melted the whole window whenever
+/// a platform client probed accessibility (every alt-tab through certain
+/// setups does).
 pub(in crate::ui::window) struct PanelHost<P: CachedPanel> {
     panel: P,
     owner: WeakEntity<P::Owner>,
@@ -296,19 +304,6 @@ impl<P: CachedPanel> Render for PanelHost<P> {
             panel.render(owner, window, cx)
         })
     }
-}
-
-/// Splice a cached panel entity. Accessibility needs no live escape hatch:
-/// gpui-fast's splice machinery gates on a11y staleness itself — on
-/// activation it rebuilds until the a11y nodes are recorded, then replays
-/// them from the cache's records — so forcing live rebuilds here only
-/// melted the whole window whenever a platform client probed accessibility
-/// (every alt-tab through certain setups does).
-pub(in crate::ui::window) fn cached_splice<E: 'static>(
-    entity: Entity<E>,
-    cached: impl FnOnce(Entity<E>) -> AnyElement,
-) -> AnyElement {
-    cached(entity)
 }
 
 #[cfg(test)]

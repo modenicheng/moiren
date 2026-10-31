@@ -6,7 +6,7 @@
 //! published.
 use super::*;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
-use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_splice};
+use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost};
 use pages::graph_canvas::CanvasFrame;
 use std::rc::Rc;
 
@@ -102,11 +102,11 @@ impl CachedPanel for GraphPanel {
 }
 
 pub(in crate::ui::window) fn page(shell: &StudioShell, _window: &Window) -> AnyElement {
-    let controls = cached_splice(shell.graph_controls.clone(), |entity| {
-        entity
-            .cached(StyleRefinement::default().size_full())
-            .into_any_element()
-    });
+    let controls = shell
+        .graph_controls
+        .clone()
+        .cached(StyleRefinement::default().size_full())
+        .into_any_element();
     div()
         .relative()
         .flex()
