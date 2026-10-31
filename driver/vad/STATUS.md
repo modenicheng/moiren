@@ -6,13 +6,27 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
-The separate physical target has app `6827f02`, integration holder `ac93295`,
-and pause-fence driver `6d9e32f`: `oem201.inf`, version `3.1.1.607`.
+The separate physical target has app `af70aa9` and explicitly enabled
+Playback-copy diagnostic driver `74f11c6`: `oem202.inf`, version `3.1.1.608`.
 Service Running/root PnP OK and exact SYS hash are verified, with the old
 rollback package retained and no reboot. A fresh read-only audit confirms no
 owned build/audio processes before further work. Native retries are authorized;
 older paused-retry statements below describe dated history. Only DAWN
 headphones are used for audible runs; speaker/default settings stay unchanged.
+
+Direction remains virtual speaker/Playback -> Moiren Input/Source and
+virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
+The new bounded diagnostic reads the actual transfer source and READ MDL
+destination AFTER memcpy, not native ring ingress. A retained first attempt
+loses Playback readiness before any source starts. An unchanged-fixture retry
+then completes and retains 480000 frames on both sides, all zero, equal to
+the all-zero provider capture. Both complete 15-fragment revisions and
+sequence/scan bounds are retained; the first failure is not erased or fixed
+by the retry. This does not establish before-copy source contents, waveform
+delivery, a sole cause, continuity or physical latency. App help/offline smoke
+passes separately; GUI/native app acceptance remains open. Exact deployment,
+host checks, failed attempts, archive and next boundary are in the
+[Playback-copy receipt](../../docs/validation/2026-10-31-playback-copy-boundary.md).
 
 The pause-fence repair serializes epoch publication with PCM queue draining
 and adds a stream-release fence without weakening the Rust cancellation guard.
