@@ -825,6 +825,105 @@ fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppC
     finish_service(runtime);
 }
 
+/// The capture-tap monitor meters must not keep the frame loop armed for a
+/// display the node level topics already cover. The Graph page mounts no
+/// legacy probes and stands down at silence; the Mixer page's pre-fader tap
+/// keeps producing signal even when the fader is muted, so a live tap
+/// subscription pinned the whole page to display-rate frames and burned a
+/// core.
+#[gpui_kit::test]
+fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let backend_state = backend.0.clone();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::window::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = crate::ui::window::test_harness::shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1024.), px(720.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.meter_points.get().0,
+            "the source strip's capture probe must be mounted on the page"
+        );
+        assert!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .signal_topics
+                .node_levels
+                .contains_key(&node),
+            "the source node's level topic must cover its meter"
+        );
+    });
+    // Park the session at digital silence (the fake engine ignores mixer
+    // mutes, so the silence fixture pauses its render loop instead). The
+    // probe stays mounted and the node stays managed: the legacy capture
+    // tap must not be subscribed, and its motion must not hold the frame
+    // arbiter open for a display the node topic already covers.
+    backend_state.pause_audio.store(true, Ordering::SeqCst);
+    // The ballistics need a few seconds to fall from full scale to rest.
+    crate::ui::window::test_harness::wait_until(Duration::from_secs(8), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.at_rest() && !shell.frames_wanted(cx)
+        })
+    });
+    view.read_with(cx, |shell, cx| {
+        assert!(
+            shell.meter_points.get().0,
+            "the probe must stay mounted while the page is at rest"
+        );
+        assert!(
+            !shell.meters.input_subscribed(),
+            "the capture tap stayed subscribed for a display the node topic covers"
+        );
+        assert!(
+            !shell.frames_wanted(cx),
+            "the frame loop must stand down once every displayed meter is at rest"
+        );
+    });
+    finish_service(runtime);
+}
+
 /// Exercise a real managed publisher: painting cannot pass just by reusing
 /// frozen levels or silently dropping visibility/subscription demand.
 #[gpui_kit::test]

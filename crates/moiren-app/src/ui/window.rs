@@ -563,10 +563,17 @@ impl StudioShell {
     pub(super) fn pump_meters(&mut self, cx: &mut Context<Self>) -> bool {
         let visible = self.frames_eligible(cx);
         let points = self.meter_points.get();
+        // The legacy monitor meters only display where the strip has no node
+        // level topic: a managed strip's meter comes from NodeMeters, and
+        // the pre-fader capture tap carries signal even when the fader is
+        // muted. Subscribing it for a display nobody sees kept the whole
+        // page's frame loop armed forever — the Graph page mounts no such
+        // probes and stands down, the Mixer page burned a core.
+        let (input_shown, output_shown) = self.legacy_meters_shown(cx, points);
         let meter_changed = self.meters.update_points(
             &self.state.read(cx).snapshot,
-            visible && points.0,
-            visible && points.1,
+            visible && input_shown,
+            visible && output_shown,
         );
         let node_meter_changed = self.update_node_meters(visible, cx);
         // Re-derive the arbiter's meter demand from the fresh ballistics: the
@@ -575,6 +582,25 @@ impl StudioShell {
         self.frame_demand
             .set(hot::METER_MOTION, self.meters_in_motion(cx));
         meter_changed || node_meter_changed
+    }
+
+    /// Whether the legacy input/output monitor meters actually display: their
+    /// probe is mounted on screen AND the strip's node level topic is
+    /// missing, so the meter paint falls back to the legacy reading. A
+    /// managed strip renders from NodeMeters alone.
+    fn legacy_meters_shown(&self, cx: &App, points: (bool, bool)) -> (bool, bool) {
+        let managed = |id: moiren_core::graph::NodeId| {
+            self.state
+                .read(cx)
+                .snapshot
+                .signal_topics
+                .node_levels
+                .contains_key(&id)
+        };
+        match self.observation_nodes {
+            Some((_, source, sink)) => (points.0 && !managed(source), points.1 && !managed(sink)),
+            None => (false, false),
+        }
     }
 
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {

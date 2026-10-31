@@ -517,11 +517,20 @@ pub(in crate::ui::window) fn readout(shell: &StudioShell, id: NodeId) -> impl In
 pub(in crate::ui::window) struct MixerMeters {
     shell: WeakEntity<StudioShell>,
     geometry: Geometry,
+    /// One shaped peak readout per track, re-shaped only when its text
+    /// changes. The readout holds its value most of the time (peak hold),
+    /// and shaping every track's text every frame dominated the page's
+    /// per-frame budget at display refresh rates.
+    readout_cache: std::cell::RefCell<BTreeMap<NodeId, (String, Option<gpui_kit::ShapedLine>)>>,
 }
 
 impl MixerMeters {
     pub(in crate::ui::window) fn new(shell: WeakEntity<StudioShell>, geometry: Geometry) -> Self {
-        Self { shell, geometry }
+        Self {
+            shell,
+            geometry,
+            readout_cache: std::cell::RefCell::new(BTreeMap::new()),
+        }
     }
 }
 
@@ -555,7 +564,7 @@ impl HotSurface for MixerMeters {
             return;
         };
         shell.update(cx, |shell, cx| {
-            paint_mixer_meter_frame(frame, shell, window, cx)
+            paint_mixer_meter_frame(frame, shell, window, cx, &self.readout_cache)
         });
     }
 }
@@ -565,6 +574,7 @@ fn paint_mixer_meter_frame(
     shell: &mut StudioShell,
     window: &mut Window,
     cx: &mut Context<StudioShell>,
+    readout_cache: &std::cell::RefCell<BTreeMap<NodeId, (String, Option<gpui_kit::ShapedLine>)>>,
 ) {
     #[cfg(feature = "gpui-test")]
     let began = std::time::Instant::now();
@@ -622,25 +632,35 @@ fn paint_mixer_meter_frame(
             })
             .unwrap_or_else(|| "\u{2014}".to_owned());
         window.with_content_mask(Some(placement.mask), |window| {
-            let line = window.text_system().shape_line(
-                text.clone().into(),
-                px(8.),
-                &[TextRun {
-                    len: text.len(),
-                    font: font(theme::FONT_MONO),
-                    color: theme::TEXT_MUTED,
-                    ..Default::default()
-                }],
-                None,
-            );
-            let _ = line.paint(
-                placement.bounds.origin,
-                px(12.),
-                TextAlign::Center,
-                Some(placement.bounds.size.width),
-                window,
-                cx,
-            );
+            // Re-shape only when the text changed: the cache holds one entry
+            // per track, so during peak hold every frame replays the shaped
+            // line instead of re-running the shaper.
+            let mut cache = readout_cache.borrow_mut();
+            let entry = cache.entry(id).or_default();
+            if entry.0 != text {
+                entry.0 = text.clone();
+                entry.1 = Some(window.text_system().shape_line(
+                    text.into(),
+                    px(8.),
+                    &[TextRun {
+                        len: entry.0.len(),
+                        font: font(theme::FONT_MONO),
+                        color: theme::TEXT_MUTED,
+                        ..Default::default()
+                    }],
+                    None,
+                ));
+            }
+            if let Some(line) = &entry.1 {
+                let _ = line.paint(
+                    placement.bounds.origin,
+                    px(12.),
+                    TextAlign::Center,
+                    Some(placement.bounds.size.width),
+                    window,
+                    cx,
+                );
+            }
         });
     }
     #[cfg(feature = "gpui-test")]

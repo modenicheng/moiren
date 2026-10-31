@@ -117,6 +117,14 @@ impl MeterSubscriptions {
         self.settings = settings;
     }
 
+    /// Test visibility: whether the legacy capture-tap subscription is live.
+    /// A managed strip renders from NodeMeters alone, so the tap must stay
+    /// unsubscribed there even while its probe is on screen.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(crate) fn input_subscribed(&self) -> bool {
+        self.input_subscription.is_some()
+    }
+
     /// Poll off the audio thread. The caller combines active page, window,
     /// minimization, and component visibility into `visible`.
     pub fn update(&mut self, snapshot: &AppSnapshot, visible: bool) -> bool {
