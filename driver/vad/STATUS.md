@@ -66,6 +66,17 @@ sub-10-ms is demonstrated impossible under the current declared conditions.
 Neither that impossibility nor a calibrated physical minimum is established;
 quality gates and the distinction from software diagnostics remain unchanged.
 
+The later exact Input -> unity Bus -> DAWN Exclusive256 control retains
+actual period256 but fails final host cleanup with SET_GATE `0x8007051A`.
+Its17-payload failure archive is root-verified and independently audited49/0.
+Probe-only `a20dfe2` moves original Playback gate close before physical-path
+revocation/Stop; source review16/0 and root620 tests/Clippy/fmt/release pass.
+MIC/Process paths, installed610, buffers and defaults remain unchanged. One
+same256 native replay completes35 seconds with no native/cleanup error;
+separate128 refuses before Running against queried device minimum144.
+Both archives are verified; no physical delay or minimum is established:
+[physical retirement receipt](../../docs/validation/2026-10-31-physical-soak-retirement.md).
+
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
 A distinct existing Exclusive event Playback control now passes on the same

@@ -21,6 +21,20 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [physical DAWN retirement control](2026-10-31-physical-soak-retirement.md)
+retains the actual256-frame admission and probe exit1/SET_GATE cleanup failure
+on unchanged610; independent acquired-evidence audit passes49 checks without
+converting the failure to success. Probe-only `a20dfe2` closes the original
+Playback gate before revocation/native Stop in the non-collection physical
+route. MIC/Process schedulers and production guards remain unchanged. Root620
+tests, strict Clippy/fmt/release and independent16-check source review pass.
+The same256/Engine64 native replay completes35.004354 seconds with no native
+or cleanup error, retaining prime32 and cleanup reset/recovery1. A one-variable
+128 request refuses before Running against queried minimum144; the suggested
+next preset256 is not the hardware floor. Both archives are root-verified.
+Neither the admission model nor this repair establishes a physical lower bound
+or sub10ms impossibility.
+
 The [native-first MIC retirement](2026-10-31-native-first-mic-retirement.md)
 keeps MIC service/admission until actual native Stop/release/join completes,
 while broadcasting both stops before any wait and retaining physical-route
