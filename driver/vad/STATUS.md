@@ -6,14 +6,23 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
-The separate physical target has app `af70aa9` and explicitly enabled
+The separate physical target has app `e1a7c2f` staged side by side with
+`af70aa9`, and explicitly enabled
 native-Playback diagnostic driver `2a5aee5`: `oem203.inf`, version `3.1.1.609`.
 Service Running/root PnP OK, exact installed SYS hash, target signatures and
 catalog members are verified. The 608 and older 607 rollback packages remain;
 no reboot, trust/volume/default change or target build occurs. Native retries
 are authorized; older paused-retry statements below describe dated history.
-Only DAWN headphones may be used for audible runs. This checkpoint adds no
-physical render client.
+Only DAWN headphones may be used for audible runs. The driver acquisitions
+below add no physical render client; the separately recorded current-app
+desktop retry does explicitly open DAWN.
+
+Current-app release provenance, four direction/binding regressions, and three
+target startup smokes pass. A console1/limited-token desktop retry starts
+generation1 on DAWN, then fails Settings UIA before measured Apply; owned-app
+forced termination, source exit0, unchanged volume/defaults and all original
+evidence remain retained. No current-binary S3 or quality PASS follows:
+[application deployment and desktop receipt](../../docs/validation/2026-10-31-app-deployment-desktop.md).
 
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
