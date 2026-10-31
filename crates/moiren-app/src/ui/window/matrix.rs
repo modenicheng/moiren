@@ -8,8 +8,13 @@ use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice
 use controls::*;
 use moiren_core::graph::{PortId, SendParams};
 
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
+
 /// The matrix page behind a [`PanelHost`]: rebuilt only when the published
-/// snapshot, the selected route, the scroll offset, or the density changes.
+/// snapshot, the selected route, the scroll offset, or the preferences change
+/// (the row height follows the density, which settings may switch
+/// mid-session).
 pub(in crate::ui::window) struct MatrixPanel;
 
 #[derive(PartialEq)]
@@ -18,6 +23,10 @@ pub(in crate::ui::window) struct MatrixKey {
     selected_route: Option<(PortId, PortId)>,
     scroll: Point<Pixels>,
     compact: bool,
+    /// Carried whole like on the other pages: the render's density input is
+    /// `shell.density`, which the settings transaction and the desktop
+    /// presentation apply together with `preferences.density`.
+    preferences: crate::project::AppPreferences,
 }
 
 pub(in crate::ui::window) type MatrixPanelHost = PanelHost<MatrixPanel>;
@@ -32,6 +41,7 @@ impl CachedPanel for MatrixPanel {
             selected_route: shell.selected_route,
             scroll: shell.matrix_scroll.offset(),
             compact: shell.compact,
+            preferences: shell.preferences.clone(),
         }
     }
 

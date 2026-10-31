@@ -168,8 +168,11 @@ pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
 
     /// Subscribe to nested model entities (slider states, search inputs)
     /// whose notifications cannot invalidate this cached ancestor by
-    /// themselves. Runs on every rebuild; the host replaces its subscription
-    /// pool with the result.
+    /// themselves. Runs whenever the captured key or locale changed, which is
+    /// exactly when the host replaces its subscription pool with the result;
+    /// the pool's entities are created by the owner's update path before it
+    /// notifies, so capture time always sees them. Nested notifications reach
+    /// the screen through [`PanelHost::notify_nested`] instead.
     fn observe_nested(
         &self,
         _owner: &Entity<Self::Owner>,
@@ -194,9 +197,21 @@ pub(in crate::ui::window) struct PanelHost<P: CachedPanel> {
     nested: Vec<Subscription>,
     nested_gate: NestedGate,
     _subscription: Subscription,
+    /// Rebuild counter for the cache tests (design 17 hazard 6): assertions
+    /// pair it with a paint-output check, never with the root's per-frame
+    /// render count. Test-only so the release build carries no branch.
+    #[cfg(all(test, feature = "gpui-test"))]
+    rebuilds: usize,
 }
 
 impl<P: CachedPanel> PanelHost<P> {
+    /// How many times this panel actually rendered (a rebuild), as opposed to
+    /// replaying its cached paint.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(in crate::ui::window) fn rebuild_count(&self) -> usize {
+        self.rebuilds
+    }
+
     pub(in crate::ui::window) fn new(
         panel: P,
         owner: Entity<P::Owner>,
@@ -211,7 +226,11 @@ impl<P: CachedPanel> PanelHost<P> {
             // ever gets compared, and every publish rebuilds every panel.
             let key = host.panel.key(owner.read(cx), cx);
             let locale = crate::i18n::current();
-            if host.key.as_ref() != Some(&key) || host.locale != locale || host.nested.is_empty() {
+            // `key` starts None, so the first notification always captures.
+            // No empty-pool retry on top of that: a panel whose
+            // `observe_nested` legitimately yields nothing would take this
+            // branch on every notification and rebuild per notify.
+            if host.key.as_ref() != Some(&key) || host.locale != locale {
                 host.key = Some(key);
                 host.locale = locale;
                 host.nested = host.panel.observe_nested(&owner, cx);
@@ -226,6 +245,8 @@ impl<P: CachedPanel> PanelHost<P> {
             nested: Vec::new(),
             nested_gate: NestedGate::default(),
             _subscription: subscription,
+            #[cfg(all(test, feature = "gpui-test"))]
+            rebuilds: 0,
         }
     }
 
@@ -265,6 +286,10 @@ impl<P: CachedPanel> Render for PanelHost<P> {
         // the writes it performs and the state the built tree reads (which
         // is written, not notified, between rebuilds). Key capture lives in
         // the owner observer above.
+        #[cfg(all(test, feature = "gpui-test"))]
+        {
+            self.rebuilds += 1;
+        }
         let panel = &self.panel;
         owner.update(cx, |owner, cx| {
             panel.on_rebuild(owner);
