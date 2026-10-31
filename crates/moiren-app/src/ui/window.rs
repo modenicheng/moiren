@@ -542,7 +542,18 @@ impl StudioShell {
     /// the observations current, so a fully silent session costs no animation
     /// frames at all.
     fn frames_wanted(&self, cx: &App) -> bool {
-        self.frames_eligible(cx) && self.frame_demand.any()
+        // A graph gesture bypasses the meter eligibility gate: the canvas is
+        // interactive whether or not a session runs and every meter rests.
+        self.drag_active() || (self.frames_eligible(cx) && self.frame_demand.any())
+    }
+
+    /// Whether a graph canvas gesture is in flight (rubber band, pan, node
+    /// or connection drag).
+    fn drag_active(&self) -> bool {
+        self.selection_drag.is_some()
+            || self.pan_grab.is_some()
+            || self.node_drag.is_some()
+            || self.connection_drag.is_some()
     }
 
     /// Whether any observed meter still moves: decaying ballistics, a held
@@ -581,7 +592,16 @@ impl StudioShell {
         // takes over the moment everything rests.
         self.frame_demand
             .set(hot::METER_MOTION, self.meters_in_motion(cx));
+        self.sync_drag_demand();
         meter_changed || node_meter_changed
+    }
+
+    /// Re-derive the gesture demand source from the in-flight graph
+    /// gestures. Called from the pump and at gesture boundaries: the
+    /// mouse-down handlers must arm the loop immediately, not at the next
+    /// control poll.
+    pub(in crate::ui::window) fn sync_drag_demand(&mut self) {
+        self.frame_demand.set(hot::DRAG, self.drag_active());
     }
 
     /// Whether the legacy input/output monitor meters actually display: their

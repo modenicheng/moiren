@@ -22,7 +22,6 @@ type WindowAppCallback<Argument> = dyn Fn(Argument, &mut Window, &mut App);
 type CameraFitFn = dyn Fn(&Camera, Size<Pixels>, &mut Window, &mut App);
 type SelectFn = dyn Fn(&str, &mut Window, &mut App);
 type ZoomFn = dyn Fn((f32, Point<Pixels>), &mut Window, &mut App);
-type BoxSelectFn = dyn Fn(Option<Bounds<f32>>, &mut Window, &mut App);
 
 /// One node's live meter reading: display ballistics plus the latched clip
 /// state, read at paint time so meter motion repaints without re-projecting
@@ -45,8 +44,6 @@ pub(in crate::ui) use nodes::paint_meter_bars;
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
     pub connection: Option<(PortTarget, (f32, f32))>,
-    /// Active rubber-band selection in window coordinates (anchor, current).
-    pub selection_box: Option<((f32, f32), (f32, f32))>,
     /// Live ballistics-smoothed bar readings per node, consulted at paint
     /// time so meter motion repaints without rebuilding this element tree.
     pub node_levels: Rc<NodeLevelsFn>,
@@ -58,9 +55,7 @@ pub struct CanvasCallbacks {
     pub on_drop_node: Rc<WindowAppCallback<(super::node_catalog::NodeTemplate, (f32, f32))>>,
     pub on_background_down: Rc<WindowAppCallback<(MouseDownEvent, Bounds<Pixels>)>>,
     pub on_canvas_mouse_move: WindowAppFn<(Point<Pixels>, Option<MouseButton>)>,
-    /// Receives the world-space rectangle of the active rubber band once per
-    /// frame (None when no band is active), so the shell can live-select.
-    pub on_box_select: Rc<BoxSelectFn>,
+
     pub on_zoom: Rc<ZoomFn>,
     pub on_pan: WindowAppFn<(f32, f32)>,
     pub on_select_node: Rc<SelectFn>,
@@ -101,7 +96,6 @@ fn paint_canvas_layer(
     frame: &CanvasFrame,
     selected_nodes: &[String],
     selected_wire: Option<&str>,
-    selection_box: Option<((f32, f32), (f32, f32))>,
     node_levels: &NodeLevelsFn,
     window: &mut Window,
     cx: &mut App,
@@ -155,25 +149,6 @@ fn paint_canvas_layer(
                         cx,
                     );
                 }
-            }
-            if let Some((anchor, current)) = selection_box {
-                let a = frame.local_position(anchor);
-                let b = frame.local_position(current);
-                let left = a.0.min(b.0);
-                let top = a.1.min(b.1);
-                let rect = frame.window_rect(Bounds {
-                    origin: point(left, top),
-                    size: size((a.0 - b.0).abs(), (a.1 - b.1).abs()),
-                });
-                window.paint_quad(fill(rect, theme::PRIMARY.opacity(0.10)));
-                window.paint_quad(PaintQuad {
-                    bounds: rect,
-                    corner_radii: 2f32.into(),
-                    background: transparent_black().into(),
-                    border_widths: 1f32.into(),
-                    border_color: theme::PRIMARY.opacity(0.65),
-                    border_style: BorderStyle::default(),
-                });
             }
         },
     );
@@ -330,7 +305,6 @@ pub fn graph_canvas_view(
         on_drop_node,
         on_background_down,
         on_canvas_mouse_move,
-        on_box_select,
         on_zoom,
         on_pan,
         on_select_node,
@@ -339,7 +313,6 @@ pub fn graph_canvas_view(
         node_levels,
         focus,
         connection,
-        selection_box,
         on_port_down,
         on_port_up,
         on_connection_move,
@@ -367,22 +340,6 @@ pub fn graph_canvas_view(
                         let frame = Rc::new(CanvasFrame::new(world.clone(), camera, bounds));
                         prepared.publish(Rc::clone(&frame));
                         on_camera_fit(&frame.camera, bounds.size, window, cx);
-                        if let Some((anchor, current)) = selection_box {
-                            let a = frame.local_position(anchor);
-                            let b = frame.local_position(current);
-                            let min = frame.camera.canvas_to_world((a.0.min(b.0), a.1.min(b.1)));
-                            let max = frame.camera.canvas_to_world((a.0.max(b.0), a.1.max(b.1)));
-                            on_box_select(
-                                Some(Bounds {
-                                    origin: point(min.0, min.1),
-                                    size: size(max.0 - min.0, max.1 - min.1),
-                                }),
-                                window,
-                                cx,
-                            );
-                        } else {
-                            on_box_select(None, window, cx);
-                        }
                         frame
                     }
                 },
@@ -391,7 +348,6 @@ pub fn graph_canvas_view(
                         &frame,
                         &selected_nodes,
                         selected_wire.as_deref(),
-                        selection_box,
                         node_levels.as_ref(),
                         window,
                         cx,

@@ -33,6 +33,56 @@ pub(super) struct SelectionDrag {
 }
 
 impl StudioShell {
+    /// The rubber band's live application, driven by the meter hot layer
+    /// once per frame while a box select is in flight. Returns whether the
+    /// selection changed (the caller notifies once per change, not per
+    /// frame).
+    pub(in crate::ui::window) fn apply_box_select(
+        &mut self,
+        rect: Bounds<f32>,
+        nodes: &[pages::graph_canvas::CanvasNode],
+        additive: bool,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        let hits: std::collections::BTreeSet<moiren_core::graph::NodeId> = nodes
+            .iter()
+            .filter(|node| {
+                pages::graph_canvas::NodeLayout::new(node)
+                    .card
+                    .intersects(&rect)
+            })
+            .filter_map(|node| node.node_id)
+            .collect();
+        let Some(drag) = self.selection_drag.as_mut() else {
+            return false;
+        };
+        if !drag.moved {
+            return false;
+        }
+        drag.hits = hits;
+        let selection = if additive {
+            drag.base.union(&drag.hits).copied().collect()
+        } else {
+            drag.hits.clone()
+        };
+        if self.selected_nodes == selection {
+            return false;
+        }
+        self.selected_nodes = selection;
+        if self.selected_nodes.len() == 1 {
+            self.selected_node = self.selected_nodes.iter().next().copied();
+        } else if self
+            .selected_node
+            .is_none_or(|id| !self.selected_nodes.contains(&id))
+        {
+            self.selected_node = None;
+        }
+        if !self.selected_nodes.is_empty() {
+            self.selected_route = None;
+        }
+        true
+    }
+
     /// Shared pointer-session preamble for canvas hit targets: cancel any
     /// in-flight drag or click first; under the hand tool the pointer instead
     /// becomes a pan grab. Returns true when the hand tool consumed the event.
@@ -41,9 +91,11 @@ impl StudioShell {
         self.pan_grab = None;
         self.background_click = None;
         self.selection_drag = None;
+        self.sync_drag_demand();
         if self.hand_tool {
             let position = window.mouse_position();
             self.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
+            self.sync_drag_demand();
             true
         } else {
             false
@@ -201,6 +253,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                 let pos = window.mouse_position();
                 shell.camera.adjusted = true;
                 shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
+                shell.sync_drag_demand();
                 // Single click selects; a double click on the same node also
                 // opens the inspector.
                 if shell.element_double_clicked(StudioShell::element_key("node", node_id)) {
@@ -245,6 +298,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                     if shell.connection_drag.take().is_some() {
                         cx.notify();
                     }
+                    shell.sync_drag_demand();
                     return;
                 }
                 if let Some(drag) = shell.selection_drag.as_mut() {
@@ -271,6 +325,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                     shell.camera.pan_by(x - gx, y - gy);
                     shell.node_drag = None;
                     shell.pan_grab = Some((x, y));
+                    shell.sync_drag_demand();
                     cx.notify();
                 }
             });
@@ -308,59 +363,11 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                         shell.selection_drag = None;
                     }
                 }
+                shell.sync_drag_demand();
                 cx.notify();
             });
         }
     };
-    let on_box_select = {
-        let this = this.clone();
-        let nodes = world.clone();
-        move |rect: Option<Bounds<f32>>, _window: &mut Window, cx: &mut App| {
-            // The canvas prepaint reports the active band's world rectangle
-            // once per frame; None means no band and needs no work here.
-            let Some(rect) = rect else {
-                return;
-            };
-            let hits: std::collections::BTreeSet<moiren_core::graph::NodeId> = nodes
-                .nodes
-                .iter()
-                .filter(|node| {
-                    pages::graph_canvas::NodeLayout::new(node)
-                        .card
-                        .intersects(&rect)
-                })
-                .filter_map(|node| node.node_id)
-                .collect();
-            this.update(cx, |shell, cx| {
-                let Some(drag) = shell.selection_drag.as_mut() else {
-                    return;
-                };
-                if !drag.moved {
-                    return;
-                }
-                drag.hits = hits;
-                let selection = if drag.additive {
-                    drag.base.union(&drag.hits).copied().collect()
-                } else {
-                    drag.hits.clone()
-                };
-                shell.selected_nodes = selection;
-                if shell.selected_nodes.len() == 1 {
-                    shell.selected_node = shell.selected_nodes.iter().next().copied();
-                } else if shell
-                    .selected_node
-                    .is_none_or(|id| !shell.selected_nodes.contains(&id))
-                {
-                    shell.selected_node = None;
-                }
-                if !shell.selected_nodes.is_empty() {
-                    shell.selected_route = None;
-                }
-                cx.notify();
-            });
-        }
-    };
-
     let on_scroll_pan = {
         let this = this.clone();
         move |(dx, dy): (f32, f32), _window: &mut Window, cx: &mut App| {
@@ -411,10 +418,6 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         pages::graph_canvas_view::CanvasCallbacks {
             focus: shell.graph_focus.clone(),
             connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
-            selection_box: shell
-                .selection_drag
-                .as_ref()
-                .map(|drag| (drag.anchor, drag.current)),
             node_levels,
             on_port_down: std::rc::Rc::new({
                 let this = this.clone();
@@ -501,7 +504,6 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
             }),
             on_background_down: std::rc::Rc::new(on_bg_down),
             on_canvas_mouse_move: Box::new(on_bg_move),
-            on_box_select: std::rc::Rc::new(on_box_select),
             on_zoom: std::rc::Rc::new(on_zoom),
             on_pan: Box::new(on_scroll_pan),
             on_select_node: std::rc::Rc::new(on_select_node),

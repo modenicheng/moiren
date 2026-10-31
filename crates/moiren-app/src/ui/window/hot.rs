@@ -28,6 +28,13 @@ pub(in crate::ui::window) struct FrameDemand {
 /// The meter-motion demand source registered after every pump.
 pub(in crate::ui::window) const METER_MOTION: &str = "meters";
 
+/// The graph-canvas gesture demand source: a rubber band, pan, node drag or
+/// connection drag in flight. The canvas is frame-driven — the rubber band
+/// paints and applies its hits from the canvas prepaint — so the loop must
+/// run while a gesture holds even when every meter is at rest and the
+/// session is stopped.
+pub(in crate::ui::window) const DRAG: &str = "drags";
+
 impl FrameDemand {
     pub(in crate::ui::window) fn set(&mut self, source: &'static str, active: bool) {
         if active {

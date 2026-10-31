@@ -29,7 +29,6 @@ pub(in crate::ui::window) struct ControlsKey {
     selected_nodes: Vec<moiren_core::graph::NodeId>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     connection: Option<(pages::graph_canvas::PortTarget, (f32, f32))>,
-    selection_box: Option<((f32, f32), (f32, f32))>,
     hand_tool: bool,
     sidebar_open: bool,
     compact: bool,
@@ -50,10 +49,6 @@ impl ControlsKey {
             selected_nodes: shell.selected_nodes.iter().copied().collect(),
             selected_route: shell.selected_route,
             connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
-            selection_box: shell
-                .selection_drag
-                .as_ref()
-                .map(|drag| (drag.anchor, drag.current)),
             hand_tool: shell.hand_tool,
             sidebar_open: shell.sidebar_open,
             compact: shell.compact,
@@ -177,8 +172,55 @@ impl HotSurface for GraphMeters {
             return;
         };
         shell.update(cx, |shell, cx| {
-            paint_graph_meter_frame(frame, shell, window, cx)
+            paint_graph_meter_frame(frame, shell, window, cx);
+            paint_box_select_band(frame, shell, window, cx);
         });
+    }
+}
+
+/// The rubber band, painted from the live drag state by the hot layer once
+/// per frame — dynamic pixels cannot live in the cached canvas, whose
+/// closures only run on rebuilds. While the band has moved past its
+/// threshold this also applies the live selection, exactly as the canvas
+/// prepaint used to report it.
+fn paint_box_select_band(
+    frame: &CanvasFrame,
+    shell: &mut StudioShell,
+    window: &mut Window,
+    cx: &mut Context<StudioShell>,
+) {
+    let Some(drag) = shell.selection_drag.as_ref() else {
+        return;
+    };
+    let (anchor, current, moved, additive) = (drag.anchor, drag.current, drag.moved, drag.additive);
+    let a = frame.local_position(anchor);
+    let b = frame.local_position(current);
+    let left = a.0.min(b.0);
+    let top = a.1.min(b.1);
+    let screen = frame.window_rect(Bounds {
+        origin: point(left, top),
+        size: size((a.0 - b.0).abs(), (a.1 - b.1).abs()),
+    });
+    window.paint_quad(fill(screen, theme::PRIMARY.opacity(0.10)));
+    window.paint_quad(PaintQuad {
+        bounds: screen,
+        corner_radii: 2f32.into(),
+        background: transparent_black().into(),
+        border_widths: 1f32.into(),
+        border_color: theme::TEXT_MUTED,
+        border_style: BorderStyle::default(),
+    });
+    if !moved {
+        return;
+    }
+    let min = frame.camera.canvas_to_world((left, top));
+    let max = frame.camera.canvas_to_world((a.0.max(b.0), a.1.max(b.1)));
+    let world_rect = Bounds {
+        origin: point(min.0, min.1),
+        size: size(max.0 - min.0, max.1 - min.1),
+    };
+    if shell.apply_box_select(world_rect, &frame.world.nodes, additive, cx) {
+        cx.notify();
     }
 }
 

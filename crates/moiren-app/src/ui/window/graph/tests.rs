@@ -662,6 +662,93 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
     finish_service(runtime);
 }
 
+/// The rubber band is frame-driven: the canvas prepaint paints it and
+/// applies its hits once per frame. With every meter at rest and no session
+/// running, the meter demand is idle — the gesture itself must arm the
+/// frame loop, or box select freezes until the next elapsed-time publish.
+#[gpui_kit::test]
+fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.compact = false;
+        cx.notify();
+    });
+    render(cx);
+    // The sidebar/inspector close springs animate; let them finish before
+    // measuring the at-rest frame loop.
+    crate::ui::window::test_harness::settle_panels(cx);
+    let frame = canvas_frame(&view, cx);
+    let node = frame.world.nodes[0].node_id.expect("projected node id");
+    let center = node_position(&frame, 0);
+    // At rest: no session, meters parked — the loop must be standing down
+    // (any spring tail from the initial layout dies within a few frames).
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+    });
+    let mut rest_frames = 0;
+    for _ in 0..6 {
+        cx.update(|window, cx| {
+            rest_frames = window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    cx.update(|window, cx| assert_eq!(window.simulate_next_frame(cx), 0));
+    // Background press: the gesture arms the loop immediately.
+    let anchor = center - point(px(120.), px(60.));
+    cx.simulate_mouse_down(anchor, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| {
+        assert!(
+            window.simulate_next_frame(cx) > 0,
+            "the box-select gesture must arm the frame loop"
+        );
+        window.draw(cx).clear(cx);
+    });
+    // Drag the band across the node: the prepaint applies the hits.
+    let finish = center + point(px(120.), px(60.));
+    cx.simulate_mouse_move(
+        anchor + point(px(60.), px(30.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.simulate_mouse_move(finish, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.selected_nodes.contains(&node),
+            "the band crossing the node must select it"
+        );
+    });
+    // Release: the loop stands down again.
+    cx.simulate_mouse_up(finish, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, _| assert!(shell.selection_drag.is_none()));
+    for _ in 0..6 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    cx.update(|window, cx| {
+        assert_eq!(
+            window.simulate_next_frame(cx),
+            0,
+            "the frame loop must stand down when the gesture ends"
+        );
+    });
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     cx: &mut gpui_kit::TestAppContext,
