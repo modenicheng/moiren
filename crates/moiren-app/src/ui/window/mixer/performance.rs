@@ -16,6 +16,9 @@ pub(in crate::ui::window) struct MeterTrace {
     pub graph_frames: usize,
     /// Graph page content (cached controls) renders.
     pub graph_renders: usize,
+    /// Inspector panel (cached sidebar column) renders; a nested editor
+    /// notification must advance this without waking the root.
+    pub inspector_renders: usize,
     /// Graph meter-frame overlay paints; on a healthy page these advance per
     /// animation frame while `graph_renders` stays flat.
     pub graph_meter_paints: usize,

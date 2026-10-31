@@ -103,6 +103,23 @@ impl MixerPresentation {
     /// Fixed strip and dock widths; strips are not user-resizable.
     pub(in crate::ui::window) const STRIP_WIDTH: f32 = 160.;
     pub(in crate::ui::window) const DOCK_WIDTH: f32 = 360.;
+
+    /// Every click-to-type text editor family in one walk: the send-gain
+    /// editors plus the four value families (fader readout, balance label,
+    /// Gain "Requested", Pan position). [`StudioShell::typing_focus`] and
+    /// the inspector panel's nested observers both consume this single list,
+    /// so a newly added family cannot be wired into one enumeration site and
+    /// forgotten in the other.
+    pub(in crate::ui::window) fn text_input_entities(
+        &self,
+    ) -> impl Iterator<Item = &Entity<component::input::InputState>> + '_ {
+        self.send_inputs
+            .values()
+            .chain(self.value_inputs.values())
+            .chain(self.balance_inputs.values())
+            .chain(self.node_gain_inputs.values())
+            .chain(self.node_pan_inputs.values())
+    }
 }
 
 /// dB readout for send gains: −∞ collapses to −60 dB at the slider's quiet
