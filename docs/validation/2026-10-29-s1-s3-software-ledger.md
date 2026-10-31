@@ -12,6 +12,14 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [first native indexed-v2 acquisition](2026-10-31-indexed-marker-source.md#first-native-indexed-v2-acquisition)
+uses integrated74f173f/main PR50, retains the original indexed29-marker schedule
+and negotiates Playback480/MIC144. Operational collection/cleanup complete with
+10108 packets, but tail MIC silence1, cleanup reset/recovery1 and unknown
+observations keep quality incomplete. Scalar provenance admission has genuine
+RED/GREEN fixtures. Neither threshold-region counts nor clean packet flags
+recover source identity or qualify physical latency; no lower default follows.
+
 The [2026-10-31 MIC minimum request](2026-10-31-microphone-minimum-period.md)
 adds an independent opt-in recorder request and exact native call receipts.
 The controlled MIC-only run completes with Playback480/MIC144, but retains
