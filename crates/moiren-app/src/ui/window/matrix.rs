@@ -8,6 +8,9 @@ use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice
 use controls::*;
 use moiren_core::graph::{PortId, SendParams};
 
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
+
 /// The matrix page behind a [`PanelHost`]: rebuilt only when the published
 /// snapshot, the selected route, the scroll offset, or the density changes.
 pub(in crate::ui::window) struct MatrixPanel;
