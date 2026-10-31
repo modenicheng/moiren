@@ -5,6 +5,14 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [current353f0db gate audit](2026-11-01-s1-s3-353f0db-gate-audit.md)
+rechecks all23 original requirement groups against current source/test witnesses
+and directly revalidates all44 historical both-minimum archive payloads plus
+PCM/packet bytes. Fresh contract50 and headless desktop15 tests pass; original
+quality/refusal and missing common-reference/calibrated physical gates remain.
+It identifies no new host defect and does not authorize native replay or add
+another synthetic fixture as an acceptance substitute.
+
 The [playback SRC zero-refill receipt](2026-11-01-src-zero-refill.md) repairs
 a separate audio defect: a short upsampled segment produced from retained FIR
 history no longer rearms prime merely because its successful zero-demand
