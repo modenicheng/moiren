@@ -107,6 +107,17 @@ audited53/53 with the initial52/53 harness assertion retained. Driver610 is
 unchanged; no error is waived or gap/jitter budget reduced:
 [decode-call receipt](../../docs/validation/2026-10-31-vad-decode-call-envelope.md).
 
+The frozen binary/settings then complete305.0073755s with only existing WPP
+enabled: no reported live reset/recovery/drop/xrun and clean native/host teardown.
+Eligible call envelopes retain maximum3.708ms, not physical latency or proven
+consumer delivery. Matching610 trace decode records123 events, reported loss/
+format errors/unknowns0, and no ClockRebase message; run1's fault is not reproduced
+or explained. Both audio and separate trace archives are integrity-verified.
+Controller0/probe1/wrapper1 retain an unqualified diagnostic, not a new cleanup
+failure. No PCM/calibration, gap/jitter reduction, default promotion or physical
+lower bound follows:
+[existing-WPP control](../../docs/validation/2026-10-31-vad-call-envelope-wpp-control.md).
+
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
 A distinct existing Exclusive event Playback control now passes on the same

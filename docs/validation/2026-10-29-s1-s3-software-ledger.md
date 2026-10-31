@@ -61,6 +61,16 @@ established; this failure does not invalidate the earlier bounded control or
 prove that the new telemetry caused the reset. Source and final facts have
 separate independent reviews; S1-S3 remain incomplete.
 
+The same frozen binary/configuration's [existing-WPP control](2026-10-31-vad-call-envelope-wpp-control.md)
+then completes305.0073755s with no reported live reset/recovery/drop/xrun or host
+cleanup error. Its101665 eligible call intervals span304.9949353s, maximum3.708ms;
+publication effect/complete delivery remain unknown. Decode retains123 events,
+reported loss/format errors/unknowns0 and no ClockRebase message. This does not
+reproduce or explain run1. Audio and separate trace archives are integrity-
+verified; controller0/probe1/wrapper1 preserve the unqualified diagnostic verdict,
+not an inferred audio failure. No PCM/calibration, budget/default change,
+physical floor or impossibility proof follows; S1-S3 remain incomplete.
+
 The [physical DAWN retirement control](2026-10-31-physical-soak-retirement.md)
 retains the actual256-frame admission and probe exit1/SET_GATE cleanup failure
 on unchanged610; independent acquired-evidence audit passes49 checks without
