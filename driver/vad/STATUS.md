@@ -6,8 +6,8 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
-The separate physical target has app `e1a7c2f` staged side by side with
-`af70aa9`, and explicitly enabled
+The separate physical target has the current main-PR50-integrated app
+`74f173f` staged side by side with earlier app copies, and explicitly enabled
 native-Playback diagnostic driver `2a5aee5`: `oem203.inf`, version `3.1.1.609`.
 Service Running/root PnP OK, exact installed SYS hash, target signatures and
 catalog members are verified. The 608 and older 607 rollback packages remain;
@@ -17,12 +17,29 @@ Only DAWN headphones may be used for audible runs. The driver acquisitions
 below add no physical render client; the separately recorded current-app
 desktop retry does explicitly open DAWN.
 
-Current-app release provenance, four direction/binding regressions, and three
-target startup smokes pass. A console1/limited-token desktop retry starts
-generation1 on DAWN, then fails Settings UIA before measured Apply; owned-app
-forced termination, source exit0, unchanged volume/defaults and all original
-evidence remain retained. No current-binary S3 or quality PASS follows:
+The earlier current-app console1 retry fails Settings UIA before measured
+Apply; its forced termination and original evidence remain retained. The later
+actual74f desktop regression completes generation1/2 Start/restart/Stop,13 UIA
+Invokes, owner cleanup/reaping and normal app/source exit0 on pinned DAWN.
+Foreground, boot, volume/defaults remain unchanged and the exact terminal task
+is removed after verified archival. This closes that bounded current-binary
+control/lifecycle regression, not complete source-waveform, meter-frame visual,
+lower-budget S3 or physical quality acceptance:
 [application deployment and desktop receipt](../../docs/validation/2026-10-31-app-deployment-desktop.md).
+
+Probe `18d1552` additionally retains close-gate, stop-broadcast, worker-observed
+stop, actual native Stop and join call windows. The actual indexed-v2
+Playback480/MIC144 run completes collection/cleanup and stores10109 packets;
+fresh585 full/22 focused host tests and independent64-check archive audit pass.
+MIC tail silence1 and cleanup reset/recovery1 remain quality-incomplete.
+Recorder sample timestamps cannot identify the exact driver no-copy increment;
+one operation-unidentified trace revision mismatch remains. See the
+[stop-window receipt](../../docs/validation/2026-10-31-capture-stop-windows.md).
+
+The user permits an evidenced device-limited theoretical minimum only if
+sub-10-ms is demonstrated impossible under the current declared conditions.
+Neither that impossibility nor a calibrated physical minimum is established;
+quality gates and the distinction from software diagnostics remain unchanged.
 
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
