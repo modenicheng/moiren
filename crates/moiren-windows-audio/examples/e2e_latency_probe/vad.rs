@@ -5,6 +5,7 @@
 //! writes into the VAD playback MMDevice.
 
 use super::source::{PreparedSource, SourceCursor, SourceProgress, SourceProvenance};
+use super::source_controls::{self, SourceControls, native::NativeControls};
 use super::source_write_witness::{self, SubmitError, WriteWitness};
 use super::vad_collection::PlaybackProgress;
 use super::vad_period::{self, PeriodEvidence};
@@ -85,6 +86,8 @@ pub struct PlaybackOutcome {
     pub failure: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write_witness: Option<WriteWitness>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_controls: Option<SourceControls>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -257,6 +260,7 @@ struct WorkerState {
     native_stop_attempted: Option<bool>,
     native_stop_succeeded: Option<bool>,
     write_witness: Option<WriteWitness>,
+    source_controls: Option<SourceControls>,
 }
 
 fn stop_and_publish(
@@ -544,6 +548,7 @@ fn join_outcome(
         native_stop_succeeded: state.native_stop_succeeded,
         failure,
         write_witness: state.write_witness.clone(),
+        source_controls: state.source_controls.clone(),
     }
 }
 
@@ -1234,6 +1239,21 @@ fn run_worker(
         Stream::prepare(&device, &latest)?
     };
     let mut source = SourceCursor::new(source_plan);
+    let mut controls = source_controls::prepare_if(witness, || {
+        NativeControls::prepare(
+            &stream.client,
+            &device,
+            &mmdevice_id,
+            stream.witness_clock.as_ref(),
+            || stop.load(Ordering::Acquire),
+        )
+    });
+    if let Some(controls) = controls.as_ref() {
+        latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .source_controls = Some(controls.evidence.clone());
+    }
     latest.lock().unwrap_or_else(|p| p.into_inner()).provenance = Some(source.provenance());
     let mut info = PlaybackInfo {
         source_mode: shared.then(|| "shared_explicit_mmdevice".into()),
@@ -1289,6 +1309,32 @@ fn run_worker(
                     submit_and_publish(&mut source, &latest, |source| {
                         stream.fill_and_submit(source, false)
                     })?;
+                    if let Some(controls) = controls.as_mut().filter(|controls| {
+                        controls.evidence.snapshot.is_none()
+                            && stream
+                                .witness
+                                .as_ref()
+                                .is_some_and(|w| w.confirmed.is_some())
+                    }) {
+                        // Successful nonzero Release has committed source progress.
+                        // No lease/mutex is held during getters; they may perturb
+                        // servicing and cannot be assigned a hard COM timeout.
+                        controls.evidence.snapshot = Some(source_controls::observe(
+                            controls,
+                            source.progress.clone(),
+                            || {
+                                stream
+                                    .witness_clock
+                                    .as_ref()
+                                    .and_then(|clock| clock.now_ticks())
+                            },
+                            || stop.load(Ordering::Acquire),
+                        ));
+                        latest
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .source_controls = Some(controls.evidence.clone());
+                    }
                     let mut state = latest.lock().unwrap_or_else(|p| p.into_inner());
                     state.elapsed_seconds = started.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 }
@@ -1333,6 +1379,66 @@ pub fn discover_root() -> Result<(DeviceInterface, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_controls_join_keeps_observation_and_original_audio_error() {
+        use super::super::source_controls::{
+            ControlSnapshot, Preparation, Reading, SourceControls,
+        };
+        let latest = Mutex::new(WorkerState {
+            source_controls: Some(SourceControls {
+                qualified: false,
+                mmdevice_id: "exact owned playback".into(),
+                process_id: 42,
+                process_creation_100ns: Reading::observed(0, 123),
+                qpc_frequency_hz: Some(10_000_000),
+                preparation: Preparation {
+                    session_control_hresult: Some(0),
+                    session_volume_hresult: Some(-123),
+                    endpoint_volume_hresult: Some(0),
+                },
+                snapshot: Some(ControlSnapshot {
+                    phase: "after_first_nonzero_release",
+                    client_start_succeeded: true,
+                    source_progress: SourceProgress {
+                        submitted_nonzero_frames: 480,
+                        ..Default::default()
+                    },
+                    before_qpc: Some(100),
+                    after_qpc: Some(101),
+                    stop_requested: false,
+                    session_state: Reading::observed(0, 1),
+                    session_volume: Reading::default(),
+                    session_mute: Reading::default(),
+                    endpoint_volume: Reading::observed(0, 0.5),
+                    endpoint_mute: Reading::observed(0, false),
+                }),
+            }),
+            ..WorkerState::default()
+        });
+        let worker = thread::spawn(|| anyhow::bail!("original later render failure"));
+        let outcome = join_outcome(worker, &latest, SourceProvenance::new(None));
+        assert!(
+            outcome
+                .failure
+                .as_deref()
+                .unwrap()
+                .contains("original later render failure")
+        );
+        let json = serde_json::to_value(outcome).unwrap();
+        assert_eq!(
+            json["source_controls"]["preparation"]["session_volume_hresult"],
+            -123
+        );
+        assert_eq!(json["source_controls"]["snapshot"]["before_qpc"], 100);
+        assert!(json["source_controls"]["snapshot"]["session_volume"]["value"].is_null());
+        assert!(json["source_controls"]["snapshot"]["session_volume"]["hresult"].is_null());
+        assert_eq!(
+            json["source_controls"]["snapshot"]["endpoint_mute"]["value"],
+            false
+        );
+        assert_eq!(json["source_controls"]["qualified"], false);
+    }
+
     #[test]
     fn shared_source_padding_bounds_the_packet_and_rejects_invalid_padding() {
         assert_eq!(super::available_frames(480, 352).unwrap(), 128);

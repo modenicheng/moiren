@@ -3184,6 +3184,7 @@ mod tests {
             period_request: None,
             submitted_frames: 48_480,
             write_witness: None,
+            source_controls: None,
             playback_source: super::super::source::SourceProvenance::new(None),
             source_progress: super::super::source::SourceProgress {
                 native_preroll_frames: 480,
@@ -3509,6 +3510,7 @@ mod tests {
             playback_source: super::super::source::SourceProvenance::new(None),
             source_progress: source.source,
             write_witness: None,
+            source_controls: None,
             event_timeouts: 0,
             elapsed_seconds: 1.3,
             started: true,

@@ -20,6 +20,9 @@ process-source-worker --source-endpoint ID --source-schedule FILE --run-director
     [--source-write-witness] (worker only; fixed one-shot native write/readback evidence, always unqualified)
 Witness final playback.write_witness distinguishes failed_attempt from successful Release confirmed;
 <=16B from the first actual nonzero encoded frame, not silence preroll; never proves delivery.
+The same opt-in also retains playback.source_controls: one exact existing-client read-only
+volume/session snapshot after first nonzero Release. COM reads may perturb servicing or hang;
+no hard getter deadline, setting writes, effective gain or signal/physical acceptance is implied.
 evaluate --reports FILE --expectation FILE --level experimental|default --max-input-bytes N --max-runs N --output FILE
 analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE [--packets FILE --max-packets N]
 replay-process --trace FILE --candidates FILE --process-pid PID --process-created-100ns N
