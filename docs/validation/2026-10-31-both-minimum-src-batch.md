@@ -141,3 +141,10 @@ verification of the final retired-QUERY repair, sustained lower-budget
 delivery, matched VAD/Process comparison and calibrated physical acceptance
 remain open. S1-S3 are not complete; no device-floor or impossibility claim
 follows.
+
+The subsequent [exact interval-spacing diagnostic](2026-11-01-indexed-spacing.md)
+uses these29 frozen model intervals without another correlation search. Their
+406 pair constraints rule out a single positive constant-affine mapping, not
+actual clock drift, SRC history or physical delay. All original refusals and
+incomplete quality remain unchanged; time-varying mapping versus model-coordinate
+bias needs separate validation.

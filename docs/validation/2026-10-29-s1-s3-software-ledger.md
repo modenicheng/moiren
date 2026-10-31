@@ -91,6 +91,17 @@ The isolated44 tests and actual-repository19 model tests/strict Clippy pass;
 the isolated strict lint failure in unchanged imported test source remains
 recorded. No native replay or production/model/default change occurs.
 
+The [exact model-interval spacing diagnostic](2026-11-01-indexed-spacing.md)
+then intersects all406 pair constraints from those same29 frozen intervals.
+Its lower47993/48000 exceeds upper9583/9600 by13/8000: no single positive
+constant-affine source mapping fits those model coordinates. This is not
+actual clock drift, missing frames or physical delay; time-varying processing
+and model-coordinate bias remain distinct possibilities. No new matching,
+origin fit, interval widening or native acquisition occurs. Sixteen tool tests,
+the existing17 QPC/15 rebase tests, Ruff and fmt/diff pass; a separate53-check
+result audit preserves all original files and quality refusals. S1 requires
+more than a global phase/rate correction for these coordinates.
+
 The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
 strictly associates first-copy/native0 and first-nonzero/native228 witnesses
 with raw WASAPI packets1/229 at the same callback/completion QPC labels. The

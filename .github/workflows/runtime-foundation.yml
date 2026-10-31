@@ -68,6 +68,8 @@ jobs:
         run: python3 scripts/tests/vad-clock-rebase.tests.py
       - name: Test offline VAD capture QPC evidence association
         run: python3 scripts/tests/vad-capture-qpc.tests.py
+      - name: Test offline indexed model interval spacing
+        run: python3 scripts/tests/vad-indexed-spacing.tests.py
   test:
     needs: changes
     if: needs.changes.outputs.any == 'true'
