@@ -36,6 +36,14 @@ then separately lowers target945 to the Engine32 model minimum881. Both
 35-second native controls retain actual144, no native/cleanup error or reported
 fault, and separate initial-prime32/final-reset1. Each archive independently
 audits62/0. No declared gap/jitter is reduced or physical floor established.
+The next continuous881 fixture keeps those budgets and uses a fresh300-second
+adjacent repeated-v1 source, not the previous29 indexed-v2 markers. Its305.004622s
+native control completes cleanup with no reported live/native fault, retaining
+prime32 and joined reset1/recovery1. All14400000 source frames are Release-acked
+and the17-payload archive is root-verified; neither is delivered-waveform proof.
+Independent acquired-evidence audit passes72/0 with its initial scalar-compare
+69/70 fixture result retained; source/report/archive bytes are unchanged.
+No PCM/calibration or controlled load is acquired, and S1-S3 remain incomplete.
 
 The [physical DAWN retirement control](2026-10-31-physical-soak-retirement.md)
 retains the actual256-frame admission and probe exit1/SET_GATE cleanup failure

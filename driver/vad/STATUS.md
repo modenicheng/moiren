@@ -91,6 +91,12 @@ also finish35 seconds with actual144 and no reported native/cleanup failure;
 each archive independently audits62/0. Prime32 and final reset/recovery1 remain.
 881 is the current declared-policy model minimum, not a qualified default or
 physical theoretical minimum; sustained signal and physical quality remain open.
+The same881 budget subsequently completes305.004622s with a fresh300-second
+adjacent repeated-v1 changing-source schedule, no reported native/live fault and
+clean teardown. Source submission completion and the root-verified17-payload
+archive remain diagnostic only: no delivered PCM/calibration or physical bound
+is established. Independent acquired-evidence audit passes72/0. Driver610,
+default settings and quality gates are unchanged.
 
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
