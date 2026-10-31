@@ -8,9 +8,10 @@ verdict. Status updated 2026-10-31.
 
 The separate physical target has the current main-PR50-integrated app
 `74f173f` staged side by side with earlier app copies, and explicitly enabled
-native-Playback diagnostic driver `2a5aee5`: `oem203.inf`, version `3.1.1.609`.
+native-Playback/no-copy diagnostic driver `883a5be`: `oem204.inf`, version
+`3.1.1.610` (previous `2a5aee5`/609 is retained for rollback).
 Service Running/root PnP OK, exact installed SYS hash, target signatures and
-catalog members are verified. The 608 and older 607 rollback packages remain;
+catalog members are verified. The 609,608 and older607 rollback packages remain;
 no reboot, trust/volume/default change or target build occurs. Native retries
 are authorized; older paused-retry statements below describe dated history.
 Only DAWN headphones may be used for audible runs. The driver acquisitions
@@ -35,6 +36,19 @@ MIC tail silence1 and cleanup reset/recovery1 remain quality-incomplete.
 Recorder sample timestamps cannot identify the exact driver no-copy increment;
 one operation-unidentified trace revision mismatch remains. See the
 [stop-window receipt](../../docs/validation/2026-10-31-capture-stop-windows.md).
+
+The newer610 diagnostic directly retains the first actual MIC no-copy
+increment's original gate/state and matching event/Notify. A pre-Start inactive
+MIC attempt fails; the same-fixture retry completes10110 packets but remains
+quality-incomplete. Its sole silence0->1 increment has gate2 closed/Running;
+the existing callback sample, not the exact increment timestamp, falls after
+stop broadcast and before native Stop entry. Notify succeeds, but retained
+PCM packet identity is not independently proven. Root verifies deployment and
+both-run archive; independent native audit passes96 checks. The original91/1
+inventory-assertion RED and first run's temporary owned MMDevice catalog entry
+remain retained; default roles and preexisting render controls are unchanged.
+No counter, buffer, quality exemption or physical qualification changes:
+[no-copy witness receipt](../../docs/validation/2026-10-31-microphone-no-copy-witness.md).
 
 The user permits an evidenced device-limited theoretical minimum only if
 sub-10-ms is demonstrated impossible under the current declared conditions.

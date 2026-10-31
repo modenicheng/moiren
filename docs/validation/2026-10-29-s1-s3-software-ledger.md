@@ -21,6 +21,22 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [first MIC no-copy witness](2026-10-31-microphone-no-copy-witness.md)
+adds fixed144-byte original transfer evidence and matching event/Notify, with
+unchanged counters and RT policy. Root17 host suites, both analyzed WDK builds,
+INF/TMF checks and121 deployment-helper fixtures pass. Actual883a5be driver610
+installs as oem204 without reboot or speaker-state changes; rollback609 remains.
+One pre-Start inactive-endpoint failure and a complete10110-packet retry are
+both archived/verified. The retry directly records the sole no-copy as
+closed-gate/Running; its existing callback sample is after stop broadcast and
+before native Stop entry, not an exact increment timestamp. It does not prove
+recorder-packet identity or waive tail silence/reset/recovery. Independent
+archive audit passes96 checks, retaining its original91/1 inventory-assertion
+RED and the first run's temporary owned MMDevice catalog entry. All six default
+roles and12 preexisting render master/mute controls stay unchanged.
+Physical/lower-budget gates and the conditional device-limited-floor evidence
+requirement remain open.
+
 The [capture retirement call-window receipt](2026-10-31-capture-stop-windows.md)
 records integrated585/22 full/focused checks and a single actual18d1552
 Playback480/MIC144 acquisition, with source/collection/cleanup complete and
