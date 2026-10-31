@@ -756,6 +756,9 @@ enum Retirement {
     StopMeasurement,
     JoinSource,
     CloseGate,
+    ClosePlayback,
+    CompleteNative,
+    CloseMicrophone,
     ShutdownHost,
     Invalidate,
     Retire,
@@ -766,6 +769,8 @@ enum Retirement {
 #[derive(Default, Serialize)]
 struct RetirementObservation {
     close_gate: crate::measurement::session::CallWindow,
+    close_playback: crate::measurement::session::CallWindow,
+    complete_native: crate::measurement::session::CallWindow,
     stop_measurement_broadcast: crate::measurement::session::CallWindow,
     /// Last admitted stamps, not a fresh QUERY or a claim about the close result.
     admitted_playback_stamp: Option<[u64; 5]>,
@@ -774,9 +779,28 @@ struct RetirementObservation {
 
 #[cfg(any(windows, test))]
 impl RetirementObservation {
+    fn observe_owned<T>(
+        &mut self,
+        stage: Retirement,
+        measurement_owned: bool,
+        call: impl FnOnce() -> Result<T>,
+    ) -> Result<Option<T>> {
+        if !measurement_owned
+            && matches!(
+                stage,
+                Retirement::StopMeasurement | Retirement::CompleteNative
+            )
+        {
+            return Ok(None);
+        }
+        self.observe(stage, call).map(Some)
+    }
+
     fn observe<T>(&mut self, stage: Retirement, call: impl FnOnce() -> Result<T>) -> Result<T> {
         match stage {
-            Retirement::CloseGate => self.close_gate.observe(call),
+            Retirement::CloseGate | Retirement::CloseMicrophone => self.close_gate.observe(call),
+            Retirement::ClosePlayback => self.close_playback.observe(call),
+            Retirement::CompleteNative => self.complete_native.observe(call),
             Retirement::StopMeasurement => self.stop_measurement_broadcast.observe(call),
             _ => call(),
         }
@@ -795,28 +819,28 @@ fn retire_with_route(
     mut step: impl FnMut(Retirement) -> Result<()>,
     failures: &mut Option<String>,
 ) {
-    // Retain active evidence before revoking admission. On the pure virtual
-    // route, close both gates before native Stop/reset can advance an open
-    // gate's epoch; those later transitions cannot reopen a closed gate. Even
-    // a failed close must not skip either stop broadcast or any join. Physical
-    // retirement keeps its existing order. The recorder releases its MIC
-    // client before that export is removed, and both stops precede all joins.
+    // Keep MIC service/admission alive until native Stop/release completes.
+    // Only Playback closes before broadcasting BOTH stops; no wait/join may
+    // precede those broadcasts. A failed/expired completion still runs every
+    // later cleanup stage. Physical retirement retains its original order.
     let microphone = route == super::vad_route::RouteKind::Microphone;
-    let stages = if microphone {
-        [
+    let stages: &[Retirement] = if microphone {
+        &[
             Retirement::Observe,
             Retirement::ObserveFinal,
-            Retirement::Invalidate,
-            Retirement::CloseGate,
+            Retirement::ClosePlayback,
             Retirement::StopSource,
             Retirement::StopMeasurement,
+            Retirement::CompleteNative,
+            Retirement::Invalidate,
+            Retirement::CloseMicrophone,
             Retirement::ShutdownHost,
             Retirement::JoinSource,
             Retirement::FinishMeasurement,
             Retirement::Retire,
         ]
     } else {
-        [
+        &[
             Retirement::Observe,
             Retirement::ObserveFinal,
             Retirement::Invalidate,
@@ -829,13 +853,25 @@ fn retire_with_route(
             Retirement::FinishMeasurement,
         ]
     };
-    for stage in stages {
+    for &stage in stages {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(stage)))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("cleanup stage panicked")));
         if let Err(error) = result {
             append_failure(failures, &format!("{stage:?}: {error:#}"));
         }
     }
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn pin_retirement_stream(expected: Option<[u64; 5]>, current: [u64; 5]) -> Result<()> {
+    // Native Stop/release advances the gate epoch, not stream ownership. Use
+    // the one fresh QUERY's full stamp for close, never close a replacement.
+    let expected = expected.context("admitted retirement stream identity unknown")?;
+    ensure!(
+        expected[3] != 0 && expected[..4] == current[..4] && current[4] >= expected[4],
+        "retirement export identity changed or gate epoch regressed"
+    );
+    Ok(())
 }
 
 pub(super) fn append_failure(failures: &mut Option<String>, message: &str) {
@@ -1382,77 +1418,92 @@ impl CollectionGuard<'_> {
             |stage| {
                 // Partial preparation still visits every retirement stage, but
                 // absence of an owner is not an executed stop broadcast.
-                if stage == Retirement::StopMeasurement && self.measurement.is_none() {
-                    return Ok(());
-                }
-                self.retirement_observation.observe(stage, || match stage {
-                    Retirement::Observe => {
-                        if self.recorder_admitted
-                            && let Some(admitted) = &self.vad.admission
-                        {
-                            let admitted = admitted.current.clone();
-                            let health = match self.vad.current_health() {
-                                Ok(health) => health,
-                                Err(error) => {
-                                    latch_failure_observations(
-                                        &mut self.first_failure_observations,
-                                        self.vad.report,
-                                        self.vad.last_health.as_ref(),
-                                    );
-                                    return Err(error);
-                                }
-                            };
-                            validate_health_with_policy(
-                                &health,
-                                &admitted,
-                                self.vad.report,
-                                &mut self.first_failure_observations,
-                                self.policy,
-                                &mut self.quality,
-                            )
-                        } else {
+                self.retirement_observation
+                    .observe_owned(stage, self.measurement.is_some(), || match stage {
+                        Retirement::Observe => {
+                            if self.recorder_admitted
+                                && let Some(admitted) = &self.vad.admission
+                            {
+                                let admitted = admitted.current.clone();
+                                let health = match self.vad.current_health() {
+                                    Ok(health) => health,
+                                    Err(error) => {
+                                        latch_failure_observations(
+                                            &mut self.first_failure_observations,
+                                            self.vad.report,
+                                            self.vad.last_health.as_ref(),
+                                        );
+                                        return Err(error);
+                                    }
+                                };
+                                validate_health_with_policy(
+                                    &health,
+                                    &admitted,
+                                    self.vad.report,
+                                    &mut self.first_failure_observations,
+                                    self.policy,
+                                    &mut self.quality,
+                                )
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        Retirement::ObserveFinal => {
+                            let result = self.vad.observe_final();
+                            if result.is_err() {
+                                latch_failure_observations(
+                                    &mut self.first_failure_observations,
+                                    self.vad.report,
+                                    self.vad.last_health.as_ref(),
+                                );
+                            }
+                            result
+                        }
+                        Retirement::StopSource => {
+                            if let Some(source) = &self.vad.playback {
+                                source.request_stop();
+                            }
                             Ok(())
                         }
-                    }
-                    Retirement::ObserveFinal => {
-                        let result = self.vad.observe_final();
-                        if result.is_err() {
-                            latch_failure_observations(
-                                &mut self.first_failure_observations,
-                                self.vad.report,
-                                self.vad.last_health.as_ref(),
-                            );
+                        Retirement::StopMeasurement => {
+                            if let Some(owner) = &mut self.measurement {
+                                let result = owner.request_stop();
+                                self.measurement_retirement = Some(owner.retirement_observation());
+                                result?;
+                            }
+                            Ok(())
                         }
-                        result
-                    }
-                    Retirement::StopSource => {
-                        if let Some(source) = &self.vad.playback {
-                            source.request_stop();
+                        Retirement::JoinSource => self.vad.stop_source(),
+                        Retirement::CloseGate => self.vad.close_gate(),
+                        Retirement::ClosePlayback => self.vad.close_playback_gate(),
+                        Retirement::CloseMicrophone => self.vad.close_microphone_gate(),
+                        Retirement::CompleteNative => {
+                            if let Some(owner) = &mut self.measurement {
+                                let result = owner.complete_native();
+                                self.measurement_retirement = Some(owner.retirement_observation());
+                                result?;
+                            }
+                            Ok(())
                         }
-                        Ok(())
-                    }
-                    Retirement::StopMeasurement => {
-                        if let Some(owner) = &mut self.measurement {
-                            let result = owner.request_stop();
-                            self.measurement_retirement = Some(owner.retirement_observation());
-                            result?;
+                        Retirement::ShutdownHost => self.vad.shutdown_host(),
+                        Retirement::Invalidate => self.vad.invalidate_admission(),
+                        Retirement::Retire => {
+                            if self.route == super::vad_route::RouteKind::Microphone {
+                                self.vad.retire_collection_exports()
+                            } else {
+                                self.vad.retire_endpoint()
+                            }
                         }
-                        Ok(())
-                    }
-                    Retirement::JoinSource => self.vad.stop_source(),
-                    Retirement::CloseGate => self.vad.close_gate(),
-                    Retirement::ShutdownHost => self.vad.shutdown_host(),
-                    Retirement::Invalidate => self.vad.invalidate_admission(),
-                    Retirement::Retire => self.vad.retire_endpoint(),
-                    Retirement::FinishMeasurement => {
-                        if let Some(mut owner) = self.measurement.take() {
-                            let result = owner.finish();
-                            self.measurement_retirement = Some(owner.retirement_observation());
-                            self.measurement_outcome = Some(result?);
+                        Retirement::FinishMeasurement => {
+                            if let Some(mut owner) = self.measurement.take() {
+                                let result = owner.finish();
+                                self.measurement_retirement = Some(owner.retirement_observation());
+                                self.measurement_outcome = Some(result?);
+                            }
+                            Ok(())
                         }
-                        Ok(())
-                    }
-                })
+                    })
+                    .map(|_| ())
             },
             &mut failures,
         );
@@ -4013,6 +4064,137 @@ mod tests {
     }
 
     #[test]
+    fn retirement_partial_prepare_does_not_fabricate_native_completion_or_broadcast() {
+        let mut observation = RetirementObservation::default();
+        let mut stages = Vec::new();
+        let mut failures = None;
+        retire_with_route(
+            super::super::vad_route::RouteKind::Microphone,
+            |stage| {
+                observation
+                    .observe_owned(stage, false, || {
+                        stages.push(stage);
+                        if stage == Retirement::CloseMicrophone {
+                            pin_retirement_stream(None, [7, 8, 9, 1, 2])?;
+                        }
+                        Ok(())
+                    })
+                    .map(|_| ())
+            },
+            &mut failures,
+        );
+        let json = serde_json::to_value(observation).unwrap();
+        for field in ["complete_native", "stop_measurement_broadcast"] {
+            assert_eq!(json[field]["attempted"], false);
+            assert!(json[field]["outcome"].is_null());
+        }
+        assert!(!stages.contains(&Retirement::CompleteNative));
+        assert!(!stages.contains(&Retirement::StopMeasurement));
+        assert!(failures.unwrap().contains("identity unknown"));
+        assert_eq!(stages.last(), Some(&Retirement::Retire));
+    }
+
+    #[test]
+    fn retirement_stream_pin_allows_only_original_stream_and_monotonic_epoch() {
+        let admitted = [1, 2, 3, 4, 5];
+        for gate in [5, 6, u64::MAX] {
+            pin_retirement_stream(Some(admitted), [1, 2, 3, 4, gate]).unwrap();
+        }
+        assert!(pin_retirement_stream(None, admitted).is_err());
+        assert!(pin_retirement_stream(Some([1, 2, 3, 0, 5]), [1, 2, 3, 0, 6]).is_err());
+        for index in 0..5 {
+            let mut current = admitted;
+            current[index] = if index == 4 { 4 } else { current[index] + 1 };
+            assert!(
+                pin_retirement_stream(Some(admitted), current).is_err(),
+                "{index}"
+            );
+        }
+    }
+
+    #[test]
+    fn microphone_retirement_broadcasts_before_bounded_native_wait_with_service_live() {
+        use std::sync::{Arc, Mutex, mpsc};
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut service_live = true;
+            let mut failures = None;
+            retire_with_route(
+                super::super::vad_route::RouteKind::Microphone,
+                |stage| {
+                    observed.lock().unwrap().push(stage);
+                    if stage == Retirement::CompleteNative {
+                        ensure!(
+                            service_live,
+                            "MIC admission was revoked before native completion"
+                        );
+                        entered_tx.send(()).unwrap();
+                        release_rx
+                            .recv_timeout(Duration::from_secs(2))
+                            .context("bounded native wait timed out")?;
+                    }
+                    if matches!(
+                        stage,
+                        Retirement::Invalidate
+                            | Retirement::CloseMicrophone
+                            | Retirement::ShutdownHost
+                    ) {
+                        service_live = false;
+                    }
+                    Ok(())
+                },
+                &mut failures,
+            );
+            failures
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+        let before_release = events.lock().unwrap().clone();
+        // Always release and join before assertion, even for a broken sequence.
+        let _ = release_tx.send(());
+        let failures = worker.join().unwrap();
+        assert!(entered.is_ok(), "{failures:?}");
+        assert!(failures.is_none(), "{failures:?}");
+        assert_eq!(
+            before_release,
+            [
+                Retirement::Observe,
+                Retirement::ObserveFinal,
+                Retirement::ClosePlayback,
+                Retirement::StopSource,
+                Retirement::StopMeasurement,
+                Retirement::CompleteNative
+            ]
+        );
+    }
+
+    #[test]
+    fn microphone_retirement_keeps_service_until_both_stop_broadcasts() {
+        let mut stops = 0;
+        let mut failures = None;
+        retire_with_route(
+            super::super::vad_route::RouteKind::Microphone,
+            |stage| {
+                match stage {
+                    Retirement::StopSource | Retirement::StopMeasurement => stops += 1,
+                    Retirement::Invalidate | Retirement::CloseGate => {
+                        ensure!(
+                            stops == 2,
+                            "MIC service revoked before native stop broadcasts"
+                        );
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+            &mut failures,
+        );
+        assert!(failures.is_none(), "{failures:?}");
+    }
+
+    #[test]
     fn microphone_route_retirement_releases_capture_client_before_endpoint_removal() {
         let mut events = Vec::new();
         let mut failure = None;
@@ -4025,36 +4207,36 @@ mod tests {
             &mut failure,
         );
         let index = |stage| events.iter().position(|event| *event == stage).unwrap();
-        assert!(index(Retirement::ObserveFinal) < index(Retirement::CloseGate));
-        assert!(index(Retirement::Invalidate) < index(Retirement::CloseGate));
-        assert!(index(Retirement::CloseGate) < index(Retirement::StopSource));
-        assert!(index(Retirement::CloseGate) < index(Retirement::StopMeasurement));
+        assert!(index(Retirement::ObserveFinal) < index(Retirement::ClosePlayback));
+        assert!(index(Retirement::ClosePlayback) < index(Retirement::StopSource));
+        assert!(index(Retirement::ClosePlayback) < index(Retirement::StopMeasurement));
+        assert!(index(Retirement::StopSource) < index(Retirement::CompleteNative));
+        assert!(index(Retirement::StopMeasurement) < index(Retirement::CompleteNative));
+        assert!(index(Retirement::CompleteNative) < index(Retirement::Invalidate));
+        assert!(index(Retirement::Invalidate) < index(Retirement::CloseMicrophone));
         assert!(index(Retirement::StopSource) < index(Retirement::JoinSource));
         assert!(index(Retirement::StopMeasurement) < index(Retirement::JoinSource));
         assert!(index(Retirement::ShutdownHost) < index(Retirement::JoinSource));
         assert!(index(Retirement::ShutdownHost) < index(Retirement::FinishMeasurement));
-        assert!(index(Retirement::Invalidate) < index(Retirement::StopSource));
-        assert!(index(Retirement::Invalidate) < index(Retirement::StopMeasurement));
         assert!(index(Retirement::FinishMeasurement) < index(Retirement::Retire));
-        assert_eq!(events.len(), 10);
+        assert_eq!(events.len(), 12);
         for stage in events {
             assert!(failure.as_ref().unwrap().contains(&format!("{stage:?}")));
         }
     }
 
     #[test]
-    fn microphone_retirement_closes_before_native_stop_epoch_race() {
+    fn microphone_retirement_keeps_mic_open_through_native_stop_epoch_changes() {
         use super::super::vad_route::RouteKind;
         let mut open = [true; 2];
         let mut epoch = [1_u64; 2];
         let mut stops = [false; 2];
         let mut invalidated = false;
+        let mut completed = false;
         let mut events = Vec::new();
         let mut failures = None;
-        // The real scheduler drives this interleave: a native Pause publishes
-        // epoch 2, another reset publishes 3, both retaining an open gate.
-        // This is a scheduling model, not a replacement for finish_close's
-        // actual same-stream/closed confirmation tests in the audio library.
+        // Pause/reset changes are complete before the one fresh MIC close.
+        // The library's same-stream/closed confirmation guard stays unchanged.
         retire_with_route(
             RouteKind::Microphone,
             |stage| {
@@ -4063,26 +4245,35 @@ mod tests {
                     Retirement::Observe | Retirement::ObserveFinal => {
                         ensure!(open == [true; 2] && !invalidated, "lost active observation");
                     }
-                    Retirement::Invalidate => invalidated = true,
-                    Retirement::CloseGate => {
-                        ensure!(invalidated, "close before admission revoke");
-                        for index in 0..2 {
-                            open[index] = false;
-                            epoch[index] += 1;
-                        }
+                    Retirement::ClosePlayback => {
+                        open[0] = false;
+                        epoch[0] += 1;
+                    }
+                    Retirement::Invalidate => {
+                        ensure!(completed, "MIC revoked before native completion");
+                        invalidated = true;
+                    }
+                    Retirement::CloseMicrophone => {
+                        ensure!(completed && invalidated, "MIC closed before completion");
+                        pin_retirement_stream(Some([7, 8, 9, 1, 1]), [7, 8, 9, 1, epoch[1]])?;
+                        open[1] = false;
+                        epoch[1] += 1;
                     }
                     Retirement::StopSource | Retirement::StopMeasurement => {
                         let index = usize::from(stage == Retirement::StopMeasurement);
                         stops[index] = true;
-                        ensure!(invalidated, "native stop before admission revoke");
-                        epoch[index] += 1;
-                        let requested = epoch[index];
-                        epoch[index] += 1;
+                        ensure!(!invalidated && open[1], "MIC service lost before Stop");
+                    }
+                    Retirement::CompleteNative => {
                         ensure!(
-                            !open[index],
-                            "native stop close race: gate{requested}->{} still open; rejected_still_open",
-                            epoch[index]
+                            stops == [true; 2] && !invalidated && open[1],
+                            "service lost during wait"
                         );
+                        // Native Pause/reset preserves the open gate while
+                        // advancing epochs. Release retains stream generation.
+                        epoch[0] += 2;
+                        epoch[1] += 2;
+                        completed = true;
                     }
                     Retirement::ShutdownHost
                     | Retirement::JoinSource
@@ -4090,6 +4281,7 @@ mod tests {
                         ensure!(stops == [true; 2], "join before both stop broadcasts");
                     }
                     Retirement::Retire => {}
+                    Retirement::CloseGate => panic!("combined close on MIC route"),
                 }
                 Ok(())
             },
@@ -4103,10 +4295,12 @@ mod tests {
             [
                 Retirement::Observe,
                 Retirement::ObserveFinal,
-                Retirement::Invalidate,
-                Retirement::CloseGate,
+                Retirement::ClosePlayback,
                 Retirement::StopSource,
                 Retirement::StopMeasurement,
+                Retirement::CompleteNative,
+                Retirement::Invalidate,
+                Retirement::CloseMicrophone,
                 Retirement::ShutdownHost,
                 Retirement::JoinSource,
                 Retirement::FinishMeasurement,
@@ -4530,7 +4724,8 @@ mod tests {
                     .unwrap()
             };
             if route == RouteKind::Microphone {
-                assert!(index(Retirement::CloseGate) < index(Retirement::StopSource));
+                assert!(index(Retirement::ClosePlayback) < index(Retirement::StopSource));
+                assert!(index(Retirement::CompleteNative) < index(Retirement::ShutdownHost));
                 assert!(
                     final_index(Retirement::FinishMeasurement) < final_index(Retirement::Retire)
                 );
@@ -4561,7 +4756,7 @@ mod tests {
                     RouteKind::Microphone,
                     |stage| {
                         observed.lock().unwrap().push(stage);
-                        if stage == Retirement::CloseGate {
+                        if stage == Retirement::ClosePlayback {
                             assert!(close_failure != 2, "injected early close panic");
                             ensure!(close_failure != 1, "injected early close failure");
                         }
@@ -4594,15 +4789,17 @@ mod tests {
                 [
                     Retirement::Observe,
                     Retirement::ObserveFinal,
-                    Retirement::Invalidate,
-                    Retirement::CloseGate,
+                    Retirement::ClosePlayback,
                     Retirement::StopSource,
                     Retirement::StopMeasurement,
+                    Retirement::CompleteNative,
+                    Retirement::Invalidate,
+                    Retirement::CloseMicrophone,
                     Retirement::ShutdownHost,
                 ]
             );
             assert_eq!(
-                &events.lock().unwrap()[7..],
+                &events.lock().unwrap()[9..],
                 &[
                     Retirement::JoinSource,
                     Retirement::FinishMeasurement,
@@ -4611,8 +4808,8 @@ mod tests {
             );
             assert!(failures.contains("original collection failure"));
             match close_failure {
-                1 => assert!(failures.contains("CloseGate: injected early close failure")),
-                2 => assert!(failures.contains("CloseGate: cleanup stage panicked")),
+                1 => assert!(failures.contains("ClosePlayback: injected early close failure")),
+                2 => assert!(failures.contains("ClosePlayback: cleanup stage panicked")),
                 _ => assert_eq!(failures, "original collection failure"),
             }
         }
@@ -4628,7 +4825,7 @@ mod tests {
             |stage| {
                 evidence.observe(stage, || {
                     stages.push(stage);
-                    if stage == Retirement::CloseGate {
+                    if stage == Retirement::CloseMicrophone {
                         panic!("injected close panic");
                     }
                     ensure!(
@@ -4648,7 +4845,8 @@ mod tests {
         );
         assert!(json["admitted_microphone_stamp"].is_null());
         let index = |stage| stages.iter().position(|found| *found == stage).unwrap();
-        assert!(index(Retirement::CloseGate) < index(Retirement::StopSource));
+        assert!(index(Retirement::ClosePlayback) < index(Retirement::StopSource));
+        assert!(index(Retirement::CompleteNative) < index(Retirement::CloseMicrophone));
         for join in [
             Retirement::ShutdownHost,
             Retirement::JoinSource,
@@ -4659,7 +4857,7 @@ mod tests {
         }
         assert_eq!(stages.last(), Some(&Retirement::Retire));
         let failures = failures.unwrap();
-        assert!(failures.contains("CloseGate: cleanup stage panicked"));
+        assert!(failures.contains("CloseMicrophone: cleanup stage panicked"));
         assert!(failures.contains("StopMeasurement: injected broadcast failure"));
     }
 
@@ -4925,7 +5123,7 @@ mod tests {
     }
 
     #[test]
-    fn retirement_intent_precedes_both_native_stops_for_both_routes() {
+    fn retirement_revoke_preserves_physical_order_and_follows_mic_native_completion() {
         use super::super::vad_route::RouteKind;
         for route in [RouteKind::Physical, RouteKind::Microphone] {
             let mut events = Vec::new();
@@ -4939,8 +5137,17 @@ mod tests {
                     match stage {
                         Retirement::Invalidate => invalidated = true,
                         Retirement::StopSource | Retirement::StopMeasurement => {
-                            ensure!(invalidated, "native stop before explicit retirement intent");
+                            ensure!(
+                                invalidated == (route == RouteKind::Physical),
+                                "wrong service state before native stop"
+                            );
                             stops += 1;
+                        }
+                        Retirement::CompleteNative => {
+                            ensure!(
+                                !invalidated && stops == 2,
+                                "MIC service unavailable during completion"
+                            );
                         }
                         Retirement::ShutdownHost
                         | Retirement::JoinSource
@@ -4954,8 +5161,18 @@ mod tests {
                 &mut failures,
             );
             assert!(failures.is_none(), "{route:?}: {failures:?}");
-            assert_eq!(events.len(), 10);
-            assert_eq!(events[2], Retirement::Invalidate);
+            assert_eq!(
+                events.len(),
+                if route == RouteKind::Physical { 10 } else { 12 }
+            );
+            assert_eq!(
+                events[2],
+                if route == RouteKind::Physical {
+                    Retirement::Invalidate
+                } else {
+                    Retirement::ClosePlayback
+                }
+            );
             assert_eq!(
                 events
                     .iter()
@@ -4974,10 +5191,12 @@ mod tests {
                 vec![
                     Retirement::Observe,
                     Retirement::ObserveFinal,
-                    Retirement::Invalidate,
-                    Retirement::CloseGate,
+                    Retirement::ClosePlayback,
                     Retirement::StopSource,
                     Retirement::StopMeasurement,
+                    Retirement::CompleteNative,
+                    Retirement::Invalidate,
+                    Retirement::CloseMicrophone,
                     Retirement::ShutdownHost,
                     Retirement::JoinSource,
                     Retirement::FinishMeasurement,
@@ -5011,6 +5230,7 @@ mod tests {
                                     stop_attempts += 1;
                                 }
                                 Retirement::ShutdownHost
+                                | Retirement::CompleteNative
                                 | Retirement::JoinSource
                                 | Retirement::FinishMeasurement => {
                                     assert_eq!(stop_attempts, 2, "join before both stop attempts");

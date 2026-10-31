@@ -12,6 +12,7 @@ use std::{
 };
 
 const START_TIMEOUT: Duration = Duration::from_secs(5);
+const NATIVE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_FAILURE_BYTES: usize = 16 * 1024;
 
 /// Control/teardown call windows in the recorder's QPC 100ns domain. They are
@@ -205,6 +206,7 @@ trait SinkOwner: Send {
 
 pub(crate) struct MeasurementSession {
     native: Option<Box<dyn NativeOwner>>,
+    native_result: Option<Result<CaptureReport>>,
     sink: Option<Box<dyn SinkOwner>>,
     info: MeasurementInfo,
     config: MeasurementConfig,
@@ -366,6 +368,7 @@ impl MeasurementSession {
     ) -> Self {
         Self {
             native: Some(Box::new(native)),
+            native_result: None,
             sink: None,
             config,
             info,
@@ -526,19 +529,16 @@ impl MeasurementSession {
 
     pub(crate) fn finish(&mut self) -> Result<MeasurementOutcome> {
         ensure!(
-            self.native.is_some() && self.sink.is_some(),
+            (self.native.is_some() || self.native_result.is_some()) && self.sink.is_some(),
             "measurement owner missing or already finished"
         );
         // No fallible result below may bypass either join. Native EOF must be
         // final before the sink drains, even when native quality already failed.
-        let _ = self.request_stop();
-        let mut native = self.native.take().expect("owner checked above");
-        let native_result = self
-            .retirement
-            .native_join
-            .observe(|| join_native(native.as_mut()));
-        (self.retirement.worker_joined, self.retirement.worker) = native.worker_retirement();
-        drop(native);
+        if self.native.is_some() {
+            let _ = self.request_stop();
+            self.join_native_owner();
+        }
+        let native_result = self.native_result.take().expect("native result retained");
         let mut sink = self.sink.take().expect("owner checked above");
         let sink_result = join_sink(sink.as_mut());
         drop(sink);
@@ -565,6 +565,80 @@ impl MeasurementSession {
         }
         validate_outcome(&mut outcome);
         Ok(outcome)
+    }
+
+    /// Wait only for native Stop/release, never the filesystem sink. Keep the
+    /// owner on timeout: later cleanup still closes gates, stops the host and
+    /// performs the existing final joins. Those joins are not deadline-bounded.
+    pub(crate) fn complete_native(&mut self) -> Result<()> {
+        let started = Instant::now();
+        self.complete_native_with(|| {
+            let remaining = NATIVE_COMPLETION_TIMEOUT.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return false;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+            true
+        })
+    }
+
+    fn complete_native_with(&mut self, mut wait: impl FnMut() -> bool) -> Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ensure!(
+                self.stopping,
+                "native completion requires a stop broadcast attempt"
+            );
+            if self.native_result.is_none() {
+                let native = self
+                    .native
+                    .as_ref()
+                    .context("measurement native owner missing")?;
+                while !native.is_finished() {
+                    ensure!(
+                        wait(),
+                        "native Stop/release completion exceeded {NATIVE_COMPLETION_TIMEOUT:?}"
+                    );
+                }
+                // JoinHandle::is_finished covers thread return, including Stop
+                // and release. A successful join alone does not mean Stop passed.
+                self.join_native_owner();
+            }
+            let report = self
+                .native_result
+                .as_ref()
+                .expect("native result retained")
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+            ensure!(
+                report.failure.is_none(),
+                "native completion: {}",
+                report.failure.as_deref().unwrap_or_default()
+            );
+            ensure!(
+                !report.stream_started || report.stop_succeeded,
+                "native Stop did not succeed"
+            );
+            Ok(())
+        }))
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("native completion panicked")));
+        if let Err(error) = &result {
+            append_failure(
+                &mut self.failures.borrow_mut(),
+                &format!("complete measurement native: {error:#}"),
+            );
+        }
+        result
+    }
+
+    fn join_native_owner(&mut self) {
+        let mut native = self.native.take().expect("native owner checked");
+        self.native_result = Some(
+            self.retirement
+                .native_join
+                .observe(|| join_native(native.as_mut())),
+        );
+        (self.retirement.worker_joined, self.retirement.worker) = native.worker_retirement();
+        drop(native);
     }
 }
 
@@ -1312,6 +1386,167 @@ mod tests {
         );
         session.sink = Some(Box::new(FakeSink(state.clone())));
         (session, state)
+    }
+
+    #[test]
+    fn native_completion_timeout_retains_owner_and_finishes_every_join() {
+        let (mut owner, state) = session();
+        // Before activation is still a real native owner, not no-owner success.
+        assert!(owner.complete_native().is_err());
+        owner.request_stop().unwrap();
+        let mut waits = 0;
+        let error = owner
+            .complete_native_with(|| {
+                waits += 1;
+                waits < 3
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeded 3s"));
+        assert_eq!(waits, 3);
+        assert!(owner.native.is_some());
+        assert!(owner.native_result.is_none());
+        assert!(!owner.retirement.native_join.attempted);
+        assert_eq!(&*state.log.lock().unwrap(), &["native_stop"]);
+        let outcome = owner.finish().unwrap();
+        assert!(outcome.failure.unwrap().contains("exceeded 3s"));
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &["native_stop", "native_stop", "native_join", "sink_join"]
+        );
+    }
+
+    #[test]
+    fn native_completion_wait_panic_retains_owner_and_sink_for_final_cleanup() {
+        let (mut owner, state) = session();
+        state.stop_failure.store(true, Ordering::Relaxed);
+        assert!(owner.request_stop().is_err());
+        let error = owner
+            .complete_native_with(|| panic!("injected wait panic"))
+            .unwrap_err();
+        assert!(error.to_string().contains("native completion panicked"));
+        assert!(owner.native.is_some() && owner.sink.is_some());
+        assert!(!owner.retirement.native_join.attempted);
+        let outcome = owner.finish().unwrap();
+        let failure = outcome.failure.unwrap();
+        assert!(failure.contains("stop failure") && failure.contains("native completion panicked"));
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &["native_stop", "native_stop", "native_join", "sink_join"]
+        );
+    }
+
+    #[test]
+    fn native_completion_joins_once_without_touching_sink_and_retains_join_failure() {
+        for before_start in [false, true] {
+            let (mut owner, state) = session();
+            if !before_start {
+                owner.activate().unwrap();
+            }
+            owner.request_stop().unwrap();
+            let error = owner
+                .complete_native_with(|| {
+                    // A service turn can progress until native Stop/release
+                    // returns; neither the sink nor native join runs meanwhile.
+                    assert!(!state.log.lock().unwrap().contains(&"native_join"));
+                    state.native_finished.store(true, Ordering::Relaxed);
+                    true
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("missing fake report"));
+            assert!(owner.native.is_none());
+            assert!(owner.sink.is_some());
+            assert!(!state.log.lock().unwrap().contains(&"sink_join"));
+            let outcome = owner.finish().unwrap();
+            assert!(outcome.failure.unwrap().contains("missing fake report"));
+            let log = state.log.lock().unwrap();
+            assert_eq!(
+                log.iter().filter(|event| **event == "native_join").count(),
+                1
+            );
+            assert_eq!(log.iter().filter(|event| **event == "sink_join").count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_completion_preserves_stop_release_failures_and_partial_report() {
+        use moiren_windows_audio::{SessionDuration, capture::CaptureSource};
+        for fault in 0..4 {
+            let state = Arc::new(State::default());
+            state.native_finished.store(true, Ordering::Relaxed);
+            let mut report =
+                CaptureReport::new(CaptureSource::Physical, SessionDuration::UntilStopped);
+            report.stream_started = fault != 3;
+            report.stop_succeeded = fault == 0;
+            report.failure = (fault == 2).then(|| "injected release failure".into());
+            let mut owner = MeasurementSession::own_native(
+                config(),
+                info(),
+                FakeNative {
+                    state: state.clone(),
+                    report: Some(report),
+                },
+            );
+            owner.sink = Some(Box::new(FakeSink(state.clone())));
+            owner.request_stop().unwrap();
+            // Already finished means no wait, including pre-Start cancellation.
+            let result = owner.complete_native_with(|| panic!("already finished"));
+            assert_eq!(result.is_ok(), matches!(fault, 0 | 3));
+            // The control entry point must also be idempotent after completion.
+            assert_eq!(owner.complete_native().is_ok(), result.is_ok());
+            let outcome = owner.finish().unwrap();
+            let report = outcome
+                .native_capture
+                .expect("partial native result retained");
+            assert_eq!(report.stream_started, fault != 3);
+            assert_eq!(report.stop_succeeded, fault == 0);
+            if fault == 2 {
+                assert!(outcome.failure.unwrap().contains("release failure"));
+            }
+            assert_eq!(
+                &*state.log.lock().unwrap(),
+                &["native_stop", "native_join", "sink_join"]
+            );
+        }
+    }
+
+    #[test]
+    fn native_completion_join_panic_is_retained_before_sink_finish() {
+        struct PanickingJoin;
+        impl NativeOwner for PanickingJoin {
+            fn activate(&self) -> Result<()> {
+                Ok(())
+            }
+            fn has_started(&self) -> bool {
+                true
+            }
+            fn is_finished(&self) -> bool {
+                true
+            }
+            fn request_stop(&self) -> Result<()> {
+                Ok(())
+            }
+            fn join(&mut self) -> Result<CaptureReport> {
+                panic!("injected native join panic")
+            }
+        }
+        let state = Arc::new(State::default());
+        let mut owner = MeasurementSession::own_native(config(), info(), PanickingJoin);
+        owner.sink = Some(Box::new(FakeSink(state.clone())));
+        owner.request_stop().unwrap();
+        assert!(
+            owner
+                .complete_native_with(|| panic!("already complete"))
+                .unwrap_err()
+                .to_string()
+                .contains("native join panicked")
+        );
+        assert!(owner.native.is_none() && owner.native_result.is_some());
+        assert!(state.log.lock().unwrap().is_empty());
+        let outcome = owner.finish().unwrap();
+        assert!(outcome.failure.unwrap().contains("native join panicked"));
+        assert!(outcome.sink.is_some());
+        assert_eq!(&*state.log.lock().unwrap(), &["sink_join"]);
     }
 
     #[test]

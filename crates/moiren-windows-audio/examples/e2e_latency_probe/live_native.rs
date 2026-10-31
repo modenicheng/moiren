@@ -135,6 +135,7 @@ fn each_owned_export(
 fn prepare_owned_exports(
     exports: &[(VirtualEndpointId, Intent, String)],
     owned: &mut Vec<VirtualEndpointId>,
+    created: &mut Vec<GateSnapshot>,
     mut observe: impl FnMut(
         VirtualEndpointId,
     ) -> Option<moiren_windows_audio::vad::VadExportObservation>,
@@ -151,16 +152,19 @@ fn prepare_owned_exports(
             );
             // A panic after the provider published its uncertain record must
             // still transfer that endpoint into this run's cleanup ownership.
-            let created = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 create(*id, *intent, name)
             }))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("VAD CREATE {id:?} panicked")));
             // CREATE can fail after publishing an uncertain ownership record.
             // Explicit no-resource deferral removes that record; do not own it.
-            if observe(*id).is_some() {
+            if let Some(view) = observe(*id) {
                 owned.push(*id);
+                if let Some(snapshot) = view.snapshot {
+                    created.push((*id, snapshot));
+                }
             }
-            created.with_context(|| format!("CREATE VAD {intent:?} export"))?;
+            result.with_context(|| format!("CREATE VAD {intent:?} export"))?;
         }
         ready(*id, *intent)?;
     }
@@ -171,6 +175,60 @@ type GateSnapshot = (
     VirtualEndpointId,
     moiren_windows_audio::vad::EndpointSnapshot,
 );
+
+#[derive(Clone, Copy)]
+enum RetirementPin {
+    Admitted([u64; 5]),
+    Created([u64; 5]),
+}
+
+impl RetirementPin {
+    fn validate(self, current: [u64; 5]) -> Result<()> {
+        match self {
+            Self::Admitted(expected) => {
+                vad_collection::pin_retirement_stream(Some(expected), current)
+            }
+            Self::Created(created) => {
+                // Only before admission: native setup may create/release its
+                // own stream, but never adopt another CREATE/session identity.
+                ensure!(
+                    created[..3] == current[..3]
+                        && current[3] >= created[3]
+                        && current[4] >= created[4],
+                    "retirement CREATE identity changed or epoch regressed"
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
+fn collection_retirement_pin(
+    id: VirtualEndpointId,
+    playback: VirtualEndpointId,
+    admission: Option<&vad_collection::Admission>,
+    created: &[GateSnapshot],
+) -> Result<RetirementPin> {
+    if let Some(admission) = admission {
+        let stamp = if id == playback {
+            admission.current.stamp
+        } else {
+            admission
+                .current
+                .microphone
+                .as_ref()
+                .and_then(|mic| mic.stamp)
+        };
+        return Ok(RetirementPin::Admitted(
+            stamp.context("admitted retirement stream unknown")?,
+        ));
+    }
+    created
+        .iter()
+        .find(|(endpoint, _)| *endpoint == id)
+        .map(|(_, snapshot)| RetirementPin::Created(snapshot_stamp(*snapshot)))
+        .context("original CREATE retirement identity unknown")
+}
 
 fn open_prepared_gates(
     snapshots: &[GateSnapshot],
@@ -673,6 +731,7 @@ pub fn run_vad(
         endpoint_id,
         microphone: options.microphone_target()?,
         owned_exports: Vec::with_capacity(2),
+        created_exports: Vec::with_capacity(2),
         exports_prepared: false,
         recorder_confirmed: false,
         initial_recorder: None,
@@ -795,6 +854,7 @@ pub(super) struct VadCleanup<'a> {
     endpoint_id: VirtualEndpointId,
     pub(super) microphone: Option<vad_route::MicrophoneTarget>,
     owned_exports: Vec<VirtualEndpointId>,
+    created_exports: Vec<GateSnapshot>,
     exports_prepared: bool,
     recorder_confirmed: bool,
     initial_recorder: Option<moiren_windows_audio::vad::EndpointSnapshot>,
@@ -818,6 +878,58 @@ pub(super) struct VadCleanup<'a> {
 }
 
 impl VadCleanup<'_> {
+    pub(super) fn close_playback_gate(&mut self) -> Result<()> {
+        let pin = collection_retirement_pin(
+            self.endpoint_id,
+            self.endpoint_id,
+            self.admission.as_ref(),
+            &self.created_exports,
+        )?;
+        close_vad_gate_expected(self.provider, self.endpoint_id, Some(pin))
+    }
+
+    pub(super) fn close_microphone_gate(&mut self) -> Result<()> {
+        if let Some(target) = &self.microphone {
+            let pin = collection_retirement_pin(
+                target.endpoint_id,
+                self.endpoint_id,
+                self.admission.as_ref(),
+                &self.created_exports,
+            )?;
+            close_vad_gate_expected(self.provider, target.endpoint_id, Some(pin))?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn retire_collection_exports(&mut self) -> Result<()> {
+        self.retire_exports(true)
+    }
+
+    fn retire_exports(&mut self, pin_stream: bool) -> Result<()> {
+        each_owned_export(&self.owned_exports, |id| {
+            let expected = if pin_stream {
+                Some(collection_retirement_pin(
+                    id,
+                    self.endpoint_id,
+                    self.admission.as_ref(),
+                    &self.created_exports,
+                )?)
+            } else {
+                None
+            };
+            let receipt = if id == self.endpoint_id {
+                &mut self.report.vad_cleanup
+            } else {
+                &mut self.report.vad_microphone_cleanup
+            };
+            let observation = retire_vad(self.provider, id, receipt, expected)?;
+            if let Some(error) = observation.error {
+                bail!("VAD provider cleanup {id:?}: {error}");
+            }
+            Ok(())
+        })
+    }
+
     pub(super) fn current_health(&mut self) -> Result<vad_collection::Health> {
         use moiren_windows_audio::engine_backend::NativeStreamKind;
         let ((exports, engine, native), control_observation) =
@@ -988,6 +1100,7 @@ impl VadCleanup<'_> {
         prepare_owned_exports(
             &exports,
             &mut self.owned_exports,
+            &mut self.created_exports,
             |id| {
                 self.provider
                     .export_observations()
@@ -1460,25 +1573,14 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
     }
 
     fn invalidate_admission(&mut self) -> Result<()> {
-        // Shared atomic stop intent for both exports, before native Stop. Gate
-        // closure alone performs QUERY/IO and does not invalidate this ticket.
+        // Global revocation stops service for both exports. The MIC route must
+        // first finish native Stop/release; physical retirement is unchanged.
         self.provider.set_active_revision(None);
         Ok(())
     }
 
     fn retire_endpoint(&mut self) -> Result<()> {
-        each_owned_export(&self.owned_exports, |id| {
-            let receipt = if id == self.endpoint_id {
-                &mut self.report.vad_cleanup
-            } else {
-                &mut self.report.vad_microphone_cleanup
-            };
-            let observation = retire_vad(self.provider, id, receipt)?;
-            if let Some(error) = observation.error {
-                bail!("VAD provider cleanup {id:?}: {error}");
-            }
-            Ok(())
-        })
+        self.retire_exports(false)
     }
 }
 
@@ -1895,11 +1997,32 @@ fn minimal_vad_project(
 }
 
 fn close_vad_gate(provider: &WindowsVadProvider, endpoint_id: VirtualEndpointId) -> Result<()> {
+    close_vad_gate_expected(provider, endpoint_id, None)
+}
+
+fn close_vad_gate_expected(
+    provider: &WindowsVadProvider,
+    endpoint_id: VirtualEndpointId,
+    expected: Option<RetirementPin>,
+) -> Result<()> {
     let view = provider
         .export_observations()
         .into_iter()
         .find(|view| view.endpoint_id == endpoint_id)
         .context("VAD export disappeared before gate close")?;
+    close_vad_gate_observed(view, expected, |stamp| {
+        provider
+            .set_export_gate(endpoint_id, stamp, false, 0, 0)
+            .context("close VAD export gate")
+    })
+}
+
+fn close_vad_gate_observed(
+    view: moiren_windows_audio::vad::VadExportObservation,
+    expected: Option<RetirementPin>,
+    close: impl FnOnce([u64; 5]) -> Result<()>,
+) -> Result<()> {
+    let endpoint_id = view.endpoint_id;
     let observed = view.error.map_or(Ok(()), |error| {
         Err(anyhow::anyhow!(
             "VAD gate-close observation {endpoint_id:?}: {error}"
@@ -1907,10 +2030,11 @@ fn close_vad_gate(provider: &WindowsVadProvider, endpoint_id: VirtualEndpointId)
     });
     let closed = (|| {
         let current = view.snapshot.context("VAD gate-close snapshot unknown")?;
+        if let Some(expected) = expected {
+            expected.validate(snapshot_stamp(current))?;
+        }
         if current.gate_open() {
-            provider
-                .set_export_gate(endpoint_id, snapshot_stamp(current), false, 0, 0)
-                .context("close VAD export gate")?;
+            close(snapshot_stamp(current))?;
         }
         Ok(())
     })();
@@ -1921,6 +2045,7 @@ fn retire_vad(
     provider: &WindowsVadProvider,
     endpoint_id: VirtualEndpointId,
     last_observation: &mut Option<Value>,
+    expected: Option<RetirementPin>,
 ) -> Result<moiren_windows_audio::vad::VadExportObservation> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -1938,6 +2063,9 @@ fn retire_vad(
             thread::sleep(Duration::from_millis(50));
             continue;
         };
+        if let Some(expected) = expected {
+            expected.validate(snapshot_stamp(snapshot))?;
+        }
         if snapshot.state() == PdoState::Removed {
             return Ok(view);
         }
@@ -2347,6 +2475,119 @@ mod tests {
     }
 
     #[test]
+    fn pre_admission_created_endpoint_is_retired_without_inventing_an_admitted_stream() {
+        let created = endpoint_view_at(Intent::Microphone, StreamState::Closed, false, 0, 1);
+        let created_stamp = snapshot_stamp(created.snapshot.unwrap());
+        let after_prepare = endpoint_view_at(Intent::Microphone, StreamState::Closed, false, 1, 3);
+        let owned = [(created.endpoint_id, created.snapshot.unwrap())];
+        let pin = collection_retirement_pin(created.endpoint_id, created.endpoint_id, None, &owned)
+            .unwrap();
+        pin.validate(snapshot_stamp(after_prepare.snapshot.unwrap()))
+            .unwrap();
+        close_vad_gate_observed(after_prepare.clone(), Some(pin), |_| {
+            panic!("already closed")
+        })
+        .unwrap();
+        for index in 0..3 {
+            let mut foreign = snapshot_stamp(after_prepare.snapshot.unwrap());
+            foreign[index] += 1;
+            assert!(pin.validate(foreign).is_err());
+        }
+        assert_eq!(
+            &created_stamp[..3],
+            &snapshot_stamp(after_prepare.snapshot.unwrap())[..3]
+        );
+        let mut admitted = vad_collection::Admission {
+            before_gate: created_stamp,
+            current: vad_collection::Health::default(),
+        };
+        assert!(
+            collection_retirement_pin(
+                created.endpoint_id,
+                created.endpoint_id,
+                Some(&admitted),
+                &owned
+            )
+            .is_err(),
+            "admission missing stamp cannot fall back to CREATE"
+        );
+        admitted.current.stamp = Some(snapshot_stamp(after_prepare.snapshot.unwrap()));
+        let strict = collection_retirement_pin(
+            created.endpoint_id,
+            created.endpoint_id,
+            Some(&admitted),
+            &owned,
+        )
+        .unwrap();
+        let mut replacement = snapshot_stamp(after_prepare.snapshot.unwrap());
+        replacement[3] += 1;
+        assert!(strict.validate(replacement).is_err());
+        assert!(
+            collection_retirement_pin(created.endpoint_id, created.endpoint_id, None, &[]).is_err(),
+            "uncertain CREATE remains unknown"
+        );
+    }
+
+    #[test]
+    fn retirement_gate_close_uses_one_observation_and_never_retries_stale_query() {
+        let view = endpoint_view(Intent::Microphone, StreamState::Running);
+        let expected = snapshot_stamp(view.snapshot.unwrap());
+        let calls = Cell::new(0);
+        // The real close decision passes this exact QUERY stamp to lifecycle;
+        // a concurrent epoch change there must stay an error, never refresh.
+        let error =
+            close_vad_gate_observed(view, Some(RetirementPin::Admitted(expected)), |stamp| {
+                calls.set(calls.get() + 1);
+                assert_eq!(stamp, expected);
+                anyhow::bail!("stale QUERY -> SET_GATE: Cancelled")
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("Cancelled"));
+        assert_eq!(calls.get(), 1);
+        for (generation, gate) in [
+            (expected[3] + 1, expected[4]),
+            (expected[3], expected[4] - 1),
+        ] {
+            let foreign = endpoint_view_at(
+                Intent::Microphone,
+                StreamState::Closed,
+                false,
+                generation,
+                gate,
+            );
+            assert!(
+                close_vad_gate_observed(
+                    foreign,
+                    Some(RetirementPin::Admitted(expected)),
+                    |_| panic!("must not close foreign/regressed stream")
+                )
+                .is_err()
+            );
+        }
+        let closed = endpoint_view_at(
+            Intent::Microphone,
+            StreamState::Closed,
+            false,
+            expected[3],
+            expected[4] + 1,
+        );
+        close_vad_gate_observed(closed, Some(RetirementPin::Admitted(expected)), |_| {
+            panic!("closed needs no SET_GATE")
+        })
+        .unwrap();
+        let mut missing = endpoint_view(Intent::Microphone, StreamState::Running);
+        missing.snapshot = None;
+        assert!(
+            close_vad_gate_observed(
+                missing,
+                Some(RetirementPin::Admitted(expected)),
+                |_| panic!("unknown is not a close")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn recorder_start_waits_only_for_same_stamp_paused_observations() {
         let origin = Instant::now();
         let clock = Cell::new(origin);
@@ -2682,10 +2923,12 @@ mod tests {
         for uncertain in [false, true] {
             let views = RefCell::new(Vec::<VadExportObservation>::new());
             let mut owned = Vec::new();
+            let mut created = Vec::new();
             let mut ready_ids = Vec::new();
             let error = prepare_owned_exports(
                 &exports,
                 &mut owned,
+                &mut created,
                 |id| {
                     views
                         .borrow()
@@ -2714,6 +2957,8 @@ mod tests {
             .unwrap_err();
             assert!(format!("{error:#}").contains("second CREATE failed"));
             assert_eq!(ready_ids, [playback.endpoint_id]);
+            assert_eq!(created.len(), 1);
+            assert_eq!(created[0].1.key(), playback.snapshot.unwrap().key());
             assert_eq!(
                 owned,
                 if uncertain {
@@ -2741,6 +2986,7 @@ mod tests {
                 ),
             ],
             &mut owned,
+            &mut Vec::new(),
             |id| {
                 views
                     .borrow()
@@ -2780,6 +3026,7 @@ mod tests {
                 ),
             ],
             &mut owned,
+            &mut Vec::new(),
             |id| {
                 views
                     .borrow()
