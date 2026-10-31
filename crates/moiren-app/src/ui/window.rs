@@ -163,12 +163,12 @@ pub struct StudioShell {
     mixer_scroll: ScrollHandle,
     exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
-    mixer_geometry: mixer::meter_frame::Geometry,
+    mixer_geometry: mixer::page::Geometry,
     toolbar_chrome: Entity<chrome::ToolbarChrome>,
     status_chrome: Entity<chrome::StatusbarChrome>,
-    mixer_frame: Entity<mixer::meter_frame::MixerMeterLayer>,
-    graph_meter_frame: Entity<graph::meter_frame::GraphMeterLayer>,
-    graph_controls: Entity<graph::meter_frame::GraphPanelHost>,
+    mixer_frame: Entity<mixer::page::MixerMeterLayer>,
+    graph_meter_frame: Entity<graph::page::GraphMeterLayer>,
+    graph_controls: Entity<graph::page::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
@@ -265,20 +265,17 @@ impl StudioShell {
         };
         let settings = settings::SettingsEditor::new(&preferences, cx);
         let export_controls = devices::ExportControls::new(window, cx);
-        let mixer_geometry = mixer::meter_frame::Geometry::default();
+        let mixer_geometry = mixer::page::Geometry::default();
         let graph_canvas_frame = pages::graph_canvas_view::PreparedFrame::default();
         let shell_entity = cx.entity();
         let mixer_meters = std::rc::Rc::new(std::cell::RefCell::new(
-            mixer::meter_frame::MixerMeters::new(shell_entity.downgrade(), mixer_geometry.clone()),
+            mixer::page::MixerMeters::new(shell_entity.downgrade(), mixer_geometry.clone()),
         ));
-        let mixer_frame = cx.new(|_| mixer::meter_frame::MixerMeterLayer::new(mixer_meters));
+        let mixer_frame = cx.new(|_| mixer::page::MixerMeterLayer::new(mixer_meters));
         let graph_meters = std::rc::Rc::new(std::cell::RefCell::new(
-            graph::meter_frame::GraphMeters::new(
-                shell_entity.downgrade(),
-                graph_canvas_frame.clone(),
-            ),
+            graph::page::GraphMeters::new(shell_entity.downgrade(), graph_canvas_frame.clone()),
         ));
-        let graph_meter_frame = cx.new(|_| graph::meter_frame::GraphMeterLayer::new(graph_meters));
+        let graph_meter_frame = cx.new(|_| graph::page::GraphMeterLayer::new(graph_meters));
         let inspector_meters = sidebar::InspectorMeterFrame::default();
         let inspector_meter_layer = cx.new(|_| {
             sidebar::InspectorMeterLayer::new(std::rc::Rc::new(std::cell::RefCell::new(
@@ -306,8 +303,8 @@ impl StudioShell {
             sidebar::LibraryRailPanelHost::new(sidebar::LibraryRailPanel, shell_entity.clone(), cx)
         });
         let graph_controls = cx.new(|child_cx| {
-            graph::meter_frame::GraphPanelHost::new(
-                graph::meter_frame::GraphPanel,
+            graph::page::GraphPanelHost::new(
+                graph::page::GraphPanel,
                 shell_entity.clone(),
                 child_cx,
             )
@@ -760,8 +757,8 @@ impl Render for StudioShell {
                     .min_h_0()
                     .min_w_0()
                     .child(match self.presentation.page {
-                        Page::Graph => graph::meter_frame::page(self, window),
-                        Page::Mixer => mixer::meter_frame::page(self, window, cx),
+                        Page::Graph => graph::page::page(self, window),
+                        Page::Mixer => mixer::page::page(self, window, cx),
                         Page::Matrix => matrix::page_for(self, window, cx),
                         Page::Devices => devices::page_for(self, window, cx),
                     })

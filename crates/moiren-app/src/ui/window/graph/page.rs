@@ -1,8 +1,9 @@
-//! Cached page content behind a [`PanelHost`] and the display-rate meter
-//! layer behind a [`HotLayerView`]: the meter canvas is a sibling, never a
-//! descendant of the cached subtree — gpui-fast replays a cached panel's
-//! paint without re-running its closures, so live bars must be painted by
-//! the hot layer at the frame the canvas prepaint published.
+//! The Graph page assembly: cached page content behind a [`PanelHost`] and
+//! the display-rate meter layer behind a [`HotLayerView`]: the meter canvas
+//! is a sibling, never a descendant of the cached subtree — gpui-fast
+//! replays a cached panel's paint without re-running its closures, so live
+//! bars must be painted by the hot layer at the frame the canvas prepaint
+//! published.
 use super::*;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
 use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_splice};
