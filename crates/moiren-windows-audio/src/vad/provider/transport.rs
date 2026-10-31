@@ -2,6 +2,44 @@
 //! only the lifecycle adapter can open a native gate.
 use super::{lifecycle::EndpointControl, *};
 
+pub(super) fn microphone_running(
+    current: super::super::EndpointSnapshot,
+    state: &SessionState,
+) -> bool {
+    current.stream_state() == StreamState::Running && current.gate_open() && state.admitted()
+}
+
+pub(super) fn wait_for_microphone_poll(
+    current: super::super::EndpointSnapshot,
+    capabilities: super::super::Capabilities,
+    state: &SessionState,
+    transport_started: bool,
+    observed_reset: u64,
+    sleep: impl FnOnce(Duration),
+) {
+    // Only the fresh admitted first-start Paused observation gets a shorter
+    // poll. No owner or WRITE is prepared here; the next QUERY must still
+    // authorize Running. Recovery and steady-state event waits stay unchanged.
+    let first_paused = !transport_started
+        && observed_reset == 0
+        && state.reset_epoch.load(Ordering::Acquire) == 0
+        && state.producer_quiesced_epoch.load(Ordering::Acquire) == 0
+        && state.consumer_quiesced_epoch.load(Ordering::Acquire) == 0
+        && state.admitted()
+        && current.intent() == Intent::Microphone
+        && current.stream_state() == StreamState::Paused;
+    let wait = if first_paused && let Ok(shape) = current.pcm_shape(capabilities) {
+        Duration::from_nanos(
+            (u64::from(shape.frames()) * 1_000_000_000)
+                .div_ceil(u64::from(super::super::SAMPLE_RATE) * 2),
+        )
+        .min(POLL_INTERVAL)
+    } else {
+        POLL_INTERVAL
+    };
+    sleep(wait);
+}
+
 #[cfg(test)]
 pub(super) fn poll<C: EndpointControl>(
     control: &mut C,

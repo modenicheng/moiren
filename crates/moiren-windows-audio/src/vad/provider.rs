@@ -1121,10 +1121,7 @@ fn run_microphone(
                     // MicrophonePump::arm_reprime).
                     reprime_after_reset = true;
                 }
-                if current.stream_state() == StreamState::Running
-                    && current.gate_open()
-                    && state.admitted()
-                {
+                if transport::microphone_running(current, state) {
                     if owner.is_none() {
                         let shape = current
                             .pcm_shape(control.capabilities())
@@ -1223,7 +1220,14 @@ fn run_microphone(
                 );
             }
             retired.poll();
-            thread::sleep(POLL_INTERVAL);
+            transport::wait_for_microphone_poll(
+                current,
+                control.capabilities(),
+                state,
+                transport_started,
+                observed_reset,
+                thread::sleep,
+            );
         }
         Ok(())
     })();

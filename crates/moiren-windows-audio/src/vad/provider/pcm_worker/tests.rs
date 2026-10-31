@@ -7,6 +7,8 @@ mod sequence_tests;
 mod input_capture_tests;
 #[path = "reprime_tests.rs"]
 mod reprime_tests;
+#[path = "startup_poll_tests.rs"]
+mod startup_poll_tests;
 use crate::vad::{SampleFormat, pcm_slots::SlotBook};
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
 use moiren_engine::{
