@@ -66,7 +66,7 @@ fn input_capture_actual_pump_retains_raw_before_decode_without_changing_carrier(
 }
 
 struct Fixture {
-    state: SessionState,
+    state: Arc<SessionState>,
     shared: Arc<CaptureShared>,
     handle: crate::vad::VadInputCaptureHandle,
     capture: Option<crate::vad::provider::input_capture::CaptureWorker>,
@@ -79,7 +79,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(frames: u32, capacity: usize) -> Self {
-        let state = state();
+        let state = Arc::new(state());
         let identity = capture_identity(&state, SampleFormat::Float32);
         let id = VirtualEndpointId::from_bytes(identity.stable_id);
         let (shared, handle) = CaptureShared::new(id, frames).unwrap();
@@ -272,7 +272,7 @@ fn input_capture_session_join_and_drop_retain_error_and_panic_without_early_take
         f.packet(1, [0.; 2]);
         f.pump().unwrap();
         let capture = f.capture.take().unwrap();
-        let state = Arc::new(f.state);
+        let state = f.state;
         let worker_state = state.clone();
         let (exited_tx, exited_rx) = mpsc::sync_channel(1);
         let (finish_tx, finish_rx) = mpsc::sync_channel(1);
@@ -415,3 +415,6 @@ fn input_capture_pre_first_packet_reset_can_arm_fresh_but_later_reset_seals() {
     assert_eq!(a.identity.unwrap(), identity);
     assert_eq!(a.seal_reason, "identity_changed");
 }
+
+#[path = "input_capture_race_tests.rs"]
+mod race_tests;

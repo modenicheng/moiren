@@ -30,6 +30,9 @@ pub struct VadInputCapturePacket {
     /// retained in byte_count/raw and marked short_or_wrong_packet, not hidden.
     pub actual_frames: u32,
     pub byte_count: usize,
+    /// `published` means decode accepted the bytes with the capture owner's
+    /// identity observed current on both sides, not delivery to the graph.
+    /// `published_identity_changed` preserves a real write whose owner changed.
     pub publication: &'static str,
 }
 
@@ -200,6 +203,18 @@ impl CaptureWorker {
     pub(super) fn bind(&mut self, identity: VadInputCaptureIdentity) {
         self.owner = Some(identity);
     }
+    pub(super) fn publication_current(&self, state: &SessionState, epoch: u64) -> bool {
+        self.owner.is_some_and(|identity| {
+            identity.reset_epoch == epoch
+                && state.admitted()
+                && state.reset_epoch.load(Ordering::Acquire) == epoch
+                && state.admitted_ticket.load(Ordering::Acquire) == identity.admission_ticket
+                && state.admitted_revision.load(Ordering::Acquire) == identity.active_revision
+                && state
+                    .admission
+                    .matches(identity.admission_ticket, identity.active_revision)
+        })
+    }
     pub(super) fn seal(&mut self, reason: &'static str) {
         if self.artifact.identity.is_some() && self.artifact.seal_reason == "open" {
             self.artifact.seal_reason = reason;
@@ -218,15 +233,7 @@ impl CaptureWorker {
         }
         // The identity belongs to the actual PcmOwner, not a later QUERY or
         // admission. Never relabel borrowed old-owner bytes with fresh atoms.
-        if identity.reset_epoch != epoch
-            || !state.admitted()
-            || state.reset_epoch.load(Ordering::Acquire) != epoch
-            || state.admitted_ticket.load(Ordering::Acquire) != identity.admission_ticket
-            || state.admitted_revision.load(Ordering::Acquire) != identity.active_revision
-            || !state
-                .admission
-                .matches(identity.admission_ticket, identity.active_revision)
-        {
+        if !self.publication_current(state, epoch) {
             self.artifact.excluded_epoch_packets =
                 self.artifact.excluded_epoch_packets.saturating_add(1);
             self.seal("identity_changed");
@@ -305,9 +312,22 @@ impl CaptureWorker {
             self.artifact.seal_reason = "no_accepted_data_unknown";
         }
     }
-    pub(super) fn published(&mut self, index: Option<usize>, result: &'static str) {
+    pub(super) fn published(
+        &mut self,
+        index: Option<usize>,
+        result: &'static str,
+        identity_current: bool,
+    ) {
         if let Some(index) = index {
-            self.artifact.packets[index].publication = result;
+            self.artifact.packets[index].publication = if result == "published" && !identity_current
+            {
+                // Keep the actual successful write and any earlier capacity
+                // seal; never let an identity race acquire a clean label.
+                self.seal("identity_changed_during_publication");
+                "published_identity_changed"
+            } else {
+                result
+            };
         }
     }
 }
@@ -380,7 +400,7 @@ mod tests {
                     },
                     &[0; 8],
                 );
-                worker.published(index, "published");
+                worker.published(index, "published", true);
             }
         });
         assert_eq!(worker.artifact.packets.len(), 4096);

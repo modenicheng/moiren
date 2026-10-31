@@ -338,7 +338,13 @@ pub(super) fn playback_recorded<C: PcmIo>(
                 } else {
                     None
                 };
-                let decoded = if accepted {
+                let (decoded, capture_identity_current) = if accepted {
+                    // The optional raw capture has its own single-shot owner;
+                    // telemetry may already be invalidated by an earlier open.
+                    let capture_current_before = record.is_none()
+                        || capture
+                            .as_ref()
+                            .is_none_or(|capture| capture.publication_current(state, epoch));
                     let valid_before = publication_current(state, epoch);
                     let before = state.telemetry.publication_clock();
                     #[cfg(test)]
@@ -350,6 +356,10 @@ pub(super) fn playback_recorded<C: PcmIo>(
                     // Observe revocation/reset after the existing write, but
                     // never add a drop/retry or alter its result/error policy.
                     let valid_after = publication_current(state, epoch);
+                    let capture_current_after = record.is_none()
+                        || capture
+                            .as_ref()
+                            .is_none_or(|capture| capture.publication_current(state, epoch));
                     state.telemetry.publication.record(
                         before,
                         after,
@@ -358,9 +368,9 @@ pub(super) fn playback_recorded<C: PcmIo>(
                         stamp.sequence,
                         valid_before && valid_after,
                     );
-                    decoded
+                    (decoded, capture_current_before && capture_current_after)
                 } else {
-                    Ok(true)
+                    (Ok(true), false)
                 };
                 if let Some(capture) = capture.as_mut() {
                     capture.published(
@@ -370,6 +380,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
                             Ok(false) => "carrier_full",
                             Err(_) => "decode_error",
                         },
+                        capture_identity_current,
                     );
                 }
                 if !decoded? {

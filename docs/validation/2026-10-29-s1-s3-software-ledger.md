@@ -5,6 +5,13 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [raw capture publication-race receipt](2026-11-01-input-publication-race.md)
+repairs a reproduced pre-decode/raw-record versus post-write admission race.
+Actual successful writes with an observed identity change retain their bytes
+but no longer carry an unqualified `published` label. Capture enablement does
+not change audio/reset/error policy, and no source/native/recorder clock
+correspondence or acquired-waveform/physical acceptance follows.
+
 The [stamped two-FIR dependency receipt](2026-11-01-src-cascade.md) adds actual
 callback plan/applied-control identity, trace4 backward readback and bounded
 three-pass full-support composition. Sixteen compiled IO/Bus/IO changing-PCM
