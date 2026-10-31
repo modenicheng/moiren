@@ -97,6 +97,53 @@ fn fractional_production_src_recovers_exact_nonzero_source_index() {
 }
 
 #[test]
+fn inverted_whole_polarity_accepts_exact_index_and_same_recorder_coordinates() {
+    let book = codes(4);
+    for rates in [&[2000.0][..], &[2000.0, 2000.0][..]] {
+        let positive = fixture(&book[2], 125, rates, 37);
+        let inverted: Vec<_> = positive.iter().map(|sample| -*sample).collect();
+        let expected = run(&book, &positive);
+        let actual = run(&book, &inverted);
+        assert_eq!(actual.results[0].status, Status::Unique);
+        assert_eq!(actual.results[0].source_index, Some(2));
+        assert_eq!(
+            actual.results[0].recording_frame_interval,
+            expected.results[0].recording_frame_interval
+        );
+        assert_eq!(actual.results[0].best_score, expected.results[0].best_score);
+    }
+}
+
+#[test]
+fn opposite_quarter_polarity_refuses_even_when_whole_score_exceeds_floor() {
+    let book = codes(4);
+    for quarter in 0..4 {
+        let mut damaged = book[2].clone();
+        // Keep this opposite-polarity section above the RMS floor, while the
+        // other three quarters give a misleadingly high whole-window score.
+        for sample in &mut damaged[quarter * FRAMES / 4..(quarter + 1) * FRAMES / 4] {
+            *sample *= -0.2;
+        }
+        for rates in [&[2000.0][..], &[2000.0, 2000.0][..]] {
+            let pcm = fixture(&damaged, 125, rates, 37);
+            let report = run(&book, &pcm);
+            let result = &report.results[0];
+            assert!(
+                result.best_score >= CORRELATION_FLOOR,
+                "{quarter}/{rates:?}: {report:?}"
+            );
+            assert_eq!(
+                result.status,
+                Status::Unidentified,
+                "{quarter}/{rates:?}: {report:?}"
+            );
+            assert_eq!(result.source_index, None);
+            assert_eq!(result.recording_frame_interval, None);
+        }
+    }
+}
+
+#[test]
 fn schema_and_cartesian_work_admission_refuse_before_matching() {
     let book = codes(4);
     let pcm = fixture(&book[0], 125, &[2000.0], 37);
