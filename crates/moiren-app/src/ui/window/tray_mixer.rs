@@ -530,7 +530,7 @@ fn paint_flyout_meter(
     window: &mut Window,
 ) {
     let bar_width = px(METER_BAR_WIDTH);
-    for channel in 0..2 {
+    for (channel, clip) in clips.iter().enumerate() {
         let left = bounds.left() + px(channel as f32 * (METER_BAR_WIDTH + 2.));
         let track = Bounds::new(
             point(left, bounds.top() + px(METER_LAMP_HEIGHT)),
@@ -540,7 +540,7 @@ fn paint_flyout_meter(
             Some(level) => paint_meter_fill(track, *level, theme::BORDER, window),
             None => window.paint_quad(fill(track, theme::BORDER)),
         }
-        crate::ui::widgets::meters::paint_clip_lamp(track, Axis::Vertical, clips[channel], window);
+        crate::ui::widgets::meters::paint_clip_lamp(track, Axis::Vertical, *clip, window);
     }
 }
 
