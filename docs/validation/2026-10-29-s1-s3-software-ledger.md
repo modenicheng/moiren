@@ -5,6 +5,15 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+Acceptance update,2026-10-31: per the user's
+[target-device fallback](../vad-low-latency-goals-2026-10-28.md#2026-10-31-target-device-fallback),
+if sub-10-ms is demonstrated impossible under the declared current device
+conditions, pursue the defensible theoretical lower bound and best achievable
+stable configuration instead. Keep the bound, measured stable result and gap
+distinct, with measurement uncertainty and unchanged waveform/quality gates.
+No current result proves impossibility or establishes the theoretical minimum;
+this amendment does not turn existing incomplete runs into accepted results.
+
 Current remote build policy: [retain reusable caches](2026-10-29-remote-build-cache-policy.md).
 Do not clean after each build, deployment or archive; inspect disk pressure
 and reclaim only justified obsolete artifacts. Earlier cleanup receipts below
