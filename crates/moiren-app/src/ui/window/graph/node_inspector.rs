@@ -93,7 +93,7 @@ pub(in crate::ui::window) fn inspector(
     };
     let id = node.id();
     let entry = snapshot.graph.node(id).expect("service node metadata");
-    let display = crate::ui::state::display_label(snapshot, entry, node.kind());
+    let display = crate::ui::presentation::display_label(snapshot, entry, node.kind());
     let editing = shell.node_name_editing == Some(id);
     // One inline name control: a plain heading until clicked, then the editor
     // in the same place. There is no separate rename row.
@@ -214,32 +214,31 @@ pub(in crate::ui::window) fn inspector(
             .exports
             .iter()
             .find(|export| export.enabled && export.binding == Some(id));
-        view = view
-            .child(heading(t!("Source")))
-            .child(label(
-                bound_export
-                    .map(|export| export.name.clone())
-                    .or_else(|| {
-                        entry
-                            .source
-                            .as_ref()
-                            .map(|source| crate::ui::state::source_name(snapshot, source))
-                    })
-                    .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
-            ))
-            .child(
-                button("unbind-node-source", t!("Clear binding"))
-                    .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
-            )
-            .child(
-                button("bind-node-tone", t!("Tone generator · 440 Hz")).on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindSource {
-                        node: id,
-                        source: InputSelection::Tone { frequency_hz: 440. },
-                    },
-                )),
-            );
+        view =
+            view.child(heading(t!("Source")))
+                .child(label(
+                    bound_export
+                        .map(|export| export.name.clone())
+                        .or_else(|| {
+                            entry.source.as_ref().map(|source| {
+                                crate::ui::presentation::source_name(snapshot, source)
+                            })
+                        })
+                        .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
+                ))
+                .child(
+                    button("unbind-node-source", t!("Clear binding"))
+                        .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
+                )
+                .child(
+                    button("bind-node-tone", t!("Tone generator · 440 Hz")).on_click(edit(
+                        cx.entity(),
+                        GraphEdit::BindSource {
+                            node: id,
+                            source: InputSelection::Tone { frequency_hz: 440. },
+                        },
+                    )),
+                );
         if let Some(InputSelection::Tone { frequency_hz }) = entry.source {
             view = view
                 .child(detail(&t!("Frequency"), format!("{frequency_hz:.1} Hz")))
@@ -352,7 +351,7 @@ pub(in crate::ui::window) fn inspector(
                     entry
                         .output_endpoint_id
                         .as_ref()
-                        .map(|endpoint| crate::ui::state::output_name(snapshot, endpoint))
+                        .map(|endpoint| crate::ui::presentation::output_name(snapshot, endpoint))
                 })
                 .unwrap_or_else(|| t!("Not bound · choose an output").into()),
         ));

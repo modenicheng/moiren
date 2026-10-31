@@ -117,7 +117,7 @@ fn strip(
                 .font_weight(FontWeight::SEMIBOLD)
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(crate::ui::state::display_label(
+                .child(crate::ui::presentation::display_label(
                     &shell.state.read(cx).snapshot,
                     entry,
                     kind,

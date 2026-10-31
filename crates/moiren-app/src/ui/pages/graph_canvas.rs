@@ -212,7 +212,7 @@ impl CanvasWorld {
             };
             let mut card = node(
                 &key,
-                &crate::ui::state::display_label(snapshot, state, logical.kind()),
+                &crate::ui::presentation::display_label(snapshot, state, logical.kind()),
                 detail,
             )
             .at(position.0, position.1)
