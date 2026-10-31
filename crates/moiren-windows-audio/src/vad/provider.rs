@@ -869,7 +869,7 @@ fn run_playback(
         Ok(())
     })();
     state.revoke();
-    let close_result = close_worker_gate(&mut control, &mut current);
+    let close_result = close_worker_gate(&mut control, &mut current, Intent::Playback);
     teardown_playback(
         &mut retired,
         &mut owner,
@@ -1198,7 +1198,7 @@ fn run_microphone(
         Ok(())
     })();
     state.revoke();
-    let close_result = close_worker_gate(&mut control, &mut current);
+    let close_result = close_worker_gate(&mut control, &mut current, Intent::Microphone);
     teardown_microphone(
         &mut retired,
         &mut owner,
@@ -1244,12 +1244,28 @@ fn teardown_microphone(
 fn close_worker_gate(
     control: &mut ControlClient,
     current: &mut super::EndpointSnapshot,
+    caller_intent: Intent,
 ) -> Result<(), BackendError> {
     // Closing during shutdown is safe for the latest native stream, but opening
     // is never allowed to refresh its expected snapshot this way.
-    *current = control.query(current.key()).map_err(client_error)?;
+    let queried = control.query(current.key());
+    log::debug!(
+        target: "moiren::audio::vad",
+        "event=worker_gate_close_query caller_intent={caller_intent:?} previous={current:?} result={queried:?}"
+    );
+    *current = queried.map_err(client_error)?;
     if current.gate_open() {
-        *current = control.close_gate(*current).map_err(client_error)?;
+        let closed = control.close_gate(*current);
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=worker_gate_close_result caller_intent={caller_intent:?} previous={current:?} result={closed:?}"
+        );
+        *current = closed.map_err(client_error)?;
+    } else {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=worker_gate_close_result caller_intent={caller_intent:?} decision=already_closed snapshot={current:?}"
+        );
     }
     Ok(())
 }
