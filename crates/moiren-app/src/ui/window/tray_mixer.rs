@@ -90,7 +90,7 @@ impl TrayMixer {
         window.focus(&focus, cx);
         cx.on_release(|this, cx| this.release_desktop(cx)).detach();
         let this = cx.entity();
-        let panel = cx.new(|cx| TrayPanelHost::new(this.clone(), cx));
+        let panel = cx.new(|cx| TrayPanelHost::new(TrayPanel, this.clone(), cx));
         // One geometry frame shared by both halves of the pipeline: the
         // strips' canvases publish into it and the hot surface reads it. Two
         // separate frames would leave the flyout without any meter bars.
@@ -186,13 +186,14 @@ impl CachedPanel for TrayPanel {
     type Owner = TrayMixer;
     type Key = TrayKey;
 
-    fn key(owner: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, owner: &Self::Owner, cx: &App) -> Self::Key {
         Self::Key {
             snapshot: PublishRef::new(Arc::clone(&owner.state.read(cx).snapshot)),
         }
     }
 
     fn render(
+        &self,
         owner: &mut Self::Owner,
         window: &mut Window,
         cx: &mut Context<Self::Owner>,
@@ -255,13 +256,14 @@ impl CachedPanel for TrayPanel {
             .into_any_element()
     }
 
-    fn on_rebuild(owner: &mut Self::Owner) {
+    fn on_rebuild(&self, owner: &mut Self::Owner) {
         // Geometry is registered by the strip canvases during this same
         // layout pass; stale placements must not survive a rebuild.
         owner.geometry.reset();
     }
 
     fn observe_nested(
+        &self,
         owner: &Entity<Self::Owner>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {

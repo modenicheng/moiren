@@ -30,13 +30,14 @@ impl CachedPanel for ErrorStripPanel {
     type Owner = StudioShell;
     type Key = ErrorStripKey;
 
-    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         Self::Key {
             snapshot: PublishRef::new(Arc::clone(&shell.state.read(cx).snapshot)),
         }
     }
 
     fn render(
+        &self,
         shell: &mut Self::Owner,
         _window: &mut Window,
         cx: &mut Context<Self::Owner>,

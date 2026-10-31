@@ -26,7 +26,7 @@ impl CachedPanel for MatrixPanel {
     type Owner = StudioShell;
     type Key = MatrixKey;
 
-    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
             selected_route: shell.selected_route,
@@ -36,6 +36,7 @@ impl CachedPanel for MatrixPanel {
     }
 
     fn render(
+        &self,
         shell: &mut Self::Owner,
         _window: &mut Window,
         cx: &mut Context<Self::Owner>,

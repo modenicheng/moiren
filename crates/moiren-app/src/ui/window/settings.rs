@@ -38,7 +38,7 @@ impl CachedPanel for SettingsPanel {
     type Owner = StudioShell;
     type Key = SettingsKey;
 
-    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         let settings = &shell.settings;
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
@@ -49,6 +49,7 @@ impl CachedPanel for SettingsPanel {
     }
 
     fn render(
+        &self,
         shell: &mut Self::Owner,
         window: &mut Window,
         cx: &mut Context<Self::Owner>,

@@ -38,7 +38,7 @@ impl CachedPanel for InspectorPanel {
     type Owner = StudioShell;
     type Key = InspectorKey;
 
-    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         let state = shell.state.read(cx);
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
@@ -58,6 +58,7 @@ impl CachedPanel for InspectorPanel {
     }
 
     fn render(
+        &self,
         shell: &mut Self::Owner,
         _window: &mut Window,
         cx: &mut Context<Self::Owner>,
@@ -65,13 +66,14 @@ impl CachedPanel for InspectorPanel {
         page_inspector(shell, cx)
     }
 
-    fn on_rebuild(shell: &mut Self::Owner) {
+    fn on_rebuild(&self, shell: &mut Self::Owner) {
         // The inspector's canvases register their meter tracks during this
         // same layout pass; stale placements must not survive a rebuild.
         shell.inspector_meters.reset();
     }
 
     fn observe_nested(
+        &self,
         owner: &Entity<Self::Owner>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
@@ -132,11 +134,12 @@ impl CachedPanel for LibraryPanel {
     type Owner = StudioShell;
     type Key = LibraryKey;
 
-    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         library_key(shell, cx)
     }
 
     fn render(
+        &self,
         shell: &mut Self::Owner,
         _window: &mut Window,
         cx: &mut Context<Self::Owner>,
@@ -145,6 +148,7 @@ impl CachedPanel for LibraryPanel {
     }
 
     fn observe_nested(
+        &self,
         owner: &Entity<Self::Owner>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
@@ -162,11 +166,12 @@ impl CachedPanel for LibraryRailPanel {
     type Owner = StudioShell;
     type Key = LibraryKey;
 
-    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         library_key(shell, cx)
     }
 
     fn render(
+        &self,
         shell: &mut Self::Owner,
         _window: &mut Window,
         cx: &mut Context<Self::Owner>,

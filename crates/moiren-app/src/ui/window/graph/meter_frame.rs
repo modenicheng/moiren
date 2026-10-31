@@ -68,11 +68,12 @@ impl CachedPanel for GraphPanel {
     type Owner = StudioShell;
     type Key = ControlsKey;
 
-    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
         ControlsKey::new(shell, cx)
     }
 
     fn render(
+        &self,
         shell: &mut StudioShell,
         window: &mut Window,
         cx: &mut Context<StudioShell>,
@@ -84,7 +85,7 @@ impl CachedPanel for GraphPanel {
         super::page(shell, window, cx)
     }
 
-    fn on_rebuild(shell: &mut StudioShell) {
+    fn on_rebuild(&self, shell: &mut StudioShell) {
         // Fresh visibility demand: the canvas prepaint re-registers the
         // nodes its fitted camera shows during this same layout pass.
         shell.meter_points.set((false, false));
@@ -92,6 +93,7 @@ impl CachedPanel for GraphPanel {
     }
 
     fn observe_nested(
+        &self,
         shell: &Entity<StudioShell>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {

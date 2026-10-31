@@ -65,7 +65,7 @@ impl CachedPanel for DevicesPanel {
     type Owner = StudioShell;
     type Key = DevicesKey;
 
-    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
             device_tab: shell.device_tab,
@@ -78,6 +78,7 @@ impl CachedPanel for DevicesPanel {
     }
 
     fn render(
+        &self,
         shell: &mut Self::Owner,
         _window: &mut Window,
         cx: &mut Context<Self::Owner>,
@@ -86,6 +87,7 @@ impl CachedPanel for DevicesPanel {
     }
 
     fn observe_nested(
+        &self,
         owner: &Entity<Self::Owner>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {

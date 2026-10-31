@@ -194,7 +194,7 @@ impl CachedPanel for ToolbarPanel {
     type Owner = StudioShell;
     type Key = ToolbarKey;
 
-    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
         let state = shell.state.read(cx);
         Self::Key {
             snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
@@ -206,6 +206,7 @@ impl CachedPanel for ToolbarPanel {
     }
 
     fn render(
+        &self,
         shell: &mut StudioShell,
         _window: &mut Window,
         cx: &mut Context<StudioShell>,
@@ -232,13 +233,14 @@ impl CachedPanel for StatusbarPanel {
     type Owner = StudioShell;
     type Key = StatusbarKey;
 
-    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
         Self::Key {
             snapshot: PublishRef::new(Arc::clone(&shell.state.read(cx).snapshot)),
         }
     }
 
     fn render(
+        &self,
         shell: &mut StudioShell,
         _window: &mut Window,
         cx: &mut Context<StudioShell>,

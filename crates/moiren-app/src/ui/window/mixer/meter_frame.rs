@@ -6,7 +6,7 @@
 use super::*;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
-use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_or_live};
+use crate::ui::window::panel::{CachedPanel, PanelHost, cached_or_live};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
@@ -49,139 +49,410 @@ impl Geometry {
     }
 }
 
-/// The Mixer page panel behind [`PanelHost`]: the strip tree, rebuilt only
-/// when its semantic key changes.
-pub(in crate::ui::window) struct MixerPanel;
-
-/// Only data consumed by the control tree belongs in this key. In particular,
-/// elapsed time and audio observations must not turn the 33 ms service poll
-/// into another full-strip render loop. Child input/hover/scroll notifications
-/// still invalidate their actual GPUI ancestor normally.
-#[derive(PartialEq)]
-pub(in crate::ui::window) struct ControlsKey {
-    graph: ArcSnapshot<crate::service::GraphSnapshot>,
-    catalog: std::sync::Arc<crate::service::DeviceCatalog>,
-    backend: crate::service::AudioBackend,
-    generation: crate::service::SessionGeneration,
-    phase: SessionPhase,
-    desired: Option<crate::service::SessionSpec>,
-    topics: Vec<(NodeId, moiren_signal::TopicId)>,
-    preferences: crate::project::AppPreferences,
-    order: Vec<NodeId>,
-    selected: Option<NodeId>,
-    editing_value: Option<NodeId>,
-    editing_balance: Option<NodeId>,
-    editing_node_gain: Option<NodeId>,
-    editing_node_pan: Option<NodeId>,
-    editing_send: Option<EdgeId>,
-    collapsed: (bool, bool),
-    scroll: Point<Pixels>,
-    compact: bool,
-    page: Page,
+/// One strip of the Mixer page as its own cached panel, keyed on that
+/// strip's projected inputs. The page mounts one host per node as siblings
+/// (never nested in another cached panel), so a publish during a fader drag
+/// rebuilds only the strip whose gain actually changed — the rest compare
+/// their keys equal and replay. This is the cache split the design's
+/// "split where the change rate differs" rule asks for: the dragged strip
+/// changes at the dispatch rate, its siblings at the session rate.
+pub(in crate::ui::window) struct StripPanel {
+    pub(in crate::ui::window) id: NodeId,
 }
 
-impl ControlsKey {
-    fn new(shell: &StudioShell, cx: &App) -> Self {
-        let snapshot = &shell.state.read(cx).snapshot;
-        Self {
-            graph: ArcSnapshot::new(snapshot.graph.clone()),
+/// Only this strip's control-tree inputs, projected: derived booleans over
+/// the snapshot (`managed`, `probe`) instead of the snapshot fields behind
+/// them, so a key capture stays allocation-free apart from the graph Arc.
+/// Elapsed time and audio observations must not appear here.
+pub(in crate::ui::window) struct StripKey {
+    id: NodeId,
+    graph: std::sync::Arc<crate::service::GraphSnapshot>,
+    catalog: std::sync::Arc<crate::service::DeviceCatalog>,
+    /// The node's level topic exists: the managed-meter visibility canvas is
+    /// mounted and the hot layer expects a track.
+    managed: bool,
+    /// The strip is the session's observed source/sink: the legacy probe
+    /// canvas claims one of the shared `meter_points` flags.
+    probe: bool,
+    selected: bool,
+    compact: bool,
+    position: usize,
+    editing_value: bool,
+    editing_balance: bool,
+    editing_send: Option<EdgeId>,
+    collapsed: (bool, bool),
+    /// Registered meter geometry goes stale under scroll just like under any
+    /// other layout change, so the offset rides in the key.
+    scroll: Point<Pixels>,
+    meters: crate::project::MeterDisplayPreferences,
+}
+
+impl PartialEq for StripKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.managed == other.managed
+            && self.probe == other.probe
+            && self.selected == other.selected
+            && self.compact == other.compact
+            && self.position == other.position
+            && self.editing_value == other.editing_value
+            && self.editing_balance == other.editing_balance
+            && self.editing_send == other.editing_send
+            && self.collapsed == other.collapsed
+            && self.scroll == other.scroll
+            && self.meters == other.meters
+            && self.catalog == other.catalog
+            && strip_content_eq(&self.graph, &other.graph, self.id)
+    }
+}
+
+impl StripPanel {
+    fn key_for(id: NodeId, shell: &StudioShell, cx: &App) -> StripKey {
+        let state = shell.state.read(cx);
+        let snapshot = &state.snapshot;
+        let graph = &snapshot.graph;
+        let probe = graph
+            .graph
+            .get_node(id)
+            .ok()
+            .zip(graph.node(id))
+            .is_some_and(|(node, entry)| strip_probe_candidate(snapshot, entry, node.kind()));
+        StripKey {
+            id,
+            graph: snapshot.graph.clone(),
             catalog: snapshot.catalog.clone(),
-            backend: snapshot.audio_settings.backend,
-            generation: snapshot.generation,
-            phase: snapshot.phase,
-            desired: snapshot.desired.clone(),
-            topics: snapshot
-                .signal_topics
-                .node_levels
+            managed: snapshot.signal_topics.node_levels.contains_key(&id),
+            probe,
+            selected: shell.selected_node == Some(id),
+            compact: shell.compact,
+            position: shell
+                .mixer
+                .order
                 .iter()
-                .map(|(id, topic)| (*id, topic.id()))
-                .collect(),
-            preferences: shell.preferences.clone(),
-            order: shell.mixer.order.clone(),
-            selected: shell.selected_node,
-            editing_value: shell.mixer.editing_value,
-            editing_balance: shell.mixer.editing_balance,
-            editing_node_gain: shell.mixer.editing_node_gain,
-            editing_node_pan: shell.mixer.editing_node_pan,
+                .position(|node| *node == id)
+                .unwrap_or(0),
+            editing_value: shell.mixer.editing_value == Some(id),
+            editing_balance: shell.mixer.editing_balance == Some(id),
             editing_send: shell.mixer.editing_send,
             collapsed: (shell.mixer.inputs_collapsed, shell.mixer.sends_collapsed),
             scroll: shell.mixer_scroll.offset(),
-            compact: shell.compact,
-            page: shell.presentation.page,
+            meters: shell.preferences.meters,
         }
     }
 }
 
-pub(in crate::ui::window) type MixerPanelHost = PanelHost<MixerPanel>;
+/// Whether a strip's rendered content is identical between two snapshots: its
+/// own node state, kind, channels and ports, the edges terminating at or
+/// originating from it in graph order (input/send rows render in that order,
+/// with each far end's display name), and the export intents that can name a
+/// rendered node. Deliberately ignores session bookkeeping — revisions,
+/// faults, undo flags — that no strip renders: a whole-snapshot compare would
+/// drag every sibling strip into a rebuild on every edit publish.
+fn strip_content_eq(
+    a: &std::sync::Arc<crate::service::GraphSnapshot>,
+    b: &std::sync::Arc<crate::service::GraphSnapshot>,
+    id: NodeId,
+) -> bool {
+    if std::sync::Arc::ptr_eq(a, b) {
+        return true;
+    }
+    let (a, b) = (&**a, &**b);
+    if a.node(id) != b.node(id) {
+        return false;
+    }
+    let touching = |snapshot: &crate::service::GraphSnapshot| {
+        snapshot
+            .graph
+            .edges()
+            .iter()
+            .filter(|edge| edge.dst() == id || edge.src() == id)
+            .map(|edge| {
+                (
+                    edge.id(),
+                    edge.src(),
+                    edge.dst(),
+                    edge.src_port(),
+                    edge.dst_port(),
+                    *edge.params(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    if touching(a) != touching(b) {
+        return false;
+    }
+    let far_ends = |snapshot: &crate::service::GraphSnapshot| {
+        snapshot
+            .graph
+            .edges()
+            .iter()
+            .filter(|edge| edge.dst() == id || edge.src() == id)
+            .flat_map(|edge| [edge.src(), edge.dst()])
+            .filter(|end| *end != id)
+            .collect::<std::collections::BTreeSet<NodeId>>()
+    };
+    let (a_ends, b_ends) = (far_ends(a), far_ends(b));
+    if a_ends != b_ends {
+        return false;
+    }
+    for end in a_ends {
+        // A far end renders only its display identity (the name in input and
+        // send rows), not its mixer state: muting node 0 must not rebuild
+        // node 1 merely because node 1 shows node 0's name.
+        let (Some(a_end), Some(b_end)) = (a.node(end), b.node(end)) else {
+            return false;
+        };
+        if a_end.label != b_end.label
+            || a_end.source != b_end.source
+            || a_end.output_endpoint_id != b_end.output_endpoint_id
+        {
+            return false;
+        }
+        match (a.graph.get_node(end), b.graph.get_node(end)) {
+            (Ok(x), Ok(y)) if x.kind() == y.kind() => {}
+            _ => return false,
+        }
+    }
+    a.exports == b.exports
+}
 
-impl CachedPanel for MixerPanel {
+pub(in crate::ui::window) type StripPanelHost = PanelHost<StripPanel>;
+
+impl CachedPanel for StripPanel {
     type Owner = StudioShell;
-    type Key = ControlsKey;
+    type Key = StripKey;
 
-    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
-        ControlsKey::new(shell, cx)
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
+        Self::key_for(self.id, shell, cx)
     }
 
     fn render(
+        &self,
         shell: &mut StudioShell,
         _window: &mut Window,
         cx: &mut Context<StudioShell>,
     ) -> AnyElement {
-        super::page(shell, cx)
+        let state = shell.state.read(cx);
+        let graph = &state.snapshot.graph;
+        let Some(entry) = graph.node(self.id) else {
+            return div().into_any_element();
+        };
+        let Some(node) = graph.graph.get_node(self.id).ok() else {
+            return div().into_any_element();
+        };
+        super::strip(shell, entry, node.kind(), node.channels(), cx).into_any_element()
     }
 
-    fn on_rebuild(shell: &mut StudioShell) {
-        // Geometry is registered by the strip canvases during this same
-        // layout pass; stale placements must not survive a rebuild.
-        shell.mixer_geometry.reset();
-        // Fresh visibility demand: the strip canvases re-register the meters
-        // their content mask shows during this same layout pass.
-        shell.meter_points.set((false, false));
-        shell.node_meter_points.borrow_mut().clear();
+    fn on_rebuild(&self, shell: &mut StudioShell) {
+        // The accumulating geometry frame must exist before this strip's
+        // canvases extend it at prepaint — `update` is a deliberate no-op on
+        // an empty slot. Only create it when missing: a whole-table reset
+        // here would wipe the registrations of siblings that are not
+        // rebuilding. This strip's own stale placements are removed so the
+        // canvases re-register fresh during this same layout pass.
+        if shell.mixer_geometry.read().is_none() {
+            shell.mixer_geometry.reset();
+        }
+        shell.mixer_geometry.update(|geometry| {
+            geometry.tracks.remove(&self.id);
+            geometry.readouts.remove(&self.id);
+        });
+        shell.node_meter_points.borrow_mut().remove(&self.id);
     }
 
     fn observe_nested(
+        &self,
         shell: &Entity<StudioShell>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
-        // SliderState is a model entity, not a Render view in the dispatch
-        // tree. Its notifications cannot invalidate this cached ancestor by
-        // themselves. Observe both faders and sends, including drag updates
-        // that intentionally precede the service's confirmed snapshot.
-        let sliders = shell.read_with(cx, |shell, _| {
-            shell
-                .mixer
-                .faders
-                .values()
-                .chain(shell.mixer.sends.values())
-                .map(|slot| slot.state.clone())
-                .collect::<Vec<_>>()
+        // Every model entity nested in THIS strip: its fader, its readout
+        // and balance editors, and the send sliders and editors of its own
+        // out-edges. Their notifications cannot invalidate this cached
+        // ancestor by themselves.
+        let (sliders, inputs) = shell.read_with(cx, |shell, _| {
+            let mut sliders = Vec::new();
+            let mut inputs = Vec::new();
+            if let Some(slot) = shell.mixer.faders.get(&self.id) {
+                sliders.push(slot.state.clone());
+            }
+            if let Some(input) = shell.mixer.value_inputs.get(&self.id) {
+                inputs.push(input.clone());
+            }
+            if let Some(input) = shell.mixer.balance_inputs.get(&self.id) {
+                inputs.push(input.clone());
+            }
+            for edge in shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .graph
+                .edges()
+                .iter()
+                .filter(|edge| edge.src() == self.id)
+            {
+                if let Some(slot) = shell.mixer.sends.get(&edge.id()) {
+                    sliders.push(slot.state.clone());
+                }
+                if let Some(input) = shell.mixer.send_inputs.get(&edge.id()) {
+                    inputs.push(input.clone());
+                }
+            }
+            (sliders, inputs)
         });
-        sliders
+        let mut subscriptions: Vec<Subscription> = sliders
             .into_iter()
             .map(|slider| cx.observe(&slider, |host, _, cx| host.notify_nested(cx)))
-            .collect()
+            .collect();
+        subscriptions.extend(
+            inputs
+                .into_iter()
+                .map(|input| cx.observe(&input, |host, _, cx| host.notify_nested(cx))),
+        );
+        subscriptions
     }
 }
 
-pub(in crate::ui::window) fn page(shell: &StudioShell, window: &Window) -> AnyElement {
-    let controls = cached_or_live(
-        shell.mixer_controls.clone(),
-        window,
-        |entity| {
-            entity
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element()
-        },
-        |entity| div().size_full().child(entity).into_any_element(),
-    );
-    div()
-        .relative()
+/// Whether the strip carries the session's legacy source/output probe: the
+/// observed source or sink matching the active desired spec. Shared by the
+/// strip render and the hot layer's legacy fallback so the two cannot drift.
+pub(in crate::ui::window) fn meter_probe_eligible(
+    shell: &StudioShell,
+    snapshot: &crate::service::AppSnapshot,
+    entry: &crate::service::GraphNodeState,
+    kind: NodeKind,
+) -> bool {
+    let input = kind == NodeKind::Source;
+    matches!(kind, NodeKind::Source | NodeKind::Sink)
+        && shell
+            .observation_nodes
+            .is_some_and(|(generation, source, sink)| {
+                generation == snapshot.generation && entry.id == if input { source } else { sink }
+            })
+        && snapshot.desired.as_ref().is_some_and(|active| {
+            if input {
+                entry.source.as_ref() == Some(&active.source)
+            } else {
+                entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
+            }
+        })
+}
+
+/// Snapshot-only probe candidacy for the strip key: the session runs and the
+/// node matches the desired spec's source/output. The key must never depend
+/// on render-ordered shell state (`observation_nodes` is refreshed when the
+/// shell renders) because keys are captured at notify time, before that
+/// refresh — a probe transition would pin a stale key until the next notify.
+/// The canvas MOUNT keeps the full [`meter_probe_eligible`] predicate, which
+/// runs at render where the observation is fresh.
+fn strip_probe_candidate(
+    snapshot: &crate::service::AppSnapshot,
+    entry: &crate::service::GraphNodeState,
+    kind: NodeKind,
+) -> bool {
+    let input = kind == NodeKind::Source;
+    snapshot.phase == SessionPhase::Running
+        && matches!(kind, NodeKind::Source | NodeKind::Sink)
+        && snapshot.desired.as_ref().is_some_and(|active| {
+            if input {
+                entry.source.as_ref() == Some(&active.source)
+            } else {
+                entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
+            }
+        })
+}
+
+/// The Mixer page: a light container (rebuilt per shell render) splicing the
+/// per-strip cached panels, with the meter hot layer as a sibling above them.
+pub(in crate::ui::window) fn page(
+    shell: &StudioShell,
+    window: &Window,
+    cx: &Context<StudioShell>,
+) -> AnyElement {
+    let graph = &shell.state.read(cx).snapshot.graph;
+    let mut channels = div()
+        .id("mixer-strips")
+        .flex()
         .flex_1()
         .min_w_0()
         .min_h_0()
-        .child(controls)
+        .track_scroll(&shell.mixer_scroll)
+        .overflow_x_scroll()
+        .overflow_y_scroll()
+        .on_scroll_wheel({
+            let this = cx.entity();
+            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+        });
+    let mut dock = div().flex().flex_none().min_w_full().h_full().justify_end();
+    let dock_container = div()
+        .id("mixer-dock")
+        .flex()
+        .flex_none()
+        .w(px(MixerPresentation::DOCK_WIDTH))
+        .max_w(relative(0.55))
+        .min_h_0()
+        .border_l_1()
+        .border_color(theme::BORDER_STRONG)
+        .overflow_x_scroll()
+        .overflow_y_scroll()
+        .on_scroll_wheel({
+            let this = cx.entity();
+            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+        });
+    for id in &shell.mixer.order {
+        let Ok(node) = graph.graph.get_node(*id) else {
+            continue;
+        };
+        let Some(host) = shell.mixer.strips.get(id) else {
+            continue;
+        };
+        // The strip is cached behind a wrapper carrying its load-bearing
+        // outer sizing (cached views lay out by their wrapper).
+        let strip = cached_or_live(
+            host.clone(),
+            window,
+            {
+                let width = px(MixerPresentation::STRIP_WIDTH);
+                move |entity| {
+                    entity
+                        .cached(
+                            StyleRefinement::default()
+                                .flex_none()
+                                .w(width)
+                                .h_full()
+                                .min_h_0(),
+                        )
+                        .into_any_element()
+                }
+            },
+            |entity| entity.into_any_element(),
+        );
+        if matches!(node.kind(), NodeKind::Bus | NodeKind::Sink) {
+            dock = dock.child(strip);
+        } else {
+            channels = channels.child(strip);
+        }
+    }
+    div()
+        .id("mixer-page")
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .child(channels.gpui_test_observe())
+                .child(dock_container.child(dock).gpui_test_observe()),
+        )
         .child(shell.mixer_frame.clone())
+        .gpui_test_observe()
         .into_any_element()
 }
 

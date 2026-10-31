@@ -129,6 +129,12 @@ impl NestedGate {
 /// A cached panel: the declaration of what a cached subtree consumes and how
 /// it is built. The mechanics — key diffing, invalidation, the accessibility
 /// fallback, nested-model subscriptions — live once in [`PanelHost`].
+///
+/// The panel value itself is per-instance state: one `StripPanel { id }` per
+/// mixer strip, one unit struct per whole-page panel. Cache granularity is a
+/// per-panel decision — split a page into per-item panels when one item's
+/// inputs change far more often than the rest (a fader drag republishes the
+/// graph at the dispatch rate; only the dragged strip's content changes).
 pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
     /// The state entity this panel projects. Most panels project the main
     /// window's [`StudioShell`]; the tray flyout projects its own root view.
@@ -141,20 +147,23 @@ pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
 
     /// Capture the key from the owner. Runs on every owner notification and
     /// on every rebuild.
-    fn key(owner: &Self::Owner, cx: &App) -> Self::Key;
+    fn key(&self, owner: &Self::Owner, cx: &App) -> Self::Key;
 
     /// Build the tree. A pure function of [`Self::Key`] and the locale:
     /// between key changes the cached subtree replays last frame's paint.
     fn render(
+        &self,
         owner: &mut Self::Owner,
         window: &mut Window,
         cx: &mut Context<Self::Owner>,
     ) -> AnyElement;
 
     /// Per-rebuild side state: re-register meter demand, reset geometry
-    /// scratch. Runs immediately before [`Self::render`].
-    fn on_rebuild(owner: &mut Self::Owner) {
-        let _ = owner;
+    /// scratch. Runs immediately before [`Self::render`]. Per-item panels
+    /// must clean only their own registrations — the whole-table resets of a
+    /// page panel would wipe siblings that are not rebuilding.
+    fn on_rebuild(&self, owner: &mut Self::Owner) {
+        let _ = (self, owner);
     }
 
     /// Subscribe to nested model entities (slider states, search inputs)
@@ -162,6 +171,7 @@ pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
     /// themselves. Runs on every rebuild; the host replaces its subscription
     /// pool with the result.
     fn observe_nested(
+        &self,
         _owner: &Entity<Self::Owner>,
         _cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
@@ -177,6 +187,7 @@ pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
 /// strings, so a language switch must rebuild all of them regardless of what
 /// each key happens to capture.
 pub(in crate::ui::window) struct PanelHost<P: CachedPanel> {
+    panel: P,
     owner: WeakEntity<P::Owner>,
     key: Option<P::Key>,
     locale: crate::i18n::UiLanguage,
@@ -186,17 +197,29 @@ pub(in crate::ui::window) struct PanelHost<P: CachedPanel> {
 }
 
 impl<P: CachedPanel> PanelHost<P> {
-    pub(in crate::ui::window) fn new(owner: Entity<P::Owner>, cx: &mut Context<Self>) -> Self {
+    pub(in crate::ui::window) fn new(
+        panel: P,
+        owner: Entity<P::Owner>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let subscription = cx.observe(&owner, |host, owner, cx| {
-            let key = P::key(owner.read(cx), cx);
+            // The key capture and the nested subscriptions run here, in the
+            // notification effect — never during this view's render. Reading
+            // the owner during render would register it as a read dependency
+            // of the cached view, and the owner is notified on every publish:
+            // the framework then invalidates the cached view before the key
+            // ever gets compared, and every publish rebuilds every panel.
+            let key = host.panel.key(owner.read(cx), cx);
             let locale = crate::i18n::current();
-            if host.key.as_ref() != Some(&key) || host.locale != locale {
+            if host.key.as_ref() != Some(&key) || host.locale != locale || host.nested.is_empty() {
                 host.key = Some(key);
                 host.locale = locale;
+                host.nested = host.panel.observe_nested(&owner, cx);
                 cx.notify();
             }
         });
         Self {
+            panel,
             owner: owner.downgrade(),
             key: None,
             locale: crate::i18n::current(),
@@ -238,14 +261,14 @@ impl<P: CachedPanel> Render for PanelHost<P> {
         let Some(owner) = self.owner.upgrade() else {
             return div().into_any_element();
         };
-        // Self-healing: a rebuild always records the inputs it rendered with,
-        // so a missed notification cannot pin a stale key.
-        self.key = Some(P::key(owner.read(cx), cx));
-        self.locale = crate::i18n::current();
-        self.nested = P::observe_nested(&owner, cx);
+        // No reads of the owner here: the render's only entity traffic is
+        // the writes it performs and the state the built tree reads (which
+        // is written, not notified, between rebuilds). Key capture lives in
+        // the owner observer above.
+        let panel = &self.panel;
         owner.update(cx, |owner, cx| {
-            P::on_rebuild(owner);
-            P::render(owner, window, cx)
+            panel.on_rebuild(owner);
+            panel.render(owner, window, cx)
         })
     }
 }

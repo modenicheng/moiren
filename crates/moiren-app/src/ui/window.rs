@@ -166,7 +166,6 @@ pub struct StudioShell {
     exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
     mixer_geometry: mixer::meter_frame::Geometry,
-    mixer_controls: Entity<mixer::meter_frame::MixerPanelHost>,
     toolbar_chrome: Entity<chrome::ToolbarChrome>,
     status_chrome: Entity<chrome::StatusbarChrome>,
     mixer_frame: Entity<mixer::meter_frame::MixerMeterLayer>,
@@ -317,9 +316,6 @@ impl StudioShell {
         let mixer_geometry = mixer::meter_frame::Geometry::default();
         let graph_canvas_frame = pages::graph_canvas_view::PreparedFrame::default();
         let shell_entity = cx.entity();
-        let mixer_controls = cx.new(|child_cx| {
-            mixer::meter_frame::MixerPanelHost::new(shell_entity.clone(), child_cx)
-        });
         let mixer_meters = std::rc::Rc::new(std::cell::RefCell::new(
             mixer::meter_frame::MixerMeters::new(shell_entity.downgrade(), mixer_geometry.clone()),
         ));
@@ -337,21 +333,38 @@ impl StudioShell {
                 sidebar::InspectorMeters::new(shell_entity.downgrade(), inspector_meters.clone()),
             )))
         });
-        let error_strip = cx.new(|cx| error_strip::ErrorStripHost::new(shell_entity.clone(), cx));
-        let matrix_panel = cx.new(|cx| matrix::MatrixPanelHost::new(shell_entity.clone(), cx));
-        let devices_panel = cx.new(|cx| devices::DevicesPanelHost::new(shell_entity.clone(), cx));
-        let settings_panel =
-            cx.new(|cx| settings::SettingsPanelHost::new(shell_entity.clone(), cx));
-        let inspector_panel =
-            cx.new(|cx| sidebar::InspectorPanelHost::new(shell_entity.clone(), cx));
-        let library_panel = cx.new(|cx| sidebar::LibraryPanelHost::new(shell_entity.clone(), cx));
-        let library_rail_panel =
-            cx.new(|cx| sidebar::LibraryRailPanelHost::new(shell_entity.clone(), cx));
-        let graph_controls = cx.new(|child_cx| {
-            graph::meter_frame::GraphPanelHost::new(shell_entity.clone(), child_cx)
+        let error_strip = cx.new(|cx| {
+            error_strip::ErrorStripHost::new(error_strip::ErrorStripPanel, shell_entity.clone(), cx)
         });
-        let toolbar_chrome = cx.new(|cx| chrome::ToolbarChrome::new(shell_entity.clone(), cx));
-        let status_chrome = cx.new(|cx| chrome::StatusbarChrome::new(shell_entity.clone(), cx));
+        let matrix_panel = cx
+            .new(|cx| matrix::MatrixPanelHost::new(matrix::MatrixPanel, shell_entity.clone(), cx));
+        let devices_panel = cx.new(|cx| {
+            devices::DevicesPanelHost::new(devices::DevicesPanel, shell_entity.clone(), cx)
+        });
+        let settings_panel = cx.new(|cx| {
+            settings::SettingsPanelHost::new(settings::SettingsPanel, shell_entity.clone(), cx)
+        });
+        let inspector_panel = cx.new(|cx| {
+            sidebar::InspectorPanelHost::new(sidebar::InspectorPanel, shell_entity.clone(), cx)
+        });
+        let library_panel = cx.new(|cx| {
+            sidebar::LibraryPanelHost::new(sidebar::LibraryPanel, shell_entity.clone(), cx)
+        });
+        let library_rail_panel = cx.new(|cx| {
+            sidebar::LibraryRailPanelHost::new(sidebar::LibraryRailPanel, shell_entity.clone(), cx)
+        });
+        let graph_controls = cx.new(|child_cx| {
+            graph::meter_frame::GraphPanelHost::new(
+                graph::meter_frame::GraphPanel,
+                shell_entity.clone(),
+                child_cx,
+            )
+        });
+        let toolbar_chrome =
+            cx.new(|cx| chrome::ToolbarChrome::new(chrome::ToolbarPanel, shell_entity.clone(), cx));
+        let status_chrome = cx.new(|cx| {
+            chrome::StatusbarChrome::new(chrome::StatusbarPanel, shell_entity.clone(), cx)
+        });
         let mut shell = Self {
             state,
             settings_open: false,
@@ -399,7 +412,6 @@ impl StudioShell {
             exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
             mixer_geometry,
-            mixer_controls,
             toolbar_chrome,
             status_chrome,
             mixer_frame,
@@ -767,7 +779,7 @@ impl Render for StudioShell {
                     .min_w_0()
                     .child(match self.presentation.page {
                         Page::Graph => graph::meter_frame::page(self, window),
-                        Page::Mixer => mixer::meter_frame::page(self, window),
+                        Page::Mixer => mixer::meter_frame::page(self, window, cx),
                         Page::Matrix => matrix::page_for(self, window, cx),
                         Page::Devices => devices::page_for(self, window, cx),
                     })
@@ -905,6 +917,7 @@ impl StudioShell {
 
     fn refresh_observation_nodes(&mut self, cx: &App) {
         use moiren_core::graph::NodeKind;
+        let before = self.observation_nodes;
         let snapshot = &self.state.read(cx).snapshot;
         if snapshot.phase != SessionPhase::Running
             || self
@@ -924,6 +937,13 @@ impl StudioShell {
             self.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));
+        }
+        if before != self.observation_nodes {
+            // The probe flags belonged to the previous owners' canvases,
+            // which mount only while eligible. The new owners re-register on
+            // their rebuild in this same layout pass — eligibility rides in
+            // their strip keys — so clearing here leaves no stale window.
+            self.meter_points.set((false, false));
         }
     }
 }

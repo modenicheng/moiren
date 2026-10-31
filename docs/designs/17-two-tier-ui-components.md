@@ -273,11 +273,54 @@ each with its fix landed on the same branch:
   `FADER_DISPATCH_INTERVAL`, so a drag never rebuilds the panel faster
   than its service confirmations actually change it.
 
-Known remaining cost, accepted for now: during a drag the confirmed
-publishes (30/s) still rebuild the whole panel because the strip's dB
-readout is panel content keyed on the graph snapshot. If that ever reads
-as stutter, the escape hatch is per-strip panels (siblings, one
-`PanelHost` per strip) — not nested caches.
+### The cache splits per item (2026-10-31, second acceptance round)
+
+The throttle bounded the *notify*-driven rebuilds, but a confirmed publish
+still rebuilt the whole strip tree — and the reason was not the key. gpui
+pre-windows' cached views invalidate whenever an entity they *read* is
+notified, before any key compare runs: every panel read its owner during
+render (key capture, and the owner access itself), and the shell is
+notified on every publish, so keys were decorative for publish-driven
+changes. Three changes landed together:
+
+- **Per-strip panels.** `CachedPanel` gained per-instance state
+  (`panel: P`): the Mixer page is a light container splicing one
+  `StripPanel { id }` per node as siblings, each keyed on its own projected
+  inputs. The page panel and its 19-field `ControlsKey` are gone.
+- **Keyed render.** A panel can declare `KEYED = true` and build from its
+  key alone; `PanelHost::render` then never touches the owner, so the
+  framework's dependency tracking cannot invalidate it when the owner is
+  merely notified. `StripKey` carries everything the strip renders — the
+  entity handles for its fader, editors and send sliders, the shared
+  geometry/visibility handles, the derived booleans — and a hand-written
+  `PartialEq` compares only what the strip renders: its own node state,
+  kind, channels, the edges touching it (in graph order), each far end's
+  *display identity* (label/source/endpoint — muting node 0 must not
+  rebuild node 1 for showing node 0's name), and the exports. Session
+  bookkeeping (revisions, faults, undo flags) is deliberately excluded;
+  the derived `PartialEq` on `GraphSnapshot` would have dragged every
+  sibling into a rebuild on every edit. Chrome (toolbar, status bar,
+  error strip) keeps the owner path — its content follows publishes and
+  its keys change with them anyway.
+- **Publish-driven keys run in the notification effect.** Key capture and
+  nested subscriptions moved from `render` to the owner observer, which
+  also captures the initial key at construction.
+
+`UiState` now derives the observation source/sink pair itself (in `poll`,
+a write-only entity — nothing that renders reads a notified entity for
+it), replacing the render-ordered `refresh_observation_nodes` whose value
+was always one publish stale at key-capture time. `SharedFrame`'s
+update-on-empty is a documented no-op, so per-strip rebuilds create the
+accumulating geometry frame when missing instead of resetting it — a
+whole-table reset here would wipe siblings that are not rebuilding.
+
+Regression: `mixer_publish_rebuilds_only_the_changed_strip` dispatches a
+mute edit on one node and asserts exactly one strip render — the whole-page
+panel produced one per strip.
+
+Still true: chrome rebuilds on every publish (small, and its content is
+publish data). The flyout keeps its single cached panel — two or three
+strips measured smooth.
 
 ## Deletions
 

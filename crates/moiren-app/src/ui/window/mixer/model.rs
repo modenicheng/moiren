@@ -12,6 +12,10 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub order: Vec<NodeId>,
     pub faders: BTreeMap<NodeId, SliderSlot>,
     pub sends: BTreeMap<EdgeId, SliderSlot>,
+    /// One cached panel host per strip (design 17's per-item split): a
+    /// publish during a fader drag rebuilds only the strip whose content
+    /// changed. Created and retained by [`StudioShell::sync_mixer_controls`].
+    pub strips: BTreeMap<NodeId, Entity<super::meter_frame::StripPanelHost>>,
     pub send_inputs: BTreeMap<EdgeId, Entity<component::input::InputState>>,
     pub editing_send: Option<EdgeId>,
     /// Click-to-type editors for the fader dB readouts; the strip readout
@@ -399,7 +403,11 @@ fn sync_value_inputs<K: Ord + Clone + 'static>(
             .detach();
             input
         });
-        if editing != Some(&id) {
+        // InputState::set_value notifies unconditionally, even for
+        // identical text — writing every publish would wake every panel
+        // that observes its editors. Skip the write when the text is
+        // already current.
+        if editing != Some(&id) && input.read(cx).value() != text {
             input.update(cx, |input, cx| input.set_value(text, window, cx));
         }
     }
@@ -785,6 +793,18 @@ impl StudioShell {
                 self.mixer.order.push(node.id);
             }
         }
+        // One cached strip panel per node; the page splices them as siblings.
+        // Created after the slider maps are synced so the panel's nested
+        // observers find their entities on the first rebuild.
+        self.mixer.strips.retain(|id, _| graph.node(*id).is_some());
+        for node in &graph.nodes {
+            let id = node.id;
+            self.mixer.strips.entry(id).or_insert_with(|| {
+                let panel = super::meter_frame::StripPanel { id };
+                let shell = cx.entity();
+                cx.new(|child_cx| super::meter_frame::StripPanelHost::new(panel, shell, child_cx))
+            });
+        }
         sync_faders(
             window,
             cx,
@@ -813,8 +833,10 @@ impl StudioShell {
                 .detach();
                 input
             });
-            if self.mixer.editing_send != Some(id) {
-                let text = gain_db_text(edge.params().gain);
+            // InputState::set_value notifies even for identical text; skip
+            // the write when the readout is already current.
+            let text = gain_db_text(edge.params().gain);
+            if self.mixer.editing_send != Some(id) && input.read(cx).value() != text {
                 input.update(cx, |input, cx| input.set_value(text, window, cx));
             }
         }

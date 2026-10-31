@@ -542,6 +542,65 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
     finish_service(runtime);
 }
 
+/// The per-strip split (design 17): a publish that changes one strip's
+/// content rebuilds exactly that strip's panel — its siblings compare their
+/// keys equal and replay their cached paint. Under the whole-page panel this
+/// same edit paid one full strip-tree render per publish.
+#[gpui_kit::test]
+fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The inspector's closing spring notifies its way through the first
+    // second; let it finish or every frame rebuilds every panel.
+    crate::ui::window::test_harness::settle_panels(cx);
+    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let muted = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(target)
+                .is_some_and(|node| node.mixer.muted)
+        })
+    };
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_mixer(target, |state| state.muted = !state.muted)
+        });
+    });
+    // Land the publish without rendering: `render_frame` refreshes the whole
+    // window and would rebuild every panel regardless of the caches.
+    wait_until(Duration::from_secs(2), || muted(&view, cx));
+    let before = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    cx.update(|window, cx| {
+        assert!(!window.is_a11y_active(), "measuring the cached path");
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let mid = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let after = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    eprintln!("DELTA first={} second={}", mid - before, after - mid);
+    assert_eq!(
+        after - before,
+        1,
+        "only the edited strip's panel may rebuild; siblings must replay"
+    );
+    finish_service(runtime);
+}
+
 /// Exercise a real managed publisher: painting cannot pass just by reusing
 /// frozen levels or silently dropping visibility/subscription demand.
 #[gpui_kit::test]
