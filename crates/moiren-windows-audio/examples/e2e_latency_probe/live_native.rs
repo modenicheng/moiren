@@ -844,7 +844,7 @@ pub fn run_vad(
             || Ok(()),
         )
     })();
-    let result = soak_cleanup::run(collection, &mut cleanup);
+    let result = soak_cleanup::run_physical_vad(collection, &mut cleanup);
     drop(cleanup);
     soak_cleanup::combine(result, finish_journal(&mut journal, native_report))
 }
@@ -1469,6 +1469,24 @@ impl VadCleanup<'_> {
     }
 }
 
+impl soak_cleanup::PhysicalVadCleanup for VadCleanup<'_> {
+    fn request_source_stop(&mut self) -> Result<()> {
+        if let Some(playback) = &self.playback {
+            playback.request_stop();
+        }
+        Ok(())
+    }
+
+    fn close_gate_before_stop(&mut self) -> Result<()> {
+        // Close only an export created/owned by this run, pinning admission
+        // once established. Missing admitted identity never falls back to CREATE.
+        if self.owned_exports.contains(&self.endpoint_id) {
+            self.close_playback_gate()?;
+        }
+        Ok(())
+    }
+}
+
 impl soak_cleanup::Cleanup for VadCleanup<'_> {
     fn observe_final(&mut self) -> Result<()> {
         if let Some(observer) = &self.observer {
@@ -1574,7 +1592,7 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
 
     fn invalidate_admission(&mut self) -> Result<()> {
         // Global revocation stops service for both exports. The MIC route must
-        // first finish native Stop/release; physical retirement is unchanged.
+        // first finish native Stop/release; physical soak first closes Playback.
         self.provider.set_active_revision(None);
         Ok(())
     }
