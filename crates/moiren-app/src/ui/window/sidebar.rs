@@ -251,11 +251,14 @@ fn paint_inspector_meter(
 ) {
     let count = channels.clamp(1, 2);
     let (row_height, gap) = (px(4.), px(2.));
+    // The clip lamp reserves the last 6 px of the row (3 px gap + 3 px
+    // lamp), the same loud-end indicator every meter surface uses.
+    let bar_width = bounds.size.width - px(6.);
     for channel in 0..count {
         let top = bounds.top() + (row_height + gap) * channel as f32;
         let track = Bounds::new(
             point(bounds.left(), top),
-            size(bounds.size.width, row_height),
+            size(bar_width, row_height),
         );
         match levels.as_ref().and_then(|levels| levels.get(channel)) {
             Some(level) => crate::ui::widgets::meters::paint_meter_fill_horizontal(
@@ -266,19 +269,13 @@ fn paint_inspector_meter(
             ),
             None => window.paint_quad(fill(track, theme::BORDER)),
         }
+        crate::ui::widgets::meters::paint_clip_lamp(
+            track,
+            Axis::Horizontal,
+            clips.get(channel).copied().unwrap_or(false),
+            window,
+        );
     }
-    let dot = Bounds::new(
-        point(bounds.left(), bounds.bottom() - px(3.)),
-        size(px(6.), px(3.)),
-    );
-    window.paint_quad(fill(
-        dot,
-        if clips[..count].iter().any(|clip| *clip) {
-            theme::DANGER
-        } else {
-            theme::BORDER
-        },
-    ));
 }
 
 /// Panel motion: quick with a slight, damped overshoot and no wobble.

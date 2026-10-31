@@ -35,7 +35,9 @@ const STRIP_WIDTH: f32 = 104.;
 const FLYOUT_HEIGHT: f32 = 372.;
 const METER_BAR_WIDTH: f32 = 7.;
 const METER_HEIGHT: f32 = 176.;
-const METER_DOT_HEIGHT: f32 = 7.;
+/// The clip lamp sits above the bars (the loud end), the same convention as
+/// the main mixer: 3 px lamp, 7 px gap.
+const METER_LAMP_HEIGHT: f32 = 10.;
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
@@ -442,7 +444,7 @@ fn meter_track(flyout: &TrayMixer, id: NodeId) -> impl IntoElement {
         |_, _, _, _| {},
     )
     .w(px(METER_BAR_WIDTH * 2. + 2.))
-    .h(px(METER_HEIGHT + METER_DOT_HEIGHT))
+    .h(px(METER_HEIGHT + METER_LAMP_HEIGHT))
     .flex_none()
 }
 
@@ -521,10 +523,11 @@ impl HotSurface for FlyoutMeters {
     }
 }
 
-/// Two slim bars and a shared clip dot under them — the flyout's meter
+/// Two slim bars with a clip lamp above each — the flyout's meter
 /// footprint, painting the same `meter_spans` segmentation as every other
-/// surface (design 17 D1). The dot lights when either channel latched, like
-/// the DOM meter it replaced.
+/// surface (design 17 D1) under the main mixer's clip convention: the lamp
+/// sits at the loud end of the track and lights while a clip latches;
+/// clicking the strip resets it.
 fn paint_flyout_meter(
     bounds: Bounds<Pixels>,
     levels: Option<[DisplayLevel; 2]>,
@@ -534,27 +537,21 @@ fn paint_flyout_meter(
     let bar_width = px(METER_BAR_WIDTH);
     for channel in 0..2 {
         let left = bounds.left() + px(channel as f32 * (METER_BAR_WIDTH + 2.));
-        let track = Bounds::new(point(left, bounds.top()), size(bar_width, px(METER_HEIGHT)));
+        let track = Bounds::new(
+            point(left, bounds.top() + px(METER_LAMP_HEIGHT)),
+            size(bar_width, px(METER_HEIGHT)),
+        );
         match levels.as_ref().and_then(|levels| levels.get(channel)) {
             Some(level) => paint_meter_fill(track, *level, theme::BORDER, window),
             None => window.paint_quad(fill(track, theme::BORDER)),
         }
+        crate::ui::widgets::meters::paint_clip_lamp(
+            track,
+            Axis::Vertical,
+            clips[channel],
+            window,
+        );
     }
-    let dot = Bounds::new(
-        point(
-            bounds.left() + (bounds.size.width - px(10.)) / 2.,
-            bounds.top() + px(METER_HEIGHT + METER_DOT_HEIGHT - 3.),
-        ),
-        size(px(10.), px(3.)),
-    );
-    window.paint_quad(fill(
-        dot,
-        if clips[0] || clips[1] {
-            theme::DANGER
-        } else {
-            theme::BORDER
-        },
-    ));
 }
 
 /// Strip edit; it applies itself through the live parameter path.

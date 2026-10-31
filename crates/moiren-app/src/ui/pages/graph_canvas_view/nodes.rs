@@ -164,22 +164,27 @@ pub(in crate::ui) fn paint_meter_bars(
     for channel in 0..2 {
         let mut meter = layout.meter;
         meter.origin.y += channel as f32 * 3. * layout.scale;
+        // The clip lamp reserves the last 3 world units of the row — the
+        // same loud-end indicator every meter surface uses; the fill never
+        // changes background for clipping.
+        meter.size.width -= 3. * layout.scale;
         let track = frame.window_rect(meter);
         let clip = reading.is_some_and(|reading| reading.clips[channel]);
-        // A latched clip lights the track itself: the card has no lamp row,
-        // and the tint stays legible at any zoom where the 2 px row is.
-        // Zone colors, the dark RMS tail, and the held marker come from the
-        // shared fill painter; the card only keeps its rounded corners.
-        let background = if clip {
-            theme::soft(theme::DANGER)
-        } else {
-            theme::WINDOW_BG
-        };
         rounded(track, theme::WINDOW_BG, layout.scale, window);
-        let Some(level) = reading.and_then(|reading| reading.levels.get(channel)) else {
-            continue;
-        };
-        crate::ui::widgets::meters::paint_meter_fill_horizontal(track, *level, background, window);
+        if let Some(level) = reading.and_then(|reading| reading.levels.get(channel)) {
+            crate::ui::widgets::meters::paint_meter_fill_horizontal(
+                track,
+                *level,
+                theme::WINDOW_BG,
+                window,
+            );
+        }
+        crate::ui::widgets::meters::paint_clip_lamp(
+                track,
+                gpui_kit::Axis::Horizontal,
+                clip,
+                window,
+            );
     }
 }
 

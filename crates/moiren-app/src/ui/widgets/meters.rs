@@ -19,6 +19,30 @@ pub(crate) fn channel_meter_width(channels: usize) -> f32 {
     width * count + gap * (count - 1.)
 }
 
+/// The clip lamp at the loud end of one meter track: above a vertical
+/// track, right of a horizontal one. Lit red while a clip latches, dim
+/// otherwise; the surrounding element owns click-to-reset. The single clip
+/// indicator for every meter surface — the fill never changes background
+/// for clipping.
+pub(crate) fn paint_clip_lamp(
+    track: Bounds<Pixels>,
+    axis: Axis,
+    clipped: bool,
+    window: &mut Window,
+) {
+    let lamp = match axis {
+        Axis::Vertical => Bounds::new(
+            point(track.left(), track.top() - px(10.)),
+            size(track.size.width, px(3.)),
+        ),
+        Axis::Horizontal => Bounds::new(
+            point(track.right() + px(3.), track.top()),
+            size(px(3.), track.size.height),
+        ),
+    };
+    window.paint_quad(fill(lamp, if clipped { theme::DANGER } else { theme::BORDER }));
+}
+
 pub(crate) fn paint_channel_meter(
     bounds: Bounds<Pixels>,
     levels: Option<&[DisplayLevel]>,
@@ -46,10 +70,7 @@ pub(crate) fn paint_channel_meter(
         // A held display marker is not a new overload. Trust the
         // raw-window latch so clicking reset clears it immediately.
         let clip = clips.get(index).copied().unwrap_or(false);
-        window.paint_quad(fill(
-            Bounds::new(point(left, bounds.top() - px(10.)), size(px(width), px(3.))),
-            if clip { theme::DANGER } else { theme::BORDER },
-        ));
+        paint_clip_lamp(track, Axis::Vertical, clip, window);
         if width + gap >= 5. {
             let label = if channels == 2 {
                 ["L", "R"][index].to_owned()

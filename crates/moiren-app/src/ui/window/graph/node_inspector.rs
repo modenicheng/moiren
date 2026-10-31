@@ -189,7 +189,7 @@ pub(in crate::ui::window) fn inspector(
         ))
         // Live bars are the sidebar hot surface's job; this painting-free
         // canvas only registers where this node's meter tracks sit.
-        .child(inspector_meter_track(shell, id, node.channels()))
+        .child(inspector_meter_track(shell, cx.entity(), id, node.channels()))
         .when(node.channels() == 2, |view| {
             view.child(super::super::mixer::strip_controls::balance(
                 shell,
@@ -1303,17 +1303,30 @@ impl StudioShell {
 /// live bars at. Sized like the DOM meter it replaced.
 fn inspector_meter_track(
     shell: &StudioShell,
+    this: Entity<StudioShell>,
     id: moiren_core::graph::NodeId,
     channels: usize,
 ) -> impl IntoElement {
     let geometry = shell.inspector_meters.clone();
-    canvas(
-        move |bounds, window, _| {
-            geometry.update(|geometry| geometry.register(id, bounds, window.content_mask()));
-        },
-        |_, _, _, _| {},
-    )
-    .w_full()
-    .h(px(if channels >= 2 { 15. } else { 9. }))
-    .flex_none()
+    // Clicking the meter resets the clip latch, like every meter surface.
+    div()
+        .id(SharedString::from(format!("inspector-meter-{id:?}")))
+        .w_full()
+        .h(px(if channels >= 2 { 15. } else { 9. }))
+        .flex_none()
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            this.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.node_meters.reset_clip(id));
+                cx.notify();
+            });
+        })
+        .child(
+            canvas(
+                move |bounds, window, _| {
+                    geometry.update(|geometry| geometry.register(id, bounds, window.content_mask()));
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
 }

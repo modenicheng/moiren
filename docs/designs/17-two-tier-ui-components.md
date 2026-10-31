@@ -169,6 +169,15 @@ inspector). `NodeLevelsFn` widens from bar heights to
 canvas consume identical data. Graph cards lose their tint-colored bars by
 design (D1).
 
+
+
+The clip indicator itself is one painter for every surface
+(`paint_clip_lamp`): a small lamp at the loud end of the track — above a
+vertical track, right of a horizontal one — lit red while a clip latches,
+dim otherwise, with click-to-reset on the surrounding element (mixer
+strips, inspector meters, flyout strips). The graph cards' meter fill
+never changes background for clipping; they carry the same lamp, and the
+flyout's under-bar dot and the inspector's corner dot are gone.
 ### Flyout (D2) and inspector meter (D3)
 
 - The flyout becomes a `CachedPanel` (strip controls) plus one `HotSurface`
