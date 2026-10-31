@@ -203,6 +203,10 @@ impl SelectionState {
     }
 }
 
+/// Memo key for [`UiState::can_start_transport`]: every input the
+/// validation consumes, cheap to copy and compare.
+type TransportCheckFingerprint = ((u64, u32, u32, bool, bool), bool);
+
 /// Root gpui entity: owns the service handle and the latest projected state.
 /// The text projections and the display-level stale guard live in
 /// [`crate::ui::presentation`].
@@ -226,6 +230,12 @@ pub struct UiState {
     pub max_block_frames: usize,
     pub run_limit: RunLimit,
     request_id: Option<RequestId>,
+    /// Memo for [`Self::can_start_transport`]: the toolbar asks per rebuild,
+    /// and the answer clones the whole candidate graph to validate. The key
+    /// carries every input of the validation — candidate revision plus the
+    /// processing settings `configured_engine_project` consumes — so a
+    /// settings change without a graph edit still invalidates it.
+    transport_check: std::cell::Cell<Option<TransportCheckFingerprint>>,
 }
 
 impl UiState {
@@ -252,6 +262,7 @@ impl UiState {
             max_block_frames,
             run_limit: RunLimit::UntilStopped,
             request_id: None,
+            transport_check: std::cell::Cell::new(None),
         };
         let resources = graph_resources(&state.snapshot);
         state.sync_graph_resources(resources.0, resources.1);
@@ -528,7 +539,24 @@ impl UiState {
     }
 
     pub fn can_start_transport(&self) -> bool {
-        self.transport_request().is_ok()
+        let fingerprint = (
+            self.snapshot.graph.candidate_revision,
+            self.snapshot.audio_settings.processing.sample_rate,
+            self.snapshot.audio_settings.processing.block_frames,
+            matches!(
+                self.snapshot.audio_settings.processing.precision,
+                moiren_engine::audio_config::ProcessingPrecision::F64
+            ),
+            self.snapshot.latency_profile == crate::service::AudioLatencyProfile::default(),
+        );
+        if let Some((seen, ok)) = self.transport_check.get()
+            && seen == fingerprint
+        {
+            return ok;
+        }
+        let ok = self.transport_request().is_ok();
+        self.transport_check.set(Some((fingerprint, ok)));
+        ok
     }
 
     fn sync_graph_resources(&mut self, source: Option<InputSelection>, output: Option<String>) {

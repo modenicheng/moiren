@@ -23,38 +23,28 @@ pub enum ActionIcon {
 }
 
 impl ActionIcon {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Plus => "plus",
-            Self::Settings => "settings",
-            Self::Graph => "graph",
-            Self::Mixer => "sliders",
-            Self::Matrix => "route",
-            Self::Devices => "devices",
-            Self::Minimize => "minimize",
-            Self::Maximize => "maximize",
-            Self::Close => "close",
-            Self::Cursor => "cursor-arrow",
-            Self::HandMove => "hand-move",
-            Self::ZoomOut => "minus",
-            Self::ZoomIn => "plus",
-        }
-    }
     pub(crate) fn element(self) -> impl IntoElement {
         // Kit's Icon resolves inherited text color before painting Svg. A bare
         // Svg with no explicit color silently skips painting in this GPUI version.
-        let directory = match self {
-            Self::Mixer
-            | Self::Matrix
-            | Self::Devices
-            | Self::Cursor
-            | Self::HandMove
-            | Self::ZoomOut
-            | Self::ZoomIn => "icons",
-            _ => "figma-actions",
+        // The asset path is a literal: every toolbar rebuild used to pay a
+        // format! allocation for a string that never varies per variant.
+        let path: &'static str = match self {
+            Self::Plus => "figma-actions/plus.svg",
+            Self::Settings => "figma-actions/settings.svg",
+            Self::Graph => "figma-actions/graph.svg",
+            Self::Mixer => "icons/sliders.svg",
+            Self::Matrix => "icons/route.svg",
+            Self::Devices => "icons/devices.svg",
+            Self::Minimize => "figma-actions/minimize.svg",
+            Self::Maximize => "figma-actions/maximize.svg",
+            Self::Close => "figma-actions/close.svg",
+            Self::Cursor => "icons/cursor-arrow.svg",
+            Self::HandMove => "icons/hand-move.svg",
+            Self::ZoomOut => "icons/minus.svg",
+            Self::ZoomIn => "icons/plus.svg",
         };
         Icon::default()
-            .path(format!("{directory}/{}.svg", self.name()))
+            .path(path)
             .with_size(Size::Size(px(controls::ICON)))
     }
 }

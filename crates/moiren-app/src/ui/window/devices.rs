@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::state::{SourceMode, output_name, source_name};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
 use controls::*;
 use rust_i18n::t;
 
@@ -43,6 +44,93 @@ pub(super) enum DeviceTab {
     Applications,
     Exports,
     Clock,
+}
+
+/// The devices page behind a [`PanelHost`]: rebuilt only when the published
+/// snapshot, the active tab, the selected device, or an export draft input
+/// changed.
+pub(in crate::ui::window) struct DevicesPanel;
+
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct DevicesKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    device_tab: DeviceTab,
+    selected_device: Option<String>,
+    exports_scroll: Point<Pixels>,
+}
+
+pub(in crate::ui::window) type DevicesPanelHost = PanelHost<DevicesPanel>;
+
+impl CachedPanel for DevicesPanel {
+    type Owner = StudioShell;
+    type Key = DevicesKey;
+
+    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+        Self::Key {
+            snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
+            device_tab: shell.device_tab,
+            selected_device: shell.selected_device.clone(),
+            // The export list scrolls inside the cached page; the offset
+            // rides in the key so wheel steps rebuild it (the mixer's
+            // precedent for scrollable containers under a cached panel).
+            exports_scroll: shell.exports_scroll.offset(),
+        }
+    }
+
+    fn render(
+        shell: &mut Self::Owner,
+        _window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement {
+        page(shell, cx)
+    }
+
+    fn observe_nested(
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
+        // The export drafts' inputs are model entities nested in this cached
+        // tree; typing must re-render through explicit observers.
+        let inputs = owner.read_with(cx, |shell, _| shell.export_controls.input_entities());
+        inputs
+            .into_iter()
+            .map(|input| cx.observe(&input, |_, _, cx| cx.notify()))
+            .collect()
+    }
+}
+
+/// The devices page's cached splice. The Exports tab stays live: its list
+/// scrolls under the cached subtree, and a rebuild's scroll clamp resets the
+/// tracked offset between frames (the scroll-under-cache hazard in design
+/// 17) — until that has a framework-level answer, the tab keeps the
+/// rebuild-every-notify behavior it always had.
+pub(in crate::ui::window) fn page_for(
+    shell: &StudioShell,
+    window: &Window,
+    cx: &Context<StudioShell>,
+) -> AnyElement {
+    if shell.device_tab == DeviceTab::Exports {
+        return page(shell, cx);
+    }
+    cached_or_live(
+        shell.devices_panel.clone(),
+        window,
+        // The page root carries `flex_1` for the workspace row; the cached
+        // wrapper must inherit it, or the scroll areas collapse to content.
+        |entity| {
+            entity
+                .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
+                .into_any_element()
+        },
+        |entity| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(entity)
+                .into_any_element()
+        },
+    )
 }
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {

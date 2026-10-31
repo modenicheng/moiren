@@ -230,6 +230,13 @@ mechanics are shared. Two shared helpers keep keys honest:
 6. Cache tests assert **paint output changes** while rebuild counters stay
    flat — never `shell_renders` (the root rebuilds every drawn frame), and
    never counters alone (the #48 lesson: broken states can pass both).
+7. A scrollable container inside a cached panel needs the mixer's
+   scroll-under-cache treatment — a shell-owned `ScrollHandle`, a wheel
+   handler that notifies, and the offset in the panel's key — and even then
+   a rebuild's scroll clamp can reset the tracked offset between frames
+   (observed on the devices page's Exports list). Surfaces that must scroll
+   freely stay live until this has a framework-level answer; the Exports
+   tab deliberately keeps its rebuild-every-notify behavior.
 
 ## Deletions
 

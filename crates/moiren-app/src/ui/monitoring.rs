@@ -6,14 +6,12 @@
 use std::time::{Duration, Instant};
 
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
-use moiren_signal::{PublisherStatus, SubscriptionOptions, Topic, TopicLifecycle};
+use moiren_signal::{PublisherStatus, Subscriber, SubscriptionOptions, Topic, TopicLifecycle};
 use rust_i18n::t;
 
 use crate::service::{
     AppHandle, AppSnapshot, InputSelection, LevelTopic, SessionGeneration, SessionPhase,
 };
-
-use super::signals::{PresentationDemand, VisibleSignal};
 
 /// A complete window must keep arriving; a retained value is not proof that
 /// the audio thread or publisher is still advancing.
@@ -303,7 +301,12 @@ fn stereo_display(display: Option<&[DisplayLevel]>) -> Option<[DisplayLevel; 2]>
 
 struct MeterSubscription {
     topic: Topic<LevelTopic>,
-    visible: VisibleSignal<LevelTopic>,
+    /// The level topic's subscription, latched once at construction: the
+    /// meter path has no demand gating left — visibility is the caller's
+    /// visible set, and the demand wrapper it used was hardcoded to "always
+    /// wants" (design 17 deletions).
+    ticket: Option<crate::service::SubscriptionTicket<LevelTopic>>,
+    subscriber: Option<Subscriber<LevelTopic>>,
     sequence_fence: u64,
     last_delivery: Option<Instant>,
     last_window: Option<(u64, u64)>,
@@ -498,15 +501,10 @@ impl MeterSubscription {
     }
 
     fn new(handle: AppHandle, topic: Topic<LevelTopic>, channels: usize) -> Self {
-        Self {
+        let mut this = Self {
             sequence_fence: topic.stats().attempts,
-            visible: VisibleSignal::new(
-                handle,
-                topic.clone(),
-                SubscriptionOptions {
-                    stream_depth: Some(LEVEL_WINDOW_DEPTH),
-                },
-            ),
+            ticket: None,
+            subscriber: None,
             topic,
             last_delivery: None,
             last_window: None,
@@ -516,7 +514,21 @@ impl MeterSubscription {
             settings: MeterDisplayPreferences::default(),
             ballistics: Vec::new(),
             display: None,
+        };
+        match handle.subscribe_topic(
+            this.topic.clone(),
+            SubscriptionOptions {
+                stream_depth: Some(LEVEL_WINDOW_DEPTH),
+            },
+        ) {
+            Ok(ticket) => this.ticket = Some(ticket),
+            Err(error) => {
+                this.status = MeterStatus::Error(
+                    t!("Meter subscription: %{error}", error = format!("{error:?}")).to_string(),
+                );
+            }
         }
+        this
     }
 
     fn poll(&mut self, now: Instant) -> bool {
@@ -529,20 +541,6 @@ impl MeterSubscription {
     /// accepted. Every drained window contributes its peak and its RMS share,
     /// so intermediate windows between display reads are never lost.
     fn poll_windows(&mut self, now: Instant) -> bool {
-        let demand = PresentationDemand {
-            window_visible: true,
-            minimized: false,
-            page_active: true,
-            component_visible: true,
-            intersects_viewport: true,
-        };
-        if let Err(error) = self.visible.update_demand(demand) {
-            self.levels = None;
-            self.status = MeterStatus::Error(
-                t!("Meter subscription: %{error}", error = format!("{error:?}")).to_string(),
-            );
-            return false;
-        }
         let status = self.topic.status();
         if status.lifecycle == TopicLifecycle::Closed
             || status.publisher == PublisherStatus::NoPublisher
@@ -553,19 +551,26 @@ impl MeterSubscription {
             self.status = MeterStatus::NoPublisher;
             return false;
         }
-        let subscriber = match self.visible.subscriber() {
-            Ok(Some(subscriber)) => subscriber,
-            Ok(None) => {
-                self.status = MeterStatus::Waiting;
-                return false;
+        if let Some(ticket) = self.ticket.as_mut() {
+            match ticket.try_take() {
+                Ok(Some(subscriber)) => {
+                    self.ticket = None;
+                    self.subscriber = Some(subscriber);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.ticket = None;
+                    self.levels = None;
+                    self.status = MeterStatus::Error(
+                        t!("Meter subscription: %{error}", error = error.to_string()).to_string(),
+                    );
+                    return false;
+                }
             }
-            Err(error) => {
-                self.levels = None;
-                self.status = MeterStatus::Error(
-                    t!("Meter subscription: %{error}", error = error.to_string()).to_string(),
-                );
-                return false;
-            }
+        }
+        let Some(subscriber) = self.subscriber.as_mut() else {
+            self.status = MeterStatus::Waiting;
+            return false;
         };
         let mut published = false;
         while let Some(window) = subscriber.next() {

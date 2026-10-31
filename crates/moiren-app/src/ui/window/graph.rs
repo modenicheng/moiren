@@ -110,7 +110,7 @@ impl StudioShell {
 /// shell renders this through [`super::meter_frame::page`], which caches it
 /// behind [`meter_frame::ControlsKey`] and adds the animation-owner meter
 /// frame as a sibling.
-pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
+pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     // Meter bar readings are not baked in: the canvas paint consults the
     // live ballistics per draw, so meter motion repaints without the page
@@ -568,7 +568,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .child(canvas_view)
                         .child(editing_toolbar(shell, &this)),
                 )
-                .child(sidebar::library_host(shell, cx)),
+                .child(sidebar::library_host(shell, window, cx)),
         )
         .gpui_test_observe()
         .into_any_element()

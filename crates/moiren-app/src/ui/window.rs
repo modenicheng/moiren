@@ -163,6 +163,7 @@ pub struct StudioShell {
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
+    exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
     mixer_geometry: mixer::meter_frame::Geometry,
     mixer_controls: Entity<mixer::meter_frame::MixerPanelHost>,
@@ -185,6 +186,13 @@ pub struct StudioShell {
     /// canvases each frame and read by the sidebar hot layer.
     inspector_meters: sidebar::InspectorMeterFrame,
     inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
+    error_strip: Entity<error_strip::ErrorStripHost>,
+    matrix_panel: Entity<matrix::MatrixPanelHost>,
+    devices_panel: Entity<devices::DevicesPanelHost>,
+    settings_panel: Entity<settings::SettingsPanelHost>,
+    inspector_panel: Entity<sidebar::InspectorPanelHost>,
+    library_panel: Entity<sidebar::LibraryPanelHost>,
+    library_rail_panel: Entity<sidebar::LibraryRailPanelHost>,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
@@ -329,6 +337,16 @@ impl StudioShell {
                 sidebar::InspectorMeters::new(shell_entity.downgrade(), inspector_meters.clone()),
             )))
         });
+        let error_strip = cx.new(|cx| error_strip::ErrorStripHost::new(shell_entity.clone(), cx));
+        let matrix_panel = cx.new(|cx| matrix::MatrixPanelHost::new(shell_entity.clone(), cx));
+        let devices_panel = cx.new(|cx| devices::DevicesPanelHost::new(shell_entity.clone(), cx));
+        let settings_panel =
+            cx.new(|cx| settings::SettingsPanelHost::new(shell_entity.clone(), cx));
+        let inspector_panel =
+            cx.new(|cx| sidebar::InspectorPanelHost::new(shell_entity.clone(), cx));
+        let library_panel = cx.new(|cx| sidebar::LibraryPanelHost::new(shell_entity.clone(), cx));
+        let library_rail_panel =
+            cx.new(|cx| sidebar::LibraryRailPanelHost::new(shell_entity.clone(), cx));
         let graph_controls = cx.new(|child_cx| {
             graph::meter_frame::GraphPanelHost::new(shell_entity.clone(), child_cx)
         });
@@ -378,6 +396,7 @@ impl StudioShell {
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
+            exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
             mixer_geometry,
             mixer_controls,
@@ -392,6 +411,13 @@ impl StudioShell {
             frame_demand: Default::default(),
             inspector_meters,
             inspector_meter_layer,
+            error_strip,
+            matrix_panel,
+            devices_panel,
+            settings_panel,
+            inspector_panel,
+            library_panel,
+            library_rail_panel,
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
@@ -627,6 +653,7 @@ mod desktop;
 pub use capture::run_ui_capture;
 mod controls;
 mod devices;
+mod error_strip;
 mod graph;
 mod hot;
 mod matrix;
@@ -716,142 +743,8 @@ impl Render for StudioShell {
             self.pan_slider
                 .update(cx, |s, cx| s.set_value(pan, window, cx));
         }
-        let error_strip = {
-            let state = self.state.read(cx);
-            let faults = state.snapshot.graph.faults.clone();
-            let other = state
-                .dispatch_error
-                .as_ref()
-                .or(state.snapshot.error.as_ref())
-                .or(state.snapshot.catalog_error.as_ref())
-                .cloned();
-            (!faults.is_empty() || other.is_some()).then(|| {
-                let log_path = crate::logging::log_path()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| t!("Application file logging is unavailable").into());
-                let this = cx.entity();
-                let graph = state.snapshot.graph.clone();
-                let mut list = div()
-                    .id("error-strip")
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .px(px(theme::SPACE_4))
-                    .py(px(theme::SPACE_2))
-                    .bg(theme::soft(theme::DANGER))
-                    .text_size(px(theme::TEXT_SM));
-                for (index, fault) in faults.iter().enumerate() {
-                    let subject = fault.subject;
-                    let location = match subject {
-                        crate::service::GraphSubject::Node(node) => {
-                            graph.node(node).map(|node| node.label.clone())
-                        }
-                        crate::service::GraphSubject::Route(source, destination) => {
-                            let port_label = |port: &moiren_core::graph::PortId| {
-                                graph
-                                    .graph
-                                    .nodes()
-                                    .iter()
-                                    .find(|node| {
-                                        node.inputs()
-                                            .iter()
-                                            .chain(node.outputs())
-                                            .any(|candidate| candidate.id() == *port)
-                                    })
-                                    .map(|node| node.id())
-                                    .and_then(|owner| {
-                                        graph.node(owner).map(|node| node.label.clone())
-                                    })
-                            };
-                            let source = port_label(&source);
-                            let destination = port_label(&destination);
-                            match (source, destination) {
-                                (Some(source), Some(destination)) => {
-                                    Some(format!("{source} → {destination}"))
-                                }
-                                _ => None,
-                            }
-                        }
-                        crate::service::GraphSubject::Graph => None,
-                    };
-                    let mut row = div()
-                        .id(SharedString::from(format!("fault-{index}")))
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .when(subject != crate::service::GraphSubject::Graph, |row| {
-                            row.cursor_pointer().on_click({
-                                let this = this.clone();
-                                move |_, _, cx| {
-                                    this.update(cx, |shell, cx| {
-                                        shell.inspector_open = true;
-                                        match subject {
-                                            crate::service::GraphSubject::Node(node) => {
-                                                shell.selected_route = None;
-                                                shell.selected_node = Some(node);
-                                            }
-                                            crate::service::GraphSubject::Route(
-                                                source,
-                                                destination,
-                                            ) => {
-                                                shell.selected_node = None;
-                                                shell.selected_route = Some((source, destination));
-                                            }
-                                            crate::service::GraphSubject::Graph => {}
-                                        }
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                        });
-                    row = row
-                        .child(
-                            div()
-                                .text_color(theme::DANGER)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                // Causes and hints are English catalog keys
-                                // produced by the service; translation happens
-                                // here so a locale switch re-renders stored
-                                // faults, and unknown prose passes through.
-                                .child(t!("Error: %{cause}", cause = t!(fault.cause.as_str()))),
-                        )
-                        .when_some(location, |row, location| {
-                            row.child(
-                                div().text_color(theme::TEXT).child(t!(
-                                    "Channel: %{location}",
-                                    location = location.as_str()
-                                )),
-                            )
-                        })
-                        .when_some(fault.hint.as_deref(), |row, hint: &str| {
-                            row.child(
-                                div()
-                                    .text_color(theme::TEXT)
-                                    .child(t!("Hint: %{hint}", hint = t!(hint))),
-                            )
-                        });
-                    list = list.child(row.gpui_test_observe());
-                }
-                if let Some(error) = other {
-                    // Dispatch/persistence diagnostics may be plain prose; a
-                    // catalog miss renders the source text unchanged.
-                    let message = t!(error.as_str()).into_owned();
-                    list = list.child(
-                        div()
-                            .id("error-strip-message")
-                            .text_color(theme::DANGER)
-                            .child(message),
-                    );
-                }
-                list.child(
-                    div()
-                        .pt(px(2.))
-                        .text_color(theme::TEXT)
-                        .child(t!("Diagnostics: %{log_path}", log_path = log_path)),
-                )
-                .gpui_test_observe()
-            })
-        };
+        let error_strip =
+            error_strip::has_faults(self, cx).then(|| error_strip::for_shell(self, window));
         div()
             .id("studio-shell")
             .relative()
@@ -875,10 +768,10 @@ impl Render for StudioShell {
                     .child(match self.presentation.page {
                         Page::Graph => graph::meter_frame::page(self, window),
                         Page::Mixer => mixer::meter_frame::page(self, window),
-                        Page::Matrix => matrix::page(self, cx),
-                        Page::Devices => devices::page(self, cx),
+                        Page::Matrix => matrix::page_for(self, window, cx),
+                        Page::Devices => devices::page_for(self, window, cx),
                     })
-                    .child(sidebar::inspector_host(self, cx)),
+                    .child(sidebar::inspector_host(self, window, cx)),
             )
             .child(chrome::status_for_page(self, window))
             // Clicking anywhere outside an open inline editor commits it, so
@@ -899,7 +792,7 @@ impl Render for StudioShell {
             })
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
-                v.child(settings::overlay(self, window, cx))
+                v.child(settings::overlay_for(self, window))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);

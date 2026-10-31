@@ -74,14 +74,14 @@ impl CachedPanel for GraphPanel {
 
     fn render(
         shell: &mut StudioShell,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<StudioShell>,
     ) -> AnyElement {
         #[cfg(feature = "gpui-test")]
         {
             shell.mixer.trace.borrow_mut().graph_renders += 1;
         }
-        super::page(shell, cx)
+        super::page(shell, window, cx)
     }
 
     fn on_rebuild(shell: &mut StudioShell) {

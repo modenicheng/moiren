@@ -26,6 +26,16 @@ struct NameDraft {
 impl ExportControls {
     /// Whether one of the export editor's text inputs owns focus, so global
     /// shortcuts (undo/redo) leave typing alone.
+    /// Every nested draft input, for panel hosts that must observe model
+    /// entities whose notifications cannot invalidate a cached ancestor.
+    pub(in crate::ui::window) fn input_entities(
+        &self,
+    ) -> Vec<Entity<component::input::InputState>> {
+        let mut inputs = vec![self.name.clone()];
+        inputs.extend(self.names.values().map(|draft| draft.input.clone()));
+        inputs
+    }
+
     pub(in crate::ui::window) fn owns_focus(
         &self,
         focus: &gpui_kit::FocusHandle,
@@ -221,6 +231,11 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .min_w_0()
         .gap(px(12.))
         .overflow_y_scroll()
+        .track_scroll(&shell.exports_scroll)
+        .on_scroll_wheel({
+            let this = cx.entity();
+            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+        })
         .child(heading(t!("Virtual exports")))
         .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
         .child(creation_controls(shell, cx))

@@ -34,8 +34,24 @@ pub(in super::super) struct Draft {
     pub pending: Option<Pending>,
 }
 
+impl PartialEq for Draft {
+    fn eq(&self, other: &Self) -> bool {
+        self.audio == other.audio
+            && self.profile == other.profile
+            && self.density == other.density
+            && self.original == other.original
+            && self.error == other.error
+            && self.message == other.message
+            && self.pending.is_some() == other.pending.is_some()
+    }
+}
+
 #[derive(Clone)]
 pub(in super::super) struct Pending {
+    // NOTE: deliberately not `PartialEq`; the draft comparison below treats
+    // any pending save as equal to any other so the panel key only rebuilds
+    // on value changes (the pending stage renders through the shell's save
+    // notifications via the `message`/`error` fields instead).
     pub request: RequestId,
     pub stage: Stage,
     pub restart: bool,

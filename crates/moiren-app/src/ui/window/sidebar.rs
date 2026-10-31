@@ -8,6 +8,172 @@ use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
+
+/// The inspector panel behind a [`PanelHost`]: rebuilt only when its inputs
+/// changed — the published snapshot, the selection, the active editing
+/// session, and the graph/library mode flags.
+pub(in crate::ui::window) struct InspectorPanel;
+
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct InspectorKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    selected_node: Option<moiren_core::graph::NodeId>,
+    selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
+    device_tab: devices::DeviceTab,
+    selected_device: Option<String>,
+    node_name_editing: Option<moiren_core::graph::NodeId>,
+    editing_value: Option<moiren_core::graph::NodeId>,
+    editing_balance: Option<moiren_core::graph::NodeId>,
+    editing_node_gain: Option<moiren_core::graph::NodeId>,
+    editing_node_pan: Option<moiren_core::graph::NodeId>,
+    editing_send: Option<moiren_core::graph::EdgeId>,
+    compact: bool,
+    preferences: crate::project::AppPreferences,
+}
+
+pub(in crate::ui::window) type InspectorPanelHost = PanelHost<InspectorPanel>;
+
+impl CachedPanel for InspectorPanel {
+    type Owner = StudioShell;
+    type Key = InspectorKey;
+
+    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+        let state = shell.state.read(cx);
+        Self::Key {
+            snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
+            selected_node: shell.selected_node,
+            selected_route: shell.selected_route,
+            device_tab: shell.device_tab,
+            selected_device: shell.selected_device.clone(),
+            node_name_editing: shell.node_name_editing,
+            editing_value: shell.mixer.editing_value,
+            editing_balance: shell.mixer.editing_balance,
+            editing_node_gain: shell.mixer.editing_node_gain,
+            editing_node_pan: shell.mixer.editing_node_pan,
+            editing_send: shell.mixer.editing_send,
+            compact: shell.compact,
+            preferences: shell.preferences.clone(),
+        }
+    }
+
+    fn render(
+        shell: &mut Self::Owner,
+        _window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement {
+        page_inspector(shell, cx)
+    }
+
+    fn on_rebuild(shell: &mut Self::Owner) {
+        // The inspector's canvases register their meter tracks during this
+        // same layout pass; stale placements must not survive a rebuild.
+        shell.inspector_meters.reset();
+    }
+
+    fn observe_nested(
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
+        // Model entities nested in the panel — the inline rename input, the
+        // mixer's editable-value inputs, and the export drafts — whose
+        // notifications cannot invalidate this cached ancestor themselves.
+        let inputs = owner.read_with(cx, |shell, _| {
+            let mut inputs = vec![shell.node_name.clone()];
+            inputs.extend(shell.mixer.value_inputs.values().cloned());
+            inputs.extend(shell.export_controls.input_entities());
+            inputs
+        });
+        inputs
+            .into_iter()
+            .map(|input| cx.observe(&input, |_, _, cx| cx.notify()))
+            .collect()
+    }
+}
+
+/// The inspector panel's cached splice.
+fn inspector_panel_for(shell: &StudioShell, window: &Window) -> AnyElement {
+    cached_or_live(
+        shell.inspector_panel.clone(),
+        window,
+        |entity| {
+            entity
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        },
+        |entity| div().size_full().child(entity).into_any_element(),
+    )
+}
+
+/// The node-library panels behind [`PanelHost`]s: the icon rail and the
+/// detail sleeve, rebuilt only when their inputs changed.
+pub(in crate::ui::window) struct LibraryPanel;
+
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct LibraryKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    pending_spawn: bool,
+    compact: bool,
+    preferences: crate::project::AppPreferences,
+}
+
+fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
+    LibraryKey {
+        snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
+        pending_spawn: shell.pending_node_spawn.is_some(),
+        compact: shell.compact,
+        preferences: shell.preferences.clone(),
+    }
+}
+
+pub(in crate::ui::window) type LibraryPanelHost = PanelHost<LibraryPanel>;
+
+impl CachedPanel for LibraryPanel {
+    type Owner = StudioShell;
+    type Key = LibraryKey;
+
+    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+        library_key(shell, cx)
+    }
+
+    fn render(
+        shell: &mut Self::Owner,
+        _window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement {
+        super::graph::library(shell, cx).into_any_element()
+    }
+
+    fn observe_nested(
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
+        let search = owner.read_with(cx, |shell, _| shell.node_search.clone());
+        vec![cx.observe(&search, |_, _, cx| cx.notify())]
+    }
+}
+
+/// The library's icon rail: same inputs as the detail sleeve, no search.
+pub(in crate::ui::window) struct LibraryRailPanel;
+
+pub(in crate::ui::window) type LibraryRailPanelHost = PanelHost<LibraryRailPanel>;
+
+impl CachedPanel for LibraryRailPanel {
+    type Owner = StudioShell;
+    type Key = LibraryKey;
+
+    fn key(shell: &Self::Owner, cx: &App) -> Self::Key {
+        library_key(shell, cx)
+    }
+
+    fn render(
+        shell: &mut Self::Owner,
+        _window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement {
+        super::graph::library_rail(shell, cx).into_any_element()
+    }
+}
 
 /// The sidebar inspector's hot surface: live horizontal meter bars over the
 /// inspector panel, painting from the tracks the inspector's canvases
@@ -117,11 +283,12 @@ const HANDLE_HEIGHT: f32 = 56.;
 
 /// Right-hand inspector host: page content plus the collapse handle that
 /// rides the panel's left edge.
-pub(super) fn inspector_host(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<Div> {
+pub(super) fn inspector_host(
+    shell: &StudioShell,
+    window: &Window,
+    cx: &Context<StudioShell>,
+) -> Stateful<Div> {
     let this = cx.entity();
-    // The inspector rebuilds with the shell root every drawn frame; start
-    // each pass from a blank track register so removed nodes never linger.
-    shell.inspector_meters.reset();
     div()
         .id("inspector-host")
         .relative()
@@ -131,7 +298,7 @@ pub(super) fn inspector_host(shell: &StudioShell, cx: &Context<StudioShell>) -> 
             "inspector-panel-width",
             shell.inspector_open,
             theme::INSPECTOR_WIDTH,
-            page_inspector(shell, cx),
+            inspector_panel_for(shell, window),
         ))
         .child(shell.inspector_meter_layer.clone())
         .child(edge_handle(
@@ -145,7 +312,11 @@ pub(super) fn inspector_host(shell: &StudioShell, cx: &Context<StudioShell>) -> 
 /// Left-hand node-library host for the graph page. The icon rail is the
 /// collapsed form: it grows in from zero only while the detail sleeve is
 /// closed, so the two springs swap one for the other in the same motion.
-pub(super) fn library_host(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<Div> {
+pub(super) fn library_host(
+    shell: &StudioShell,
+    window: &Window,
+    cx: &Context<StudioShell>,
+) -> Stateful<Div> {
     let this = cx.entity();
     div()
         .id("library-host")
@@ -157,13 +328,31 @@ pub(super) fn library_host(shell: &StudioShell, cx: &Context<StudioShell>) -> St
             "library-rail-width",
             !shell.sidebar_open,
             theme::LIBRARY_RAIL_WIDTH,
-            graph::library_rail(shell, cx).into_any_element(),
+            cached_or_live(
+                shell.library_rail_panel.clone(),
+                window,
+                |entity| {
+                    entity
+                        .cached(StyleRefinement::default().size_full())
+                        .into_any_element()
+                },
+                |entity| div().size_full().child(entity).into_any_element(),
+            ),
         ))
         .child(panel(
             "library-panel-width",
             shell.sidebar_open,
             theme::LIBRARY_WIDTH,
-            graph::library(shell, cx).into_any_element(),
+            cached_or_live(
+                shell.library_panel.clone(),
+                window,
+                |entity| {
+                    entity
+                        .cached(StyleRefinement::default().size_full())
+                        .into_any_element()
+                },
+                |entity| div().size_full().child(entity).into_any_element(),
+            ),
         ))
         .child(edge_handle(
             "library-toggle",
