@@ -12,6 +12,13 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [bounded indexed-v2 identity diagnostic](2026-10-31-indexed-marker-analysis.md)
+keeps original source indices and explicit recorder windows, with root21/576
+focused/full probe checks and portable compilation. The retained native PCM
+resolves14 identities but leaves15 missing and9762 nominal-QPC policy issues;
+both author/root artifacts agree and exit1. Missing is not proven marker loss,
+and spacing is not origin/physical delay. No threshold or quality gate is eased.
+
 The [current74f desktop regression](2026-10-31-app-deployment-desktop.md#main-pr50-integrated-app-current-binary-native-regression)
 includes main PR50, fresh graph20/direction1 tests and actual DAWN-only native
 start/restart/stop with13 UIA Invokes. Both owners retire/reap, app/source exit0,
