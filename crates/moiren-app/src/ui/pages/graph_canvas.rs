@@ -29,7 +29,6 @@ pub struct CanvasNode {
     pub icon: Option<&'static str>,
     pub x: f32,
     pub y: f32,
-    pub wide: bool,
     pub input_count: usize,
     pub input_ports: Vec<moiren_core::graph::PortId>,
     pub output_port: Option<moiren_core::graph::PortId>,
@@ -41,11 +40,7 @@ pub struct CanvasNode {
 
 impl CanvasNode {
     pub fn width(&self) -> f32 {
-        if self.wide {
-            theme::NODE_WIDE_WIDTH
-        } else {
-            theme::NODE_WIDTH
-        }
+        theme::NODE_WIDTH
     }
     pub fn height(&self) -> f32 {
         theme::NODE_HEIGHT.max(
@@ -69,7 +64,6 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         icon: None,
         x: 0.,
         y: 0.,
-        wide: false,
         input_count: 0,
         input_ports: Vec::new(),
         output_port: None,
@@ -310,11 +304,6 @@ impl CanvasNode {
     }
     fn with_tint(mut self, tint: Hsla) -> Self {
         self.tint = Some(tint);
-        self
-    }
-    #[allow(dead_code)]
-    fn wide(mut self) -> Self {
-        self.wide = true;
         self
     }
 }

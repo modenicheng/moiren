@@ -119,13 +119,6 @@ impl ServiceCore {
             spec.pan = pan;
         }
     }
-    pub fn start_failed(
-        &mut self,
-        generation: SessionGeneration,
-        error: super::BackendError,
-    ) -> bool {
-        self.failed(generation, error.to_string())
-    }
     pub fn start(&mut self, spec: SessionSpec) -> Result<SessionGeneration, DispatchError> {
         self.check_open()?;
         spec.validate()?;
@@ -180,6 +173,10 @@ impl ServiceCore {
         self.owner = Some(g);
         true
     }
+    /// Test-orchestration primitive for the session lifecycle: transitions an
+    /// owned, activating generation into Running. The managed host drives the
+    /// same transition through `managed_execution`, so production dispatch
+    /// never calls this directly.
     pub fn owner_started(&mut self, g: SessionGeneration) -> bool {
         if self.phase != SessionPhase::Starting
             || self.generation != g
@@ -208,18 +205,6 @@ impl ServiceCore {
             };
         }
         true
-    }
-    /// Natural completion consumes only this owner's unchanged intent. A newer
-    /// requested session remains queued and no generation counter is advanced.
-    pub fn owner_completed(&mut self, g: SessionGeneration) {
-        if self.generation == g && self.owner == Some(g) && self.check_open().is_ok() {
-            self.desired = None;
-        }
-    }
-    pub fn owner_stopping(&mut self, g: SessionGeneration) {
-        if self.owner == Some(g) && self.check_open().is_ok() {
-            self.phase = SessionPhase::Stopping;
-        }
     }
     pub fn failed(&mut self, g: SessionGeneration, error: String) -> bool {
         if self.generation != g || self.check_open().is_err() {
