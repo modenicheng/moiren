@@ -194,6 +194,16 @@ plus manifest, SHA256
 Root verifies CRCs, exact member set, manifest lengths/SHA256 and extracted
 bytes. The two preceding genuine native REDs remain retained unchanged.
 
+Independent archive audit passes31/31 checks, including all payload hashes,
+13 successful Invokes, matching requested/active source identity, both native
+owner retirement sequences and app/source exit0. Its JSON SHA256 is
+`86FEB941963BDA738AFFEC120EF6FDEE9C5D8D1D082000E41D2AE9B3FDDF45CB`.
+The after-Stop-button observation slightly precedes the native generation1
+started log; Apply returning also precedes asynchronous generation2 startup.
+UI state and Invoke returns are therefore not substituted for native Running
+timestamps. Native logs provide the independent state evidence. Endpoint
+equality is from before/after snapshots, not continuous settings monitoring.
+
 This is a same-scenario actual desktop regression GREEN consistent with the
 cache hypothesis; it does not prove every interleaving or render-frame tree.
 The helper retains PrintWindow requests, not frame-counter evidence or a
