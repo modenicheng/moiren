@@ -601,6 +601,230 @@ fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
     finish_service(runtime);
 }
 
+/// A small press-drag on the fader must track the pointer: the thumb moves a
+/// couple of pixels, the confirmed publishes land mid-drag, the release
+/// commits — and the value never snaps to the rail (−inf). Regression for a
+/// probabilistic mapping fault where a tiny drag ended at digital silence.
+#[gpui_kit::test]
+fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    // Start from unity (0 dB): thumb at FaderScale position 0.24.
+    let start_value = 1. - FaderScale::position(1.);
+    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    // Four small downward moves with frames in between: publishes land
+    // mid-drag exactly as they do on a real machine.
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    // Mid-drag sanity: the value tracks downward, never the rail.
+    let mid_value = view.update(cx, |shell, cx| {
+        shell.mixer.faders[&node].state.read(cx).value().end()
+    });
+    assert!(
+        mid_value > 0.5 && mid_value < start_value,
+        "mid-drag value {mid_value} must track between unity and the rail"
+    );
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    // The dispatch rides the mailbox: until a poll consumes the published
+    // confirmation, the UI snapshot still holds the PRE-DRAG gain, and every
+    // rendered frame runs the snapshot write-back. The thumb must hold the
+    // user's value through that window instead of snapping back to the rail.
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let held = view.read_with(cx, |shell, cx| {
+            shell.mixer.faders[&node].state.read(cx).value().end()
+        });
+        assert!(
+            held > 0.5,
+            "the thumb snapped back to the pre-drag snapshot value {held} before confirmation"
+        );
+    }
+    // A stale publication (the driver's strip sync races the edit path on a
+    // real machine): a revision the UI has not seen, carrying the PRE-DRAG
+    // gain. The fresh user commit must shield the thumb from it.
+    view.update(cx, |shell, cx| {
+        let stale_gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        shell.state.update(cx, |state, _| {
+            let snapshot = std::sync::Arc::make_mut(&mut state.snapshot);
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            graph.candidate_revision += 1;
+            if let Some(entry) = graph.nodes.iter_mut().find(|entry| entry.id == node) {
+                entry.mixer.gain = stale_gain;
+            }
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let shielded = view.read_with(cx, |shell, cx| {
+        shell.mixer.faders[&node].state.read(cx).value().end()
+    });
+    assert!(
+        shielded > 0.5,
+        "a stale publication yanked the thumb back to {shielded}"
+    );
+    poll(&view, cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (final_value, final_db) = view.update(cx, |shell, cx| {
+        let value = shell.mixer.faders[&node].state.read(cx).value().end();
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        (value, 20. * gain.log10())
+    });
+    assert!(
+        final_value > 0.5,
+        "a small drag must not land on the rail (value {final_value}, {final_db} dB)"
+    );
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag from unity landed at {final_db} dB"
+    );
+    finish_service(runtime);
+}
+
+/// Same small drag, but the window was resized after the strips laid out:
+/// the strips must re-derive their pointer mapping from the new geometry
+/// instead of mapping against the pre-resize track and clamping to the rail.
+#[gpui_kit::test]
+fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let start_value = 1. - FaderScale::position(1.);
+    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // A real layout change the strip key does not mention: the window is
+    // shortened, so every strip's height (and its fader track) changes.
+    let strips_before_resize =
+        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    cx.simulate_resize(size(px(1440.), px(640.)));
+    view.update(cx, |_, cx| cx.notify());
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let strips_after_resize =
+        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    eprintln!(
+        "RESIZE-REBUILDS {}",
+        strips_after_resize - strips_before_resize
+    );
+    let (thumb_x, thumb_y, _track_height) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+            f32::from(bounds.size.height),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    poll(&view, cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (final_value, final_db) = view.update(cx, |shell, cx| {
+        let value = shell.mixer.faders[&node].state.read(cx).value().end();
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        (value, 20. * gain.log10())
+    });
+    assert!(
+        final_value > 0.5,
+        "a small drag after a resize must not land on the rail (value {final_value}, {final_db} dB)"
+    );
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag after a resize landed at {final_db} dB"
+    );
+    finish_service(runtime);
+}
+
 /// Exercise a real managed publisher: painting cannot pass just by reusing
 /// frozen levels or silently dropping visibility/subscription demand.
 #[gpui_kit::test]

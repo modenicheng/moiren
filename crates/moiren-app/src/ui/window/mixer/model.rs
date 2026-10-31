@@ -675,7 +675,15 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                     match event {
                         base::slider::SliderEvent::Change(value) => {
                             drag_flag.set(true);
-                            if let Some(send) = gate.change(value.end(), Instant::now()) {
+                            let value = value.end();
+                            // A degenerate pointer mapping (zero state bounds
+                            // before the first layout) yields NaN; dispatching
+                            // it would produce an invalid gain and strand the
+                            // thumb until the next write-back.
+                            if !value.is_finite() {
+                                return;
+                            }
+                            if let Some(send) = gate.change(value, Instant::now()) {
                                 dispatch_edit(&ui, &drag_edit, send, cx);
                             }
                         }
@@ -683,6 +691,9 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             drag_flag.set(false);
                             gate.release();
                             let value = value.end();
+                            if !value.is_finite() {
+                                return;
+                            }
                             // The release always lands — unless a wheel or
                             // double-click commit already moved the slider
                             // past it: those handlers paint before the
