@@ -103,7 +103,7 @@ pub(super) fn inputs(
                 .node(edge.src())
                 .and_then(|node| {
                     graph.graph.get_node(node.id).ok().map(|logical| {
-                        crate::ui::state::display_label(snapshot, node, logical.kind())
+                        crate::ui::presentation::display_label(snapshot, node, logical.kind())
                     })
                 })
                 .unwrap_or_else(|| t!("Unknown").into_owned());
@@ -164,7 +164,7 @@ pub(super) fn inputs(
             let resource = entry.source.as_ref().map(|source| {
                 t!(
                     "Resource · %{name}",
-                    name = crate::ui::state::source_name(snapshot, source)
+                    name = crate::ui::presentation::source_name(snapshot, source)
                 )
                 .into_owned()
             });
@@ -268,7 +268,7 @@ pub(super) fn sends(
                                 .node(edge.dst())
                                 .and_then(|node| {
                                     graph.graph.get_node(node.id).ok().map(|logical| {
-                                        crate::ui::state::display_label(
+                                        crate::ui::presentation::display_label(
                                             snapshot,
                                             node,
                                             logical.kind(),

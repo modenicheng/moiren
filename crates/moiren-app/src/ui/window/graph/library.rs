@@ -142,7 +142,7 @@ pub(in crate::ui::window) fn library(
         session = session.child(
             button(
                 SharedString::from(format!("locate-{id:?}")),
-                crate::ui::state::display_label(
+                crate::ui::presentation::display_label(
                     &state.snapshot,
                     entry,
                     state

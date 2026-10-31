@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::service::{ProcessRow, ServiceMailbox};
+use crate::ui::presentation::{output_name, source_name};
 use crate::ui::{finish_service, initial_projection, spawn_service, wait_until};
 use moiren_core::graph::NodeKind;
 

@@ -1,5 +1,6 @@
 use super::*;
-use crate::ui::state::{SourceMode, output_name, source_name};
+use crate::ui::presentation::{output_name, source_name};
+use crate::ui::state::SourceMode;
 use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 use controls::*;
 use rust_i18n::t;

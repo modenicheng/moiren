@@ -340,7 +340,7 @@ fn strip(
                         // The main mixer's display name: an export binding,
                         // the bound input device or output endpoint — never
                         // the bare default label ("Input"/"Output").
-                        .child(crate::ui::state::display_label(
+                        .child(crate::ui::presentation::display_label(
                             &flyout.state.read(cx).snapshot,
                             entry,
                             kind,

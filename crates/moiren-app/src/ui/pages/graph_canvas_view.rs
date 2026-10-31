@@ -11,9 +11,9 @@ use super::graph_canvas::{
     Camera, CanvasFrame, CanvasNode, CanvasWorld, HitTarget, PortDirection, PortTarget, WireCurve,
 };
 use crate::ui::monitoring::DisplayLevel;
+use crate::ui::observe::TestObserve;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::theme;
-use crate::ui::window::TestObserve;
 
 mod nodes;
 
