@@ -77,6 +77,16 @@ separate128 refuses before Running against queried device minimum144.
 Both archives are verified; no physical delay or minimum is established:
 [physical retirement receipt](../../docs/validation/2026-10-31-physical-soak-retirement.md).
 
+Feature-gated `06b3daa` then permits explicit WASAPI Exclusive render144 for
+diagnostics, keeping feature-off behavior and app presets/defaults unchanged.
+Actual DAWN admits144 period/capacity; separate Engine64 target1152 and945
+controls each finish35 seconds without native/cleanup error or reported xrun,
+drop or silence. Prime32 and final reset/recovery1 are retained. Root feature-
+on/off659 library/622 probe tests, strict Clippy/fmt/release and independent
+source review pass; both acquired archives independently audit59/0. No PCM,
+physical floor or calibrated sub10ms conclusion follows:
+[exact144 receipt](../../docs/validation/2026-10-31-dawn-exact144.md).
+
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
 A distinct existing Exclusive event Playback control now passes on the same

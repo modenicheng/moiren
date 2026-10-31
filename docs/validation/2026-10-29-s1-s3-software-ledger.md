@@ -21,6 +21,17 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [exact144 physical-output diagnostic](2026-10-31-dawn-exact144.md)
+adds only a `vad-probe`-gated WASAPI Exclusive-render144 validation exception,
+not an application preset/default. Root feature-on/off each pass659 library
+tests/2 ignored and622 probe tests plus strict Clippy/fmt/release; independent
+source review passes16 checks. Actual DAWN accepts144 period/capacity at48k.
+Separate35-second candidates keep Engine64 and change target1152 then945;
+both have no native/cleanup error or reported xrun/drop/silence, retaining
+prime32 and final provider reset/recovery1. Each17-payload archive is verified
+and independently audited59/0. This is bounded admission/counter progress,
+not PCM continuity, physical latency, a default promotion or impossibility proof.
+
 The [physical DAWN retirement control](2026-10-31-physical-soak-retirement.md)
 retains the actual256-frame admission and probe exit1/SET_GATE cleanup failure
 on unchanged610; independent acquired-evidence audit passes49 checks without
