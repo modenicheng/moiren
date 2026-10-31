@@ -99,7 +99,7 @@ impl CachedPanel for GraphPanel {
         // tree; its notifications cannot invalidate the cached ancestor by
         // themselves, so typing must re-render through an explicit observer.
         let search = shell.read_with(cx, |shell, _| shell.node_search.clone());
-        vec![cx.observe(&search, |_, _, cx| cx.notify())]
+        vec![cx.observe(&search, |host, _, cx| host.notify_nested(cx))]
     }
 }
 

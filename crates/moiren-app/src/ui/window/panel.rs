@@ -11,6 +11,7 @@
 //! Panels are siblings, never nested: a cached parent forces its nested
 //! caches fresh on every rebuild.
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::*;
 
@@ -60,6 +61,68 @@ impl<T> Clone for PublishRef<T> {
 impl<T> PartialEq for PublishRef<T> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// How far apart nested-model rebuilds may land. Matches the fader dispatch
+/// interval (`mixer::model::FADER_DISPATCH_INTERVAL`): during a drag the
+/// service confirmations that carry the dB readouts arrive at the same pace,
+/// so the panel never rebuilds faster than its inputs actually change.
+pub(in crate::ui::window) const NESTED_REBUILD_INTERVAL: Duration = Duration::from_millis(33);
+
+/// What [`NestedGate::notify`] asks the host to do with one nested-model
+/// notification (a slider drag tick, an input edit).
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::ui::window) enum NestedAction {
+    /// Rebuild the panel now: the first notification of a burst must reach
+    /// the screen without waiting for the interval.
+    Rebuild,
+    /// Suppress now and arm the single trailing rebuild.
+    Arm,
+    /// Suppress; a trailing rebuild is already armed.
+    Ignore,
+}
+
+/// Leading-edge throttle for nested-model notifications. A drag emits a
+/// Change per pointer move — far above the display rate — and every one of
+/// them costs a full panel rebuild, so sustained drags starve the frame
+/// budget and stutter. The first notification of a burst rebuilds at once;
+/// later ones coalesce into one trailing rebuild, so a paused drag still
+/// paints its last suppressed value before release.
+#[derive(Default)]
+pub(in crate::ui::window) struct NestedGate {
+    last_rebuild: Option<Instant>,
+    armed_at: Option<Instant>,
+}
+
+impl NestedGate {
+    fn notify(&mut self, now: Instant) -> NestedAction {
+        if self
+            .last_rebuild
+            .is_none_or(|last| now.duration_since(last) >= NESTED_REBUILD_INTERVAL)
+        {
+            self.last_rebuild = Some(now);
+            return NestedAction::Rebuild;
+        }
+        if self.armed_at.is_none() {
+            self.armed_at = Some(now);
+            return NestedAction::Arm;
+        }
+        NestedAction::Ignore
+    }
+
+    /// The armed trailing timer fired INTERVAL after arming. Rebuilds unless
+    /// a nested rebuild already resumed after arming (its burst carries the
+    /// fresh values); consumes the armed state either way.
+    fn fire(&mut self, now: Instant) -> bool {
+        let Some(armed_at) = self.armed_at.take() else {
+            return false;
+        };
+        if self.last_rebuild.is_some_and(|last| last > armed_at) {
+            return false;
+        }
+        self.last_rebuild = Some(now);
+        true
     }
 }
 
@@ -118,6 +181,7 @@ pub(in crate::ui::window) struct PanelHost<P: CachedPanel> {
     key: Option<P::Key>,
     locale: crate::i18n::UiLanguage,
     nested: Vec<Subscription>,
+    nested_gate: NestedGate,
     _subscription: Subscription,
 }
 
@@ -137,7 +201,34 @@ impl<P: CachedPanel> PanelHost<P> {
             key: None,
             locale: crate::i18n::current(),
             nested: Vec::new(),
+            nested_gate: NestedGate::default(),
             _subscription: subscription,
+        }
+    }
+
+    /// A nested model entity moved (slider drag tick, input edit): schedule
+    /// the panel rebuild that carries it to the screen. The throttle keeps a
+    /// sustained drag from paying a full panel rebuild per pointer move; the
+    /// first notification of a burst still rebuilds immediately, and release
+    /// paths repaint through their own publishes regardless.
+    pub(in crate::ui::window) fn notify_nested(&mut self, cx: &mut Context<Self>) {
+        match self.nested_gate.notify(Instant::now()) {
+            NestedAction::Rebuild => cx.notify(),
+            NestedAction::Arm => {
+                cx.spawn(async move |host, cx| {
+                    cx.background_executor()
+                        .timer(NESTED_REBUILD_INTERVAL)
+                        .await;
+                    host.update(cx, |host, cx| {
+                        if host.nested_gate.fire(Instant::now()) {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            NestedAction::Ignore => {}
         }
     }
 }
@@ -181,8 +272,9 @@ mod tests {
     // Explicit imports: the module glob would shadow the built-in #[test]
     // with the gpui test macro re-exported through the window module chain.
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
-    use super::{ArcSnapshot, PublishRef};
+    use super::{ArcSnapshot, NestedAction, NestedGate, PublishRef};
 
     #[test]
     fn arc_snapshot_prefers_pointer_identity_before_value_equality() {
@@ -206,5 +298,53 @@ mod tests {
         // The service dedups publishes by content, so equal contents in two
         // different publishes should not occur; identity is the whole truth.
         assert_ne!(a, PublishRef::new(Arc::new(7)));
+    }
+
+    #[test]
+    fn nested_gate_rebuilds_the_first_notification_of_a_burst() {
+        let mut gate = NestedGate::default();
+        let base = Instant::now();
+        assert_eq!(gate.notify(base), NestedAction::Rebuild);
+        assert_eq!(
+            gate.notify(base + Duration::from_millis(10)),
+            NestedAction::Arm
+        );
+        assert_eq!(
+            gate.notify(base + Duration::from_millis(20)),
+            NestedAction::Ignore,
+            "a trailing rebuild is already armed"
+        );
+        // The interval elapsed since the last rebuild: the burst's next
+        // notification leads again.
+        assert_eq!(
+            gate.notify(base + Duration::from_millis(33)),
+            NestedAction::Rebuild
+        );
+    }
+
+    #[test]
+    fn nested_gate_trailing_fire_rebuilds_once_and_yields_to_living_bursts() {
+        let mut gate = NestedGate::default();
+        let base = Instant::now();
+        gate.notify(base);
+        gate.notify(base + Duration::from_millis(5));
+        // The timer fires a full interval after arming; the last rebuild is
+        // then older than the interval, so the suppressed tail must paint.
+        assert!(gate.fire(base + Duration::from_millis(38)));
+        assert!(
+            !gate.fire(base + Duration::from_millis(39)),
+            "the trailing edge is single-shot"
+        );
+
+        // A burst that resumes on its own between arming and the fire makes
+        // the trailing rebuild redundant: its leading rebuilds carry the
+        // values, and the stale timer must not spend another rebuild.
+        gate.notify(base + Duration::from_millis(100));
+        gate.notify(base + Duration::from_millis(105));
+        gate.notify(base + Duration::from_millis(140));
+        assert!(
+            !gate.fire(base + Duration::from_millis(145)),
+            "resumed rebuilds supersede the armed trailing edge"
+        );
     }
 }

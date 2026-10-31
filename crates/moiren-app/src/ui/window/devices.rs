@@ -94,7 +94,7 @@ impl CachedPanel for DevicesPanel {
         let inputs = owner.read_with(cx, |shell, _| shell.export_controls.input_entities());
         inputs
             .into_iter()
-            .map(|input| cx.observe(&input, |_, _, cx| cx.notify()))
+            .map(|input| cx.observe(&input, |host, _, cx| host.notify_nested(cx)))
             .collect()
     }
 }

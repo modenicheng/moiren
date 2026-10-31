@@ -86,7 +86,7 @@ impl CachedPanel for InspectorPanel {
         });
         inputs
             .into_iter()
-            .map(|input| cx.observe(&input, |_, _, cx| cx.notify()))
+            .map(|input| cx.observe(&input, |host, _, cx| host.notify_nested(cx)))
             .collect()
     }
 }
@@ -149,7 +149,7 @@ impl CachedPanel for LibraryPanel {
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
         let search = owner.read_with(cx, |shell, _| shell.node_search.clone());
-        vec![cx.observe(&search, |_, _, cx| cx.notify())]
+        vec![cx.observe(&search, |host, _, cx| host.notify_nested(cx))]
     }
 }
 

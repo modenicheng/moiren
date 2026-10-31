@@ -277,7 +277,7 @@ impl CachedPanel for TrayPanel {
         });
         sliders
             .into_iter()
-            .map(|slider| cx.observe(&slider, |_, _, cx| cx.notify()))
+            .map(|slider| cx.observe(&slider, |host, _, cx| host.notify_nested(cx)))
             .collect()
     }
 }
