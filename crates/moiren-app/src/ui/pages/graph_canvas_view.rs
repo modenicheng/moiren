@@ -23,7 +23,12 @@ type SelectFn = dyn Fn(&str, &mut Window, &mut App);
 type ZoomFn = dyn Fn((f32, Point<Pixels>), &mut Window, &mut App);
 type BoxSelectFn = dyn Fn(Option<Bounds<f32>>, &mut Window, &mut App);
 pub(in crate::ui) type NodeLevelsFn = dyn Fn(moiren_core::graph::NodeId, &App) -> Option<[f32; 2]>;
-type PreparedFrame = Rc<RefCell<Option<Rc<CanvasFrame>>>>;
+/// The frame the canvas prepaint projected most recently. Shell-owned so the
+/// page's meter frame can repaint bars over the cached canvas between cache
+/// rebuilds, exactly like the canvas painted them.
+pub(in crate::ui) type PreparedFrame = Rc<RefCell<Option<Rc<CanvasFrame>>>>;
+
+pub(in crate::ui) use nodes::paint_meter_bars;
 
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
@@ -308,6 +313,7 @@ pub fn graph_canvas_view(
     selected_nodes: &[String],
     selected_wire: Option<&str>,
     callbacks: CanvasCallbacks,
+    prepared: PreparedFrame,
 ) -> impl IntoElement {
     let CanvasCallbacks {
         on_drop_node,
@@ -329,7 +335,6 @@ pub fn graph_canvas_view(
         on_delete,
         on_cancel,
     } = callbacks;
-    let prepared: PreparedFrame = Rc::new(RefCell::new(None));
     let selected_nodes = selected_nodes.to_vec();
     let selected_wire = selected_wire.map(str::to_owned);
     // The left handler moves `focus`; keep one clone for the right handler,
