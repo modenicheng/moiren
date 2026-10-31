@@ -166,18 +166,26 @@ impl Render for MixerControls {
     }
 }
 
-pub(in crate::ui::window) fn page(shell: &StudioShell) -> AnyElement {
+pub(in crate::ui::window) fn page(shell: &StudioShell, window: &Window) -> AnyElement {
+    // Active accessibility needs the controls rebuilt into each frame's tree.
+    let controls = if window.is_a11y_active() {
+        div()
+            .size_full()
+            .child(shell.mixer_controls.clone())
+            .into_any_element()
+    } else {
+        shell
+            .mixer_controls
+            .clone()
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
+    };
     div()
         .relative()
         .flex_1()
         .min_w_0()
         .min_h_0()
-        .child(
-            shell
-                .mixer_controls
-                .clone()
-                .cached(StyleRefinement::default().size_full()),
-        )
+        .child(controls)
         .child(shell.mixer_frame.clone())
         .into_any_element()
 }

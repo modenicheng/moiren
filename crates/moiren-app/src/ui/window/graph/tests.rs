@@ -1093,7 +1093,13 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
     let state = cx.new(|_| UiState::new(handle, snapshot));
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1440.), px(900.)));
-    cx.update(|window, cx| window.render_frame(cx));
+    cx.update(|window, cx| {
+        assert!(
+            !window.is_a11y_active(),
+            "this regression measures the accessibility-inactive cache path"
+        );
+        window.render_frame(cx);
+    });
     // Live publications must arm the graph meter frame before steady-state
     // measurements begin.
     wait_until(Duration::from_secs(3), || {
