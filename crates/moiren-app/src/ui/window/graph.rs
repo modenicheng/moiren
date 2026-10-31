@@ -424,7 +424,18 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                     origin: point(0., 0.),
                     size: size(f32::from(canvas.width), f32::from(canvas.height)),
                 };
-                shell.node_meter_points.borrow_mut().extend(
+                // Cull against the camera this frame actually rendered, not
+                // the shell's fit bookkeeping: `fitted` is the shell camera
+                // verbatim once the user has zoomed or panned, and only
+                // differs from it in fit mode — where the fitted view is
+                // what is on screen. The set is replaced, never extended:
+                // demand must shrink when the camera leaves nodes off
+                // screen, or their level windows keep being drained and
+                // their ballistics advancing for a view nobody sees
+                // (audit HC-9).
+                let mut points = shell.node_meter_points.borrow_mut();
+                points.clear();
+                points.extend(
                     nodes
                         .nodes
                         .iter()
@@ -435,6 +446,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                         })
                         .filter_map(|node| node.node_id),
                 );
+                drop(points);
                 let canvas_size = Some((f32::from(canvas.width), f32::from(canvas.height)));
                 let changed = shell.canvas_size != canvas_size
                     || (!shell.camera.adjusted && shell.camera != *fitted);
