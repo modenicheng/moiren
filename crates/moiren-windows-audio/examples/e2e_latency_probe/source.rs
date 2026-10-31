@@ -166,6 +166,19 @@ impl SourceSchedule {
     }
 }
 
+impl PreparedSource {
+    /// Read the exact precomputed indexed code; never advance the source cursor.
+    pub fn indexed_marker(&self, index: usize) -> Option<&[f32]> {
+        if self.schedule.waveform_version != INDEXED_WAVEFORM_VERSION
+            || index >= self.schedule.starts.len()
+        {
+            return None;
+        }
+        let start = index * self.schedule.marker_frames;
+        Some(&self.marker[start..start + self.schedule.marker_frames])
+    }
+}
+
 pub fn read_plan(path: &Path, limit: u64, seconds: u64) -> Result<(Vec<u8>, PreparedSource)> {
     let limit = limit.min(MAX_SOURCE_BYTES);
     ensure!(limit > 0, "source byte cap must be positive");

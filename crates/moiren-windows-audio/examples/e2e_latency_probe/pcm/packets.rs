@@ -85,6 +85,17 @@ pub struct PacketTimeline {
 }
 
 impl PacketTimeline {
+    /// Expose existing conservative diagnostics without changing v1 analysis.
+    pub fn diagnostic_evidence(&self) -> &PacketEvidence {
+        &self.evidence
+    }
+
+    pub fn diagnostic_invalid(&self) -> bool {
+        !self.evidence.coverage_complete
+            || !self.evidence.startup.issues.is_empty()
+            || !self.evidence.observations.is_empty()
+    }
+
     pub fn read(
         reader: impl Read,
         max_bytes: u64,

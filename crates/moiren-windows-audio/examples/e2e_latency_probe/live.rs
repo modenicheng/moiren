@@ -32,7 +32,7 @@ use std::{
 };
 
 #[path = "source.rs"]
-mod source;
+pub(crate) mod source;
 #[cfg(any(windows, test))]
 #[path = "source_controls.rs"]
 mod source_controls;

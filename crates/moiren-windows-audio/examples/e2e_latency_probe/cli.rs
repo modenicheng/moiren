@@ -25,6 +25,16 @@ volume/session snapshot after first nonzero Release. COM reads may perturb servi
 no hard getter deadline, setting writes, effective gain or signal/physical acceptance is implied.
 evaluate --reports FILE --expectation FILE --level experimental|default --max-input-bytes N --max-runs N --output FILE
 analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE [--packets FILE --max-packets N]
+analyze-indexed-pcm --pcm FILE --source-schedule FILE --analysis-config FILE --packets FILE
+    --max-input-bytes N --max-packets N --output NEWFILE
+Bounded indexed-v2 identity diagnostic only: exact nominal 48 kHz stereo f32le, explicit
+unlabelled stored-PCM windows, all source codes compete (no peak-order identity assignment).
+Config schema1: recorder_origin=stored_pcm_frame_zero, sample_rate=48000, channel=0|1,
+max_pcm_frames<=28800000, max_correlation_samples<=256000000, min_correlation>=0.7,
+min_peak_margin and min_rms in (0,1], windows:[{start_frame,frames<=96000}].
+Windows must be complete/nonoverlapping. Exact v2 source schedule and packet metadata required.
+Exits 0=identity set resolved in supplied windows, 1=diagnostic refusal retained, 2=invalid input/IO.
+Never estimates source clock origin; spacing is not waveform continuity or physical latency.
 replay-process --trace FILE --candidates FILE --process-pid PID --process-created-100ns N
     --owner-generation N --max-input-bytes 1..16777216 --output NEWFILE [--window-policy FILE]
 Offline finite Process queue replay only, not qualification: no safe/stability/latency or source-age claim.
@@ -143,6 +153,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     }
     if command == "replay-process" {
         return process_replay::run(arguments[1..].to_vec());
+    }
+    if command == "analyze-indexed-pcm" {
+        return run_indexed(&arguments[1..]);
     }
     if command == "process-source-worker" {
         #[cfg(any(windows, test))]
@@ -278,4 +291,70 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             Ok(code)
         }
     }
+}
+
+fn run_indexed(arguments: &[String]) -> Result<i32> {
+    let required = [
+        "--pcm",
+        "--source-schedule",
+        "--analysis-config",
+        "--packets",
+        "--max-input-bytes",
+        "--max-packets",
+        "--output",
+    ];
+    let (pairs, remainder) = arguments.as_chunks::<2>();
+    ensure!(
+        remainder.is_empty(),
+        "indexed options require separate values"
+    );
+    let mut options = BTreeMap::new();
+    for [name, value] in pairs {
+        ensure!(
+            required.contains(&name.as_str()),
+            "unknown indexed option {name}"
+        );
+        ensure!(
+            options.insert(name.as_str(), value.as_str()).is_none(),
+            "duplicate indexed option {name}"
+        );
+    }
+    for name in required {
+        ensure!(options.contains_key(name), "missing {name}");
+    }
+    let limit: u64 = options["--max-input-bytes"]
+        .parse()
+        .context("parse indexed JSON/metadata cap")?;
+    ensure!(
+        (1..=16 * 1024 * 1024).contains(&limit),
+        "indexed JSON/metadata byte cap must be 1..16777216"
+    );
+    let max_packets = options["--max-packets"]
+        .parse()
+        .context("parse indexed packet cap")?;
+    ensure!(
+        (1..=1_000_000).contains(&max_packets),
+        "indexed packet cap must be 1..1000000"
+    );
+    let source = read_json(options["--source-schedule"], limit)?;
+    let config = read_json(options["--analysis-config"], limit)?;
+    let mut pcm = File::open(options["--pcm"]).context("open indexed PCM")?;
+    let metadata = File::open(options["--packets"]).context("open indexed packets")?;
+    ensure!(
+        pcm.metadata()?.is_file() && metadata.metadata()?.is_file(),
+        "indexed inputs must be regular files"
+    );
+    let bytes = pcm.metadata()?.len();
+    let result = super::indexed_pcm::analyze(
+        &mut pcm,
+        bytes,
+        source,
+        config,
+        metadata,
+        limit,
+        max_packets,
+    )?;
+    let code = i32::from(result["identity_set_complete"] != true);
+    write_json(Path::new(options["--output"]), &result)?;
+    Ok(code)
 }
