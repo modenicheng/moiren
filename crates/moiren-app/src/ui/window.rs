@@ -131,8 +131,6 @@ pub struct StudioShell {
     meters: MeterSubscriptions,
     node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
-    gain_slider: Entity<base::slider::SliderState>,
-    pan_slider: Entity<base::slider::SliderState>,
     project_path: Option<std::path::PathBuf>,
     project_name: String,
     project_message: Option<String>,
@@ -235,52 +233,6 @@ impl StudioShell {
             }
             registration
         };
-        let gain = state.read(cx).gain as f32;
-        let pan = state.read(cx).pan as f32;
-        let gain_slider = cx.new(|_| {
-            base::slider::SliderState::new()
-                .min(-60.)
-                .max(0.)
-                .step(0.1)
-                .default_value(if gain <= 0. { -60. } else { 20. * gain.log10() })
-        });
-        let pan_slider = cx.new(|_| {
-            base::slider::SliderState::new()
-                .min(-1.)
-                .max(1.)
-                .step(0.01)
-                .default_value(pan)
-        });
-        cx.subscribe(
-            &gain_slider,
-            |shell, _, event: &base::slider::SliderEvent, cx| {
-                if let base::slider::SliderEvent::Change(value) = event {
-                    shell.state.update(cx, |state, _| {
-                        state.gain = if value.end() <= -60. {
-                            0.
-                        } else {
-                            10f64.powf(f64::from(value.end()) / 20.)
-                        };
-                        state.request_parameters();
-                    });
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &pan_slider,
-            |shell, _, event: &base::slider::SliderEvent, cx| {
-                if let base::slider::SliderEvent::Change(value) = event {
-                    shell.state.update(cx, |state, _| {
-                        state.pan = f64::from(value.end());
-                        state.request_parameters();
-                    });
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
         let node_search = cx.new(|cx| {
             component::input::InputState::new(window, cx).placeholder(t!("Search nodes"))
         });
@@ -385,8 +337,6 @@ impl StudioShell {
             selected_route: None,
             meters,
             node_meter_points: Default::default(),
-            gain_slider,
-            pan_slider,
             project_path: None,
             project_name: t!("Untitled session").into(),
             project_message: None,
@@ -806,25 +756,6 @@ impl Render for StudioShell {
         if !visible {
             self.meters.update(&self.state.read(cx).snapshot, false);
             self.update_node_meters(false, cx);
-        }
-        let (gain, pan) = {
-            let state = self.state.read(cx);
-            (
-                if state.gain <= 0. {
-                    -60.
-                } else {
-                    (20. * state.gain.log10()).clamp(-60., 0.) as f32
-                },
-                state.pan as f32,
-            )
-        };
-        if self.gain_slider.read(cx).value().end() != gain {
-            self.gain_slider
-                .update(cx, |s, cx| s.set_value(gain, window, cx));
-        }
-        if self.pan_slider.read(cx).value().end() != pan {
-            self.pan_slider
-                .update(cx, |s, cx| s.set_value(pan, window, cx));
         }
         let error_strip =
             error_strip::has_faults(self, cx).then(|| error_strip::for_shell(self, window));
