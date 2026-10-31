@@ -22,6 +22,10 @@ fn matrix_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> us
     view.read_with(cx, |shell, cx| shell.matrix_panel.read(cx).rebuild_count())
 }
 
+fn route_cell_height(cx: &mut VisualTestContext) -> f32 {
+    cx.update(|window, _| f32::from(window.find("route-0-0").bounds().size.height))
+}
+
 /// Opens the Matrix page on a settled shell. Density is loaded from the
 /// developer's real preferences at shell construction, so the baseline is
 /// pinned explicitly.
@@ -100,6 +104,46 @@ fn matrix_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut Tes
         matrix_rebuilds(&view, cx),
         before + 1,
         "the replayed paint must not rebuild the panel"
+    );
+    finish_service(runtime);
+}
+
+/// The settings transaction applies a new density with a plain shell
+/// notification (settings/transaction.rs); an idle session has no publishes
+/// to paper over a key that missed the input, so the row height must follow
+/// on that notification alone and hold across density-neutral ones.
+#[gpui_kit::test]
+fn matrix_panel_rebuilds_rows_when_the_session_density_changes(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    open_matrix_page(&view, cx);
+    let comfortable = route_cell_height(cx);
+    let before = matrix_rebuilds(&view, cx);
+    // Mirrors the settings transaction: preferences.density and the theme
+    // density move together.
+    view.update(cx, |shell, cx| {
+        shell.preferences.density = crate::project::UiDensity::Compact;
+        shell.density = Density::Compact;
+        cx.notify();
+    });
+    cached_frame(cx);
+    let compact = route_cell_height(cx);
+    assert!(
+        compact < comfortable,
+        "compact rows must repaint shorter ({compact} vs {comfortable})"
+    );
+    assert_eq!(
+        matrix_rebuilds(&view, cx),
+        before + 1,
+        "the density change must rebuild the panel exactly once"
+    );
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(matrix_rebuilds(&view, cx), before + 1);
+    assert_eq!(
+        route_cell_height(cx),
+        compact,
+        "a density-neutral notification must keep the compact rows"
     );
     finish_service(runtime);
 }
