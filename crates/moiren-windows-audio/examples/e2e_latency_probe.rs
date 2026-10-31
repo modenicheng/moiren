@@ -34,6 +34,9 @@ mod codec {
 #[cfg(test)]
 #[path = "../src/resample.rs"]
 mod resample;
+#[cfg(test)]
+#[path = "../src/servo.rs"]
+mod servo;
 
 #[cfg(test)]
 #[path = "e2e_latency_probe/tests.rs"]

@@ -7,6 +7,9 @@ use moiren_windows_audio::latency::{
 
 const FRAMES: usize = 256;
 
+#[path = "tests/clock_trace.rs"]
+mod clock_trace;
+
 fn codes(count: usize) -> Vec<Vec<f32>> {
     codes_with_frames(count, FRAMES)
 }

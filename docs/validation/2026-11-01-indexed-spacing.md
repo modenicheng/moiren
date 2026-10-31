@@ -122,3 +122,10 @@ sustained lower-budget delivery, matched VAD/Process comparison and calibrated
 physical acceptance remain open. S1-S3 and the overarching goal stay active.
 No native replay, remote/audio process, physical render, driver/system-control
 write, push or subagent work occurs; unrelated `gate.log` is preserved.
+
+The subsequent [known production SRC center control](2026-11-01-src-clock-trace.md)
+demonstrates the time-varying possibility on a fixed synthetic two-stage
+servo/FIR fixture with an independent center/sample oracle. Its unchanged
+model intervals contain all three known centers while their spacing excludes
+a constant map. This does not reconstruct this historical recording or select
+between its actual mapping and model-coordinate bias.

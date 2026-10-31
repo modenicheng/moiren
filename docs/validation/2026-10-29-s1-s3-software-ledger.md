@@ -102,6 +102,17 @@ the existing17 QPC/15 rebase tests, Ruff and fmt/diff pass; a separate53-check
 result audit preserves all original files and quality refusals. S1 requires
 more than a global phase/rate correction for these coordinates.
 
+The [known time-varying SRC control](2026-11-01-src-clock-trace.md) then drives
+the production servo/FIR with two pre-frozen synthetic occupancy histories.
+An independent direct-index FIR and45-digit Decimal center calculation verify
+the fixed inputs. All three unchanged-model intervals contain their known
+centers, whose adjacent slopes exclude a constant map; erased-quarter and
+16-sample insertion/deletion controls refuse complete identity. Five focused
+tests and645 full probe tests pass. This demonstrates a possible mechanism,
+not the historical servo history, source origin, continuous quality or delay.
+Production/model/defaults and all original native refusals are unchanged;
+native/physical acceptance and S1-S3 remain incomplete.
+
 The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
 strictly associates first-copy/native0 and first-nonzero/native228 witnesses
 with raw WASAPI packets1/229 at the same callback/completion QPC labels. The
