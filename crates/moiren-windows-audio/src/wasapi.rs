@@ -78,7 +78,7 @@ fn capture_packet_frames(
     acquire: impl FnOnce() -> windows::core::Result<u32>,
 ) -> Result<u32, BackendError> {
     // GetNextPacketSize is Shared-only. Exclusive capture polls GetBuffer
-    // directly and an unavailable packet must wait for the next native wake.
+    // directly; BUFFER_ERROR means wait for the next processing pass.
     if mode == DeviceMode::Shared && api("GetNextPacketSize", next_packet())? == 0 {
         return Ok(0);
     }
@@ -1338,6 +1338,8 @@ impl NativeStream for WasapiStream {
                 },
             )?;
             if available == 0 {
+                // No packet was acquired. GetBuffer permits omitting ReleaseBuffer
+                // for zero frames; errors likewise do not create a packet lease.
                 return Ok(0);
             }
             let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
@@ -1854,14 +1856,18 @@ mod tests {
             .unwrap(),
             0
         );
-        assert_eq!(
-            capture_packet_frames(DeviceMode::Exclusive, || Ok(480), || Ok(0)).unwrap(),
-            0
-        );
+        for mode in [DeviceMode::Shared, DeviceMode::Exclusive] {
+            assert_eq!(
+                capture_packet_frames(mode, || Ok(480), || Ok(0)).unwrap(),
+                0
+            );
+        }
     }
 
     #[test]
     fn capture_packet_polling_preserves_shared_admission_and_real_errors() {
+        use windows::Win32::Media::Audio::AUDCLNT_E_OUT_OF_ORDER;
+
         assert_eq!(
             capture_packet_frames(DeviceMode::Shared, || Ok(0), || panic!("no packet lease"))
                 .unwrap(),
@@ -1885,6 +1891,7 @@ mod tests {
             (DeviceMode::Shared, AUDCLNT_E_BUFFER_ERROR),
             (DeviceMode::Shared, AUDCLNT_E_DEVICE_INVALIDATED),
             (DeviceMode::Exclusive, AUDCLNT_E_DEVICE_INVALIDATED),
+            (DeviceMode::Exclusive, AUDCLNT_E_OUT_OF_ORDER),
         ] {
             assert!(
                 capture_packet_frames(
