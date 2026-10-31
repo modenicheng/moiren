@@ -123,3 +123,26 @@ JSON SHA256 is
 Provider completion intervals have different provenance from recorder packet
 timestamps: cleanup MIC max36498 hns, Playback105950 hns. Neither is treated
 as physical end-to-end latency or a future delivery guarantee.
+
+## Portable CI configuration read
+
+The7a4f34c experimental CI run41167023182 retains a real Ubuntu example-test
+compile failure: MeasurementConfig.request_minimum_period is never read on
+the non-Windows test path, where unused is denied. The Windows native use
+and strict-Clippy configuration do not make that exact portable test profile
+pass. No failed job is relabeled as successful.
+
+`714c6a5` integrates isolated author commit06a9ba4. Only the existing portable
+configuration regression changes: it reads the default false request, then
+checks cloned false/true opt-ins independently of the generated Exclusive
+Float32 device's absent explicit frame preset. No production field, native
+logic, default, dependency or warning suppression changes.
+
+The author reproduces the same dead_code RED. Actual Windows examples pass
+548+5 and actual Debian Linux examples pass432+5; the Linux run uses the
+installed nightly rather than pretending to match CI's stable1.99.1. Root
+then runs the integrated Windows examples555+5 and Linux-target examples/tests
+check successfully. Remote CI confirmation remains a separate pending gate.
+Evidence is under `20261031-probe-mic-period-control\portable-config-read`
+and the integrated logs in this receipt's host evidence root. This test-only
+repair does not change the frozen87c85ef native binary or either acquisition.
