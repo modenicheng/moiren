@@ -47,6 +47,7 @@ Virtual route is exact playback -> Bus -> microphone, Internal software evidence
 Distinct explicit stable IDs; no physical --output/render-only options or calibration. Collection schema2 may omit input_endpoint_id;
 only the exact owned capture endpoint is resolved, and any supplied recorder ID must match. Stereo duplication is not an independent reference.
 Schema2 owned microphone collection optionally accepts capture_mode=exclusive; omitted remains Shared. Unsupported exclusive capture refuses without Shared fallback.
+    [--vad-microphone-minimum-period] requests the owned MIC recorder's queried Exclusive minimum; schema2 Exclusive only, no fallback.
 record-measurement --input ENDPOINT --artifact-dir NEW_DIR --seconds 1..7200
     --ring-frames N --max-pcm-bytes N --max-metadata-bytes N --max-packets N [--dry-run]
 Independent native capture retains bounded raw PCM/packet metadata; never claims physical qualification.

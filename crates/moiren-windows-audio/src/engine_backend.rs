@@ -181,6 +181,7 @@ impl Group {
                         .unwrap_or(processing_rate),
                     device: direction.device,
                     input: self.input.is_some(),
+                    exclusive_period_evidence: None,
                 };
                 Ok(Box::new(move || Ok(Box::new(WasapiStream::open(options)?))))
             }

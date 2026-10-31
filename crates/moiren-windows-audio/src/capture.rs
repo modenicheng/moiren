@@ -164,6 +164,9 @@ pub struct CaptureReport {
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
     pub shared_period: crate::format::SharedPeriodReport,
+    /// Explicit owned-MIC Exclusive minimum request evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclusive_period: Option<crate::native::ExclusivePeriodEvidence>,
     pub stream_latency_100ns: Option<i64>,
     pub source: CaptureSource,
     pub endpoint_id: Option<String>,
@@ -209,6 +212,7 @@ impl CaptureReport {
             latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
                 .snapshot(),
             shared_period: crate::format::SharedPeriodReport::default(),
+            exclusive_period: None,
             stream_latency_100ns: None,
             source,
             endpoint_id: None,

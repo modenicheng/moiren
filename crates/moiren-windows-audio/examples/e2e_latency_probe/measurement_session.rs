@@ -18,6 +18,7 @@ const MAX_FAILURE_BYTES: usize = 16 * 1024;
 pub(crate) struct MeasurementConfig {
     pub(crate) input_endpoint_id: String,
     pub(crate) capture_mode: moiren_engine::node::DeviceMode,
+    pub(crate) request_minimum_period: bool,
     pub(crate) max_active_duration: Duration,
     pub(crate) ring_frames: usize,
     pub(crate) max_pcm_bytes: u64,
@@ -563,6 +564,7 @@ impl NativeCapture {
         let request = NativeCaptureRequest {
             endpoint_id: config.input_endpoint_id.clone(),
             device: config.capture_device(),
+            request_minimum_period: config.request_minimum_period,
         };
         let worker_gate = gate.clone();
         let worker = std::thread::Builder::new()
@@ -628,6 +630,7 @@ struct CaptureStartup {
 struct NativeCaptureRequest {
     endpoint_id: String,
     device: moiren_engine::node::DeviceOptions,
+    request_minimum_period: bool,
 }
 
 #[cfg(windows)]
@@ -654,16 +657,50 @@ fn capture_owner(
 
     let mut report = CaptureReport::new(CaptureSource::Physical, duration);
     report.endpoint_id = Some(request.endpoint_id.clone());
+    let period_evidence = request.request_minimum_period.then(|| {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            moiren_windows_audio::native::ExclusivePeriodEvidence {
+                qualification: "unqualified-request-only",
+                requested_minimum: true,
+                default_hns: None,
+                minimum_hns: None,
+                query_hresult: None,
+                initial_request_hns: None,
+                final_request_hns: None,
+                alignment_retry: false,
+                alignment_query_hresult: None,
+                aligned_buffer_frames: None,
+                first_initialize_hresult: None,
+                retry_initialize_hresult: None,
+                actual_buffer_frames: None,
+                actual_buffer_hresult: None,
+            },
+        ))
+    });
     let mut stream: Option<WasapiStream> = None;
     let mut writer = None;
     let mut ready = Some(ready);
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<CaptureStatus> {
-        let mut opened = WasapiStream::open(WasapiOptions {
+        let opened = WasapiStream::open(WasapiOptions {
             endpoint_id: request.endpoint_id,
             sample_rate: 48_000,
             device: request.device,
             input: true,
-        })?;
+            exclusive_period_evidence: period_evidence.clone(),
+        });
+        let mut opened = match opened {
+            Ok(stream) => stream,
+            Err(error) => {
+                report.exclusive_period = period_evidence.as_ref().map(|handle| {
+                    handle
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .to_owned()
+                });
+                return Err(anyhow::anyhow!(error));
+            }
+        };
+        report.exclusive_period = opened.exclusive_period();
         let info = opened.info();
         report.sample_rate = Some(info.sample_rate);
         report.channels = Some(info.channels);
@@ -1015,6 +1052,7 @@ mod tests {
         MeasurementConfig {
             input_endpoint_id: "independent-endpoint".into(),
             capture_mode: Default::default(),
+            request_minimum_period: false,
             max_active_duration: Duration::from_secs(10),
             ring_frames: 8,
             max_pcm_bytes: 1024,

@@ -918,6 +918,7 @@ pub(super) fn collect(
                 MeasurementConfig {
                     input_endpoint_id: recorder_endpoint.clone(),
                     capture_mode: config.capture_mode,
+                    request_minimum_period: options.vad_microphone_minimum_period,
                     max_active_duration: Duration::from_secs(options.seconds),
                     ring_frames: config.ring_frames,
                     max_pcm_bytes: config.max_pcm_bytes,

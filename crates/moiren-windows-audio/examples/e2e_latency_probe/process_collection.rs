@@ -768,6 +768,7 @@ pub(super) fn collect(
                 MeasurementConfig {
                     input_endpoint_id: config.input_endpoint_id.clone(),
                     capture_mode: Default::default(),
+                    request_minimum_period: false,
                     max_active_duration: phases.ceiling,
                     ring_frames: config.ring_frames,
                     max_pcm_bytes: config.max_pcm_bytes,

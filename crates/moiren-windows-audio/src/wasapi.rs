@@ -13,7 +13,8 @@ use crate::latency::{
     },
 };
 use crate::native::{
-    NativeDeviceClockObservation, NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame,
+    ExclusivePeriodEvidence, ExclusivePeriodEvidenceHandle, NativeDeviceClockObservation,
+    NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame, observe_exclusive_initialize,
 };
 use crate::negotiation::{
     EnginePeriods, SUBFORMAT_FLOAT, SUBFORMAT_PCM, StageError, aligned_shared_buffer_duration,
@@ -50,6 +51,9 @@ pub struct WasapiOptions {
     pub sample_rate: u32,
     pub device: DeviceOptions,
     pub input: bool,
+    /// Opt-in queried minimum request plus preparation-only receipt. Requires
+    /// input Exclusive mode without an explicit period; never used by read().
+    pub exclusive_period_evidence: Option<ExclusivePeriodEvidenceHandle>,
 }
 
 fn capture_packet_frames(
@@ -147,6 +151,7 @@ pub struct WasapiStream {
     info: NativeStreamInfo,
     timing: NativeStreamTiming,
     shared_period: Option<SharedPeriodReport>,
+    exclusive_period: Option<ExclusivePeriodEvidence>,
     render_queue: Option<PreparedRenderQueue>,
     padding_observer: Option<RenderPaddingObserver>,
     padding_owner: Option<RenderPaddingOwner>,
@@ -290,6 +295,9 @@ impl Drop for EndpointNotificationRegistration {
 }
 
 impl WasapiStream {
+    pub fn exclusive_period(&self) -> Option<ExclusivePeriodEvidence> {
+        self.exclusive_period
+    }
     pub fn open(options: WasapiOptions) -> Result<Self, BackendError> {
         let requested_mode = options.device.mode;
         let requested_period = options.device.period_frames;
@@ -311,6 +319,18 @@ impl WasapiStream {
     /// later phases negotiate, its decoded codec pair, and whether Shared mode
     /// will convert between the client format and the endpoint mix.
     fn open_inner(options: WasapiOptions) -> Result<Self, BackendError> {
+        if options.exclusive_period_evidence.is_some()
+            && (options.device.mode != DeviceMode::Exclusive || !options.input)
+        {
+            return Err(unsupported(
+                "Exclusive period evidence requires an input Exclusive WASAPI stream",
+            ));
+        }
+        if options.exclusive_period_evidence.is_some() && options.device.period_frames.is_some() {
+            return Err(unsupported(
+                "Exclusive minimum-period evidence cannot combine with an explicit period",
+            ));
+        }
         if options.endpoint_id.trim().is_empty()
             || options.endpoint_id.contains('\0')
             || !(8_000..=384_000).contains(&options.sample_rate)
@@ -409,8 +429,16 @@ impl WasapiStream {
             requested_period_frames: options.device.period_frames.map(|frames| frames as u32),
             ..Default::default()
         });
+        let exclusive_period_handle = options.exclusive_period_evidence.clone();
         let client = if exclusive {
-            negotiate_exclusive(&options, &device, client, &selected, &endpoint_name)?
+            negotiate_exclusive(
+                &options,
+                &device,
+                client,
+                &selected,
+                &endpoint_name,
+                exclusive_period_handle.as_ref(),
+            )?
         } else if let Some(period_frames) = options.device.period_frames {
             negotiate_shared_exact(
                 &options,
@@ -438,7 +466,23 @@ impl WasapiStream {
             record_current_shared_period(&client, rate, report);
         }
         api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
-        let capacity = api("GetBufferSize", unsafe { client.GetBufferSize() })?;
+        let capacity_result = unsafe { client.GetBufferSize() };
+        if let Some(handle) = exclusive_period_handle.as_ref() {
+            let mut evidence = handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            evidence.record_actual_hresult(match &capacity_result {
+                Ok(_) => 0,
+                Err(error) => error.code().0,
+            });
+        }
+        let capacity = api("GetBufferSize", capacity_result)?;
+        if let Some(handle) = exclusive_period_handle.as_ref() {
+            handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .record_actual(capacity);
+        }
         if capacity == 0 || capacity > 65536 {
             return Err(unsupported(
                 "native WASAPI buffer exceeds the prepared frame limit",
@@ -527,6 +571,12 @@ impl WasapiStream {
             },
             timing,
             shared_period: period_report,
+            exclusive_period: exclusive_period_handle.map(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .to_owned()
+            }),
             render_queue,
             padding_observer,
             padding_owner,
@@ -806,20 +856,28 @@ fn negotiate_exclusive(
     mut client: IAudioClient,
     selected: &SelectedFormat,
     endpoint_name: &str,
+    evidence_handle: Option<&ExclusivePeriodEvidenceHandle>,
 ) -> Result<IAudioClient, BackendError> {
     let format = &selected.format;
     let sample_format = selected.sample_format;
     let rate = format.Format.nSamplesPerSec;
     let (mut default_period, mut minimum_period) = (0, 0);
-    api("GetDevicePeriod", unsafe {
-        client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period))
-    })?;
-    let duration = options
-        .device
-        .period_frames
-        .map_or(default_period, |frames| {
-            exclusive_frames_duration(frames as u32, rate)
+    let period_result =
+        unsafe { client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period)) };
+    if let Some(handle) = evidence_handle {
+        let mut evidence = handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        evidence.record_query_hresult(match &period_result {
+            Ok(()) => 0,
+            Err(error) => error.code().0,
         });
+        if period_result.is_ok() {
+            evidence.record_query(default_period, minimum_period);
+        }
+    }
+    api("GetDevicePeriod", period_result)?;
+    let duration = exclusive_request_duration(options, default_period, minimum_period, rate)?;
     if let Some(requested_frames) = options.device.period_frames
         && let Some(minimum_frames) = minimum_exclusive_frames(minimum_period, rate)
         && u64::try_from(requested_frames)
@@ -863,15 +921,46 @@ fn negotiate_exclusive(
         default_period,
         minimum_period,
     );
-    // SAFETY: `format.Format` remains part of `selected` for this call.
-    let initialized = unsafe { initialize_exclusive(&client, &format.Format, duration) };
+    let initialized = observe_exclusive_initialize(
+        evidence_handle,
+        duration,
+        false,
+        // SAFETY: `format.Format` remains part of `selected` for this call.
+        |actual| unsafe { initialize_exclusive(&client, &format.Format, actual) },
+        |error| error.code().0,
+    );
     if initialized
         .as_ref()
         .is_err_and(|e| e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
     {
-        let aligned = api("GetBufferSize(alignment)", unsafe {
-            client.GetBufferSize()
-        })?;
+        if let Some(handle) = evidence_handle {
+            handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .begin_alignment();
+        }
+        let aligned_result = unsafe { client.GetBufferSize() };
+        if let Some(handle) = evidence_handle {
+            let mut evidence = handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            evidence.record_alignment_hresult(match &aligned_result {
+                Ok(_) => 0,
+                Err(error) => error.code().0,
+            });
+        }
+        let aligned = api("GetBufferSize(alignment)", aligned_result)?;
+        if let Some(handle) = evidence_handle {
+            handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .record_alignment(aligned);
+        }
+        if evidence_handle.is_some() && !(1..=65536).contains(&aligned) {
+            return Err(unsupported(
+                "exclusive alignment query exceeds the prepared frame limit",
+            ));
+        }
         if options
             .device
             .period_frames
@@ -886,22 +975,44 @@ fn negotiate_exclusive(
         client = api("Activate(aligned client)", unsafe {
             device.Activate(CLSCTX_ALL, None)
         })?;
+        let retry = observe_exclusive_initialize(
+            evidence_handle,
+            exclusive_frames_duration(aligned, rate),
+            true,
+            // SAFETY: the same selected format outlives this fresh-client call.
+            |actual| unsafe { initialize_exclusive(&client, &format.Format, actual) },
+            |error| error.code().0,
+        );
         api(
             "Initialize(Exclusive aligned)",
             // The shared negotiation helper owns the raw COM call; this map
             // keeps the professional BackendError stage and policy.
-            unsafe {
-                initialize_exclusive(
-                    &client,
-                    &format.Format,
-                    exclusive_frames_duration(aligned, rate),
-                )
-            },
+            retry,
         )?;
     } else {
         api("Initialize(Exclusive)", initialized)?;
     }
     Ok(client)
+}
+
+fn exclusive_request_duration(
+    options: &WasapiOptions,
+    default_hns: i64,
+    minimum_hns: i64,
+    rate: u32,
+) -> Result<i64, BackendError> {
+    if options.exclusive_period_evidence.is_some() {
+        if !(1_000..=1_000_000).contains(&minimum_hns) {
+            return Err(unsupported(
+                "exclusive minimum period query returned an invalid period",
+            ));
+        }
+        Ok(minimum_hns)
+    } else {
+        Ok(options.device.period_frames.map_or(default_hns, |frames| {
+            exclusive_frames_duration(frames as u32, rate)
+        }))
+    }
 }
 
 /// Phase 2 (Shared, explicit period): exact period negotiation through
@@ -1543,6 +1654,113 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
     use windows::core::PCWSTR;
+
+    fn minimum_period_evidence() -> ExclusivePeriodEvidenceHandle {
+        Arc::new(std::sync::Mutex::new(ExclusivePeriodEvidence {
+            qualification: "unqualified-request-only",
+            requested_minimum: true,
+            default_hns: None,
+            minimum_hns: None,
+            query_hresult: None,
+            initial_request_hns: None,
+            final_request_hns: None,
+            alignment_retry: false,
+            alignment_query_hresult: None,
+            aligned_buffer_frames: None,
+            first_initialize_hresult: None,
+            retry_initialize_hresult: None,
+            actual_buffer_frames: None,
+            actual_buffer_hresult: None,
+        }))
+    }
+
+    #[test]
+    fn exclusive_minimum_selection_preserves_default_and_refuses_invalid_query() {
+        let mut options = WasapiOptions {
+            endpoint_id: "not-opened".into(),
+            sample_rate: 48_000,
+            device: DeviceOptions {
+                mode: DeviceMode::Exclusive,
+                ..Default::default()
+            },
+            input: true,
+            exclusive_period_evidence: None,
+        };
+        assert_eq!(
+            exclusive_request_duration(&options, 100_000, 30_000, 48_000).unwrap(),
+            100_000
+        );
+        options.device.period_frames = Some(256);
+        assert_eq!(
+            exclusive_request_duration(&options, 100_000, 30_000, 48_000).unwrap(),
+            53_333
+        );
+        options.device.period_frames = None;
+        let handle = minimum_period_evidence();
+        options.exclusive_period_evidence = Some(handle.clone());
+        assert_eq!(
+            exclusive_request_duration(&options, 100_000, 30_000, 48_000).unwrap(),
+            30_000
+        );
+        for invalid in [i64::MIN, 0, 999, 1_000_001] {
+            handle.lock().unwrap().record_query(100_000, invalid);
+            assert!(exclusive_request_duration(&options, 100_000, invalid, 48_000).is_err());
+            let evidence = handle.lock().unwrap();
+            assert_eq!(evidence.initial_request_hns, None);
+            assert_eq!(evidence.final_request_hns, None);
+            assert_eq!(evidence.first_initialize_hresult, None);
+        }
+    }
+
+    #[test]
+    fn exclusive_minimum_refuses_shared_output_and_explicit_period_before_com() {
+        for (input, mode, period, expected) in [
+            (true, DeviceMode::Shared, None, "input Exclusive"),
+            (false, DeviceMode::Exclusive, None, "input Exclusive"),
+            (true, DeviceMode::Exclusive, Some(256), "explicit period"),
+        ] {
+            let handle = minimum_period_evidence();
+            let options = WasapiOptions {
+                endpoint_id: "not-opened".into(),
+                sample_rate: 48_000,
+                device: DeviceOptions {
+                    mode,
+                    period_frames: period,
+                    ..Default::default()
+                },
+                input,
+                exclusive_period_evidence: Some(handle.clone()),
+            };
+            match WasapiStream::open_inner(options) {
+                Err(error) => assert!(error.to_string().contains(expected)),
+                Ok(_) => panic!("invalid request must refuse before native activation"),
+            }
+            let evidence = handle.lock().unwrap();
+            assert_eq!(evidence.query_hresult, None);
+            assert_eq!(evidence.first_initialize_hresult, None);
+        }
+    }
+
+    #[test]
+    fn exclusive_minimum_receipt_is_omitted_by_default_and_preserves_partial_failure() {
+        use crate::{
+            SessionDuration,
+            capture::{CaptureReport, CaptureSource},
+        };
+        let mut report = CaptureReport::new(CaptureSource::Physical, SessionDuration::UntilStopped);
+        let default = serde_json::to_value(&report).unwrap();
+        assert!(default.get("exclusive_period").is_none());
+        assert_eq!(default["schema_version"], 12);
+        let handle = minimum_period_evidence();
+        handle.lock().unwrap().record_query_hresult(-1);
+        report.exclusive_period = Some(*handle.lock().unwrap());
+        report.failure = Some("preserved preparation failure".into());
+        let partial = serde_json::to_value(&report).unwrap();
+        assert_eq!(partial["failure"], "preserved preparation failure");
+        assert_eq!(partial["exclusive_period"]["query_hresult"], -1);
+        assert!(partial["exclusive_period"]["minimum_hns"].is_null());
+        assert!(partial["exclusive_period"]["initial_request_hns"].is_null());
+    }
 
     #[test]
     fn exclusive_capture_skips_shared_only_packet_query() {

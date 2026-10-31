@@ -632,6 +632,7 @@ fn owner(
             sample_rate: 48_000,
             device: options.device_options(),
             input: false,
+            exclusive_period_evidence: None,
         })?);
         let stream = stream.as_mut().expect("opened native stream");
         let (prepared, padding) = prepare_render_stream(&options, &mut report, stream)?;

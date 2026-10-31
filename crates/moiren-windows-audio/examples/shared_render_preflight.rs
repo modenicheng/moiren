@@ -279,6 +279,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 ..DeviceOptions::default()
             },
             input: false,
+            exclusive_period_evidence: None,
         };
         let result = match WasapiStream::open(render_options) {
             Ok(mut stream) => {

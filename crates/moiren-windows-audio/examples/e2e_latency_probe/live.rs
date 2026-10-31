@@ -145,6 +145,7 @@ struct LiveOptions {
     max_gap_frames: u32,
     vad_recovery_cap_periods: Option<u64>,
     vad_minimum_period: bool,
+    vad_microphone_minimum_period: bool,
     render_target_frames: Option<u32>,
     wake_margin_frames: u32,
     callback_budget_frames: u32,
@@ -199,6 +200,7 @@ impl Default for LiveOptions {
             max_gap_frames: DEFAULT_MAX_GAP_FRAMES,
             vad_recovery_cap_periods: None,
             vad_minimum_period: false,
+            vad_microphone_minimum_period: false,
             render_target_frames: None,
             wake_margin_frames: DEFAULT_WAKE_MARGIN_FRAMES,
             callback_budget_frames: DEFAULT_CALLBACK_BUDGET_FRAMES,
@@ -249,7 +251,8 @@ impl LiveOptions {
     }
 
     fn route_intent(&self) -> Option<Value> {
-        self.vad_microphone_id.as_ref().map(|id| serde_json::json!({
+        self.vad_microphone_id.as_ref().map(|id| {
+            let mut route = serde_json::json!({
             "route": "microphone", "input_kind": "virtual_playback", "bus": true,
             "output_kind": "virtual_microphone", "clock": "virtual_realtime",
             "playback_stable_endpoint_id": self.stable_endpoint_id,
@@ -262,7 +265,12 @@ impl LiveOptions {
             "independent_reference": false,
             "physical_render_queue_applicable": false,
             "meaning": "requested software route; source submission and duplicated stereo are not an independent delay reference",
-        }))
+            });
+            if self.vad_microphone_minimum_period {
+                route["recorder_native_request"]["minimum_period"] = true.into();
+            }
+            route
+        })
     }
 }
 
@@ -426,6 +434,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              live-vad accepts --vad-recovery-cap-periods 1..8; omitted preserves 8.\n\
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
              --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
+             --vad-microphone-minimum-period separately requests the owned MIC recorder minimum; requires schema2 Exclusive collection.\n\
              Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
              --render-mode shared|exclusive --render-period-frames 64|128|256|512|1024|2048|4096\n\
              selects physical output only in both probe paths; omission preserves existing defaults.\n\
@@ -462,6 +471,11 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         .transpose()?;
     if let Some((_, config)) = &collection_input {
         config.validate_route(options.vad_route_kind())?;
+        ensure!(
+            !options.vad_microphone_minimum_period
+                || config.capture_mode == moiren_engine::node::DeviceMode::Exclusive,
+            "--vad-microphone-minimum-period requires schema2 Exclusive owned MIC collection"
+        );
         options.vad_recorder_mode = config.capture_mode;
     }
     let process_input = options
@@ -826,6 +840,14 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
     let mut iter = arguments.into_iter();
     while let Some(flag) = iter.next() {
         let value = match flag.as_str() {
+            "--vad-microphone-minimum-period" => {
+                ensure!(
+                    !options.vad_microphone_minimum_period,
+                    "duplicate --vad-microphone-minimum-period"
+                );
+                options.vad_microphone_minimum_period = true;
+                continue;
+            }
             "--vad-minimum-period" => {
                 ensure!(
                     !options.vad_minimum_period,
@@ -1117,6 +1139,13 @@ fn validate(options: &LiveOptions) -> Result<()> {
     ensure!(
         !options.vad_minimum_period || options.source_kind == EvidenceSourceKind::VadPlayback,
         "--vad-minimum-period is only valid for live-vad"
+    );
+    ensure!(
+        !options.vad_microphone_minimum_period
+            || (options.source_kind == EvidenceSourceKind::VadPlayback
+                && options.vad_route_kind() == vad_route::RouteKind::Microphone
+                && options.vad_collection.is_some()),
+        "--vad-microphone-minimum-period requires an owned live-vad microphone collection"
     );
     if let Some(cap) = options.vad_recovery_cap_periods {
         ensure!(
@@ -2705,6 +2734,93 @@ mod tests {
             "--artifact-dir".into(),
             directory.to_string_lossy().into_owned(),
         ]
+    }
+
+    #[test]
+    fn microphone_minimum_period_dry_run_preserves_explicit_request_and_refuses_shared() {
+        for (minimum, mode) in [(false, "exclusive"), (true, "exclusive"), (true, "shared")] {
+            let directory = temp_dir(&format!("mic-period-dry-{minimum}-{mode}"));
+            let source_path = directory.with_extension("source.json");
+            let collection_path = directory.with_extension("collection.json");
+            fs::write(&source_path, source_plan_bytes()).unwrap();
+            let config = serde_json::json!({
+                "schema_version": 2, "capture_mode": mode, "ring_frames": 1024,
+                "max_pcm_bytes": 1048576, "max_metadata_bytes": 100000,
+                "max_packets": 1000, "preroll_ms": 100, "postroll_ms": 200,
+            });
+            fs::write(&collection_path, serde_json::to_vec(&config).unwrap()).unwrap();
+            let mut args = microphone_route_args(&directory);
+            for (flag, path) in [
+                ("--source-schedule", &source_path),
+                ("--vad-collection", &collection_path),
+            ] {
+                let index = args.iter().position(|value| value == flag).unwrap();
+                args[index + 1] = path.to_string_lossy().into_owned();
+            }
+            if minimum {
+                args.push("--vad-microphone-minimum-period".into());
+            }
+            let result = run(args);
+            if mode == "shared" {
+                assert!(result.is_err());
+                assert!(
+                    !directory.exists(),
+                    "refuse before artifact/native preparation"
+                );
+            } else {
+                assert_eq!(result.unwrap(), 1);
+                for name in ["manifest.json", "report.json"] {
+                    let report: Value =
+                        serde_json::from_slice(&fs::read(directory.join(name)).unwrap()).unwrap();
+                    let request = &report["vad_route"]["recorder_native_request"];
+                    assert_eq!(request["mode"], "exclusive");
+                    if minimum {
+                        assert_eq!(request["minimum_period"], true);
+                    } else {
+                        assert!(request.get("minimum_period").is_none());
+                    }
+                    assert!(report["native"]["engine"].is_null());
+                    assert_eq!(report["status"], "unqualified");
+                }
+                fs::remove_dir_all(&directory).unwrap();
+            }
+            fs::remove_file(source_path).unwrap();
+            fs::remove_file(collection_path).unwrap();
+        }
+    }
+
+    #[test]
+    fn microphone_minimum_period_requires_one_owned_collection_switch() {
+        let directory = temp_dir("mic-min-period-parser");
+        let mut args = microphone_route_args(&directory);
+        args.push("--vad-microphone-minimum-period".into());
+        let options = parse(args.clone()).expect("owned MIC minimum switch must parse");
+        validate(&options).unwrap();
+        args.push("--vad-microphone-minimum-period".into());
+        assert!(parse(args).is_err());
+
+        let mut physical = source_test_args(&directory);
+        physical.push("--vad-microphone-minimum-period".into());
+        assert!(
+            parse(physical)
+                .and_then(|options| validate(&options))
+                .is_err()
+        );
+        let process = [
+            "--source-pid",
+            "42",
+            "--output",
+            "out",
+            "--artifact-dir",
+            "unused",
+            "--vad-microphone-minimum-period",
+        ];
+        assert!(
+            parse(process.map(str::to_owned).to_vec())
+                .and_then(|options| validate(&options))
+                .is_err()
+        );
+        assert!(!directory.exists());
     }
 
     #[test]
