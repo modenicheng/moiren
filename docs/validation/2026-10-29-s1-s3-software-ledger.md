@@ -21,6 +21,23 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
+trace1's closure/observer failure and uses the same frozen9968505 audio binary
+for one terminal trace2 acquisition. Matching native fragments directly tie
+Running/open MIC gate1->2 to EventDeadline rebase and the same callback's first
+no-copy silence0->1. Lateness is1.3007ms against the NEXT packet deadline,
+4.3007ms against the serviced deadline; the underlying dispatch cause remains
+unknown. Source303840/1440000, collection and runtime cleanup are incomplete,
+with MIC Removed silence8 and slot2 `0x8007051A`. The44-payload archive is
+verified and matching TMFs decode170 events with reported loss/format/unknown0;
+neither accepts audio nor proves whole-interval trace completeness. This is
+not native verification of the later0ef5a29 final-QUERY repair. No production
+timing/buffer/default or quality-gate change, physical result, impossibility
+proof or device floor follows. Strict offline joins and actual-callback MIC144/
+State-wait regressions are host-tested; only the exact archived terminal task
+is removed after quiescence and unchanged catalog/driver/boot checks. Native
+runtime cleanup stays failed; S1-S3 remain incomplete.
+
 The [exact144 physical-output diagnostic](2026-10-31-dawn-exact144.md)
 adds only a `vad-probe`-gated WASAPI Exclusive-render144 validation exception,
 not an application preset/default. Root feature-on/off each pass659 library

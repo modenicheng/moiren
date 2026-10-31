@@ -453,13 +453,82 @@ static void ProductionShortTimerProgressAndStall()
     }
 }
 
+static void ProductionRetainedMicDeadline()
+{
+    // Retained trace2 fault: 144 frames, not the older 480-frame fixture.
+    // The second case keeps the planning instant but moves the delay inside
+    // State acquisition. Rebase alone cannot distinguish those boundaries.
+    constexpr uint64_t callback = 1266827998581;
+    constexpr uint64_t servicedDeadline = 1266827955574;
+    for (const bool delayedEntry : {true, false}) {
+        Shared shared = {};
+        Child child = {&shared, 0, 26};
+        auto& slot = shared.Slots[0];
+        slot.Id = 26;
+        slot.Session = 1266750799707;
+        slot.StreamGeneration = 1;
+        slot.AdmissionGeneration = slot.GateOpen = slot.AudioReady = 1;
+        slot.State = MOIREN_VAD_STATE_PRESENT;
+        slot.StreamState = MOIREN_VAD_STREAM_RUNNING;
+        slot.HasSequence = 1;
+        shared.ClockDiagnostics[0].Reset(1);
+        VAD_AUDIO_STREAM stream = {};
+        stream.Device = &child;
+        stream.Generation = 1;
+        stream.Stream = reinterpret_cast<void*>(46173801378424ULL);
+        stream.PacketFrames = 144;
+        stream.PacketSize = 1152;
+        stream.BlockAlign = 8;
+        stream.Capture = true;
+        stream.CompletedPackets = 2138;
+        stream.Clock = {10000000, 1266763785574, 0, 308016, true};
+        TimerContext timer = {&stream};
+        CallbackSamples = {delayedEntry ? callback - 2 : servicedDeadline,
+            callback - 1, callback};
+        SampleIndex = 0;
+        ScriptSamples = true;
+        Starts = Notifications = Transfers = 0;
+        VadAudioTimer(&timer);
+        ScriptSamples = false;
+
+        const auto evidence = shared.ClockDiagnostics[0].TakeUnreported();
+        Check(SampleIndex == 3 && evidence.ReportFirst &&
+            evidence.First.Reason == ClockRebaseReason::EventDeadline &&
+            evidence.First.CallbackQpc == callback &&
+            evidence.First.DeadlineFrame == 308160 &&
+            evidence.First.DeadlineQpc == 1266827985574 &&
+            evidence.First.LatenessTicks == 13007 &&
+            evidence.First.CompletedPackets == 2139 &&
+            evidence.First.Before.EpochQpc == 1266763785574 &&
+            evidence.First.After.EpochQpc == callback &&
+            evidence.First.After.BaseFrames == 308016 &&
+            evidence.First.After.LimitFrames == 308160,
+            "retained MIC144 deadline replays through actual scheduler and atomic rebase");
+        Check(evidence.EndpointBefore.GateEpoch == 1 &&
+            evidence.EndpointAfter.GateEpoch == 2 && slot.HasSequence == 0 &&
+            slot.GateOpen == 1 && slot.StreamState == MOIREN_VAD_STREAM_RUNNING &&
+            LastCallback.DeadlineQpc == servicedDeadline &&
+            LastCallback.DpcQpc == CallbackSamples[0] &&
+            LastCallback.StateQpc == callback - 1 &&
+            LastCallback.StateQpc - LastCallback.DpcQpc ==
+                (delayedEntry ? 1ULL : 43006ULL),
+            "same rebase separates entry-late from State-wait; it does not prove dispatch cause");
+        Check(Starts == 1 && Notifications == 1 && Transfers == 1 &&
+            LastDue == -30000 && stream.LastCaptureStart == callback &&
+            stream.CompletedPackets == 2139 && !shared.Lock.Held && !stream.State.Held,
+            "fault keeps one bounded replacement transfer/notify and next 3ms arm");
+    }
+}
+
 int main()
 {
     PureFirstRebase();
     ProductionCallSites();
     ProductionCallbackBoundary();
     ProductionShortTimerProgressAndStall();
+    ProductionRetainedMicDeadline();
     std::printf("PASS: first event/timer rebase, real callback/epoch causality, "
-        "lateness, generation reset, passive WPP; fixed diagnostic=%zu bytes\n", sizeof(ClockDiagnostic));
+        "retained MIC144/State-wait contrast, lateness, generation reset, passive WPP; "
+        "fixed diagnostic=%zu bytes\n", sizeof(ClockDiagnostic));
 }
 #endif
