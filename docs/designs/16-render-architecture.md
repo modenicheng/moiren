@@ -174,3 +174,11 @@ P2 first among app changes because it is self-contained, measurable with
 existing tooling, and required regardless of platform decisions; P1 needs a
 fork-location decision and touches build infra for every crate; P3/P4 are
 follow-on consolidations whose design is stabilized by P2's outcome.
+
+## Status update (2026-10-31)
+
+P1 landed as #46 and P2 as #42/#48/#50. P3 and P4 are absorbed into
+`17-two-tier-ui-components.md`, which generalizes the Mixer/Graph pattern
+into two reusable tiers — hot surfaces (per-frame painting) and cached
+panels (semantic-key caching) — and adds the caching coverage for the pages
+that currently have none.
