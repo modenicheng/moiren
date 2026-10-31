@@ -6,6 +6,7 @@
 #include "../src/Ownership.h"
 #if __has_include("../src/PlaybackCopyDiagnostic.h")
 #include "../src/PlaybackCopyDiagnostic.h"
+#include "../src/NativePlaybackDiagnostic.h"
 #if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
 #include "../src/audio/ClockDiagnostic.h"
 #endif
@@ -58,6 +59,7 @@ struct VAD_SHARED {
     vad::audio::CaptureDiagnostic CaptureDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
 #if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC && __has_include("../src/PlaybackCopyDiagnostic.h")
     vad::PlaybackCopyDiagnostic PlaybackCopyDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    vad::NativePlaybackDiagnostic NativePlaybackDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
     vad::audio::ClockDiagnostic ClockDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
 #endif
     vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};

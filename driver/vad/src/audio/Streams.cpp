@@ -266,6 +266,80 @@ static void NotifyPacketComplete(VAD_AUDIO_STREAM* stream, uint64_t packet, uint
     KeReleaseSpinLock(&shared->Lock, irql);
 }
 
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+static vad::NativePlaybackLayout NativePlaybackLayoutFor(VAD_AUDIO_STREAM* stream)
+{
+    vad::NativePlaybackLayout layout = {};
+    layout.Path = stream->PacketCount == 1 ? vad::NativePlaybackPath::TimerCopy :
+        vad::NativePlaybackPath::EventRead;
+    layout.PacketCount = stream->PacketCount; layout.PacketSize = stream->PacketSize;
+    layout.PacketFrames = stream->PacketFrames; layout.AllocationBytes = stream->AllocationBytes;
+    layout.MappedBytes = stream->PacketCount == 1 ? stream->TimerRing.MappedBytes : 0;
+    layout.MappedFrames = stream->PacketCount == 1 ? stream->TimerRing.MappedFrames : 0;
+    for (ULONG i = 0; i < stream->PacketCount && i < 2; ++i) {
+        layout.RtPacketSize[i] = stream->Packets[i].RtPacketSize;
+        layout.RtPacketOffset[i] = stream->Packets[i].RtPacketOffset;
+    }
+    return layout;
+}
+
+// Called under existing Shared + State locks, never by a capture/MIC copy.
+static void RecordNativePlaybackLocked(VAD_AUDIO_STREAM* stream, vad::NativePlaybackScan scan,
+    const void* native, const void* destination)
+{
+    const auto child = VadChild(stream->Device);
+    const auto& slot = child->Shared->Slots[child->Index];
+    if (slot.Id != child->Id || slot.StreamGeneration != stream->Generation ||
+        slot.Intent != MOIREN_VAD_INTENT_PLAYBACK) { return; }
+    auto& d = child->Shared->NativePlaybackDiagnostics[child->Index];
+    const auto identity = vad::PlaybackCopyIdentity::From(slot, stream->PacketFrames, stream->BlockAlign);
+    const bool admitted = slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0 &&
+        slot.GateOpen != 0 && slot.StreamState == MOIREN_VAD_STREAM_RUNNING;
+    d.SealCurrent(identity, admitted);
+    if (!admitted || d.Seal != vad::NativePlaybackSeal::None) { return; }
+    if (!d.Observed) {
+        // A transient system/format-probe stream must not consume the one-shot
+        // native record. The accepted READ witness chooses this exact epoch.
+        const auto& read = child->Shared->PlaybackCopyDiagnostics[child->Index];
+        if (!read.Observed || !read.Identity.Same(identity)) { return; }
+        d.SelectingRead = read.FirstScan;
+    }
+    d.Observe(identity, NativePlaybackLayoutFor(stream), scan, native, destination, [] {
+        LARGE_INTEGER frequency;
+        const auto qpc = KeQueryPerformanceCounter(&frequency);
+        return vad::PlaybackCopyTime{static_cast<uint64_t>(qpc.QuadPart),
+            static_cast<uint64_t>(frequency.QuadPart)};
+    });
+}
+
+// Replace only this opt-in event call's VadPcmTransfer wrapper. Keep its same
+// rundown and single Shared-lock boundary; do not add another lock to the DPC.
+static void RecordEventNativePlayback(VAD_AUDIO_STREAM* stream, ULONG index, void* buffer,
+    uint64_t sequence, uint64_t qpc, VAD_PCM_BATCH* batch)
+{
+    NT_ASSERT(batch->Shared == nullptr && batch->Completions.Count == 0);
+    const auto child = VadChild(stream->Device);
+    const auto shared = child->Shared;
+    if (!ExAcquireRundownProtection(&shared->PcmRundown)) { return; }
+    batch->Shared = shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[child->Index];
+    if (slot.Id == child->Id && slot.StreamGeneration == stream->Generation) {
+        const auto offset = index == 0 ? stream->Packets[0].RtPacketOffset : 0;
+        const bool eosApplied = stream->HasEos && stream->EosPacket == static_cast<ULONG>(sequence);
+        // Observation is after the original EOS truncation, not before it.
+        RecordNativePlaybackLocked(stream, {sequence, sequence, 0, qpc, 0, 0,
+            offset, offset, stream->PacketFrames, index, 0,
+            (stream->HasEos ? 1u : 0u) | (eosApplied ? 2u : 0u),
+            stream->EosPacket, stream->EosLength}, buffer, buffer);
+        VadPcmTransferLocked(shared, child->Index, buffer, stream->PacketFrames,
+            stream->BlockAlign, sequence, qpc, batch);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+#endif
+
 // State is held. The endpoint lock spans epoch validation and each bounded
 // copy; gate closure therefore cannot acknowledge revocation while stale
 // scratch is being copied. Requests retrieved here complete in this DPC.
@@ -306,6 +380,14 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
                 }
             } else {
                 RtlCopyMemory(scratch, native, span.ByteCount);
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+                const auto relative = span.PacketByteOffset - segment.PacketOffsetFrames * stream->BlockAlign;
+                RecordNativePlaybackLocked(stream, {segment.Sequence, segment.PacketSequence,
+                    segment.StartFrame + relative / stream->BlockAlign, now, 0, 0,
+                    span.RingByteOffset, span.PacketByteOffset, span.ByteCount / stream->BlockAlign,
+                    0, 0, 0, 0, 0},
+                    native, scratch);
+#endif
             }
         },
         [&](const vad::audio::TimerDrivenCopySpan& span) {
@@ -446,8 +528,12 @@ VOID VadAudioTimer(WDFTIMER timer)
                 RtlZeroMemory(static_cast<PUCHAR>(buffer) + stream->EosLength,
                     stream->PacketSize - stream->EosLength);
             }
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+            RecordEventNativePlayback(stream, index, buffer, packet, now, &batch);
+#else
             VadPcmTransfer(stream->Device, stream->Generation, buffer,
                 stream->PacketFrames, stream->BlockAlign, packet, now, &batch);
+#endif
         }
         // Discard after the bounded copy. A reused/underflow packet is silence.
         RtlZeroMemory(buffer, stream->PacketSize);

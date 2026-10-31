@@ -276,6 +276,101 @@ static void TracePendingPlaybackCopyDiagnostic(VAD_SHARED* shared,
 }
 #endif
 
+// Separate native consumption schema: READ-copy fragments above stay unchanged.
+// Enabled builds retain deterministic-fixture PCM prefixes, never raw pointers.
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+static void TracePendingNativePlaybackDiagnostic(VAD_SHARED* shared,
+    const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (snapshot.Intent != MOIREN_VAD_INTENT_PLAYBACK) { return; }
+    const bool traceEnabled = WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, VAD_CONTROL);
+    vad::NativePlaybackDiagnostic d = {};
+    bool pending = false;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
+        const auto& slot = shared->Slots[i];
+        if (slot.Id == snapshot.EndpointId && slot.Session == snapshot.SessionEpoch) {
+            const auto align = slot.Channels * (slot.SampleFormat == MOIREN_VAD_FORMAT_PCM16 ? 2u : 4u);
+            auto& retained = shared->NativePlaybackDiagnostics[i];
+            retained.SealCurrent(vad::PlaybackCopyIdentity::From(slot, slot.PacketFrames, align),
+                slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0 &&
+                    slot.GateOpen != 0 && slot.StreamState == MOIREN_VAD_STREAM_RUNNING);
+            if (traceEnabled) { pending = retained.Take(d); }
+            break;
+        }
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    if (!pending) { return; }
+    const auto& id = d.Identity; // Always the selected historical epoch, even after Stop.
+    const auto& l = d.Layout;
+    constexpr ULONG fragments = 26;
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Native playback shape endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u format=%u channels=%u frames=%u align=%u path=%u packet_count=%u frequency=%I64u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, 0u, fragments,
+        id.Format, id.Channels, id.Frames, id.BlockAlign, static_cast<ULONG>(l.Path), l.PacketCount, d.Frequency);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Native playback layout endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u packet_bytes=%u allocation_bytes=%u mapped_bytes=%u mapped_frames=%u rt0_size=%u rt0_offset=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, 1u, fragments,
+        l.PacketSize, l.AllocationBytes, l.MappedBytes, l.MappedFrames, l.RtPacketSize[0], l.RtPacketOffset[0]);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Native playback bounds endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u rt1_size=%u rt1_offset=%u cap_frames=%u seal_reason=%u paired_copy=%u before_source_known=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, 2u, fragments,
+        l.RtPacketSize[1], l.RtPacketOffset[1], vad::NativePlaybackDiagnostic::FrameCap,
+        static_cast<ULONG>(d.Seal), static_cast<ULONG>(l.Path == vad::NativePlaybackPath::TimerCopy), 0u);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Native playback counts endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u inspected_frames=%u inspected_bytes=%u native_nonzero_bytes=%u destination_nonzero_bytes=%u native_nonzero_frames=%u destination_nonzero_frames=%u different_bytes=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, 3u, fragments,
+        d.InspectedFrames, d.InspectedBytes, d.NativeNonzeroBytes, d.DestinationNonzeroBytes,
+        d.NativeNonzeroFrames, d.DestinationNonzeroFrames, d.DifferentBytes);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Native playback coverage endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u calls=%u sequence_gaps=%u counter_saturated=%u all_interval_coverage=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, 4u, fragments,
+        d.Calls, d.SequenceGaps, static_cast<ULONG>(d.CounterSaturated), 0u);
+    const auto& read = d.SelectingRead;
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Native playback selected_read endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u sequence=%I64u callback_qpc=%I64u before_qpc=%I64u after_qpc=%I64u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, 5u, fragments,
+        read.Sequence, read.CallbackQpc, read.BeforeQpc, read.AfterQpc);
+    const vad::NativePlaybackScan* scans[] = {&d.FirstScan, &d.LastScan,
+        &d.First.Scan, &d.FirstNonzero.Scan, &d.FirstMismatch.Scan};
+    const vad::NativePlaybackPrefix* prefixes[] = {&d.First, &d.FirstNonzero, &d.FirstMismatch};
+    for (ULONG kind = 0; kind < 5; ++kind) {
+        const auto& s = *scans[kind];
+        const ULONG fragment = kind < 2 ? 6 + kind * 2 : 10 + (kind - 2) * 5;
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Native playback scan_time endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u segment=%I64u logical=%I64u start_frame=%I64u callback_qpc=%I64u before_qpc=%I64u after_qpc=%I64u index=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, fragment, fragments,
+            s.SegmentSequence, s.LogicalSequence, s.StartFrame, s.CallbackQpc, s.BeforeQpc, s.AfterQpc, s.Index);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Native playback scan_span endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u native_offset=%u destination_offset=%u inspected_frames=%u consumed_frames=%u eos_flags=%u eos_packet=%u eos_length=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, fragment + 1, fragments,
+            s.NativeOffset, s.DestinationOffset, s.Frames, s.ConsumedFrames,
+            s.EosFlags, s.EosPacket, s.EosLength);
+        if (kind < 2) { continue; }
+        const auto& p = *prefixes[kind - 2];
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Native playback prefix_meta endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u observed=%u frame_offset=%u bytes=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, fragment + 2, fragments,
+            static_cast<ULONG>(p.Observed), p.FrameOffset, p.Bytes);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Native playback prefix_native endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u word0=%u word1=%u word2=%u word3=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, fragment + 3, fragments,
+            p.Word(false, 0), p.Word(false, 1), p.Word(false, 2), p.Word(false, 3));
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Native playback prefix_destination endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u word0=%u word1=%u word2=%u word3=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, fragment + 4, fragments,
+            p.Word(true, 0), p.Word(true, 1), p.Word(true, 2), p.Word(true, 3));
+    }
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Native playback semantics endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u event_same_buffer=%u observed=%u sealed=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, d.Revision, 25u, fragments,
+        static_cast<ULONG>(l.Path == vad::NativePlaybackPath::EventRead), static_cast<ULONG>(d.Observed),
+        static_cast<ULONG>(d.Seal != vad::NativePlaybackSeal::None));
+}
+#endif
+
 static void TracePendingUnservedDiagnostics(VAD_SHARED* shared,
     const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
 {
@@ -445,6 +540,7 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
             TracePendingUnservedDiagnostics(shared, snapshot);
 #if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
             TracePendingPlaybackCopyDiagnostic(shared, snapshot);
+            TracePendingNativePlaybackDiagnostic(shared, snapshot);
 #endif
         }
         RtlCopyMemory(output, &snapshot, sizeof(snapshot));
