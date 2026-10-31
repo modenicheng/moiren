@@ -15,6 +15,25 @@ use moiren_engine::{
 };
 
 #[test]
+fn exact_bridge_writes_do_not_allocate_or_deallocate() {
+    let (mut writer, reader) = audio_bridge::<f32>(2, 2, 1024).unwrap();
+    let (results, counts) = track_allocations(|| {
+        [
+            writer.write_interleaved_exact(&[1.0; 4]),
+            writer.write_interleaved_exact(&[2.0; 2]),
+            writer.write_interleaved_exact(&[]),
+        ]
+    });
+    assert_eq!(results, [Ok(true), Ok(false), Ok(true)]);
+    assert_eq!(counts, (0, 0));
+
+    drop(reader);
+    let (result, counts) = track_allocations(|| writer.write_interleaved_exact(&[1.0; 2]));
+    assert_eq!(result, Ok(false));
+    assert_eq!(counts, (0, 0));
+}
+
+#[test]
 fn io_nodes_and_bridges_render_without_allocations_with_fan_out_and_full_queues() {
     let (mut input, source) = audio_bridge::<f64>(2, 8, 4096).unwrap();
     let (sink_a, mut output_a) = audio_bridge::<f64>(2, 8, 4096).unwrap();

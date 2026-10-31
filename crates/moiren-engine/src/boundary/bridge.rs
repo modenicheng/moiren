@@ -107,6 +107,16 @@ impl<S: ProcessingSample> AudioWriter<S> {
     /// use this for fixed-size native packets so a full carrier cannot expose
     /// a partial packet to Engine.
     pub fn write_interleaved_exact(&mut self, samples: &[S]) -> Result<bool, BridgeError> {
+        self.write_interleaved_exact_before_push(samples, || {})
+    }
+
+    // A private, statically dispatched hook lets tests drop the reader exactly
+    // after admission. The public path uses a no-op without allocation or locks.
+    fn write_interleaved_exact_before_push(
+        &mut self,
+        samples: &[S],
+        before_push: impl FnOnce(),
+    ) -> Result<bool, BridgeError> {
         if !samples.len().is_multiple_of(self.channels) {
             return Err(BridgeError::InvalidInterleaved);
         }
@@ -114,9 +124,10 @@ impl<S: ProcessingSample> AudioWriter<S> {
         if self.tx.is_abandoned() || frames > self.tx.slots() / self.channels {
             return Ok(false);
         }
+        before_push();
         let report = self.push(frames, samples.iter().copied());
-        debug_assert_eq!(report.transferred_frames, frames);
-        Ok(true)
+        // The reader can exit after admission, making push refuse the packet.
+        Ok(report.transferred_frames == frames)
     }
 
     fn push(&mut self, requested: usize, samples: impl Iterator<Item = S>) -> BoundaryReport {
@@ -240,3 +251,6 @@ impl<S: ProcessingSample> RtAudioSource<S> for AudioReader<S> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
