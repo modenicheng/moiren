@@ -763,6 +763,27 @@ enum Retirement {
 }
 
 #[cfg(any(windows, test))]
+#[derive(Default, Serialize)]
+struct RetirementObservation {
+    close_gate: crate::measurement::session::CallWindow,
+    stop_measurement_broadcast: crate::measurement::session::CallWindow,
+    /// Last admitted stamps, not a fresh QUERY or a claim about the close result.
+    admitted_playback_stamp: Option<[u64; 5]>,
+    admitted_microphone_stamp: Option<[u64; 5]>,
+}
+
+#[cfg(any(windows, test))]
+impl RetirementObservation {
+    fn observe<T>(&mut self, stage: Retirement, call: impl FnOnce() -> Result<T>) -> Result<T> {
+        match stage {
+            Retirement::CloseGate => self.close_gate.observe(call),
+            Retirement::StopMeasurement => self.stop_measurement_broadcast.observe(call),
+            _ => call(),
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
 #[cfg_attr(not(test), allow(dead_code))]
 fn retire(mut step: impl FnMut(Retirement) -> Result<()>, failures: &mut Option<String>) {
     retire_with_route(super::vad_route::RouteKind::Physical, &mut step, failures);
@@ -868,6 +889,8 @@ pub(super) fn collect(
         measurement: None,
         measurement_outcome: None,
         measurement_preparation_capture: None,
+        retirement_observation: RetirementObservation::default(),
+        measurement_retirement: None,
         controlled_load_id: options.controlled_load_id.clone(),
         controlled_load: None,
         controlled_load_evidence: None,
@@ -941,6 +964,7 @@ pub(super) fn collect(
                 Ok(measurement) => measurement.with_start_grace(guard.policy.progress_grace())?,
                 Err(mut error) => {
                     guard.measurement_preparation_capture = error.native_capture.take();
+                    guard.measurement_retirement = error.retirement.take().map(|receipt| *receipt);
                     return Err(error.error);
                 }
             },
@@ -1261,6 +1285,11 @@ pub(super) fn collect(
             "engine_cleanup": guard.vad.report.engine_cleanup, "vad_cleanup": guard.vad.report.vad_cleanup,
             "microphone_cleanup": guard.vad.report.vad_microphone_cleanup },
         "measurement": measurement, "phases": phases.stamps,
+        "retirement_observation": {
+            "scope": "control-side QPC 100ns call windows; not transfer/arrival times or proof associating driver silence increments with PCM; admitted stamps are historical",
+            "stages": guard.retirement_observation,
+            "measurement": guard.measurement_retirement,
+        },
         "controlled_load_id": guard.controlled_load_id,
         "controlled_load": guard.controlled_load_evidence,
         "controlled_load_requested": guard.controlled_load_id.is_some(),
@@ -1292,6 +1321,8 @@ struct CollectionGuard<'a> {
     measurement: Option<crate::measurement::session::MeasurementSession>,
     measurement_outcome: Option<crate::measurement::session::MeasurementOutcome>,
     measurement_preparation_capture: Option<Box<moiren_windows_audio::capture::CaptureReport>>,
+    retirement_observation: RetirementObservation,
+    measurement_retirement: Option<crate::measurement::session::MeasurementRetirement>,
     controlled_load_id: Option<String>,
     controlled_load: Option<controlled_load::Supervisor>,
     controlled_load_evidence: Option<controlled_load::Evidence>,
@@ -1338,71 +1369,90 @@ impl CollectionGuard<'_> {
             );
         }
         let mut failures = None;
+        if let Some(admission) = self.vad.admission.as_ref() {
+            self.retirement_observation.admitted_playback_stamp = admission.current.stamp;
+            self.retirement_observation.admitted_microphone_stamp = admission
+                .current
+                .microphone
+                .as_ref()
+                .and_then(|mic| mic.stamp);
+        }
         retire_with_route(
             self.route,
-            |stage| match stage {
-                Retirement::Observe => {
-                    if self.recorder_admitted
-                        && let Some(admitted) = &self.vad.admission
-                    {
-                        let admitted = admitted.current.clone();
-                        let health = match self.vad.current_health() {
-                            Ok(health) => health,
-                            Err(error) => {
-                                latch_failure_observations(
-                                    &mut self.first_failure_observations,
-                                    self.vad.report,
-                                    self.vad.last_health.as_ref(),
-                                );
-                                return Err(error);
-                            }
-                        };
-                        validate_health_with_policy(
-                            &health,
-                            &admitted,
-                            self.vad.report,
-                            &mut self.first_failure_observations,
-                            self.policy,
-                            &mut self.quality,
-                        )
-                    } else {
+            |stage| {
+                // Partial preparation still visits every retirement stage, but
+                // absence of an owner is not an executed stop broadcast.
+                if stage == Retirement::StopMeasurement && self.measurement.is_none() {
+                    return Ok(());
+                }
+                self.retirement_observation.observe(stage, || match stage {
+                    Retirement::Observe => {
+                        if self.recorder_admitted
+                            && let Some(admitted) = &self.vad.admission
+                        {
+                            let admitted = admitted.current.clone();
+                            let health = match self.vad.current_health() {
+                                Ok(health) => health,
+                                Err(error) => {
+                                    latch_failure_observations(
+                                        &mut self.first_failure_observations,
+                                        self.vad.report,
+                                        self.vad.last_health.as_ref(),
+                                    );
+                                    return Err(error);
+                                }
+                            };
+                            validate_health_with_policy(
+                                &health,
+                                &admitted,
+                                self.vad.report,
+                                &mut self.first_failure_observations,
+                                self.policy,
+                                &mut self.quality,
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Retirement::ObserveFinal => {
+                        let result = self.vad.observe_final();
+                        if result.is_err() {
+                            latch_failure_observations(
+                                &mut self.first_failure_observations,
+                                self.vad.report,
+                                self.vad.last_health.as_ref(),
+                            );
+                        }
+                        result
+                    }
+                    Retirement::StopSource => {
+                        if let Some(source) = &self.vad.playback {
+                            source.request_stop();
+                        }
                         Ok(())
                     }
-                }
-                Retirement::ObserveFinal => {
-                    let result = self.vad.observe_final();
-                    if result.is_err() {
-                        latch_failure_observations(
-                            &mut self.first_failure_observations,
-                            self.vad.report,
-                            self.vad.last_health.as_ref(),
-                        );
+                    Retirement::StopMeasurement => {
+                        if let Some(owner) = &mut self.measurement {
+                            let result = owner.request_stop();
+                            self.measurement_retirement = Some(owner.retirement_observation());
+                            result?;
+                        }
+                        Ok(())
                     }
-                    result
-                }
-                Retirement::StopSource => {
-                    if let Some(source) = &self.vad.playback {
-                        source.request_stop();
+                    Retirement::JoinSource => self.vad.stop_source(),
+                    Retirement::CloseGate => self.vad.close_gate(),
+                    Retirement::ShutdownHost => self.vad.shutdown_host(),
+                    Retirement::Invalidate => self.vad.invalidate_admission(),
+                    Retirement::Retire => self.vad.retire_endpoint(),
+                    Retirement::FinishMeasurement => {
+                        if let Some(mut owner) = self.measurement.take() {
+                            let result = owner.finish();
+                            self.measurement_retirement = Some(owner.retirement_observation());
+                            self.measurement_outcome = Some(result?);
+                        }
+                        Ok(())
                     }
-                    Ok(())
-                }
-                Retirement::StopMeasurement => {
-                    if let Some(owner) = &mut self.measurement {
-                        owner.request_stop()?;
-                    }
-                    Ok(())
-                }
-                Retirement::JoinSource => self.vad.stop_source(),
-                Retirement::CloseGate => self.vad.close_gate(),
-                Retirement::ShutdownHost => self.vad.shutdown_host(),
-                Retirement::Invalidate => self.vad.invalidate_admission(),
-                Retirement::Retire => self.vad.retire_endpoint(),
-                Retirement::FinishMeasurement => {
-                    if let Some(mut owner) = self.measurement.take() {
-                        self.measurement_outcome = Some(owner.finish()?);
-                    }
-                    Ok(())
-                }
+                })
             },
             &mut failures,
         );
@@ -4566,6 +4616,51 @@ mod tests {
                 _ => assert_eq!(failures, "original collection failure"),
             }
         }
+    }
+
+    #[test]
+    fn retirement_windows_retain_close_panic_and_broadcast_error_without_reordering() {
+        let mut evidence = RetirementObservation::default();
+        let mut failures = None;
+        let mut stages = Vec::new();
+        retire_with_route(
+            super::super::vad_route::RouteKind::Microphone,
+            |stage| {
+                evidence.observe(stage, || {
+                    stages.push(stage);
+                    if stage == Retirement::CloseGate {
+                        panic!("injected close panic");
+                    }
+                    ensure!(
+                        stage != Retirement::StopMeasurement,
+                        "injected broadcast failure"
+                    );
+                    Ok(())
+                })
+            },
+            &mut failures,
+        );
+        let json = serde_json::to_value(evidence).unwrap();
+        assert_eq!(json["close_gate"]["outcome"], "panicked");
+        assert_eq!(
+            json["stop_measurement_broadcast"]["outcome"],
+            "returned_error"
+        );
+        assert!(json["admitted_microphone_stamp"].is_null());
+        let index = |stage| stages.iter().position(|found| *found == stage).unwrap();
+        assert!(index(Retirement::CloseGate) < index(Retirement::StopSource));
+        for join in [
+            Retirement::ShutdownHost,
+            Retirement::JoinSource,
+            Retirement::FinishMeasurement,
+        ] {
+            assert!(index(Retirement::StopSource) < index(join));
+            assert!(index(Retirement::StopMeasurement) < index(join));
+        }
+        assert_eq!(stages.last(), Some(&Retirement::Retire));
+        let failures = failures.unwrap();
+        assert!(failures.contains("CloseGate: cleanup stage panicked"));
+        assert!(failures.contains("StopMeasurement: injected broadcast failure"));
     }
 
     #[test]
