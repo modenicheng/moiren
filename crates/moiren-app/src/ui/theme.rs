@@ -58,7 +58,6 @@ pub const LIBRARY_WIDTH: f32 = 210.;
 pub const LIBRARY_RAIL_WIDTH: f32 = 44.;
 pub const INSPECTOR_WIDTH: f32 = 280.;
 pub const NODE_WIDTH: f32 = 270.;
-pub const NODE_WIDE_WIDTH: f32 = 270.;
 pub const NODE_HEIGHT: f32 = 112.;
 pub const NODE_SOURCE: Hsla = hsla(0.439203, 0.643725, 0.515686, 1.);
 pub const NODE_DSP: Hsla = hsla(0.722741, 0.781022, 0.731373, 1.);

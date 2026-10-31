@@ -6,6 +6,8 @@ mod core;
 mod exports;
 mod graph;
 mod jobs;
+#[cfg(test)]
+mod jobs_tests;
 mod latency;
 mod mailbox;
 mod managed;
@@ -220,7 +222,11 @@ impl ServiceContext {
             && self.core.generation() == generation
     }
 
-    /// Refusal preserves ownership; callers must retain an owned session job.
+    /// Test intake for the deferred-job budget: production paths reserve
+    /// cleanup storage first (`try_reserve_cleanup`) and submit through the
+    /// pool directly. Refusal preserves ownership; callers must retain an
+    /// owned session job.
+    #[cfg(test)]
     pub fn try_defer(
         &mut self,
         priority: JobPriority,
@@ -255,6 +261,9 @@ impl ServiceContext {
         self.pending.push_back((JobPriority::Cleanup, job, permit));
         Ok(())
     }
+    /// Drain probe for the tests above; production observes idleness through
+    /// `JobPool::is_idle` and the driver's `is_drained` instead.
+    #[cfg(test)]
     pub fn pending_jobs(&self) -> usize {
         self.pending.len()
     }

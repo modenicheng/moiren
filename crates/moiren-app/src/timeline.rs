@@ -2,6 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
+/// Fixture epoch source for the in-crate graph compile tests. This crate's
+/// production paths never build a `CompileConfig` themselves — the managed
+/// engine host owns real epochs — so nothing here has a production caller.
 pub(crate) fn next_epoch() -> Option<u64> {
     allocate_epoch(&NEXT_EPOCH)
 }

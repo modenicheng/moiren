@@ -642,7 +642,7 @@ fn render(service: &ServiceGraph) -> Vec<f32> {
         runtime::EngineConfig,
     };
     let preparation = service.preparation();
-    let (input, sink) = preparation.io_nodes().expect("io nodes");
+    let (input, sink) = preparation.primary_io_nodes().expect("io nodes");
     let (writer, mut output) = audio_bridge(2, 32, 8 * 1024 * 1024).unwrap();
     let mut bindings = moiren_engine::compiler::NodeBindings::new();
     bindings
@@ -868,7 +868,7 @@ fn bus_input_and_additional_gain_nodes_are_compiled_with_individual_values() {
     assert_eq!(render(&service), vec![0.75; 16]);
 }
 #[test]
-fn legacy_single_io_restriction_does_not_limit_managed_graph_preparation() {
+fn extra_source_prepares_from_the_primary_pair_without_mutating_active_state() {
     let mut service = ServiceGraph::default();
     service
         .edit(GraphEdit::AddNode {
@@ -876,13 +876,6 @@ fn legacy_single_io_restriction_does_not_limit_managed_graph_preparation() {
             channels: 2,
         })
         .unwrap();
-    assert!(
-        service
-            .preparation()
-            .io_nodes()
-            .unwrap_err()
-            .contains("one Source and one Sink node")
-    );
     assert!(service.preparation().primary_io_nodes().is_ok());
     assert_eq!(service.snapshot.graph.nodes().len(), 5);
     assert_eq!(service.snapshot.active_revision, None);

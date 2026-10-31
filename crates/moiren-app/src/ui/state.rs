@@ -202,27 +202,35 @@ impl SelectionState {
             self.output_initialized = true;
         }
     }
+    // Row-index probes over the display catalogs. Production renders rows
+    // from the catalog itself; these exist so the state tests can observe
+    // which row a stored identity resolves to after a refresh.
+    #[cfg(test)]
     pub fn input_index(&self, catalog: &DeviceCatalog) -> Option<usize> {
         input_rows(catalog, self.backend)
             .iter()
             .position(|row| Some(&row.endpoint_id) == self.input_id.as_ref())
     }
+    #[cfg(test)]
     pub fn output_index(&self, catalog: &DeviceCatalog) -> Option<usize> {
         output_rows(catalog, self.backend)
             .iter()
             .position(|row| Some(&row.endpoint_id) == self.output_id.as_ref())
     }
+    #[cfg(test)]
     pub fn process_index(&self, catalog: &DeviceCatalog) -> Option<usize> {
         catalog
             .processes
             .iter()
             .position(|p| Some((p.pid, p.creation_time_100ns)) == self.process_key)
     }
+    #[cfg(test)]
     pub fn select_process(&mut self, catalog: &DeviceCatalog, row: Option<usize>) {
         self.process_key = row
             .and_then(|i| catalog.processes.get(i))
             .map(|p| (p.pid, p.creation_time_100ns));
     }
+    #[cfg(test)]
     pub fn input_selection(&self, catalog: &DeviceCatalog) -> Option<InputSelection> {
         match self.process_key {
             Some(key) => catalog

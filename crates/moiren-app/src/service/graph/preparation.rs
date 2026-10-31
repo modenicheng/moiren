@@ -1,8 +1,10 @@
 use super::*;
 
 impl GraphPreparation {
-    /// Translate resource intent for every IO node. The first stable sink owns
-    /// the render clock; further sinks follow it through native output bridges.
+    /// Default-settings translation used only by the tests; production always
+    /// carries the effective audio settings through
+    /// [`Self::configured_engine_project`].
+    #[cfg(test)]
     pub fn engine_project(
         &self,
         max_block_frames: usize,
@@ -284,30 +286,6 @@ impl GraphPreparation {
         self.exports
             .iter()
             .find(|export| export.enabled && export.binding == Some(node))
-    }
-    pub fn io_nodes(&self) -> Result<(NodeId, NodeId), String> {
-        self.validate_state()?;
-        let sources: Vec<_> = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Source)
-            .collect();
-        let sinks: Vec<_> = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Sink)
-            .collect();
-        if sources.len() != 1 || sinks.len() != 1 {
-            return Err("The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet".into());
-        }
-        if self.graph.get_node(sources[0].id()).unwrap().channels() != 2
-            || self.graph.get_node(sinks[0].id()).unwrap().channels() != 2
-        {
-            return Err("The current device bridge only supports stereo nodes".into());
-        }
-        Ok((sources[0].id(), sinks[0].id()))
     }
     pub fn gain_pan_nodes(&self) -> Option<(NodeId, NodeId)> {
         Some((

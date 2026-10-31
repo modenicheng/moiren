@@ -195,7 +195,6 @@ pub(in crate::ui) fn node_drag_preview(
         icon: Some(icon),
         x: PREVIEW_PORT_PAD,
         y: PREVIEW_PORT_PAD,
-        wide: false,
         input_count,
         input_ports: Vec::new(),
         output_port: None,

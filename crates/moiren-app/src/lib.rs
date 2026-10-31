@@ -227,6 +227,10 @@ impl OfflineApp {
         Ok(report)
     }
 
+    /// Embedder/offline-demo control surface: ramps the master gain without
+    /// the GUI. The `--gain` CLI demo does not go through here — it passes its
+    /// value via `config.initial_gain` — but the integration tests drive this
+    /// to observe the live-parameter protocol end to end.
     pub fn set_gain(&mut self, value: f64, ramp_frames: u32) -> Result<ControlReply, AppError> {
         let request_id = self.next_request;
         self.next_request = self
@@ -253,6 +257,9 @@ impl OfflineApp {
         }
         Ok(reply)
     }
+    /// Observation side of the offline control surface: applied-control
+    /// receipts and latest boundary snapshots per direction. Unused by the
+    /// CLI demo; kept for embedders and the integration tests.
     pub fn poll_applied(&mut self) -> Option<ControlReply> {
         self.control.poll_applied()
     }

@@ -147,23 +147,6 @@ fn unread_snapshots_do_not_stall_generation_and_exit() {
     assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Exited);
 }
 #[test]
-fn deferred_jobs_have_fixed_capacity_and_preserve_refusals() {
-    let mut c = ServiceContext::default();
-    for _ in 0..MAX_PENDING_JOBS {
-        c.try_defer(JobPriority::Cleanup, Box::new(|| {}))
-            .unwrap_or_else(|_| panic!("space"));
-    }
-    let (tx, rx) = mpsc::channel();
-    let probe = DropProbe(tx);
-    let (_, job) = c
-        .try_defer(JobPriority::Cleanup, Box::new(move || drop(probe)))
-        .err()
-        .unwrap();
-    assert!(rx.try_recv().is_err());
-    thread::spawn(job).join().unwrap();
-    assert_ne!(rx.recv().unwrap(), thread::current().id());
-}
-#[test]
 fn all_sixty_four_queued_requests_are_drained_in_bounded_rounds() {
     let (tx, rx) = mpsc::channel();
     let runtime = ServiceRuntime::spawn_with_driver(AckDriver { ack: tx }).unwrap();
@@ -241,6 +224,13 @@ fn bounded_rounds_continue_until_backlog_is_empty() {
 struct OwnedPrepared {
     probe: DropProbe,
     slot: DeferredPermit,
+}
+/// Local completion envelope: the service protocol only sees driver results
+/// through `CompletionQueue`, so the test driver owns the concrete shape
+/// (generation + owned value) that a real backend would hand over.
+struct JobResult<T> {
+    generation: SessionGeneration,
+    value: T,
 }
 struct DisposalDriver {
     queue: Option<CompletionQueue<JobResult<Result<OwnedPrepared, OwnedPrepared>>>>,
@@ -359,19 +349,6 @@ fn stale_results_are_disposed_on_cleanup_worker() {
 #[test]
 fn failed_stale_results_are_disposed_on_cleanup_worker() {
     disposed_stale_or_failed(true);
-}
-#[test]
-fn reserved_cleanup_survives_full_service_storage() {
-    let mut c = ServiceContext::default();
-    let reserved = c.try_reserve_cleanup().unwrap();
-    for _ in 0..15 {
-        c.try_defer(JobPriority::Prepare, Box::new(|| {}))
-            .unwrap_or_else(|_| panic!("space"));
-    }
-    assert!(matches!(c.try_reserve_cleanup(), Err(DispatchError::Busy)));
-    c.defer_reserved_cleanup(reserved, Box::new(|| {}))
-        .unwrap_or_else(|_| panic!("reserved space"));
-    assert_eq!(c.pending_jobs(), 16);
 }
 #[test]
 fn exit_waits_for_blocked_prepare_result_and_cleanup() {
