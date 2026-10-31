@@ -132,7 +132,6 @@ fn inspector_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut 
 /// page switch with a selection held must repaint the inspector into the new
 /// page's inspector on that notification alone.
 #[gpui_kit::test]
-#[ignore = "InspectorKey omits presentation.page while page_inspector() switches content on it; switching pages with a selection keeps the previous page's inspector (verified: the rebuild counter holds and the node editor survives the switch) until another key input moves"]
 fn inspector_panel_follows_the_active_page_with_a_selection_held(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     open_graph_page(cx);
@@ -261,6 +260,67 @@ fn session_node_ids(
         .iter()
         .map(|node| node.id)
         .collect()
+}
+
+/// The selected fact the session-node row wrapper carries for tests; the
+/// selected button variant itself is pure paint no snapshot can see.
+fn row_selected(cx: &mut VisualTestContext, id: moiren_core::graph::NodeId) -> Option<bool> {
+    cx.update(|window, _| {
+        window
+            .find(SharedString::from(format!("locate-row-{id:?}")))
+            .selected()
+    })
+}
+
+/// The session-node list styles each row from `selected_node`, so a selection
+/// change with no publish behind it must rebuild the library exactly once and
+/// move the selected style to the newly selected row.
+#[gpui_kit::test]
+fn library_panel_repaints_the_session_selection_without_a_publish(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    open_graph_page(cx);
+    let nodes = view.update(cx, |shell, cx| session_node_ids(shell, cx));
+    let (first, second) = (nodes[0], nodes[1]);
+
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(first);
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert_eq!(
+        row_selected(cx, first),
+        Some(true),
+        "the selected row must paint the selected style"
+    );
+    assert_eq!(
+        row_selected(cx, second),
+        Some(false),
+        "unselected rows must not paint the selected style"
+    );
+
+    burn_in(&view, |cx| library_rebuilds(&view, cx), cx);
+    let before = library_rebuilds(&view, cx);
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(second);
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert_eq!(
+        library_rebuilds(&view, cx),
+        before + 1,
+        "the selection edit must rebuild the library exactly once"
+    );
+    assert_eq!(
+        row_selected(cx, first),
+        Some(false),
+        "the previous row must lose the selected style"
+    );
+    assert_eq!(
+        row_selected(cx, second),
+        Some(true),
+        "the selected style must follow the selection"
+    );
+    finish_service(runtime);
 }
 
 /// The rail shares the library's key, so the same contract holds: key-neutral

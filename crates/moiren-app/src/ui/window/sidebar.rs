@@ -11,8 +11,8 @@ use crate::ui::shared_frame::SharedFrame;
 use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_splice};
 
 /// The inspector panel behind a [`PanelHost`]: rebuilt only when its inputs
-/// changed — the published snapshot, the selection, the active editing
-/// session, and the graph/library mode flags.
+/// changed — the published snapshot, the selection, the active page, the
+/// active editing session, and the graph/library mode flags.
 pub(in crate::ui::window) struct InspectorPanel;
 
 #[derive(PartialEq)]
@@ -20,6 +20,11 @@ pub(in crate::ui::window) struct InspectorKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     selected_node: Option<moiren_core::graph::NodeId>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
+    // `page_inspector` switches its whole tree on the active page (graph/mixer
+    // node editors vs the matrix router vs the device inspector), so a page
+    // switch must rebuild even when a selection rides along unchanged; keyed
+    // without it the previous page's inspector froze until the next edit.
+    page: Page,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
     node_name_editing: Option<moiren_core::graph::NodeId>,
@@ -44,6 +49,7 @@ impl CachedPanel for InspectorPanel {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
             selected_node: shell.selected_node,
             selected_route: shell.selected_route,
+            page: shell.presentation.page,
             device_tab: shell.device_tab,
             selected_device: shell.selected_device.clone(),
             node_name_editing: shell.node_name_editing,
@@ -138,6 +144,12 @@ pub(in crate::ui::window) struct LibraryPanel;
 #[derive(PartialEq)]
 pub(in crate::ui::window) struct LibraryKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
+    // The session-node list styles each row as selected from this field
+    // (graph::library), so a selection change must rebuild the list even when
+    // no publish rides along; keyed without it the selected style froze on
+    // the previous row until the next snapshot. The rail renders no selection
+    // and merely rides along — selection changes are discrete user actions.
+    selected_node: Option<moiren_core::graph::NodeId>,
     pending_spawn: bool,
     compact: bool,
     preferences: crate::project::AppPreferences,
@@ -146,6 +158,7 @@ pub(in crate::ui::window) struct LibraryKey {
 fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
     LibraryKey {
         snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
+        selected_node: shell.selected_node,
         pending_spawn: shell.pending_node_spawn.is_some(),
         compact: shell.compact,
         preferences: shell.preferences.clone(),
