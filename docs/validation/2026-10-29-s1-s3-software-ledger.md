@@ -63,6 +63,21 @@ This makes transformation plausible for that mismatch, not a measured SRC
 history, complete-set/continuity result or replacement quality pass. Other
 windows are not evaluated and no native run or production change is made.
 
+The separately frozen [both-minimum stable-binding control](2026-10-31-event-arm-both-minimum.md)
+adds only the source minimum-period request under unchanged611/frozen9968505.
+Playback and MIC both actually negotiate144 frames; source submission,
+collection and cleanup complete with10111 stored packets and zero reported
+drop/silence. Quality remains incomplete with14 unknown boundary observations.
+Offline nominal analysis exits1 with14 unique identities/15 missing and9686
+native-QPC policy violations despite complete stored coverage; these do not
+prove marker/frame loss or an improvement over the predecessor. Its44-payload
+archive is independently verified before/after guarded exact-task removal.
+Matching TMFs decode159 events with reported loss/format/unknown0, but schema2
+still refuses missing rebase/no-copy witnesses. The older609 both-minimum
+failure and both611 predecessor outcomes remain intact. No timer fix, default
+promotion, native final-QUERY verification, device floor or physical acceptance
+follows; S1-S3 remain incomplete.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie
