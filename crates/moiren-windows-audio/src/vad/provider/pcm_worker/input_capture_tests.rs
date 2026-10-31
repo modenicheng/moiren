@@ -418,3 +418,6 @@ fn input_capture_pre_first_packet_reset_can_arm_fresh_but_later_reset_seals() {
 
 #[path = "input_capture_race_tests.rs"]
 mod race_tests;
+
+#[path = "input_capture_reopen_tests.rs"]
+mod reopen_tests;

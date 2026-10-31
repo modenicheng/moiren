@@ -201,6 +201,9 @@ impl CaptureWorker {
         }
     }
     pub(super) fn bind(&mut self, identity: VadInputCaptureIdentity) {
+        // Each bind represents a new PcmOwner, even if its scalar identity
+        // matches. Only pre-first-data startup may rebind an open segment.
+        self.seal("owner_reopened");
         self.owner = Some(identity);
     }
     pub(super) fn publication_current(&self, state: &SessionState, epoch: u64) -> bool {

@@ -5,6 +5,14 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [raw capture owner-reopen receipt](2026-11-01-input-owner-reopen.md) repairs
+a separate segment-attribution defect: a second actual owner bind now seals
+retained raw evidence even when every scalar identity field matches. Original
+bytes/identity and earlier seals survive, pre-first-data rebinding remains
+allowed, and real PCM pumping is unchanged. Fresh workspace all-target/all-feature
+tests pass3039 with10 ignored; this is software verification, not new native
+waveform or physical acceptance and not approval of an additional fixture.
+
 The [raw capture publication-race receipt](2026-11-01-input-publication-race.md)
 repairs a reproduced pre-decode/raw-record versus post-write admission race.
 Actual successful writes with an observed identity change retain their bytes
