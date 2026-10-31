@@ -37,6 +37,7 @@ struct PlaybackCopyIdentity {
 };
 
 struct PlaybackCopyTime { uint64_t Qpc, Frequency; };
+struct PlaybackCopyScan { uint64_t Sequence, CallbackQpc, BeforeQpc, AfterQpc; };
 enum class PlaybackCopySeal : uint32_t { None, Capacity, IdentityChanged, NotAdmitted };
 struct PlaybackCopyPrefix {
     uint64_t Sequence, CallbackQpc, BeforeQpc, AfterQpc;
@@ -67,10 +68,18 @@ struct PlaybackCopyDiagnostic {
     uint32_t SourceNonzeroBytes, DestinationNonzeroBytes;
     uint32_t SourceNonzeroFrames, DestinationNonzeroFrames, DifferentBytes;
     PlaybackCopyPrefix First, FirstNonzero, FirstMismatch;
+    PlaybackCopyScan FirstScan, LastScan;
+    uint32_t AcceptedCopied, SequenceGaps;
+    bool CoverageCounterSaturated;
     PlaybackCopySeal Seal;
     bool Observed, InterimExported, SealedExported;
 
     void Reset() { *this = {}; }
+    void IncrementCoverage(uint32_t& value)
+    {
+        if (value == ~uint32_t{0}) { CoverageCounterSaturated = true; }
+        else { ++value; }
+    }
     void SealChanged(const PlaybackCopyIdentity& identity)
     {
         if (Observed && Seal == PlaybackCopySeal::None && !Identity.Same(identity)) {
@@ -131,6 +140,15 @@ struct PlaybackCopyDiagnostic {
             }
         }
         const auto after = clock();
+        const PlaybackCopyScan scan = {sequence, callbackQpc, before.Qpc, after.Qpc};
+        if (AcceptedCopied == 0) { FirstScan = scan; }
+        else if (LastScan.Sequence == ~uint64_t{0} || sequence != LastScan.Sequence + 1) {
+            IncrementCoverage(SequenceGaps);
+        }
+        LastScan = scan;
+        IncrementCoverage(AcceptedCopied);
+        // First/last brackets describe scanned calls, NOT all-interval coverage.
+        // A sequence gap means nonconsecutive observations, never silence.
         for (uint32_t kind = 0; kind < 3; ++kind) {
             if (started[kind]) { prefixes[kind]->AfterQpc = after.Qpc; }
         }

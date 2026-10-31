@@ -219,23 +219,23 @@ static void TracePendingPlaybackCopyDiagnostic(VAD_SHARED* shared,
     KeReleaseSpinLock(&shared->Lock, irql);
     if (!pending) { return; }
     const auto& id = diagnostic.Identity; // Stored epoch survives Stop/shape clearing.
-    // Twelve fixed fragments, joined by stored identity + revision, never by
+    // Fifteen fixed fragments, joined by stored identity + revision, never by
     // current stream shape. Prefix words are little-endian actual PCM bytes;
     // this opt-in diagnostic is post-copy only and is not physical qualification.
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
         "Playback copy shape endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u format=%u channels=%u frames=%u align=%u frequency=%I64u observed=%u sealed=%u",
-        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 0u, 12u,
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 0u, 15u,
         id.Format, id.Channels, id.Frames, id.BlockAlign, diagnostic.Frequency,
         static_cast<ULONG>(diagnostic.Observed), static_cast<ULONG>(diagnostic.Seal != vad::PlaybackCopySeal::None));
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
         "Playback copy counts endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u inspected_frames=%u inspected_bytes=%u source_nonzero_bytes=%u destination_nonzero_bytes=%u source_nonzero_frames=%u destination_nonzero_frames=%u different_bytes=%u",
-        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 1u, 12u,
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 1u, 15u,
         diagnostic.InspectedFrames, diagnostic.InspectedBytes, diagnostic.SourceNonzeroBytes,
         diagnostic.DestinationNonzeroBytes, diagnostic.SourceNonzeroFrames,
         diagnostic.DestinationNonzeroFrames, diagnostic.DifferentBytes);
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
         "Playback copy bounds endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u cap_frames=%u seal_reason=%u after_copy=%u before_source_known=%u",
-        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 2u, 12u,
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 2u, 15u,
         vad::PlaybackCopyDiagnostic::FrameCap, static_cast<ULONG>(diagnostic.Seal), 1u, 0u);
     const vad::PlaybackCopyPrefix* prefixes[] = {
         &diagnostic.First, &diagnostic.FirstNonzero, &diagnostic.FirstMismatch};
@@ -244,20 +244,35 @@ static void TracePendingPlaybackCopyDiagnostic(VAD_SHARED* shared,
         const ULONG fragment = 3 + kind * 3;
         VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
             "Playback copy prefix_meta endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u sequence=%I64u callback_qpc=%I64u before_qpc=%I64u after_qpc=%I64u frame_offset=%u packet_byte_offset=%u mdl_byte_offset=%u",
-            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment, 12u,
+            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment, 15u,
             item.Sequence, item.CallbackQpc, item.BeforeQpc, item.AfterQpc,
             item.FrameOffset, item.PacketByteOffset, item.MdlByteOffset);
         VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
             "Playback copy prefix_source endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u bytes=%u observed=%u word0=%u word1=%u word2=%u word3=%u",
-            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment + 1, 12u,
+            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment + 1, 15u,
             item.Bytes, static_cast<ULONG>(item.Observed), item.Word(false, 0), item.Word(false, 1),
             item.Word(false, 2), item.Word(false, 3));
         VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
             "Playback copy prefix_destination endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u packet_inspected_frames=%u word0=%u word1=%u word2=%u word3=%u",
-            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment + 2, 12u,
+            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment + 2, 15u,
             item.PacketInspectedFrames, item.Word(true, 0), item.Word(true, 1),
             item.Word(true, 2), item.Word(true, 3));
     }
+    const auto& first = diagnostic.FirstScan;
+    const auto& last = diagnostic.LastScan;
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Playback copy coverage_first endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u sequence=%I64u callback_qpc=%I64u before_qpc=%I64u after_qpc=%I64u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 12u, 15u,
+        first.Sequence, first.CallbackQpc, first.BeforeQpc, first.AfterQpc);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Playback copy coverage_last endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u sequence=%I64u callback_qpc=%I64u before_qpc=%I64u after_qpc=%I64u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 13u, 15u,
+        last.Sequence, last.CallbackQpc, last.BeforeQpc, last.AfterQpc);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Playback copy coverage_counts endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u accepted_copied=%u sequence_gaps=%u counter_saturated=%u all_interval_coverage=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 14u, 15u,
+        diagnostic.AcceptedCopied, diagnostic.SequenceGaps,
+        static_cast<ULONG>(diagnostic.CoverageCounterSaturated), 0u);
 }
 #endif
 
