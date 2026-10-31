@@ -536,6 +536,9 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             }),
             on_camera_fit: std::rc::Rc::new(on_camera_fit),
         },
+        // Shared with the meter frame: its overlay repaints bars at this
+        // frame's geometry between cache rebuilds.
+        shell.graph_canvas_frame.clone(),
     );
 
     div()

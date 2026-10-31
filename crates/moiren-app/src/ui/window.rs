@@ -172,6 +172,10 @@ pub struct StudioShell {
     mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
     graph_meter_frame: Entity<graph::meter_frame::GraphMeterFrame>,
     graph_controls: Entity<graph::meter_frame::GraphControls>,
+    /// The graph canvas's most recent projected frame, shared with the meter
+    /// frame's overlay paint. Refreshed by the canvas prepaint on cache
+    /// rebuilds; between them the geometry the cached canvas painted stands.
+    graph_canvas_frame: pages::graph_canvas_view::PreparedFrame,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     observation_nodes: Option<(
@@ -375,6 +379,7 @@ impl StudioShell {
             mixer_frame,
             graph_meter_frame,
             graph_controls,
+            graph_canvas_frame: Default::default(),
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             observation_nodes: None,
