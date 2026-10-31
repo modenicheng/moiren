@@ -88,6 +88,9 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
         shared->UnservedDiagnostics[reserved].Reset(0);
         shared->ClockDiagnostics[reserved].Reset(0);
         shared->CaptureDiagnostics[reserved].Reset(0);
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+        shared->PlaybackCopyDiagnostics[reserved].Reset();
+#endif
         slot.StableId = request.StableId;
         slot.AllowDefault = request.AllowDefault;
         RtlCopyMemory(slot.Name, request.Name, sizeof(request.Name));

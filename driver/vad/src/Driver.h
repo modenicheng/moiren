@@ -11,6 +11,7 @@
 #include "UnservedDiagnostics.h"
 #include "audio/ClockDiagnostic.h"
 #include "audio/CaptureDiagnostic.h"
+#include "PlaybackCopyDiagnostic.h"
 
 extern const GUID VadControlInterface;
 
@@ -30,6 +31,9 @@ struct VAD_SHARED {
     vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     vad::audio::ClockDiagnostic ClockDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     vad::audio::CaptureDiagnostic CaptureDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+    vad::PlaybackCopyDiagnostic PlaybackCopyDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+#endif
     WDFDEVICE Children[MOIREN_VAD_MAX_ENDPOINTS]; // Owns one WDF reference.
     WDFQUEUE PcmQueues[MOIREN_VAD_MAX_ENDPOINTS];
     EX_RUNDOWN_REF PcmRundown;

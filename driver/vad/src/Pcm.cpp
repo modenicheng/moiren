@@ -383,6 +383,16 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                 header.Qpc = qpc;
                 RtlCopyMemory(context->Buffer, &header, sizeof(header));
                 RtlCopyMemory(static_cast<PUCHAR>(context->Buffer) + sizeof(header), buffer, bytes);
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+                shared->PlaybackCopyDiagnostics[index].Observe(
+                    vad::PlaybackCopyIdentity::From(slot, frames, blockAlign), buffer,
+                    static_cast<PUCHAR>(context->Buffer) + sizeof(header), sequence, qpc, [] {
+                        LARGE_INTEGER frequency;
+                        const auto tick = KeQueryPerformanceCounter(&frequency);
+                        return vad::PlaybackCopyTime{static_cast<uint64_t>(tick.QuadPart),
+                            static_cast<uint64_t>(frequency.QuadPart)};
+                    });
+#endif
                 completion.Information = sizeof(header) + bytes;
             }
             completion.Status = STATUS_SUCCESS;

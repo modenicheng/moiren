@@ -5,8 +5,10 @@
 VAD_PAGE static EVT_WDF_WORKITEM ControlWork;
 static EVT_WDF_REQUEST_CANCEL CancelControl;
 
-// Only the passive control path emits diagnostics. Audio callbacks retain two
-// fixed first observations; no PCM, user names, paths, or per-packet log stream.
+// Only the passive control path emits diagnostics. Audio callbacks retain
+// fixed first observations; no user names, paths, or per-packet log stream.
+// The default-off Playback copy build explicitly adds three paired <=16-byte
+// PCM prefixes for an owned deterministic fixture; ordinary diagnostics do not.
 static void TracePcmObservation(const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot,
     const vad::PcmDiagnostics& diagnostic, const vad::PcmTransferObservation& item,
     ULONG kind)
@@ -189,6 +191,76 @@ static void TracePendingCaptureDiagnostic(VAD_SHARED* shared,
     }
 }
 
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+static void TracePendingPlaybackCopyDiagnostic(VAD_SHARED* shared,
+    const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (snapshot.Intent != MOIREN_VAD_INTENT_PLAYBACK) { return; }
+    const bool traceEnabled = WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, VAD_CONTROL);
+    vad::PlaybackCopyDiagnostic diagnostic = {};
+    bool pending = false;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
+        const auto& slot = shared->Slots[i];
+        if (slot.Id == snapshot.EndpointId && slot.Session == snapshot.SessionEpoch) {
+            const auto align = slot.Channels *
+                (slot.SampleFormat == MOIREN_VAD_FORMAT_PCM16 ? 2u : 4u);
+            auto& retained = shared->PlaybackCopyDiagnostics[i];
+            retained.SealCurrent(
+                vad::PlaybackCopyIdentity::From(slot, slot.PacketFrames, align),
+                slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0 &&
+                    slot.GateOpen != 0 && slot.StreamState == MOIREN_VAD_STREAM_RUNNING);
+            if (traceEnabled) { pending = retained.Take(diagnostic); }
+            break;
+        }
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    if (!pending) { return; }
+    const auto& id = diagnostic.Identity; // Stored epoch survives Stop/shape clearing.
+    // Twelve fixed fragments, joined by stored identity + revision, never by
+    // current stream shape. Prefix words are little-endian actual PCM bytes;
+    // this opt-in diagnostic is post-copy only and is not physical qualification.
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Playback copy shape endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u format=%u channels=%u frames=%u align=%u frequency=%I64u observed=%u sealed=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 0u, 12u,
+        id.Format, id.Channels, id.Frames, id.BlockAlign, diagnostic.Frequency,
+        static_cast<ULONG>(diagnostic.Observed), static_cast<ULONG>(diagnostic.Seal != vad::PlaybackCopySeal::None));
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Playback copy counts endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u inspected_frames=%u inspected_bytes=%u source_nonzero_bytes=%u destination_nonzero_bytes=%u source_nonzero_frames=%u destination_nonzero_frames=%u different_bytes=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 1u, 12u,
+        diagnostic.InspectedFrames, diagnostic.InspectedBytes, diagnostic.SourceNonzeroBytes,
+        diagnostic.DestinationNonzeroBytes, diagnostic.SourceNonzeroFrames,
+        diagnostic.DestinationNonzeroFrames, diagnostic.DifferentBytes);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Playback copy bounds endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u cap_frames=%u seal_reason=%u after_copy=%u before_source_known=%u",
+        id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, 2u, 12u,
+        vad::PlaybackCopyDiagnostic::FrameCap, static_cast<ULONG>(diagnostic.Seal), 1u, 0u);
+    const vad::PlaybackCopyPrefix* prefixes[] = {
+        &diagnostic.First, &diagnostic.FirstNonzero, &diagnostic.FirstMismatch};
+    for (ULONG kind = 0; kind < 3; ++kind) {
+        const auto& item = *prefixes[kind];
+        const ULONG fragment = 3 + kind * 3;
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Playback copy prefix_meta endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u sequence=%I64u callback_qpc=%I64u before_qpc=%I64u after_qpc=%I64u frame_offset=%u packet_byte_offset=%u mdl_byte_offset=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment, 12u,
+            item.Sequence, item.CallbackQpc, item.BeforeQpc, item.AfterQpc,
+            item.FrameOffset, item.PacketByteOffset, item.MdlByteOffset);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Playback copy prefix_source endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u bytes=%u observed=%u word0=%u word1=%u word2=%u word3=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment + 1, 12u,
+            item.Bytes, static_cast<ULONG>(item.Observed), item.Word(false, 0), item.Word(false, 1),
+            item.Word(false, 2), item.Word(false, 3));
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Playback copy prefix_destination endpoint=%I64u session=%I64u generation=%I64u gate=%I64u revision=%u fragment=%u fragments=%u packet_inspected_frames=%u word0=%u word1=%u word2=%u word3=%u",
+            id.Endpoint, id.Session, id.Generation, id.Gate, diagnostic.Revision, fragment + 2, 12u,
+            item.PacketInspectedFrames, item.Word(true, 0), item.Word(true, 1),
+            item.Word(true, 2), item.Word(true, 3));
+    }
+}
+#endif
+
 static void TracePendingUnservedDiagnostics(VAD_SHARED* shared,
     const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
 {
@@ -356,6 +428,9 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
             TracePendingClockDiagnostic(shared, snapshot);
             TracePendingCaptureDiagnostic(shared, snapshot);
             TracePendingUnservedDiagnostics(shared, snapshot);
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+            TracePendingPlaybackCopyDiagnostic(shared, snapshot);
+#endif
         }
         RtlCopyMemory(output, &snapshot, sizeof(snapshot));
         *information = sizeof(snapshot);

@@ -4,6 +4,12 @@
 #include "../src/UnservedDiagnostics.h"
 #include "../src/Lifecycle.h"
 #include "../src/Ownership.h"
+#if __has_include("../src/PlaybackCopyDiagnostic.h")
+#include "../src/PlaybackCopyDiagnostic.h"
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+#include "../src/audio/ClockDiagnostic.h"
+#endif
+#endif
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +56,10 @@ struct VAD_SHARED {
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS] = {};
     vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
     vad::audio::CaptureDiagnostic CaptureDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC && __has_include("../src/PlaybackCopyDiagnostic.h")
+    vad::PlaybackCopyDiagnostic PlaybackCopyDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    vad::audio::ClockDiagnostic ClockDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
+#endif
     vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
     Queue* PcmQueues[MOIREN_VAD_MAX_ENDPOINTS] = {};
     LONG PcmOnline = 1;
