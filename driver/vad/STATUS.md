@@ -6,6 +6,16 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
+The separate Interactive/Limited Shared-source control now retains nonzero
+Process Float32 PCM (287520 frames) and accepted provider PCM16 READ data
+(332640 frames), independently audited75/75. This is the existing
+`Playback -> Gain(0.5) -> MIC` holder, not exact S1; neither boundary records
+post-Gain MIC output. Capture is partial and the historical all-zero cause
+is not isolated by a matched session-only A/B. Six default roles and12 render
+master snapshots match; all four exact terminal tasks are removed after
+archive verification. No settings/default/budget or driver changes occur:
+[Shared VAD interactive control](../../docs/validation/2026-10-31-shared-vad-interactive-control.md).
+
 The separate physical target has the current main-PR51-integrated app
 `7023b9a` (main `5c925dd`),33780736 bytes, SHA256
 `AB67439510570A6F758E4B1E2A051D985F8E67087D174895124D52F880160C1C`,
