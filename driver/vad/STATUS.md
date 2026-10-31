@@ -6,6 +6,21 @@ verdict. Status updated 2026-10-31.
 
 ## Latest physical checkpoint - 2026-10-31
 
+The new Interactive/Limited exact `Playback -> unity Bus -> MIC` control
+`interactive-iobus1` completes source submission, collection and cleanup, with
+source480/MIC144 native frames and Engine32. Its acquired1456272-frame PCM is
+finite and nonzero, but quality fails: first MIC driver silence3 becomes9 and
+remains9 after removal. Host silence counters0 do not override driver silence.
+The unchanged exact-nominal method resolves only4/29 marker identities;
+25 missing detections and9616 packet-QPC policy invalidations are not proven
+marker/packet losses. The37-payload archive is root-verified, all four earlier
+loose artifacts match byte-for-byte, and independent acquired audit passes93/93
+after retaining an initial92/93 checker failure. The exact terminal task is
+removed after fresh guards; six default roles and12 render-master snapshots
+match, driver610/boot are unchanged and no owners/children remain. No physical
+output, calibrated latency, quality waiver or lower-default promotion follows:
+[interactive IO/Bus control](../../docs/validation/2026-10-31-interactive-iobus-control.md).
+
 The separate Interactive/Limited Shared-source control now retains nonzero
 Process Float32 PCM (287520 frames) and accepted provider PCM16 READ data
 (332640 frames), independently audited75/75. This is the existing
