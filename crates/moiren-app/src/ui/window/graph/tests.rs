@@ -666,6 +666,154 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
 /// applies its hits once per frame. With every meter at rest and no session
 /// running, the meter demand is idle — the gesture itself must arm the
 /// frame loop, or box select freezes until the next elapsed-time publish.
+/// With signal playing, starting a box select must not degrade the card
+/// meters to the elapsed-publication cadence: the drag arms frames, and the
+/// hot layer keeps pumping the ballistics every frame while the gesture
+/// holds.
+#[gpui_kit::test]
+fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = crate::ui::window::test_harness::shell_with_state(cx, state);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.compact = false;
+        cx.notify();
+    });
+    render(cx);
+    crate::ui::window::test_harness::settle_panels(cx);
+    let frame = canvas_frame(&view, cx);
+    let center = node_position(&frame, 0);
+    // Signal is flowing: the loop runs on meter motion alone.
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        render(cx);
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
+    });
+    // Start the box select away from the card and hold it: the hot layer's
+    // pump must keep advancing every frame while the gesture holds — the
+    // pump is what updates the card meters' readings.
+    let anchor = center + point(px(300.), px(200.));
+    cx.simulate_mouse_down(anchor, MouseButton::Left, Modifiers::default());
+    let pump_frames = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().graph_frames)
+    };
+    let mut pumped_rounds = 0;
+    let mut previous = pump_frames(&view, cx);
+    for step in 0..6 {
+        cx.simulate_mouse_move(
+            anchor + point(px(10. * (step as f32) + 10.), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        let frames = pump_frames(&view, cx);
+        if frames > previous {
+            pumped_rounds += 1;
+        }
+        previous = frames;
+    }
+    view.read_with(cx, |shell, _| {
+        assert!(shell.selection_drag.is_some(), "the gesture must be held");
+    });
+    assert!(
+        pumped_rounds >= 5,
+        "the meter pump stalled during the box select: {pumped_rounds}/6 rounds advanced"
+    );
+    // A stale platform visibility flag (fully occluded, then a fast alt-tab)
+    // must not blank the meter updates mid-gesture: the drag proves the
+    // window is interactive.
+    view.update(cx, |shell, cx| {
+        shell.presentation.visible = false;
+        shell.presentation.minimized = true;
+        cx.notify();
+    });
+    let mut previous = pump_frames(&view, cx);
+    let mut pumped_while_hidden = 0;
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            anchor + point(px(80. + 10. * (step as f32)), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        let frames = pump_frames(&view, cx);
+        if frames > previous {
+            pumped_while_hidden += 1;
+        }
+        previous = frames;
+    }
+    view.read_with(cx, |shell, cx| {
+        assert!(
+            shell.selection_drag.is_some(),
+            "the gesture must still hold"
+        );
+        assert!(
+            shell.state.read(cx).node_meters.status(node)
+                != crate::ui::monitoring::MeterStatus::Hidden,
+            "the node meters must not drop their subscriptions mid-gesture"
+        );
+    });
+    assert!(
+        pumped_while_hidden >= 3,
+        "the pump stalled while the visibility flag was stale: {pumped_while_hidden}/4 rounds"
+    );
+    cx.simulate_mouse_up(
+        anchor + point(px(120.), px(0.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
     cx: &mut gpui_kit::TestAppContext,

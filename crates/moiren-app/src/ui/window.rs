@@ -572,7 +572,12 @@ impl StudioShell {
     /// ballistics motion alone does not, because animation frames (not
     /// notify) carry it.
     pub(super) fn pump_meters(&mut self, cx: &mut Context<Self>) -> bool {
-        let visible = self.frames_eligible(cx);
+        // A gesture in flight proves the window is interactive even when the
+        // platform's visibility flag is stale (a full occlusion followed by
+        // a fast alt-tab can leave it false): the meter updates must not
+        // blank out mid-drag, or the readings freeze at the publication
+        // cadence.
+        let visible = self.frames_eligible(cx) || self.drag_active();
         let points = self.meter_points.get();
         // The legacy monitor meters only display where the strip has no node
         // level topic: a managed strip's meter comes from NodeMeters, and
