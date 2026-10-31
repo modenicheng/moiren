@@ -12,6 +12,16 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [2026-10-31 MIC minimum request](2026-10-31-microphone-minimum-period.md)
+adds an independent opt-in recorder request and exact native call receipts.
+The controlled MIC-only run completes with Playback480/MIC144, but retains
+tail silence and incomplete quality. The later
+[both-minimum acquisition](2026-10-31-both-minimum-period.md) negotiates144
+on both ends and genuinely fails collection/quality/native cleanup. Matching
+driver trace fragments attribute each retained first gate1->2 transition to
+EventDeadline clock rebase, not a format change; the underlying scheduling
+cause remains unknown. No lower default, target scan or physical pass follows.
+
 The [2026-10-31 pause-fence receipt](2026-10-31-vad-pause-fence.md) records
 three actual-routine cancellation/fencing RED cases, serialized drain/fence
 repair, bounded host/WSL/WDK/provider coverage and verified physical deployment
