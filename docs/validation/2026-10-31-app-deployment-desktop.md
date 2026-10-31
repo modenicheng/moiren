@@ -137,3 +137,66 @@ developed in an independent worktree. Smaller targets require actual period
 and delivery admission in both directions; no default or quality threshold is
 changed to obtain a pass. Full S1-S3 and calibrated sub-10-ms qualification
 remain open.
+
+## Accessibility-active cache bypass and actual desktop GREEN
+
+`bdf3766` integrates independently reviewed `421bc4e`. The four app cache
+entry points (toolbar, status, Graph controls and Mixer controls) bypass GPUI
+paint/layout caching only while `window.is_a11y_active()`. Their sizing/flex
+wrappers and inactive cache branches remain. No dependency, audio, driver or
+buffer default changes occur. Graph19, Mixer19 and measured Settings28 tests,
+strict app gpui-test all-target Clippy and formatting pass in the isolated
+author worktree; those tests explicitly cover the inactive performance path,
+not fabricated headless accessibility activation. Independent source review
+finds no blocking issue, while noting native geometry and activation coverage
+still require actual observations.
+
+Root builds the integrated release with jobs2 and a worktree-local target.
+The EXE is33715712 bytes, SHA256
+`61FA3D92357BC557CBF09299A4028456ABE9AA057AC04E13920889E9BCB338DF`,
+staged side by side at
+`D:\MoirenTest\20261031-app-a11y-cache\bin\moiren-app.exe`.
+Target size/hash, help, monitor-help and exact offline gain0.25 all pass with
+exit0. The inherited `EarlierHelpAttempt` receipt text describes the old
+e1a7c2f control, not an ambiguous attempt of this new binary; a separate
+provenance note clarifies this without overwriting the receipt.
+
+`desktop-a11y-process3` changes only app revision/hash and deploy/run identity
+from diagnostic2. Source/catalog/driver pins, graph, candidate, invocation,
+cleanup and final gate are unchanged. Root PS5.1 parsing, contract and real
+wrong-host refusal fixtures pass; an independent read-only helper safety
+review finds no blocker. Helper SHA256 is
+`FA73C8612FF1CE3D41454D1C984B423CC8EEDA92E2061AF885BA0D69706B945F`.
+
+The single limited console1 task launches UTC03:47:00; actual script execution
+is03:49:00.8354686 through03:49:32.2184778. The app logs actual Accessibility
+activation. PID9512, creation134378921421618925 and HWND722634 remain fixed
+at all four diagnostic boundaries; node counts are21/21/21/21, not a
+root-only failure. Settings Invoke returns, followed by Input buffers and
+actual measured Apply. Native logs show generation1 cleanup/reap, then
+generation2 Running on the same DAWN Shared Float32 stereo48k endpoint,
+actual native buffer1056. Exact requested/active strings match the owned
+Process PID5092/creation134378921419057287, selection1, target4096,
+capacity16384 and jitter96 at48kHz. This is a diagnostic candidate, not a
+lower-latency default or a latency measurement.
+
+Close, Stop, reopening Settings/Diagnostics and Quit all return. Native logs
+show generation2 cleanup/reap. App and source exit0 without forced termination;
+Completed=true and task result0. Cleanup/diagnostic error arrays and remaining
+owners are empty. Boot, render volume/mute and default roles remain unchanged;
+there is no driver installation, reboot or cache clean. After host archive
+verification, the exact terminal task is unregistered, with originals retained.
+
+Host evidence: `D:\coding\moiren-evidence\20261031-app-a11y-cache`.
+Archive `desktop-a11y-process3-evidence.zip` is67575 bytes,47 payload files
+plus manifest, SHA256
+`0157D759B35444757C26F2A21A1559C9FC36CFFCD90E1F87316EED272F69F7C4`.
+Root verifies CRCs, exact member set, manifest lengths/SHA256 and extracted
+bytes. The two preceding genuine native REDs remain retained unchanged.
+
+This is a same-scenario actual desktop regression GREEN consistent with the
+cache hypothesis; it does not prove every interleaving or render-frame tree.
+The helper retains PrintWindow requests, not frame-counter evidence or a
+visual screenshot acceptance. No waveform acquisition or calibrated physical
+latency acceptance follows. Sparse-source/source-origin limitations and the
+remaining S1-S3 quality/admission gates remain open.
