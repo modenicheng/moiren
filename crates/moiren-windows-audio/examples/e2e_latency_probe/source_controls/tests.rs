@@ -1,5 +1,34 @@
 use super::*;
 use std::cell::RefCell;
+
+#[test]
+fn source_controls_dto_preserves_preparation_failures_and_absent_snapshot() {
+    let controls = SourceControls {
+        qualified: false,
+        mmdevice_id: "owned-playback".into(),
+        process_id: 42,
+        process_creation_100ns: Reading::observed(0, 123456789),
+        qpc_frequency_hz: Some(10_000_000),
+        preparation: Preparation {
+            session_control_hresult: Some(-123),
+            session_volume_hresult: None,
+            endpoint_volume_hresult: Some(0),
+        },
+        snapshot: None,
+    };
+    let value = serde_json::to_value(controls).unwrap();
+    assert_eq!(value["qualified"], false);
+    assert_eq!(value["mmdevice_id"], "owned-playback");
+    assert_eq!(value["process_id"], 42);
+    assert_eq!(value["process_creation_100ns"]["value"], 123456789);
+    assert_eq!(value["qpc_frequency_hz"], 10_000_000);
+    assert_eq!(value["preparation"]["session_control_hresult"], -123);
+    assert!(value["preparation"]["session_volume_hresult"].is_null());
+    assert_eq!(value["preparation"]["endpoint_volume_hresult"], 0);
+    assert!(value["snapshot"].is_null());
+    assert_eq!(value.as_object().unwrap().len(), 7);
+}
+
 struct Fake {
     calls: RefCell<Vec<&'static str>>,
     failure: bool,
