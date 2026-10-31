@@ -50,6 +50,8 @@ pub struct NativeSrcTraceChunk {
 pub struct NativeSrcTrace {
     pub schema_version: u32,
     pub owner_generation: u64,
+    /// Initial prepared route only, never a callback-aligned active revision.
+    pub route: super::NativeSrcRouteObservation,
     pub checkpoint_limit: usize,
     pub retained_checkpoints: usize,
     /// Ownership handed to the control caller, not proof of persistence.
@@ -88,8 +90,9 @@ impl NativeObservationReadHandle {
         Ok(NativeSrcTraceCollector {
             owner: self.clone(),
             artifact: NativeSrcTrace {
-                schema_version: 2,
+                schema_version: 3,
                 owner_generation: self.0.generation,
+                route: self.src_route(),
                 checkpoint_limit: limit,
                 retained_checkpoints: 0,
                 drained_checkpoints: 0,
@@ -131,6 +134,7 @@ impl NativeSrcTraceCollector {
         if self.artifact.finalized {
             return;
         }
+        self.artifact.route.invalidated |= self.owner.src_route().invalidated;
         for ((boundary, (_, _, probe)), overlap) in self
             .artifact
             .boundaries

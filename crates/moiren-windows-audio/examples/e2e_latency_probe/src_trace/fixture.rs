@@ -211,3 +211,53 @@ impl Drop for Fixture {
         self.close();
     }
 }
+
+#[test]
+fn src_route_engine_host_update_invalidates_same_owner_preparation_without_replacing_facts() {
+    let mut fixture = Fixture::new();
+    fixture.callbacks(4);
+    let owner = fixture.observations.retain_session().unwrap();
+    let original = owner.src_route();
+    assert!(!original.invalidated);
+    let route = original.prepared.clone().unwrap();
+    let before = fixture.host.as_ref().unwrap().observer().snapshot();
+    let receipt = fixture
+        .host
+        .as_ref()
+        .unwrap()
+        .control()
+        .edit(move |project| {
+            project.graph.remove_node(route.bus)?;
+            let source = project.graph.get_node(route.source)?.outputs()[0].id();
+            let sink = project.graph.get_node(route.sink)?.inputs()[0].id();
+            project.graph.connect(source, sink, Default::default())?;
+            Ok(())
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    while !owner.src_route().invalidated {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "compatible update did not invalidate preparation"
+        );
+        std::thread::yield_now();
+    }
+    for _ in 0..100 {
+        fixture.callbacks(1);
+        if receipt.outcome().is_terminal() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(matches!(
+        receipt.outcome(),
+        moiren_engine::host::EditOutcome::Activated { .. }
+    ));
+    let after = fixture.host.as_ref().unwrap().observer().snapshot();
+    assert_eq!(before.owner_generation, after.owner_generation);
+    assert_ne!(before.active_revision, after.active_revision);
+    assert_eq!(owner.src_route().prepared, original.prepared);
+    fixture.close();
+    assert!(owner.src_route().invalidated);
+    assert_eq!(owner.src_route().prepared, original.prepared);
+}

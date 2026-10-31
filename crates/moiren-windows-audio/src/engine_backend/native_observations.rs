@@ -28,6 +28,10 @@ pub use src_trace::{
     NativeSrcTraceCollector, SRC_TRACE_MAX_CHECKPOINTS, SrcTraceRefusal,
 };
 
+#[path = "native_observations/src_route.rs"]
+pub(super) mod src_route;
+pub use src_route::{NativeSrcRouteObservation, PreparedSrcRoute};
+
 #[cfg(test)]
 #[path = "native_observations/src_trace_tests.rs"]
 mod src_trace_tests;
@@ -261,6 +265,7 @@ impl Drop for ObservationLease {
     }
 }
 pub(super) struct Session {
+    route: Arc<src_route::RouteState>,
     process_delivery: Vec<ProcessDeliverySource>,
     generation: u64,
     running: AtomicBool,
@@ -275,6 +280,11 @@ pub(super) struct Session {
     virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
 }
 impl NativeObservationReadHandle {
+    /// Immutable initial topology plus conservative invalidation. This is not
+    /// an active-plan transaction or authority over subsequent live controls.
+    pub fn src_route(&self) -> NativeSrcRouteObservation {
+        self.0.route.snapshot()
+    }
     /// Publication state only, not a successful-start or teardown witness.
     /// Immutable owner identity prevents registry replacement from redirecting
     /// admission while avoiding a full history snapshot just to inspect it.
@@ -456,7 +466,7 @@ impl NativeObservations {
             None,
         );
     }
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn publish_with_clock(
         &self,
@@ -472,11 +482,41 @@ impl NativeObservations {
         process_delivery: Vec<ProcessDeliverySource>,
         virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
     ) {
+        self.publish_with_route(
+            generation,
+            streams,
+            bridges,
+            probes,
+            renders,
+            process_delivery,
+            virtual_clock,
+            Arc::default(),
+        );
+    }
+
+    #[cfg(any(windows, test))]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn publish_with_route(
+        &self,
+        generation: u64,
+        streams: Vec<NativeStreamObservation>,
+        bridges: Vec<(NodeId, BridgeObserver)>,
+        probes: Vec<(
+            NodeId,
+            NativeStreamKind,
+            Arc<crate::virtual_owner::BoundaryProbe>,
+        )>,
+        renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+        process_delivery: Vec<ProcessDeliverySource>,
+        virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
+        route: Arc<src_route::RouteState>,
+    ) {
         let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         if let Some(previous) = state.as_ref() {
             previous.running.store(false, Ordering::Release);
         }
         *state = Some(Arc::new(Session {
+            route,
             process_delivery,
             generation,
             running: AtomicBool::new(false),
@@ -486,6 +526,17 @@ impl NativeObservations {
             renders,
             virtual_clock,
         }));
+    }
+
+    #[cfg(any(windows, test))]
+    pub(super) fn invalidate_src_route(&self, generation: u64) {
+        let state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(session) = state
+            .as_ref()
+            .filter(|session| session.generation == generation)
+        {
+            session.route.invalidated.store(true, Ordering::Release);
+        }
     }
     #[cfg(any(windows, test))]
     pub(crate) fn running(&self, generation: u64) {

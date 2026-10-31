@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 
 
 U64_MAX = (1 << 64) - 1
@@ -112,6 +113,43 @@ def validate_point(point):
         finite(point["processing_step"], "processing step")
 
 
+def validate_route(trace, states):
+    if trace["schema_version"] == 2:
+        return
+    route = trace["route"]
+    shape(route, "prepared invalidated", "route")
+    boolean(route["invalidated"], "route invalidated")
+    prepared = route["prepared"]
+    if prepared is None:
+        return
+    shape(prepared, "schema_version prepared_graph_revision source bus sink source_endpoint sink_endpoint "
+          "channels engine_sample_rate engine_block_frames", "prepared route")
+    require(integer(prepared["schema_version"], "route schema") == 1, "unsupported route schema")
+    integer(prepared["prepared_graph_revision"], "route revision")
+    for name in ["source", "bus", "sink"]:
+        require(type(prepared[name]) is str and 0 < len(prepared[name]) <= 256, "invalid route node")
+    require(len({prepared[name] for name in ["source", "bus", "sink"]}) == 3, "duplicate route node")
+    require(set(states) == {(prepared["source"], "virtual_playback"),
+                            (prepared["sink"], "virtual_microphone")}, "route boundary linkage mismatch")
+    for name in ["source_endpoint", "sink_endpoint"]:
+        require(type(prepared[name]) is str and re.fullmatch(r"[0-9a-f]{32}", prepared[name]) is not None,
+                "invalid route endpoint")
+    require(prepared["source_endpoint"] != prepared["sink_endpoint"], "duplicate route endpoint")
+    integer(prepared["channels"], "route channels", 1, 2)
+    require(integer(prepared["engine_sample_rate"], "route rate") in [44100, 48000, 88200, 96000],
+            "unsupported route rate")
+    integer(prepared["engine_block_frames"], "route block", 1, 4096)
+
+
+def route_report(trace):
+    route = trace.get("route", {"prepared": None, "invalidated": False})
+    status = ("unknown" if route["prepared"] is None else "invalidated_preparation"
+              if route["invalidated"] else "imported_preparation_only")
+    return {**route, "status": status,
+            "scope": "initial exact IO/Bus/IO preparation only, not active plan or controls; "
+                     "imported labels cannot authenticate native origin or compose FIR stages"}
+
+
 def prepare(summary, boundary_limit):
     shape(summary, "schema_version trace stream chunks_path history_complete qualified limits", "summary")
     require(integer(summary["schema_version"], "summary schema") == 2, "unsupported summary schema")
@@ -129,9 +167,12 @@ def prepare(summary, boundary_limit):
     for name in ["chunks", "checkpoints", "bytes"]:
         integer(stream[name], "stream " + name)
     trace = summary["trace"]
+    require(type(trace) is dict, "invalid trace schema")
+    version = integer(trace.get("schema_version"), "trace schema")
+    require(version in [2, 3], "unsupported trace schema")
     shape(trace, "schema_version owner_generation checkpoint_limit retained_checkpoints drained_checkpoints "
-          "drained_chunks finalized history_complete qualified refusal boundaries", "trace")
-    require(integer(trace["schema_version"], "trace schema") == 2, "unsupported trace schema")
+          "drained_chunks finalized history_complete qualified refusal boundaries" +
+          (" route" if version == 3 else ""), "trace")
     integer(trace["owner_generation"], "owner generation")
     integer(trace["checkpoint_limit"], "checkpoint limit", 1, 131072)
     require(trace["checkpoint_limit"] == LIMITS["pending_checkpoints"], "pending limit mismatch")
@@ -162,6 +203,7 @@ def prepare(summary, boundary_limit):
                        "last_sequence": 0, "callbacks_with_xruns": 0,
                        "callbacks_with_discontinuity": 0, "callbacks_with_mute": 0,
                        "callbacks_with_unknown_or_saturated_cursor": 0}
+    validate_route(trace, states)
     return trace, stream, states
 
 
@@ -188,6 +230,11 @@ def accept_chunk(chunk, trace, states, expected_sequence, checkpoint_observer):
         require(count <= trace["checkpoint_limit"], "chunk checkpoint cap exceeded")
         for point in points:
             validate_point(point)
+            route = trace.get("route", {}).get("prepared")
+            if route is not None:
+                require(point["engine_sample_rate"] == route["engine_sample_rate"] and
+                        point["engine_frames"] <= route["engine_block_frames"],
+                        "callback outside prepared route rate/block")
             require(point["sequence"] > state["last_sequence"], "callback order regressed or duplicated")
             state["last_sequence"] = point["sequence"]
             state["observed_checkpoints"] += 1
@@ -265,6 +312,7 @@ def verify(summary, source, *, record_limit=MAX_RECORD_BYTES, stream_limit=MAX_S
             "scope": "serialized scalar coverage only; imported data cannot issue native provenance, "
                      "source/recorder correspondence, clean waveform or physical acceptance",
             "owner_generation": trace["owner_generation"], "trace_refusal": trace["refusal"],
+            "route": route_report(trace),
             "stream": {"bytes": byte_count, "sha256": digest.hexdigest(), "chunks": chunks,
                        "checkpoints": checkpoints}, "boundaries": list(states.values()),
             "reader_limits": {"record_bytes": record_limit, "stream_bytes": stream_limit,

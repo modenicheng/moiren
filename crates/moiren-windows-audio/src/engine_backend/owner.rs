@@ -600,6 +600,7 @@ pub(super) struct Transport<S: ProcessingSample> {
     pub observations: ProfessionalObservations,
     pub streams: Vec<(ProfessionalStreamObservation, Arc<Counters>)>,
     pub native_observations: NativeObservations,
+    pub src_route: Arc<super::native_observations::src_route::RouteState>,
     pub native_streams: Vec<NativeStreamObservation>,
     pub native_bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
     pub native_process_delivery: Vec<super::native_observations::ProcessDeliverySource>,
@@ -624,6 +625,7 @@ impl<S: ProcessingSample> Transport<S> {
             observations,
             streams: Vec::new(),
             native_observations: NativeObservations::default(),
+            src_route: Arc::default(),
             native_streams: Vec::new(),
             native_bridges: Vec::new(),
             native_process_delivery: Vec::new(),
@@ -651,7 +653,7 @@ impl<S: ProcessingSample> Transport<S> {
         }))
     }
     fn activate(&self) -> Result<(), BackendError> {
-        self.native_observations.publish_with_clock(
+        self.native_observations.publish_with_route(
             self.generation,
             self.native_streams.clone(),
             self.native_bridges.clone(),
@@ -659,6 +661,7 @@ impl<S: ProcessingSample> Transport<S> {
             self.native_renders.clone(),
             self.native_process_delivery.clone(),
             self.virtual_clock.clone(),
+            self.src_route.clone(),
         );
         for auxiliary in &self.auxiliaries {
             if let Err(error) = auxiliary.activate() {

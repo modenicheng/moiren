@@ -5,6 +5,12 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [prepared SRC route receipt](2026-11-01-src-route.md) adds exact initial
+IO/Bus/IO preparation to trace3 with sticky same-owner Update invalidation and
+backward-compatible independent readback. It deliberately does not turn matching
+owner/timeline labels into callback-aligned active topology, cascade mapping,
+clean acquired waveform or physical qualification.
+
 Acceptance update,2026-10-31: per the user's
 [target-device fallback](../vad-low-latency-goals-2026-10-28.md#2026-10-31-target-device-fallback),
 if sub-10-ms is demonstrated impossible under the declared current device

@@ -15,6 +15,9 @@ mod measured_preparation;
 #[path = "packet_phase_tests.rs"]
 mod packet_phase;
 
+#[path = "tests/src_route.rs"]
+mod src_route;
+
 fn virtual_project(channels: usize, rate: u32) -> EngineProject {
     let mut project = EngineProject::default();
     project.processing.engine.processing_sr = f64::from(rate);

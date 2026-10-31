@@ -71,6 +71,15 @@ def encode(summary, chunks):
     return raw
 
 
+def prepared_route():
+    return {"prepared": {"schema_version": 1, "prepared_graph_revision": 41,
+                         "source": "NodeId(1v1)", "bus": "NodeId(2v1)", "sink": "NodeId(3v1)",
+                         "source_endpoint": "01010101010101010101010101010101",
+                         "sink_endpoint": "02020202020202020202020202020202",
+                         "channels": 2, "engine_sample_rate": 48000, "engine_block_frames": 32},
+            "invalidated": False}
+
+
 class BoundedReader(io.BytesIO):
     def read(self, size=-1):
         if not 0 <= size <= 8193:
@@ -99,6 +108,81 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(result["stream"]["sha256"], hashlib.sha256(raw).hexdigest())
         self.assertEqual(result["stream"]["bytes"], len(raw))
         self.assertEqual([row["observed_checkpoints"] for row in result["boundaries"]], [4, 4])
+
+    def test_v3_route_retains_imported_preparation_not_active_or_native_authority(self):
+        summary, chunks = fixture()
+        summary["trace"].update(schema_version=3, route=prepared_route())
+        result = self.verify(summary, encode(summary, chunks))
+        self.assertTrue(result["scalar_readback_complete"])
+        self.assertEqual(result["route"]["status"], "imported_preparation_only")
+        self.assertEqual(result["route"]["prepared"], prepared_route()["prepared"])
+        self.assertFalse(result["native_execution"])
+        self.assertEqual(result["phase_mapping"], "not_evaluated")
+        summary["trace"]["route"]["invalidated"] = True
+        result = self.verify(summary, encode(summary, chunks))
+        self.assertEqual(result["route"]["status"], "invalidated_preparation")
+        self.assertEqual(result["route"]["prepared"], prepared_route()["prepared"])
+
+    def test_v2_and_absent_v3_preparation_remain_unknown(self):
+        summary, chunks = fixture()
+        result = self.verify(summary, encode(summary, chunks))
+        self.assertEqual(result["route"]["status"], "unknown")
+        for invalidated in [False, True]:
+            summary["trace"].update(schema_version=3, route={"prepared": None, "invalidated": invalidated})
+            result = self.verify(summary, encode(summary, chunks))
+            self.assertTrue(result["scalar_readback_complete"])
+            self.assertIsNone(result["route"]["prepared"])
+            self.assertEqual(result["route"]["invalidated"], invalidated)
+            self.assertEqual(result["route"]["status"], "unknown")
+
+    def test_v3_route_rejects_malformed_or_unbound_preparation(self):
+        mutations = [
+            ("prepared", []), ("invalidated", 1), ("extra", False),
+            ("schema_version", True), ("prepared_graph_revision", True),
+            ("source", ""), ("bus", "NodeId(1v1)"), ("sink", "NodeId(9v1)"),
+            ("source_endpoint", "native-label"), ("sink_endpoint", prepared_route()["prepared"]["source_endpoint"]),
+            ("source_endpoint", "01010101-0101-0101-0101-010101010101"),
+            ("channels", 3), ("channels", True), ("engine_sample_rate", 0),
+            ("engine_block_frames", 0), ("engine_block_frames", 4097),
+        ]
+        for key, value in mutations:
+            summary, chunks = fixture()
+            route = prepared_route()
+            (route if key in ["prepared", "invalidated", "extra"] else route["prepared"])[key] = value
+            summary["trace"].update(schema_version=3, route=route)
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                self.verify(summary, encode(summary, chunks))
+
+    def test_v3_route_callback_rate_and_block_need_agreement_not_nominal_labels(self):
+        for field, value in [("engine_sample_rate", 44100), ("engine_frames", 33)]:
+            summary, chunks = fixture()
+            summary["trace"].update(schema_version=3, route=prepared_route())
+            chunks[0]["chunk"]["boundaries"][0]["checkpoints"][0][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "route"):
+                self.verify(summary, encode(summary, chunks))
+
+    def test_v3_invalidated_route_remains_diagnostic_and_terminal_is_exact(self):
+        summary, chunks = fixture()
+        summary["trace"].update(schema_version=3, route=prepared_route())
+        summary["trace"]["route"]["invalidated"] = True
+        good = encode(summary, chunks)
+        terminal = json.loads(good.splitlines()[-1])
+        terminal["summary"]["route"]["invalidated"] = False
+        raw = b"\n".join(good.splitlines()[:-1]) + b"\n" + json.dumps(terminal).encode() + b"\n"
+        summary["stream"]["bytes"] = len(raw)
+        with self.assertRaisesRegex(ValueError, "terminal"):
+            self.verify(summary, raw)
+
+    def test_v3_absent_or_invalidated_route_never_erases_collection_faults(self):
+        summary, chunks = fixture()
+        summary["trace"].update(schema_version=3, route=prepared_route(), refusal="history_unavailable",
+                                history_complete=False)
+        summary["history_complete"] = False
+        summary["trace"]["route"]["invalidated"] = True
+        result = self.verify(summary, encode(summary, chunks))
+        self.assertFalse(result["scalar_readback_complete"])
+        self.assertEqual(result["trace_refusal"], "history_unavailable")
+        self.assertEqual(result["route"]["status"], "invalidated_preparation")
 
     def test_gap_and_original_refusal_are_not_upgraded(self):
         summary, chunks = fixture()

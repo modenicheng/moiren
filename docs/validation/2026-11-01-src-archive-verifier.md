@@ -18,6 +18,11 @@ quality gate changes.
 
 ## Reader contract
 
+The later [prepared-route slice](2026-11-01-src-route.md) adds strict trace3
+readback while preserving trace2 support. Its preparation-only linkage is
+not active-plan confirmation or native provenance; the original receipt below
+describes the trace2-only baseline at its recorded revision.
+
 Run from the repository root, with explicit paths:
 
 ```text

@@ -11,9 +11,9 @@ pub use native_observations::{
     NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
     NativeObservationSnapshot, NativeObservations, NativeProcessDeliveryObservation,
     NativeProcessTraceCollector, NativeProcessWindowCandidate, NativeRenderPaddingObservation,
-    NativeSrcBoundaryTrace, NativeSrcChunkBoundary, NativeSrcTrace, NativeSrcTraceChunk,
-    NativeSrcTraceCollector, NativeStreamKind, NativeStreamObservation,
-    PreparedNativeProcessWindow, SRC_TRACE_MAX_CHECKPOINTS, SrcTraceRefusal,
+    NativeSrcBoundaryTrace, NativeSrcChunkBoundary, NativeSrcRouteObservation, NativeSrcTrace,
+    NativeSrcTraceChunk, NativeSrcTraceCollector, NativeStreamKind, NativeStreamObservation,
+    PreparedNativeProcessWindow, PreparedSrcRoute, SRC_TRACE_MAX_CHECKPOINTS, SrcTraceRefusal,
 };
 #[cfg(windows)]
 pub use observations::{
@@ -296,6 +296,12 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         cancel: &CancellationToken,
         native: &dyn NativeDevices,
     ) -> Result<PreparedBackend<S>, BackendError> {
+        if request.mode == PrepareMode::Update {
+            // This marks preparation intent, not successful activation. Never
+            // let a reused owner make its initial route look current forever.
+            self.native_observations
+                .invalidate_src_route(request.owner_generation);
+        }
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -398,6 +404,13 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             self.observations.clone(),
         ));
         transport.native_observations = self.native_observations.clone();
+        transport.src_route = Arc::new(native_observations::src_route::RouteState {
+            prepared: native_observations::src_route::prepared_route(
+                request.project,
+                request.graph_revision,
+            ),
+            ..Default::default()
+        });
         let block_demand = u32::try_from(request.project.processing.engine.max_block_frames)
             .map_err(|_| unsupported("virtual block demand overflow"))?;
         let recovery_cap_periods = self
