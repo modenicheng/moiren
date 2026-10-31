@@ -135,6 +135,15 @@ Longer streaming retention, actual source/recorder correspondence, acquired
 waveform and native/physical gates remain open. Historical refusals and all
 audio/quality/default settings are unchanged.
 
+The subsequent [streaming SRC evidence](2026-11-01-src-stream.md) drains
+ordered control chunks through a bounded four-chunk file-writer queue. It
+removes the prior lifetime-RAM limit without changing the RT publisher or
+audio policies. Create-new chunk records, final summary counts, pending/byte
+caps and retained IO failures keep collection distinct from persistence.
+Real IO/Bus owner readback covers 132,000 callbacks without native devices.
+Finite polling/storage, native cost, independent source/recorder reference,
+acquired waveform and physical qualification remain open; S1-S3 are not done.
+
 The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
 strictly associates first-copy/native0 and first-nonzero/native228 witnesses
 with raw WASAPI packets1/229 at the same callback/completion QPC labels. The

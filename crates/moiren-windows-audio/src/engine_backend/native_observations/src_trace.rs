@@ -26,7 +26,24 @@ pub struct NativeSrcBoundaryTrace {
     pub unretained_callbacks: u64,
     pub unavailable_polls: u64,
     pub writer_finished: bool,
+    pub drained_checkpoints: u64,
     pub checkpoints: Vec<BoundarySrcCheckpoint>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NativeSrcChunkBoundary {
+    #[serde(serialize_with = "serialize_node")]
+    pub node: NodeId,
+    pub kind: NativeStreamKind,
+    pub checkpoints: Vec<BoundarySrcCheckpoint>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NativeSrcTraceChunk {
+    pub schema_version: u32,
+    pub owner_generation: u64,
+    pub sequence: u64,
+    pub boundaries: Vec<NativeSrcChunkBoundary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +52,9 @@ pub struct NativeSrcTrace {
     pub owner_generation: u64,
     pub checkpoint_limit: usize,
     pub retained_checkpoints: usize,
+    /// Ownership handed to the control caller, not proof of persistence.
+    pub drained_checkpoints: u64,
+    pub drained_chunks: u64,
     pub finalized: bool,
     /// Sequence-one through the final boundary callback, not clean audio,
     /// native cleanup, a common source clock or physical qualification.
@@ -47,6 +67,9 @@ pub struct NativeSrcTrace {
 pub struct NativeSrcTraceCollector {
     owner: NativeObservationReadHandle,
     artifact: NativeSrcTrace,
+    // Keep bounded overlap after draining, so a changed suffix cannot replace
+    // earlier facts. This is control storage, separate from pending chunks.
+    overlap: Vec<Vec<BoundarySrcCheckpoint>>,
 }
 
 impl NativeObservationReadHandle {
@@ -65,10 +88,12 @@ impl NativeObservationReadHandle {
         Ok(NativeSrcTraceCollector {
             owner: self.clone(),
             artifact: NativeSrcTrace {
-                schema_version: 1,
+                schema_version: 2,
                 owner_generation: self.0.generation,
                 checkpoint_limit: limit,
                 retained_checkpoints: 0,
+                drained_checkpoints: 0,
+                drained_chunks: 0,
                 finalized: false,
                 history_complete: false,
                 qualified: false,
@@ -85,10 +110,12 @@ impl NativeObservationReadHandle {
                         unretained_callbacks: 0,
                         unavailable_polls: 0,
                         writer_finished: false,
+                        drained_checkpoints: 0,
                         checkpoints: Vec::new(),
                     })
                     .collect(),
             },
+            overlap: vec![Vec::new(); self.0.probes.len()],
         })
     }
 }
@@ -104,11 +131,12 @@ impl NativeSrcTraceCollector {
         if self.artifact.finalized {
             return;
         }
-        for (boundary, (_, _, probe)) in self
+        for ((boundary, (_, _, probe)), overlap) in self
             .artifact
             .boundaries
             .iter_mut()
             .zip(&self.owner.0.probes)
+            .zip(&self.overlap)
         {
             let Some(history) = probe.src_history() else {
                 boundary.unavailable_polls = boundary.unavailable_polls.saturating_add(1);
@@ -121,7 +149,7 @@ impl NativeSrcTraceCollector {
             };
             let remaining = self.artifact.checkpoint_limit - self.artifact.retained_checkpoints;
             let before = boundary.checkpoints.len();
-            if let Some(refusal) = accept(boundary, history, remaining) {
+            if let Some(refusal) = accept(boundary, history, remaining, overlap) {
                 self.artifact.refusal.get_or_insert(refusal);
             }
             self.artifact.retained_checkpoints += boundary.checkpoints.len() - before;
@@ -154,12 +182,64 @@ impl NativeSrcTraceCollector {
                     && boundary.total_callbacks > 0
                     && boundary.missing_callbacks == 0
                     && boundary.unretained_callbacks == 0
-                    && boundary.checkpoints.len() as u64 == boundary.total_callbacks
+                    && boundary.drained_checkpoints + boundary.checkpoints.len() as u64
+                        == boundary.total_callbacks
             });
     }
 
     pub fn artifact(&self) -> &NativeSrcTrace {
         &self.artifact
+    }
+
+    /// Move pending checkpoints to a bounded control-side chunk. The caller
+    /// owns persistence and must retain a failed/full-queue chunk; draining is
+    /// not an IO acknowledgment. Loss/cap refusals never reset at a chunk edge.
+    pub fn drain_chunk(&mut self) -> Option<NativeSrcTraceChunk> {
+        if self.artifact.retained_checkpoints == 0 {
+            return None;
+        }
+        let Some(sequence) = self.artifact.drained_chunks.checked_add(1) else {
+            self.artifact
+                .refusal
+                .get_or_insert(SrcTraceRefusal::InvalidHistory);
+            self.artifact.history_complete = false;
+            return None;
+        };
+        let mut boundaries = Vec::new();
+        for (boundary, overlap) in self.artifact.boundaries.iter_mut().zip(&mut self.overlap) {
+            if boundary.checkpoints.is_empty() {
+                continue;
+            }
+            let start = boundary
+                .checkpoints
+                .len()
+                .saturating_sub(SRC_HISTORY_CAPACITY);
+            // A new suffix need only retain the most recent callback window.
+            // Older drained sequences cannot reappear in a valid history.
+            if start == 0 {
+                let excess = (overlap.len() + boundary.checkpoints.len())
+                    .saturating_sub(SRC_HISTORY_CAPACITY);
+                overlap.drain(..excess);
+                overlap.extend_from_slice(&boundary.checkpoints);
+            } else {
+                *overlap = boundary.checkpoints[start..].to_vec();
+            }
+            boundary.drained_checkpoints += boundary.checkpoints.len() as u64;
+            boundaries.push(NativeSrcChunkBoundary {
+                node: boundary.node,
+                kind: boundary.kind,
+                checkpoints: std::mem::take(&mut boundary.checkpoints),
+            });
+        }
+        self.artifact.drained_checkpoints += self.artifact.retained_checkpoints as u64;
+        self.artifact.retained_checkpoints = 0;
+        self.artifact.drained_chunks = sequence;
+        Some(NativeSrcTraceChunk {
+            schema_version: 1,
+            owner_generation: self.artifact.owner_generation,
+            sequence,
+            boundaries,
+        })
     }
 }
 
@@ -167,6 +247,7 @@ fn accept(
     boundary: &mut NativeSrcBoundaryTrace,
     history: BoundarySrcHistory,
     limit: usize,
+    overlap: &[BoundarySrcCheckpoint],
 ) -> Option<SrcTraceRefusal> {
     let total = history.total_callbacks;
     let count = total.min(SRC_HISTORY_CAPACITY as u64);
@@ -192,11 +273,15 @@ fn accept(
     let mut retained = 0;
     for point in history.checkpoints {
         if point.sequence <= previous {
-            if let Ok(index) = boundary
-                .checkpoints
-                .binary_search_by_key(&point.sequence, |p| p.sequence)
-                && boundary.checkpoints[index] != point
-            {
+            let retained = [&boundary.checkpoints[..], overlap]
+                .into_iter()
+                .find_map(|points| {
+                    points
+                        .binary_search_by_key(&point.sequence, |p| p.sequence)
+                        .ok()
+                        .map(|index| &points[index])
+                });
+            if retained.is_some_and(|retained| *retained != point) {
                 return Some(SrcTraceRefusal::InvalidHistory);
             }
             continue;
@@ -238,15 +323,46 @@ mod tests {
         let mut changed = fixture.probe.src_history().unwrap();
         changed.checkpoints[0].carrier_frames += 1;
         assert_eq!(
-            accept(&mut collector.artifact.boundaries[0], changed, 5),
+            accept(&mut collector.artifact.boundaries[0], changed, 5, &[]),
             Some(SrcTraceRefusal::InvalidHistory)
         );
         let mut malformed = fixture.probe.src_history().unwrap();
         malformed.checkpoints[1].sequence = 99;
         assert_eq!(
-            accept(&mut collector.artifact.boundaries[0], malformed, 5),
+            accept(&mut collector.artifact.boundaries[0], malformed, 5, &[]),
             Some(SrcTraceRefusal::InvalidHistory)
         );
         assert_eq!(serde_json::to_value(collector.artifact()).unwrap(), before);
+    }
+
+    #[test]
+    fn src_trace_drained_overlap_still_rejects_changed_earlier_facts() {
+        let mut fixture = super::super::src_trace_tests::Fixture::new();
+        let mut collector = fixture
+            .observations
+            .retain_session()
+            .unwrap()
+            .src_trace_collector(256)
+            .unwrap();
+        fixture.callbacks(0, 200);
+        collector.poll();
+        collector.drain_chunk().unwrap();
+        fixture.callbacks(200, 3);
+        collector.poll();
+        collector.drain_chunk().unwrap();
+        assert_eq!(collector.overlap[0].len(), 203);
+        let mut changed = fixture.probe.src_history().unwrap();
+        changed.checkpoints[0].carrier_frames += 1;
+        assert_eq!(
+            accept(
+                &mut collector.artifact.boundaries[0],
+                changed,
+                256,
+                &collector.overlap[0]
+            ),
+            Some(SrcTraceRefusal::InvalidHistory)
+        );
+        assert_eq!(collector.artifact.drained_checkpoints, 203);
+        assert_eq!(collector.artifact.retained_checkpoints, 0);
     }
 }

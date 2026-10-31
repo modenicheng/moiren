@@ -406,6 +406,7 @@ struct ArtifactPaths {
     diagnostic_observations: Option<String>,
     process_trace: Option<String>,
     src_trace: Option<String>,
+    src_trace_chunks: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1388,10 +1389,15 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     let process_trace_key = output_path_key(&process_trace)?;
     let src_trace = options.artifact_dir.join("src-trace.json");
     let src_trace_key = output_path_key(&src_trace)?;
+    let src_trace_chunks = options.artifact_dir.join("src-trace.chunks.jsonl");
+    let src_chunks_key = output_path_key(&src_trace_chunks)?;
     if options.source_kind == EvidenceSourceKind::VadPlayback {
         ensure!(
-            report_key != src_trace_key && manifest_key != src_trace_key,
-            "report/manifest aliases reserved src-trace.json"
+            report_key != src_trace_key
+                && manifest_key != src_trace_key
+                && report_key != src_chunks_key
+                && manifest_key != src_chunks_key,
+            "report/manifest aliases reserved SRC trace output"
         );
     }
     if options.source_kind == EvidenceSourceKind::ProcessLoopback {
@@ -1439,8 +1445,9 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     {
         let key = output_path_key(input)?;
         ensure!(
-            options.source_kind != EvidenceSourceKind::VadPlayback || key != src_trace_key,
-            "input aliases reserved src-trace.json"
+            options.source_kind != EvidenceSourceKind::VadPlayback
+                || (key != src_trace_key && key != src_chunks_key),
+            "input aliases reserved SRC trace output"
         );
         ensure!(
             options.source_kind != EvidenceSourceKind::ProcessLoopback || key != process_trace_key,
@@ -1578,6 +1585,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .then(|| process_trace.to_string_lossy().into_owned()),
         src_trace: (options.source_kind == EvidenceSourceKind::VadPlayback)
             .then(|| src_trace.to_string_lossy().into_owned()),
+        src_trace_chunks: (options.source_kind == EvidenceSourceKind::VadPlayback)
+            .then(|| src_trace_chunks.to_string_lossy().into_owned()),
     })
 }
 
@@ -1746,6 +1755,7 @@ impl ArtifactPaths {
             diagnostic_observations: self.diagnostic_observations.clone(),
             process_trace: self.process_trace.clone(),
             src_trace: self.src_trace.clone(),
+            src_trace_chunks: self.src_trace_chunks.clone(),
         }
     }
 }
@@ -3547,6 +3557,9 @@ mod tests {
                 "src-trace.json",
                 "./src-trace.json",
                 "child/../src-trace.json",
+                "src-trace.chunks.jsonl",
+                "./src-trace.chunks.jsonl",
+                "child/../src-trace.chunks.jsonl",
             ] {
                 let directory = temp_dir("src-trace-reserved");
                 let mut options = LiveOptions {
@@ -3571,6 +3584,10 @@ mod tests {
         };
         let paths = prepare_paths(&options).unwrap();
         assert_eq!(paths.src_trace, paths.clone_for_manifest().src_trace);
+        assert_eq!(
+            paths.src_trace_chunks,
+            paths.clone_for_manifest().src_trace_chunks
+        );
         assert_eq!(
             Path::new(paths.src_trace.as_ref().unwrap())
                 .file_name()

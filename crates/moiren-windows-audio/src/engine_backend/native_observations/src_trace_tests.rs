@@ -237,3 +237,74 @@ fn native_src_trace_shared_cap_and_final_tail_never_turn_suffix_into_complete_pr
     collector.finish();
     assert_eq!(serde_json::to_value(collector.artifact()).unwrap(), before);
 }
+
+#[test]
+fn native_src_trace_drains_ordered_chunks_beyond_the_lifetime_limit() {
+    let mut fixture = Fixture::new();
+    let mut collector = fixture
+        .observations
+        .retain_session()
+        .unwrap()
+        .src_trace_collector(256)
+        .unwrap();
+    let mut observed = 0_u64;
+    for chunk_index in 1..=660 {
+        fixture.callbacks(observed, 200);
+        collector.poll();
+        let chunk = collector.drain_chunk().unwrap();
+        assert_eq!(chunk.owner_generation, 7);
+        assert_eq!(chunk.sequence, chunk_index);
+        assert_eq!(chunk.boundaries.len(), 1);
+        assert_eq!(chunk.boundaries[0].node, fixture.node);
+        for point in &chunk.boundaries[0].checkpoints {
+            observed += 1;
+            assert_eq!(point.sequence, observed);
+            assert_eq!(point.timeline_start, (observed - 1) * 32);
+        }
+        assert!(collector.artifact().retained_checkpoints <= 256);
+        assert!(collector.drain_chunk().is_none());
+    }
+    assert_eq!(observed, 132_000);
+    drop(fixture.sink.take());
+    collector.finish();
+    let artifact = collector.artifact();
+    assert!(artifact.history_complete, "{:?}", artifact.refusal);
+    assert_eq!(artifact.drained_checkpoints, observed);
+    assert_eq!(artifact.boundaries[0].drained_checkpoints, observed);
+    assert_eq!(artifact.retained_checkpoints, 0);
+    assert_eq!(artifact.boundaries[0].missing_callbacks, 0);
+    assert!(!artifact.qualified);
+}
+
+#[test]
+fn native_src_trace_drain_keeps_final_faults_and_cannot_clear_missing_evidence() {
+    let mut fixture = Fixture::new();
+    let mut collector = fixture
+        .observations
+        .retain_session()
+        .unwrap()
+        .src_trace_collector(256)
+        .unwrap();
+    fixture.callbacks(0, 200);
+    collector.poll();
+    collector.drain_chunk().unwrap();
+    fixture.callbacks(200, 300);
+    drop(fixture.sink.take());
+    collector.finish();
+    let chunk = collector.drain_chunk().unwrap();
+    assert_eq!(chunk.boundaries[0].checkpoints[0].sequence, 245);
+    assert!(
+        chunk.boundaries[0]
+            .checkpoints
+            .last()
+            .unwrap()
+            .discontinuity
+    );
+    assert_eq!(collector.artifact().boundaries[0].missing_callbacks, 44);
+    assert_eq!(collector.artifact().drained_checkpoints, 456);
+    assert!(!collector.artifact().history_complete);
+    assert_eq!(
+        collector.artifact().refusal,
+        Some(SrcTraceRefusal::MissingCallbacks)
+    );
+}

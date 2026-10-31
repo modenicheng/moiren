@@ -24,8 +24,8 @@ pub use process_trace::{
 #[path = "native_observations/src_trace.rs"]
 mod src_trace;
 pub use src_trace::{
-    NativeSrcBoundaryTrace, NativeSrcTrace, NativeSrcTraceCollector, SRC_TRACE_MAX_CHECKPOINTS,
-    SrcTraceRefusal,
+    NativeSrcBoundaryTrace, NativeSrcChunkBoundary, NativeSrcTrace, NativeSrcTraceChunk,
+    NativeSrcTraceCollector, SRC_TRACE_MAX_CHECKPOINTS, SrcTraceRefusal,
 };
 
 #[cfg(test)]

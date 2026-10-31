@@ -743,6 +743,7 @@ pub fn run_vad(
         retained_native: None,
         src_trace: None,
         src_trace_path: paths.src_trace.as_deref().map(PathBuf::from),
+        src_chunks_path: paths.src_trace_chunks.as_deref().map(PathBuf::from),
         retained_professional: None,
         playback_info: None,
         startup_samples: Vec::with_capacity(STARTUP_SAMPLE_LIMIT),
@@ -870,8 +871,9 @@ pub(super) struct VadCleanup<'a> {
     professional_observations:
         Option<moiren_windows_audio::engine_backend::ProfessionalObservations>,
     retained_native: Option<moiren_windows_audio::engine_backend::NativeObservationReadHandle>,
-    src_trace: Option<moiren_windows_audio::engine_backend::NativeSrcTraceCollector>,
+    src_trace: Option<src_trace::NativeSrcStream>,
     src_trace_path: Option<PathBuf>,
+    src_chunks_path: Option<PathBuf>,
     retained_professional:
         Option<moiren_windows_audio::engine_backend::ProfessionalObservationReadHandle>,
     playback_info: Option<Value>,
@@ -1212,11 +1214,12 @@ impl VadCleanup<'_> {
                 .and_then(|view| view.retain_session());
         }
         if let Some(retained) = &self.retained_native {
-            let mut trace = retained
-                .src_trace_collector(
-                    moiren_windows_audio::engine_backend::SRC_TRACE_MAX_CHECKPOINTS,
-                )
-                .map_err(anyhow::Error::msg)?;
+            let mut trace = src_trace::NativeSrcStream::open(
+                retained,
+                self.src_chunks_path
+                    .as_deref()
+                    .context("SRC chunk path missing")?,
+            )?;
             trace.poll();
             self.src_trace = Some(trace);
         }
@@ -1606,11 +1609,10 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
             expected_generation,
         ));
         let src_export = if let Some(trace) = self.src_trace.as_mut() {
-            trace.finish();
             self.src_trace_path
                 .as_deref()
                 .context("SRC trace output path missing")
-                .and_then(|path| src_trace::export(trace, path, &mut self.report.src_trace))
+                .and_then(|path| trace.finish(path, &mut self.report.src_trace))
         } else {
             Ok(())
         };

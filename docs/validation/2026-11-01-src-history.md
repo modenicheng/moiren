@@ -160,3 +160,9 @@ minimum or new default follows. S1-S3 and the overarching goal remain active.
 This slice performs no native acquisition/replay, remote audio, driver/system
 control write, speaker render, push, subagent or memory update. Unrelated
 `gate.log` is preserved.
+
+The subsequent [streaming retention slice](2026-11-01-src-stream.md) adds
+draining and create-new ordered chunks through a bounded control-only writer.
+The lifetime archive limit above describes this revision; pending/stream caps
+and polling gaps still refuse explicitly, and scalar coverage remains separate
+from persistence, waveform quality and physical qualification.
