@@ -7,25 +7,34 @@ verdict. Status updated 2026-10-31.
 ## Latest physical checkpoint - 2026-10-31
 
 The separate physical target has app `af70aa9` and explicitly enabled
-Playback-copy diagnostic driver `74f11c6`: `oem202.inf`, version `3.1.1.608`.
-Service Running/root PnP OK and exact SYS hash are verified, with the old
-rollback package retained and no reboot. A fresh read-only audit confirms no
-owned build/audio processes before further work. Native retries are authorized;
-older paused-retry statements below describe dated history. Only DAWN
-headphones are used for audible runs; speaker/default settings stay unchanged.
+native-Playback diagnostic driver `2a5aee5`: `oem203.inf`, version `3.1.1.609`.
+Service Running/root PnP OK, exact installed SYS hash, target signatures and
+catalog members are verified. The 608 and older 607 rollback packages remain;
+no reboot, trust/volume/default change or target build occurs. Native retries
+are authorized; older paused-retry statements below describe dated history.
+Only DAWN headphones may be used for audible runs. This checkpoint adds no
+physical render client.
 
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
-The new bounded diagnostic reads the actual transfer source and READ MDL
-destination AFTER memcpy, not native ring ingress. A retained first attempt
-loses Playback readiness before any source starts. An unchanged-fixture retry
-then completes and retains 480000 frames on both sides, all zero, equal to
-the all-zero provider capture. Both complete 15-fragment revisions and
-sequence/scan bounds are retained; the first failure is not erased or fixed
-by the retry. This does not establish before-copy source contents, waveform
-delivery, a sole cause, continuity or physical latency. App help/offline smoke
-passes separately; GUI/native app acceptance remains open. Exact deployment,
-host checks, failed attempts, archive and next boundary are in the
+The new READ-selected, bounded native-buffer observer records the actual
+consumption path and bytes before the original clearing. A retained first
+attempt loses MIC readiness before any source starts. An unchanged-fixture
+retry completes: the actual path is EVENT, two packets, not timer/Scratch.
+All 480000 sampled native frames are zero after the existing EOS handling
+and before clear. Event destination counters duplicate the same single read,
+not an independent paired-copy witness. First/last EOS flags are zero; middle
+EOS states are not individually retained. Original post-copy READ and provider
+captures also retain 480000 all-zero frames. Native sequences 2..1001 differ
+from READ/provider 1..1000; 999 logical packet IDs overlap, not exact sample
+alignment. Complete 26-fragment native and unchanged 15-fragment READ groups,
+source nonzero write witness, failure, cleanup and verified archive remain in
+the [native-consumption receipt](../../docs/validation/2026-10-31-native-playback-ingress.md).
+This narrows a zero observation to the consumed event buffer; it establishes
+neither a sole cause nor nonzero continuity/physical latency. Session 0 remains
+an unproven confound. App help/offline smoke passes separately; GUI/native app,
+exact S1-S3 and calibrated sub-10-ms acceptance remain open. The preceding
+READ-only observer checkpoint is retained in the
 [Playback-copy receipt](../../docs/validation/2026-10-31-playback-copy-boundary.md).
 
 The pause-fence repair serializes epoch publication with PCM queue draining
