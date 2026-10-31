@@ -133,7 +133,9 @@ physical sound, recovery, or compatibility with other capture software. Verify
 that the PID really renders to the chosen endpoint and assess the released
 window separately. Windows can disconnect shared sessions when Exclusive mode
 overrides them, so applications may stop, retry, or move to another endpoint.
-See the [experiment and results](../../docs/superpowers/plans/2026-10-15-exclusive-loopback.md).
+The experiment and results were recorded in the 2026-10-15 exclusive-loopback
+plan document (the superpowers plans directory was removed from the repository
+on 2026-10-31; see `git log -- docs/superpowers/plans`).
 
 ## Engine-backed Process Loopback
 
@@ -181,7 +183,9 @@ Start occurs before activation. Duration starts after native Start;
 `has_started` acknowledges only successful native Start. Cancellation wakes both
 prepared and running owners, including continuous runs.
 
-Implementation and acceptance: [Process Loopback plan](../../docs/superpowers/plans/2026-10-09-process-loopback.md).
+Implementation and acceptance were recorded in the 2026-10-09 Process Loopback
+plan document (the superpowers plans directory was removed from the repository
+on 2026-10-31; see `git log -- docs/superpowers/plans`).
 
 ## Physical capture and clock bridge
 
@@ -322,8 +326,10 @@ running starvation from a teardown race; diagnostics never clear xrun counters.
 Stop/rebind must prepare a fresh bridge; Process Loopback, multiple devices,
 quality SRC and automatic recovery remain separate slices.
 
-The [implementation plan](../../docs/superpowers/plans/2026-10-09-audio-backend.md)
-and [validation record](../../docs/experiments/windows/2026-10-09-capture-clock-bridge.md)
+The 2026-10-09 audio-backend implementation plan (the superpowers plans
+directory was removed from the repository on 2026-10-31; see
+`git log -- docs/superpowers/plans`) and the
+[validation record](../../docs/experiments/windows/2026-10-09-capture-clock-bridge.md)
 distinguish simulation from hardware testing. Repeat the two-hour synthetic
 drift test for both native rates and both ±1000 ppm signs:
 
