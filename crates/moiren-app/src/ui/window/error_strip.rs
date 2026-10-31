@@ -24,6 +24,12 @@ pub(in crate::ui::window) fn has_faults(shell: &StudioShell, cx: &App) -> bool {
 #[derive(PartialEq)]
 pub(in crate::ui::window) struct ErrorStripKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
+    // `build` renders this field next to the published faults, and
+    // `UiState::try_dispatch` writes it synchronously with no publish behind
+    // it, so a dispatch failure while the strip is already mounted must
+    // rebuild on its own notification; keyed on publish identity alone the
+    // diagnostic froze until the next publish. Cloned only at capture time.
+    dispatch_error: Option<String>,
 }
 
 impl CachedPanel for ErrorStripPanel {
@@ -31,8 +37,10 @@ impl CachedPanel for ErrorStripPanel {
     type Key = ErrorStripKey;
 
     fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
+        let state = shell.state.read(cx);
         Self::Key {
-            snapshot: PublishRef::new(Arc::clone(&shell.state.read(cx).snapshot)),
+            snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
+            dispatch_error: state.dispatch_error.clone(),
         }
     }
 

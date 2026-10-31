@@ -101,12 +101,9 @@ fn error_strip_mounts_with_a_publish_and_repaints_the_next_exactly_once(cx: &mut
 
 /// A dispatch failure writes `state.dispatch_error` synchronously
 /// (`UiState::try_dispatch`) with no publish behind it, and the strip's
-/// `build` renders exactly that field — so the mounted strip must repaint the
-/// diagnostic even though its key (publish identity only) holds. The counter
-/// records the current key contract; the paint assertion is the invariant the
-/// design demands and currently fails.
+/// `build` renders exactly that field — so the key carries the field and the
+/// mounted strip repaints the diagnostic on that notification alone.
 #[gpui_kit::test]
-#[ignore = "ErrorStripKey carries only publish identity while build() also renders state.dispatch_error; a dispatch failure while the strip is already mounted freezes until the next publish (verified: the counter holds and the diagnostic row never paints)"]
 fn error_strip_repaints_a_dispatch_failure_while_already_mounted(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
@@ -136,8 +133,8 @@ fn error_strip_repaints_a_dispatch_failure_while_already_mounted(cx: &mut TestAp
     cached_frame(cx);
     assert_eq!(
         strip_rebuilds(&view, cx),
-        1,
-        "the publish-only key correctly holds across the notification"
+        2,
+        "the dispatch failure must rebuild the mounted strip exactly once"
     );
     assert!(
         cx.update(|window, _| window.find("error-strip-message").visible()),
