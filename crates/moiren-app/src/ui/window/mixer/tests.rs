@@ -725,6 +725,163 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     finish_service(runtime);
 }
 
+/// The user's repro: select the strip by clicking its bottom header, then
+/// drag the fader a tiny bit — the thumb must not lock onto -inf. The
+/// selection rebuilds the strip and (when the inspector is open) rewires
+/// the node's meter visibility and the inspector panel; none of that may
+/// corrupt the shared slider state.
+#[gpui_kit::test]
+fn mixer_fader_small_drag_survives_strip_selection(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    // Select the strip the way the header click does.
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(node);
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let start_value = 1. - FaderScale::position(1.);
+    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        let held = view.read_with(cx, |shell, cx| {
+            shell.mixer.faders[&node].state.read(cx).value().end()
+        });
+        assert!(
+            held > 0.5,
+            "with the strip selected the thumb snapped to {held}"
+        );
+    }
+    poll(&view, cx);
+    let final_db = view.update(cx, |shell, cx| {
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        20. * gain.log10()
+    });
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag from unity landed at {final_db} dB with the strip selected"
+    );
+    // And the same drag with the inspector open: the inspector shares the
+    // slider state and rebuilds per publish.
+    view.update(cx, |shell, cx| {
+        shell.open_inspector();
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let held = view.read_with(cx, |shell, cx| {
+            shell.mixer.faders[&node].state.read(cx).value().end()
+        });
+        assert!(
+            held > 0.5,
+            "with the inspector open the thumb snapped to {held}"
+        );
+    }
+    poll(&view, cx);
+    let final_db = view.update(cx, |shell, cx| {
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        20. * gain.log10()
+    });
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag from unity landed at {final_db} dB with the inspector open"
+    );
+    finish_service(runtime);
+}
+
 /// Same small drag, but the window was resized after the strips laid out:
 /// the strips must re-derive their pointer mapping from the new geometry
 /// instead of mapping against the pre-resize track and clamping to the rail.

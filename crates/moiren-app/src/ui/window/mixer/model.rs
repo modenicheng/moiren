@@ -16,6 +16,15 @@ pub(in crate::ui::window) struct MixerPresentation {
     /// publish during a fader drag rebuilds only the strip whose content
     /// changed. Created and retained by [`StudioShell::sync_mixer_controls`].
     pub strips: BTreeMap<NodeId, Entity<super::meter_frame::StripPanelHost>>,
+    /// The inspector's channel-strip fader row gets its own slider slot per
+    /// node: the kit's `SliderState` stores the pointer-mapping bounds of
+    /// whichever view registered last, so the strip's vertical fader and the
+    /// inspector's horizontal row cannot share one state — the row's
+    /// horizontal bounds would own the strip's vertical drag and slam it to
+    /// a rail (the selected-strip -inf lock). Two slots, one snapshot: both
+    /// dispatch the same edits and the published graph reconciles them,
+    /// exactly like the tray flyout's own slot set.
+    pub inspector_faders: BTreeMap<NodeId, SliderSlot>,
     pub send_inputs: BTreeMap<EdgeId, Entity<component::input::InputState>>,
     pub editing_send: Option<EdgeId>,
     /// Click-to-type editors for the fader dB readouts; the strip readout
@@ -821,6 +830,18 @@ impl StudioShell {
             cx,
             &self.state,
             &mut self.mixer.faders,
+            fader_rows(&graph),
+        );
+        // The inspector's fader row mirrors the snapshot through its own
+        // slots; the strip's slots stay untouched by the inspector's drags.
+        self.mixer
+            .inspector_faders
+            .retain(|id, _| graph.node(*id).is_some());
+        sync_faders(
+            window,
+            cx,
+            &self.state,
+            &mut self.mixer.inspector_faders,
             fader_rows(&graph),
         );
         for edge in graph.graph.edges() {

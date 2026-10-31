@@ -183,8 +183,8 @@ pub(in crate::ui::window) fn inspector(
             }),
         ))
         .child(hslider(
-            &shell.mixer.faders[&id].state,
-            &shell.mixer.faders[&id].behavior,
+            &shell.mixer.inspector_faders[&id].state,
+            &shell.mixer.inspector_faders[&id].behavior,
             cx,
         ))
         // Live bars are the sidebar hot surface's job; this painting-free
