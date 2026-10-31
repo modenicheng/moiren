@@ -66,6 +66,8 @@ jobs:
       - run: cargo +stable fmt --all -- --check
       - name: Test offline VAD rebase evidence association
         run: python3 scripts/tests/vad-clock-rebase.tests.py
+      - name: Test offline VAD capture QPC evidence association
+        run: python3 scripts/tests/vad-capture-qpc.tests.py
   test:
     needs: changes
     if: needs.changes.outputs.any == 'true'

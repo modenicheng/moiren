@@ -91,6 +91,20 @@ The isolated44 tests and actual-repository19 model tests/strict Clippy pass;
 the isolated strict lint failure in unchanged imported test source remains
 recorded. No native replay or production/model/default change occurs.
 
+The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
+strictly associates first-copy/native0 and first-nonzero/native228 witnesses
+with raw WASAPI packets1/229 at the same callback/completion QPC labels. The
+bounded host-only tool refuses ambiguity, unsupported frequency and split
+native identity;17 association tests,15 rebase tests and45 independent evidence
+checks pass. Both disclosed offline tool revisions produce identical JSON
+from the unchanged acquisition; no native replay occurs. All9686 original
+packet-QPC policy violations remain visible, and start times/full-interval
+provenance stay unknown. ACX completion and capture-start contracts remain
+distinct; neither guessed one-period subtraction nor changing the Notify
+argument follows. Collector/boundary receipts explicitly hardcode incomplete
+quality, so14 unknown boundary polls are not its sole cause. PCM/clock quality,
+native final-QUERY verification and physical acceptance remain open.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie
