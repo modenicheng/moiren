@@ -928,6 +928,99 @@ fn query_failure_marks_cached_diagnostics_without_relabeling_preparation_refusal
 }
 
 #[test]
+fn drained_worker_retention_keeps_tail_counters_when_completion_races_snapshot() {
+    use std::sync::mpsc;
+
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    lifecycle.create(spec()).unwrap();
+    let session = prepared(&mut lifecycle, Arc::new(Admission::new()));
+    let worker_state = session.clone();
+    let (finish_tx, finish_rx) = mpsc::sync_channel(1);
+    let (drained_tx, drained_rx) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        finish_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker_state.telemetry.submission_attempt(128, 64);
+        worker_state.telemetry.submission_accepted();
+        worker_state.telemetry.driver_drop();
+        worker_state.telemetry.quota_drop();
+        worker_state.telemetry.carrier_drop();
+        worker_state.telemetry.stale_packet();
+        worker_state.telemetry.sequence_gap(3);
+        worker_state.telemetry.completion_at(128, 200);
+        worker_state.telemetry.completion_at(128, 100);
+        worker_state.telemetry.epoch_reset(7);
+        worker_state.telemetry.recovery();
+        worker_state.drained.store(true, Ordering::Release);
+        drained_tx.send(()).unwrap();
+    });
+    // Finish after the first snapshot was copied but before poll can decide
+    // whether to discard the session. Both waits are finite, not timed sleeps.
+    super::super::AFTER_TELEMETRY_SNAPSHOT.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            finish_tx.send(()).unwrap();
+            drained_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+    });
+    lifecycle.poll();
+    worker.join().unwrap();
+    assert_eq!(lifecycle.endpoints[&id()].sessions.len(), 1);
+    let final_snapshot = session.telemetry_snapshot();
+    assert_eq!(final_snapshot.silence_frames, 64);
+    assert_eq!(final_snapshot.dropped_packets, 3);
+    assert_eq!(final_snapshot.missing_sequence_slots, 3);
+    assert_eq!(final_snapshot.completion_clock_regressions, 1);
+    let retained = lifecycle.poll().remove(0);
+    assert_eq!(retained.telemetry, Some(final_snapshot));
+    assert!(lifecycle.endpoints[&id()].sessions.is_empty());
+    assert!(!retained.transport_prepared);
+    assert_eq!(lifecycle.poll()[0].telemetry, Some(final_snapshot));
+}
+
+#[test]
+fn drained_worker_retention_reaps_after_completion_even_when_query_fails() {
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    lifecycle.create(spec()).unwrap();
+    let session = prepared(&mut lifecycle, Arc::new(Admission::new()));
+    session.telemetry.submission_attempt(128, 32);
+    session.telemetry.driver_drop();
+    session.drained.store(true, Ordering::Release);
+    let final_snapshot = session.telemetry_snapshot();
+    lifecycle.control.fail_query = true;
+    let failed = lifecycle.poll().remove(0);
+    assert!(lifecycle.endpoints[&id()].sessions.is_empty());
+    assert_eq!(failed.telemetry, Some(final_snapshot));
+    assert_eq!(
+        failed.diagnostic_provenance,
+        VadExportDiagnosticProvenance::CachedAfterQueryFailure
+    );
+    lifecycle.control.fail_query = false;
+    lifecycle.control.current = snapshot(PdoState::Removed, 3, 5, false);
+    let removed = lifecycle.poll().remove(0);
+    assert_eq!(removed.snapshot.unwrap().state(), PdoState::Removed);
+    assert_eq!(removed.telemetry, Some(final_snapshot));
+}
+
+#[test]
+fn drained_worker_retention_shared_reaper_keeps_running_and_retains_completed() {
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    lifecycle.create(spec()).unwrap();
+    let session = prepared(&mut lifecycle, Arc::new(Admission::new()));
+    let record = lifecycle.endpoints.get_mut(&id()).unwrap();
+    // Endpoint preparation and poll use this same control-side reaper.
+    record.reap_sessions();
+    assert_eq!(record.sessions.len(), 1);
+    session.telemetry.carrier_drop();
+    session.telemetry.sequence_gap(2);
+    session.drained.store(true, Ordering::Release);
+    record.reap_sessions();
+    assert!(record.sessions.is_empty());
+    assert_eq!(record.telemetry, Some(session.telemetry_snapshot()));
+    assert_eq!(record.telemetry.unwrap().carrier_dropped_packets, 1);
+    record.reap_sessions();
+    assert_eq!(record.telemetry, Some(session.telemetry_snapshot()));
+}
+
+#[test]
 fn pcm_cancellation_rebuilds_on_epoch_change_but_same_epoch_fault_is_fatal() {
     let admission = Arc::new(Admission::new());
     let session = SessionState::new(admission.clone());

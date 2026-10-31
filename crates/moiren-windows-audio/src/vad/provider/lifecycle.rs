@@ -35,6 +35,19 @@ pub(super) struct EndpointRecord {
     pub diagnostic_provenance: VadExportDiagnosticProvenance,
 }
 
+impl EndpointRecord {
+    pub(super) fn reap_sessions(&mut self) {
+        self.sessions.retain(|session| {
+            // Acquire completion BEFORE copying relaxed counters. If the
+            // worker finishes during that copy, retain it for another poll
+            // instead of discarding its final writes with an older snapshot.
+            let drained = session.drained.load(Ordering::Acquire);
+            self.telemetry = Some(session.telemetry_snapshot());
+            !drained
+        });
+    }
+}
+
 pub(super) trait EndpointControl {
     /// None is a validated no-resource deferral, never an uncertain IO failure.
     fn create(
@@ -203,12 +216,7 @@ impl<C: EndpointControl> Lifecycle<C> {
     pub fn poll(&mut self) -> Vec<ExportView> {
         for record in self.endpoints.values_mut() {
             record.diagnostic_provenance = VadExportDiagnosticProvenance::Fresh;
-            for session in &record.sessions {
-                record.telemetry = Some(session.telemetry_snapshot());
-            }
-            record
-                .sessions
-                .retain(|session| !session.drained.load(Ordering::Acquire));
+            record.reap_sessions();
             if let Some(previous) = record.snapshot
                 && previous.state() != PdoState::Removed
             {

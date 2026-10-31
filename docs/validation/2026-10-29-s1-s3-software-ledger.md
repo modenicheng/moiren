@@ -128,6 +128,18 @@ unattributed, and poll-before-drained retention coherence is not repaired or
 proven by these synthetic snapshots. Complete quality stays explicitly false;
 native tail-fault verification and S1-S3 physical acceptance remain open.
 
+The [drained-worker retention repair](2026-11-01-drained-worker-retention.md)
+then proves the old poll could discard a finishing session with a pre-fault
+snapshot. Its deterministic threaded regression first fails with final counters
+lost; a shared control-side reaper now Acquires drained before copying telemetry
+and removes only sessions that earlier read found completed. Endpoint preparation
+also uses it rather than discarding drained state without a snapshot. The three
+focused tests pass; audio suite974/3 ignored, five probes737, app672/4 ignored,
+app integration116 and RT218 pass, as do strict audio lint/fmt and Linux
+cross-target compilation. Running snapshots remain noncoherent and native
+tail-fault, final-only lifecycle attribution and complete physical quality
+remain unverified.
+
 The [startup WPP follow-up](2026-10-31-mic-startup-clock-rebase.md) preserves
 trace1's closure/observer failure and uses the same frozen9968505 audio binary
 for one terminal trace2 acquisition. Matching native fragments directly tie

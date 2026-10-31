@@ -73,6 +73,13 @@ validates the raw snapshots actually supplied to it. A fresh driver QUERY is
 not a guarantee of a coherent final worker snapshot. The synthetic regression
 fixtures do not exercise worker publication or protocol-decoded identity.
 
+The subsequent [drained-worker retention repair](2026-11-01-drained-worker-retention.md)
+reproduces this precise stale-copy/removal interleaving with a real worker
+thread and makes both control-side reapers Acquire drained before copying
+telemetry. It closes that demonstrated race in software, not coherent live
+publication or actual native quality. The review above records the boundary
+at this document's original `275406c` delivery.
+
 ## Regression evidence
 
 Repository base is `bc7cc62`. Host evidence root is
@@ -113,10 +120,11 @@ source hashes are pinned before documentation and local commit.
 ## Remaining acceptance
 
 This closes a demonstrated omission for available retired worker snapshots,
-not the complete end-of-collection quality problem. Worker publication/final
-retention coherence, attribution of final-only lifecycle changes and actual
-native tail-fault detection remain unverified. Historical reports and their
-original refusals are not rewritten or accepted by these software tests.
+not the complete end-of-collection quality problem. Coherent live publication,
+native final-retention verification, attribution of final-only lifecycle
+changes and actual native tail-fault detection remain unverified. Historical
+reports and their original refusals are not rewritten or accepted by these
+software tests.
 
 Complete changing-waveform/clock handling, continuous quality, matched
 preceding-arm/rebase evidence, sustained lower-budget delivery, matched

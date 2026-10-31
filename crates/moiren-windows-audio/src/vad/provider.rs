@@ -329,9 +329,7 @@ impl WindowsVadProvider {
                     "export has not been created by the lifecycle adapter".into(),
                 )
             })?;
-        record
-            .sessions
-            .retain(|s| !s.drained.load(Ordering::Acquire));
+        record.reap_sessions();
         let snapshot = record
             .snapshot
             .filter(|s| s.state() == PdoState::Present)
@@ -509,6 +507,11 @@ struct SessionState {
     telemetry: Arc<PcmTelemetry>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_TELEMETRY_SNAPSHOT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl SessionState {
     fn new(admission: Arc<Admission>) -> Self {
         Self {
@@ -543,7 +546,15 @@ impl SessionState {
     }
 
     fn telemetry_snapshot(&self) -> VadPcmTelemetrySnapshot {
-        self.telemetry.snapshot()
+        let snapshot = self.telemetry.snapshot();
+        #[cfg(test)]
+        AFTER_TELEMETRY_SNAPSHOT.with(|hook| {
+            let pending = hook.borrow_mut().take();
+            if let Some(pending) = pending {
+                pending();
+            }
+        });
+        snapshot
     }
 }
 
