@@ -211,6 +211,10 @@ pub struct UiState {
     pub handle: AppHandle,
     pub selection: SelectionState,
     pub snapshot: Arc<AppSnapshot>,
+    /// The one meter subscription table for the whole application: the main
+    /// window and the tray flyout both pump it with their own visibility, and
+    /// the seen-table grace unions the two demands (design 17, data plane).
+    pub node_meters: crate::ui::monitoring::NodeMeters,
     pub pending_request: bool,
     pub dispatch_error: Option<String>,
     pub source_mode: SourceMode,
@@ -228,6 +232,7 @@ impl UiState {
     pub fn new(handle: AppHandle, initial: Arc<AppSnapshot>) -> Self {
         let mut selection = SelectionState::default();
         selection.refresh_for_backend(&initial.catalog, initial.audio_settings.backend);
+        let node_meters = crate::ui::monitoring::NodeMeters::new(handle.clone());
         let (gain, pan) = primary_parameters(&initial);
         let max_block_frames = initial.audio_settings.processing.block_frames as usize;
         let mut state = Self {
@@ -235,6 +240,7 @@ impl UiState {
             handle,
             selection,
             snapshot: initial,
+            node_meters,
             pending_request: false,
             dispatch_error: None,
             source_mode: SourceMode::Tone,

@@ -294,7 +294,9 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
     });
     // The inspector's closing spring is a real layout change, not a meter
     // invalidation. Let it finish before measuring steady-state frames.
@@ -451,9 +453,10 @@ fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut Te
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| {
-            shell.node_meters.raw_levels(node).is_some()
-                && shell.node_meters.channel_levels(node).is_some()
+        view.read_with(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state.node_meters.raw_levels(node).is_some()
+                && state.node_meters.channel_levels(node).is_some()
         })
     });
     // Digital silence (no publications) parks every layer at the scale
@@ -589,16 +592,26 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
     });
-    let levels = view.read_with(cx, |shell, _| {
-        shell.node_meters.raw_levels(node).unwrap().to_vec()
+    let levels = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .node_meters
+            .raw_levels(node)
+            .unwrap()
+            .to_vec()
     });
     assert!(
         levels[0].peak >= 1.,
         "the fake physical source is full scale"
     );
-    assert!(view.read_with(cx, |shell, _| shell.node_meters.channel_clips(node)[0]));
+    assert!(view.read_with(cx, |shell, cx| {
+        shell.state.read(cx).node_meters.channel_clips(node)[0]
+    }));
     crate::ui::window::test_harness::settle_panels(cx);
     backend_state.pause_audio.store(true, Ordering::SeqCst);
     // Drain any already-published windows before resetting the clip latch.
@@ -607,10 +620,11 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    let (bar_before, strips_before, paints_before) = view.read_with(cx, |shell, _| {
+    let (bar_before, strips_before, paints_before) = view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
         let trace = shell.mixer.trace.borrow();
         (
-            shell.node_meters.channel_levels(node).unwrap()[0].bar,
+            state.node_meters.channel_levels(node).unwrap()[0].bar,
             trace.strip_renders,
             trace.meter_paints,
         )
@@ -620,18 +634,24 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    view.read_with(cx, |shell, _| {
+    view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
         let trace = shell.mixer.trace.borrow();
         assert!(
-            shell.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
+            state.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
             "cached controls must not freeze display ballistics between publications"
         );
         assert_eq!(trace.strip_renders, strips_before);
         assert!(trace.meter_paints > paints_before);
     });
     cx.update(|window, cx| window.click(SharedString::from(format!("meter-reset-{node:?}")), cx));
-    assert!(view.read_with(cx, |shell, _| {
-        shell.node_meters.channel_clips(node).is_empty()
+    assert!(view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .node_meters
+            .channel_clips(node)
+            .is_empty()
     }));
 
     // Add enough strips to overflow. Both the cache and overlay geometry must
@@ -676,7 +696,9 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    assert!(view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_none()));
+    assert!(view.read_with(cx, |shell, cx| {
+        shell.state.read(cx).node_meters.raw_levels(node).is_none()
+    }));
     finish_service(runtime);
 }
 

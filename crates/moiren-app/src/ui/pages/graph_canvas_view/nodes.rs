@@ -168,52 +168,18 @@ pub(in crate::ui) fn paint_meter_bars(
         let clip = reading.is_some_and(|reading| reading.clips[channel]);
         // A latched clip lights the track itself: the card has no lamp row,
         // and the tint stays legible at any zoom where the 2 px row is.
-        rounded(
-            track,
-            if clip {
-                theme::soft(theme::DANGER)
-            } else {
-                theme::WINDOW_BG
-            },
-            layout.scale,
-            window,
-        );
+        // Zone colors, the dark RMS tail, and the held marker come from the
+        // shared fill painter; the card only keeps its rounded corners.
+        let background = if clip {
+            theme::soft(theme::DANGER)
+        } else {
+            theme::WINDOW_BG
+        };
+        rounded(track, theme::WINDOW_BG, layout.scale, window);
         let Some(level) = reading.and_then(|reading| reading.levels.get(channel)) else {
             continue;
         };
-        // Zone spans tile from the quiet left edge; the dark tail covers the
-        // transient zone between the RMS body and the peak bar; the held
-        // marker stands at its reading.
-        for span in crate::ui::widgets::meters::meter_spans(*level) {
-            rounded(
-                Bounds {
-                    origin: point(
-                        track.origin.x + track.size.width * span.bottom,
-                        track.origin.y,
-                    ),
-                    size: size(track.size.width * span.height, track.size.height),
-                },
-                span.color,
-                layout.scale,
-                window,
-            );
-        }
-        let marker = crate::ui::widgets::meters::meter_height(level.marker);
-        let marker_width = px(layout.scale.max(1.));
-        rounded(
-            Bounds {
-                origin: point(
-                    track.origin.x
-                        + (track.size.width * marker)
-                            .clamp(px(0.), track.size.width - marker_width),
-                    track.origin.y,
-                ),
-                size: size(marker_width, track.size.height),
-            },
-            theme::TEXT,
-            layout.scale,
-            window,
-        );
+        crate::ui::widgets::meters::paint_meter_fill_horizontal(track, *level, background, window);
     }
 }
 

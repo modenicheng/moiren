@@ -575,7 +575,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
         // here; the selected node must end up demanded either way.
         shell.update_node_meters(true, cx);
         assert_eq!(
-            shell.node_meters.status(node),
+            shell.state.read(cx).node_meters.status(node),
             crate::ui::monitoring::MeterStatus::NoPublisher,
             "selected node keeps its subscription polled"
         );
@@ -586,7 +586,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
         shell.selected_node = None;
         shell.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
-        assert!(shell.node_meters.levels(node).is_none());
+        assert!(shell.state.read(cx).node_meters.levels(node).is_none());
     });
     view.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| state.poll());
@@ -1107,7 +1107,9 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
     });
     // The panels' opening springs animate against the shell; let them settle
     // before measuring so only the meter frame can request frames.
@@ -1245,9 +1247,10 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| {
-            shell.node_meters.raw_levels(node).is_some()
-                && shell.node_meters.channel_levels(node).is_some()
+        view.read_with(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state.node_meters.raw_levels(node).is_some()
+                && state.node_meters.channel_levels(node).is_some()
         })
     });
     // The panels' opening springs animate against the shell; let them settle
@@ -1267,10 +1270,11 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    let (bar_before, paints_before, renders_before) = view.read_with(cx, |shell, _| {
+    let (bar_before, paints_before, renders_before) = view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
         let trace = shell.mixer.trace.borrow();
         (
-            shell.node_meters.channel_levels(node).unwrap()[0].bar,
+            state.node_meters.channel_levels(node).unwrap()[0].bar,
             trace.graph_meter_paints,
             trace.graph_renders,
         )
@@ -1282,7 +1286,8 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             window.draw(cx).clear(cx);
         });
     }
-    view.read_with(cx, |shell, _| {
+    view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
         let trace = shell.mixer.trace.borrow();
         assert!(
             trace.graph_meter_paints >= paints_before + 10,
@@ -1293,7 +1298,7 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             "bar motion must not rebuild the cached graph page"
         );
         assert!(
-            shell.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
+            state.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
             "the repainted bars must follow the decaying ballistics"
         );
     });

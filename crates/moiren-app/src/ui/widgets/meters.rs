@@ -5,7 +5,6 @@
 //! from −6 to 0 dBFS, and red above digital zero.
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::theme;
-use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 /// Main Mixer bars fill exactly the shared fader track; there is no second
@@ -40,29 +39,9 @@ pub(crate) fn paint_channel_meter(
             point(left, bounds.top()),
             size(px(width), bounds.size.height),
         );
-        window.paint_quad(fill(track, theme::BORDER));
         let level = levels.and_then(|levels| levels.get(index));
         if let Some(level) = level {
-            // The zone segmentation, the dark peak tail and their
-            // colors are the DOM bars' [`meter_spans`]; only the
-            // painting surface differs here.
-            for span in meter_spans(*level) {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(
-                            left,
-                            bounds.bottom() - bounds.size.height * (span.bottom + span.height),
-                        ),
-                        size(px(width), bounds.size.height * span.height),
-                    ),
-                    span.color,
-                ));
-            }
-            let y = bounds.top() + bounds.size.height * meter_marker_position(level.marker);
-            window.paint_quad(fill(
-                Bounds::new(point(left, y - px(1.)), size(px(width), px(2.))).intersect(&track),
-                theme::TEXT,
-            ));
+            paint_meter_fill(track, *level, theme::BORDER, window);
         }
         // A held display marker is not a new overload. Trust the
         // raw-window latch so clicking reset clears it immediately.
@@ -136,12 +115,71 @@ fn meter_marker_position(marker: f32) -> f32 {
     1. - meter_height(marker)
 }
 
+/// Fill one vertical meter track from the shared `meter_spans` math: the
+/// zone colors rise from the quiet bottom, the dark RMS tail covers the
+/// transient zone, and the held marker stands at its reading. Every meter
+/// surface paints these spans; only the track geometry and the surrounding
+/// decorations differ.
+pub(crate) fn paint_meter_fill(
+    track: Bounds<Pixels>,
+    level: DisplayLevel,
+    background: Hsla,
+    window: &mut Window,
+) {
+    window.paint_quad(fill(track, background));
+    for span in meter_spans(level) {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(
+                    track.left(),
+                    track.bottom() - track.size.height * (span.bottom + span.height),
+                ),
+                size(track.size.width, track.size.height * span.height),
+            ),
+            span.color,
+        ));
+    }
+    let y = track.top() + track.size.height * meter_marker_position(level.marker);
+    window.paint_quad(fill(
+        Bounds::new(
+            point(track.left(), y - px(1.)),
+            size(track.size.width, px(2.)),
+        ),
+        theme::TEXT,
+    ));
+}
+
+/// [`paint_meter_fill`] rotated for horizontal tracks: `bottom` becomes the
+/// quiet left edge and `height` the extent from there.
+pub(crate) fn paint_meter_fill_horizontal(
+    track: Bounds<Pixels>,
+    level: DisplayLevel,
+    background: Hsla,
+    window: &mut Window,
+) {
+    window.paint_quad(fill(track, background));
+    for span in meter_spans(level) {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(track.left() + track.size.width * span.bottom, track.top()),
+                size(track.size.width * span.height, track.size.height),
+            ),
+            span.color,
+        ));
+    }
+    let x = track.left() + track.size.width * meter_height(level.marker);
+    window.paint_quad(fill(
+        Bounds::new(point(x, track.top()), size(px(2.), track.size.height)),
+        theme::TEXT,
+    ));
+}
+
 /// One colored layer of a meter bar, spanning `bottom`..`bottom + height` in
 /// the 0..1 track space.
-pub(crate) struct MeterSpan {
-    pub(crate) bottom: f32,
-    pub(crate) height: f32,
-    pub(crate) color: Hsla,
+struct MeterSpan {
+    bottom: f32,
+    height: f32,
+    color: Hsla,
 }
 
 /// Layers for one channel: the bright segment fill covers the RMS body, and
@@ -149,9 +187,9 @@ pub(crate) struct MeterSpan {
 /// sustained reading stays light and transients show as the dark tail.
 /// Zone boundaries use the compact digital reference: −6 dBFS
 /// (green→yellow) and 0 dBFS (yellow→red). This is the single source for the
-/// segmentation strategy: every meter surface — the mixer canvas, the DOM
-/// bars, and the graph cards — paints these spans in its own orientation.
-pub(crate) fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
+/// segmentation strategy: every meter surface paints these spans through the
+/// [`paint_meter_fill`] painters in its own orientation.
+fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     let bar_amount = meter_height(level.bar);
     let mut spans = Vec::with_capacity(4);
     let green_top = meter_height(10f32.powf(-6. / 20.));
@@ -184,135 +222,9 @@ pub(crate) fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     spans
 }
 
-/// Draw the dual-layer fill and the held peak marker onto a prepared track.
-fn meter_bar(track: Div, channel: Option<DisplayLevel>) -> Div {
-    let Some(level) = channel else {
-        return track;
-    };
-    let mut track = track;
-    for span in meter_spans(level) {
-        track = track.child(
-            div()
-                .absolute()
-                .bottom(relative(span.bottom))
-                .w_full()
-                .h(relative(span.height))
-                .bg(span.color),
-        );
-    }
-    track.child(
-        div()
-            .absolute()
-            .bottom(relative(meter_height(level.marker)))
-            .w_full()
-            .h(px(2.))
-            .bg(theme::TEXT),
-    )
-}
-
-/// Flyout-scale stereo meter: two slim bars and a clip dot, no scale readouts.
-pub fn compact_stereo_meter(levels: Option<[DisplayLevel; 2]>, clips: [bool; 2]) -> Div {
-    let mut pair = div()
-        .flex()
-        .flex_none()
-        .flex_col()
-        .items_center()
-        .gap(px(3.))
-        .line_height(px(10.));
-    let mut bars = div().flex().flex_none().gap(px(2.));
-    for index in 0..2 {
-        let channel = levels.map(|l| l[index]);
-        bars = bars.child(meter_bar(
-            div()
-                .relative()
-                .w(px(7.))
-                .h(px(176.))
-                .flex_none()
-                .overflow_hidden()
-                .rounded(px(1.))
-                .bg(theme::BORDER),
-            channel,
-        ));
-    }
-    pair = pair
-        .child(bars)
-        .child(div().w(px(10.)).h(px(3.)).flex_none().rounded(px(1.)).bg(
-            if clips[0] || clips[1] {
-                theme::DANGER
-            } else {
-                theme::BORDER
-            },
-        ));
-    pair
-}
-
-/// A horizontal bar reuses the vertical track space: `bottom` becomes the
-/// distance from the left (quiet) edge and `height` the extent from there.
-fn horizontal_span(span: &MeterSpan) -> (f32, f32) {
-    (span.bottom, span.height)
-}
-
-/// Inspector-scale horizontal meter: one slim bar per channel (up to a stereo
-/// pair), the quiet end at the left, reusing `meter_spans` so zone colors and
-/// the peak tail stay identical to the vertical bars. The clip latch is a
-/// single dot below the bars, like the flyout meter.
-pub fn compact_horizontal_meter(
-    levels: Option<&[DisplayLevel]>,
-    channels: usize,
-    clips: &[bool],
-) -> Div {
-    let levels = levels.map(<[DisplayLevel]>::to_vec);
-    let clips = clips.to_vec();
-    let count = channels.clamp(1, 2);
-    let mut bars = div().flex().flex_none().flex_col().gap(px(2.)).w_full();
-    for index in 0..count {
-        let mut bar = div()
-            .relative()
-            .w_full()
-            .h(px(4.))
-            .flex_none()
-            .overflow_hidden()
-            .rounded(px(1.))
-            .bg(theme::BORDER);
-        if let Some(level) = levels.as_deref().and_then(|levels| levels.get(index)) {
-            for span in meter_spans(*level) {
-                let (left, width) = horizontal_span(&span);
-                bar = bar.child(
-                    div()
-                        .absolute()
-                        .left(relative(left))
-                        .top_0()
-                        .bottom_0()
-                        .w(relative(width))
-                        .bg(span.color),
-                );
-            }
-            bar = bar.child(
-                div()
-                    .absolute()
-                    .left(relative(meter_height(level.marker)))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(2.))
-                    .bg(theme::TEXT),
-            );
-        }
-        bars = bars.child(bar);
-    }
-    let clip = (0..count).any(|index| clips.get(index).copied().unwrap_or(false));
-    bars.child(
-        div()
-            .w(px(6.))
-            .h(px(3.))
-            .flex_none()
-            .rounded(px(1.))
-            .bg(if clip { theme::DANGER } else { theme::BORDER }),
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{MeterSpan, horizontal_span, meter_height, meter_marker_position, meter_spans};
+    use super::{MeterSpan, meter_height, meter_marker_position, meter_spans};
     use crate::ui::monitoring::DisplayLevel;
     use crate::ui::theme;
 
@@ -405,30 +317,5 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert!((spans[0].height - meter_height(0.1)).abs() < 0.00001);
         assert!(!same_color(&spans[0], theme::METER_PEAK_ZONE));
-    }
-
-    #[test]
-    fn horizontal_spans_map_distance_from_the_quiet_left_edge() {
-        // Mapping bottom->left and height->width rotates the vertical track:
-        // the zone segments tile from the left edge up to the bar height, and
-        // the translucent tail overlays the top of that run exactly as it
-        // overlays the zone tops in the vertical bars.
-        let spans = meter_spans(level(3., -30.));
-        assert_eq!(spans.len(), 4);
-        let mut reach = 0.;
-        for span in &spans[..3] {
-            let (left, width) = horizontal_span(span);
-            assert!((left - reach).abs() < 0.00001);
-            reach = left + width;
-        }
-        let peak = meter_height(10f32.powf(3. / 20.));
-        assert!((reach - peak).abs() < 0.00001);
-        let rms = meter_height(10f32.powf(-30. / 20.));
-        let (left, width) = horizontal_span(&spans[3]);
-        assert!((left - rms).abs() < 0.00001);
-        assert!((width - (peak - rms)).abs() < 0.00001);
-        let (left, width) = horizontal_span(&spans[0]);
-        assert_eq!(left, 0.);
-        assert!((width - meter_height(10f32.powf(-6. / 20.))).abs() < 0.00001);
     }
 }

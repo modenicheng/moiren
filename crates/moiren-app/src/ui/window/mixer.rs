@@ -25,7 +25,7 @@ use model::{StripDrag, reorder};
 use routing::{inputs, sends};
 
 impl StudioShell {
-    pub(super) fn update_node_meters(&mut self, visible: bool, cx: &App) -> bool {
+    pub(super) fn update_node_meters(&mut self, visible: bool, cx: &mut Context<Self>) -> bool {
         let mut nodes = if visible {
             self.node_meter_points.borrow().clone()
         } else {
@@ -45,8 +45,11 @@ impl StudioShell {
         {
             nodes.insert(selected);
         }
-        self.node_meters
-            .update(&self.state.read(cx).snapshot, &nodes)
+        let preferences = self.preferences.meters;
+        self.state.update(cx, |state, _| {
+            state.node_meters.set_preferences(preferences);
+            state.node_meters.update(&state.snapshot, &nodes)
+        })
     }
 }
 
@@ -373,7 +376,7 @@ fn meter(
             let id = entry.id;
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
-                    shell.node_meters.reset_clip(id);
+                    shell.state.update(cx, |state, _| state.node_meters.reset_clip(id));
                     cx.notify();
                 })
             }

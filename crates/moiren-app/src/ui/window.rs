@@ -129,7 +129,6 @@ pub struct StudioShell {
     export_controls: devices::ExportControls,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     meters: MeterSubscriptions,
-    node_meters: super::monitoring::NodeMeters,
     node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
     gain_slider: Entity<base::slider::SliderState>,
@@ -182,6 +181,10 @@ pub struct StudioShell {
     /// H): sources register while active, and the control-side poll is the
     /// complement.
     frame_demand: hot::FrameDemand,
+    /// Where the inspector's meter tracks sit; registered by the inspector's
+    /// canvases each frame and read by the sidebar hot layer.
+    inspector_meters: sidebar::InspectorMeterFrame,
+    inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
@@ -296,7 +299,6 @@ impl StudioShell {
         )
         .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
-        let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
         let density = match preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
@@ -311,16 +313,21 @@ impl StudioShell {
             mixer::meter_frame::MixerPanelHost::new(shell_entity.clone(), child_cx)
         });
         let mixer_meters = std::rc::Rc::new(std::cell::RefCell::new(
-            mixer::meter_frame::MixerMeters::new(mixer_geometry.clone()),
+            mixer::meter_frame::MixerMeters::new(shell_entity.downgrade(), mixer_geometry.clone()),
         ));
-        let mixer_frame = cx.new(|_| {
-            mixer::meter_frame::MixerMeterLayer::new(shell_entity.downgrade(), mixer_meters)
-        });
+        let mixer_frame = cx.new(|_| mixer::meter_frame::MixerMeterLayer::new(mixer_meters));
         let graph_meters = std::rc::Rc::new(std::cell::RefCell::new(
-            graph::meter_frame::GraphMeters::new(graph_canvas_frame.clone()),
+            graph::meter_frame::GraphMeters::new(
+                shell_entity.downgrade(),
+                graph_canvas_frame.clone(),
+            ),
         ));
-        let graph_meter_frame = cx.new(|_| {
-            graph::meter_frame::GraphMeterLayer::new(shell_entity.downgrade(), graph_meters)
+        let graph_meter_frame = cx.new(|_| graph::meter_frame::GraphMeterLayer::new(graph_meters));
+        let inspector_meters = sidebar::InspectorMeterFrame::default();
+        let inspector_meter_layer = cx.new(|_| {
+            sidebar::InspectorMeterLayer::new(std::rc::Rc::new(std::cell::RefCell::new(
+                sidebar::InspectorMeters::new(shell_entity.downgrade(), inspector_meters.clone()),
+            )))
         });
         let graph_controls = cx.new(|child_cx| {
             graph::meter_frame::GraphPanelHost::new(shell_entity.clone(), child_cx)
@@ -346,7 +353,6 @@ impl StudioShell {
             export_controls,
             selected_route: None,
             meters,
-            node_meters,
             node_meter_points: Default::default(),
             gain_slider,
             pan_slider,
@@ -384,6 +390,8 @@ impl StudioShell {
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),
+            inspector_meters,
+            inspector_meter_layer,
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
@@ -502,8 +510,8 @@ impl StudioShell {
     /// Whether any observed meter still moves: decaying ballistics, a held
     /// peak marker, or fresh readings above the scale bottom all keep the
     /// display short of rest.
-    fn meters_in_motion(&self) -> bool {
-        !self.meters.at_rest() || !self.node_meters.at_rest()
+    fn meters_in_motion(&self, cx: &App) -> bool {
+        !self.meters.at_rest() || !self.state.read(cx).node_meters.at_rest()
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -514,9 +522,7 @@ impl StudioShell {
     /// reading changed — raw levels, status, or a freshly latched clip;
     /// ballistics motion alone does not, because animation frames (not
     /// notify) carry it.
-    pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
-        self.meters.set_preferences(self.preferences.meters);
-        self.node_meters.set_preferences(self.preferences.meters);
+    pub(super) fn pump_meters(&mut self, cx: &mut Context<Self>) -> bool {
         let visible = self.frames_eligible(cx);
         let points = self.meter_points.get();
         let meter_changed = self.meters.update_points(
@@ -529,7 +535,7 @@ impl StudioShell {
         // loop continues while anything moves, and the control-side poll
         // takes over the moment everything rests.
         self.frame_demand
-            .set(hot::METER_MOTION, self.meters_in_motion());
+            .set(hot::METER_MOTION, self.meters_in_motion(cx));
         meter_changed || node_meter_changed
     }
 

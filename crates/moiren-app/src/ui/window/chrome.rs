@@ -191,6 +191,7 @@ pub(in crate::ui::window) struct ToolbarKey {
 pub(super) struct ToolbarPanel;
 
 impl CachedPanel for ToolbarPanel {
+    type Owner = StudioShell;
     type Key = ToolbarKey;
 
     fn key(shell: &StudioShell, cx: &App) -> Self::Key {
@@ -228,6 +229,7 @@ pub(in crate::ui::window) struct StatusbarKey {
 pub(super) struct StatusbarPanel;
 
 impl CachedPanel for StatusbarPanel {
+    type Owner = StudioShell;
     type Key = StatusbarKey;
 
     fn key(shell: &StudioShell, cx: &App) -> Self::Key {

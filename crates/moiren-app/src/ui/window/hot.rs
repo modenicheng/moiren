@@ -44,73 +44,57 @@ impl FrameDemand {
 
 /// A hot surface: the declaration of what a display-rate layer pumps and
 /// paints. The mechanics — the no-hitbox canvas, the pump/gate/continue
-/// skeleton, the sibling placement — live once in [`HotLayerView`].
+/// skeleton, the sibling placement — live once in [`HotLayerView`]. Any
+/// window can mount one; the surface owns whatever state it projects.
 pub(in crate::ui::window) trait HotSurface: 'static + Sized {
     /// Geometry the sibling cached panel published for this frame.
     type Frame;
 
-    /// Drain fresh observations once per painted frame, inside the shell
-    /// update. Returns whether anything display-bearing changed — raw
-    /// readings, status, or a freshly latched clip; ballistics motion alone
-    /// does not, because animation frames (not notify) carry it. Pumping is
-    /// also what registers motion with the frame-demand arbiter: the pump
-    /// path is the single writer, so several surfaces on one window can
-    /// never fight over the same source.
-    fn pump(&mut self, shell: &mut StudioShell, cx: &mut Context<StudioShell>) -> bool;
+    /// Drain fresh observations once per painted frame and register the
+    /// owning window's frame demand. Returns whether the window should take
+    /// another display-rate frame: motion, not visibility, sustains the
+    /// loop, and the control-side poll is the complement — it keeps
+    /// observations current at rest and re-arms the frames once fresh data
+    /// moves a layer. Pumping is also what registers demand: the pump path
+    /// is the single writer, so several surfaces on one window can never
+    /// fight over the same source.
+    fn pump(&mut self, window: &mut Window, cx: &mut App) -> bool;
 
     /// The geometry the sibling cached panel last published.
     fn frame(&self) -> &SharedFrame<Self::Frame>;
 
     /// Paint the live layer above the cached panel. Reads observations at
-    /// paint time; aside from test traces, must not mutate shell state.
-    fn paint(
-        &self,
-        frame: &Self::Frame,
-        shell: &mut StudioShell,
-        window: &mut Window,
-        cx: &mut Context<StudioShell>,
-    );
+    /// paint time; aside from test traces, must not mutate state.
+    fn paint(&self, frame: &Self::Frame, window: &mut Window, cx: &mut App);
 }
 
 /// The host view around a [`HotSurface`]: a painting-only, hitbox-free
 /// canvas that owns the animation loop for its surface. Controls under the
 /// layer keep their pointer routing untouched.
 pub(in crate::ui::window) struct HotLayerView<S: HotSurface> {
-    shell: WeakEntity<StudioShell>,
     surface: Rc<RefCell<S>>,
 }
 
 impl<S: HotSurface> HotLayerView<S> {
-    pub(in crate::ui::window) fn new(
-        shell: WeakEntity<StudioShell>,
-        surface: Rc<RefCell<S>>,
-    ) -> Self {
-        Self { shell, surface }
+    pub(in crate::ui::window) fn new(surface: Rc<RefCell<S>>) -> Self {
+        Self { surface }
     }
 }
 
 impl<S: HotSurface> Render for HotLayerView<S> {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let pump_shell = self.shell.clone();
-        let paint_shell = self.shell.clone();
         let pump_surface = self.surface.clone();
         let paint_surface = self.surface.clone();
         canvas(
             move |_, window, cx| {
-                let _ = pump_shell.update(cx, |shell, cx| {
-                    pump_surface.borrow_mut().pump(shell, cx);
-                    // Motion, not visibility, sustains the loop: at rest the
-                    // control-side poll keeps observations current and
-                    // re-arms the frames once fresh data moves a layer.
-                    if shell.frames_wanted(cx) {
-                        window.request_animation_frame();
-                    }
-                });
+                // Motion, not visibility, sustains the loop: at rest the
+                // control-side poll keeps observations current and re-arms
+                // the frames once fresh data moves a layer.
+                if pump_surface.borrow_mut().pump(window, cx) {
+                    window.request_animation_frame();
+                }
             },
             move |_, _, window, cx| {
-                let Some(shell) = paint_shell.upgrade() else {
-                    return;
-                };
                 let surface = paint_surface.borrow();
                 // A cached view replays last frame's paint operations instead
                 // of re-running its paint closures, so anything dynamic the
@@ -119,15 +103,46 @@ impl<S: HotSurface> Render for HotLayerView<S> {
                 let Some(frame) = surface.frame().read() else {
                     return;
                 };
-                shell.update(cx, |shell, cx| {
-                    surface.paint(&frame, shell, window, cx);
-                });
+                surface.paint(&frame, window, cx);
             },
         )
         .absolute()
         .top_0()
         .left_0()
         .size_full()
+    }
+}
+
+/// Where a window's meter tracks sit: registered by cached panels' canvases
+/// during a rebuild, read by hot layers at paint time. Shared by surfaces
+/// that paint one track set per node (flyout strips, the inspector's meter).
+#[derive(Clone, Default)]
+pub(in crate::ui::window) struct MeterTracks(
+    std::collections::BTreeMap<moiren_core::graph::NodeId, (Bounds<Pixels>, ContentMask<Pixels>)>,
+);
+
+impl MeterTracks {
+    pub(in crate::ui::window) fn register(
+        &mut self,
+        id: moiren_core::graph::NodeId,
+        bounds: Bounds<Pixels>,
+        mask: ContentMask<Pixels>,
+    ) {
+        self.0.insert(id, (bounds, mask));
+    }
+
+    pub(in crate::ui::window) fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            moiren_core::graph::NodeId,
+            Bounds<Pixels>,
+            ContentMask<Pixels>,
+        ),
+    > + '_ {
+        self.0
+            .iter()
+            .map(|(id, (bounds, mask))| (*id, *bounds, *mask))
     }
 }
 

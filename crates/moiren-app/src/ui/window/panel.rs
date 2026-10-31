@@ -67,27 +67,31 @@ impl<T> PartialEq for PublishRef<T> {
 /// it is built. The mechanics — key diffing, invalidation, the accessibility
 /// fallback, nested-model subscriptions — live once in [`PanelHost`].
 pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
+    /// The state entity this panel projects. Most panels project the main
+    /// window's [`StudioShell`]; the tray flyout projects its own root view.
+    type Owner: 'static;
+
     /// Inputs the panel's tree consumes. Elapsed time and audio observations
     /// must never appear here: a key carrying them turns every poll into a
     /// full rebuild, and an input missing from the key freezes on screen.
     type Key: PartialEq + 'static;
 
-    /// Capture the key from the shell. Runs on every shell notification and
+    /// Capture the key from the owner. Runs on every owner notification and
     /// on every rebuild.
-    fn key(shell: &StudioShell, cx: &App) -> Self::Key;
+    fn key(owner: &Self::Owner, cx: &App) -> Self::Key;
 
     /// Build the tree. A pure function of [`Self::Key`] and the locale:
     /// between key changes the cached subtree replays last frame's paint.
     fn render(
-        shell: &mut StudioShell,
+        owner: &mut Self::Owner,
         window: &mut Window,
-        cx: &mut Context<StudioShell>,
+        cx: &mut Context<Self::Owner>,
     ) -> AnyElement;
 
     /// Per-rebuild side state: re-register meter demand, reset geometry
     /// scratch. Runs immediately before [`Self::render`].
-    fn on_rebuild(shell: &mut StudioShell) {
-        let _ = shell;
+    fn on_rebuild(owner: &mut Self::Owner) {
+        let _ = owner;
     }
 
     /// Subscribe to nested model entities (slider states, search inputs)
@@ -95,14 +99,14 @@ pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
     /// themselves. Runs on every rebuild; the host replaces its subscription
     /// pool with the result.
     fn observe_nested(
-        _shell: &Entity<StudioShell>,
+        _owner: &Entity<Self::Owner>,
         _cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
         Vec::new()
     }
 }
 
-/// The host entity around a [`CachedPanel`]: it observes the shell, rebuilds
+/// The host entity around a [`CachedPanel`]: it observes the owner, rebuilds
 /// the panel only when the panel's key (or the active locale) changed, and
 /// owns the mechanics every panel shares.
 ///
@@ -110,7 +114,7 @@ pub(in crate::ui::window) trait CachedPanel: 'static + Sized {
 /// strings, so a language switch must rebuild all of them regardless of what
 /// each key happens to capture.
 pub(in crate::ui::window) struct PanelHost<P: CachedPanel> {
-    shell: WeakEntity<StudioShell>,
+    owner: WeakEntity<P::Owner>,
     key: Option<P::Key>,
     locale: crate::i18n::UiLanguage,
     nested: Vec<Subscription>,
@@ -118,9 +122,9 @@ pub(in crate::ui::window) struct PanelHost<P: CachedPanel> {
 }
 
 impl<P: CachedPanel> PanelHost<P> {
-    pub(in crate::ui::window) fn new(shell: Entity<StudioShell>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&shell, |host, shell, cx| {
-            let key = P::key(shell.read(cx), cx);
+    pub(in crate::ui::window) fn new(owner: Entity<P::Owner>, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&owner, |host, owner, cx| {
+            let key = P::key(owner.read(cx), cx);
             let locale = crate::i18n::current();
             if host.key.as_ref() != Some(&key) || host.locale != locale {
                 host.key = Some(key);
@@ -129,7 +133,7 @@ impl<P: CachedPanel> PanelHost<P> {
             }
         });
         Self {
-            shell: shell.downgrade(),
+            owner: owner.downgrade(),
             key: None,
             locale: crate::i18n::current(),
             nested: Vec::new(),
@@ -140,17 +144,17 @@ impl<P: CachedPanel> PanelHost<P> {
 
 impl<P: CachedPanel> Render for PanelHost<P> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(shell) = self.shell.upgrade() else {
+        let Some(owner) = self.owner.upgrade() else {
             return div().into_any_element();
         };
         // Self-healing: a rebuild always records the inputs it rendered with,
         // so a missed notification cannot pin a stale key.
-        self.key = Some(P::key(shell.read(cx), cx));
+        self.key = Some(P::key(owner.read(cx), cx));
         self.locale = crate::i18n::current();
-        self.nested = P::observe_nested(&shell, cx);
-        shell.update(cx, |shell, cx| {
-            P::on_rebuild(shell);
-            P::render(shell, window, cx)
+        self.nested = P::observe_nested(&owner, cx);
+        owner.update(cx, |owner, cx| {
+            P::on_rebuild(owner);
+            P::render(owner, window, cx)
         })
     }
 }

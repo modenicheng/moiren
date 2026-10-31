@@ -115,6 +115,7 @@ impl ControlsKey {
 pub(in crate::ui::window) type MixerPanelHost = PanelHost<MixerPanel>;
 
 impl CachedPanel for MixerPanel {
+    type Owner = StudioShell;
     type Key = ControlsKey;
 
     fn key(shell: &StudioShell, cx: &App) -> Self::Key {
@@ -243,12 +244,13 @@ pub(in crate::ui::window) fn readout(shell: &StudioShell, id: NodeId) -> impl In
 /// cached strip tree, painting from the geometry the strips registered and
 /// the observations of the current frame.
 pub(in crate::ui::window) struct MixerMeters {
+    shell: WeakEntity<StudioShell>,
     geometry: Geometry,
 }
 
 impl MixerMeters {
-    pub(in crate::ui::window) fn new(geometry: Geometry) -> Self {
-        Self { geometry }
+    pub(in crate::ui::window) fn new(shell: WeakEntity<StudioShell>, geometry: Geometry) -> Self {
+        Self { shell, geometry }
     }
 }
 
@@ -257,109 +259,126 @@ pub(in crate::ui::window) type MixerMeterLayer = HotLayerView<MixerMeters>;
 impl HotSurface for MixerMeters {
     type Frame = MeterGeometry;
 
-    fn pump(&mut self, shell: &mut StudioShell, cx: &mut Context<StudioShell>) -> bool {
-        #[cfg(feature = "gpui-test")]
-        shell.mixer.trace.borrow_mut().begin(true);
-        #[cfg(feature = "gpui-test")]
-        let began = std::time::Instant::now();
-        let changed = shell.pump_meters(cx);
-        #[cfg(feature = "gpui-test")]
-        shell.mixer.trace.borrow_mut().add(began.elapsed());
-        changed
+    fn pump(&mut self, _window: &mut Window, cx: &mut App) -> bool {
+        let Some(shell) = self.shell.upgrade() else {
+            return false;
+        };
+        shell.update(cx, |shell, cx| {
+            #[cfg(feature = "gpui-test")]
+            shell.mixer.trace.borrow_mut().begin(true);
+            #[cfg(feature = "gpui-test")]
+            let began = std::time::Instant::now();
+            shell.pump_meters(cx);
+            #[cfg(feature = "gpui-test")]
+            shell.mixer.trace.borrow_mut().add(began.elapsed());
+            shell.frames_wanted(cx)
+        })
     }
 
     fn frame(&self) -> &Geometry {
         &self.geometry
     }
 
-    fn paint(
-        &self,
-        frame: &MeterGeometry,
-        shell: &mut StudioShell,
-        window: &mut Window,
-        cx: &mut Context<StudioShell>,
-    ) {
-        #[cfg(feature = "gpui-test")]
-        let began = std::time::Instant::now();
-        #[cfg(feature = "gpui-test")]
-        let mut levels_fingerprint = 0u64;
-        for (&id, &(placement, channels, legacy_input)) in &frame.tracks {
-            if !placement.decorations_visible() {
-                continue;
-            }
-            let legacy = legacy_input.and_then(|input| {
-                if input {
-                    shell.meters.display_input()
-                } else {
-                    shell.meters.display_output()
-                }
-            });
-            let levels = shell
-                .node_meters
-                .channel_levels(id)
-                .or_else(|| legacy.as_ref().map(|levels| levels.as_slice()));
-            #[cfg(feature = "gpui-test")]
-            for level in levels.into_iter().flatten() {
-                levels_fingerprint = levels_fingerprint.rotate_left(7)
-                    ^ u64::from(level.bar.to_bits())
-                    ^ (u64::from(level.rms.to_bits()) << 32)
-                    ^ u64::from(level.marker.to_bits());
-            }
-            window.with_content_mask(Some(placement.mask), |window| {
-                crate::ui::widgets::meters::paint_channel_meter(
-                    placement.bounds,
-                    levels,
-                    channels,
-                    shell.node_meters.channel_clips(id),
-                    window,
-                    cx,
-                );
-            });
+    fn paint(&self, frame: &MeterGeometry, window: &mut Window, cx: &mut App) {
+        let Some(shell) = self.shell.upgrade() else {
+            return;
+        };
+        shell.update(cx, |shell, cx| {
+            paint_mixer_meter_frame(frame, shell, window, cx)
+        });
+    }
+}
+
+fn paint_mixer_meter_frame(
+    frame: &MeterGeometry,
+    shell: &mut StudioShell,
+    window: &mut Window,
+    cx: &mut Context<StudioShell>,
+) {
+    #[cfg(feature = "gpui-test")]
+    let began = std::time::Instant::now();
+    #[cfg(feature = "gpui-test")]
+    let mut levels_fingerprint = 0u64;
+    for (&id, &(placement, channels, legacy_input)) in &frame.tracks {
+        if !placement.decorations_visible() {
+            continue;
         }
-        for (&id, &placement) in &frame.readouts {
-            let peak = shell
+        let legacy = legacy_input.and_then(|input| {
+            if input {
+                shell.meters.display_input()
+            } else {
+                shell.meters.display_output()
+            }
+        });
+        let levels = {
+            let state = shell.state.read(cx);
+            state.node_meters.levels(id).or(legacy)
+        };
+        #[cfg(feature = "gpui-test")]
+        for level in levels.into_iter().flatten() {
+            levels_fingerprint = levels_fingerprint.rotate_left(7)
+                ^ u64::from(level.bar.to_bits())
+                ^ (u64::from(level.rms.to_bits()) << 32)
+                ^ u64::from(level.marker.to_bits());
+        }
+        let clips = shell.state.read(cx).node_meters.clips(id);
+        window.with_content_mask(Some(placement.mask), |window| {
+            crate::ui::widgets::meters::paint_channel_meter(
+                placement.bounds,
+                levels.as_ref().map(|levels| levels.as_slice()),
+                channels,
+                &clips,
+                window,
+                cx,
+            );
+        });
+    }
+    for (&id, &placement) in &frame.readouts {
+        let peak = {
+            let state = shell.state.read(cx);
+            state
                 .node_meters
                 .raw_levels(id)
-                .map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max));
-            let text = peak
-                .map(|peak| {
-                    if peak == 0. {
-                        "\u{2212}\u{221e}".to_owned()
-                    } else {
-                        format!("{:.1}", 20. * peak.log10())
-                    }
-                })
-                .unwrap_or_else(|| "\u{2014}".to_owned());
-            window.with_content_mask(Some(placement.mask), |window| {
-                let line = window.text_system().shape_line(
-                    text.clone().into(),
-                    px(8.),
-                    &[TextRun {
-                        len: text.len(),
-                        font: font(theme::FONT_MONO),
-                        color: theme::TEXT_MUTED,
-                        ..Default::default()
-                    }],
-                    None,
-                );
-                let _ = line.paint(
-                    placement.bounds.origin,
-                    px(12.),
-                    TextAlign::Center,
-                    Some(placement.bounds.size.width),
-                    window,
-                    cx,
-                );
-            });
-        }
-        #[cfg(feature = "gpui-test")]
-        {
-            let mut trace = shell.mixer.trace.borrow_mut();
-            trace.levels(levels_fingerprint);
-            trace.meter_paints += 1;
-            trace.add(began.elapsed());
-            trace.finish(shell.node_meter_points.borrow().len());
-        }
+                .map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max))
+        };
+        let text = peak
+            .map(|peak| {
+                if peak == 0. {
+                    "\u{2212}\u{221e}".to_owned()
+                } else {
+                    format!("{:.1}", 20. * peak.log10())
+                }
+            })
+            .unwrap_or_else(|| "\u{2014}".to_owned());
+        window.with_content_mask(Some(placement.mask), |window| {
+            let line = window.text_system().shape_line(
+                text.clone().into(),
+                px(8.),
+                &[TextRun {
+                    len: text.len(),
+                    font: font(theme::FONT_MONO),
+                    color: theme::TEXT_MUTED,
+                    ..Default::default()
+                }],
+                None,
+            );
+            let _ = line.paint(
+                placement.bounds.origin,
+                px(12.),
+                TextAlign::Center,
+                Some(placement.bounds.size.width),
+                window,
+                cx,
+            );
+        });
+    }
+    #[cfg(feature = "gpui-test")]
+    {
+        let mut trace = shell.mixer.trace.borrow_mut();
+        trace.levels(levels_fingerprint);
+        trace.meter_paints += 1;
+        trace.add(began.elapsed());
+        trace.finish(shell.node_meter_points.borrow().len());
     }
 }
 
