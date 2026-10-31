@@ -115,3 +115,11 @@ manifest, SHA256
 Root verifies CRCs, exact members, manifest lengths/SHA256 and extracted bytes.
 Target originals remain. This closes the missing explicit MIC native request
 control/evidence gap, not S1-S3, complete waveform quality or physical latency.
+
+Independent archive/PCM/metadata audit passes43 checks and confirms the same
+request, native periods, packet/frame totals and retained cleanup faults. Audit
+JSON SHA256 is
+`3245FA29133E00581A1679913DBC46490DFE540068C174CD110FAE8C535D54D5`.
+Provider completion intervals have different provenance from recorder packet
+timestamps: cleanup MIC max36498 hns, Playback105950 hns. Neither is treated
+as physical end-to-end latency or a future delivery guarantee.
