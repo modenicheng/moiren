@@ -322,6 +322,26 @@ Still true: chrome rebuilds on every publish (small, and its content is
 publish data). The flyout keeps its single cached panel — two or three
 strips measured smooth.
 
+### Third machine round: the page that never stood down (2026-10-31)
+
+Non-drag Mixer fps still read low, and at silence the page burned about
+three times a core while the Graph page idled. The frame arbiter was
+never the problem — the *demand* never cleared: the Mixer page mounts
+the legacy capture-tap monitor meters (the Graph page mounts none), and
+the tap is pre-fader, so it keeps producing signal after the user mutes
+the fader. `meters_in_motion` therefore never rested and the page ran
+the full frame loop at display rate forever; a window drag measured the
+same difference. The legacy meters only display where a strip has no
+node level topic, so the pump now subscribes them exactly for that case
+(probe mounted AND the node topic missing); a managed strip renders
+from NodeMeters alone, and the page stands down like every other page.
+Regression: `mixer_stands_down_while_the_capture_tap_still_has_signal`.
+
+The remaining per-frame budget went to text: the peak readout re-shaped
+every track's dB string every frame. The hot surface now keeps one
+shaped line per track and re-shapes only when the text changes — during
+peak hold (most of the time) frames replay the shaped line.
+
 ## Deletions
 
 - `compact_stereo_meter`, `meter_bar`, and the flyout's DOM rebuild path.
