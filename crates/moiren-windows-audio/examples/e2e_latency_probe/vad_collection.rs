@@ -1335,6 +1335,7 @@ pub(super) fn collect(
             "engine": guard.vad.report.engine, "provider": guard.vad.report.vad_provider,
             "microphone_provider": guard.vad.report.vad_microphone_provider,
             "native_summary": guard.vad.report.backend_diagnostics,
+            "src_trace": guard.vad.report.src_trace,
             "engine_cleanup": guard.vad.report.engine_cleanup, "vad_cleanup": guard.vad.report.vad_cleanup,
             "microphone_cleanup": guard.vad.report.vad_microphone_cleanup },
         "measurement": measurement, "phases": phases.stamps,

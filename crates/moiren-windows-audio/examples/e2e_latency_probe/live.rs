@@ -40,6 +40,10 @@ mod source_controls;
 #[path = "source_write_witness.rs"]
 mod source_write_witness;
 
+#[cfg(any(windows, test))]
+#[path = "src_trace.rs"]
+mod src_trace;
+
 #[path = "vad_route.rs"]
 mod vad_route;
 
@@ -382,6 +386,7 @@ struct NativeReport {
     collection: Option<Value>,
     controlled_load: Option<Value>,
     process_trace: Option<Value>,
+    src_trace: Option<Value>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -400,6 +405,7 @@ struct ArtifactPaths {
     capture_pcm_metadata: Option<String>,
     diagnostic_observations: Option<String>,
     process_trace: Option<String>,
+    src_trace: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1380,6 +1386,14 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     let manifest_key = output_path_key(&manifest)?;
     let process_trace = options.artifact_dir.join("process-trace.json");
     let process_trace_key = output_path_key(&process_trace)?;
+    let src_trace = options.artifact_dir.join("src-trace.json");
+    let src_trace_key = output_path_key(&src_trace)?;
+    if options.source_kind == EvidenceSourceKind::VadPlayback {
+        ensure!(
+            report_key != src_trace_key && manifest_key != src_trace_key,
+            "report/manifest aliases reserved src-trace.json"
+        );
+    }
     if options.source_kind == EvidenceSourceKind::ProcessLoopback {
         ensure!(
             report_key != process_trace_key && manifest_key != process_trace_key,
@@ -1424,6 +1438,10 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     .flatten()
     {
         let key = output_path_key(input)?;
+        ensure!(
+            options.source_kind != EvidenceSourceKind::VadPlayback || key != src_trace_key,
+            "input aliases reserved src-trace.json"
+        );
         ensure!(
             options.source_kind != EvidenceSourceKind::ProcessLoopback || key != process_trace_key,
             "input aliases reserved process-trace.json"
@@ -1558,6 +1576,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
         }),
         process_trace: (options.source_kind == EvidenceSourceKind::ProcessLoopback)
             .then(|| process_trace.to_string_lossy().into_owned()),
+        src_trace: (options.source_kind == EvidenceSourceKind::VadPlayback)
+            .then(|| src_trace.to_string_lossy().into_owned()),
     })
 }
 
@@ -1725,6 +1745,7 @@ impl ArtifactPaths {
             capture_pcm_metadata: self.capture_pcm_metadata.clone(),
             diagnostic_observations: self.diagnostic_observations.clone(),
             process_trace: self.process_trace.clone(),
+            src_trace: self.src_trace.clone(),
         }
     }
 }
@@ -3517,6 +3538,46 @@ mod tests {
         assert!(paths.diagnostic_observations.is_none());
         assert!(paths.capture_pcm.is_some());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn src_trace_artifact_is_reserved_for_vad_before_any_native_or_file_creation() {
+        for manifest in [false, true] {
+            for spelling in [
+                "src-trace.json",
+                "./src-trace.json",
+                "child/../src-trace.json",
+            ] {
+                let directory = temp_dir("src-trace-reserved");
+                let mut options = LiveOptions {
+                    source_kind: EvidenceSourceKind::VadPlayback,
+                    artifact_dir: directory.clone(),
+                    ..Default::default()
+                };
+                if manifest {
+                    options.manifest_path = Some(directory.join(spelling));
+                } else {
+                    options.report_path = Some(directory.join(spelling));
+                }
+                assert!(prepare_paths(&options).is_err());
+                assert!(!directory.exists());
+            }
+        }
+        let directory = temp_dir("src-trace-manifest");
+        let options = LiveOptions {
+            source_kind: EvidenceSourceKind::VadPlayback,
+            artifact_dir: directory.clone(),
+            ..Default::default()
+        };
+        let paths = prepare_paths(&options).unwrap();
+        assert_eq!(paths.src_trace, paths.clone_for_manifest().src_trace);
+        assert_eq!(
+            Path::new(paths.src_trace.as_ref().unwrap())
+                .file_name()
+                .unwrap(),
+            "src-trace.json"
+        );
+        fs::remove_dir(&directory).unwrap();
     }
 
     #[test]

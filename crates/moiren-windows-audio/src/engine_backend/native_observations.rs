@@ -21,6 +21,17 @@ pub use process_trace::{
     NativeProcessTraceCollector, NativeProcessWindowCandidate, PreparedNativeProcessWindow,
 };
 
+#[path = "native_observations/src_trace.rs"]
+mod src_trace;
+pub use src_trace::{
+    NativeSrcBoundaryTrace, NativeSrcTrace, NativeSrcTraceCollector, SRC_TRACE_MAX_CHECKPOINTS,
+    SrcTraceRefusal,
+};
+
+#[cfg(test)]
+#[path = "native_observations/src_trace_tests.rs"]
+mod src_trace_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeStreamKind {

@@ -11,7 +11,9 @@ pub use native_observations::{
     NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
     NativeObservationSnapshot, NativeObservations, NativeProcessDeliveryObservation,
     NativeProcessTraceCollector, NativeProcessWindowCandidate, NativeRenderPaddingObservation,
-    NativeStreamKind, NativeStreamObservation, PreparedNativeProcessWindow,
+    NativeSrcBoundaryTrace, NativeSrcTrace, NativeSrcTraceCollector, NativeStreamKind,
+    NativeStreamObservation, PreparedNativeProcessWindow, SRC_TRACE_MAX_CHECKPOINTS,
+    SrcTraceRefusal,
 };
 #[cfg(windows)]
 pub use observations::{

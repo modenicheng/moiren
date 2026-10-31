@@ -145,6 +145,19 @@ fn check_virtual_src<S: ProcessingSample>(drift: bool) {
 }
 
 #[test]
+fn virtual_src_history_is_preallocated_without_changing_callback_heap_work() {
+    assert!(std::mem::size_of::<BoundaryProbe>() < 512);
+    let (writer, _reader) = audio_bridge(2, 1024, 1 << 20).unwrap();
+    let probe = Arc::new(BoundaryProbe::default());
+    let sink = VirtualMicrophoneSink::new(writer, 2, 32, 48_000, 1 << 20)
+        .unwrap()
+        .with_probe(probe.clone());
+    assert!(!probe.src_history().unwrap().writer_finished);
+    drop(sink);
+    assert!(probe.src_history().unwrap().writer_finished);
+}
+
+#[test]
 fn rejected_src_budget_allocates_only_the_diagnostic() {
     for microphone in [false, true] {
         let (writer, reader) = audio_bridge(2, 1024, 8192).unwrap();

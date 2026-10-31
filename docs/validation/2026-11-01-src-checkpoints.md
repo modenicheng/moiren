@@ -180,3 +180,10 @@ physical acceptance remain open. S1-S3 and the overarching goal remain active.
 No native acquisition/replay, remote/audio process, driver/control write,
 speaker rendering, push, subagent or memory update occurs. `gate.log` remains
 untouched.
+
+The subsequent [ordered retention slice](2026-11-01-src-history.md) replaces
+the inline latest payload with an off-RT prepared 256-slot history sharing
+the same latest publication. It adds bounded pinned collection, actual writer
+retirement and create-new probe export. The latest-only limits above describe
+this receipt's revision; finite ordered coverage is now separately verifiable,
+while source/recorder reference, waveform and physical gates remain open.

@@ -19,8 +19,8 @@ mod reprime;
 
 pub use crate::resample::SrcCursor;
 pub use boundary::{
-    BoundaryProbe, BoundaryProbeSample, BoundarySrcCheckpoint, PlaybackBoundaryEvents,
-    VirtualMicrophoneSink, VirtualPlaybackSource,
+    BoundaryProbe, BoundaryProbeSample, BoundarySrcCheckpoint, BoundarySrcHistory,
+    PlaybackBoundaryEvents, SRC_HISTORY_CAPACITY, VirtualMicrophoneSink, VirtualPlaybackSource,
 };
 pub use budget::{PreparedVirtualBudget, VirtualBufferOptions};
 #[allow(unused_imports)]

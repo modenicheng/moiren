@@ -125,6 +125,16 @@ unchanged. Historical data cannot be reconstructed from these future facts;
 full ordered span retention/reference and native/physical acceptance remain
 open. No targets, buffers, servo/DSP math or quality thresholds change.
 
+The subsequent [ordered SRC retention](2026-11-01-src-history.md) adds a fixed
+256-callback history and owner-pinned bounded archive to the actual VAD probe
+polling/post-join path. Missing prefixes/interior/tail callbacks, archive caps,
+unknown polls and writer retirement remain explicit; `history_complete`
+means scalar coverage only, not clean audio or physical acceptance. The exact
+IO/Bus owner and real EngineHost cleanup have hardware-free regressions.
+Longer streaming retention, actual source/recorder correspondence, acquired
+waveform and native/physical gates remain open. Historical refusals and all
+audio/quality/default settings are unchanged.
+
 The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
 strictly associates first-copy/native0 and first-nonzero/native228 witnesses
 with raw WASAPI packets1/229 at the same callback/completion QPC labels. The

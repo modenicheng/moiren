@@ -1,9 +1,20 @@
-//! One coherent latest callback, not a retained callback history or clock fit.
+//! Coherent bounded callback history; not a source clock or waveform verdict.
 use crate::resample::SrcCursor;
 use moiren_engine::{boundary::BoundaryReport, processor::ProcessContext};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
 const FIELDS: usize = 31;
+pub const SRC_HISTORY_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BoundarySrcHistory {
+    pub schema_version: u32,
+    pub total_callbacks: u64,
+    pub overwritten_callbacks: u64,
+    /// Boundary attachment retired, not proof that native workers joined cleanly.
+    pub writer_finished: bool,
+    pub checkpoints: Vec<BoundarySrcCheckpoint>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct BoundarySrcCheckpoint {
@@ -85,6 +96,7 @@ mod tests {
         shared.version.store(u64::MAX - 1, SeqCst);
         shared.publish(point(2));
         assert_eq!(shared.snapshot(), None);
+        assert_eq!(shared.history(), None);
         let shared = PublishedCheckpoint::default();
         shared.attach();
         shared.publish(point(1));
@@ -92,6 +104,7 @@ mod tests {
         assert_eq!(shared.snapshot(), None);
         shared.publish(point(2));
         assert_eq!(shared.snapshot(), None);
+        assert_eq!(shared.history(), None);
     }
 
     #[test]
@@ -117,6 +130,68 @@ mod tests {
         }
         thread.join().unwrap();
         assert_eq!(shared.snapshot().unwrap().sequence, 10_000);
+    }
+
+    #[test]
+    fn checkpoint_history_preserves_callbacks_between_polls_and_explicit_overwrite() {
+        let shared = PublishedCheckpoint::default();
+        assert!(shared.history().is_none());
+        shared.attach();
+        let empty = shared.history().unwrap();
+        assert!(empty.checkpoints.is_empty());
+        assert!(!empty.writer_finished);
+        for index in 1..=300 {
+            shared.publish(point(index));
+        }
+        let history = shared.history().unwrap();
+        assert_eq!(history.total_callbacks, 300);
+        assert_eq!(history.overwritten_callbacks, 44);
+        assert_eq!(history.checkpoints.len(), 256);
+        for (index, checkpoint) in history.checkpoints.iter().enumerate() {
+            let sequence = 45 + index as u64;
+            assert_eq!(checkpoint.sequence, sequence);
+            assert_eq!(checkpoint.before, point(sequence).before);
+            assert_eq!(checkpoint.after, point(sequence).after);
+        }
+        assert_eq!(shared.snapshot(), history.checkpoints.last().copied());
+        shared.finish();
+        assert!(shared.history().unwrap().writer_finished);
+        shared.version.store(601, SeqCst);
+        assert!(shared.history().is_none());
+        shared.version.store(600, SeqCst);
+        shared.attach();
+        assert!(shared.history().is_none());
+    }
+
+    #[test]
+    fn checkpoint_concurrent_history_is_a_coherent_ordered_suffix_or_unknown() {
+        let shared = Arc::new(PublishedCheckpoint::default());
+        shared.attach();
+        let writer = shared.clone();
+        let thread = std::thread::spawn(move || {
+            for index in 1..=10_000 {
+                writer.publish(point(index));
+            }
+            writer.finish();
+        });
+        while !thread.is_finished() {
+            if let Some(history) = shared.history() {
+                for (index, checkpoint) in history.checkpoints.iter().enumerate() {
+                    let sequence = history.overwritten_callbacks + index as u64 + 1;
+                    assert_eq!(checkpoint.sequence, sequence);
+                    assert_eq!(checkpoint.before, point(sequence).before);
+                    assert_eq!(checkpoint.after, point(sequence).after);
+                }
+                assert_eq!(
+                    history.total_callbacks,
+                    history.overwritten_callbacks + history.checkpoints.len() as u64
+                );
+            }
+        }
+        thread.join().unwrap();
+        let history = shared.history().unwrap();
+        assert!(history.writer_finished);
+        assert_eq!(history.total_callbacks, 10_000);
     }
 }
 
@@ -208,7 +283,8 @@ pub(super) struct PublishedCheckpoint {
     version: AtomicU64,
     attached: AtomicBool,
     shared_writer: AtomicBool,
-    fields: [AtomicU64; FIELDS],
+    finished: AtomicBool,
+    fields: Box<[[AtomicU64; FIELDS]]>,
 }
 
 impl Default for PublishedCheckpoint {
@@ -217,7 +293,11 @@ impl Default for PublishedCheckpoint {
             version: AtomicU64::new(0),
             attached: AtomicBool::new(false),
             shared_writer: AtomicBool::new(false),
-            fields: std::array::from_fn(|_| AtomicU64::new(0)),
+            finished: AtomicBool::new(false),
+            // Prepare directly on the heap, not a large callback/owner stack.
+            fields: (0..SRC_HISTORY_CAPACITY)
+                .map(|_| std::array::from_fn(|_| AtomicU64::new(0)))
+                .collect(),
         }
     }
 }
@@ -226,14 +306,14 @@ impl PublishedCheckpoint {
     /// Preparation only. A probe reused across boundaries loses SRC provenance
     /// permanently; it must not masquerade as one stream's single-writer data.
     pub(super) fn attach(&self) {
-        if self.attached.swap(true, SeqCst) {
+        if self.attached.swap(true, SeqCst) || self.finished.load(SeqCst) {
             self.shared_writer.store(true, SeqCst);
         }
     }
 
     /// Unique boundary writer; fixed atomic scalar work, no retry or heap work.
     pub(super) fn publish(&self, mut point: BoundarySrcCheckpoint) {
-        if self.shared_writer.load(SeqCst) {
+        if self.shared_writer.load(SeqCst) || self.finished.load(SeqCst) {
             return;
         }
         let before = self.version.load(SeqCst);
@@ -265,7 +345,8 @@ impl PublishedCheckpoint {
             point.xruns,
         ]);
         fields[30] = u64::from(point.engine_sample_rate);
-        for (slot, field) in self.fields.iter().zip(fields) {
+        let index = ((point.sequence - 1) % SRC_HISTORY_CAPACITY as u64) as usize;
+        for (slot, field) in self.fields[index].iter().zip(fields) {
             slot.store(field, SeqCst);
         }
         self.version.store(after, SeqCst);
@@ -278,27 +359,66 @@ impl PublishedCheckpoint {
         if before == 0 || !before.is_multiple_of(2) || self.shared_writer.load(SeqCst) {
             return None;
         }
-        let f: [u64; FIELDS] = std::array::from_fn(|i| self.fields[i].load(SeqCst));
-        (before == self.version.load(SeqCst) && !self.shared_writer.load(SeqCst)).then(|| {
-            BoundarySrcCheckpoint {
+        let index = ((before / 2 - 1) % SRC_HISTORY_CAPACITY as u64) as usize;
+        let f = self.load_slot(index);
+        (before == self.version.load(SeqCst) && !self.shared_writer.load(SeqCst)).then(|| decode(f))
+    }
+
+    pub(super) fn finish(&self) {
+        self.finished.store(true, SeqCst);
+    }
+
+    /// Control only: allocate one bounded copy, or return unknown without retry.
+    pub(super) fn history(&self) -> Option<BoundarySrcHistory> {
+        let before = self.version.load(SeqCst);
+        if !before.is_multiple_of(2)
+            || !self.attached.load(SeqCst)
+            || self.shared_writer.load(SeqCst)
+        {
+            return None;
+        }
+        let total = before / 2;
+        let count = total.min(SRC_HISTORY_CAPACITY as u64);
+        let mut checkpoints = Vec::with_capacity(count as usize);
+        for sequence in total - count + 1..=total {
+            let index = ((sequence - 1) % SRC_HISTORY_CAPACITY as u64) as usize;
+            checkpoints.push(decode(self.load_slot(index)));
+        }
+        let writer_finished = self.finished.load(SeqCst);
+        (before == self.version.load(SeqCst) && !self.shared_writer.load(SeqCst)).then_some(
+            BoundarySrcHistory {
                 schema_version: 1,
-                sequence: f[0],
-                timeline_epoch: f[1],
-                timeline_start: f[2],
-                engine_frames: f[3],
-                engine_sample_rate: f[30] as u32,
-                boundary_epoch_before: f[4],
-                boundary_epoch_after: f[5],
-                requested_epoch_after: f[6],
-                processing_step: (f[7] != 0).then(|| f64::from_bits(f[8])),
-                before: cursor_from(&f[9..17]),
-                after: cursor_from(&f[17..25]),
-                carrier_frames: f[25],
-                muted_frames: f[26],
-                transferred_frames: f[27],
-                discontinuity: f[28] != 0,
-                xruns: f[29],
-            }
-        })
+                total_callbacks: total,
+                overwritten_callbacks: total - count,
+                writer_finished,
+                checkpoints,
+            },
+        )
+    }
+
+    fn load_slot(&self, index: usize) -> [u64; FIELDS] {
+        std::array::from_fn(|i| self.fields[index][i].load(SeqCst))
+    }
+}
+
+fn decode(f: [u64; FIELDS]) -> BoundarySrcCheckpoint {
+    BoundarySrcCheckpoint {
+        schema_version: 1,
+        sequence: f[0],
+        timeline_epoch: f[1],
+        timeline_start: f[2],
+        engine_frames: f[3],
+        engine_sample_rate: f[30] as u32,
+        boundary_epoch_before: f[4],
+        boundary_epoch_after: f[5],
+        requested_epoch_after: f[6],
+        processing_step: (f[7] != 0).then(|| f64::from_bits(f[8])),
+        before: cursor_from(&f[9..17]),
+        after: cursor_from(&f[17..25]),
+        carrier_frames: f[25],
+        muted_frames: f[26],
+        transferred_frames: f[27],
+        discontinuity: f[28] != 0,
+        xruns: f[29],
     }
 }

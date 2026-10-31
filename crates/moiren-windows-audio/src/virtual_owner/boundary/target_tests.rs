@@ -767,8 +767,14 @@ fn explicit_target_checked_admission_covers_extreme_engine_rates() {
             .unwrap()
             .with_clock_drift_target(target)
             .unwrap();
-        assert_eq!(source.drift.unwrap().servo.target(), SRC_HEADROOM_FRAMES);
-        assert_eq!(sink.drift.unwrap().servo.target(), SRC_HEADROOM_FRAMES);
+        assert_eq!(
+            source.drift.as_ref().unwrap().servo.target(),
+            SRC_HEADROOM_FRAMES
+        );
+        assert_eq!(
+            sink.drift.as_ref().unwrap().servo.target(),
+            SRC_HEADROOM_FRAMES
+        );
     }
     // These synthetic layouts cannot be allocated as carriers; exercise the
     // same checked target admission without trying to reserve their storage.

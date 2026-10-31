@@ -741,6 +741,8 @@ pub fn run_vad(
         observations: None,
         professional_observations: None,
         retained_native: None,
+        src_trace: None,
+        src_trace_path: paths.src_trace.as_deref().map(PathBuf::from),
         retained_professional: None,
         playback_info: None,
         startup_samples: Vec::with_capacity(STARTUP_SAMPLE_LIMIT),
@@ -791,6 +793,9 @@ pub fn run_vad(
         soak_control::run_until(
             duration,
             |elapsed| {
+                if let Some(trace) = cleanup.src_trace.as_mut() {
+                    trace.poll();
+                }
                 if let Some(journal) = journal.as_ref() {
                     journal.check()?;
                 }
@@ -865,6 +870,8 @@ pub(super) struct VadCleanup<'a> {
     professional_observations:
         Option<moiren_windows_audio::engine_backend::ProfessionalObservations>,
     retained_native: Option<moiren_windows_audio::engine_backend::NativeObservationReadHandle>,
+    src_trace: Option<moiren_windows_audio::engine_backend::NativeSrcTraceCollector>,
+    src_trace_path: Option<PathBuf>,
     retained_professional:
         Option<moiren_windows_audio::engine_backend::ProfessionalObservationReadHandle>,
     playback_info: Option<Value>,
@@ -939,6 +946,9 @@ impl VadCleanup<'_> {
                 let native = self.observations.as_ref().and_then(|view| view.snapshot());
                 (exports, engine, native)
             });
+        if let Some(trace) = self.src_trace.as_mut() {
+            trace.poll();
+        }
         let runtime = exports
             .iter()
             .find(|view| view.endpoint_id == self.endpoint_id);
@@ -1195,6 +1205,21 @@ impl VadCleanup<'_> {
         let observer = self.observer.as_ref().expect("prepared host observer");
         let active = wait_engine_running(observer)?;
         self.engine_health = Some(engine_health::Tracker::new(&active, options.validation)?);
+        if self.retained_native.is_none() {
+            self.retained_native = self
+                .observations
+                .as_ref()
+                .and_then(|view| view.retain_session());
+        }
+        if let Some(retained) = &self.retained_native {
+            let mut trace = retained
+                .src_trace_collector(
+                    moiren_windows_audio::engine_backend::SRC_TRACE_MAX_CHECKPOINTS,
+                )
+                .map_err(anyhow::Error::msg)?;
+            trace.poll();
+            self.src_trace = Some(trace);
+        }
         if let Some(expected_node) = physical_output {
             let native = self.observations.as_ref().and_then(|view| view.snapshot());
             retain_and_validate_physical_render(
@@ -1278,10 +1303,14 @@ impl VadCleanup<'_> {
             },
         )?;
         let admitted = self.current_health()?;
-        self.retained_native = self
-            .observations
-            .as_ref()
-            .and_then(|view| view.retain_session());
+        // Keep the pre-gate pinned owner. A registry replacement must not
+        // redirect final counters away from the SRC collector's generation.
+        if self.retained_native.is_none() {
+            self.retained_native = self
+                .observations
+                .as_ref()
+                .and_then(|view| view.retain_session());
+        }
         self.retained_professional = self
             .professional_observations
             .as_ref()
@@ -1489,6 +1518,9 @@ impl soak_cleanup::PhysicalVadCleanup for VadCleanup<'_> {
 
 impl soak_cleanup::Cleanup for VadCleanup<'_> {
     fn observe_final(&mut self) -> Result<()> {
+        if let Some(trace) = self.src_trace.as_mut() {
+            trace.poll();
+        }
         if let Some(observer) = &self.observer {
             let mut engine = engine_snapshot_value(&observer.snapshot());
             engine["observations"] = serde_json::json!(
@@ -1573,6 +1605,15 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
             closed.as_ref(),
             expected_generation,
         ));
+        let src_export = if let Some(trace) = self.src_trace.as_mut() {
+            trace.finish();
+            self.src_trace_path
+                .as_deref()
+                .context("SRC trace output path missing")
+                .and_then(|path| src_trace::export(trace, path, &mut self.report.src_trace))
+        } else {
+            Ok(())
+        };
         if let Some(snapshot) = closed {
             self.report.engine_cleanup = Some(engine_snapshot_value(&snapshot));
             if let Some(error) = snapshot.cleanup_error {
@@ -1587,7 +1628,7 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
                 "VAD EngineHost retained a terminal fault after shutdown"
             );
         }
-        Ok(())
+        src_export
     }
 
     fn invalidate_admission(&mut self) -> Result<()> {

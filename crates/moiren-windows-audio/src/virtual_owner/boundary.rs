@@ -15,13 +15,14 @@ use crate::NATIVE_SAMPLE_RATE;
 const SRC_HEADROOM_FRAMES: usize = 32;
 
 mod checkpoint;
-pub use checkpoint::BoundarySrcCheckpoint;
+pub use checkpoint::{BoundarySrcCheckpoint, BoundarySrcHistory, SRC_HISTORY_CAPACITY};
 use checkpoint::{PublishedCheckpoint, TransferFacts};
 
 /// Control-side observation of one virtual boundary's carrier. The realtime
 /// side records relaxed water-level samples and a separately coherent latest
 /// SRC callback checkpoint (no allocation, locks or retries). Neither API is
-/// a complete callback history or an atomic cross-boundary observation.
+/// an atomic cross-boundary observation. The separate bounded history API
+/// retains callbacks between polls and explicitly counts overwritten entries.
 #[derive(Debug, Default)]
 pub struct BoundaryProbe {
     src_checkpoint: PublishedCheckpoint,
@@ -82,6 +83,12 @@ impl BoundaryProbe {
     /// is not atomically associated with this callback or its exact step.
     pub fn src_checkpoint(&self) -> Option<BoundarySrcCheckpoint> {
         self.src_checkpoint.snapshot()
+    }
+
+    /// Control only. One coherent bounded suffix; None on contention, reuse or
+    /// sequence exhaustion. A suffix is not evidence of the missing prefix.
+    pub fn src_history(&self) -> Option<BoundarySrcHistory> {
+        self.src_checkpoint.history()
     }
 
     /// The attached playback source is the unique writer. Fixed scalar work,
@@ -455,6 +462,9 @@ impl VirtualPlaybackSource {
     /// Attach the control-side probe and publish prepared geometry off RT.
     /// Live occupancy snapshots land once per completed transfer.
     pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
+        if let Some(previous) = &self.probe {
+            previous.src_checkpoint.finish();
+        }
         probe.src_checkpoint.attach();
         self.probe = Some(probe);
         self.prepare_probe();
@@ -817,6 +827,14 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
     }
 }
 
+impl Drop for VirtualPlaybackSource {
+    fn drop(&mut self) {
+        if let Some(probe) = &self.probe {
+            probe.src_checkpoint.finish();
+        }
+    }
+}
+
 /// A mono microphone uses carrier slot 0 and initializes slot 1 to exact zero.
 pub struct VirtualMicrophoneSink {
     carrier: AudioWriter<f32>,
@@ -881,6 +899,9 @@ impl VirtualMicrophoneSink {
     /// Attach the control-side probe and publish prepared geometry off RT.
     /// Live occupancy snapshots land once per completed transfer.
     pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
+        if let Some(previous) = &self.probe {
+            previous.src_checkpoint.finish();
+        }
         probe.src_checkpoint.attach();
         self.probe = Some(probe);
         self.prepare_probe();
@@ -1199,6 +1220,14 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             }
         }
         report
+    }
+}
+
+impl Drop for VirtualMicrophoneSink {
+    fn drop(&mut self) {
+        if let Some(probe) = &self.probe {
+            probe.src_checkpoint.finish();
+        }
     }
 }
 

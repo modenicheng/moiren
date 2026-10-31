@@ -1123,6 +1123,120 @@ fn virtual_endpoints_publish_stream_observations() {
 }
 
 #[test]
+fn virtual_src_archive_retains_actual_owner_callbacks_until_returned_engine_retires() {
+    let mut project = virtual_project(2, 48_000);
+    let source = *project.nodes.keys().next().unwrap();
+    let sink = *project.nodes.keys().last().unwrap();
+    let source_port = project.graph.get_node(source).unwrap().outputs()[0].id();
+    let sink_port = project.graph.get_node(sink).unwrap().inputs()[0].id();
+    let direct = project.graph.edges()[0].id();
+    project.graph.disconnect(direct).unwrap();
+    let bus_node = project.graph.create_node(NodeKind::Bus, 2).unwrap();
+    moiren_core::graph::edit::connect_to_new_bus_input(
+        &mut project.graph,
+        source_port,
+        bus_node,
+        Default::default(),
+    )
+    .unwrap();
+    let bus_output = project.graph.get_node(bus_node).unwrap().outputs()[0].id();
+    project
+        .graph
+        .connect(bus_output, sink_port, Default::default())
+        .unwrap();
+    project.nodes.insert(bus_node, NodeConfig::Bus);
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = backend::<f32>(&probe);
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| {
+        owner
+            .timeline()
+            .is_some_and(|timeline| timeline.frame >= 512)
+    });
+    let retained = backend.native_observations().retain_session().unwrap();
+    let mut collector = retained.src_trace_collector(1024).unwrap();
+    collector.poll();
+    owner.cancel();
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert!(backend.native_observations().snapshot().is_none());
+    collector.poll();
+    assert!(
+        collector
+            .artifact()
+            .boundaries
+            .iter()
+            .all(|boundary| !boundary.writer_finished)
+    );
+    // Joining the owner returns prepared Engine bindings to control. Only
+    // their actual retirement proves that no further boundary call can occur.
+    drop(returned);
+    collector.finish();
+    let artifact = collector.artifact();
+    assert!(artifact.history_complete, "{:?}", artifact.refusal);
+    assert_eq!(artifact.boundaries.len(), 2);
+    for boundary in &artifact.boundaries {
+        assert!(boundary.writer_finished);
+        assert!(boundary.total_callbacks >= 2);
+        assert_eq!(boundary.checkpoints.len() as u64, boundary.total_callbacks);
+    }
+    assert!(!artifact.qualified);
+}
+
+#[test]
+fn virtual_src_archive_finalizes_after_real_host_drop_without_native_devices() {
+    let probe = Arc::new(Probe::default());
+    let backend = backend::<f32>(&probe);
+    let observations = backend.native_observations();
+    let host = moiren_engine::host::EngineHost::open(
+        Default::default(),
+        virtual_project(2, 48_000),
+        backend,
+    )
+    .unwrap();
+    let observer = host.observer();
+    wait_until(|| {
+        observer
+            .snapshot()
+            .timeline
+            .is_some_and(|timeline| timeline.frame >= 512)
+    });
+    let mut collector = observations
+        .retain_session()
+        .unwrap()
+        .src_trace_collector(1024)
+        .unwrap();
+    collector.poll();
+    drop(host);
+    assert_eq!(
+        observer.snapshot().host,
+        moiren_engine::host::HostState::Closed
+    );
+    assert!(observer.snapshot().cleanup_error.is_none());
+    collector.finish();
+    assert!(
+        collector.artifact().history_complete,
+        "{:?}",
+        collector.artifact().refusal
+    );
+    assert!(
+        collector
+            .artifact()
+            .boundaries
+            .iter()
+            .all(|boundary| boundary.writer_finished)
+    );
+}
+
+#[test]
 fn mono_virtual_boundaries_can_follow_a_stereo_physical_master() {
     let mut project = virtual_project(1, 88_200);
     add_physical_output(&mut project, 2);
