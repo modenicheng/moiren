@@ -8,10 +8,22 @@ mkdir -p -- "$build_dir"
 
 # Pure helpers and production-extracted lifecycle with DDI stubs; no device access.
 status=0
-for suite in lifecycle audio ownership timer cleanup removal interface_name pause_fence playback_copy playback_copy_disabled; do
+for suite in lifecycle audio ownership timer cleanup removal interface_name pause_fence playback_copy playback_copy_disabled native_playback native_playback_disabled; do
     printf '\n=== VAD portable host suite: %s ===\n' "$suite"
     suite_flags=()
     source_name="$suite"
+    if [[ "$suite" == native_playback || "$suite" == native_playback_disabled ]]; then
+        if ! python3 "$script_dir/tests/extract-native-playback.py" \
+            "$script_dir" "$build_dir" \
+            2>&1 | tee "$build_dir/$suite.extract.log"; then
+            status=1
+            continue
+        fi
+        source_name=native_playback
+        if [[ "$suite" == native_playback ]]; then
+            suite_flags+=(-DMOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC=1)
+        fi
+    fi
     if [[ "$suite" == playback_copy || "$suite" == playback_copy_disabled ]]; then
         if ! python3 "$script_dir/tests/extract-playback-copy.py" \
             "$script_dir" "$build_dir" \

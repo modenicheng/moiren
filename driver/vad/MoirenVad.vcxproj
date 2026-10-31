@@ -73,6 +73,7 @@
     <ClInclude Include="src\Lifecycle.h" />
     <ClInclude Include="src\PcmDiagnostics.h" />
     <ClInclude Include="src\PlaybackCopyDiagnostic.h" />
+    <ClInclude Include="src\NativePlaybackDiagnostic.h" />
     <ClInclude Include="src\audio\CaptureDiagnostic.h" />
     <ClInclude Include="src\audio\CircuitIdentity.h" />
     <ClInclude Include="src\Trace.h" />
