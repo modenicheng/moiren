@@ -49,6 +49,13 @@ MIC `silence_packets=1` quality fault. It is not a passing collection.
 Pins, verified archive, independent audit and limits:
 [close-confirmation receipt](../../docs/validation/2026-10-31-close-confirmation.md).
 
+A probe-only virtual-route retirement slice now closes gates before external
+Stop/reset, retaining both Stop broadcasts before every join and leaving the
+physical route unchanged. Software regressions/review pass; the isolated probe
+is staged but has not run while an unrelated target application remains active.
+Native cleanup improvement and MIC silence remain unverified:
+[retirement-order checkpoint](../../docs/validation/2026-10-31-mic-retirement-order.md).
+
 The new READ-selected, bounded native-buffer observer records the actual
 consumption path and bytes before the original clearing. A retained first
 attempt loses MIC readiness before any source starts. An unchanged-fixture
