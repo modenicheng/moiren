@@ -113,6 +113,18 @@ not the historical servo history, source origin, continuous quality or delay.
 Production/model/defaults and all original native refusals are unchanged;
 native/physical acceptance and S1-S3 remain incomplete.
 
+The [actual SRC checkpoint slice](2026-11-01-src-checkpoints.md) adds reset-scoped
+split FIR centers/frontiers and exact applied step at each actual virtual
+boundary call, including prime/fence/fault returns. The existing native report
+now carries one coherent latest callback with explicit unknown and sequence
+gaps, not a complete history or a source/recorder clock. Counter saturation,
+reset fences, duplicate probe attachment and concurrent publication retain
+their uncertainty. Real graph guards verify allocation/deallocation freedom
+with probes attached, while the known synthetic waveform/model results stay
+unchanged. Historical data cannot be reconstructed from these future facts;
+full ordered span retention/reference and native/physical acceptance remain
+open. No targets, buffers, servo/DSP math or quality thresholds change.
+
 The [retained MIC QPC provenance diagnostic](2026-10-31-capture-qpc-provenance.md)
 strictly associates first-copy/native0 and first-nonzero/native228 witnesses
 with raw WASAPI packets1/229 at the same callback/completion QPC labels. The

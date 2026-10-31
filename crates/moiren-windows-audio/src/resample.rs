@@ -17,6 +17,25 @@ pub(super) const CORRECTION_PPM_LIMIT: f64 = 2000.0;
 #[error("SRC rates must be 8..384 kHz, and capacity must be 64..1048576 frames")]
 pub struct ResampleError;
 
+/// Reset-scoped FIR coordinates, not native timestamps or physical onset.
+/// Split the next center so a large integer origin never absorbs its phase.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct SrcCursor {
+    /// Increments on every actual FIR reset, not on every transport epoch.
+    pub reset_generation: u64,
+    /// Successful FIR pushes since reset, including playback silence-fill.
+    /// This is not a native source packet frontier or a loss-free frame count.
+    pub input_frames: u64,
+    /// Successful FIR outputs since reset, even when later muted or dropped.
+    pub output_frames: u64,
+    /// Center of the next FIR output in this reset's pushed-input coordinates.
+    pub next_input_frame: u64,
+    pub fraction: f64,
+    pub step: f64,
+    /// Sticky across resets: exhausted counters cannot regain provenance.
+    pub saturated: bool,
+}
+
 pub struct StereoResampler {
     frames: Box<[StereoFrame]>,
     kernels: Box<[[f64; TAPS]]>,
@@ -25,6 +44,11 @@ pub struct StereoResampler {
     position: f64,
     nominal_step: f64,
     step: f64,
+    reset_generation: u64,
+    input_frames: u64,
+    output_frames: u64,
+    discarded_frames: u64,
+    counters_saturated: bool,
 }
 
 impl StereoResampler {
@@ -64,6 +88,11 @@ impl StereoResampler {
             position: HALF as f64,
             nominal_step,
             step: nominal_step,
+            reset_generation: 0,
+            input_frames: 0,
+            output_frames: 0,
+            discarded_frames: 0,
+            counters_saturated: false,
         })
     }
 
@@ -78,11 +107,32 @@ impl StereoResampler {
 
     /// Clear stream history without releasing or reallocating prepared storage.
     pub fn reset(&mut self) {
+        add_counter(&mut self.reset_generation, 1, &mut self.counters_saturated);
+        self.input_frames = 0;
+        self.output_frames = 0;
+        self.discarded_frames = 0;
         self.head = 0;
         self.len = HALF;
         self.position = HALF as f64;
         self.step = self.nominal_step;
         self.frames.fill([0.0; 2]);
+    }
+
+    /// Fixed scalar observation; no clock, allocation or sample traversal.
+    pub fn cursor(&self) -> SrcCursor {
+        let whole = self.position.floor() as u64;
+        let next = whole
+            .checked_sub(HALF as u64)
+            .and_then(|local| self.discarded_frames.checked_add(local));
+        SrcCursor {
+            reset_generation: self.reset_generation,
+            input_frames: self.input_frames,
+            output_frames: self.output_frames,
+            next_input_frame: next.unwrap_or(u64::MAX),
+            fraction: self.position - whole as f64,
+            step: self.step,
+            saturated: self.counters_saturated || next.is_none(),
+        }
     }
 
     #[cfg(any(windows, test))]
@@ -118,6 +168,7 @@ impl StereoResampler {
         let index = (self.head + self.len) % self.frames.len();
         self.frames[index] = [finite(frame[0]), finite(frame[1])];
         self.len += 1;
+        add_counter(&mut self.input_frames, 1, &mut self.counters_saturated);
         true
     }
 
@@ -157,6 +208,12 @@ impl StereoResampler {
         self.head = (self.head + discard) % self.frames.len();
         self.len -= discard;
         self.position -= discard as f64;
+        add_counter(&mut self.output_frames, 1, &mut self.counters_saturated);
+        add_counter(
+            &mut self.discarded_frames,
+            discard as u64,
+            &mut self.counters_saturated,
+        );
         Some(output)
     }
 
@@ -176,9 +233,86 @@ impl StereoResampler {
     }
 }
 
+fn add_counter(counter: &mut u64, delta: u64, saturated: &mut bool) {
+    *counter = counter.checked_add(delta).unwrap_or_else(|| {
+        *saturated = true;
+        u64::MAX
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn src_cursor_tracks_fractional_consumption_and_reset_without_fitting_an_origin() {
+        let mut src = StereoResampler::new(48_000, 48_000, 128).unwrap();
+        let initial = src.cursor();
+        assert_eq!(initial.input_frames, 0);
+        assert_eq!(initial.output_frames, 0);
+        assert_eq!(initial.next_input_frame, 0);
+        assert_eq!(initial.fraction, 0.0);
+        assert_eq!(initial.step, 1.0);
+        for ppm in [2000.0, -2000.0] {
+            src.set_correction_ppm(ppm);
+            let before = src.cursor();
+            assert_eq!(src.push(&[[0.25; 2]; 32]), 32);
+            for _ in 0..8 {
+                src.next_frame().unwrap();
+            }
+            let after = src.cursor();
+            assert_eq!(after.input_frames - before.input_frames, 32);
+            assert_eq!(after.output_frames - before.output_frames, 8);
+            let consumed = (after.next_input_frame - before.next_input_frame) as f64
+                + after.fraction
+                - before.fraction;
+            assert!((consumed - 8.0 * before.step).abs() < 1e-12);
+            assert!(!after.saturated);
+        }
+        src.reset();
+        let reset = src.cursor();
+        assert_eq!(reset.reset_generation, initial.reset_generation + 1);
+        assert_eq!(reset.input_frames, 0);
+        assert_eq!(reset.output_frames, 0);
+        assert_eq!(reset.next_input_frame, 0);
+        assert_eq!(reset.fraction, 0.0);
+        assert_eq!(reset.step, 1.0);
+    }
+
+    #[test]
+    fn src_cursor_large_split_origins_and_counter_exhaustion_never_alias_zero() {
+        let mut src = StereoResampler::new(48_000, 48_000, 128).unwrap();
+        src.discarded_frames = (1_u64 << 54) + 3;
+        src.position = HALF as f64 + 0.125;
+        assert_eq!(src.cursor().next_input_frame, (1_u64 << 54) + 3);
+        assert_eq!(src.cursor().fraction, 0.125);
+        src.reset();
+        src.input_frames = u64::MAX;
+        assert!(src.push_frame([0.0; 2]));
+        assert_eq!(src.cursor().input_frames, u64::MAX);
+        assert!(src.cursor().saturated);
+        src.reset();
+        assert!(src.cursor().saturated);
+        src.reset_generation = u64::MAX;
+        src.reset();
+        assert_eq!(src.cursor().reset_generation, u64::MAX);
+        assert!(src.cursor().saturated);
+        let mut src = StereoResampler::new(48_000, 48_000, 128).unwrap();
+        src.push(&[[0.25; 2]; 32]);
+        src.output_frames = u64::MAX;
+        src.next_frame().unwrap();
+        assert_eq!(src.cursor().output_frames, u64::MAX);
+        assert!(src.cursor().saturated);
+        let mut src = StereoResampler::new(48_000, 48_000, 128).unwrap();
+        src.discarded_frames = u64::MAX;
+        assert_eq!(src.cursor().next_input_frame, u64::MAX);
+        assert!(
+            !src.cursor().saturated,
+            "subtract local FIR prefix before adding origin"
+        );
+        src.position += 1.0;
+        assert!(src.cursor().saturated);
+    }
 
     fn convert(input: &[StereoFrame], from: u32, to: u32, packet: usize) -> Vec<StereoFrame> {
         let mut src = StereoResampler::new(from, to, 512).unwrap();

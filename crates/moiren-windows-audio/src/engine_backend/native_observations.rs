@@ -4,7 +4,9 @@ use crate::{
     clock_bridge::{BridgeObserver, BridgeSnapshot},
     latency::shared_period::SharedPeriodReport,
     latency::{NativeStreamTiming, PreparedInputQueue, PreparedRenderQueue},
-    virtual_owner::{BoundaryProbeSample, PlaybackBoundaryEvents, PreparedVirtualBudget},
+    virtual_owner::{
+        BoundaryProbeSample, BoundarySrcCheckpoint, PlaybackBoundaryEvents, PreparedVirtualBudget,
+    },
 };
 use moiren_core::graph::NodeId;
 use serde::Serialize;
@@ -206,6 +208,9 @@ pub struct NativeBoundaryProbe {
     pub xruns: u64,
     pub soft_events: u64,
     pub playback_events: Option<PlaybackBoundaryEvents>,
+    /// Independently coherent latest callback, not coherent with relaxed
+    /// occupancy above, another boundary, or the enclosing control snapshot.
+    pub src_checkpoint: Option<BoundarySrcCheckpoint>,
 }
 
 impl From<(NodeId, NativeStreamKind, BoundaryProbeSample)> for NativeBoundaryProbe {
@@ -220,6 +225,7 @@ impl From<(NodeId, NativeStreamKind, BoundaryProbeSample)> for NativeBoundaryPro
             xruns: sample.xruns,
             soft_events: sample.soft_events,
             playback_events: sample.playback_events,
+            src_checkpoint: None,
         }
     }
 }
@@ -300,7 +306,11 @@ impl NativeObservationReadHandle {
         let boundary_probes = session
             .probes
             .iter()
-            .map(|(node, kind, probe)| (*node, *kind, probe.snapshot()).into())
+            .map(|(node, kind, probe)| {
+                let mut native = NativeBoundaryProbe::from((*node, *kind, probe.snapshot()));
+                native.src_checkpoint = probe.src_checkpoint();
+                native
+            })
             .collect();
         NativeObservationSnapshot {
             owner_generation: session.generation,
@@ -755,6 +765,13 @@ mod tests {
         let json = serde_json::to_value(native).unwrap();
         assert_eq!(json["capacity_frames"], 512);
         assert_eq!(json["target_frames"], 128);
+        let point = json
+            .get("src_checkpoint")
+            .expect("retain actual callback checkpoint");
+        assert_eq!(point["sequence"], 64);
+        assert_eq!(point["timeline_start"], 63 * 32);
+        assert_eq!(point["engine_sample_rate"], 48_000);
+        assert!(point["after"]["reset_generation"].as_u64().unwrap() > 0);
     }
 
     #[test]
@@ -795,6 +812,7 @@ mod tests {
             assert_eq!(native.playback_events, events);
             assert_eq!(native.soft_events, 47);
             let json = serde_json::to_value(native).unwrap();
+            assert!(json.get("src_checkpoint").unwrap().is_null());
             assert_eq!(
                 json["playback_events"],
                 serde_json::to_value(events).unwrap()

@@ -19,7 +19,7 @@ pub(super) fn before_transfer_return() {
     }
 }
 
-fn reset_at_transfer_return(epoch: Arc<AtomicU64>) {
+pub(super) fn reset_at_transfer_return(epoch: Arc<AtomicU64>) {
     BEFORE_RETURN.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
             epoch.fetch_add(1, Ordering::AcqRel);

@@ -7,6 +7,215 @@ use moiren_engine::{
 const BUDGET: usize = 1 << 20;
 
 #[test]
+fn src_checkpoints_bind_actual_playback_and_microphone_calls_to_their_fir_state() {
+    let (mut producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let (writer, mut consumer) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let playback = Arc::new(BoundaryProbe::default());
+    let microphone = Arc::new(BoundaryProbe::default());
+    let mut source = VirtualPlaybackSource::new(reader, 2, 32, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_probe(playback.clone());
+    let mut sink = VirtualMicrophoneSink::new(writer, 2, 32, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_probe(microphone.clone());
+    let mut buffer = CallbackBuffer::<f32>::new(32, 48_000);
+    buffer.context.timeline_start = 96;
+    assert_eq!(playback.src_checkpoint(), None);
+    buffer.read_source(&mut source);
+    let waiting = playback.src_checkpoint().unwrap();
+    assert_eq!(waiting.sequence, 1);
+    assert_eq!(waiting.processing_step, None);
+    assert_eq!(waiting.before, waiting.after);
+    assert_eq!(waiting.transferred_frames, 0);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    let read = buffer.read_source(&mut source);
+    let source_point = playback.src_checkpoint().unwrap();
+    assert_eq!(source_point.sequence, 2);
+    assert_eq!(source_point.timeline_epoch, 1);
+    assert_eq!(source_point.timeline_start, 96);
+    assert_eq!(source_point.engine_frames, 32);
+    assert_eq!(
+        source_point.transferred_frames,
+        read.transferred_frames as u64
+    );
+    assert_eq!(source_point.muted_frames, 32);
+    let before = source_point.before.unwrap();
+    let after = source_point.after.unwrap();
+    assert_eq!(after.output_frames - before.output_frames, 32);
+    assert_eq!(
+        after.input_frames - before.input_frames,
+        source_point.carrier_frames
+    );
+    assert_eq!(source_point.processing_step, Some(1.0));
+    let write = buffer.write_sink(&mut sink);
+    let sink_point = microphone.src_checkpoint().unwrap();
+    assert_eq!(sink_point.sequence, 1);
+    assert_eq!(
+        sink_point.transferred_frames,
+        write.transferred_frames as u64
+    );
+    assert_eq!(sink_point.after.unwrap().input_frames, 32);
+    assert_eq!(
+        sink_point.after.unwrap().output_frames,
+        consumer.available_frames() as u64
+    );
+    assert_eq!(
+        sink_point.carrier_frames,
+        consumer.available_frames() as u64
+    );
+    assert!(sink_point.processing_step.unwrap() < 1.0);
+    consumer.discard();
+    buffer.context.timeline_start += 32;
+    buffer.write_sink(&mut sink);
+    let next = microphone.src_checkpoint().unwrap();
+    assert_eq!(next.sequence, 2);
+    assert_eq!(next.before, sink_point.after);
+    assert_eq!(next.timeline_start, 128);
+    assert_eq!(next.muted_frames, 0);
+}
+
+#[test]
+fn src_checkpoints_preserve_epoch_wait_reset_silence_and_drop_new_barriers() {
+    let (mut producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let (writer, mut consumer) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let epoch = Arc::new(AtomicU64::new(0));
+    let playback = Arc::new(BoundaryProbe::default());
+    let microphone = Arc::new(BoundaryProbe::default());
+    let mut source = VirtualPlaybackSource::new(reader, 2, 32, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_reset_epoch(epoch.clone())
+        .with_probe(playback.clone());
+    let mut sink = VirtualMicrophoneSink::new(writer, 2, 32, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_reset_epoch(epoch.clone())
+        .with_probe(microphone.clone());
+    let mut buffer = CallbackBuffer::<f64>::new(32, 48_000);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    buffer.read_source(&mut source);
+    let original = playback.src_checkpoint().unwrap();
+    epoch.store(1, Ordering::Release);
+    buffer.read_source(&mut source);
+    let reset = playback.src_checkpoint().unwrap();
+    assert_eq!(reset.before, original.after);
+    assert_eq!(reset.boundary_epoch_before, 0);
+    assert_eq!(reset.boundary_epoch_after, 1);
+    assert_eq!(reset.requested_epoch_after, 1);
+    assert_eq!(reset.processing_step, None);
+    assert_eq!(reset.after.unwrap().reset_generation, 1);
+    assert_eq!(reset.after.unwrap().output_frames, 0);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    for _ in 0..16 {
+        let report = buffer.read_source(&mut source);
+        let point = playback.src_checkpoint().unwrap();
+        assert_eq!(point.transferred_frames, report.transferred_frames as u64);
+        assert_eq!(point.xruns, report.xruns);
+    }
+    let starvation = playback.src_checkpoint().unwrap();
+    assert!(starvation.discontinuity || starvation.transferred_frames < 32);
+    assert_eq!(starvation.carrier_frames, 0);
+    buffer.fill([0.25, -0.5]);
+    for _ in 0..40 {
+        buffer.write_sink(&mut sink);
+    }
+    let overflow = microphone.src_checkpoint().unwrap();
+    assert_eq!(consumer.available_frames(), 1024);
+    assert_eq!(overflow.carrier_frames, 0);
+    assert_eq!(overflow.processing_step, None);
+    assert!(overflow.discontinuity);
+    assert!(overflow.after.unwrap().reset_generation > overflow.before.unwrap().reset_generation);
+    consumer.discard();
+    buffer.write_sink(&mut sink);
+    assert!(
+        microphone
+            .src_checkpoint()
+            .unwrap()
+            .processing_step
+            .is_some()
+    );
+}
+
+#[test]
+fn src_checkpoints_keep_inflight_epoch_races_and_missing_callbacks_explicit() {
+    let (mut producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let epoch = Arc::new(AtomicU64::new(0));
+    let producer_epoch = Arc::new(AtomicU64::new(0));
+    let consumer_epoch = Arc::new(AtomicU64::new(0));
+    let probe = Arc::new(BoundaryProbe::default());
+    let mut source = VirtualPlaybackSource::new(reader, 2, 32, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_reset_fence(epoch.clone(), producer_epoch.clone(), consumer_epoch)
+        .with_probe(probe.clone());
+    let mut buffer = CallbackBuffer::<f32>::new(32, 48_000);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    tests::reset_at_transfer_return(epoch.clone());
+    let report = buffer.read_source(&mut source);
+    let race = probe.src_checkpoint().unwrap();
+    assert!(report.discontinuity);
+    assert_eq!(race.boundary_epoch_before, 0);
+    assert_eq!(race.boundary_epoch_after, 0);
+    assert_eq!(race.requested_epoch_after, 1);
+    assert_eq!(race.transferred_frames, 0);
+    assert_eq!(race.after.unwrap().output_frames, 32);
+    assert!(race.processing_step.is_some());
+    buffer.read_source(&mut source);
+    let waiting = probe.src_checkpoint().unwrap();
+    assert_eq!(waiting.processing_step, None);
+    assert_eq!(waiting.before, waiting.after);
+    producer_epoch.store(1, Ordering::Release);
+    buffer.read_source(&mut source);
+    buffer.read_source(&mut source);
+    let later = probe.src_checkpoint().unwrap();
+    assert_eq!(
+        later.sequence - waiting.sequence,
+        2,
+        "poll skipped a callback"
+    );
+    assert_eq!(later.boundary_epoch_after, 1);
+    assert_eq!(later.after.unwrap().reset_generation, 1);
+}
+
+#[test]
+fn src_checkpoints_keep_the_applied_step_when_partial_publication_resets_the_fir() {
+    let (mut writer, consumer) = audio_bridge(2, 1024, BUDGET).unwrap();
+    writer.write_interleaved_exact(&pcm(1010)).unwrap();
+    let probe = Arc::new(BoundaryProbe::default());
+    let mut sink = VirtualMicrophoneSink::new(writer, 2, 32, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_probe(probe.clone());
+    let mut buffer = CallbackBuffer::<f32>::new(32, 48_000);
+    buffer.fill([0.25, -0.5]);
+    let report = buffer.write_sink(&mut sink);
+    let point = probe.src_checkpoint().unwrap();
+    assert_eq!(consumer.available_frames(), 1024);
+    assert_eq!(point.carrier_frames, 14);
+    assert!(point.processing_step.unwrap() > 1.0);
+    assert_eq!(
+        point.after.unwrap().step,
+        1.0,
+        "reset is not the processing step"
+    );
+    assert_eq!(point.before.unwrap().reset_generation, 0);
+    assert_eq!(point.after.unwrap().reset_generation, 1);
+    assert_eq!(point.after.unwrap().input_frames, 0);
+    assert_eq!(point.after.unwrap().output_frames, 0);
+    assert_eq!(point.transferred_frames, report.transferred_frames as u64);
+    assert!(point.discontinuity);
+    assert!(point.xruns > 0);
+}
+
+#[test]
 fn playback_event_classes_interrupted_initial_prime_cannot_be_completed_by_recovery() {
     let (mut producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
     let epoch = Arc::new(AtomicU64::new(0));

@@ -14,12 +14,17 @@ use std::sync::{
 use crate::NATIVE_SAMPLE_RATE;
 const SRC_HEADROOM_FRAMES: usize = 32;
 
+mod checkpoint;
+pub use checkpoint::BoundarySrcCheckpoint;
+use checkpoint::{PublishedCheckpoint, TransferFacts};
+
 /// Control-side observation of one virtual boundary's carrier. The realtime
-/// side records relaxed snapshots once per block (no allocation, no locks);
-/// [`BoundaryProbe::snapshot`] samples the latest values for soak evidence
-/// and regressions.
+/// side records relaxed water-level samples and a separately coherent latest
+/// SRC callback checkpoint (no allocation, locks or retries). Neither API is
+/// a complete callback history or an atomic cross-boundary observation.
 #[derive(Debug, Default)]
 pub struct BoundaryProbe {
+    src_checkpoint: PublishedCheckpoint,
     capacity_frames: AtomicU32,
     /// Zero means adaptation has no prepared content target.
     target_frames: AtomicU32,
@@ -73,6 +78,12 @@ pub struct BoundaryProbeSample {
 }
 
 impl BoundaryProbe {
+    /// Separate coherent observation; the legacy relaxed water-level sample
+    /// is not atomically associated with this callback or its exact step.
+    pub fn src_checkpoint(&self) -> Option<BoundarySrcCheckpoint> {
+        self.src_checkpoint.snapshot()
+    }
+
     /// The attached playback source is the unique writer. Fixed scalar work,
     /// no CAS retry: readers either see one complete publication or unknown.
     fn observe_playback_events(
@@ -444,6 +455,7 @@ impl VirtualPlaybackSource {
     /// Attach the control-side probe and publish prepared geometry off RT.
     /// Live occupancy snapshots land once per completed transfer.
     pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
+        probe.src_checkpoint.attach();
         self.probe = Some(probe);
         self.prepare_probe();
         self
@@ -591,12 +603,12 @@ impl VirtualPlaybackSource {
     }
 }
 
-impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
-    fn channel_count(&self) -> usize {
-        self.channels
-    }
-
-    fn read(&mut self, _: &ProcessContext, mut output: AudioBlockMut<'_, S>) -> BoundaryReport {
+impl VirtualPlaybackSource {
+    fn read_audio<S: ProcessingSample>(
+        &mut self,
+        mut output: AudioBlockMut<'_, S>,
+        facts: &mut TransferFacts,
+    ) -> BoundaryReport {
         if !self.synchronize_epoch() {
             output.clear();
             return short(output.frames());
@@ -641,10 +653,12 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
             output.frames()
         };
         let scratch = &mut self.scratch[..required_input * 2];
+        facts.step = self.resampler.as_ref().map(|src| src.cursor().step);
         let report = self
             .carrier
             .read_interleaved(scratch)
             .expect("complete carrier frames");
+        facts.carrier_frames = report.transferred_frames;
         if let Some(src) = &mut self.resampler {
             let transferred = report.transferred_frames.min(required_input);
             // Silence advances the same timeline as real PCM. Freezing the
@@ -682,6 +696,7 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                     output.channel_mut(channel)[produced..].fill(S::ZERO);
                 }
             }
+            facts.muted_frames = muted;
             let missing = missing_output_frames(
                 required_input - transferred,
                 NATIVE_SAMPLE_RATE,
@@ -767,6 +782,41 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
     }
 }
 
+impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
+    fn channel_count(&self) -> usize {
+        self.channels
+    }
+
+    fn read(&mut self, context: &ProcessContext, output: AudioBlockMut<'_, S>) -> BoundaryReport {
+        let point = (output.frames() > 0 && self.probe.is_some()).then(|| {
+            BoundarySrcCheckpoint::begin(
+                context,
+                output.frames(),
+                self.engine_sample_rate,
+                self.observed_reset,
+                self.resampler.as_ref().map(StereoResampler::cursor),
+            )
+        });
+        let mut facts = TransferFacts::default();
+        let report = self.read_audio(output, &mut facts);
+        if let Some(mut point) = point {
+            point.finish(
+                self.observed_reset,
+                self.reset_epoch
+                    .as_ref()
+                    .map_or(self.observed_reset, |epoch| epoch.load(Ordering::Acquire)),
+                self.resampler.as_ref().map(StereoResampler::cursor),
+                facts,
+                report,
+            );
+            if let Some(probe) = &self.probe {
+                probe.src_checkpoint.publish(point);
+            }
+        }
+        report
+    }
+}
+
 /// A mono microphone uses carrier slot 0 and initializes slot 1 to exact zero.
 pub struct VirtualMicrophoneSink {
     carrier: AudioWriter<f32>,
@@ -831,6 +881,7 @@ impl VirtualMicrophoneSink {
     /// Attach the control-side probe and publish prepared geometry off RT.
     /// Live occupancy snapshots land once per completed transfer.
     pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
+        probe.src_checkpoint.attach();
         self.probe = Some(probe);
         self.prepare_probe();
         self
@@ -980,12 +1031,12 @@ impl VirtualMicrophoneSink {
     }
 }
 
-impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
-    fn channel_count(&self) -> usize {
-        self.channels
-    }
-
-    fn write(&mut self, _: &ProcessContext, input: AudioBlock<'_, S>) -> BoundaryReport {
+impl VirtualMicrophoneSink {
+    fn write_audio<S: ProcessingSample>(
+        &mut self,
+        input: AudioBlock<'_, S>,
+        facts: &mut TransferFacts,
+    ) -> BoundaryReport {
         if !self.synchronize_epoch() {
             return short(input.frames());
         }
@@ -1028,6 +1079,7 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 }
                 return self.finish_transfer(short(input.frames()), input.frames());
             }
+            facts.step = Some(src.cursor().step);
             for frame in 0..input.frames() {
                 let left = input.channel(0)[frame].to_f64();
                 let right = if self.channels == 2 {
@@ -1057,6 +1109,7 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 .write_interleaved(&self.scratch[..produced * 2])
                 .expect("complete carrier frames");
             let complete = report.transferred_frames == produced;
+            facts.carrier_frames = report.transferred_frames;
             if !complete {
                 src.reset();
                 if let Some(drift) = &mut self.drift {
@@ -1101,6 +1154,7 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             .carrier
             .write_interleaved(scratch)
             .expect("complete carrier frames");
+        facts.carrier_frames = report.transferred_frames;
         if let Some(probe) = &self.probe {
             probe.observe(
                 self.carrier.capacity_frames() - self.carrier.available_frames(),
@@ -1110,6 +1164,41 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             );
         }
         self.finish_transfer(report, input.frames())
+    }
+}
+
+impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
+    fn channel_count(&self) -> usize {
+        self.channels
+    }
+
+    fn write(&mut self, context: &ProcessContext, input: AudioBlock<'_, S>) -> BoundaryReport {
+        let point = (input.frames() > 0 && self.probe.is_some()).then(|| {
+            BoundarySrcCheckpoint::begin(
+                context,
+                input.frames(),
+                self.engine_sample_rate,
+                self.observed_reset,
+                self.resampler.as_ref().map(StereoResampler::cursor),
+            )
+        });
+        let mut facts = TransferFacts::default();
+        let report = self.write_audio(input, &mut facts);
+        if let Some(mut point) = point {
+            point.finish(
+                self.observed_reset,
+                self.reset_epoch
+                    .as_ref()
+                    .map_or(self.observed_reset, |epoch| epoch.load(Ordering::Acquire)),
+                self.resampler.as_ref().map(StereoResampler::cursor),
+                facts,
+                report,
+            );
+            if let Some(probe) = &self.probe {
+                probe.src_checkpoint.publish(point);
+            }
+        }
+        report
     }
 }
 

@@ -161,3 +161,10 @@ boundary observations and `quality_complete=false` are unchanged.
 S1-S3 and the overarching goal remain incomplete. There is no native replay,
 remote/audio process, driver/system-control write, speaker render, push or
 subagent work; unrelated `gate.log` is preserved.
+
+The subsequent [actual-boundary checkpoints](2026-11-01-src-checkpoints.md)
+retain coherent before/after FIR frontiers, phase and exact applied step for
+the latest real callback. They close that scalar provenance gap, not the
+missing ordered history or independent source/recorder reference. This fixed
+synthetic fixture also checks each new cursor against its known center, with
+unchanged waveform/model results.

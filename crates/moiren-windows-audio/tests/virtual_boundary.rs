@@ -5,7 +5,9 @@ use moiren_engine::{
     runtime::EngineConfig,
     sample::ProcessingSample,
 };
-use moiren_windows_audio::virtual_owner::{VirtualMicrophoneSink, VirtualPlaybackSource};
+use moiren_windows_audio::virtual_owner::{
+    BoundaryProbe, VirtualMicrophoneSink, VirtualPlaybackSource,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -31,6 +33,8 @@ fn check_virtual_src<S: ProcessingSample>(drift: bool) {
             let microphone_consumer = Arc::new(AtomicU64::new(0));
             let (mut input, reader) = audio_bridge(2, 1024, 1 << 20).unwrap();
             let (writer, mut output) = audio_bridge(2, 1024, 1 << 20).unwrap();
+            let playback_probe = Arc::new(BoundaryProbe::default());
+            let microphone_probe = Arc::new(BoundaryProbe::default());
             let source = VirtualPlaybackSource::new(reader, channels, 128, sample_rate, 1 << 20)
                 .unwrap()
                 .with_reset_fence(
@@ -49,12 +53,14 @@ fn check_virtual_src<S: ProcessingSample>(drift: bool) {
                 source.with_clock_drift().unwrap()
             } else {
                 source
-            };
+            }
+            .with_probe(playback_probe.clone());
             let sink = if drift {
                 sink.with_clock_drift().unwrap()
             } else {
                 sink
-            };
+            }
+            .with_probe(microphone_probe.clone());
             let mut graph = LogicalGraph::new();
             let source_node = graph.create_node(NodeKind::Source, channels).unwrap();
             let sink_node = graph.create_node(NodeKind::Sink, channels).unwrap();
@@ -104,6 +110,12 @@ fn check_virtual_src<S: ProcessingSample>(drift: bool) {
                         microphone_producer.store(current, Ordering::Release);
                     }
                     engine.render(128).unwrap();
+                    let source = playback_probe.src_checkpoint().unwrap();
+                    let sink = microphone_probe.src_checkpoint().unwrap();
+                    assert_eq!(source.sequence, block + 1);
+                    assert_eq!(sink.sequence, block + 1);
+                    assert_eq!(source.engine_frames, 128);
+                    assert_eq!(sink.engine_frames, 128);
                     let current = epoch.load(Ordering::Acquire);
                     if microphone_producer.load(Ordering::Acquire) == current
                         && microphone_consumer.load(Ordering::Acquire) != current

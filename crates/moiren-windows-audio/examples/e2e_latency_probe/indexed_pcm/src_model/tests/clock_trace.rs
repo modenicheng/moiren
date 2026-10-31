@@ -69,9 +69,14 @@ fn stage(input: &[f32], varying: bool, playback: bool) -> Stage {
         supplied += needed;
         let mut produced = 0;
         while !playback || produced < BLOCK {
+            let cursor = src.cursor();
             let Some(frame) = src.next_frame() else {
                 break;
             };
+            assert!(!cursor.saturated);
+            assert_eq!(cursor.output_frames, result.samples.len() as u64);
+            assert!((cursor.next_input_frame as f64 + cursor.fraction - center).abs() < 1e-5);
+            assert_eq!(cursor.step, 1.0 + correction * 1e-6);
             assert_eq!(frame[0], frame[1]);
             result.samples.push(frame[0] as f32);
             // Global source-center arithmetic is independent of the FIR's

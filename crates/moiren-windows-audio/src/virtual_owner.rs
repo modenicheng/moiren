@@ -17,9 +17,10 @@ mod clock_observation;
 mod provider;
 mod reprime;
 
+pub use crate::resample::SrcCursor;
 pub use boundary::{
-    BoundaryProbe, BoundaryProbeSample, PlaybackBoundaryEvents, VirtualMicrophoneSink,
-    VirtualPlaybackSource,
+    BoundaryProbe, BoundaryProbeSample, BoundarySrcCheckpoint, PlaybackBoundaryEvents,
+    VirtualMicrophoneSink, VirtualPlaybackSource,
 };
 pub use budget::{PreparedVirtualBudget, VirtualBufferOptions};
 #[allow(unused_imports)]
