@@ -54,6 +54,12 @@ resolves14 identities but leaves15 missing and9762 nominal-QPC policy issues;
 both author/root artifacts agree and exit1. Missing is not proven marker loss,
 and spacing is not origin/physical delay. No threshold or quality gate is eased.
 
+The separate [synthetic SRC model](2026-10-31-indexed-src-synthetic.md)
+imports the real FIR only into example tests and uses exact indexed-v2 source
+bytes. Root17 focused/605 full tests, strict Clippy and independent review pass.
+Its finite FIR-plus-affine approximation is not a native analyzer extension:
+the retained14/29 result and physical/quality unknowns are unchanged.
+
 The [current74f desktop regression](2026-10-31-app-deployment-desktop.md#main-pr50-integrated-app-current-binary-native-regression)
 includes main PR50, fresh graph20/direction1 tests and actual DAWN-only native
 start/restart/stop with13 UIA Invokes. Both owners retire/reap, app/source exit0,
