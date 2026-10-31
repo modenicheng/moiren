@@ -45,6 +45,22 @@ Independent acquired-evidence audit passes72/0 with its initial scalar-compare
 69/70 fixture result retained; source/report/archive bytes are unchanged.
 No PCM/calibration or controlled load is acquired, and S1-S3 remain incomplete.
 
+The additive [VAD decode-call envelope](2026-10-31-vad-decode-call-envelope.md)
+then keeps that exact305-second source/configuration and driver610. Its terminal
+report retains observed duration0 and cleanup failure: four PCM slots return
+`0x8007051A`, despite61 periodic observations through300.3363808s and source
+elapsed305.0074778s. Live reset/recovery1, recovery-prime32 and QUERY dropped4
+remain visible; collected-packet telemetry dropped0 does not erase QUERY's
+separate evidence. The original owner has only1887 eligible intervals before
+invalidation/reopen, followed by99772 ambiguous calls. Its3.6274ms prefix maximum
+and24.0141ms completion maximum are not whole-window delivery or physical delay.
+Root verifies the17-payload archive; independent acquired audit passes53/53
+after correcting only an integer-count versus JSONL-array assertion, retaining
+the initial52/53 receipt. No budget reduction, error waiver or stable floor is
+established; this failure does not invalidate the earlier bounded control or
+prove that the new telemetry caused the reset. Source and final facts have
+separate independent reviews; S1-S3 remain incomplete.
+
 The [physical DAWN retirement control](2026-10-31-physical-soak-retirement.md)
 retains the actual256-frame admission and probe exit1/SET_GATE cleanup failure
 on unchanged610; independent acquired-evidence audit passes49 checks without

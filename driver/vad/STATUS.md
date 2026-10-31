@@ -97,6 +97,15 @@ clean teardown. Source submission completion and the root-verified17-payload
 archive remain diagnostic only: no delivered PCM/calibration or physical bound
 is established. Independent acquired-evidence audit passes72/0. Driver610,
 default settings and quality gates are unchanged.
+The subsequent additive decode-call telemetry control keeps that305-second
+source/configuration but is not a successful soak: report observed duration0,
+live reset/recovery1 and recovery-prime32, QUERY dropped4, and four terminal
+PCM shutdown `0x8007051A` failures remain. Only an early original-owner call
+segment is eligible; its small maximum cannot describe the ambiguous suffix
+or physical latency. The17-payload archive is root-verified and independently
+audited53/53 with the initial52/53 harness assertion retained. Driver610 is
+unchanged; no error is waived or gap/jitter budget reduced:
+[decode-call receipt](../../docs/validation/2026-10-31-vad-decode-call-envelope.md).
 
 Direction remains virtual speaker/Playback -> Moiren Input/Source and
 virtual microphone/MIC -> Moiren Output/Sink, already merged in PR44.
