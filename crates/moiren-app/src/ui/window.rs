@@ -166,12 +166,12 @@ pub struct StudioShell {
     mixer_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
     mixer_geometry: mixer::meter_frame::Geometry,
-    mixer_controls: Entity<mixer::meter_frame::MixerControls>,
-    toolbar_chrome: Entity<chrome::CachedChrome>,
-    status_chrome: Entity<chrome::CachedChrome>,
+    mixer_controls: Entity<mixer::meter_frame::MixerPanelHost>,
+    toolbar_chrome: Entity<chrome::ToolbarChrome>,
+    status_chrome: Entity<chrome::StatusbarChrome>,
     mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
     graph_meter_frame: Entity<graph::meter_frame::GraphMeterFrame>,
-    graph_controls: Entity<graph::meter_frame::GraphControls>,
+    graph_controls: Entity<graph::meter_frame::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
@@ -303,11 +303,7 @@ impl StudioShell {
         let mixer_geometry = mixer::meter_frame::Geometry::default();
         let shell_entity = cx.entity();
         let mixer_controls = cx.new(|child_cx| {
-            mixer::meter_frame::MixerControls::new(
-                shell_entity.clone(),
-                mixer_geometry.clone(),
-                child_cx,
-            )
+            mixer::meter_frame::MixerPanelHost::new(shell_entity.clone(), child_cx)
         });
         let mixer_frame = cx.new(|_| {
             mixer::meter_frame::MixerMeterFrame::new(
@@ -318,14 +314,10 @@ impl StudioShell {
         let graph_meter_frame =
             cx.new(|_| graph::meter_frame::GraphMeterFrame::new(shell_entity.downgrade()));
         let graph_controls = cx.new(|child_cx| {
-            graph::meter_frame::GraphControls::new(
-                shell_entity.clone(),
-                node_search.clone(),
-                child_cx,
-            )
+            graph::meter_frame::GraphPanelHost::new(shell_entity.clone(), child_cx)
         });
-        let toolbar_chrome = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), true, cx));
-        let status_chrome = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), false, cx));
+        let toolbar_chrome = cx.new(|cx| chrome::ToolbarChrome::new(shell_entity.clone(), cx));
+        let status_chrome = cx.new(|cx| chrome::StatusbarChrome::new(shell_entity.clone(), cx));
         let mut shell = Self {
             state,
             settings_open: false,
@@ -616,6 +608,7 @@ mod graph;
 mod matrix;
 mod mixer;
 mod native;
+mod panel;
 mod project;
 mod settings;
 mod sidebar;

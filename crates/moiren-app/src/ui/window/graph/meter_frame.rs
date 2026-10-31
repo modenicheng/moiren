@@ -5,22 +5,20 @@
 //! drawn frame rebuilds the shell's root element, so without this cache the
 //! world projection and every interaction closure would rebuild per frame.
 use super::*;
+use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_or_live};
 use std::rc::Rc;
 
-pub(in crate::ui::window) struct GraphControls {
-    shell: WeakEntity<StudioShell>,
-    key: Option<ControlsKey>,
-    _search_subscription: Subscription,
-    _subscription: Subscription,
-}
+/// The Graph page panel behind [`PanelHost`]: the canvas world, library, and
+/// editing toolbar, rebuilt only when their semantic key changes.
+pub(in crate::ui::window) struct GraphPanel;
 
 /// Only inputs the page content consumes belong in this key. Elapsed time
 /// and audio observations must not invalidate it: the shell root still
 /// rebuilds on every drawn frame, and those rebuilds must splice this cache
 /// instead of re-projecting the graph.
 #[derive(PartialEq)]
-struct ControlsKey {
-    graph: std::sync::Arc<crate::service::GraphSnapshot>,
+pub(in crate::ui::window) struct ControlsKey {
+    graph: ArcSnapshot<crate::service::GraphSnapshot>,
     generation: crate::service::SessionGeneration,
     phase: SessionPhase,
     desired: Option<crate::service::SessionSpec>,
@@ -41,7 +39,7 @@ impl ControlsKey {
     fn new(shell: &StudioShell, cx: &App) -> Self {
         let snapshot = &shell.state.read(cx).snapshot;
         Self {
-            graph: snapshot.graph.clone(),
+            graph: ArcSnapshot::new(snapshot.graph.clone()),
             generation: snapshot.generation,
             phase: snapshot.phase,
             desired: snapshot.desired.clone(),
@@ -63,68 +61,57 @@ impl ControlsKey {
     }
 }
 
-impl GraphControls {
-    pub fn new(
-        shell: Entity<StudioShell>,
-        search: Entity<component::input::InputState>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let subscription = cx.observe(&shell, |controls, shell, cx| {
-            let key = ControlsKey::new(shell.read(cx), cx);
-            if controls.key.as_ref() != Some(&key) {
-                controls.key = Some(key);
-                cx.notify();
-            }
-        });
+pub(in crate::ui::window) type GraphPanelHost = PanelHost<GraphPanel>;
+
+impl CachedPanel for GraphPanel {
+    type Key = ControlsKey;
+
+    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
+        ControlsKey::new(shell, cx)
+    }
+
+    fn render(
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        #[cfg(feature = "gpui-test")]
+        {
+            shell.mixer.trace.borrow_mut().graph_renders += 1;
+        }
+        super::page(shell, cx)
+    }
+
+    fn on_rebuild(shell: &mut StudioShell) {
+        // Fresh visibility demand: the canvas prepaint re-registers the
+        // nodes its fitted camera shows during this same layout pass.
+        shell.meter_points.set((false, false));
+        shell.node_meter_points.borrow_mut().clear();
+    }
+
+    fn observe_nested(
+        shell: &Entity<StudioShell>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
         // The library's search input is a model entity nested in this cached
         // tree; its notifications cannot invalidate the cached ancestor by
         // themselves, so typing must re-render through an explicit observer.
-        let search_subscription = cx.observe(&search, |_, _, cx| cx.notify());
-        Self {
-            shell: shell.downgrade(),
-            key: None,
-            _search_subscription: search_subscription,
-            _subscription: subscription,
-        }
-    }
-}
-
-impl Render for GraphControls {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(shell) = self.shell.upgrade() {
-            self.key = Some(ControlsKey::new(shell.read(cx), cx));
-        }
-        #[cfg(feature = "gpui-test")]
-        if let Some(shell) = self.shell.upgrade() {
-            shell.read(cx).mixer.trace.borrow_mut().graph_renders += 1;
-        }
-        let Some(shell) = self.shell.upgrade() else {
-            return div().into_any_element();
-        };
-        shell.update(cx, |shell, cx| {
-            // Fresh visibility demand: the canvas prepaint re-registers the
-            // nodes its fitted camera shows during this same layout pass.
-            shell.meter_points.set((false, false));
-            shell.node_meter_points.borrow_mut().clear();
-            super::page(shell, cx)
-        })
+        let search = shell.read_with(cx, |shell, _| shell.node_search.clone());
+        vec![cx.observe(&search, |_, _, cx| cx.notify())]
     }
 }
 
 pub(in crate::ui::window) fn page(shell: &StudioShell, window: &Window) -> AnyElement {
-    // Active accessibility needs the controls rebuilt into each frame's tree.
-    let controls = if window.is_a11y_active() {
-        div()
-            .size_full()
-            .child(shell.graph_controls.clone())
-            .into_any_element()
-    } else {
-        shell
-            .graph_controls
-            .clone()
-            .cached(StyleRefinement::default().size_full())
-            .into_any_element()
-    };
+    let controls = cached_or_live(
+        shell.graph_controls.clone(),
+        window,
+        |entity| {
+            entity
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        },
+        |entity| div().size_full().child(entity).into_any_element(),
+    );
     div()
         .relative()
         .flex()

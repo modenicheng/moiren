@@ -1,7 +1,9 @@
 use rust_i18n::t;
 
 use super::*;
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef, cached_or_live};
 use controls::*;
+use std::sync::Arc;
 
 pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     #[cfg(feature = "gpui-test")]
@@ -167,88 +169,137 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .gpui_test_observe()
 }
 
-/// Chrome is a sibling of the animated meter view, never a cached parent of
-/// the controls. Rebuilding a cached parent forces its nested caches fresh.
-pub(super) struct CachedChrome {
-    shell: WeakEntity<StudioShell>,
-    toolbar: bool,
-    _subscription: Subscription,
+/// The chrome panels are siblings of the animated meter views, never cached
+/// parents of the page panels: rebuilding a cached parent forces its nested
+/// caches fresh.
+pub(super) type ToolbarChrome = PanelHost<ToolbarPanel>;
+pub(super) type StatusbarChrome = PanelHost<StatusbarPanel>;
+
+/// Everything the toolbar tree consumes. Shell notifications arrive far more
+/// often than these inputs change (meter pumps are excluded by design — the
+/// meter frames own the animation loops), so the key exists to keep those
+/// notifications from rebuilding the chrome.
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct ToolbarKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    page: Page,
+    compact: bool,
+    project_name: String,
+    pending_request: bool,
 }
 
-impl CachedChrome {
-    pub fn new(shell: Entity<StudioShell>, toolbar: bool, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&shell, |_, _, cx| cx.notify());
-        Self {
-            shell: shell.downgrade(),
-            toolbar,
-            _subscription: subscription,
+pub(super) struct ToolbarPanel;
+
+impl CachedPanel for ToolbarPanel {
+    type Key = ToolbarKey;
+
+    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
+        let state = shell.state.read(cx);
+        Self::Key {
+            snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
+            page: shell.presentation.page,
+            compact: shell.compact,
+            project_name: shell.project_name.clone(),
+            pending_request: state.pending_request,
         }
+    }
+
+    fn render(
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        // A cached view is laid out as a root. Give the original flex row its
+        // allocated width explicitly, not its intrinsic content width.
+        div()
+            .size_full()
+            .child(toolbar(shell, cx))
+            .into_any_element()
     }
 }
 
-impl Render for CachedChrome {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(shell) = self.shell.upgrade() else {
-            return div().into_any_element();
-        };
-        shell.update(cx, |shell, cx| {
-            let content = if self.toolbar {
-                toolbar(shell, cx).into_any_element()
-            } else {
-                #[cfg(feature = "gpui-test")]
-                {
-                    shell.mixer.trace.borrow_mut().status_renders += 1;
-                }
-                statusbar(shell.state.read(cx))
-                    .gpui_test_observe()
-                    .into_any_element()
-            };
-            // A cached view is laid out as a root. Give the original flex row
-            // its allocated width explicitly, not its intrinsic content width.
-            div().size_full().child(content).into_any_element()
-        })
+/// The status bar projects the published snapshot and nothing else; the
+/// service dedups publishes, so publish identity is the whole truth.
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct StatusbarKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+}
+
+pub(super) struct StatusbarPanel;
+
+impl CachedPanel for StatusbarPanel {
+    type Key = StatusbarKey;
+
+    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
+        Self::Key {
+            snapshot: PublishRef::new(Arc::clone(&shell.state.read(cx).snapshot)),
+        }
+    }
+
+    fn render(
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        #[cfg(feature = "gpui-test")]
+        {
+            shell.mixer.trace.borrow_mut().status_renders += 1;
+        }
+        // A cached view is laid out as a root. Give the original flex row its
+        // allocated width explicitly, not its intrinsic content width.
+        div()
+            .size_full()
+            .child(statusbar(shell.state.read(cx)).gpui_test_observe())
+            .into_any_element()
     }
 }
 
 pub(super) fn toolbar_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
-    // GPUI's cache replays paint/layout, not the per-frame accessibility tree.
-    if window.is_a11y_active() {
-        return div()
-            .w_full()
-            .h(px(theme::TOOLBAR_HEIGHT))
-            .flex_none()
-            .child(shell.toolbar_chrome.clone())
-            .into_any_element();
-    }
     // Chrome is cached on every page: both meter frames — not the shell —
     // own the animation loops, so shell notifications here are real state
     // changes and the cached tree rebuilds through its shell observer.
-    shell
-        .toolbar_chrome
-        .clone()
-        .cached(
-            StyleRefinement::default()
+    cached_or_live(
+        shell.toolbar_chrome.clone(),
+        window,
+        |entity| {
+            entity
+                .cached(
+                    StyleRefinement::default()
+                        .w_full()
+                        .h(px(theme::TOOLBAR_HEIGHT))
+                        .flex_none(),
+                )
+                .into_any_element()
+        },
+        |entity| {
+            div()
                 .w_full()
                 .h(px(theme::TOOLBAR_HEIGHT))
-                .flex_none(),
-        )
-        .into_any_element()
+                .flex_none()
+                .child(entity)
+                .into_any_element()
+        },
+    )
 }
 
 pub(super) fn status_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
-    if window.is_a11y_active() {
-        return div()
-            .w_full()
-            .h(px(28.))
-            .flex_none()
-            .child(shell.status_chrome.clone())
-            .into_any_element();
-    }
-    shell
-        .status_chrome
-        .clone()
-        .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
-        .into_any_element()
+    cached_or_live(
+        shell.status_chrome.clone(),
+        window,
+        |entity| {
+            entity
+                .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
+                .into_any_element()
+        },
+        |entity| {
+            div()
+                .w_full()
+                .h(px(28.))
+                .flex_none()
+                .child(entity)
+                .into_any_element()
+        },
+    )
 }
 
 fn titlebar_drag_region(id: &'static str) -> impl IntoElement {

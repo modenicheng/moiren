@@ -2,6 +2,7 @@
 //! is a sibling, not a descendant: GPUI invalidates ancestors of an animated
 //! view, which would otherwise invalidate the controls' prepaint/paint cache.
 use super::*;
+use crate::ui::window::panel::{ArcSnapshot, CachedPanel, PanelHost, cached_or_live};
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 #[derive(Clone, Copy)]
@@ -43,21 +44,17 @@ impl Geometry {
     }
 }
 
-pub(in crate::ui::window) struct MixerControls {
-    shell: WeakEntity<StudioShell>,
-    geometry: Geometry,
-    key: Option<ControlsKey>,
-    slider_subscriptions: std::collections::HashMap<EntityId, Subscription>,
-    _subscription: Subscription,
-}
+/// The Mixer page panel behind [`PanelHost`]: the strip tree, rebuilt only
+/// when its semantic key changes.
+pub(in crate::ui::window) struct MixerPanel;
 
 /// Only data consumed by the control tree belongs in this key. In particular,
 /// elapsed time and audio observations must not turn the 33 ms service poll
 /// into another full-strip render loop. Child input/hover/scroll notifications
 /// still invalidate their actual GPUI ancestor normally.
 #[derive(PartialEq)]
-struct ControlsKey {
-    graph: std::sync::Arc<crate::service::GraphSnapshot>,
+pub(in crate::ui::window) struct ControlsKey {
+    graph: ArcSnapshot<crate::service::GraphSnapshot>,
     catalog: std::sync::Arc<crate::service::DeviceCatalog>,
     backend: crate::service::AudioBackend,
     generation: crate::service::SessionGeneration,
@@ -82,7 +79,7 @@ impl ControlsKey {
     fn new(shell: &StudioShell, cx: &App) -> Self {
         let snapshot = &shell.state.read(cx).snapshot;
         Self {
-            graph: snapshot.graph.clone(),
+            graph: ArcSnapshot::new(snapshot.graph.clone()),
             catalog: snapshot.catalog.clone(),
             backend: snapshot.audio_settings.backend,
             generation: snapshot.generation,
@@ -110,34 +107,37 @@ impl ControlsKey {
     }
 }
 
-impl MixerControls {
-    pub fn new(shell: Entity<StudioShell>, geometry: Geometry, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&shell, |controls, shell, cx| {
-            let key = ControlsKey::new(shell.read(cx), cx);
-            if controls.key.as_ref() != Some(&key) {
-                controls.key = Some(key);
-                cx.notify();
-            }
-        });
-        Self {
-            shell: shell.downgrade(),
-            geometry,
-            key: None,
-            slider_subscriptions: Default::default(),
-            _subscription: subscription,
-        }
-    }
-}
+pub(in crate::ui::window) type MixerPanelHost = PanelHost<MixerPanel>;
 
-impl Render for MixerControls {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(shell) = self.shell.upgrade() {
-            self.key = Some(ControlsKey::new(shell.read(cx), cx));
-        }
-        *self.geometry.0.borrow_mut() = MeterGeometry::default();
-        let Some(shell) = self.shell.upgrade() else {
-            return div().into_any_element();
-        };
+impl CachedPanel for MixerPanel {
+    type Key = ControlsKey;
+
+    fn key(shell: &StudioShell, cx: &App) -> Self::Key {
+        ControlsKey::new(shell, cx)
+    }
+
+    fn render(
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        super::page(shell, cx)
+    }
+
+    fn on_rebuild(shell: &mut StudioShell) {
+        // Geometry is registered by the strip canvases during this same
+        // layout pass; stale placements must not survive a rebuild.
+        *shell.mixer_geometry.0.borrow_mut() = MeterGeometry::default();
+        // Fresh visibility demand: the strip canvases re-register the meters
+        // their content mask shows during this same layout pass.
+        shell.meter_points.set((false, false));
+        shell.node_meter_points.borrow_mut().clear();
+    }
+
+    fn observe_nested(
+        shell: &Entity<StudioShell>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
         // SliderState is a model entity, not a Render view in the dispatch
         // tree. Its notifications cannot invalidate this cached ancestor by
         // themselves. Observe both faders and sends, including drag updates
@@ -151,35 +151,24 @@ impl Render for MixerControls {
                 .map(|slot| slot.state.clone())
                 .collect::<Vec<_>>()
         });
-        self.slider_subscriptions
-            .retain(|id, _| sliders.iter().any(|slider| slider.entity_id() == *id));
-        for slider in sliders {
-            self.slider_subscriptions
-                .entry(slider.entity_id())
-                .or_insert_with(|| cx.observe(&slider, |_, _, cx| cx.notify()));
-        }
-        shell.update(cx, |shell, cx| {
-            shell.meter_points.set((false, false));
-            shell.node_meter_points.borrow_mut().clear();
-            super::page(shell, cx)
-        })
+        sliders
+            .into_iter()
+            .map(|slider| cx.observe(&slider, |_, _, cx| cx.notify()))
+            .collect()
     }
 }
 
 pub(in crate::ui::window) fn page(shell: &StudioShell, window: &Window) -> AnyElement {
-    // Active accessibility needs the controls rebuilt into each frame's tree.
-    let controls = if window.is_a11y_active() {
-        div()
-            .size_full()
-            .child(shell.mixer_controls.clone())
-            .into_any_element()
-    } else {
-        shell
-            .mixer_controls
-            .clone()
-            .cached(StyleRefinement::default().size_full())
-            .into_any_element()
-    };
+    let controls = cached_or_live(
+        shell.mixer_controls.clone(),
+        window,
+        |entity| {
+            entity
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        },
+        |entity| div().size_full().child(entity).into_any_element(),
+    );
     div()
         .relative()
         .flex_1()
