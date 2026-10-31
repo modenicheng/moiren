@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence', 'playback_copy', 'playback_copy_disabled')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,15 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name', 'interface_name_native', 'capture_boundary', 'pause_fence', 'playback_copy', 'playback_copy_disabled') } else { @($Test) })) {
+    $sourceName = $testName
+    $defines = @()
+    if ($testName -in @('playback_copy', 'playback_copy_disabled')) {
+        & python (Join-Path $PSScriptRoot 'tests\extract-playback-copy.py') $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Playback copy extraction failed ($LASTEXITCODE)." }
+        $sourceName = 'playback_copy'
+        if ($testName -eq 'playback_copy') { $defines = @('/DMOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC=1') }
+    }
     if ($testName -eq 'pause_fence') {
         & python (Join-Path $PSScriptRoot 'tests\extract-pause-fence.py') $PSScriptRoot $buildRoot
         if ($LASTEXITCODE -ne 0) { throw "Pause fence extraction failed ($LASTEXITCODE)." }
@@ -126,12 +134,12 @@ for relative, functions in (
             (Join-Path $PSScriptRoot 'src\Children.cpp') (Join-Path $buildRoot 'removal-production.inc')
         if ($LASTEXITCODE -ne 0) { throw "Removal source extraction failed ($LASTEXITCODE)." }
     }
-    & $compiler /nologo /std:c++17 /W4 /WX /EHsc /MT `
+    & $compiler /nologo /std:c++17 /W4 /WX /EHsc /MT @defines `
         "/I$buildRoot" `
         "/I$tools\include" "/I$sdk\Include\10.0.28000.0\ucrt" `
         "/I$sdk\Include\10.0.28000.0\shared" "/I$sdk\Include\10.0.28000.0\um" `
         "/Fo$buildRoot\$testName.obj" "/Fe$buildRoot\$testName.exe" `
-        (Join-Path $PSScriptRoot "tests\$testName.cpp") /link `
+        (Join-Path $PSScriptRoot "tests\$sourceName.cpp") /link `
         "/LIBPATH:$tools\lib\x64" "/LIBPATH:$sdk\Lib\10.0.28000.0\ucrt\x64" `
         "/LIBPATH:$sdk\Lib\10.0.28000.0\um\x64"
     if ($LASTEXITCODE -ne 0) { throw "$testName host test compile failed ($LASTEXITCODE)." }
