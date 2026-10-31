@@ -409,7 +409,8 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                     shared->UnservedDiagnostics[index].RecordUnserved(
                         slot.StreamGeneration, slot.AdmissionGeneration,
                         batch->Callback, retrieveStatus, retrieveCalls,
-                        unservedReasons != 0 ? unservedReasons : vad::UnservedNoCurrent);
+                        unservedReasons != 0 ? unservedReasons :
+                            static_cast<uint16_t>(vad::UnservedNoCurrent));
                 }
                 ++slot.SilencePackets;
             } else {
