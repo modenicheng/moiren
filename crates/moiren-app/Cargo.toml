@@ -34,6 +34,9 @@ gpui-test = ["gpui-kit/test-support"]
 ui-profiler = ["gpui-test", "gpui-kit/profiler"]
 # Explicit target service/VAD integration probe; ordinary builds never run it.
 vad-integration-probe = []
+# Native design-review gallery; only the component_preview example consumes it,
+# so the module stays out of ordinary application builds.
+component-gallery = []
 
 [[example]]
 name = "ui_capture"
@@ -42,6 +45,10 @@ required-features = ["gpui-test"]
 [[example]]
 name = "vad_integration"
 required-features = ["vad-integration-probe"]
+
+[[example]]
+name = "component_preview"
+required-features = ["component-gallery"]
 
 [dev-dependencies]
 # Backend tests exercise the portable renderer without enabling native audio.
