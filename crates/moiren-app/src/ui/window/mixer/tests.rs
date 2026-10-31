@@ -1635,6 +1635,72 @@ fn send_numeric_edit_commits_on_blur_and_rejects_invalid(cx: &mut TestAppContext
     finish_service(runtime);
 }
 
+#[gpui_kit::test]
+fn send_editor_accepts_the_shared_silence_spellings(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    activate_window(cx);
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let edge = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.edges()[0].id()
+    });
+    let editor = view.update(cx, |shell, _| shell.mixer.send_inputs[&edge].clone());
+    let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.update(cx, |shell, cx| {
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .graph
+                .get_edge(edge)
+                .unwrap()
+                .params()
+                .gain
+        })
+    };
+    let open = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        let position = cx.update(|window, _| {
+            window
+                .find(SharedString::from(format!("send-value-{edge:?}")))
+                .bounds()
+                .center()
+        });
+        cx.simulate_event(gpui_kit::MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+        });
+        view.update(cx, |shell, _| {
+            assert_eq!(shell.mixer.editing_send, Some(edge), "editor must open");
+        });
+    };
+
+    // The readout's U+2212 −∞ spelling must round-trip: the editor shows
+    // "-inf", but the styled strip label renders the Unicode minus.
+    open(&view, cx);
+    type_and_blur(&view, cx, &editor, "−inf");
+    assert_eq!(gain(&view, cx), 0., "−inf (U+2212) must parse as silence");
+    // The case-insensitive long form the fader editor already accepts.
+    open(&view, cx);
+    type_and_blur(&view, cx, &editor, "-INFINITY");
+    assert_eq!(gain(&view, cx), 0., "-INFINITY must parse as silence");
+    finish_service(runtime);
+}
+
 /// Clicks one editable readout and asserts its editor opened.
 fn open_editor(
     view: &Entity<StudioShell>,

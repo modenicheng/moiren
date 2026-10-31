@@ -484,21 +484,15 @@ fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut Ap
 }
 
 /// Enter/blur commit for the send gain editor; the input subscription and
-/// [`commit_active_editor`] share it.
+/// [`commit_active_editor`] share it. The parse goes through the shared
+/// [`parse_gain_db`] so the send editor accepts exactly the same silence
+/// spellings and entry domain as every other dB editor.
 fn commit_send_gain(shell: &mut StudioShell, id: EdgeId, text: &str, cx: &mut App) {
     if shell.mixer.editing_send != Some(id) {
         return;
     }
     shell.mixer.editing_send = None;
-    let gain = if matches!(text.trim(), "-inf" | "−∞" | "-∞") {
-        Some(0.)
-    } else {
-        text.parse::<f64>()
-            .ok()
-            .filter(|db| db.is_finite() && (-120. ..=24.).contains(db))
-            .map(|db| 10f64.powf(db / 20.))
-    };
-    if let Some(gain) = gain {
+    if let Some(gain) = parse_gain_db(text) {
         shell.state.update(cx, |state, _| {
             if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
                 state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
