@@ -472,6 +472,17 @@ impl StudioShell {
             cx.notify();
         })
         .detach();
+        // Alt+Tab (or any focus steal) mid-gesture loses the mouse-up, and a
+        // grab armed on an inactive window stays armed: cancel on
+        // deactivation, since the platform will never complete the stroke.
+        // Registration fires this once immediately; with no gesture in
+        // flight the cancel is a no-op.
+        cx.observe_window_activation(window, |shell, window, cx| {
+            if !window.is_window_active() {
+                shell.cancel_active_gesture(cx);
+            }
+        })
+        .detach();
         // Quit observers run before GPUI drops the windows. Move the latest
         // write into shutdown ownership: it also owns every earlier queued
         // write, and must finish after the shell entity is gone.
@@ -544,7 +555,12 @@ impl StudioShell {
     fn frames_wanted(&self, cx: &App) -> bool {
         // A graph gesture bypasses the meter eligibility gate: the canvas is
         // interactive whether or not a session runs and every meter rests.
-        self.drag_active() || (self.frames_eligible(cx) && self.frame_demand.any())
+        // Only the page that mounts the canvas may speak for a gesture,
+        // though: a grab that outlived the page (some lifecycle path missed
+        // the mouse-up) must not starve the control-side poll, which is the
+        // only meter pump the pages without hot layers have.
+        (self.drag_active() && self.presentation.page == Page::Graph)
+            || (self.frames_eligible(cx) && self.frame_demand.any())
     }
 
     /// Whether a graph canvas gesture is in flight (rubber band, pan, node
@@ -629,6 +645,10 @@ impl StudioShell {
     }
 
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        // Switching unmounts the canvas, so an in-flight gesture never sees
+        // its closing mouse-up (the new page's background has no canvas
+        // handlers); cancel it here or it stays armed across pages.
+        self.cancel_active_gesture(cx);
         self.presentation.page = page;
         self.window_state.workspace = desktop::workspace(page);
         self.settings_open = false;
