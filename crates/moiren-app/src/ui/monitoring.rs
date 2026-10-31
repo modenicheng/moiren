@@ -231,21 +231,25 @@ impl MeterSubscriptions {
                 self.output = None;
                 self.output_status = MeterStatus::Hidden;
             }
-            let mut publication = false;
+            // The legacy path shares the NodeMeters wake policy (see
+            // `NodeMeters::update_at`): a publication alone must not wake
+            // the interface, because a running stream keeps publishing
+            // windows whose readings may not move — notifying on each would
+            // repaint at the control-poll rate forever. The projection
+            // comparison below returns true exactly when a raw reading or a
+            // status did, which still wakes every lifecycle transition
+            // (fresh subscription, stall, hide, stop).
             if let Some(subscription) = self.input_subscription.as_mut() {
                 subscription.settings = self.settings;
-                publication |= subscription.poll(now);
+                subscription.poll(now);
                 self.input = stereo_levels(subscription.levels.as_deref());
                 self.input_status = subscription.status.clone();
             }
             if let Some(subscription) = self.output_subscription.as_mut() {
                 subscription.settings = self.settings;
-                publication |= subscription.poll(now);
+                subscription.poll(now);
                 self.output = stereo_levels(subscription.levels.as_deref());
                 self.output_status = subscription.status.clone();
-            }
-            if publication {
-                return true;
             }
         } else {
             self.clear();
@@ -1027,5 +1031,122 @@ mod tests {
             swing_db < 3.,
             "displayed swing {swing_db} dB is not smoothed against the 12 dB input swing"
         );
+    }
+
+    /// The legacy source/output probe must follow the NodeMeters wake policy:
+    /// a running stream publishes windows at its own cadence whether or not
+    /// the readings move, so only a reading or status change may wake the
+    /// interface (SD-8). Driven by the fake engine's constant source, whose
+    /// windows stand in for silence: arriving, valid, and bit-identical.
+    #[test]
+    fn legacy_meter_wakes_on_changes_only_not_on_publications() {
+        use std::sync::atomic::Ordering;
+
+        use crate::service::{
+            AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceRuntime,
+            SessionPhase, SessionSpec, test_backend::FakeBackend,
+        };
+        use crate::ui::{finish_service, wait_for, wait_until};
+
+        let backend = FakeBackend::default();
+        backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+        let backend_state = backend.0.clone();
+        let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+            Ok(Box::new(backend.clone()))
+        }))
+        .unwrap();
+        let handle = runtime.handle();
+        handle
+            .try_request(AppRequest::Start(SessionSpec {
+                source: InputSelection::Physical {
+                    endpoint_id: "input".into(),
+                },
+                output_endpoint_id: "output".into(),
+                limit: RunLimit::UntilStopped,
+                gain: 1.,
+                pan: 0.,
+                max_block_frames: 256,
+            }))
+            .unwrap();
+        let snapshot = wait_for(Duration::from_secs(3), || {
+            handle
+                .try_snapshot()
+                .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+        });
+
+        let mut meters = MeterSubscriptions::new(handle.clone());
+        // Fresh demand must wake once the first windows land (Waiting → Live,
+        // no reading → first window): the new-subscription path stays loud.
+        wait_until(Duration::from_secs(3), || {
+            meters.update_points(&snapshot, true, true)
+        });
+        // Let the relayed readings converge on the constant source, then
+        // require the stream to fall asleep: windows keep arriving, the
+        // readings never move, so no poll may return true again.
+        std::thread::sleep(Duration::from_secs(1));
+        wait_until(Duration::from_secs(3), || {
+            !meters.update_points(&snapshot, true, true)
+                && !meters.update_points(&snapshot, true, true)
+        });
+        assert!(
+            !meters.update_points(&snapshot, true, true),
+            "a publication whose readings did not change must not wake"
+        );
+
+        // A raw reading change must wake even though the stream keeps
+        // publishing: silencing the sink's feed drops its tap from full
+        // scale to zero.
+        let graph = &snapshot.graph.graph;
+        let sink = graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == moiren_core::graph::NodeKind::Sink)
+            .expect("the template graph carries a sink");
+        let feed = graph
+            .edges()
+            .iter()
+            .find(|edge| {
+                sink.inputs()
+                    .iter()
+                    .any(|port| port.id() == edge.dst_port())
+            })
+            .expect("the template graph wires the sink");
+        handle
+            .try_request(AppRequest::EditGraph(GraphEdit::Disconnect(feed.id())))
+            .unwrap();
+        wait_until(Duration::from_secs(3), || {
+            handle.try_snapshot().is_some_and(|snapshot| {
+                !snapshot
+                    .graph
+                    .graph
+                    .edges()
+                    .iter()
+                    .any(|edge| edge.id() == feed.id())
+            })
+        });
+        wait_until(Duration::from_secs(3), || {
+            meters.update_points(&snapshot, true, true)
+        });
+
+        // A delivery stall is a status change: it must wake exactly once,
+        // then stay quiet while the stall persists.
+        backend_state.pause_audio.store(true, Ordering::Relaxed);
+        std::thread::sleep(STALE_AFTER + Duration::from_millis(200));
+        assert!(
+            meters.update_points(&snapshot, true, true),
+            "the transition to Stale must wake"
+        );
+        assert!(
+            !meters.update_points(&snapshot, true, true),
+            "a persisted stall without new publications must not keep waking"
+        );
+
+        // Recovery is a status change too: Stale → Live with fresh readings.
+        backend_state.pause_audio.store(false, Ordering::Relaxed);
+        wait_until(Duration::from_secs(3), || {
+            meters.update_points(&snapshot, true, true)
+        });
+
+        finish_service(runtime);
     }
 }
