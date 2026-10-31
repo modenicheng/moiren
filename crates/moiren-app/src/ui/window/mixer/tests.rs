@@ -974,6 +974,136 @@ fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppC
     finish_service(runtime);
 }
 
+/// Undo must outrank an in-flight fader drag (audit SD-7): the drag holds the
+/// snapshot write-back down, so an undo landing mid-drag used to stay
+/// invisible (thumb pinned to the pointer) and the release then dispatched
+/// the stale pointer value over the undone gain — undo seemed to work only
+/// sometimes. The journal step now cancels the active drag: the write-back
+/// reopens so the thumb follows the undone value, and the release drops the
+/// gesture's stale tail instead of landing it as a fresh edit.
+#[gpui_kit::test]
+fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let gain_of = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> f64 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain
+        })
+    };
+    // A journaled baseline edit gives the undo something to restore: 0.5
+    // (-6 dB). The drag below will push the journal past it.
+    view.update(cx, |shell, cx| {
+        let mixer = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .expect("strip node")
+            .mixer;
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::SetMixer {
+                    node,
+                    state: crate::service::MixerState { gain: 0.5, ..mixer },
+                },
+            ));
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        (gain_of(&view, cx) - 0.5).abs() < 1e-9
+    });
+    // Same-node mixer edits merge into one undo step inside the journal's
+    // 500 ms coalesce window; the baseline must fall outside it so the undo
+    // steps back to 0.5 rather than past it to unity.
+    std::thread::sleep(Duration::from_millis(600));
+    let undo_position = 1. - FaderScale::position(0.5);
+    // Press below the -6 dB thumb and hold: the press revalues the slider and
+    // its Change dispatches immediately, so the journal head is the press's
+    // own value and the pointer owns the thumb (write-back suppressed).
+    let press = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(0.5) + px(8.),
+        )
+    });
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    wait_until(Duration::from_secs(2), || gain_of(&view, cx) < 0.5);
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.state.read(cx).snapshot.graph.can_undo,
+            "the drag's dispatch must be journaled before the undo"
+        );
+        assert_ne!(
+            shell.mixer.faders[&node].state.read(cx).value().end(),
+            undo_position,
+            "the dragging thumb must sit at the pointer, not at the snapshot"
+        );
+    });
+    // Undo mid-drag. The undo publishes the restored gain while the pointer
+    // is still down; deliberately no frame renders in between, so the slider
+    // state still carries the stale pointer value when the release lands.
+    // The journal step is invoked directly: the mixer page keeps no element
+    // under the shell's focus handle for ctrl-z to bubble through (the
+    // keystroke routing itself is covered by the window-level undo tests).
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| shell.undo_redo_graph(false, window, cx));
+    });
+    wait_until(Duration::from_secs(2), || {
+        (gain_of(&view, cx) - 0.5).abs() < 1e-9
+    });
+    cx.simulate_mouse_up(press, MouseButton::Left, Modifiers::default());
+    // The cancelled gesture's release must not re-land its stale value: drain
+    // the mailbox and give any (wrongly) dispatched edit time to publish.
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    let (gain, thumb) = view.update(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.faders[&node].state.read(cx).value().end(),
+        )
+    });
+    assert!(
+        (gain - 0.5).abs() < 1e-9,
+        "the release must not overwrite the undone gain, got {gain}"
+    );
+    assert!(
+        (thumb - undo_position).abs() < 1e-6,
+        "the thumb must follow the undone value after the drag was cancelled, got {thumb}"
+    );
+    finish_service(runtime);
+}
+
 /// The capture-tap monitor meters must not keep the frame loop armed for a
 /// display the node level topics already cover. The Graph page mounts no
 /// legacy probes and stands down at silence; the Mixer page's pre-fader tap
