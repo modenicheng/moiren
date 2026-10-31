@@ -482,7 +482,6 @@ fn graph_only_template_clears_previous_project_resource_selection() {
     state.source_mode = SourceMode::Input;
     state.max_block_frames = 1024;
     state.run_limit = RunLimit::Seconds(60);
-    state.muted = true;
     state.restore_graph_candidate();
     assert_eq!(state.source_mode, SourceMode::Tone);
     assert_eq!(state.tone_frequency, 440.);
@@ -490,7 +489,6 @@ fn graph_only_template_clears_previous_project_resource_selection() {
     assert!(state.selection.input_id.is_none());
     assert_eq!(state.max_block_frames, 256);
     assert_eq!(state.run_limit, RunLimit::UntilStopped);
-    assert!(!state.muted);
     assert!(state.candidate_config().is_none());
     finish_service(runtime);
 }

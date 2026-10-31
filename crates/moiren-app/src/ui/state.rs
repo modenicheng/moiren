@@ -289,8 +289,6 @@ pub struct UiState {
     pub source_mode: SourceMode,
     pub gain: f64,
     pub pan: f64,
-    pub muted: bool,
-    pub dimmed: bool,
     pub tone_frequency: f64,
     pub max_block_frames: usize,
     pub run_limit: RunLimit,
@@ -323,8 +321,6 @@ impl UiState {
             source_mode: SourceMode::Tone,
             gain,
             pan,
-            muted: false,
-            dimmed: false,
             tone_frequency: 440.,
             max_block_frames,
             run_limit: RunLimit::UntilStopped,
@@ -350,7 +346,7 @@ impl UiState {
             }
             let before = primary_parameters(&self.snapshot);
             let after = primary_parameters(&snapshot);
-            if before.0 != after.0 && !self.muted && !self.dimmed {
+            if before.0 != after.0 {
                 self.gain = after.0;
             }
             if before.1 != after.1 {
@@ -428,16 +424,6 @@ impl UiState {
         let _ = self.try_dispatch(AppRequest::SetLatencyProfile(preferences.latency_profile));
     }
 
-    pub fn effective_gain(&self) -> f64 {
-        if self.muted {
-            0.0
-        } else if self.dimmed {
-            self.gain * 0.25
-        } else {
-            self.gain
-        }
-    }
-
     /// Explicit node targets let the service distinguish a loaded candidate
     /// from a still-running project whose NodeId numbers happen to coincide.
     pub fn request_parameters(&mut self) {
@@ -455,7 +441,7 @@ impl UiState {
         if let Some(node) = gain {
             self.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::SetGain {
                 node,
-                gain: self.effective_gain(),
+                gain: self.gain,
             }));
         }
         if let Some(node) = pan {
@@ -519,7 +505,7 @@ impl UiState {
             source,
             output_endpoint_id: self.selection.output_id.clone()?,
             limit: self.run_limit,
-            gain: self.effective_gain(),
+            gain: self.gain,
             pan: self.pan,
             max_block_frames: self.max_block_frames,
         };
@@ -698,8 +684,6 @@ impl UiState {
         let (gain, pan) = primary_parameters(&self.snapshot);
         self.gain = gain;
         self.pan = pan;
-        self.muted = false;
-        self.dimmed = false;
         self.max_block_frames = self.snapshot.audio_settings.processing.block_frames as usize;
         self.run_limit = RunLimit::UntilStopped;
     }
@@ -721,8 +705,6 @@ impl UiState {
         self.selection.output_initialized = true;
         self.gain = spec.gain;
         self.pan = spec.pan;
-        self.muted = false;
-        self.dimmed = false;
         self.max_block_frames = spec.max_block_frames;
         self.run_limit = spec.limit;
     }
