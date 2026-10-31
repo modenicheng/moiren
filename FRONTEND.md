@@ -307,7 +307,8 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 - 原生动画帧驱动读取和衰减，跟随显示刷新率。隐式 UI 测量窗为 `max(1, floor(sample_rate / 240))`，显式 Meter 节点窗长保持原设置。存在订阅需求时，引擎泵和兼容桥分别使用 1 ms 轮询预算；无需求时恢复空闲节奏。峰值保持仅由实际收到的新窗续期，Latest 覆盖的未收到峰值无法恢复；较大音频回调会成批产出测量窗。
 - 主 Mixer 与托盘的 Strip 参数实时生效。PRE 位于节点 DSP、声道模式、静音/独奏门控和 Balance 之后、增益与 Dim 之前；POST 位于增益与 Dim 之后。
 
-实现细节、参考来源与验证要求见 [Mixer 推子改造计划](docs/superpowers/plans/2026-10-25-mixer-strip-redesign.md)。原 Figma v2 组件仅作为历史参考，不再定义当前通道顺序。
+实现细节、参考来源与验证要求原记录于 Mixer 推子改造计划（2026-10-25；计划文档已于
+2026-10-31 从仓库移除，见 git 历史：`git log -- docs/superpowers/plans`）。原 Figma v2 组件仅作为历史参考，不再定义当前通道顺序。
 
 ### 7.3 Matrix：范围必须准确
 
@@ -427,7 +428,7 @@ Slint 文件检查与原生 UI 验证可参考下面的历史接入文档，执�
 | 文档 | 使用方式 |
 | --- | --- |
 | [2026-10-12 UI 重设计规格](docs/superpowers/specs/2026-10-12-moiren-figma-ui-redesign-design.md) | 公共框架、工作区、状态、交互与密度设计；后续专项更正优先 |
-| [2026-10-12 Figma 构建计划](docs/superpowers/plans/2026-10-12-moiren-figma-ui-redesign.md) | 历史实施顺序与验收目标，不当作当前完成状态 |
+| 2026-10-12 Figma 构建计划（已移除，见 git 历史） | 历史实施顺序与验收目标，不当作当前完成状态 |
 | [统一拓扑视图评估](docs/designs/11-unified-topology-views-evaluation.md) | Graph / Mixer / Matrix 共用图身份、节点 Slot、端口与多重边的架构建议；属于评估，不能描述为已实现功能 |
 | [早期 UI 设计系统](docs/designs/07-app-ui-design-system.md) | 历史背景与参数来源，配色、字体与导航可能已被新要求取代 |
 | [早期 Graph 规格](docs/designs/08-figma-graph-ui-spec.md) | 历史 Graph 组件和交互记录，按本文件与当前授权设计核对 |

@@ -42,8 +42,8 @@ cargo fmt --all -- --check
 
 ## 文档
 
-- [托管路由与低延迟](docs/designs/14-managed-routing-low-latency.md)
-- [本轮验证记录](docs/superpowers/plans/2026-10-16-managed-routing-low-latency-validation.md)
+- [托管路由与低延迟](docs/designs/14-managed-routing-low-latency.md)（其验证记录原在
+  superpowers 计划目录，该目录已于 2026-10-31 从仓库移除，见 git 历史）
 - [EngineHost 所有权与更新](crates/moiren-engine/README.md)
 - [后端节点验收与能力边界](docs/validation/backend-nodes.md)
 - [Windows 音频后端、探针与硬件边界](crates/moiren-windows-audio/README.md)

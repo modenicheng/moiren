@@ -2,7 +2,8 @@
 
 > **2026-10-27 更新**：本文原描述的 legacy 队列/库存档位模型与 `routing_probe`
 > 验证工具已随单栈化（PR #20）废弃。档位语义已按下文重写为设备 buffer 请求；
-> 变更背景见 [professional-only 后端计划](../superpowers/plans/2026-10-27-professional-only-backend.md)。
+> 变更背景见 professional-only 后端计划（2026-10-27；计划文档已于 2026-10-31
+> 从仓库移除，见 git 历史：`git log -- docs/superpowers/plans`）。
 > 本文是延迟档位语义的 canonical 文档；README 中的档位描述以本文为准。
 
 ## 生命周期与路由
@@ -46,14 +47,15 @@ fallback 来自原生观测，请求值不是测量值。
 `asio_probe` / `exclusive_probe`（能力与占用诊断）和 W00 系列
 （`w00_probe` / `w00_physical` / `w00_swdevice`，见
 [windows-audio README](../../crates/moiren-windows-audio/README.md)）。
-托管路径的连续运行资格结论保留在
-[历史记录](../superpowers/plans/2026-10-16-low-latency-qualification.md)：
+托管路径的连续运行资格结论保留在 2026-10-16 低延迟资格验证记录中（计划文档
+已于 2026-10-31 从仓库移除，见 git 历史：`git log -- docs/superpowers/plans`）：
 FreeDSP + CABLE 在 Low 连续 600 秒内发生 120 次跟随积压恢复（legacy 队列
 模型下测得）；预算内 wake 间隔不保证长期消费量匹配。该组合应选择 Balanced
 后在相同 IO 上重新验证，必要时再选择 Compatible。没有自动改档；healthy、
 零 overflow 或零 underrun 都不能替代无恢复和可听连续性验收。
 
-普通软件测试与硬件执行证据分别记录在[本轮验收文档](../superpowers/plans/2026-10-16-managed-routing-low-latency-validation.md)中。音频格式边界仍为
+普通软件测试与硬件执行证据分别记录在 2026-10-16 托管路由验收文档中（计划文档
+已于 2026-10-31 从仓库移除，见 git 历史）。音频格式边界仍为
 Shared、双声道 graph、48 kHz 输出（canonical 描述见
 [windows-audio README](../../crates/moiren-windows-audio/README.md)）；专业
 路径使用预计算 windowed-sinc SRC，旧 Clock Bridge 路径保留线性插值基线。
