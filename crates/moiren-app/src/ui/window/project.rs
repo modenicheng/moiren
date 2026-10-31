@@ -116,6 +116,46 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn project_load_completion_cancels_canvas_gestures(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx, runtime) = test_shell(cx);
+        let handle = runtime.handle();
+        let snapshot = initial_projection(&handle);
+        let document = ProjectDocument::from_graph("Loaded", &snapshot.graph).unwrap();
+        view.update(cx, |shell, cx| {
+            // A pan grab in flight when the load lands: the rubber-band
+            // trigger is a drag running while the async load completes and
+            // `apply_project_presentation` switches pages.
+            shell.pan_grab = Some((100., 100.));
+            shell.sync_drag_demand();
+            assert!(shell.drag_active());
+            assert!(
+                shell
+                    .stage_project(document, "Loaded.moiren.json".into(), cx)
+                    .is_ok()
+            );
+        });
+        wait_until(Duration::from_secs(2), || {
+            view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                shell.finish_project_load(cx);
+                shell.pending_project.is_none()
+            })
+        });
+        view.update(cx, |shell, cx| {
+            assert_eq!(shell.project_name, "Loaded", "the load must have applied");
+            assert!(
+                shell.pan_grab.is_none() && !shell.drag_active(),
+                "the project apply path must cancel the in-flight gesture"
+            );
+            assert!(
+                !shell.frames_wanted(cx),
+                "the DRAG demand must not outlive the load"
+            );
+        });
+        finish_service(runtime);
+    }
+
+    #[gpui_kit::test]
     fn rejected_project_enqueue_preserves_current_name_and_layout(
         cx: &mut gpui_kit::TestAppContext,
     ) {

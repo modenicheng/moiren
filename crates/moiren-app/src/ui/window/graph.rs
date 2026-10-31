@@ -102,6 +102,25 @@ impl StudioShell {
         }
     }
 
+    /// Cancels every in-flight canvas gesture without a pointer event to
+    /// consume it. Lifecycle paths that unmount the canvas or steal the
+    /// pointer (page switch, project load, window deactivation) drop the
+    /// closing mouse-up on the floor; a grab left armed there would paint a
+    /// stale rubber band and pin the DRAG frame demand after the user has
+    /// moved on. Same effect as the canvas's Escape handler.
+    pub(in crate::ui::window) fn cancel_active_gesture(&mut self, cx: &mut Context<Self>) {
+        let cancelled = self.drag_active() || self.background_click.is_some();
+        self.connection_drag = None;
+        self.node_drag = None;
+        self.pan_grab = None;
+        self.background_click = None;
+        self.selection_drag = None;
+        if cancelled {
+            self.sync_drag_demand();
+            cx.notify();
+        }
+    }
+
     fn clear_canvas_selection(&mut self) {
         self.selected_nodes.clear();
         self.selected_node = None;
@@ -504,16 +523,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
             }),
             on_cancel: std::rc::Rc::new({
                 let this = this.clone();
-                move |(), _, cx| {
-                    this.update(cx, |shell, cx| {
-                        shell.connection_drag = None;
-                        shell.node_drag = None;
-                        shell.pan_grab = None;
-                        shell.background_click = None;
-                        shell.selection_drag = None;
-                        cx.notify();
-                    })
-                }
+                move |(), _, cx| this.update(cx, |shell, cx| shell.cancel_active_gesture(cx))
             }),
             on_drop_node: std::rc::Rc::new({
                 let this = this.clone();

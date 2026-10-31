@@ -933,6 +933,157 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
 }
 
 #[gpui_kit::test]
+fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = crate::ui::window::test_harness::shell_with_state(cx, state);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.compact = false;
+        cx.notify();
+    });
+    render(cx);
+    crate::ui::window::test_harness::settle_panels(cx);
+    let frame = canvas_frame(&view, cx);
+    let node = frame.world.nodes[0].node_id.expect("projected node id");
+    let center = node_position(&frame, 0);
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        render(cx);
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
+    });
+    // Middle-button press on the canvas background: a pan grab in flight.
+    let anchor = center + point(px(300.), px(200.));
+    cx.simulate_mouse_down(anchor, MouseButton::Middle, Modifiers::default());
+    view.read_with(cx, |shell, cx| {
+        assert!(
+            shell.pan_grab.is_some(),
+            "the middle press must arm a pan grab"
+        );
+        assert!(shell.drag_active());
+        assert!(
+            shell.frames_wanted(cx),
+            "the in-flight gesture must keep taking frames on the canvas page"
+        );
+    });
+    // Switch pages while the middle button stays held (the real trigger: a
+    // left click on a workspace tab during a pan). The grab can never see
+    // its mouse-up on the new page, so the switch must cancel it.
+    view.update(cx, |shell, cx| shell.set_page(pages::Page::Matrix, cx));
+    view.read_with(cx, |shell, cx| {
+        assert!(
+            shell.pan_grab.is_none(),
+            "the pan grab must not survive the page switch"
+        );
+        assert!(shell.selection_drag.is_none());
+        assert!(shell.node_drag.is_none());
+        assert!(shell.connection_drag.is_none());
+        assert!(shell.background_click.is_none());
+        assert!(!shell.drag_active());
+        assert!(
+            !shell.frames_wanted(cx),
+            "the DRAG demand must be cleared along with the gesture"
+        );
+    });
+    // Defense in depth: a grab that dodged every lifecycle hook must not
+    // starve the control-side poll, the only meter pump the Matrix page has.
+    view.update(cx, |shell, _| shell.pan_grab = Some((100., 100.)));
+    view.read_with(cx, |shell, cx| {
+        assert!(shell.drag_active());
+        assert!(
+            !shell.frames_wanted(cx),
+            "a stale grab off the canvas page must not gate the poll pump"
+        );
+    });
+    // The desktop poll skips its meter pump exactly while frames are wanted;
+    // once the stale grab stops counting, one poll must advance the meters.
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            !shell.frames_wanted(cx) && shell.pump_meters(cx)
+        })
+    });
+    // Back on the Graph page the leftover grab is cancelled by the same
+    // path, and no rubber band state can resurface with it.
+    view.update(cx, |shell, cx| shell.set_page(pages::Page::Graph, cx));
+    view.read_with(cx, |shell, _| {
+        assert!(shell.pan_grab.is_none());
+        assert!(
+            shell.selection_drag.is_none(),
+            "no rubber band may survive the round trip"
+        );
+    });
+    render(cx);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn window_deactivation_cancels_canvas_gestures(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.compact = false;
+        cx.notify();
+    });
+    render(cx);
+    let frame = canvas_frame(&view, cx);
+    let anchor = node_position(&frame, 0) - point(px(120.), px(60.));
+    cx.simulate_mouse_down(anchor, MouseButton::Middle, Modifiers::default());
+    view.read_with(cx, |shell, _| assert!(shell.pan_grab.is_some()));
+    // The test platform only tracks a foreground window after an explicit
+    // activation; make this window active before blurring it.
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    // Alt+Tab mid-pan: the mouse-up lands in the other window and the grab
+    // would stay armed forever; deactivation must cancel it instead.
+    cx.deactivate_window();
+    view.read_with(cx, |shell, _| {
+        assert!(
+            shell.pan_grab.is_none() && !shell.drag_active(),
+            "deactivation must cancel the in-flight pan grab"
+        );
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     cx: &mut gpui_kit::TestAppContext,
 ) {
