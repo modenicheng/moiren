@@ -52,6 +52,29 @@ fn monitor_compatibility_does_not_invent_explicit_queue_or_output_requests() {
 }
 
 #[test]
+fn monitor_shared_native_period_is_exact_and_independent_of_engine_block() {
+    let options = monitor(&[
+        "--output-buffer-frames",
+        "336",
+        "--engine-block-frames",
+        "64",
+    ])
+    .unwrap();
+    assert_eq!(options.audio.output.buffer_frames, Some(336));
+    assert_eq!(options.audio.processing.block_frames, 64);
+    assert!(
+        monitor(&[
+            "--output-buffer-frames",
+            "336",
+            "--output-mode",
+            "exclusive"
+        ])
+        .is_err()
+    );
+    assert!(monitor(&["--engine-block-frames", "336"]).is_err());
+}
+
+#[test]
 fn complete_expert_tuple_is_declared_and_independent_of_output_buffer() {
     let options = monitor(&[
         "--target-frames",

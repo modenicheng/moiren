@@ -8,6 +8,7 @@ use gpui_kit::{AppContext, point, px};
 use std::time::Duration;
 
 mod ingress_elapsed;
+mod native_period;
 
 #[gpui_kit::test]
 fn toolbar_reserves_draggable_space_outside_interactive_controls(

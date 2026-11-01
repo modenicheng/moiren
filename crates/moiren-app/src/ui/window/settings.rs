@@ -16,6 +16,7 @@ mod measured_ui_tests;
 mod model;
 #[cfg(test)]
 mod model_tests;
+mod native_period;
 mod persistence;
 mod transaction;
 mod transport;
@@ -132,8 +133,11 @@ pub(super) fn overlay(
                         .on_key_down(move |event, window, cx| {
                             if event.keystroke.key == "escape" {
                                 this.update(cx, |shell, cx| shell.close_settings(window, cx));
+                                cx.stop_propagation();
                             }
-                            cx.stop_propagation();
+                            // Focus is confined to this modal, a sibling of
+                            // the graph. Unhandled text keys must reach the
+                            // platform input handler after key dispatch.
                         })
                         .child(
                             div()

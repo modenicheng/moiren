@@ -5,13 +5,13 @@ use crate::service::{
     AppSnapshot, AudioLatencyProfile, MeasuredProcessSummary, RequestId, TransportLatencySettings,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(in super::super) enum Editor {
     Global,
     Device,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(in super::super) enum Direction {
     Input,
     Output,
@@ -287,6 +287,7 @@ fn rebase_audio(
 }
 
 pub(in super::super) struct SettingsEditor {
+    pub(super) period_inputs: super::native_period::PeriodInputs,
     pub(super) measured: super::measured::MeasuredEditor,
     pub global: Draft,
     pub device: Draft,
@@ -310,6 +311,7 @@ impl SettingsEditor {
             preferences.transport_latency,
         );
         Self {
+            period_inputs: Default::default(),
             measured: Default::default(),
             global: draft.clone(),
             device: draft,
@@ -390,6 +392,7 @@ impl StudioShell {
 
     pub(in super::super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.settings.global.dirty() && self.settings.global.pending.is_none() {
+            self.settings.reset_period_inputs(Editor::Global);
             self.settings.global = self.current_settings_draft(cx);
         }
         self.settings.previous_focus = window.focused(cx);
@@ -433,6 +436,7 @@ impl StudioShell {
 
     pub(in super::super) fn inspect_device(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.settings.device.dirty() && self.settings.device.pending.is_none() {
+            self.settings.reset_period_inputs(Editor::Device);
             self.settings.device = self.current_settings_draft(cx);
         }
         self.selected_device = Some(id);

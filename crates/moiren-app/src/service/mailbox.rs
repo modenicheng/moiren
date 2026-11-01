@@ -250,7 +250,7 @@ mod tests {
             assert_eq!(mailbox.try_request(), None);
         }
         settings.processing.sample_rate = 48_000;
-        settings.output.buffer_frames = Some(65);
+        settings.output.buffer_frames = Some(63);
         assert_eq!(
             handle.try_request(AppRequest::SetAudioSettings(settings)),
             Err(DispatchError::InvalidConfig)

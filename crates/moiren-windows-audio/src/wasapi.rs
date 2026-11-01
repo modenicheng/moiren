@@ -7,8 +7,7 @@ use crate::latency::{
     NativeStreamTiming, PreparedRenderQueue, RenderQueuePolicy, prepare_render_queue,
     render::{RenderPaddingObserver, RenderPaddingOwner, RenderPaddingSample},
     shared_period::{
-        SharedFallbackReason, SharedFormatInfo, SharedInitializationApi,
-        SharedInitializationFailure, SharedInitializationStage, SharedPeriodCaps,
+        SharedFallbackReason, SharedFormatInfo, SharedInitializationApi, SharedPeriodCaps,
         SharedPeriodReport,
     },
 };
@@ -18,9 +17,9 @@ use crate::native::{
 };
 use crate::negotiation::{
     EnginePeriods, SUBFORMAT_FLOAT, SUBFORMAT_PCM, StageError, aligned_shared_buffer_duration,
-    client3_rejects_format, exclusive_format_supported, exclusive_frames_duration, friendly_name,
-    initialize_exclusive, initialize_legacy_shared, initialize_legacy_shared_with_duration,
-    parse_descriptor, shared_engine_periods, shared_initialize_retryable,
+    exclusive_format_supported, exclusive_frames_duration, friendly_name, initialize_exclusive,
+    initialize_legacy_shared, initialize_legacy_shared_with_duration, parse_descriptor,
+    shared_engine_periods, shared_initialize_retryable,
 };
 use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
@@ -66,6 +65,15 @@ pub(crate) fn native_period_request_supported(device: DeviceOptions, input: bool
         && device.period_frames == Some(144)
     {
         return true;
+    }
+    if device.backend == moiren_engine::audio_config::AudioBackend::Wasapi
+        && device.mode == DeviceMode::Shared
+    {
+        return device.period_frames.is_none_or(|frames| {
+            u32::try_from(frames).is_ok_and(|frames| {
+                moiren_engine::audio_config::SHARED_PERIOD_RANGE.contains(&frames)
+            })
+        });
     }
     device
         .period_frames
@@ -476,7 +484,7 @@ impl WasapiStream {
             client
         };
         if let Some(report) = period_report.as_mut() {
-            record_current_shared_period(&client, rate, report);
+            record_current_shared_period(&client, rate, report)?;
         }
         api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
         let capacity_result = unsafe { client.GetBufferSize() };
@@ -685,6 +693,12 @@ fn record_shared_period(
     report.engine_period_frames = Some(frames);
     report.engine_sample_rate = Some(engine_rate);
     report.actual_period_frames = Some(normalized);
+    if report
+        .requested_period_frames
+        .is_some_and(|requested| requested != normalized)
+    {
+        return Err(windows::Win32::Media::Audio::AUDCLNT_E_INVALID_DEVICE_PERIOD.into());
+    }
     Ok(())
 }
 
@@ -692,7 +706,7 @@ fn record_current_shared_period(
     client: &IAudioClient,
     client_rate: u32,
     report: &mut SharedPeriodReport,
-) {
+) -> Result<(), BackendError> {
     let result = client.cast::<IAudioClient3>().and_then(|client3| {
         let mut pointer = ptr::null_mut();
         let mut period = 0;
@@ -710,7 +724,11 @@ fn record_current_shared_period(
     });
     if let Err(error) = result {
         report.actual_period_hresult = Some(error.code().0);
+        if report.requested_period_frames.is_some() {
+            return api("GetCurrentSharedModeEnginePeriod(exact period)", Err(error));
+        }
     }
+    Ok(())
 }
 
 fn shared_render_demand(
@@ -1028,9 +1046,8 @@ fn exclusive_request_duration(
     }
 }
 
-/// Phase 2 (Shared, explicit period): exact period negotiation through
-/// IAudioClient3's engine periods, falling back to compatibility
-/// initialization on the kernel rejection matrix (D4 policy).
+/// Explicit Shared requests require exact Client3 negotiation and readback.
+/// Compatibility initialization remains available only when no period is requested.
 fn negotiate_shared_exact(
     options: &WasapiOptions,
     client: &IAudioClient,
@@ -1040,140 +1057,59 @@ fn negotiate_shared_exact(
     report: &mut SharedPeriodReport,
 ) -> Result<(), BackendError> {
     let format = &selected.format;
-    let sample_format = selected.sample_format;
     let rate = format.Format.nSamplesPerSec;
-    // Explicit requests are exact, not rounded to a convenient driver
-    // period. Legacy conversion cannot promise an exact event period.
-    let period = period_frames as u32;
+    let period = u32::try_from(period_frames)
+        .map_err(|_| unsupported("explicit Shared period overflows native frames"))?;
     if selected.shared_conversion {
-        log::warn!(
-            target: "moiren::audio::wasapi",
-            "WASAPI Shared explicit period uses compatibility initialization because the requested client format differs from the endpoint mix: endpoint={:?} requested_rate={} requested_format={:?} requested_frames={}",
-            options.endpoint_id,
-            rate,
-            sample_format,
+        return Err(unsupported(format!(
+            "exact Shared period {period} requires the endpoint mix format; select Device native or the matching rate and encoding"
+        )));
+    }
+    let client3: IAudioClient3 = api("IAudioClient3(exact period)", client.cast())?;
+    // SAFETY: the selected descriptor remains owned through initialization.
+    let periods = api("GetSharedModeEnginePeriod(exact period)", unsafe {
+        shared_engine_periods(&client3, std::ptr::from_ref(&format.Format))
+    })?;
+    report.caps = Some(SharedPeriodCaps {
+        default_frames: periods.default_frames,
+        fundamental_frames: periods.fundamental_frames,
+        min_frames: periods.min_frames,
+        max_frames: periods.max_frames,
+    });
+    let EnginePeriods {
+        default_frames: default,
+        fundamental_frames: fundamental,
+        min_frames: minimum,
+        max_frames: maximum,
+    } = periods;
+    log::info!(
+        target: "moiren::audio::wasapi",
+        "WASAPI shared period capabilities: endpoint={:?} name={:?} direction={} rate={} default_frames={} fundamental_frames={} minimum_frames={} maximum_frames={} requested_frames={}",
+        options.endpoint_id, endpoint_name,
+        if options.input { "input" } else { "output" },
+        rate, default, fundamental, minimum, maximum, period,
+    );
+    if fundamental == 0
+        || minimum == 0
+        || minimum > maximum
+        || period < minimum
+        || period > maximum
+        || !period.is_multiple_of(fundamental)
+    {
+        return Err(unsupported(format!(
+            "requested Shared period {period} is outside {minimum}..={maximum} or not a multiple of {fundamental}"
+        )));
+    }
+    // Never round or retry a locked engine at a different period.
+    api("InitializeSharedAudioStream", unsafe {
+        client3.InitializeSharedAudioStream(
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             period,
-        );
-        initialize_shared_legacy(
-            client,
             &format.Format,
-            "Initialize(Shared compatibility)",
-            report,
-        )?;
-        report.initialization_api = Some(SharedInitializationApi::LegacyClient);
-        report.fallback_reason = Some(SharedFallbackReason::WindowsFormatConversion);
-        return Ok(());
-    }
-    let client3: Option<IAudioClient3> = match client.cast() {
-        Ok(client3) => Some(client3),
-        // The professional stack applies the kernel rejection
-        // matrix to this interface query as well; the legacy
-        // shared stack falls back on E_NOINTERFACE alone.
-        Err(error) if client3_rejects_format(error.code()) => {
-            report.client3_failure = Some(SharedInitializationFailure {
-                stage: SharedInitializationStage::InterfaceQuery,
-                hresult: error.code().0,
-            });
-            report.fallback_reason = Some(SharedFallbackReason::Client3Unavailable);
-            log::warn!(
-                target: "moiren::audio::wasapi",
-                "WASAPI Client3 unavailable for exact Shared period; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
-                options.endpoint_id,
-                error.code().0 as u32,
-                period,
-            );
-            initialize_shared_legacy(
-                client,
-                &format.Format,
-                "Initialize(Shared compatibility)",
-                report,
-            )?;
-            report.initialization_api = Some(SharedInitializationApi::LegacyClient);
-            None
-        }
-        Err(error) => return api("IAudioClient3(exact period)", Err(error)),
-    };
-    if let Some(client3) = client3 {
-        // SAFETY: format is the locally owned selected descriptor,
-        // valid for this query.
-        let capabilities =
-            unsafe { shared_engine_periods(&client3, std::ptr::from_ref(&format.Format)) };
-        match capabilities {
-            Ok(periods) => {
-                report.caps = Some(SharedPeriodCaps {
-                    default_frames: periods.default_frames,
-                    fundamental_frames: periods.fundamental_frames,
-                    min_frames: periods.min_frames,
-                    max_frames: periods.max_frames,
-                });
-                let EnginePeriods {
-                    default_frames: default,
-                    fundamental_frames: fundamental,
-                    min_frames: minimum,
-                    max_frames: maximum,
-                } = periods;
-                log::info!(
-                    target: "moiren::audio::wasapi",
-                    "WASAPI shared period capabilities: endpoint={:?} name={:?} direction={} rate={} default_frames={} fundamental_frames={} minimum_frames={} maximum_frames={} requested_frames={}",
-                    options.endpoint_id,
-                    endpoint_name,
-                    if options.input { "input" } else { "output" },
-                    rate,
-                    default,
-                    fundamental,
-                    minimum,
-                    maximum,
-                    period,
-                );
-                if fundamental == 0
-                    || period < minimum
-                    || period > maximum
-                    || !period.is_multiple_of(fundamental)
-                {
-                    return Err(unsupported(format!(
-                        "requested Shared period {period} is outside {minimum}..={maximum} or not a multiple of {fundamental}"
-                    )));
-                }
-                // An explicit Shared period is a hard contract: out-of-range
-                // periods were rejected above (never rounded), so
-                // PERIODICITY_LOCKED surfaces instead of retrying with the
-                // engine's current period.
-                api("InitializeSharedAudioStream", unsafe {
-                    client3.InitializeSharedAudioStream(
-                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                        period,
-                        &format.Format,
-                        None,
-                    )
-                })?;
-                report.initialization_api = Some(SharedInitializationApi::Client3);
-            }
-            Err(error) if client3_rejects_format(error.code()) => {
-                report.client3_failure = Some(SharedInitializationFailure {
-                    stage: SharedInitializationStage::Capabilities,
-                    hresult: error.code().0,
-                });
-                report.fallback_reason = Some(SharedFallbackReason::CapabilityQueryUnsupported);
-                log::warn!(
-                    target: "moiren::audio::wasapi",
-                    "WASAPI Client3 rejected the Shared format; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
-                    options.endpoint_id,
-                    error.code().0 as u32,
-                    period,
-                );
-                initialize_shared_legacy(
-                    client,
-                    &format.Format,
-                    "Initialize(Shared compatibility)",
-                    report,
-                )?;
-                report.initialization_api = Some(SharedInitializationApi::LegacyClient);
-            }
-            Err(error) => {
-                return api("GetSharedModeEnginePeriod", Err(error));
-            }
-        }
-    }
+            None,
+        )
+    })?;
+    report.initialization_api = Some(SharedInitializationApi::Client3);
     Ok(())
 }
 
@@ -1671,6 +1607,58 @@ mod tests {
     use windows::core::PCWSTR;
 
     #[test]
+    fn shared_device_period_accepts_exact_non_power_of_two_requests_only_for_wasapi() {
+        for frames in [64, 65, 144, 336, 441, 480, 4096] {
+            for input in [false, true] {
+                let device = DeviceOptions {
+                    period_frames: Some(frames),
+                    ..Default::default()
+                };
+                assert!(
+                    native_period_request_supported(device, input),
+                    "Shared {frames}"
+                );
+                if !frames.is_power_of_two() {
+                    assert!(
+                        !native_period_request_supported(
+                            DeviceOptions {
+                                backend: moiren_engine::audio_config::AudioBackend::Asio,
+                                ..device
+                            },
+                            input
+                        ),
+                        "ASIO {frames}"
+                    );
+                }
+            }
+        }
+        for frames in [0, 1, 63, 4097, usize::MAX] {
+            assert!(!native_period_request_supported(
+                DeviceOptions {
+                    period_frames: Some(frames),
+                    ..Default::default()
+                },
+                false
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_shared_period_readback_refuses_mismatch_and_preserves_observed_frames() {
+        let mut report = SharedPeriodReport {
+            requested_period_frames: Some(336),
+            initialization_api: Some(SharedInitializationApi::Client3),
+            ..Default::default()
+        };
+        assert!(record_shared_period(480, 48_000, 48_000, &mut report).is_err());
+        assert_eq!(report.engine_period_frames, Some(480));
+        assert_eq!(report.actual_period_frames, Some(480));
+        assert!(record_shared_period(336, 48_000, 48_000, &mut report).is_ok());
+        report.requested_period_frames = None;
+        assert!(record_shared_period(480, 48_000, 48_000, &mut report).is_ok());
+    }
+
+    #[test]
     fn native_explicit_render_144_requires_exclusive_probe_and_not_capture_or_asio() {
         let device = DeviceOptions {
             mode: DeviceMode::Exclusive,
@@ -1682,7 +1670,7 @@ mod tests {
             cfg!(feature = "vad-probe")
         );
         assert!(!native_period_request_supported(device, true));
-        assert!(!native_period_request_supported(
+        assert!(native_period_request_supported(
             DeviceOptions {
                 mode: DeviceMode::Shared,
                 ..device

@@ -62,9 +62,29 @@ fn invalid_audio_preferences_do_not_replace_a_valid_file() {
     save_preferences_at(&path, &AppPreferences::default()).unwrap();
     let original = fs::read(&path).unwrap();
     let mut preferences = AppPreferences::default();
-    preferences.audio.output.buffer_frames = Some(480);
+    preferences.audio.output.buffer_frames = Some(4097);
     assert!(save_preferences_at(&path, &preferences).is_err());
     assert_eq!(fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn shared_native_period_round_trip_preserves_exact_global_and_device_requests() {
+    let directory = TestDirectory::new();
+    let path = directory.file("shared-period.json");
+    let mut preferences = AppPreferences::default();
+    preferences.audio.output.buffer_frames = Some(480);
+    let mut stream = preferences.audio.output;
+    stream.buffer_frames = Some(336);
+    preferences
+        .audio
+        .output_overrides
+        .insert("exact-render".into(), stream);
+    save_preferences_at(&path, &preferences).unwrap();
+    assert_eq!(load_preferences_at(&path).unwrap(), preferences);
+    let bytes = fs::read(&path).unwrap();
+    preferences.audio.processing.block_frames = 336;
+    assert!(save_preferences_at(&path, &preferences).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]

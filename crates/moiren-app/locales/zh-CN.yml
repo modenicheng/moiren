@@ -230,6 +230,15 @@ _version: 2
 "Requested device buffer (frames / ms)":
   en: Requested device buffer (frames / ms)
   zh-CN: 请求设备缓冲（帧 / 毫秒）
+"Requested device period (frames)":
+  en: Requested device period (frames)
+  zh-CN: 请求设备周期（帧）
+"Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.":
+  en: Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.
+  zh-CN: 共享模式设备周期必须为 64～4096 帧的整数；留空使用驱动默认值。
+"Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.":
+  en: Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.
+  zh-CN: 精确请求共享模式设备周期（64～4096 帧），留空使用驱动默认值。原生准备阶段会检查设备是否支持；此值与引擎处理块独立。
 "Unsaved changes":
   en: Unsaved changes
   zh-CN: 有未保存的更改

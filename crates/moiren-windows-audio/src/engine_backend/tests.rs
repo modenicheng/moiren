@@ -124,7 +124,7 @@ fn direct_exclusive_render_144_requires_probe_feature_and_preserves_other_guards
     };
     output.device.period_frames = Some(144);
     output.device.mode = DeviceMode::Shared;
-    assert!(validate(&request(&project, &host), true).is_err());
+    assert!(validate(&request(&project, &host), true).is_ok());
     let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
         unreachable!()
     };

@@ -142,6 +142,12 @@ pub(in super::super) fn stream_editor(
             t!("Determined by ASIO driver"),
         ));
     }
+    if audio.backend == AudioBackend::Wasapi && stream.mode == DeviceMode::Shared {
+        return view.child(field(
+            &t!("Requested device period (frames)"),
+            super::native_period::editor(shell, editor, direction, device, prefix),
+        ));
+    }
     view.child(field(
         &t!("Requested device buffer (frames / ms)"),
         choices(
@@ -253,6 +259,7 @@ pub(in super::super) fn footer(
                     .disabled(busy || !draft.dirty())
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
+                            shell.settings.reset_period_inputs(editor);
                             *shell.settings.draft_mut(editor) = shell.current_settings_draft(cx);
                             cx.notify();
                         })
@@ -292,13 +299,13 @@ pub(in super::super) fn footer(
         )
 }
 
-struct StreamTarget {
-    direction: Direction,
-    device: Option<String>,
+pub(super) struct StreamTarget {
+    pub(super) direction: Direction,
+    pub(super) device: Option<String>,
 }
 
 impl StreamTarget {
-    fn stream_mut<'a>(&self, draft: &'a mut Draft) -> &'a mut StreamSettings {
+    pub(super) fn stream_mut<'a>(&self, draft: &'a mut Draft) -> &'a mut StreamSettings {
         match &self.device {
             Some(id) => device_stream_mut(&mut draft.audio, self.direction, id),
             None => match self.direction {

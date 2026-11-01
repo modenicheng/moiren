@@ -2,7 +2,7 @@
 //!
 //! Single source for the pieces the retired dual stacks had duplicated:
 //! PCM/floating-point sub-format GUIDs, WAVEFORMATEX descriptor parsing, the
-//! IAudioClient3 rejection matrix, endpoint friendly names, and the shared
+//! IAudioClient3 period queries, endpoint friendly names, and the shared
 //! and exclusive initialization sequences.
 
 #[cfg(feature = "probe-tools")]
@@ -12,7 +12,7 @@ use windows::core::Interface;
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Foundation::{E_NOINTERFACE, E_NOTIMPL, E_UNEXPECTED, S_OK},
+        Foundation::{E_UNEXPECTED, S_OK},
         Media::Audio::{
             AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL, AUDCLNT_E_DEVICE_IN_USE,
             AUDCLNT_E_INVALID_DEVICE_PERIOD, AUDCLNT_E_UNSUPPORTED_FORMAT,
@@ -179,21 +179,6 @@ pub(crate) unsafe fn parse_descriptor(
         }
         _ => Err(DescriptorError::UnsupportedTag),
     }
-}
-
-/// HRESULTs that abandon the IAudioClient3 path in favor of the legacy
-/// shared initialization after a capability query (and, in the professional
-/// stack, after the interface query as well): the endpoint does not
-/// implement, or rejects the format for, the Client3 negotiation.
-///
-/// The legacy stack additionally treats a plain `E_NOINTERFACE` from the
-/// interface query alone as the narrower `Client3Unavailable` fallback; that
-/// stage strictness stays at its call site.
-pub(crate) fn client3_rejects_format(code: windows::core::HRESULT) -> bool {
-    matches!(
-        code,
-        E_NOINTERFACE | E_NOTIMPL | AUDCLNT_E_UNSUPPORTED_FORMAT
-    )
 }
 
 /// GetSharedModeEnginePeriod frame bounds.
@@ -391,14 +376,13 @@ mod tests {
     use super::{EXTENSION_BYTES, SUBFORMAT_FLOAT, SUBFORMAT_PCM};
     use windows::{
         Win32::{
-            Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL},
+            Foundation::E_INVALIDARG,
             Media::Audio::{
                 AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL, AUDCLNT_E_DEVICE_IN_USE,
-                AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_ENGINE_PERIODICITY_LOCKED,
-                AUDCLNT_E_INVALID_DEVICE_PERIOD, AUDCLNT_E_UNSUPPORTED_FORMAT,
-                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-                WAVEFORMATEXTENSIBLE_0,
+                AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_INVALID_DEVICE_PERIOD,
+                AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
             },
             System::Com::CoTaskMemAlloc,
         },
@@ -498,20 +482,6 @@ mod tests {
             let memory = owned(format);
             // SAFETY: test-owned allocation.
             assert!(unsafe { super::parse_descriptor(memory.0) }.is_err());
-        }
-    }
-
-    #[test]
-    fn client3_rejection_covers_missing_and_unsupported_queries() {
-        for code in [E_NOINTERFACE, E_NOTIMPL, AUDCLNT_E_UNSUPPORTED_FORMAT] {
-            assert!(super::client3_rejects_format(code));
-        }
-        for code in [
-            AUDCLNT_E_DEVICE_INVALIDATED,
-            E_INVALIDARG,
-            AUDCLNT_E_ENGINE_PERIODICITY_LOCKED,
-        ] {
-            assert!(!super::client3_rejects_format(code));
         }
     }
 

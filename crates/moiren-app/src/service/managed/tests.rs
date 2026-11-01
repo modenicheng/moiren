@@ -978,7 +978,7 @@ fn invalid_audio_settings_preserve_requested_and_running_configuration() {
     let mut rig = Rig::new();
     rig.start();
     let mut settings = AudioSettings::default();
-    settings.input.buffer_frames = Some(96);
+    settings.input.buffer_frames = Some(63);
     rig.request(AppRequest::SetAudioSettings(settings));
     assert_eq!(rig.c.audio_settings, AudioSettings::default());
     assert_eq!(rig.c.active_audio_settings, Some(AudioSettings::default()));

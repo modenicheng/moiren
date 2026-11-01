@@ -19,6 +19,37 @@ fn professional_choices_and_defaults_are_exact() {
 }
 
 #[test]
+fn shared_native_periods_are_independent_of_engine_block_presets() {
+    for frames in [64, 65, 144, 336, 441, 480, 4096] {
+        let mut settings = AudioSettings::default();
+        settings.output.buffer_frames = Some(frames);
+        settings.validate().unwrap();
+        assert_eq!(
+            settings
+                .output
+                .device_options(AudioBackend::Wasapi, 48_000, ClockRole::Master)
+                .period_frames,
+            Some(frames as usize)
+        );
+        if !BUFFER_SIZES.contains(&frames) {
+            settings.processing.block_frames = frames;
+            assert!(settings.validate().is_err(), "Engine block {frames}");
+            settings.processing.block_frames = 256;
+            settings.output.mode = DeviceMode::Exclusive;
+            assert!(settings.validate().is_err(), "Exclusive period {frames}");
+            settings.output.mode = DeviceMode::Shared;
+            settings.backend = AudioBackend::Asio;
+            assert!(settings.validate().is_err(), "ASIO buffer {frames}");
+        }
+    }
+    for frames in [0, 1, 63, 4097, u32::MAX] {
+        let mut settings = AudioSettings::default();
+        settings.output.buffer_frames = Some(frames);
+        assert!(settings.validate().is_err(), "Shared period {frames}");
+    }
+}
+
+#[test]
 fn device_overrides_are_directional_and_reset_restores_defaults() {
     let mut settings = AudioSettings::default();
     let custom = StreamSettings {
@@ -44,11 +75,16 @@ fn unsupported_rates_buffers_and_device_keys_are_rejected() {
         settings.processing.sample_rate = invalid;
         assert!(settings.validate().is_err(), "rate {invalid}");
     }
-    for invalid in [0, 32, 65, 480, 8192] {
+    for invalid in [0, 32, 4097, 8192] {
         let mut settings = AudioSettings::default();
         settings.input.buffer_frames = Some(invalid);
         assert!(settings.validate().is_err(), "buffer {invalid}");
         settings.input.buffer_frames = Some(256);
+        settings.processing.block_frames = invalid;
+        assert!(settings.validate().is_err(), "block {invalid}");
+    }
+    for invalid in [65, 336, 480] {
+        let mut settings = AudioSettings::default();
         settings.processing.block_frames = invalid;
         assert!(settings.validate().is_err(), "block {invalid}");
     }

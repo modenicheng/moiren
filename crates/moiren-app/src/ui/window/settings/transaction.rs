@@ -13,6 +13,11 @@ impl StudioShell {
         if self.settings.busy() {
             return;
         }
+        if let Err(error) = self.settings.validate_period_inputs(editor, cx) {
+            self.settings.draft_mut(editor).error = Some(error);
+            cx.notify();
+            return;
+        }
         let draft = self.settings.draft_mut(editor);
         draft.changed();
         if self.preferences_path.is_none() {
