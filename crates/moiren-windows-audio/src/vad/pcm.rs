@@ -283,6 +283,15 @@ impl PcmOwner {
             if kernel_quota_rejection(error.code()) {
                 return Err(ClientError::KernelPcmQuotaFull);
             }
+            log::error!(
+                target: "moiren::audio::vad",
+                "event=pcm_submit_fault ticket={ticket:?} writing={} shape={:?} stamp={:?} pending={} hresult={:#010x} error={error}",
+                pcm.is_some(),
+                self.shape,
+                slot.stamp,
+                self.book.pending(),
+                error.code().0,
+            );
             return Err(ClientError::windows("DeviceIoControl(VAD PCM)", error));
         }
         // Immediate completion also needs collection before slot reuse.
@@ -353,6 +362,25 @@ impl PcmOwner {
             }
         };
         if let Err(error) = result {
+            if error.code() != ERROR_IO_INCOMPLETE.to_hresult()
+                && error.code() != HRESULT::from_win32(WAIT_TIMEOUT.0)
+                && error.code() != ERROR_OPERATION_ABORTED.to_hresult()
+                && !kernel_quota_rejection(error.code())
+                && !writing_completion_timeout(error.code(), writing)
+            {
+                // The slot still holds the submitted stamp here. Log before
+                // finish_error releases its ticket or worker cleanup advances
+                // endpoint state; successful/polling IO remains log-free.
+                log::error!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_completion_fault ticket={ticket:?} writing={writing} waiting={} shape={:?} stamp={:?} pending={} hresult={:#010x} error={error}",
+                    deadline.is_some(),
+                    self.shape,
+                    slot.stamp,
+                    self.book.pending(),
+                    error.code().0,
+                );
+            }
             let handle = raw(&self.lease.handle);
             // SAFETY: the boxed request stays live through error collection.
             let overlapped = unsafe { addr_of!((*storage).overlapped) };
@@ -856,23 +884,33 @@ mod tests {
 
     #[test]
     fn pcm_cancel_does_not_convert_other_terminal_faults_to_cancellation() {
-        use windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED;
-        let mut book = SlotBook::new().unwrap();
-        let ticket = book.reserve().unwrap();
-        let mut slot = Slot::new().unwrap();
-        slot.pending = true;
-        let result = slot.finish_error(
-            &mut book,
-            ticket,
-            windows::core::Error::from_hresult(ERROR_DEVICE_NOT_CONNECTED.to_hresult()),
-            false,
-            false,
-            || panic!("already terminal"),
-        );
-        assert!(matches!(result, Err(ClientError::Windows { source, .. })
-            if source.code() == ERROR_DEVICE_NOT_CONNECTED.to_hresult()));
-        assert!(!slot.pending);
-        assert_eq!(book.pending(), 0);
+        use windows::Win32::Foundation::{ERROR_DEVICE_NOT_CONNECTED, ERROR_REVISION_MISMATCH};
+        for code in [ERROR_DEVICE_NOT_CONNECTED, ERROR_REVISION_MISMATCH] {
+            for writing in [false, true] {
+                let mut book = SlotBook::new().unwrap();
+                let ticket = book.reserve().unwrap();
+                let other = book.reserve().unwrap();
+                let mut slot = Slot::new().unwrap();
+                slot.pending = true;
+                let result = slot.finish_error(
+                    &mut book,
+                    ticket,
+                    windows::core::Error::from_hresult(code.to_hresult()),
+                    false,
+                    writing,
+                    || panic!("already terminal"),
+                );
+                assert!(
+                    matches!(result, Err(ClientError::Windows { operation, source })
+                    if operation == "GetOverlappedResult(VAD PCM)"
+                        && source.code() == code.to_hresult())
+                );
+                assert!(!slot.pending);
+                assert!(book.check(ticket).is_err());
+                assert!(book.check(other).is_ok());
+                assert_eq!(book.pending(), 1, "peer requests still require draining");
+            }
+        }
     }
 
     #[test]

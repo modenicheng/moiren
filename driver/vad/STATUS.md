@@ -6,6 +6,17 @@ verdict. Status updated 2026-11-01.
 
 ## Application test scope - 2026-11-01
 
+A [fresh desktop log fault](../../docs/validation/2026-11-01-live-gui-vad-revision-fault.md)
+also occurs at13:02:26+08:00 in the running e6076f9 desktop, generation3:
+`GetOverlappedResult(VAD PCM)` returns `0x8007051A` and the owner enters
+`WaitingForResources`. This is not just the earlier native probe's retirement
+fault. Its original INFO log lacks request direction/stamp and fault-time
+endpoint state; native epoch/gate/stream changes remain hypotheses, not a
+proven ABI mismatch or a reason to convert the fault to cancellation. The
+later Process-only recording does not exercise this failed VAD owner.
+Fault-only diagnostics are under local validation; no root repair or new
+VAD runtime acceptance is claimed.
+
 Application/native testing is remote-only by user direction. Missing physical
 multichannel recording hardware defers calibrated physical measurement, not
 software/application progress. The separate [remote OBS/QQMusic smoke](../../docs/validation/2026-11-01-remote-obs-qqmusic.md)

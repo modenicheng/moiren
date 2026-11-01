@@ -137,6 +137,7 @@ struct Fake {
     fail_remove: bool,
     revoke_on_remove_failure: bool,
     fail_query: bool,
+    query_calls: usize,
     creating: bool,
     revoke_on_open: Option<Arc<Admission>>,
 }
@@ -152,6 +153,7 @@ impl Default for Fake {
             fail_remove: false,
             revoke_on_remove_failure: false,
             fail_query: false,
+            query_calls: 0,
             creating: false,
             revoke_on_open: None,
         }
@@ -180,6 +182,7 @@ impl EndpointControl for Fake {
         Ok(Some(self.current))
     }
     fn query(&mut self, _: EndpointSnapshot) -> Result<EndpointSnapshot, BackendError> {
+        self.query_calls += 1;
         if self.fail_query {
             return Err(unavailable("QUERY timeout"));
         }
@@ -1248,6 +1251,54 @@ fn pcm_cancel_active_query_failure_and_prior_worker_failure_stay_visible_on_join
     assert_eq!(session.stop_and_join(), Err(error));
     assert!(state.cancel.load(Ordering::Acquire));
     assert!(!state.drained.load(Ordering::Acquire));
+}
+
+#[test]
+fn pcm_terminal_fault_observes_once_before_cleanup_without_recovery_or_error_replacement() {
+    for situation in 0..5 {
+        let admission = Arc::new(Admission::new());
+        let session = SessionState::new(admission.clone());
+        session.active.store(true, Ordering::Release);
+        session
+            .admitted_ticket
+            .store(admission.set(Some(9)), Ordering::Release);
+        session.admitted_revision.store(9, Ordering::Release);
+        let previous = snapshot(PdoState::Present, 3, 5, true);
+        let mut control = Fake {
+            current: previous,
+            ..Default::default()
+        };
+        match situation {
+            0 => session.cancel.store(true, Ordering::Release),
+            1 => session.revoke(),
+            2 => control.current = snapshot(PdoState::Present, 4, 6, false),
+            3 => control.fail_query = true,
+            _ => {}
+        }
+        let admitted = session.admitted();
+        let error = unavailable("GetOverlappedResult(VAD PCM): 0x8007051A");
+        let result = super::super::transport::after_io_error(
+            &mut control,
+            previous,
+            &session,
+            error.clone(),
+        );
+        assert_eq!(
+            result,
+            Err(error),
+            "diagnostics cannot replace the PCM fault"
+        );
+        assert_eq!(control.query_calls, 1, "one bounded same-file observation");
+        assert!(
+            control.gates.is_empty(),
+            "do not use the mutating recovery poll"
+        );
+        assert_eq!(session.admitted(), admitted);
+        assert_eq!(session.reset_epoch.load(Ordering::Acquire), 0);
+        assert_eq!(session.telemetry_snapshot().epoch_resets, 0);
+        assert_eq!(session.telemetry_snapshot().recovery_events, 0);
+        assert!(!session.drained.load(Ordering::Acquire));
+    }
 }
 
 #[test]

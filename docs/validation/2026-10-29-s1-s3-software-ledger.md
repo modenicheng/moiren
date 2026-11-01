@@ -5,6 +5,14 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [fresh desktop fault attribution](2026-11-01-live-gui-vad-revision-fault.md)
+confirms a separate live generation3 VAD PCM `0x8007051A` at13:02:26+08:00,
+not merely native-probe shutdown. The running application's INFO log cannot
+resolve the failed direction/request stamp or causative driver transition.
+Preserved evidence and fault-only diagnostics do not constitute a root fix;
+the later Process-only recording cannot clear this failure. No quality gate
+or S1-S3 acceptance is relaxed.
+
 The user now requires remote-only application/native testing and has no
 simultaneous physical recording hardware. Physical calibration is deferred,
 not a blocker for application work. The [remote OBS/QQMusic checkpoint](2026-11-01-remote-obs-qqmusic.md)

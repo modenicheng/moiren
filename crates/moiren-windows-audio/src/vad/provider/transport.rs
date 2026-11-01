@@ -138,12 +138,22 @@ pub(super) fn after_io_error<C: EndpointControl>(
     // transition or explicit stop. A device/protocol/timeout fault stays a
     // fault even if shutdown races it; never turn all retirement errors green.
     if error != BackendError::Cancelled {
-        log::debug!(
+        // Observe through the existing file object before worker-exit revokes
+        // admission or closes the gate. The recovery poll can mutate both;
+        // this one QUERY is evidence only, including when QUERY itself fails.
+        let cancel = state.cancel.load(Ordering::Acquire);
+        let admitted = state.admitted();
+        let reset_epoch = state.reset_epoch.load(Ordering::Acquire);
+        log::error!(
             target: "moiren::audio::vad",
-            "event=transport_io_fault endpoint={:?} previous={previous:?} cancel={} admitted={} error={error:?}",
+            "event=transport_io_fault endpoint={:?} previous={previous:?} cancel={cancel} admitted={admitted} reset_epoch={reset_epoch} error={error:?}",
             previous.key(),
-            state.cancel.load(Ordering::Acquire),
-            state.admitted(),
+        );
+        let observed = control.query(previous);
+        log::error!(
+            target: "moiren::audio::vad",
+            "event=transport_io_fault_observed endpoint={:?} previous={previous:?} observed={observed:?} cancel_before={cancel} admitted_before={admitted} reset_epoch_before={reset_epoch}",
+            previous.key(),
         );
         return Err(error);
     }
