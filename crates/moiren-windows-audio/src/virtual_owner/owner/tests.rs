@@ -7,6 +7,8 @@ use moiren_engine::{
     runtime::EngineConfig,
 };
 
+mod burst;
+
 struct FakeClock {
     now: u64,
     wakes: usize,

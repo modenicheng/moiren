@@ -1056,3 +1056,16 @@ whole-waveform quality or physical latency. Original failed control, capture
 receipt and delivery-gap faults remain unchanged; no new audio run or path
 winner follows. Compact JSON/PNG are verified and visually reviewed; raw PCM
 remains remote. S1-S3 are not declared complete.
+
+### Actual virtual-owner repayment through both boundaries
+
+The [owner burst integration](2026-11-02-owner-burst-integration.md) exercises
+the real scheduling loop and compiled stereo source/Bus/sink at cap1/2/8,
+independent capacity4096/8192 and packet-before/after half-period ordering.
+All samples and carrier inventory are accounted for against a separate FIR
+replay; startup muting remains separately classified. One over-cap wake retains
+exact omitted-frame and late-burst counts without inventing a reset or fail-fast
+policy. The fixture is a prefilled isolated burst, not native delivery cadence.
+Zero/wrong-gain exported-tree mutations fail as expected. Fresh workspace2101
+passed/8ignored, measured UI20passed, strict Clippy/fmt pass. Production behavior
+and defaults are unchanged; this closes a combination-test gap, not S1-S3.
