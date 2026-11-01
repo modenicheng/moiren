@@ -6,6 +6,23 @@ verdict. Status updated 2026-11-01.
 
 ## Application test scope - 2026-11-01
 
+The latest [PCM-pump admission repair and remote retest](../../docs/validation/2026-11-01-vad-pcm-pump-admission.md)
+is locally committed as1956636 after10 red/green admission regressions,
+2075 workspace passes,15 measured UI passes, strict Clippy/fmt and release
+builds. It stops new READ/WRITE after observed local revocation while preserving
+pending drain and genuine errors; it is not atomic native epoch serialization.
+The authorized old remote GUI owner is stopped only after identity/hash checks
+and log preservation; no host process is manipulated. Three new exact
+Playback -> unity Bus -> MIC runs retain144/144 buffers and Engine32. Native1
+changes epoch while open/Running after about5.3 source seconds, then retains
+`0x8007051A` shutdown faults; no cause attribution is claimed. Same-configuration
+bounded-WPP native2/3 complete the30-second source and cleanup but both fail
+quality:6/4 native position gaps, with one MIC no-copy/silence packet in native3.
+No packet flag erases those gaps. Remote plots/raw evidence remain available;
+all test owners/children are gone, owned traces stopped, original OBS/QQMusic,
+driver/hash/boot/defaults/render controls unchanged. New app is staged, not yet
+desktop recovery-tested. Native waveform/latency and S1-S3 remain incomplete.
+
 A [fresh desktop log fault](../../docs/validation/2026-11-01-live-gui-vad-revision-fault.md)
 also occurs at13:02:26+08:00 in the running e6076f9 desktop, generation3:
 `GetOverlappedResult(VAD PCM)` returns `0x8007051A` and the owner enters
@@ -14,8 +31,9 @@ fault. Its original INFO log lacks request direction/stamp and fault-time
 endpoint state; native epoch/gate/stream changes remain hypotheses, not a
 proven ABI mismatch or a reason to convert the fault to cancellation. The
 later Process-only recording does not exercise this failed VAD owner.
-Fault-only diagnostics are under local validation; no root repair or new
-VAD runtime acceptance is claimed.
+Fault-only diagnostics are now built and staged; the retest above exercises
+native teardown, not reproduction of this desktop completion call-site.
+No established root repair or VAD runtime acceptance is claimed.
 
 A separate [gate-close admission regression](../../docs/validation/2026-11-01-vad-gate-close-admission.md)
 demonstrates that explicit close and preparation-fault polling could leave
