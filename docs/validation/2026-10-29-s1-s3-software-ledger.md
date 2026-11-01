@@ -1017,3 +1017,23 @@ First-packet investigation remains deferred. Physical calibration remains
 unavailable and unqualified, but does not block software progress. All eighteen
 preexisting dirty files are preserved/excluded; local atomic commits only, no
 push or memory update. S1-S3 qualification is not declared complete.
+
+### Cumulative recovery and parallel warm-control acquisition
+
+The [cumulative clock diagnostics](2026-11-02-cumulative-clock-diagnostics.md)
+now project the already retained native clock counters, including skipped
+Engine frames, pre-cap debt and saturation, without changing recovery itself.
+Two actual RED failures precede implementation. Fresh workspace2099passed/8ignored,
+GPUI632passed/3ignored, strict workspace/GPUI Clippy and release pass. Remote UIA
+verifies advancing values, honest nonzero skipped counts, post-Stop disappearance
+and normal Quit0; screenshots show the upper viewport rather than these lower
+rows. No zero-fault or waveform claim is made from this feature smoke.
+
+The independent [warm-control Process recording](2026-11-02-warm-control-process-waveform.md)
+retains a failed harness wait, five delivery-gap violations, failed complete
+control correspondence and only5/28supported waveform windows. Its final monitor
+and owned processes exit normally; the original capture receipt stays failed.
+The extra held-out fit times out, not a fit verdict. Existing analyzer tests
+pass25on host/target. Media stays remote; compact plots/reports are retained.
+Final audit finds no native or analysis owner. These failures are not erased,
+used to promote a smaller default, or allowed to block independent development.
