@@ -5,6 +5,14 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [held-out linear-clock diagnostic](2026-11-02-linear-clock-diagnostic.md)
+tests fractional phase/drift against the retained Process PCM without replacing
+the raw refusals. Only4of28 windows satisfy all model gates; isolation and
+whole-waveform/physical qualification remain false. All144 Python regressions
+pass, including13 new model controls and training/held-out leakage checks.
+An independent remote1344-frame input candidate runs alongside development;
+its fresh native admission and terminal result remain separate evidence.
+
 The [isolated Process waveform diagnostic](2026-11-02-isolated-process-waveform.md)
 records two separate lossless OBS tracks while desktop regression work proceeds.
 The exact native336/render512/input1536 configuration and normal cleanup are
