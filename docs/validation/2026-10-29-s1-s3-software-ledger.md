@@ -1037,3 +1037,22 @@ The extra held-out fit times out, not a fit verdict. Existing analyzer tests
 pass25on host/target. Media stays remote; compact plots/reports are retained.
 Final audit finds no native or analysis owner. These failures are not erased,
 used to promote a smaller default, or allowed to block independent development.
+
+### Bounded local affine analysis on retained PCM
+
+The [local linear-fit repair](2026-11-02-local-linear-fit.md) removes unnecessary
+recording-length interpolation from each offline prediction. Fixed gates,
+optimizer, seed grid, fractional phase and training/held-out separation remain
+unchanged. Two actual RED regressions precede the repair; the16-test final
+focused suite and existing Python analyzer suites pass. Host known-data
+before/after fixtures retain exact fitted values and verdicts; the70s/48k case
+improves8.5579to0.1843seconds per fitted window.
+
+Remote analysis of all28unchanged warm-recording windows now completes17.4154s,
+instead of the prior180s timeout.21windows meet the local affine gates, seven
+remain refused; original raw support stays5/28. This is evidence that drift/
+fractional phase can account for many raw mismatches, not actual servo history,
+whole-waveform quality or physical latency. Original failed control, capture
+receipt and delivery-gap faults remain unchanged; no new audio run or path
+winner follows. Compact JSON/PNG are verified and visually reviewed; raw PCM
+remains remote. S1-S3 are not declared complete.

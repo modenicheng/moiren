@@ -31,6 +31,17 @@ GATES = {
 }
 
 
+def predict_linear(reference, locations):
+    if locations[0] < 0 or locations[-1] >= len(reference) - 1:
+        return None
+    # The sample grid is dense integers. Gather only the two neighbors per
+    # position instead of copying a whole strided recording for every residual.
+    whole = np.floor(locations).astype(np.intp)
+    fraction = locations - whole
+    left = reference[whole]
+    return left + (reference[whole + 1] - left) * fraction
+
+
 def fit_channel(reference, returned, start, rate):
     width = rate // 2
     center = start + (width - 1) / 2
@@ -54,12 +65,9 @@ def fit_channel(reference, returned, start, rate):
     shift = left + point["frame"] - patch_start
     seed_center = patch_start + (patch_width - 1) / 2
     phase_margin = 3 + abs(center - seed_center) * .002
-    index = np.arange(len(reference), dtype=np.float64)
     def predict(parameters):
         locations = positions + parameters[0] + (positions - center) * parameters[1] * .001
-        if locations[0] < 0 or locations[-1] >= len(reference) - 1:
-            return None
-        return np.interp(locations, index, reference)
+        return predict_linear(reference, locations)
     def estimate(predicted):
         x, y = predicted[training], target[training]
         dx, dy = x - x.mean(), y - y.mean()

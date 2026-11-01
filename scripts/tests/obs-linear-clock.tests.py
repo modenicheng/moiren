@@ -30,6 +30,48 @@ class LinearClockTests(unittest.TestCase):
         y = gain * np.column_stack([np.interp(centers, n, x[:, c], left=0, right=0) for c in range(2)])
         return x, y
 
+    def test_fit_interpolation_work_is_bounded_by_window_not_recording_length(self):
+        m = self.module()
+        x, y = self.fixture(delay=37.5, ppm=500, gain=-.75)
+        interpolate = np.interp
+
+        def bounded_interpolate(locations, index, values, *args, **kwargs):
+            self.assertLessEqual(
+                len(index), self.rate,
+                "one local prediction must not copy/search the full recording",
+            )
+            return interpolate(locations, index, values, *args, **kwargs)
+
+        with mock.patch.object(m.np, "interp", side_effect=bounded_interpolate):
+            row = m.fit_linear_window(x, y, self.rate, self.rate)
+        self.assertTrue(row["model_compatible"], row)
+        for channel in row["channels"]:
+            self.assertAlmostEqual(channel["correction_ppm"], 500, delta=3)
+            self.assertAlmostEqual(channel["gain"], -.75, delta=.005)
+
+    def test_local_linear_prediction_matches_dense_oracle_for_fractional_positions(self):
+        m = self.module()
+        reference = np.random.default_rng(97).normal(size=2048)
+        positions = np.r_[0, .001, .5, 1, 37.4, 1023.999, 2046.999]
+        expected = np.interp(positions, np.arange(len(reference)), reference)
+        self.assertTrue(hasattr(m, "predict_linear"), "missing bounded local linear prediction")
+        actual = m.predict_linear(reference, positions)
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-15)
+        for locations in [np.array([-.001, .5]), np.array([2046., 2047.])]:
+            self.assertIsNone(m.predict_linear(reference, locations))
+
+    def test_local_prediction_keeps_large_coordinate_neighbors_and_fractional_phase(self):
+        m = self.module()
+        storage = np.random.default_rng(98).normal(size=(1_048_590, 2))
+        reference = storage[:, 1]
+        pivot = 1_048_576.
+        positions = np.array([np.nextafter(pivot, -np.inf), pivot,
+                              np.nextafter(pivot, np.inf), pivot + .5])
+        self.assertFalse(reference.flags.c_contiguous)
+        expected = np.interp(positions, np.arange(len(reference)), reference)
+        np.testing.assert_allclose(m.predict_linear(reference, positions), expected,
+                                   rtol=0, atol=1e-15)
+
     def test_fractional_linear_phase_is_not_misclassified_as_destroyed_pcm(self):
         m = self.module()
         x, y = self.fixture(delay=37.5, gain=-.75)
