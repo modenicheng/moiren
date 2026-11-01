@@ -389,6 +389,9 @@ _version: 2
 "Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.":
   en: Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.
   zh-CN: 应用回环需要 WASAPI。请在设置中选择 WASAPI 以使用应用音源。
+"Captures the selected process and its descendants, not an individual browser tab or audio session.":
+  en: Captures the selected process and its descendants, not an individual browser tab or audio session.
+  zh-CN: 捕获所选进程及其后代进程，而非单个浏览器标签页或音频会话。
 "No capturable applications":
   en: No capturable applications
   zh-CN: 没有可捕获的应用程序

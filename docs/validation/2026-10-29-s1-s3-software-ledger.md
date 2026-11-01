@@ -5,6 +5,18 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [desktop Process-scope correction and stopping boundary](2026-11-02-desktop-process-capture-scope.md)
+adds the missing English/Chinese Applications explanation: capture includes
+the selected process and descendants, not an individual browser tab/session.
+Actual RED/GREEN tests cover empty/populated catalogs and stable-identity
+selection without starting audio. Final full app/headless UI656tests/3ignored,
+strict app all-target Clippy with
+gpui-test and workspace formatting pass. A bounded original-requirement review finds
+no additional necessary S1-S3 software integration gap; remaining native quality,
+matched waveform and physical qualification stay open. Do not turn unknown
+render epochs into an unbounded new tooling requirement, block independent
+development on absent physical hardware, or repeat existing stability scans.
+
 The [process-tree identity increment](2026-11-02-process-root-identity.md)
 resolves the old PID difference using the historical Windows parent/child event:
 native16768is the venv launcher, player24944its emitting child, consistent with

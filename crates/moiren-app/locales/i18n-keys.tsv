@@ -128,6 +128,7 @@ Active	-	徽章
 Next start	-	按钮与徽章
 Use next start	-	按钮
 Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.	-	ASIO 下应用页提示
+Captures the selected process and its descendants, not an individual browser tab or audio session.	-	应用页进程树捕获范围说明
 No capturable applications	-	空态标题
 Start an application that plays audio, then refresh. Protected applications may be unavailable.	-	空态说明
 PID %{pid} · created %{created}	pid=process.pid|created=process.creation_time_100ns	format! 原文 "PID {} · created {}"

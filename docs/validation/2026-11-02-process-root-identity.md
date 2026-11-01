@@ -148,5 +148,8 @@ The old eight gap-bound violations remain. Historical parent/child evidence
 does not create sample-exact Engine/render epoch alignment or physical
 calibration. First-packet investigation stays deferred. This provenance fix is
 not justification for a new repeated stability scan, weakened quality gates or
-lower defaults. Continue the remaining independent source/owner/render-boundary
-integration and native route verification without claiming S1-S3 complete.
+lower defaults. The subsequent [desktop scope/stopping-boundary receipt](2026-11-02-desktop-process-capture-scope.md)
+records a bounded original-requirement audit: no further necessary software
+integration gap is identified. Unknown rendered epochs are an evidence limit,
+not an instruction to expand tooling. Native/physical qualification remains
+open without blocking independent development or declaring S1-S3 complete.

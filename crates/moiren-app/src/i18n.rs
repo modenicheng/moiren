@@ -75,6 +75,24 @@ mod tests {
     }
 
     #[test]
+    fn application_capture_scope_translates_without_promising_tab_isolation() {
+        assert_eq!(
+            rust_i18n::t!(
+                "Captures the selected process and its descendants, not an individual browser tab or audio session.",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "捕获所选进程及其后代进程，而非单个浏览器标签页或音频会话。"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Captures the selected process and its descendants, not an individual browser tab or audio session.",
+                locale = ENGLISH
+            ),
+            "Captures the selected process and its descendants, not an individual browser tab or audio session."
+        );
+    }
+
+    #[test]
     fn vad_recovery_cap_translates_without_promising_latency() {
         assert_eq!(
             rust_i18n::t!("VAD recovery cap", locale = SIMPLIFIED_CHINESE),

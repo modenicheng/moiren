@@ -5,6 +5,108 @@ use moiren_engine::node::VirtualEndpointId;
 
 #[cfg(feature = "gpui-test")]
 #[gpui_kit::test]
+fn application_selector_explains_tree_scope_without_starting_or_substituting_a_process(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{
+        AppRequest, DeviceCatalog, DeviceRow, GraphEdit, InputSelection, ProcessRow,
+        ServiceContext, ServiceMailbox,
+    };
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, px, size};
+    use std::sync::Arc;
+
+    cx.update(gpui_kit::init);
+    let mut context = ServiceContext::default();
+    context.catalog = Arc::new(DeviceCatalog {
+        outputs: vec![DeviceRow {
+            endpoint_id: "scope-fixture-output".into(),
+            name: "Fixture output".into(),
+        }],
+        ..Default::default()
+    });
+    let (handle, mailbox) =
+        ServiceMailbox::with_snapshot(std::thread::current(), crate::service::snapshot(&context));
+    let initial = handle.try_snapshot().unwrap();
+    let original_graph = initial.graph.clone();
+    let state = cx.new(|_| super::super::UiState::new(handle, initial));
+    let (view, cx) = super::super::test_harness::shell_with_state(cx, state);
+    while mailbox.try_request().is_some() {}
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = super::super::pages::Page::Devices;
+        shell.device_tab = super::DeviceTab::Applications;
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.resize(size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        let scope = window
+            .try_find("application-capture-scope")
+            .expect("even the empty Applications list must explain its capture scope");
+        assert!(scope.visible());
+        assert_eq!(
+            scope.label(),
+            Some(rust_i18n::t!(
+                "Captures the selected process and its descendants, not an individual browser tab or audio session."
+            ).as_ref())
+        );
+    });
+    assert!(mailbox.try_request().is_none());
+
+    let mut catalog = (*context.catalog).clone();
+    catalog.processes = vec![
+        ProcessRow {
+            pid: 42,
+            creation_time_100ns: 123,
+            name: "Same player name".into(),
+        },
+        ProcessRow {
+            pid: 43,
+            creation_time_100ns: 124,
+            name: "Same player name".into(),
+        },
+    ];
+    context.catalog = Arc::new(catalog);
+    mailbox.publish(crate::service::snapshot(&context));
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("application-capture-scope").visible());
+        assert!(window.find("process-42-123").visible());
+        window.click("process-42-123", cx);
+    });
+    view.update(cx, |shell, cx| {
+        let state = shell.state.read(cx);
+        assert_eq!(state.selection.process_key, Some((42, 123)));
+        assert_eq!(state.snapshot.graph, original_graph);
+    });
+    let mut bindings = 0;
+    while let Some(request) = mailbox.try_request() {
+        match request {
+            AppRequest::EditGraph(GraphEdit::BindSource { source, .. }) => {
+                assert_eq!(
+                    source,
+                    InputSelection::Process {
+                        pid: 42,
+                        creation_time_100ns: 123
+                    }
+                );
+                bindings += 1;
+            }
+            AppRequest::EditGraph(GraphEdit::BindOutput { endpoint_id, .. }) => {
+                assert_eq!(endpoint_id, "scope-fixture-output");
+            }
+            other => panic!("selection must not start/apply audio: {other:?}"),
+        }
+    }
+    assert_eq!(bindings, 1);
+}
+
+#[cfg(feature = "gpui-test")]
+#[gpui_kit::test]
 fn owned_vad_rows_bind_in_opposite_app_directions_without_starting_audio(
     cx: &mut gpui_kit::TestAppContext,
 ) {
