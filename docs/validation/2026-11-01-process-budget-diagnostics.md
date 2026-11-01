@@ -149,3 +149,34 @@ The next bounded step is to determine a supported smaller actual render demand
 on the remote endpoint, then remeasure Process delivery under that configuration.
 Keep all current whole-wake admission terms and refusal behavior intact; do not
 blindly scan 1024/512/256 against evidence from a different output configuration.
+
+## Query-only render capability follow-up
+
+At 22:53:50+08:00 a fresh remote-only `IAudioClient3` query on the exact DAWN
+endpoint and its 48 kHz stereo Float32 extensible mix returns:
+
+| Capability | Frames |
+| --- | ---: |
+| Default Shared period | 480 |
+| Fundamental increment | 1 |
+| Minimum Shared period | 336 |
+| Maximum Shared period | 480 |
+| Current Shared period | 480 |
+
+The query calls neither Initialize nor Start. All COM references and format
+allocations are released. It does not prove that initialization at 336 succeeds,
+establish the resulting native buffer capacity or measure physical latency.
+Receipt: `s3-render-caps-query-2254.stdout.log`; remote result:
+`D:\MoirenTest\20261101-s3-render-caps-2253\result.json`.
+Original OBS/QQMusic identities and the Running 611 driver/SYS hash are unchanged;
+the final owned audio test process count is zero.
+
+This exposes a concrete configuration gap: `StreamSettings::validate`, desktop
+device-buffer choices and professional native admission currently restrict
+explicit periods to power-of-two presets. None lies in this endpoint's reported
+336..=480 Shared range: 256 is below it and 512 above it. Engine block presets
+are a separate setting and must not be widened just to configure native periods.
+The next software slice should expose validated native period choices while
+retaining Compatible defaults, then verify actual period/capacity and full
+Process demand on the remote target. A smaller period does not by itself promise
+that 1024, 512 or 256 input targets will become admissible.
