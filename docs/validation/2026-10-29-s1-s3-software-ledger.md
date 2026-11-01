@@ -1124,3 +1124,18 @@ Parallel600s application evidence retains
 it is not a continuity or latency PASS. Feature-smoke evidence is recorded
 separately in that receipt. Render/OBS correspondence and calibrated physical
 qualification remain open; S1-S3 are not declared complete.
+
+### Actual Process replay to independent OBS return
+
+The [actual-replay association](2026-11-02-process-replay-obs.md) freshly audits
+the native archives and independently binds both decoded OBS tracks, sample
+rate and full isolation control to the retained recording. Actual production
+SRC samples stay fixed; only recorder coordinates/gain/DC are fitted with the
+existing unchanged held-out gates. All four unchanged fixed windows uniquely
+associate with the replacement owner, including two refused by the old
+nominal-source affine model. Minimum held-out NCC0.999998229, maximum
+NRMSE0.001882244; original refusals are retained. Twenty-one new regressions
+cover errors, mapping, corruption, ambiguity and binding. One25.765s remote
+offline task runs in a new isolated pinned environment; no native audio run.
+Eight native gap-bound violations and unknown/priming samples remain, so this
+is bounded association evidence, not whole-run continuity or physical latency.

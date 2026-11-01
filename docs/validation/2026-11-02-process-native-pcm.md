@@ -187,3 +187,10 @@ reviewed. PNG SHA256:
 First-packet investigation remains deferred. Physical calibration is unavailable
 and does not block independent software development. No smaller default,
 relaxed gate, fail-fast replacement policy, host device operation or push occurs.
+
+The subsequent [actual-replay OBS association](2026-11-02-process-replay-obs.md)
+independently reaudits these same immutable native archives and binds both OBS
+tracks/control to the recording. All four unchanged fixed windows associate
+with the replacement owner's actual replay under unchanged held-out gates.
+This closes a bounded waveform-association gap, not whole-run continuity,
+native delivery quality or physical calibration. Original refusals stay intact.
