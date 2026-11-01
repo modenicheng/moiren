@@ -5,13 +5,22 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [desktop admitted-reserve slice](2026-11-02-admitted-input-reserve-ui.md)
+shows actual modeled minimum/low/high input frames without inventing latency
+or filling Compatible's unknown minimum. Native UIA confirms minimum1334,
+low706/high15904 after measured Apply; Stop/Quit completes normally. Pixel
+visibility below the first viewport is not claimed. Fresh workspace2092 and
+headless UI620tests pass; admission, defaults and audio algorithms are unchanged.
+
 The [held-out linear-clock diagnostic](2026-11-02-linear-clock-diagnostic.md)
 tests fractional phase/drift against the retained Process PCM without replacing
 the raw refusals. Only4of28 windows satisfy all model gates; isolation and
 whole-waveform/physical qualification remain false. All144 Python regressions
 pass, including13 new model controls and training/held-out leakage checks.
-An independent remote1344-frame input candidate runs alongside development;
-its fresh native admission and terminal result remain separate evidence.
+The independent [remote1344-frame input candidate](2026-11-02-process-input1344.md)
+completes540001ms alongside development with exact admission and normal cleanup.
+Loss/silent/underrun/reset counters are0, but93delivery-gap-bound violations
+remain; it is operational evidence, not clean service or physical qualification.
 
 The [isolated Process waveform diagnostic](2026-11-02-isolated-process-waveform.md)
 records two separate lossless OBS tracks while desktop regression work proceeds.

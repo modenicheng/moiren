@@ -100,6 +100,111 @@ fn value<'a>(rows: &'a [(String, String)], key: &str) -> &'a str {
 }
 
 #[test]
+fn native_live_rows_expose_admitted_input_reserve_without_inventing_latency() {
+    use moiren_windows_audio::latency::PreparedInputQueue;
+
+    let mut snapshot = live_snapshot();
+    let queue = &mut snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .streams[0]
+        .input_queue;
+    *queue = Some(PreparedInputQueue {
+        capacity_frames: 16_384,
+        prime_frames: 1344,
+        servo_reference_frames: 1344,
+        low_water_frames: 706,
+        high_water_frames: 15_904,
+        modeled_minimum_frames: Some(1333),
+    });
+    let rows = native_timing_rows(&snapshot);
+    assert_eq!(
+        value(&rows, "1 Physical input: effective prepared bridge queue"),
+        "Prime 1344 / capacity 16384 frames"
+    );
+    assert_eq!(
+        value(&rows, "1 Physical input: admitted input reserve"),
+        "Minimum 1333; low 706 / high 15904 input frames (modeled reserve, not latency)"
+    );
+    for (phase, generation, running) in [
+        (SessionPhase::Running, SessionGeneration(9), true),
+        (SessionPhase::Idle, SessionGeneration(8), true),
+        (SessionPhase::Running, SessionGeneration(8), false),
+    ] {
+        let mut hidden = snapshot.clone();
+        hidden.phase = phase;
+        hidden.generation = generation;
+        hidden
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .running = running;
+        assert!(
+            !native_timing_rows(&hidden)
+                .iter()
+                .any(|(label, _)| label.contains("admitted input reserve"))
+        );
+    }
+    snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .streams[0]
+        .input_queue = None;
+    assert!(
+        !native_timing_rows(&snapshot)
+            .iter()
+            .any(|(label, _)| label.contains("admitted input reserve"))
+    );
+}
+
+#[test]
+fn native_live_rows_keep_unmodeled_input_minimum_unknown() {
+    let mut snapshot = live_snapshot();
+    snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .streams[0]
+        .input_queue = Some(moiren_windows_audio::latency::PreparedInputQueue::compatible());
+    assert_eq!(
+        value(
+            &native_timing_rows(&snapshot),
+            "1 Physical input: admitted input reserve"
+        ),
+        "Minimum Unknown; low 2 / high 8191 input frames (modeled reserve, not latency)"
+    );
+}
+
+#[test]
+fn native_live_rows_translate_admitted_input_reserve_limits() {
+    let locale = crate::i18n::SIMPLIFIED_CHINESE;
+    assert_eq!(
+        rust_i18n::t!(
+            "%{prefix}: admitted input reserve",
+            locale = locale,
+            prefix = "输入"
+        ),
+        "输入：已准入输入储备"
+    );
+    assert_eq!(
+        rust_i18n::t!(
+            "Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)",
+            locale = locale,
+            minimum = 1333,
+            low = 706,
+            high = 15904
+        ),
+        "最低 1333；低水位 706 / 高水位 15904 输入帧（模型储备，不是延迟）"
+    );
+}
+
+#[test]
 fn professional_and_native_diagnostics_coexist_and_filter_stale_publishers_independently() {
     use crate::service::{ProfessionalSessionObservations, SampleFormat};
     use moiren_engine::node::DeviceOptions;

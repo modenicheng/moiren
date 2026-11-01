@@ -728,3 +728,5 @@ Use input presets	-	退出精确文本编辑，保留最后有效预算
 Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget.	-	无效整数不允许回退并提交旧值
 Exact input fields are not ready.	-	字段未创建时不允许准入
 Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.	-	说明精确预算单位和拒绝无效文本
+%{prefix}: admitted input reserve	prefix	当前所有者实际准入的输入储备
+Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)	minimum,low,high	保留未知模型下限，区分水位储备和实测延迟

@@ -80,7 +80,8 @@ In parallel, an independent bounded native operational run tests measured
 Process target1344, preserving Shared336/render512/Engine64/capacity16384/
 jitter96 and runtime admission. It may refuse if its fresh measured minimum
 exceeds1344. It is not an isolated recording or a physical test; its terminal
-result is recorded separately. No smaller default or weakened reserve follows.
+result is [recorded separately](2026-11-02-process-input1344.md). No smaller
+default or weakened reserve follows.
 
 S1-S3 remain incomplete. First-packet investigation stays deferred and missing
 physical calibration does not block useful application development.

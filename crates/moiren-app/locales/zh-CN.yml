@@ -2197,3 +2197,9 @@ _version: 2
 "Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.":
   en: "Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value."
   zh-CN: "精确输入预算以 48 kHz 帧数为单位。无效文本会阻止应用，不取整，也不回退到上一个有效值。"
+"%{prefix}: admitted input reserve":
+  en: "%{prefix}: admitted input reserve"
+  zh-CN: "%{prefix}：已准入输入储备"
+"Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)":
+  en: "Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)"
+  zh-CN: "最低 %{minimum}；低水位 %{low} / 高水位 %{high} 输入帧（模型储备，不是延迟）"

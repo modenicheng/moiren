@@ -285,6 +285,21 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                         )
                         .to_string(),
                     ));
+                    // Publish the admitted reserve, never infer measured delay
+                    // or fill an unknown Compatible minimum from occupancy.
+                    rows.push((
+                        t!("%{prefix}: admitted input reserve", prefix = prefix).to_string(),
+                        t!(
+                            "Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)",
+                            minimum = queue
+                                .modeled_minimum_frames
+                                .map(|frames| frames.to_string())
+                                .unwrap_or_else(|| t!("Unknown").to_string()),
+                            low = queue.low_water_frames,
+                            high = queue.high_water_frames,
+                        )
+                        .to_string(),
+                    ));
                 }
             }
             for bridge in &status.observation.bridges {
