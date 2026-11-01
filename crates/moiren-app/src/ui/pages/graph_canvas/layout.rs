@@ -68,6 +68,16 @@ pub struct KnobLayout {
     pub value: TextLayout,
 }
 
+/// A binding chip: the pill's rect with its icon slot, label, and the
+/// dropdown affordance at the right edge.
+#[derive(Debug, Clone)]
+pub struct ChipLayout {
+    pub bounds: Bounds<f32>,
+    pub icon: Bounds<f32>,
+    pub label: TextLayout,
+    pub chevron: Bounds<f32>,
+}
+
 /// Design 18 card anatomy: header (icon, name, status glyphs), tint rail,
 /// per-kind body, meter strip, port rails with channel hints. World-space
 /// units; [`NodeLayout::project`] scales everything with the camera.
@@ -83,6 +93,9 @@ pub struct NodeLayout {
     pub detail: TextLayout,
     pub meter: MeterLayout,
     pub knobs: Vec<KnobLayout>,
+    pub chip: Option<ChipLayout>,
+    pub matrix: Option<Bounds<f32>>,
+    pub rack: Option<Bounds<f32>>,
     pub inputs: Vec<(f32, f32)>,
     pub input_hints: Vec<TextLayout>,
     pub output: Option<(f32, f32)>,
@@ -181,6 +194,49 @@ impl NodeLayout {
                 }
             })
             .collect();
+        let chip = node.binding.as_ref().map(|_| {
+            let bounds = Bounds {
+                origin: point(
+                    node.x + theme::card::RAIL_W + padding,
+                    body_top + (node.body_height - theme::card::CHIP_H) / 2.,
+                ),
+                size: size(
+                    width - theme::card::RAIL_W - 2. * padding,
+                    theme::card::CHIP_H,
+                ),
+            };
+            ChipLayout {
+                icon: Bounds {
+                    origin: point(
+                        bounds.origin.x + 5.,
+                        bounds.origin.y + (theme::card::CHIP_H - theme::card::CHIP_ICON) / 2.,
+                    ),
+                    size: size(theme::card::CHIP_ICON, theme::card::CHIP_ICON),
+                },
+                label: TextLayout::new(
+                    bounds.origin.x + theme::card::CHIP_ICON + 9.,
+                    bounds.origin.y + (theme::card::CHIP_H - 12.) / 2.,
+                    bounds.size.width - theme::card::CHIP_ICON - 9. - 18.,
+                    11.,
+                ),
+                chevron: Bounds {
+                    origin: point(
+                        bounds.origin.x + bounds.size.width - 15.,
+                        bounds.origin.y + (theme::card::CHIP_H - 12.) / 2.,
+                    ),
+                    size: size(12., 12.),
+                },
+                bounds,
+            }
+        });
+        let matrix = node.matrix.as_ref().map(|_| Bounds {
+            origin: point(node.x + theme::card::RAIL_W + padding, body_top),
+            size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
+        });
+        let rack = (!node.rack_stages.is_empty()).then(|| Bounds {
+            origin: point(node.x + theme::card::RAIL_W + padding, body_top),
+            size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
+        });
         Self {
             card: Bounds {
                 origin: point(node.x, node.y),
@@ -229,6 +285,9 @@ impl NodeLayout {
             ),
             meter,
             knobs,
+            chip,
+            matrix,
+            rack,
             inputs,
             input_hints,
             output: node.has_output.then_some((node.x + width, port_y)),
@@ -257,6 +316,14 @@ impl NodeLayout {
                     value: knob.value.project(camera),
                 })
                 .collect(),
+            chip: self.chip.as_ref().map(|chip| ChipLayout {
+                bounds: camera.project_rect(chip.bounds),
+                icon: camera.project_rect(chip.icon),
+                label: chip.label.project(camera),
+                chevron: camera.project_rect(chip.chevron),
+            }),
+            matrix: self.matrix.map(|bounds| camera.project_rect(bounds)),
+            rack: self.rack.map(|bounds| camera.project_rect(bounds)),
             inputs: self
                 .inputs
                 .iter()

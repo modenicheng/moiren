@@ -284,10 +284,16 @@ pub(in crate::ui) fn node_drag_preview(
         NodeTemplate::Bus => ("figma-bus", theme::NODE_UTILITY),
         NodeTemplate::Recorder => ("radio", theme::NODE_ANALYSIS),
         NodeTemplate::Meter => ("activity", theme::NODE_ANALYSIS),
-        NodeTemplate::Spectrum => ("wave", theme::NODE_ANALYSIS),
+        NodeTemplate::Spectrum => ("chart-histogram", theme::NODE_ANALYSIS),
         NodeTemplate::Delay => ("clock", theme::NODE_DSP),
-        NodeTemplate::ChannelMapper | NodeTemplate::Rack => ("route", theme::NODE_UTILITY),
-        _ => ("figma-fader", theme::NODE_DSP),
+        NodeTemplate::ChannelMapper => ("route", theme::NODE_UTILITY),
+        NodeTemplate::Rack => ("list-details", theme::NODE_UTILITY),
+        NodeTemplate::Gain => ("volume", theme::NODE_DSP),
+        NodeTemplate::Balance => ("arrows-horizontal", theme::NODE_DSP),
+        NodeTemplate::Compressor => ("arrows-minimize", theme::NODE_DSP),
+        NodeTemplate::Eq => ("wave-square", theme::NODE_DSP),
+        NodeTemplate::Gate => ("door", theme::NODE_DSP),
+        NodeTemplate::Limiter => ("wall", theme::NODE_DSP),
     };
     // A fresh card's port shape: sources only output, the sink only inputs.
     let (input_count, has_output) = match template {
@@ -318,6 +324,9 @@ pub(in crate::ui) fn node_drag_preview(
         meter_vertical: false,
         channels: 2,
         knobs: Vec::new(),
+        binding: None,
+        matrix: None,
+        rack_stages: Vec::new(),
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,

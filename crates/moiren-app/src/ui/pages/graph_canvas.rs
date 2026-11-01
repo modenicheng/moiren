@@ -15,7 +15,7 @@ mod wire;
 pub use camera::Camera;
 pub use frame::{CanvasFrame, HitTarget, PortDirection, PortTarget};
 pub use knob::{CardKnob, KnobControl};
-pub use layout::{KnobLayout, MeterLayout, NodeLayout, TextLayout};
+pub use layout::{ChipLayout, KnobLayout, MeterLayout, NodeLayout, TextLayout};
 pub use wire::{WireCurve, WireGeometry};
 
 #[cfg(test)]
@@ -83,6 +83,21 @@ pub struct CanvasNode {
     /// Knob controls exposed on the body (design 18 B3); empty for kinds
     /// whose body is informational.
     pub knobs: Vec<CardKnob>,
+    /// IO binding chip for source/sink cards.
+    pub binding: Option<BindingChip>,
+    /// Channel-mapper preview weights, rows × cols (capped at 8 × 8).
+    pub matrix: Option<Vec<Vec<f64>>>,
+    /// Rack stage icon names, in chain order.
+    pub rack_stages: Vec<&'static str>,
+}
+
+/// A card's IO binding chip: what the node is wired to outside the graph
+/// (device, process, output endpoint), or the prompt to choose one.
+#[derive(Debug, Clone)]
+pub struct BindingChip {
+    pub label: String,
+    pub icon: &'static str,
+    pub unbound: bool,
 }
 
 impl CanvasNode {
@@ -125,6 +140,9 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         meter_vertical: false,
         channels: 2,
         knobs: Vec::new(),
+        binding: None,
+        matrix: None,
+        rack_stages: Vec::new(),
     }
 }
 
@@ -147,6 +165,21 @@ pub struct CanvasWorld {
     pub nodes: Vec<CanvasNode>,
     pub wires: Vec<CanvasWire>,
     pub graph_bounds: Bounds<f32>,
+}
+
+/// One rack stage's glyph, matching the standalone card icons.
+fn rack_stage_icon(processor: &moiren_engine::rack::RackProcessor) -> &'static str {
+    use moiren_engine::rack::RackProcessor;
+    match processor {
+        RackProcessor::Gain { .. } => "volume",
+        RackProcessor::Pan { .. } => "arrows-horizontal",
+        RackProcessor::Compressor(_) => "arrows-minimize",
+        RackProcessor::Eq(_) => "wave-square",
+        RackProcessor::Gate(_) => "door",
+        RackProcessor::Limiter(_) => "wall",
+        RackProcessor::Delay(_) => "clock",
+        RackProcessor::ChannelMapper(_) => "route",
+    }
 }
 
 impl CanvasWorld {
@@ -292,10 +325,16 @@ impl CanvasWorld {
                 NodeKind::Bus => ("figma-bus", theme::NODE_UTILITY),
                 NodeKind::Recorder => ("radio", theme::NODE_ANALYSIS),
                 NodeKind::Meter => ("activity", theme::NODE_ANALYSIS),
-                NodeKind::SpectrumAnalyzer => ("wave", theme::NODE_ANALYSIS),
+                NodeKind::SpectrumAnalyzer => ("chart-histogram", theme::NODE_ANALYSIS),
                 NodeKind::Delay => ("clock", theme::NODE_DSP),
-                NodeKind::ChannelMapper | NodeKind::Rack => ("route", theme::NODE_UTILITY),
-                _ => ("figma-fader", theme::NODE_DSP),
+                NodeKind::Gain => ("volume", theme::NODE_DSP),
+                NodeKind::Pan => ("arrows-horizontal", theme::NODE_DSP),
+                NodeKind::Eq => ("wave-square", theme::NODE_DSP),
+                NodeKind::Compressor => ("arrows-minimize", theme::NODE_DSP),
+                NodeKind::Gate => ("door", theme::NODE_DSP),
+                NodeKind::Limiter => ("wall", theme::NODE_DSP),
+                NodeKind::Rack => ("list-details", theme::NODE_UTILITY),
+                NodeKind::ChannelMapper => ("route", theme::NODE_UTILITY),
             };
             let mut card = node(
                 &key,
@@ -348,6 +387,118 @@ impl CanvasWorld {
             }
             if !card.knobs.is_empty() {
                 card.body_height = theme::card::KNOB_BODY_H;
+            }
+            // IO binding chips: sources and sinks name what they are wired
+            // to; tone sources show their frequency knob instead.
+            let catalog = &snapshot.catalog;
+            match logical.kind() {
+                NodeKind::Source => match &state.source {
+                    Some(crate::service::InputSelection::Physical { endpoint_id }) => {
+                        card.binding = Some(BindingChip {
+                            label: catalog
+                                .inputs
+                                .iter()
+                                .find(|row| &row.endpoint_id == endpoint_id)
+                                .map_or(endpoint_id.clone(), |row| row.name.clone()),
+                            icon: "devices",
+                            unbound: false,
+                        });
+                    }
+                    Some(crate::service::InputSelection::Process {
+                        pid,
+                        creation_time_100ns,
+                    }) => {
+                        card.binding = Some(BindingChip {
+                            label: catalog
+                                .processes
+                                .iter()
+                                .find(|row| {
+                                    row.pid == *pid
+                                        && row.creation_time_100ns == *creation_time_100ns
+                                })
+                                .map_or_else(|| format!("PID {pid}"), |row| row.name.clone()),
+                            icon: "app",
+                            unbound: false,
+                        });
+                    }
+                    Some(crate::service::InputSelection::Tone { .. }) | None => {
+                        if state.source.is_none() {
+                            card.binding = Some(BindingChip {
+                                label: t!("Choose a source").to_string(),
+                                icon: "devices",
+                                unbound: true,
+                            });
+                        }
+                    }
+                },
+                NodeKind::Sink => {
+                    card.binding = Some(match &state.output_endpoint_id {
+                        Some(endpoint_id) => BindingChip {
+                            label: catalog
+                                .outputs
+                                .iter()
+                                .find(|row| &row.endpoint_id == endpoint_id)
+                                .map_or(endpoint_id.clone(), |row| row.name.clone()),
+                            icon: "speaker",
+                            unbound: false,
+                        },
+                        None => BindingChip {
+                            label: t!("Choose an output").to_string(),
+                            icon: "speaker",
+                            unbound: true,
+                        },
+                    });
+                }
+                _ => {}
+            }
+            if card.binding.is_some() {
+                card.body_height = theme::card::CHIP_BODY_H;
+            }
+            // Channel-mapper preview: the explicit weighted matrix, or the
+            // mapping rendered as a permutation matrix; capped at 8 × 8.
+            if logical.kind() == NodeKind::ChannelMapper
+                && let Some(settings) = state.builtin.channel_mapper()
+            {
+                let preview = if !settings.matrix.is_empty() {
+                    settings.matrix.clone()
+                } else if !settings.mapping.is_empty() {
+                    let cols = settings.mapping.iter().copied().max().map_or(0, |m| m + 1);
+                    (0..settings.mapping.len())
+                        .map(|row| {
+                            (0..cols)
+                                .map(|col| usize::from(settings.mapping[row] == col) as f64)
+                                .collect()
+                        })
+                        .collect()
+                } else {
+                    let width = logical
+                        .inputs()
+                        .first()
+                        .map_or(logical.channels(), |port| port.channels());
+                    (0..logical.channels())
+                        .map(|row| {
+                            (0..width)
+                                .map(|col| usize::from(row == col) as f64)
+                                .collect()
+                        })
+                        .collect()
+                };
+                let rows = preview.len().min(8);
+                let cols = preview.first().map_or(0, |row| row.len().min(8));
+                card.matrix = Some(preview);
+                card.body_height = theme::card::MATRIX_CELL * rows as f32 + 4.;
+                let _ = cols;
+            }
+            // Rack chain: one glyph per stage.
+            if logical.kind() == NodeKind::Rack
+                && let Some(settings) = state.builtin.rack()
+            {
+                card.rack_stages = settings
+                    .slots
+                    .iter()
+                    .map(|slot| rack_stage_icon(&slot.processor))
+                    .collect();
+                card.body_height = theme::card::CHIP_BODY_H;
             }
             card.input_ports = logical
                 .inputs()

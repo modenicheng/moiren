@@ -5,7 +5,8 @@ use gpui_kit::{
 };
 
 use super::super::graph_canvas::{
-    CanvasFrame, CanvasNode, CardKnob, KnobLayout, MeterLayout, NodeLayout, TextLayout,
+    BindingChip, CanvasFrame, CanvasNode, CardKnob, ChipLayout, KnobLayout, MeterLayout,
+    NodeLayout, TextLayout,
 };
 use crate::ui::theme;
 
@@ -273,6 +274,154 @@ fn paint_knob(
     );
 }
 
+/// A binding chip: what this source/sink card is wired to. Unbound chips
+/// sit quieter — surface fill, faint text — so the missing binding reads
+/// as a prompt rather than an error.
+fn paint_binding_chip(
+    frame: &CanvasFrame,
+    layout: &ChipLayout,
+    chip: &BindingChip,
+    tint: Hsla,
+    scale: f32,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let bounds = frame.window_rect(layout.bounds);
+    window.paint_quad(PaintQuad {
+        bounds,
+        corner_radii: (theme::RADIUS_SM * scale).into(),
+        background: if chip.unbound {
+            theme::SURFACE_4.into()
+        } else {
+            theme::SURFACE.into()
+        },
+        border_widths: 0f32.into(),
+        border_color: transparent_black(),
+        border_style: BorderStyle::default(),
+    });
+    let _ = window.paint_svg(
+        frame.window_rect(layout.icon),
+        format!("icons/{}.svg", chip.icon).into(),
+        None,
+        TransformationMatrix::unit(),
+        if chip.unbound {
+            theme::TEXT_FAINT
+        } else {
+            tint
+        },
+        cx,
+    );
+    paint_label(
+        frame,
+        &layout.label,
+        Label {
+            text: &chip.label,
+            family: theme::FONT_UI,
+            color: if chip.unbound {
+                theme::TEXT_FAINT
+            } else {
+                theme::TEXT
+            },
+            right_aligned: false,
+            weight: FontWeight::NORMAL,
+        },
+        window,
+        cx,
+    );
+    let _ = window.paint_svg(
+        frame.window_rect(layout.chevron),
+        "icons/chevron-down.svg".into(),
+        None,
+        TransformationMatrix::unit(),
+        theme::TEXT_FAINT,
+        cx,
+    );
+}
+
+/// The channel-mapper preview: one intensity cell per weight, tint-filled
+/// over a dark grid so identity reads as a diagonal.
+fn paint_matrix_preview(
+    frame: &CanvasFrame,
+    bounds: Bounds<f32>,
+    matrix: &[Vec<f64>],
+    tint: Hsla,
+    scale: f32,
+    window: &mut Window,
+) {
+    let cell = (theme::card::MATRIX_CELL + theme::card::MATRIX_GAP) * scale;
+    let grid = frame.window_rect(bounds);
+    for (row, weights) in matrix.iter().enumerate().take(8) {
+        for (col, weight) in weights.iter().enumerate().take(8) {
+            let cell_bounds = Bounds {
+                origin: point(
+                    grid.origin.x + px(col as f32 * cell),
+                    grid.origin.y + px(row as f32 * cell),
+                ),
+                size: size(
+                    px(theme::card::MATRIX_CELL * scale),
+                    px(theme::card::MATRIX_CELL * scale),
+                ),
+            };
+            rounded(cell_bounds, theme::WINDOW_BG, 1.5 * scale, window);
+            let intensity = (weight.abs().min(1.) as f32) * 0.85 + 0.15;
+            rounded(cell_bounds, tint.opacity(intensity), 1.5 * scale, window);
+        }
+    }
+}
+
+/// The rack chain: one glyph per stage in signal order, with a count when
+/// the chain outgrows the body.
+fn paint_rack_chain(
+    frame: &CanvasFrame,
+    bounds: Bounds<f32>,
+    stages: &[&'static str],
+    tint: Hsla,
+    scale: f32,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let grid = frame.window_rect(bounds);
+    let icon = 14. * scale;
+    let stride = 20. * scale;
+    let top = grid.origin.y + px((f32::from(grid.size.height) - icon) / 2.);
+    let shown = stages.len().min(12);
+    for (index, stage) in stages.iter().take(shown).enumerate() {
+        let _ = window.paint_svg(
+            Bounds {
+                origin: point(grid.origin.x + px(index as f32 * stride), top),
+                size: size(px(icon), px(icon)),
+            },
+            format!("icons/{stage}.svg").into(),
+            None,
+            TransformationMatrix::unit(),
+            tint,
+            cx,
+        );
+    }
+    if stages.len() > shown {
+        let label = format!("+{}", stages.len() - shown);
+        let line = shape_text(
+            window,
+            &label,
+            theme::TEXT_XS * scale,
+            Font {
+                weight: FontWeight::NORMAL,
+                ..font(theme::FONT_MONO)
+            },
+            theme::TEXT_FAINT,
+            40. * scale,
+        );
+        let _ = line.paint(
+            point(grid.origin.x + px(shown as f32 * stride), top),
+            px(theme::TEXT_XS * scale + 2.),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
+}
+
 /// The preparing state's language-neutral marker: three dots in a soft
 /// chip, fixed width regardless of locale.
 fn paint_preparing_badge(frame: &CanvasFrame, layout: &NodeLayout, window: &mut Window) {
@@ -454,7 +603,26 @@ pub(super) fn paint_node(
                 card.origin.y + card.size.height - scrim.origin.y - px(2. * layout.scale);
             fill_quad(scrim, theme::WINDOW_BG.opacity(0.45), window);
         }
-        if node.knobs.is_empty() {
+        if !node.knobs.is_empty() {
+            for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
+                paint_knob(frame, knob_layout, knob, layout.scale, window, cx);
+            }
+        } else if let Some(chip) = node.binding.as_ref().zip(layout.chip.as_ref()) {
+            let (chip, chip_layout) = chip;
+            paint_binding_chip(frame, chip_layout, chip, tint, layout.scale, window, cx);
+        } else if let (Some(matrix), Some(bounds)) = (&node.matrix, layout.matrix) {
+            paint_matrix_preview(frame, bounds, matrix, tint, layout.scale, window);
+        } else if let (Some(bounds), false) = (layout.rack, node.rack_stages.is_empty()) {
+            paint_rack_chain(
+                frame,
+                bounds,
+                &node.rack_stages,
+                tint,
+                layout.scale,
+                window,
+                cx,
+            );
+        } else {
             paint_label(
                 frame,
                 &layout.detail,
@@ -468,10 +636,6 @@ pub(super) fn paint_node(
                 window,
                 cx,
             );
-        } else {
-            for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
-                paint_knob(frame, knob_layout, knob, layout.scale, window, cx);
-            }
         }
         paint_meter_bars(frame, layout, reading, window);
     });

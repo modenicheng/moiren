@@ -88,6 +88,13 @@ pub mod card {
     pub const KNOB_BODY_H: f32 = 44.;
     pub const DIAL_SIZE: f32 = 40.;
     pub const DIAL_TRACK_W: f32 = 3.;
+    /// Binding-chip bodies (source/sink cards, rack chains).
+    pub const CHIP_BODY_H: f32 = 26.;
+    pub const CHIP_H: f32 = 22.;
+    pub const CHIP_ICON: f32 = 14.;
+    /// Matrix-preview cells.
+    pub const MATRIX_CELL: f32 = 9.;
+    pub const MATRIX_GAP: f32 = 2.;
     pub const METER_H: f32 = 3.;
     pub const METER_CHANNEL_GAP: f32 = 2.;
     pub const METER_CHANNELS: usize = 2;

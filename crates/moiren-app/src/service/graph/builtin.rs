@@ -82,9 +82,8 @@ impl BuiltinState {
     }
 
     // Production readers match on `BuiltinState::ChannelMapper` directly (the
-    // inspector does); this accessor is only the headless gpui tests' window
-    // into the persisted settings.
-    #[cfg(all(test, feature = "gpui-test"))]
+    // inspector does); the canvas matrix preview and the headless gpui
+    // tests both read it.
     pub fn channel_mapper(&self) -> Option<&ChannelMapperSettings> {
         match self {
             Self::ChannelMapper(settings) => Some(settings),

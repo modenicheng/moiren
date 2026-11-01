@@ -91,9 +91,6 @@ impl AssetSource for ActionAssets {
             "figma-nodes/output.svg" => {
                 Some(include_bytes!("../../../assets/figma-nodes/output.svg"))
             }
-            "figma-nodes/fader.svg" => {
-                Some(include_bytes!("../../../assets/figma-nodes/fader.svg"))
-            }
             "figma-nodes/bus.svg" => Some(include_bytes!("../../../assets/figma-nodes/bus.svg")),
             "figma-nodes/more.svg" => Some(include_bytes!("../../../assets/figma-nodes/more.svg")),
             "figma-nodes/input-port.svg" => {
@@ -216,7 +213,6 @@ mod tests {
             "input",
             "output",
             "bus",
-            "fader",
             "more",
             "input-port",
             "output-port",
@@ -262,13 +258,23 @@ mod tests {
             "figma-input",
             "figma-output",
             "figma-bus",
-            "figma-fader",
             "app",
             "wave",
             "radio",
             "activity",
             "clock",
             "route",
+            "volume",
+            "arrows-horizontal",
+            "wave-square",
+            "arrows-minimize",
+            "door",
+            "wall",
+            "chart-histogram",
+            "list-details",
+            "devices",
+            "speaker",
+            "progress",
         ];
         // Assets the node painter requests straight from figma-nodes/ without
         // the name routing above: port anchors and the overflow marker.
