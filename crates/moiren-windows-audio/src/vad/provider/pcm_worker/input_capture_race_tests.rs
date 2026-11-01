@@ -61,7 +61,7 @@ fn input_capture_successful_write_revoked_during_decode_is_not_unqualified_publi
     let state = f.state.clone();
     AFTER_PLAYBACK_PUBLISH.with(|hook| *hook.borrow_mut() = Some(Box::new(move || state.revoke())));
     f.packet(1, [0.5, -0.5]);
-    assert_eq!(f.pump().unwrap(), PumpState::Current);
+    assert_eq!(f.pump().unwrap(), PumpState::Reset);
     let mut samples = [0.; 2];
     assert_eq!(
         f.reader
@@ -103,7 +103,14 @@ fn input_capture_identity_races_preserve_audio_and_capacity_seals() {
                 f.packet(1, [0.25, -0.5]);
                 assert_eq!(
                     f.pump().unwrap(),
-                    if matches!(change_kind, Change::Reset) {
+                    if matches!(
+                        change_kind,
+                        Change::Revoke
+                            | Change::Reset
+                            | Change::Cancel
+                            | Change::Drain
+                            | Change::Deactivate
+                    ) {
                         PumpState::Reset
                     } else {
                         PumpState::Current
@@ -279,7 +286,14 @@ fn input_capture_enabled_disabled_identity_races_keep_actual_pump_behavior_equal
                 let result = f.pump().unwrap();
                 assert_eq!(
                     result,
-                    if matches!(change_kind, Change::Reset) {
+                    if matches!(
+                        change_kind,
+                        Change::Revoke
+                            | Change::Reset
+                            | Change::Cancel
+                            | Change::Drain
+                            | Change::Deactivate
+                    ) {
                         PumpState::Reset
                     } else {
                         PumpState::Current

@@ -401,7 +401,9 @@ pub(super) fn playback_recorded<C: PcmIo>(
         }
     }
     while tickets.len() < super::super::REQUEST_SLOTS {
-        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+        // Lifecycle can revoke after the outer QUERY or during a prior READ.
+        // Keep collected results and pending tickets, but stop adding IO.
+        if !state.admitted() || state.reset_epoch.load(Ordering::Acquire) != epoch {
             return Ok(PumpState::Reset);
         }
         state
@@ -423,7 +425,11 @@ pub(super) fn playback_recorded<C: PcmIo>(
             Err(error) => return Err(pcm_error(error)),
         }
     }
-    Ok(PumpState::Current)
+    Ok(if state.admitted() {
+        PumpState::Current
+    } else {
+        PumpState::Reset
+    })
 }
 
 pub(super) fn microphone<C: PcmIo>(
@@ -516,12 +522,17 @@ pub(super) fn microphone<C: PcmIo>(
                 .ok_or_else(|| BackendError::Failed("microphone phase deadline overflow".into()))?,
         });
     }
+    // Collect pending results first so revocation cannot hide a terminal IO
+    // fault. New carrier consumption and WRITE need current local admission.
+    if !state.admitted() {
+        return Ok(PumpState::Reset);
+    }
     if tickets.is_empty()
         && pump
             .remaining(now())
             .is_none_or(|remaining| remaining.is_zero())
     {
-        if !pump.observe(state, epoch, now()) {
+        if !pump.observe(state, epoch, now()) || !state.admitted() {
             return Ok(PumpState::Reset);
         }
         // Bounded re-prime after a hard reset: hold the first fresh
@@ -542,7 +553,7 @@ pub(super) fn microphone<C: PcmIo>(
         state
             .telemetry
             .submission_attempt(packet_frames, silence_frames);
-        if !pump.observe(state, epoch, now()) {
+        if !pump.observe(state, epoch, now()) || !state.admitted() {
             state.telemetry.carrier_drop();
             return Ok(PumpState::Reset);
         }
@@ -582,7 +593,7 @@ pub(super) fn wait_for_microphone<C: PcmIo>(
     now: Instant,
     sleep: impl FnOnce(Duration),
 ) -> Result<(), BackendError> {
-    if !pump.current(state, epoch) {
+    if !pump.current(state, epoch) || !state.admitted() {
         return Ok(());
     }
     if let Some(&ticket) = tickets.first() {
@@ -617,7 +628,7 @@ pub(super) fn wait_for_activity<C: PcmIo>(
     state: &SessionState,
     epoch: u64,
 ) -> Result<(), BackendError> {
-    if state.cancel.load(Ordering::Acquire) || !epoch_ready(state, epoch) {
+    if !state.admitted() || !epoch_ready(state, epoch) {
         return Ok(());
     }
     if let Some(&ticket) = tickets.first() {

@@ -3,6 +3,8 @@ use super::*;
 #[path = "sequence_tests.rs"]
 mod sequence_tests;
 
+#[path = "admission_tests.rs"]
+mod admission_tests;
 #[path = "input_capture_tests.rs"]
 mod input_capture_tests;
 #[path = "reprime_tests.rs"]
@@ -257,7 +259,14 @@ impl PcmIo for FakeIo {
     }
 }
 fn state() -> SessionState {
-    SessionState::new(Arc::new(Admission::new()))
+    // The production outer worker enters a pump only after admission. Keep
+    // ordinary pump fixtures on that same precondition; race tests revoke it.
+    let state = SessionState::new(Arc::new(Admission::new()));
+    state.active.store(true, Ordering::Release);
+    let ticket = state.admission.set(Some(9));
+    state.admitted_ticket.store(ticket, Ordering::Release);
+    state.admitted_revision.store(9, Ordering::Release);
+    state
 }
 
 #[test]
@@ -397,7 +406,7 @@ fn publication_telemetry_real_pump_delayed_publication_and_post_write_revocation
     super::super::telemetry::publication::set_test_ticks(&[Some(11_000), Some(11_010)]);
     assert_eq!(
         playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0).unwrap(),
-        PumpState::Current
+        PumpState::Reset
     );
     let s = state.telemetry.snapshot().playback_publication.unwrap();
     assert_eq!(
