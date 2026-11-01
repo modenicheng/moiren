@@ -295,6 +295,7 @@ fn rebase_audio(
 
 pub(in super::super) struct SettingsEditor {
     pub(super) period_inputs: super::native_period::PeriodInputs,
+    pub(super) expert_inputs: super::transport::exact::ExpertInputs,
     pub(super) measured: super::measured::MeasuredEditor,
     pub global: Draft,
     pub device: Draft,
@@ -319,6 +320,7 @@ impl SettingsEditor {
         );
         Self {
             period_inputs: Default::default(),
+            expert_inputs: Default::default(),
             measured: Default::default(),
             global: draft.clone(),
             device: draft,
@@ -400,6 +402,7 @@ impl StudioShell {
     pub(in super::super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.settings.global.dirty() && self.settings.global.pending.is_none() {
             self.settings.reset_period_inputs(Editor::Global);
+            self.settings.reset_expert_inputs();
             self.settings.global = self.current_settings_draft(cx);
         }
         self.settings.previous_focus = window.focused(cx);

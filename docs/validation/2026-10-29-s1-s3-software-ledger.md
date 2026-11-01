@@ -5,6 +5,16 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [exact Expert input editor](2026-11-02-exact-expert-inputs.md) adds five
+integer fields independently for Process and VAD without changing admission or
+defaults. Current text gates Save/Restart, with stopped-save and exact active
+confirmation regressions; the fresh app suite passes625tests /3ignored and the
+workspace2092tests /8ignored. Remote native exact VAD4800/945/96/480/480 persists
+without starting audio, rejects945.5 and quits normally. The separate
+[2048baseline](2026-11-02-process-baseline2048.md) completes540001ms alongside
+development; seven gap-bound violations remain despite zero loss/underrun/reset
+counters. This is not a matched A/B, clean telemetry or physical qualification.
+
 The [desktop admitted-reserve slice](2026-11-02-admitted-input-reserve-ui.md)
 shows actual modeled minimum/low/high input frames without inventing latency
 or filling Compatible's unknown minimum. Native UIA confirms minimum1334,

@@ -1,7 +1,9 @@
 use super::*;
 use crate::service::{DeliveryProvenance, ExpertInputBuffer};
 
-#[derive(Clone, Copy)]
+pub(super) mod exact;
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Input {
     Process,
     Vad,
@@ -30,7 +32,7 @@ impl Input {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Frames {
     Capacity,
     Target,
@@ -40,6 +42,14 @@ enum Frames {
 }
 
 impl Frames {
+    const ALL: [Self; 5] = [
+        Self::Capacity,
+        Self::Target,
+        Self::Jitter,
+        Self::Packet,
+        Self::Gap,
+    ];
+
     fn title(self) -> &'static str {
         match self {
             Self::Capacity => "Ring capacity",
@@ -172,21 +182,7 @@ fn input_editor(shell: &StudioShell, input: Input, cx: &Context<StudioShell>) ->
             Input::Process => t!("Process input buffer"),
             Input::Vad => t!("VAD input buffer"),
         }))
-        .child(choices(
-            shell,
-            Editor::Global,
-            &format!("{prefix}-policy"),
-            selected.is_some(),
-            [
-                (false, t!("Compatible").into()),
-                (true, t!("Expert estimate").into()),
-            ],
-            move |draft, expert| {
-                let value = input.edit(draft);
-                *value = expert.then(|| value.unwrap_or_default());
-            },
-            cx,
-        ));
+        .child(exact::policy(shell, input, cx));
     if matches!(input, Input::Process) {
         let limit = shell
             .settings
@@ -238,40 +234,39 @@ fn input_editor(shell: &StudioShell, input: Input, cx: &Context<StudioShell>) ->
             .flex()
             .flex_col()
             .gap(px(10.));
-        for frames in [
-            Frames::Capacity,
-            Frames::Target,
-            Frames::Jitter,
-            Frames::Packet,
-            Frames::Gap,
-        ] {
-            let current = *frames.value(&mut selected);
-            let mut values = match frames {
-                Frames::Capacity => vec![512, 1024, 2048, 4096, 8192, 16384, 32768],
-                Frames::Target => vec![64, 96, 128, 256, 512, 1024, 2048, 4096],
-                Frames::Jitter => vec![0, 32, 64, 96, 128, 256, 480],
-                Frames::Packet | Frames::Gap => vec![32, 64, 128, 240, 256, 480, 960, 2048],
-            };
-            if !values.contains(&current) {
-                values.push(current);
-                values.sort_unstable();
+        fields = fields.child(exact::toggle(shell, input, cx));
+        if shell.settings.expert_inputs.enabled(input) {
+            fields = fields.child(exact::editor(shell, input));
+        } else {
+            for frames in Frames::ALL {
+                let current = *frames.value(&mut selected);
+                let mut values = match frames {
+                    Frames::Capacity => vec![512, 1024, 2048, 4096, 8192, 16384, 32768],
+                    Frames::Target => vec![64, 96, 128, 256, 512, 1024, 2048, 4096],
+                    Frames::Jitter => vec![0, 32, 64, 96, 128, 256, 480],
+                    Frames::Packet | Frames::Gap => vec![32, 64, 128, 240, 256, 480, 960, 2048],
+                };
+                if !values.contains(&current) {
+                    values.push(current);
+                    values.sort_unstable();
+                }
+                fields = fields.child(field(
+                    &t!(frames.title()),
+                    choices(
+                        shell,
+                        Editor::Global,
+                        &format!("{prefix}-{}", frames.key()),
+                        current,
+                        values.into_iter().map(|value| (value, value.to_string())),
+                        move |draft, value| {
+                            if let Some(settings) = input.edit(draft) {
+                                *frames.value(settings) = value;
+                            }
+                        },
+                        cx,
+                    ),
+                ));
             }
-            fields = fields.child(field(
-                &t!(frames.title()),
-                choices(
-                    shell,
-                    Editor::Global,
-                    &format!("{prefix}-{}", frames.key()),
-                    current,
-                    values.into_iter().map(|value| (value, value.to_string())),
-                    move |draft, value| {
-                        if let Some(settings) = input.edit(draft) {
-                            *frames.value(settings) = value;
-                        }
-                    },
-                    cx,
-                ),
-            ));
         }
         fields = fields.child(field(
             &t!("Delivery evidence"),

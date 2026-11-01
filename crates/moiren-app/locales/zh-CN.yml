@@ -2203,3 +2203,9 @@ _version: 2
 "Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)":
   en: "Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)"
   zh-CN: "最低 %{minimum}；低水位 %{low} / 高水位 %{high} 输入帧（模型储备，不是延迟）"
+"Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget.":
+  en: "Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget."
+  zh-CN: "专家输入预算必须是支持范围内的整数帧数。原生准备阶段仍会校验完整预算。"
+"Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value.":
+  en: "Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value."
+  zh-CN: "精确专家预算以 48 kHz 输入帧计。无效文本会阻止保存和重启音频，不取整，也不回退到上一个有效值。"

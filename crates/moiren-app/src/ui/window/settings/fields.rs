@@ -267,6 +267,9 @@ pub(in super::super) fn footer(
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
                             shell.settings.reset_period_inputs(editor);
+                            if editor == Editor::Global {
+                                shell.settings.reset_expert_inputs();
+                            }
                             *shell.settings.draft_mut(editor) = shell.current_settings_draft(cx);
                             cx.notify();
                         })

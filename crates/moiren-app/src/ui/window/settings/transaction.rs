@@ -13,6 +13,13 @@ impl StudioShell {
         if self.settings.busy() {
             return;
         }
+        if editor == Editor::Global
+            && let Err(error) = self.settings.capture_expert_inputs(cx)
+        {
+            self.settings.global.error = Some(error);
+            cx.notify();
+            return;
+        }
         if let Err(error) = self.settings.validate_period_inputs(editor, cx) {
             self.settings.draft_mut(editor).error = Some(error);
             cx.notify();

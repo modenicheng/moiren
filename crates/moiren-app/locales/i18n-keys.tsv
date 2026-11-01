@@ -730,3 +730,5 @@ Exact input fields are not ready.	-	字段未创建时不允许准入
 Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.	-	说明精确预算单位和拒绝无效文本
 %{prefix}: admitted input reserve	prefix	当前所有者实际准入的输入储备
 Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)	minimum,low,high	保留未知模型下限，区分水位储备和实测延迟
+Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget.	-	精确专家预算范围校验，最终仍需原生准入
+Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value.	-	专家输入以输入帧计，无效文本禁止保存和重启
