@@ -36,6 +36,27 @@ pub struct NativeProcessInterpolationCollector {
 }
 
 impl NativeObservationReadHandle {
+    /// Claim the prepared native PCM stream of this exact immutable source.
+    /// An editable snapshot cannot manufacture/rebind this one-reader handle.
+    pub fn process_native_pcm_reader(
+        &self,
+        node: NodeId,
+        process: &ProcessIdentity,
+        generation: u64,
+    ) -> Result<crate::clock_bridge::native_pcm::NativePcmReader, &'static str> {
+        if self.0.generation != generation {
+            return Err("native PCM owner generation mismatch");
+        }
+        self.0
+            .process_delivery
+            .iter()
+            .find(|source| source.node == node && source.process.same_process(process))
+            .ok_or("native PCM source identity mismatch")?
+            .bridge
+            .take_native_pcm_reader()
+            .ok_or("native PCM disabled or already claimed for this owner")
+    }
+
     /// Backend-local generations can be reused by a newly constructed backend.
     /// Retained immutable session identity, not an editable generation label,
     /// distinguishes replacement owners across those backend lifetimes.

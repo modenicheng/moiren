@@ -5,6 +5,55 @@ use crate::{
 };
 
 #[test]
+fn process_native_pcm_is_opt_in_and_charged_before_native_activation() {
+    use crate::clock_bridge::native_pcm::NativePcmConfig;
+    let mut project = EngineProject::default();
+    let source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+    project.nodes.insert(
+        source,
+        NodeConfig::Input(InputConfig {
+            source: InputSource::Application {
+                executable: "moiren:process:42:123".into(),
+                intent: CaptureIntent::PassiveTap,
+            },
+            channels: 2,
+            device: Default::default(),
+        }),
+    );
+    add_physical_output(&mut project, 2);
+    // Ordinary queues fit; the additional 65,536 native frames must not.
+    project.processing.audio_byte_budget = 3 * 1024 * 1024;
+    let backend = ProfessionalBackend::<f32>::new().unwrap();
+    assert!(backend.process_pcm_capture.is_none());
+    assert!(
+        ProfessionalBackend::<f32>::new()
+            .unwrap()
+            .with_process_pcm_capture(Some(NativePcmConfig { capacity_frames: 0 }))
+            .is_err()
+    );
+    let backend = backend
+        .with_process_pcm_capture(Some(NativePcmConfig {
+            capacity_frames: 65_536,
+        }))
+        .unwrap();
+    let native = native_devices(Default::default());
+    let mut signals = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = signals.create_host(8).unwrap();
+    let error = backend
+        .prepare_with_native(
+            request(&project, &host),
+            &CancellationToken::default(),
+            &native,
+        )
+        .err()
+        .expect("PCM storage must fail before native activation");
+    assert!(
+        error.to_string().contains("audio preparation budget"),
+        "{error}"
+    );
+}
+
+#[test]
 fn real_preparation_accounts_measured_storage_and_refuses_negotiated_whole_demand() {
     for capacity in [2048, 65_536] {
         let mut project = EngineProject::default();

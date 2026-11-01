@@ -146,6 +146,11 @@ pub struct CaptureBufferSizeQuery {
 }
 #[derive(Debug, Serialize)]
 pub struct CaptureReport {
+    /// Retired native tap storage crosses back in the normal report or panic
+    /// payload. It is never reclaimed by the capture/streaming owner.
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub(crate) native_pcm_retired: Option<crate::clock_bridge::native_pcm::NativePcmWriter>,
     #[serde(skip)]
     pub artifact: Option<PcmArtifact>,
     pub artifact_metadata: Option<PcmArtifactMetadata>,
@@ -201,6 +206,7 @@ impl CaptureReport {
     pub fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
             schema_version: 12,
+            native_pcm_retired: None,
             artifact: None,
             artifact_metadata: None,
             artifact_recorder: None,

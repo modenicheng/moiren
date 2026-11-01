@@ -39,6 +39,9 @@ Independent Process policy (compatible or declared; not measured mode):
 Optional diagnostic (all monitor modes):
   --cursor-trace-directory PATH New control-side actual SRC chunk archive;
                                diagnostic only, must not already exist
+  --cursor-trace-pcm-frames N   Also retain native PCM with exact packet mapping;
+                               requires trace directory, <=8 MiB native ring,
+                               <=512 MiB PCM/packet files per owner; opt-in only
 Measured Process input budget (exactly three budget fields; no packet/gap bounds):
   --measure-seconds 1..60       Measure a compatible baseline before applying
   --target-frames N --capacity-frames N --jitter-frames N

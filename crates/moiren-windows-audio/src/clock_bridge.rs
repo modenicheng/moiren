@@ -7,6 +7,8 @@ use thiserror::Error;
 
 #[path = "clock_bridge/ingress.rs"]
 mod ingress;
+#[path = "clock_bridge/native_pcm.rs"]
+pub mod native_pcm;
 #[path = "clock_bridge/rate.rs"]
 mod rate;
 pub use rate::RateClock;
@@ -26,6 +28,8 @@ pub const OUTPUT_SAMPLE_RATE: u32 = crate::NATIVE_SAMPLE_RATE;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClockBridgeConfig {
+    /// Explicit diagnostic only; absent in ordinary/native desktop owners.
+    pub native_pcm: Option<native_pcm::NativePcmConfig>,
     pub input_sample_rate: u32,
     /// Engine output rate. Physical-only owners use 48kHz; VAD projects may
     /// select another supported processing rate after native capture SRC.
@@ -55,6 +59,7 @@ pub struct ClockBridgeConfig {
 impl Default for ClockBridgeConfig {
     fn default() -> Self {
         Self {
+            native_pcm: None,
             input_sample_rate: crate::NATIVE_SAMPLE_RATE,
             output_sample_rate: OUTPUT_SAMPLE_RATE,
             input_channels: 2,
@@ -82,6 +87,12 @@ impl ClockBridgeConfig {
                 bytes.checked_add(crate::latency::packets::packet_history_storage_bytes())
             })
             .and_then(|bytes| bytes.checked_add(crate::latency::interpolation::storage_bytes()))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.native_pcm
+                        .map_or(Some(0), |config| config.storage_bytes().ok())?,
+                )
+            })
             .filter(|&bytes| bytes <= isize::MAX as usize && bytes <= self.byte_budget)
             .ok_or(ClockBridgeError::BudgetExceeded)
     }
@@ -193,12 +204,20 @@ pub(crate) fn capture_bridge_with_clock(
     let (queue_writer, queue_events) = crate::latency::queue::queue_history();
     let (packet_writer, packet_events) = crate::latency::packets::packet_history();
     let (interpolation_writer, interpolation_events) = crate::latency::interpolation::history();
+    let (pcm_writer, pcm_reader) = if let Some(pcm) = config.native_pcm {
+        let (writer, reader) =
+            native_pcm::stream(pcm, config.input_sample_rate, config.input_channels);
+        (Some(writer), Some(reader))
+    } else {
+        (None, None)
+    };
     let counters = Arc::new(Counters::new(
         config.capacity_frames,
         delivery_events,
         queue_events,
         packet_events,
         interpolation_events,
+        pcm_reader,
     ));
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
     Ok((
@@ -209,6 +228,7 @@ pub(crate) fn capture_bridge_with_clock(
             delivery_writer,
             packet_writer,
             age_clock,
+            pcm_writer,
         ),
         ClockSource::new(
             rx,

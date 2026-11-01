@@ -64,6 +64,7 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
     virtual_clock: Arc<dyn VirtualClockFactory>,
     process_bridge: crate::process_loopback::ProcessBridgeOptions,
+    process_pcm_capture: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
     measured_process_bridges: Vec<process_admission::MeasuredBridgeRequest>,
     virtual_buffer: crate::virtual_owner::VirtualBufferOptions,
     render_queue: RenderQueuePolicy,
@@ -80,6 +81,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             virtual_provider: None,
             virtual_clock: Arc::new(QpcClockFactory),
             process_bridge: Default::default(),
+            process_pcm_capture: None,
             measured_process_bridges: Vec::new(),
             virtual_buffer: Default::default(),
             render_queue: RenderQueuePolicy::default(),
@@ -110,6 +112,18 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
     ) -> Result<Self, BackendError> {
         bridge.prepare().map_err(unsupported)?;
         self.process_bridge = bridge;
+        Ok(self)
+    }
+    /// Explicit native diagnostic preparation, never persisted as a desktop
+    /// latency preset and never enabled by an ordinary graph owner.
+    pub fn with_process_pcm_capture(
+        mut self,
+        config: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
+    ) -> Result<Self, BackendError> {
+        if let Some(config) = config {
+            config.validate().map_err(unsupported)?;
+        }
+        self.process_pcm_capture = config;
         Ok(self)
     }
     pub fn with_virtual_buffer(
@@ -373,11 +387,12 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                     // Resolve the selected policy for storage accounting now;
                     // admission runs again after the master's actual demand
                     // is negotiated. Never budget a measured queue as legacy.
-                    self.process_bridge_for(node, process_selector(executable)?, rate, 1)?
+                    let mut config = self
+                        .process_bridge_for(node, process_selector(executable)?, rate, 1)?
                         .clock_config()
-                        .map_err(unsupported)?
-                        .storage_bytes()
-                        .map_err(unsupported)?
+                        .map_err(unsupported)?;
+                    config.native_pcm = self.process_pcm_capture;
+                    config.storage_bytes().map_err(unsupported)?
                 }
                 NodeConfig::Input(input)
                     if matches!(input.source, InputSource::VirtualPlayback { .. }) =>
@@ -843,6 +858,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 self.process_bridge_for(node, identity, rate, process_demand)?,
                 self.measured_source_generation(node),
                 self.telemetry,
+                self.process_pcm_capture,
                 &mut bindings,
                 &mut transport,
                 cancel,
@@ -990,6 +1006,7 @@ fn prepare_process<S: ProcessingSample>(
     bridge: crate::process_loopback::ProcessBridgeOptions,
     measured_source_generation: Option<u64>,
     telemetry: TelemetryMode,
+    pcm_capture: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
     bindings: &mut NodeBindings<S>,
     transport: &mut Transport<S>,
     cancel: &CancellationToken,
@@ -1006,7 +1023,7 @@ fn prepare_process<S: ProcessingSample>(
     cancel.on_cancel(move || {
         let _ = cancel_stop.request_stop();
     })?;
-    let prepared = crate::process_loopback::prepare_process_capture_with_gate(
+    let prepared = crate::process_loopback::stream::prepare_process_capture_with_gate_and_pcm(
         crate::process_loopback::ProcessLoopbackOptions {
             artifact: None,
             bridge,
@@ -1016,6 +1033,7 @@ fn prepare_process<S: ProcessingSample>(
         },
         stop.clone(),
         gate.clone(),
+        pcm_capture,
     )
     .map_err(unsupported)?;
     let channels = prepared.channels;

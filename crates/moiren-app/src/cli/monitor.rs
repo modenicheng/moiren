@@ -327,7 +327,15 @@ pub(super) fn run(options: MonitorOptions) -> Result<MonitorReport> {
             creation_time_100ns: process.creation_time_100ns,
         };
         let duration = Duration::from_secs(u64::from(options.seconds));
-        let driver = ManagedDriver::windows();
+        let pcm = options.process_pcm_config()?;
+        let driver = match pcm.as_ref() {
+            Some(config) => ManagedDriver::windows_with_process_pcm_capture(
+                moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {
+                    capacity_frames: config.capacity_frames,
+                },
+            )?,
+            None => ManagedDriver::windows(),
+        };
         let trace = options
             .cursor_trace_directory
             .as_ref()
@@ -341,6 +349,7 @@ pub(super) fn run(options: MonitorOptions) -> Result<MonitorReport> {
                     } else {
                         1
                     },
+                    pcm,
                 )
             })
             .transpose()?;

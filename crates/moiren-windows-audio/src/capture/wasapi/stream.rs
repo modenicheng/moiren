@@ -153,7 +153,14 @@ pub(super) fn run_prepared(
     // rejected artifact configuration must never look like a live capture to
     // the control side.
     report.prepare_artifact(input.artifact, input.sample_rate, input.channels)?;
-    let mut ingress = preparation.prepare(input.sample_rate, input.channels, report, clock)?;
+    let ingress = preparation.prepare(input.sample_rate, input.channels, report, clock)?;
+    // This drop guard also runs on gate/start/packet failure and unwind. Close
+    // evidence here, but move storage into the control-joined report instead
+    // of freeing it on this native thread when a diagnostic reader abandoned.
+    let mut ingress = crate::clock_bridge::native_pcm::NativePcmIngressGuard::new(
+        ingress,
+        &mut report.native_pcm_retired,
+    );
     let activation = input.gate.wait_with_target(input.target)?;
     // A process can exit during preparation. Stop still wins over that exit.
     match wait_target(handle(input.stop), input.audio, input.target, 0)? {

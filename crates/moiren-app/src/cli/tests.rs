@@ -49,6 +49,8 @@ fn monitor_compatibility_does_not_invent_explicit_queue_or_output_requests() {
     assert_eq!(options.audio.output.buffer_frames, None);
     assert_eq!(options.seconds, 30);
     assert!(options.cursor_trace_directory.is_none());
+    assert!(options.cursor_trace_pcm_frames.is_none());
+    assert!(options.process_pcm_config().unwrap().is_none());
     assert_eq!(options.audio.processing.precision, ProcessingPrecision::F32);
 }
 
@@ -65,6 +67,48 @@ fn cursor_archive_is_optional_and_requires_a_nonempty_directory() {
     );
     for invalid in ["", "   ", "bad\0path"] {
         assert!(monitor(&["--cursor-trace-directory", invalid]).is_err());
+    }
+}
+
+#[test]
+fn cursor_pcm_archive_requires_explicit_bounded_opt_in() {
+    for frames in ["1", "4096"] {
+        let options = monitor(&[
+            "--cursor-trace-directory",
+            "diagnostics/cursors",
+            "--cursor-trace-pcm-frames",
+            frames,
+        ])
+        .unwrap();
+        assert_eq!(options.cursor_trace_pcm_frames, frames.parse().ok());
+        assert_eq!(
+            options
+                .process_pcm_config()
+                .unwrap()
+                .unwrap()
+                .capacity_frames,
+            frames.parse::<usize>().unwrap()
+        );
+        assert_eq!(
+            options.transport().unwrap(),
+            TransportLatencySettings::default()
+        );
+    }
+}
+
+#[test]
+fn cursor_pcm_archive_rejects_missing_directory_and_invalid_capacity() {
+    assert!(monitor(&["--cursor-trace-pcm-frames", "4096"]).is_err());
+    for frames in ["0", "-1", "NaN", "1048576", "18446744073709551615"] {
+        assert!(
+            monitor(&[
+                "--cursor-trace-directory",
+                "diagnostics/cursors",
+                "--cursor-trace-pcm-frames",
+                frames,
+            ])
+            .is_err()
+        );
     }
 }
 

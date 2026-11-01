@@ -24,6 +24,9 @@ impl Fixture {
             executable_name: "pinned.exe".into(),
         };
         let (ingress, source, bridge) = capture_bridge(ClockBridgeConfig {
+            native_pcm: Some(crate::clock_bridge::native_pcm::NativePcmConfig {
+                capacity_frames: 64,
+            }),
             capacity_frames: 64,
             target_fill_frames: 4,
             trim_on_prime: false,
@@ -80,6 +83,35 @@ impl Fixture {
             .read_interleaved(&mut [0.0; 16])
             .unwrap();
     }
+}
+
+#[test]
+fn native_pcm_pin_checks_identity_and_claims_only_the_original_owner() {
+    let mut f = Fixture::new();
+    let handle = f.registry.retain_session().unwrap();
+    assert!(
+        handle
+            .process_native_pcm_reader(f.node, &f.process, 8)
+            .is_err()
+    );
+    let mut wrong = f.process.clone();
+    wrong.creation_time_100ns += 1;
+    assert!(handle.process_native_pcm_reader(f.node, &wrong, 7).is_err());
+    let mut reader = handle
+        .process_native_pcm_reader(f.node, &f.process, 7)
+        .unwrap();
+    assert!(
+        handle
+            .process_native_pcm_reader(f.node, &f.process, 7)
+            .is_err()
+    );
+    f.registry.publish(7, vec![], vec![], vec![]);
+    f.read();
+    assert_eq!(reader.pop().unwrap().packet_sequence, 1);
+    drop(f.ingress);
+    while reader.pop().is_some() {}
+    assert!(reader.is_finished());
+    assert_eq!(reader.snapshot().offered_frames, 8);
 }
 
 #[test]

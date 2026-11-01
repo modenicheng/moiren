@@ -60,6 +60,7 @@ pub struct BridgeSnapshot {
     pub correction_ppm: f64,
 }
 pub(super) struct Counters {
+    pub native_pcm: std::sync::Mutex<Option<super::native_pcm::NativePcmReader>>,
     pub interpolation_events: crate::latency::interpolation::InterpolationHistoryObserver,
     pub packet_events: crate::latency::packets::PacketHistoryObserver,
     pub queue_events: crate::latency::queue::QueueHistoryObserver,
@@ -102,8 +103,10 @@ impl Counters {
         queue_events: crate::latency::queue::QueueHistoryObserver,
         packet_events: crate::latency::packets::PacketHistoryObserver,
         interpolation_events: crate::latency::interpolation::InterpolationHistoryObserver,
+        native_pcm: Option<super::native_pcm::NativePcmReader>,
     ) -> Self {
         Self {
+            native_pcm: std::sync::Mutex::new(native_pcm),
             interpolation_events,
             packet_events,
             queue_events,
@@ -144,6 +147,15 @@ impl Counters {
 #[derive(Clone)]
 pub struct BridgeObserver(pub(super) Arc<Counters>);
 impl BridgeObserver {
+    /// One control-side claim per prepared owner. This mutex is never used by
+    /// capture/render; the reader owns only diagnostics, not native resources.
+    pub fn take_native_pcm_reader(&self) -> Option<super::native_pcm::NativePcmReader> {
+        self.0
+            .native_pcm
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
     /// Actual emitted linear-SRC spans. Independent suffix, not authenticated
     /// archive proof, physical latency or a complete recording after overwrite.
     pub fn interpolation_history(

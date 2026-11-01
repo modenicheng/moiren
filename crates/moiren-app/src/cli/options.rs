@@ -14,6 +14,7 @@ pub(super) struct MonitorOptions {
     pub measure_seconds: Option<u16>,
     pub startup_timeout_ms: u64,
     pub cursor_trace_directory: Option<std::path::PathBuf>,
+    pub cursor_trace_pcm_frames: Option<usize>,
     pub audio: AudioSettings,
     target: Option<u32>,
     capacity: Option<u32>,
@@ -41,6 +42,7 @@ impl Default for MonitorOptions {
             measure_seconds: None,
             startup_timeout_ms: 15000,
             cursor_trace_directory: None,
+            cursor_trace_pcm_frames: None,
             audio: AudioSettings::default(),
             target: None,
             capacity: None,
@@ -113,6 +115,13 @@ impl MonitorOptions {
                 .with_context(|| format!("invalid {flag} value"))
         };
         match flag {
+            "--cursor-trace-pcm-frames" => {
+                self.cursor_trace_pcm_frames = Some(
+                    value
+                        .parse()
+                        .context("invalid --cursor-trace-pcm-frames value")?,
+                );
+            }
             "--cursor-trace-directory" => {
                 ensure!(
                     !value.trim().is_empty() && !value.contains('\0'),
@@ -286,6 +295,16 @@ impl MonitorOptions {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.cursor_trace_pcm_frames.is_some() {
+            ensure!(
+                self.cursor_trace_directory.is_some(),
+                "--cursor-trace-pcm-frames requires --cursor-trace-directory"
+            );
+            #[cfg(any(windows, test))]
+            self.process_pcm_config()?;
+            #[cfg(not(any(windows, test)))]
+            bail!("native PCM archive requires Windows");
+        }
         ensure!(
             self.pid
                 .is_some_and(|pid| pid != 0 && pid != std::process::id()),
@@ -318,5 +337,20 @@ impl MonitorOptions {
         #[cfg(not(windows))]
         let _ = transport;
         Ok(())
+    }
+
+    #[cfg(any(windows, test))]
+    pub fn process_pcm_config(
+        &self,
+    ) -> Result<Option<moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig>> {
+        self.cursor_trace_pcm_frames
+            .map(|capacity_frames| {
+                let config = moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {
+                    capacity_frames,
+                };
+                config.validate().map_err(anyhow::Error::msg)?;
+                Ok(config)
+            })
+            .transpose()
     }
 }

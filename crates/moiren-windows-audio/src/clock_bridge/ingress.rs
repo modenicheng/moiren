@@ -18,6 +18,7 @@ pub struct CapturePacket {
     pub qpc_100ns: u64,
 }
 pub struct CaptureIngress {
+    pub(super) native_pcm: Option<super::native_pcm::NativePcmWriter>,
     packet_events: PacketHistoryWriter,
     publication_clock: Option<QpcClock>,
     publication_clock_high_water_100ns: Option<u64>,
@@ -38,8 +39,10 @@ impl CaptureIngress {
         delivery_events: crate::latency::events::EventHistoryWriter,
         packet_events: PacketHistoryWriter,
         publication_clock: Option<QpcClock>,
+        native_pcm: Option<super::native_pcm::NativePcmWriter>,
     ) -> Self {
         Self {
+            native_pcm,
             packet_events,
             publication_clock,
             publication_clock_high_water_100ns: None,
@@ -217,6 +220,9 @@ impl CaptureIngress {
             buffer_generation: self.generation,
             flags: packet.flags,
         });
+        if let Some(pcm) = &mut self.native_pcm {
+            pcm.record(bytes, packet, accepted, self.generation);
+        }
         self.counters
             .nonfinite_samples
             .fetch_add(nonfinite, Relaxed);
@@ -297,6 +303,10 @@ impl moiren_engine::boundary::RtAudioSink<f32> for CaptureIngress {
             }));
         }
         if input.frames() > 0 {
+            // A graph-output sink has no native offered packet provenance.
+            if let Some(pcm) = &self.native_pcm {
+                pcm.mark_saturated();
+            }
             self.packet_events.record(PacketPublicationSample {
                 offered_frames: input.frames() as u64,
                 accepted_frames: accepted as u64,

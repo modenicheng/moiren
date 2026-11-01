@@ -1,6 +1,7 @@
 //! Optional independent control diagnostic. Disk stalls cannot block service/RT.
 use anyhow::{Context, Result};
 use moiren_windows_audio::{
+    clock_bridge::native_pcm::NativePcmConfig,
     engine_backend::{NativeObservationReadHandle, NativeProcessInterpolationCollector},
     latency::interpolation::InterpolationTraceChunk,
     process_loopback::ProcessIdentity,
@@ -22,6 +23,9 @@ const PENDING_LIMIT: usize = 4096;
 const MAX_SESSIONS: usize = 8;
 const PERSIST_INTERVAL: Duration = Duration::from_millis(50);
 
+mod pcm;
+use pcm::PcmArchive;
+
 pub(super) struct CursorTraceWorker {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<Result<()>>>,
@@ -33,6 +37,7 @@ struct Session {
     persistence: ChunkPersistence,
     finalized: bool,
     last_persist: Instant,
+    pcm: Option<PcmArchive>,
 }
 
 struct ChunkPersistence {
@@ -104,7 +109,7 @@ impl Session {
             return Ok(());
         }
         let closed = self.collector.finish();
-        if !closed && !stopping {
+        if !stopping && (!closed || self.pcm.as_ref().is_some_and(|pcm| !pcm.writer_finished())) {
             return Ok(());
         }
         self.persist();
@@ -112,22 +117,32 @@ impl Session {
         if let Some(chunk) = &self.persistence.failed_chunk {
             let _ = write_new(&self.persistence.directory.join("failed-chunk.json"), chunk);
         }
-        write_new(
-            &self.persistence.directory.join("final.json"),
-            &serde_json::json!({
-                "schema_version": 1, "origin": self.collector.origin(),
-                "artifact": artifact, "final_history_available": closed,
-                "unavailable_polls": self.collector.unavailable_polls(),
-                "persisted_events": self.persistence.persisted_events,
-                "persisted_chunks": self.persistence.persisted_chunks,
-                "io_error": self.persistence.io_error,
-                "persistence_complete": closed && artifact.history_complete && self.persistence.io_error.is_none()
-                    && self.persistence.persisted_events == artifact.total_events,
-                "qualified": false,
-            }),
-        )?;
-        self.finalized = true;
-        Ok(())
+        let completed = std::cell::Cell::new(false);
+        let result = finish_pcm_and_cursor(self.pcm.as_mut(), |pcm_error, pcm_complete| {
+            let result = write_new(
+                &self.persistence.directory.join("final.json"),
+                &serde_json::json!({
+                    "schema_version": 1, "origin": self.collector.origin(),
+                    "artifact": artifact, "final_history_available": closed,
+                    "unavailable_polls": self.collector.unavailable_polls(),
+                    "persisted_events": self.persistence.persisted_events,
+                    "persisted_chunks": self.persistence.persisted_chunks,
+                    "io_error": self.persistence.io_error,
+                    "native_pcm_enabled": pcm_complete.is_some(),
+                    "native_pcm_complete": pcm_complete,
+                    "native_pcm_error": pcm_error,
+                    "persistence_complete": closed && artifact.history_complete && self.persistence.io_error.is_none()
+                        && self.persistence.persisted_events == artifact.total_events
+                        && pcm_error.is_none()
+                        && pcm_complete.unwrap_or(true),
+                    "qualified": false,
+                }),
+            );
+            completed.set(result.is_ok());
+            result
+        });
+        self.finalized = completed.get();
+        result
     }
 
     fn persistence_complete(&self) -> bool {
@@ -136,7 +151,31 @@ impl Session {
             && artifact.history_complete
             && self.persistence.io_error.is_none()
             && self.persistence.persisted_events == artifact.total_events
+            && self
+                .pcm
+                .as_ref()
+                .is_none_or(PcmArchive::persistence_complete)
     }
+}
+
+/// A PCM receipt failure must not suppress an independently retained cursor
+/// receipt. Neither failed payloads nor their successful prefix are rewritten.
+fn finish_pcm_and_cursor(
+    pcm: Option<&mut PcmArchive>,
+    write_cursor: impl FnOnce(Option<&str>, Option<bool>) -> Result<()>,
+) -> Result<()> {
+    let mut result = Ok(());
+    let complete = pcm.map(|pcm| {
+        if let Err(error) = pcm.finish() {
+            retain_error(&mut result, anyhow::anyhow!("PCM final receipt: {error:#}"));
+        }
+        pcm.persistence_complete()
+    });
+    let error = result.as_ref().err().map(|error| format!("{error:#}"));
+    if let Err(error) = write_cursor(error.as_deref(), complete) {
+        retain_error(&mut result, error);
+    }
+    result
 }
 
 impl CursorTraceWorker {
@@ -145,7 +184,11 @@ impl CursorTraceWorker {
         read: impl Fn() -> Option<NativeObservationReadHandle> + Send + 'static,
         process: ProcessIdentity,
         expected_owners: usize,
+        pcm_config: Option<NativePcmConfig>,
     ) -> Result<Self> {
+        if let Some(config) = pcm_config {
+            config.validate().map_err(anyhow::Error::msg)?;
+        }
         fs::create_dir(directory).context("create new cursor trace directory")?;
         let directory = directory.to_owned();
         let stop = Arc::new(AtomicBool::new(false));
@@ -170,13 +213,19 @@ impl CursorTraceWorker {
                                 let path = directory.join(format!("owner-{:04}-generation-{generation}", sessions.len() + 1));
                                 fs::create_dir(&path)?;
                                 write_new(&path.join("origin.json"), collector.origin())?;
-                                sessions.push(Session {owner: owner.clone(), collector, persistence: ChunkPersistence::new(path), finalized: false, last_persist: Instant::now()});
+                                let pcm = pcm_config.map(|_| {
+                                    let reader = owner.process_native_pcm_reader(source.node, &process, generation)
+                                        .map_err(anyhow::Error::msg)?;
+                                    PcmArchive::new(&path, reader)
+                                }).transpose()?;
+                                sessions.push(Session {owner: owner.clone(), collector, persistence: ChunkPersistence::new(path), finalized: false, last_persist: Instant::now(), pcm});
                             }
                         }
                     }
                     for session in &mut sessions {
                         if session.finalized { continue; }
                         session.collector.poll();
+                        if let Some(pcm) = &mut session.pcm { pcm.poll(); }
                         if session.collector.artifact().writer_finished {
                             session.finish(false)?;
                         } else if session.last_persist.elapsed() >= PERSIST_INTERVAL {
@@ -199,9 +248,14 @@ impl CursorTraceWorker {
             let summary = write_new(&directory.join("summary.json"), &serde_json::json!({
                 "schema_version": 1, "sessions": sessions.len(),
                 "expected_owners": expected_owners,
+                "native_pcm_enabled": pcm_config.is_some(),
                 "error": result.as_ref().err().map(|error| error.to_string()),
                 "qualified": false,
-                "scope": "actual Process SRC cursor archive only; not PCM mapping or physical qualification",
+                "scope": if pcm_config.is_some() {
+                    "actual Process SRC cursors and offered/accepted native PCM mapping; not replay or physical qualification"
+                } else {
+                    "actual Process SRC cursor archive only; not PCM mapping or physical qualification"
+                },
             }));
             if let Err(error) = summary { retain_error(&mut result, error); }
             result
@@ -344,7 +398,7 @@ mod tests {
             creation_time_100ns: 1,
             executable_name: "test.exe".into(),
         };
-        assert!(CursorTraceWorker::spawn(&directory.0, || None, process, 1).is_err());
+        assert!(CursorTraceWorker::spawn(&directory.0, || None, process, 1, None).is_err());
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
     }
 
@@ -357,7 +411,7 @@ mod tests {
             creation_time_100ns: 1,
             executable_name: "test.exe".into(),
         };
-        let worker = CursorTraceWorker::spawn(&path, || None, process, 1).unwrap();
+        let worker = CursorTraceWorker::spawn(&path, || None, process, 1, None).unwrap();
         assert!(
             worker
                 .finish()

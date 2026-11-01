@@ -191,3 +191,8 @@ samples. Preserve loss/epoch/startup refusal controls and all current gates.
 Do not substitute repeated stability scans or smaller-buffer experiments for
 that software work. Physical A/B qualification is still unavailable and is not
 a blocker for independent development.
+
+The subsequent [native PCM increment](2026-11-02-process-native-pcm.md) now
+implements that bounded offered/accepted correspondence and independent actual
+SRC replay. Its evidence remains separate from this earlier cursor-only run;
+render/OBS association and physical qualification are still unproven.

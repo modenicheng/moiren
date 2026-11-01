@@ -49,6 +49,9 @@ mod clock_bridge;
 #[path = "../../../crates/moiren-windows-audio/src/codec.rs"]
 #[allow(dead_code)]
 mod codec;
+#[path = "../../../crates/moiren-windows-audio/src/latency/interpolation.rs"]
+#[allow(dead_code, unused_imports)]
+pub(crate) mod interpolation_history;
 #[path = "../../../crates/moiren-windows-audio/src/virtual_owner/clock_observation.rs"]
 #[allow(dead_code)]
 mod virtual_clock_observation;
@@ -78,6 +81,7 @@ mod process_measured;
 mod process_replay;
 mod latency {
     pub(crate) use super::bounded_history;
+    pub(crate) use super::interpolation_history as interpolation;
     pub use moiren_windows_audio::latency::*;
 }
 mod process_loopback {
@@ -157,6 +161,9 @@ mod process_wake;
 // `#[path]` just like the shadow-compiled modules above.
 #[path = "../../../crates/moiren-windows-audio/tests/common/alloc_guard.rs"]
 mod alloc_guard;
+// The native PCM shadow includes the same checked-frontier tests as the
+// library, sharing this harness's sole counting allocator.
+use alloc_guard as test_allocation;
 
 fn measured<T>(f: impl FnOnce() -> T) -> T {
     alloc_guard::assert_allocates_nothing(f)

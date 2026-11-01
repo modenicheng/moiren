@@ -319,7 +319,25 @@ impl ManagedDriver {
     }
     #[cfg(windows)]
     pub fn windows() -> Self {
-        Self::windows_with_provider(moiren_windows_audio::vad::WindowsVadProvider::discover().ok())
+        Self::windows_with_provider(
+            moiren_windows_audio::vad::WindowsVadProvider::discover().ok(),
+            None,
+        )
+    }
+
+    /// Diagnostic-only native Process tap. Both precision factories and every
+    /// measured replacement retain this config; saved settings stay unchanged.
+    #[cfg(windows)]
+    pub fn windows_with_process_pcm_capture(
+        config: moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig,
+    ) -> Result<Self, host::BackendError> {
+        config
+            .validate()
+            .map_err(|error| host::BackendError::Unsupported(error.into()))?;
+        Ok(Self::windows_with_provider(
+            moiren_windows_audio::vad::WindowsVadProvider::discover().ok(),
+            Some(config),
+        ))
     }
 
     /// Explicit bounded evidence only. Discovery happens once; the factories,
@@ -333,13 +351,15 @@ impl ManagedDriver {
             moiren_windows_audio::vad::WindowsVadProvider::discover_with_input_capture(
                 endpoint, frames,
             )?;
-        Ok((Self::windows_with_provider(Some(provider)), capture))
+        Ok((Self::windows_with_provider(Some(provider), None), capture))
     }
 
     #[cfg(windows)]
     fn windows_with_provider(
         virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
+        process_pcm: Option<moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig>,
     ) -> Self {
+        let process_pcm_frames = process_pcm.map(|config| config.capacity_frames);
         let native_observations = Arc::new(std::sync::Mutex::new(None));
         let native_publisher = native_observations.clone();
         let f64_native_publisher = native_observations.clone();
@@ -357,6 +377,11 @@ impl ManagedDriver {
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f32>::new()?
                 .with_render_queue(transport.render_options())?
                 .with_process_bridge(transport.process_options())?
+                .with_process_pcm_capture(process_pcm_frames.map(|capacity_frames| {
+                    moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {
+                        capacity_frames,
+                    }
+                }))?
                 .with_virtual_buffer(transport.virtual_options())?;
             let backend = if let Some(profile) = measured {
                 profile.configure(backend)?
@@ -382,6 +407,11 @@ impl ManagedDriver {
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f64>::new()?
                 .with_render_queue(transport.render_options())?
                 .with_process_bridge(transport.process_options())?
+                .with_process_pcm_capture(process_pcm_frames.map(|capacity_frames| {
+                    moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {
+                        capacity_frames,
+                    }
+                }))?
                 .with_virtual_buffer(transport.virtual_options())?;
             let backend = if let Some(profile) = measured {
                 profile.configure(backend)?

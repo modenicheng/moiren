@@ -6,6 +6,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering::SeqCst},
 };
 
+#[path = "interpolation/archive.rs"]
 mod archive;
 pub use archive::{
     InterpolationTrace, InterpolationTraceChunk, InterpolationTraceCollector,

@@ -21,7 +21,7 @@ pub(crate) mod activation;
 #[cfg(windows)]
 mod identity;
 #[cfg(windows)]
-mod stream;
+pub(crate) mod stream;
 #[cfg(windows)]
 pub use identity::inspect_process;
 #[cfg(all(windows, feature = "probe-tools"))]

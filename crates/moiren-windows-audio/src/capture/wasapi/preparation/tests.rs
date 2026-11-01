@@ -2,6 +2,126 @@ use super::*;
 use crate::{SessionDuration, capture::CaptureSource};
 
 #[test]
+fn native_pcm_reader_abandonment_defers_reclamation_through_capture_report() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let preparation = CapturePreparation::Configured {
+        sender,
+        config: ClockBridgeConfig {
+            native_pcm: Some(crate::clock_bridge::native_pcm::NativePcmConfig {
+                capacity_frames: 4,
+            }),
+            ..Default::default()
+        },
+    };
+    let mut report = CaptureReport::new(
+        CaptureSource::ProcessLoopback,
+        SessionDuration::UntilStopped,
+    );
+    let ingress = preparation.prepare(48_000, 2, &mut report, None).unwrap();
+    let startup = receiver.recv().unwrap().unwrap();
+    let ingress = crate::clock_bridge::native_pcm::NativePcmIngressGuard::new(
+        ingress,
+        &mut report.native_pcm_retired,
+    );
+    drop(startup.observer.take_native_pcm_reader().unwrap());
+    let counts = crate::test_allocation::count_allocations(|| drop(ingress)).1;
+    assert_eq!(
+        counts,
+        (0, 0),
+        "capture teardown must retain PCM storage for control join"
+    );
+    // The actual report is the native thread's returned value, including its
+    // unwind payload; only the control joiner reclaims this retained writer.
+    let counts = crate::test_allocation::count_allocations(|| drop(report)).1;
+    assert_eq!(
+        counts,
+        (0, 3),
+        "joined report reclaims ring backing, ring Arc and publication Arc"
+    );
+}
+
+#[test]
+fn native_pcm_retirement_closes_but_preserves_buffered_frames() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let preparation = CapturePreparation::Configured {
+        sender,
+        config: ClockBridgeConfig {
+            native_pcm: Some(crate::clock_bridge::native_pcm::NativePcmConfig {
+                capacity_frames: 4,
+            }),
+            ..Default::default()
+        },
+    };
+    let mut report = CaptureReport::new(
+        CaptureSource::ProcessLoopback,
+        SessionDuration::UntilStopped,
+    );
+    let ingress = preparation.prepare(48_000, 2, &mut report, None).unwrap();
+    let startup = receiver.recv().unwrap().unwrap();
+    let mut reader = startup.observer.take_native_pcm_reader().unwrap();
+    let mut ingress = crate::clock_bridge::native_pcm::NativePcmIngressGuard::new(
+        ingress,
+        &mut report.native_pcm_retired,
+    );
+    ingress
+        .push_packet(
+            &[0; 16],
+            crate::clock_bridge::CapturePacket {
+                frames: 2,
+                flags: 0,
+                device_position_frames: 0,
+                qpc_100ns: 1,
+            },
+        )
+        .unwrap();
+    crate::test_allocation::assert_allocates_nothing(|| drop(ingress));
+    assert!(reader.snapshot().writer_finished);
+    assert!(!reader.is_finished());
+    assert_eq!(reader.pop().unwrap().packet_frame_offset, 0);
+    assert_eq!(reader.pop().unwrap().packet_frame_offset, 1);
+    assert!(reader.is_finished());
+    assert!(report.native_pcm_retired.is_some());
+}
+
+#[test]
+fn native_pcm_retirement_survives_native_owner_unwind_as_failed_report() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let preparation = CapturePreparation::Configured {
+        sender: sender.clone(),
+        config: ClockBridgeConfig {
+            native_pcm: Some(crate::clock_bridge::native_pcm::NativePcmConfig {
+                capacity_frames: 4,
+            }),
+            ..Default::default()
+        },
+    };
+    let stop = crate::StopSignal::new().unwrap();
+    let report = CaptureReport::new(
+        CaptureSource::ProcessLoopback,
+        SessionDuration::UntilStopped,
+    );
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        super::super::finish_owner_retaining_report(report, &stop.event, &sender, |report| {
+            let ingress = preparation.prepare(48_000, 2, report, None).unwrap();
+            let startup = receiver.recv().unwrap().unwrap();
+            drop(startup.observer.take_native_pcm_reader().unwrap());
+            let _guard = crate::clock_bridge::native_pcm::NativePcmIngressGuard::new(
+                ingress,
+                &mut report.native_pcm_retired,
+            );
+            panic!("injected native-owner fault");
+        })
+    }))
+    .expect_err("worker panic must remain a panic");
+    let report = unwind
+        .downcast::<CaptureReport>()
+        .expect("partial report retained across unwind");
+    assert_eq!(report.status, crate::capture::CaptureStatus::Failed);
+    assert!(report.failure.as_ref().unwrap().contains("panicked"));
+    assert!(report.native_pcm_retired.is_some());
+}
+
+#[test]
 fn ingress_elapsed_native_preparation_refuses_missing_host_clock() {
     let options = crate::process_loopback::ProcessBridgeOptions {
         max_ingress_elapsed_100ns: Some(100_000),

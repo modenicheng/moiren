@@ -1100,3 +1100,27 @@ compatible; five remain refused. Full RMS and fixed-window visualizations are
 generated remotely with verified compact downloads. Prior harness startup and
 CLI-duration refusals remain recorded. This supports continuing development,
 not lower-default promotion, whole-waveform or physical qualification.
+
+### Native offered PCM and actual accepted-index replay
+
+The [native PCM increment](2026-11-02-process-native-pcm.md) adds an explicit,
+default-off application tap alongside actual Process cursor history. Native
+offered frames retain original bits and packet metadata; accepted-ring frontiers
+exclude unpublished tails. Prepared storage, control-side persistence, final
+closure and corruption/loss/IO refusal remain bounded. Native teardown defers
+storage destruction through the normal or failed joined capture report.
+Independent Python replay uses recorded f64 bits and repeated cursor arithmetic,
+normalization, fade and generation checks, with UNKNOWN masks for output holes.
+No audio policy, default, gate or recovery behavior changes.
+
+Fresh workspace2168passed/8ignored, strict workspace/all-target Clippy/fmt and
+32independent Python tests pass. The standalone RT harness passes239tests after
+repairing explicit shadow-module wiring, without widening production visibility.
+The separately exported staged tree passes2167/8ignored, UI20, strict Clippy and
+Python32; its one-test difference is an excluded preexisting VAD test, not a
+dependency on dirty source. Exact receipts are linked in the increment document.
+Parallel600s application evidence retains
+13delivery-gap violations, four affine refusals and an owned OBS exit crash;
+it is not a continuity or latency PASS. Feature-smoke evidence is recorded
+separately in that receipt. Render/OBS correspondence and calibrated physical
+qualification remain open; S1-S3 are not declared complete.
