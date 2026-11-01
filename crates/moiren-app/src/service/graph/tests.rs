@@ -810,6 +810,114 @@ fn failed_connect_replacing_leaves_the_displaced_edge_intact() {
 }
 
 #[test]
+fn node_tint_edits_roundtrip_documents_and_reject_unknown_indices() {
+    let mut service = ServiceGraph::default();
+    let (_, gain, _, _) = ids(&service);
+    service
+        .edit(GraphEdit::SetNodeTint {
+            node: gain,
+            tint: Some(3),
+        })
+        .unwrap();
+    assert_eq!(service.snapshot().node(gain).unwrap().tint, Some(3));
+    // Presentation-only: no preparing state, and it never counts as
+    // structural.
+    assert!(service.snapshot().preparing_nodes.is_empty());
+    // Out-of-palette indices are rejected atomically.
+    let before = service.snapshot();
+    assert!(
+        service
+            .edit(GraphEdit::SetNodeTint {
+                node: gain,
+                tint: Some(super::NODE_TINT_COUNT),
+            })
+            .is_err()
+    );
+    assert_eq!(service.snapshot().nodes, before.nodes);
+    // None restores the category tint; rapid same-key edits coalesce, so
+    // one undo step returns to the pre-tint state.
+    service
+        .edit(GraphEdit::SetNodeTint {
+            node: gain,
+            tint: None,
+        })
+        .unwrap();
+    assert_eq!(service.snapshot().node(gain).unwrap().tint, None);
+    assert!(service.undo());
+    assert_eq!(service.snapshot().node(gain).unwrap().tint, None);
+    // The tint persists through the project document.
+    service
+        .edit(GraphEdit::SetNodeTint {
+            node: gain,
+            tint: Some(5),
+        })
+        .unwrap();
+    let document = crate::project::GraphDocument::from_snapshot(&service.snapshot()).unwrap();
+    let persisted = document
+        .nodes
+        .iter()
+        .find(|node| node.kind == crate::project::GraphNodeKind::Gain)
+        .unwrap();
+    assert_eq!(persisted.tint, Some(5));
+}
+#[test]
+fn structural_edits_track_preparing_nodes_until_activation() {
+    let mut service = ServiceGraph::default();
+    let (source, gain, _, _) = ids(&service);
+    // Value edits never prepare anything.
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.5,
+        })
+        .unwrap();
+    assert!(service.snapshot().preparing_nodes.is_empty());
+    // A structural add marks the new node.
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Eq,
+            channels: 2,
+        })
+        .unwrap();
+    let snapshot = service.snapshot();
+    let eq = snapshot
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Eq)
+        .unwrap()
+        .id();
+    assert_eq!(snapshot.preparing_nodes, vec![eq]);
+    // A connect marks both endpoints and keeps the pending Eq.
+    let source_out = snapshot.graph.get_node(source).unwrap().outputs()[0].id();
+    let eq_in = snapshot.graph.get_node(eq).unwrap().inputs()[0].id();
+    service
+        .edit(GraphEdit::ConnectReplacing {
+            source: source_out,
+            destination: eq_in,
+        })
+        .unwrap();
+    let preparing: std::collections::BTreeSet<_> =
+        service.snapshot().preparing_nodes.into_iter().collect();
+    assert_eq!(preparing, [source, eq].into_iter().collect());
+    // Activation clears the whole set; undo of a topology step re-marks
+    // what changed instead of inheriting a stale set.
+    let revision = service.snapshot().candidate_revision;
+    service.preparing(SessionGeneration(1), revision);
+    service.running(SessionGeneration(1), revision);
+    assert!(service.snapshot().preparing_nodes.is_empty());
+    assert!(service.undo());
+    let snapshot = service.snapshot();
+    assert_eq!(
+        snapshot.preparing_nodes,
+        vec![source, eq],
+        "undo of the connect re-prepares both endpoints"
+    );
+    assert!(snapshot.graph.get_node(eq).is_ok());
+    let _ = gain;
+}
+
+#[test]
 fn candidate_edit_does_not_claim_native_application_and_stale_start_cannot_confirm_it() {
     let mut service = ServiceGraph::default();
     let old = service.snapshot.candidate_revision;

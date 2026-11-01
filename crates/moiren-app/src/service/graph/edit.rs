@@ -82,6 +82,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 builtin: super::BuiltinState::for_kind(kind),
                 source: None,
                 output_endpoint_id: None,
+                tint: None,
             });
         }
         GraphEdit::SetMixer { node, state } => {
@@ -171,6 +172,17 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .find(|s| s.id == node)
                 .ok_or("The node does not exist")?
                 .label = label;
+            validate_edited_node(next, node)?;
+        }
+        GraphEdit::SetNodeTint { node, tint } => {
+            if tint.is_some_and(|tint| tint >= super::NODE_TINT_COUNT) {
+                return Err("Unknown tint".into());
+            }
+            next.nodes
+                .iter_mut()
+                .find(|s| s.id == node)
+                .ok_or("The node does not exist")?
+                .tint = tint;
             validate_edited_node(next, node)?;
         }
         GraphEdit::SetGain { node, gain } => {
