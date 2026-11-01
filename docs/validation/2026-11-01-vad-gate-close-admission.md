@@ -89,3 +89,45 @@ changed. New VAD waveform/continuity validation and fault-time diagnostic
 reproduction still require controlled, non-competing ownership handover.
 Physical calibration remains deferred; Process-only OBS path separation is not
 a VAD or calibrated physical result. S1-S3 remain incomplete.
+
+## Committed repair and remote package
+
+Repair and regression source is committed locally as
+`47d4d8d59e9cd9e9508e82ddcb46467add7cc288`
+(`fix(vad): revoke endpoint admission before gate close`), without push.
+The built image's Rust source matches that commit; the commit adds documentation
+and tests after the final release build without changing its production Rust
+source. The unrelated221-byte `gate.log` remains untracked with SHA256
+`863204B4E2EDC417D9C35BBDF27CD3DA541AE45CC3678EE1E8D6928E45C0FED7`.
+
+The repair is staged independently from both previous packages:
+
+```text
+D:\MoirenTest\20261101-gate-close-47d4d8d\Start-GateClose.ps1
+D:\MoirenTest\20261101-gate-close-47d4d8d\bin\moiren-app.exe
+```
+
+The launcher pins the executable hash above, uses its own `profile`, sets
+`RUST_LOG=info,moiren::audio::vad=debug`, restores its environment on exit and
+refuses an existing Moiren process. The package manifest pins source, lengths
+and hashes and explicitly records `native_verified=false`.
+
+At16:08:56.652+08:00 remote verification confirms all payload hashes, zero
+PowerShell5.1 syntax errors, existing-owner refusal before GUI launch and a
+separate isolated-profile `--help` exit0 with empty stderr. Source parsing
+returns help before native discovery, GUI or audio activation. Original
+Moiren PID13120 and OBS PID12648 retain their executable/creation identities.
+Running driver `oem205.inf` retains SYS SHA256
+`4B6F3A1A572EF36886A26EF5687797280F51AF6F7B29DEC2697A696AB06F5B73`.
+Preflight also retains boot2026-10-30T09:50:50.7461760+08:00 and sufficient D:
+space. No driver replacement or application ownership handover occurs.
+
+The archive is15788727 bytes, SHA256
+`79B02FEA4E97C960AEE4461E9FDE4CE506191CC69C9E9F5AE0EEDFF30E153F84`.
+Receipts: `gate-close-stage-preflight-160732.stdout.log`,
+`gate-close-package-upload-160735.command.json`,
+`gate-close-stage-verify-file-160842.stdout.log`. The initial encoded-command
+verification attempt is rejected for command length before script execution;
+its failure is preserved in `gate-close-stage-verify-160823.*`. Uploading the
+same script and invoking it with a short command succeeds; no audio process is
+restarted or duplicate test owner launched because of that wrapper failure.
