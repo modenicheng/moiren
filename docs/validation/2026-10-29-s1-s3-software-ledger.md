@@ -5,6 +5,22 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [frozen actual-replay coverage](2026-11-02-process-replay-coverage.md)
+accounts for every frame of the retained82.112s OBS return without per-window
+refitting:33.002667s independently compatible,1s anchor training, one64-frame
+near-zero sweep-onset refusal, plus explicitly counted UNKNOWN, silence and
+outside-support intervals. All26new regressions and95related tests pass.
+One remote offline task and one narrow read-only onset diagnostic run without
+new live audio; compact plots are verified and reviewed. The onset residual is
+not established audible destruction and need not block independent development.
+Native8gap-bound violations, unknown rendered epochs, a player/native PID
+provenance discrepancy and unavailable physical calibration remain explicit.
+The launcher lacks a numeric exit-code receipt despite final output/empty
+stderr/no remaining process; no exit0 or whole-run qualification is invented.
+No default, gate, recovery or first-packet policy changes.
+The final byte-identical manifest-snapshot integrity repair is tested locally
+after the remote analysis, without claiming an exact-final-script remote run.
+
 The [continuous Process cursor archive](2026-11-02-process-cursor-archive.md)
 adds bounded control collection, native-owner pinning and opt-in independent
 CLI persistence. A remote feature smoke exposes backend-local generation reuse;
