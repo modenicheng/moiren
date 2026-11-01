@@ -106,6 +106,34 @@ impl AssetSource for ActionAssets {
                 "../../../../../assets/logos/moiren-2c-mark-light.svg"
             )),
             "icons/mic.svg" => Some(include_bytes!("../../../assets/icons/mic.svg")),
+            "icons/alert-triangle.svg" => {
+                Some(include_bytes!("../../../assets/icons/alert-triangle.svg"))
+            }
+            "icons/volume.svg" => Some(include_bytes!("../../../assets/icons/volume.svg")),
+            "icons/arrows-horizontal.svg" => Some(include_bytes!(
+                "../../../assets/icons/arrows-horizontal.svg"
+            )),
+            "icons/wave-square.svg" => {
+                Some(include_bytes!("../../../assets/icons/wave-square.svg"))
+            }
+            "icons/arrows-minimize.svg" => {
+                Some(include_bytes!("../../../assets/icons/arrows-minimize.svg"))
+            }
+            "icons/door.svg" => Some(include_bytes!("../../../assets/icons/door.svg")),
+            "icons/wall.svg" => Some(include_bytes!("../../../assets/icons/wall.svg")),
+            "icons/chart-histogram.svg" => {
+                Some(include_bytes!("../../../assets/icons/chart-histogram.svg"))
+            }
+            "icons/chevron-down.svg" => {
+                Some(include_bytes!("../../../assets/icons/chevron-down.svg"))
+            }
+            "icons/arrows-diagonal.svg" => {
+                Some(include_bytes!("../../../assets/icons/arrows-diagonal.svg"))
+            }
+            "icons/progress.svg" => Some(include_bytes!("../../../assets/icons/progress.svg")),
+            "icons/list-details.svg" => {
+                Some(include_bytes!("../../../assets/icons/list-details.svg"))
+            }
             "icons/activity.svg" => Some(include_bytes!("../../../assets/icons/activity.svg")),
             "icons/radio.svg" => Some(include_bytes!("../../../assets/icons/radio.svg")),
             "icons/sliders.svg" => Some(include_bytes!("../../../assets/icons/sliders.svg")),
@@ -252,12 +280,30 @@ mod tests {
             "icons/zoom-scan.svg",     // inspector zoom-to-scan button
             "brand/mark.svg",          // toolbar brand mark
         ];
+        // Design 18 node-card glyphs. The error badge is painted today; the
+        // per-kind icons, dropdown, expander, loading and rack markers land
+        // with their body phases in the same change.
+        const DESIGN18_REQUESTS: &[&str] = &[
+            "icons/alert-triangle.svg",
+            "icons/volume.svg",
+            "icons/arrows-horizontal.svg",
+            "icons/wave-square.svg",
+            "icons/arrows-minimize.svg",
+            "icons/door.svg",
+            "icons/wall.svg",
+            "icons/chart-histogram.svg",
+            "icons/chevron-down.svg",
+            "icons/arrows-diagonal.svg",
+            "icons/progress.svg",
+            "icons/list-details.svg",
+        ];
 
         let mut used: HashSet<String> = ActionIcon::ALL
             .iter()
             .map(|icon| icon.path().to_string())
             .collect();
         used.extend(FIXED_REQUESTS.iter().map(|path| (*path).to_string()));
+        used.extend(DESIGN18_REQUESTS.iter().map(|path| (*path).to_string()));
         for name in CANVAS_NODE_ICONS {
             let path = match name.strip_prefix("figma-") {
                 Some(rest) => format!("figma-nodes/{rest}.svg"),

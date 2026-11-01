@@ -61,7 +61,6 @@ pub const LIBRARY_WIDTH: f32 = 210.;
 pub const LIBRARY_RAIL_WIDTH: f32 = 44.;
 pub const INSPECTOR_WIDTH: f32 = 280.;
 pub const NODE_WIDTH: f32 = 270.;
-pub const NODE_HEIGHT: f32 = 112.;
 pub const NODE_SOURCE: Hsla = hsla(0.439203, 0.643725, 0.515686, 1.);
 pub const NODE_DSP: Hsla = hsla(0.722741, 0.781022, 0.731373, 1.);
 pub const NODE_SINK: Hsla = hsla(0.125581, 0.964126, 0.562745, 1.);
@@ -69,22 +68,48 @@ pub const NODE_UTILITY: Hsla = TEXT_FAINT;
 pub const NODE_ANALYSIS: Hsla = SIGNAL_DEVICE;
 pub const CANVAS_GRID: f32 = 24.;
 
-// Graph node card metrics (graph.slint GraphCardMetrics).
+// Graph node card metrics (design 18): header + tint rail + per-kind
+// body + meter strip + port rails, all in world units.
 pub mod card {
-    pub const DECO_HEIGHT: f32 = 6.;
-    pub const PADDING: f32 = 12.;
-    pub const ICON_SIZE: f32 = 28.;
-    pub const TITLE_WIDTH: f32 = 181.;
-    pub const METER_HEIGHT: f32 = 2.;
-    pub const METER_Y: f32 = 60.;
+    pub const PADDING: f32 = 10.;
+    pub const HEADER_H: f32 = 30.;
+    pub const RAIL_W: f32 = 3.;
+    pub const ICON_SIZE: f32 = 16.;
+    pub const TITLE_SIZE: f32 = 12.;
+    pub const TITLE_WIDTH: f32 = 170.;
+    /// Status glyph slots at the header's right edge; the badge is the
+    /// error/loading marker, the expander opens the detail window.
+    pub const BADGE_SIZE: f32 = 14.;
+    pub const BODY_TOP: f32 = HEADER_H + 6.;
+    /// Shell body: one detail line. Kinds with richer bodies extend the
+    /// node's `body_height` and the ports follow.
+    pub const BODY_H: f32 = 18.;
+    pub const METER_H: f32 = 3.;
+    pub const METER_CHANNEL_GAP: f32 = 2.;
+    pub const METER_CHANNELS: usize = 2;
+    /// Base distance from the card top to the first port anchor; taller
+    /// bodies push the port rail down instead of overlapping the meter.
     pub const PORT_Y: f32 = 80.;
-    pub const FADER_Y: f32 = 68.;
-    pub const BALANCE_Y: f32 = 88.;
-    pub const TRACK_WIDTH: f32 = 211.;
-    pub const TRACK_HEIGHT: f32 = 4.;
-    pub const VALUE_WIDTH: f32 = 25.;
-    pub const TRACK_FILL: super::Hsla = super::TRACK_FILL;
-    pub const THUMB: super::Hsla = gpui_kit::hsla(0., 0., 0.85098, 1.);
+    pub const PORT_SPACING: f32 = 18.;
+    pub const PORT_BOTTOM: f32 = 14.;
+    pub const HINT_SIZE: f32 = 9.;
+}
+
+/// The user-selectable node tint palette (`GraphNodeState::tint` indexes
+/// this). Deliberately drawn from the working palette so a user override
+/// can never land off-theme; category tints remain the default.
+pub fn node_tint(index: u8) -> Option<Hsla> {
+    Some(match index {
+        0 => PRIMARY,
+        1 => SIGNAL_DEVICE,
+        2 => NODE_SOURCE,
+        3 => NODE_DSP,
+        4 => NODE_SINK,
+        5 => hsla(0.988_158, 0.703_704, 0.627_451, 1.), // pink
+        6 => hsla(0.077_381, 0.825_397, 0.603_922, 1.), // orange
+        7 => WARNING,
+        _ => return None,
+    })
 }
 
 // --- Radii -----------------------------------------------------------------

@@ -307,8 +307,11 @@ pub(in crate::ui) fn node_drag_preview(
         output_port: None,
         has_output,
         tint: Some(tint),
-        gain: 1.,
-        balance: None,
+        faulted: false,
+        preparing: false,
+        body_height: theme::card::BODY_H,
+        meter_vertical: false,
+        channels: 2,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,

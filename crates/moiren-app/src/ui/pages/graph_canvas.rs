@@ -13,7 +13,7 @@ mod wire;
 
 pub use camera::Camera;
 pub use frame::{CanvasFrame, HitTarget, PortDirection, PortTarget};
-pub use layout::{NodeLayout, TextLayout};
+pub use layout::{MeterLayout, NodeLayout, TextLayout};
 pub use wire::{WireCurve, WireGeometry};
 
 #[cfg(test)]
@@ -67,8 +67,17 @@ pub struct CanvasNode {
     pub output_port: Option<CanvasPort>,
     pub has_output: bool,
     pub tint: Option<Hsla>,
-    pub gain: f64,
-    pub balance: Option<f64>,
+    /// Card states beyond selection: a fault landed on this node, or the
+    /// engine is re-preparing it (design 18 B1).
+    pub faulted: bool,
+    pub preparing: bool,
+    /// Body region height in world units; kinds with richer bodies extend
+    /// this and the port rail follows.
+    pub body_height: f32,
+    /// Curve-style nodes run their meter vertically along the body's
+    /// right edge; everything else uses the horizontal strip.
+    pub meter_vertical: bool,
+    pub channels: usize,
 }
 
 impl CanvasNode {
@@ -76,11 +85,14 @@ impl CanvasNode {
         theme::NODE_WIDTH
     }
     pub fn height(&self) -> f32 {
-        theme::NODE_HEIGHT.max(
-            theme::card::PORT_Y
-                + self.input_count.saturating_sub(1) as f32 * 18.
-                + theme::card::PADDING,
-        )
+        let meter_total = theme::card::METER_CHANNELS as f32 * theme::card::METER_H
+            + theme::card::METER_CHANNEL_GAP;
+        let body_bottom = theme::card::BODY_TOP + self.body_height;
+        let ports_at =
+            (body_bottom + meter_total + theme::card::PORT_BOTTOM).max(theme::card::PORT_Y);
+        ports_at
+            + self.input_count.saturating_sub(1) as f32 * theme::card::PORT_SPACING
+            + theme::card::PORT_BOTTOM
     }
     pub fn tint(&self) -> Hsla {
         self.tint.unwrap_or(theme::PRIMARY)
@@ -102,8 +114,11 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         output_port: None,
         has_output: false,
         tint: Some(theme::PRIMARY),
-        gain: 1.,
-        balance: None,
+        faulted: false,
+        preparing: false,
+        body_height: theme::card::BODY_H,
+        meter_vertical: false,
+        channels: 2,
     }
 }
 
@@ -136,6 +151,36 @@ impl CanvasWorld {
     ) -> Self {
         use moiren_core::graph::NodeKind;
         let graph = &snapshot.graph;
+        // Card states (design 18 B1): a fault marks the node it names, or
+        // both endpoint cards of a route; the preparing set comes straight
+        // from the service's structural-edit tracking.
+        let node_of_port =
+            |port: moiren_core::graph::PortId| -> Option<moiren_core::graph::NodeId> {
+                graph
+                    .graph
+                    .nodes()
+                    .iter()
+                    .find(|node| {
+                        node.inputs().iter().any(|p| p.id() == port)
+                            || node.outputs().iter().any(|p| p.id() == port)
+                    })
+                    .map(|node| node.id())
+            };
+        let mut faulted = std::collections::BTreeSet::new();
+        for fault in &graph.faults {
+            match fault.subject {
+                crate::service::GraphSubject::Node(id) => {
+                    faulted.insert(id);
+                }
+                crate::service::GraphSubject::Route(source, destination) => {
+                    faulted.extend(node_of_port(source));
+                    faulted.extend(node_of_port(destination));
+                }
+                crate::service::GraphSubject::Graph => {}
+            }
+        }
+        let preparing: std::collections::BTreeSet<moiren_core::graph::NodeId> =
+            graph.preparing_nodes.iter().copied().collect();
         let order = graph.graph.topological_order().unwrap_or_default();
         let mut depth = std::collections::HashMap::new();
         let mut rows = std::collections::HashMap::new();
@@ -254,15 +299,12 @@ impl CanvasWorld {
             .at(position.0, position.1)
             .icon(icon)
             .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty())
-            .with_tint(tint);
+            .with_tint(state.tint.and_then(theme::node_tint).unwrap_or(tint));
             card.input_count = logical.inputs().len();
             card.node_id = Some(id);
-            card.gain = if logical.kind() == NodeKind::Gain {
-                state.gain
-            } else {
-                state.mixer.gain
-            };
-            card.balance = (logical.kind() == NodeKind::Pan).then_some(state.pan);
+            card.faulted = faulted.contains(&id);
+            card.preparing = preparing.contains(&id);
+            card.channels = logical.channels();
             card.input_ports = logical
                 .inputs()
                 .iter()

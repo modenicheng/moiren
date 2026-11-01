@@ -248,7 +248,7 @@ fn paint_graph_meter_frame(
                 let covered = frame.world.nodes[index + 1..]
                     .iter()
                     .zip(&frame.nodes[index + 1..])
-                    .any(|(_, later)| later.card.intersects(&layout.meter));
+                    .any(|(_, later)| later.card.intersects(&layout.meter.bounds()));
                 if covered {
                     continue;
                 }

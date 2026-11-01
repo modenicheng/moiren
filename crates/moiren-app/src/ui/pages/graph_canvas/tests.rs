@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use super::{Camera, CanvasFrame, CanvasWire, CanvasWorld, HitTarget, NodeLayout, WireCurve, node};
+use super::{
+    Camera, CanvasFrame, CanvasWire, CanvasWorld, HitTarget, MeterLayout, NodeLayout, WireCurve,
+    node,
+};
+use crate::ui::theme;
 use gpui_kit::{Bounds, Path, Pixels, point, px, size};
 
 /// Real node and port identities for wire fixtures; the IDs are opaque
@@ -298,7 +302,10 @@ fn layout_scales_fonts_ports_and_card_together_without_font_floors() {
         let layout = world.project(camera);
         assert_close(layout.title.font_size, world.title.font_size * zoom);
         assert_close(layout.detail.font_size, world.detail.font_size * zoom);
-        assert_close(layout.gain_value.font_size, 10. * zoom);
+        assert_close(
+            layout.input_hints[0].font_size,
+            world.input_hints[0].font_size * zoom,
+        );
         assert_close(layout.card.size.height, world.card.size.height * zoom);
         for (index, anchor) in layout.inputs.iter().enumerate() {
             assert_position(*anchor, camera.world_to_canvas(world.inputs[index]));
@@ -312,41 +319,73 @@ fn layout_scales_fonts_ports_and_card_together_without_font_floors() {
 }
 
 #[test]
-fn node_layout_matches_figma_header_body_and_edge_port_measurements() {
+fn node_layout_matches_design18_header_body_and_port_measurements() {
     let card = node("input", "Physical Input", "48kHz L/R").ports(false, true);
     let layout = NodeLayout::new(&card);
-    assert_eq!(layout.card.size, size(270., 112.));
+    // Header + one-line body: the ports settle at the base rail and the
+    // card closes one PORT_BOTTOM below them.
+    assert_eq!(layout.card.size, size(270., 94.));
     assert_eq!(
         layout.icon,
         Bounds {
-            origin: point(12., 18.),
-            size: size(28., 28.)
+            origin: point(11., 7.),
+            size: size(16., 16.)
         }
     );
     assert_position(
         (layout.title.bounds.origin.x, layout.title.bounds.origin.y),
-        (44., 20.),
+        (33., 8.),
     );
     assert_close(layout.title.font_size, 12.);
     assert_close(layout.detail.font_size, 10.);
-    assert_close(layout.detail.bounds.origin.y, 35.);
-    assert_close(layout.meter.origin.y, 60.);
-    assert_eq!(
-        layout.fader,
-        Bounds {
-            origin: point(12., 68.),
-            size: size(211., 4.)
-        }
+    assert_close(layout.detail.bounds.origin.y, theme::card::BODY_TOP);
+    let MeterLayout::Horizontal { bounds: meter } = layout.meter else {
+        panic!("shell bodies use the horizontal meter");
+    };
+    assert_close(
+        meter.origin.y,
+        theme::card::BODY_TOP + card.body_height + theme::card::METER_CHANNEL_GAP,
+    );
+    assert_close(
+        meter.size.width,
+        270. - theme::card::RAIL_W - 2. * theme::card::PADDING,
     );
     assert_eq!(
-        layout.balance,
+        layout.rail,
         Bounds {
-            origin: point(12., 88.),
-            size: size(211., 4.)
+            origin: point(0., 0.),
+            size: size(theme::card::RAIL_W, 94.)
         }
     );
     assert_position(layout.output.unwrap(), (270., 80.));
-    assert_eq!(layout.gain_value.bounds.size, size(25., 12.));
+    assert_eq!(
+        layout.badge,
+        Bounds {
+            origin: point(228., 8.),
+            size: size(14., 14.)
+        }
+    );
+    assert_eq!(
+        layout.expand,
+        Bounds {
+            origin: point(246., 8.),
+            size: size(14., 14.)
+        }
+    );
+    // A taller body pushes the port rail below the meter strip.
+    let mut tall = node("eq", "EQ", "1 kHz").ports(true, true);
+    tall.body_height = 96.;
+    tall.meter_vertical = true;
+    let layout = NodeLayout::new(&tall);
+    let MeterLayout::Vertical { .. } = layout.meter else {
+        panic!("curve bodies use the vertical meter");
+    };
+    let meter_total =
+        theme::card::METER_CHANNELS as f32 * theme::card::METER_H + theme::card::METER_CHANNEL_GAP;
+    assert_close(
+        layout.inputs[0].1,
+        (theme::card::BODY_TOP + 96. + meter_total + theme::card::PORT_BOTTOM).max(80.),
+    );
 }
 
 #[test]
