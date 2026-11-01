@@ -4,6 +4,18 @@ This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
 verdict. Status updated 2026-11-01.
 
+## Application test scope - 2026-11-01
+
+Application/native testing is remote-only by user direction. Missing physical
+multichannel recording hardware defers calibrated physical measurement, not
+software/application progress. The separate [remote OBS/QQMusic smoke](../../docs/validation/2026-11-01-remote-obs-qqmusic.md)
+retains15-second concurrent Process Loopback/actual OBS recordings with finite
+nonzero audio and explicit startup silence; this does not exercise VAD MIC or
+the Moiren desktop graph. Installed611 driver, boot, defaults/master controls
+and original OBS configuration remain unchanged. The VAD slot0 `0x8007051A`
+cleanup failure remains open; gate-close/pending-request ordering is a source
+inspection hypothesis, not a confirmed root fix or waived terminal error.
+
 ## Latest fixed-driver software-route checkpoint - 2026-11-01
 
 The user-authorized [current-code regression](../../docs/validation/2026-11-01-current-vad-native-regression.md)

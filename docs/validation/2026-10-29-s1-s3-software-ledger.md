@@ -5,6 +5,19 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The user now requires remote-only application/native testing and has no
+simultaneous physical recording hardware. Physical calibration is deferred,
+not a blocker for application work. The [remote OBS/QQMusic checkpoint](2026-11-01-remote-obs-qqmusic.md)
+records a fresh15-second parallel selected-process capture with actual OBS:
+1497 packets/718560 frames, finite nonzero PCM in both artifacts, native and
+recording Stop success. Startup all-zero spans1.801s/2.623s remain visible;
+whole-waveform continuity, Moiren graph/MIC/desktop and graceful application
+exit are not accepted. Driver/defaults/master controls and all726 original
+OBS files match;81 archive payloads are independently verified before removing
+the four exact terminal tasks. The VAD `0x8007051A` failure stays open, with
+gate-close/pending-PCM interleaving only a hypothesis. No driver/policy/default
+change, physical qualification or push follows.
+
 The user-authorized [current-code native regression](2026-11-01-current-vad-native-regression.md)
 runs all three requested host commands (71 tests pass) and one exact
 Playback -> Bus -> MIC collection with current497957e and unchanged611 driver.
