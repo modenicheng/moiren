@@ -19,6 +19,7 @@ pub(crate) fn observation(node: moiren_core::graph::NodeId) -> NativeProcessDeli
         delivery.callback_burst(96);
     }
     NativeProcessDeliveryObservation {
+        interpolation_history: None,
         node,
         process: ProcessIdentity {
             pid: 42,

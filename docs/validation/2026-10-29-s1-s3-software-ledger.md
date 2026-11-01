@@ -5,6 +5,13 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [actual Process interpolation slice](2026-11-02-process-interpolation-observations.md)
+adds bounded source-owned phase/step spans, exact-bit JSON export and requested
+output frontiers including priming/failed tails. Independent PCM reconstruction,
+generation skips, fades, unequal rates and no-allocation controls are covered.
+The independent suffix is not a complete PCM archive, OBS clock association,
+authenticated native proof or physical qualification. Defaults remain unchanged.
+
 The [exact Expert input editor](2026-11-02-exact-expert-inputs.md) adds five
 integer fields independently for Process and VAD without changing admission or
 defaults. Current text gates Save/Restart, with stopped-save and exact active

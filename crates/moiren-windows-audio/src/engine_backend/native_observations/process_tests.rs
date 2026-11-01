@@ -100,6 +100,14 @@ fn retained_process_observations_keep_late_native_events_and_original_generation
     assert!(json["producer"]["events"].as_array().unwrap().is_empty());
     assert_eq!(json["consumer"]["events"][0]["qpc_100ns"], 110);
     assert_eq!(json["queue_history"]["total_events"], 1);
+    assert_eq!(json["interpolation_history"]["requested_frames"], 1);
+    assert_eq!(json["interpolation_history"]["completed_reads"], 1);
+    assert!(
+        json["interpolation_history"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         json["queue_history"]["events"][0]["sample"]["output_frames"],
         0
@@ -131,6 +139,7 @@ fn measured_observation() -> NativeProcessDeliveryObservation {
         delivery.callback_burst(96);
     }
     NativeProcessDeliveryObservation {
+        interpolation_history: None,
         queue_history: None,
         packet_history: None,
         node,

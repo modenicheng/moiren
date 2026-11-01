@@ -4,6 +4,7 @@ pub(crate) mod bounded_history;
 mod budget;
 mod delivery;
 pub mod events;
+pub mod interpolation;
 mod marker;
 pub mod packet_service;
 pub mod packets;

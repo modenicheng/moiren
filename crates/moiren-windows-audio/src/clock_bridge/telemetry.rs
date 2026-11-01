@@ -60,6 +60,7 @@ pub struct BridgeSnapshot {
     pub correction_ppm: f64,
 }
 pub(super) struct Counters {
+    pub interpolation_events: crate::latency::interpolation::InterpolationHistoryObserver,
     pub packet_events: crate::latency::packets::PacketHistoryObserver,
     pub queue_events: crate::latency::queue::QueueHistoryObserver,
     pub delivery_events: crate::latency::events::EventHistoryObserver,
@@ -100,8 +101,10 @@ impl Counters {
         delivery_events: crate::latency::events::EventHistoryObserver,
         queue_events: crate::latency::queue::QueueHistoryObserver,
         packet_events: crate::latency::packets::PacketHistoryObserver,
+        interpolation_events: crate::latency::interpolation::InterpolationHistoryObserver,
     ) -> Self {
         Self {
+            interpolation_events,
             packet_events,
             queue_events,
             delivery_events,
@@ -141,6 +144,13 @@ impl Counters {
 #[derive(Clone)]
 pub struct BridgeObserver(pub(super) Arc<Counters>);
 impl BridgeObserver {
+    /// Actual emitted linear-SRC spans. Independent suffix, not authenticated
+    /// archive proof, physical latency or a complete recording after overwrite.
+    pub fn interpolation_history(
+        &self,
+    ) -> Option<crate::latency::interpolation::InterpolationHistorySnapshot> {
+        self.0.interpolation_events.snapshot()
+    }
     /// Offered/accepted packet frontiers and SPSC publication brackets. These
     /// are neither sample timestamps nor a counterfactual queue replay.
     pub fn packet_history(&self) -> Option<crate::latency::packets::PacketHistorySnapshot> {

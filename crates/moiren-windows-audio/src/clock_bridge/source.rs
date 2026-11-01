@@ -1,6 +1,9 @@
 //! Continuous linear interpolation and a bounded fill servo on the render owner.
 use super::{ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters};
 use crate::latency::QpcClock;
+use crate::latency::interpolation::{
+    InterpolationHistoryWriter, InterpolationSpan, QUANTUM_FRAMES,
+};
 use crate::latency::queue::{QueueBoundary, QueueHistoryWriter, QueueReadSample};
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSource},
@@ -11,9 +14,11 @@ use rtrb::Consumer;
 use std::sync::{Arc, atomic::Ordering::Relaxed};
 
 const RECOVERY_FADE_FRAMES: usize = 32;
-const SERVO_QUANTUM_FRAMES: usize = 32;
+const SERVO_QUANTUM_FRAMES: usize = QUANTUM_FRAMES;
 
 pub struct ClockSource {
+    interpolation_events: InterpolationHistoryWriter,
+    interpolation_read: Option<(u64, u64)>,
     queue_events: QueueHistoryWriter,
     removed_frames: u64,
     reset_discarded_frames: u64,
@@ -100,8 +105,11 @@ impl ClockSource {
         counters: Arc<Counters>,
         age_clock: Option<QpcClock>,
         queue_events: QueueHistoryWriter,
+        interpolation_events: InterpolationHistoryWriter,
     ) -> Self {
         Self {
+            interpolation_events,
+            interpolation_read: None,
             queue_events,
             removed_frames: 0,
             reset_discarded_frames: 0,
@@ -180,6 +188,7 @@ impl ClockSource {
             self.removed_frames = total;
         } else {
             self.queue_events.mark_saturated();
+            self.interpolation_events.mark_saturated();
         }
     }
     fn pop_frame(&mut self) -> Option<Frame> {
@@ -423,6 +432,7 @@ impl ClockSource {
             self.counters.oldest_frame_age.publish(None);
             return BoundaryReport::default();
         }
+        self.interpolation_read = self.interpolation_events.begin_read(frames);
         let now_qpc_100ns = now_qpc_100ns.or_else(&mut *clock);
         let before = self.queue_boundary(self.rx.slots());
         if self.config.max_ingress_elapsed_100ns.is_some() {
@@ -444,6 +454,8 @@ impl ClockSource {
         let resets = self.reset_count;
         let reset_discarded = self.reset_discarded_frames;
         let report = self.read_inventory(frames, now_qpc_100ns, set, &mut sample);
+        self.interpolation_events.finish_read();
+        self.interpolation_read = None;
         self.acquired_ring_remaining = None;
         self.ingress_read_now = None;
         sample.after = self.queue_boundary(self.rx.slots());
@@ -542,6 +554,7 @@ impl ClockSource {
         self.counters.min_fill_frames.fetch_min(fill, Relaxed);
         self.counters.max_fill_frames.fetch_max(fill, Relaxed);
         let mut guarded_frames = 0u64;
+        let mut span: Option<InterpolationSpan> = None;
         for frame in 0..frames {
             while self.phase >= 1.0 {
                 self.phase -= 1.0;
@@ -579,12 +592,43 @@ impl ClockSource {
                 self.reset(true);
                 break;
             }
+            // Downsampling may skip directly from an old same-generation
+            // pair to a new pair without an a/b mismatch or audio reset.
+            if span.is_some_and(|span| span.generation != a.generation)
+                && let Some(span) = span.take()
+            {
+                self.interpolation_events.record(span);
+            }
             if self.servo_frames_remaining == 0 {
+                if let Some(span) = span.take() {
+                    self.interpolation_events.record(span);
+                }
                 self.step = self.ratio(
                     self.rx.slots() + 2,
                     a.packet_stamp.and_then(|stamp| stamp.rate_correction_ppm),
                 );
                 self.servo_frames_remaining = SERVO_QUANTUM_FRAMES;
+            }
+            if span.is_none() {
+                // Both neighbors have been popped and validated. These are
+                // accepted-ring indices, never Process device positions.
+                if let (Some((read_sequence, start)), Some(input_start_frame)) =
+                    (self.interpolation_read, self.removed_frames.checked_sub(2))
+                {
+                    span = Some(InterpolationSpan {
+                        read_sequence,
+                        // begin_read checked the full request frontier.
+                        output_start_frame: start + frame as u64,
+                        input_start_frame,
+                        frames: 0,
+                        generation: a.generation,
+                        phase: self.phase,
+                        step: self.step,
+                        fade_remaining: self.fade_remaining as u32,
+                    });
+                } else {
+                    self.interpolation_events.mark_saturated();
+                }
             }
             let step = self.step;
             self.servo_frames_remaining -= 1;
@@ -605,8 +649,14 @@ impl ClockSource {
                     * gain) as f32
             });
             set(frame, pair);
+            if let Some(span) = span.as_mut() {
+                span.frames += 1;
+            }
             report.transferred_frames += 1;
             self.phase += step;
+        }
+        if let Some(span) = span {
+            self.interpolation_events.record(span);
         }
         self.counters
             .output_frames

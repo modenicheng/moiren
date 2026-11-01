@@ -114,6 +114,9 @@ pub struct NativeProcessDeliveryObservation {
     /// Offered supply and admitted publication with host-QPC envelopes. Not
     /// source sample age, exact commit instants or alternate-target admission.
     pub packet_history: Option<crate::latency::packets::PacketHistorySnapshot>,
+    /// Actual linear-SRC cursor suffix, independent of inventory/packet rings.
+    /// This editable DTO is not native provenance or full-run continuity proof.
+    pub interpolation_history: Option<crate::latency::interpolation::InterpolationHistorySnapshot>,
     pub counters: BridgeSnapshot,
 }
 
@@ -358,6 +361,7 @@ impl NativeObservationReadHandle {
                             .and_then(|consumer| consumer.snapshot()),
                         queue_history: source.bridge.queue_history(),
                         packet_history: source.bridge.packet_history(),
+                        interpolation_history: source.bridge.interpolation_history(),
                         counters,
                     }
                 })
