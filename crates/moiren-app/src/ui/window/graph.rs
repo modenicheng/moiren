@@ -503,21 +503,25 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
             }),
             on_port_up: std::rc::Rc::new({
                 let this = this.clone();
-                move |target, _, cx| {
+                move |candidate, _, cx| {
                     this.update(cx, |shell, cx| {
-                        use pages::graph_canvas::PortDirection;
+                        use pages::graph_canvas::{CandidateStatus, PortDirection};
                         let Some(drag) = shell.connection_drag.take() else {
                             return;
                         };
-                        if let Some(target) = target
-                            && target.direction != drag.port.direction
+                        if let Some(candidate) = candidate
+                            && matches!(
+                                candidate.status,
+                                CandidateStatus::Valid | CandidateStatus::Displacing
+                            )
                         {
                             let (source, destination) = match drag.port.direction {
-                                PortDirection::Output => (drag.port.id, target.id),
-                                PortDirection::Input => (target.id, drag.port.id),
+                                PortDirection::Output => (drag.port.id, candidate.port.id),
+                                PortDirection::Input => (candidate.port.id, drag.port.id),
                             };
-                            // Drops on an occupied input displace the old
-                            // edge instead of faulting (design 18 A1).
+                            // Both port drops and node-body drops go through
+                            // the displacing connect so an occupied input
+                            // reroutes instead of faulting (design 18 A1/A2).
                             shell.state.update(cx, |state, _| {
                                 state.dispatch(AppRequest::EditGraph(
                                     crate::service::GraphEdit::ConnectReplacing {

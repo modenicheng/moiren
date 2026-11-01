@@ -3,6 +3,22 @@ use std::sync::Arc;
 use super::{Camera, CanvasFrame, CanvasWire, CanvasWorld, HitTarget, NodeLayout, WireCurve, node};
 use gpui_kit::{Bounds, Path, Pixels, point, px, size};
 
+/// Real node and port identities for wire fixtures; the IDs are opaque
+/// outside moiren-core, so harvest them from one throwaway graph (its id
+/// counter makes the two nodes' ids distinct).
+fn id_fixture() -> (
+    (moiren_core::graph::NodeId, moiren_core::graph::PortId),
+    (moiren_core::graph::NodeId, moiren_core::graph::PortId),
+) {
+    use moiren_core::graph::NodeKind;
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    let source_port = graph.get_node(source).unwrap().outputs()[0].id();
+    let sink_port = graph.get_node(sink).unwrap().inputs()[0].id();
+    ((source, source_port), (sink, sink_port))
+}
+
 fn assert_close(actual: f32, expected: f32) {
     assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
 }
@@ -28,10 +44,19 @@ fn world() -> Arc<CanvasWorld> {
         .ports(true, false);
     source.input_count = 0;
     sink.input_count = 1;
+    let ((src, _src_port), (dst, dst_port)) = id_fixture();
+    sink.input_count = 1;
+    sink.input_ports = vec![super::CanvasPort {
+        id: dst_port,
+        channels: 2,
+    }];
     let wire = CanvasWire {
         id: "edge".into(),
         source: source.id.clone(),
         destination: sink.id.clone(),
+        src,
+        dst,
+        dst_port,
         from: NodeLayout::new(&source).output.unwrap(),
         to: NodeLayout::new(&sink).inputs[0],
         tint: None,
@@ -409,10 +434,14 @@ fn first_frame_fit_and_hits_use_the_same_camera_and_window_origin() {
 #[test]
 fn wire_hits_keep_a_screen_pixel_tolerance_at_fractional_zoom() {
     for zoom in [0.25, 0.89, 2.] {
+        let ((src, _src_port), (dst, dst_port)) = id_fixture();
         let wire = CanvasWire {
             id: "wire".into(),
             source: "source".into(),
             destination: "sink".into(),
+            src,
+            dst,
+            dst_port,
             from: (0., 0.),
             to: (200., 0.),
             tint: None,
@@ -476,10 +505,14 @@ fn overview_uses_camera_visible_world_and_stays_centered_inside_its_viewport() {
 
 #[test]
 fn graph_bounds_include_reversed_wire_handle_excursions() {
+    let ((src, _src_port), (dst, dst_port)) = id_fixture();
     let wire = CanvasWire {
         id: "wire".into(),
         source: "source".into(),
         destination: "sink".into(),
+        src,
+        dst,
+        dst_port,
         from: (500., 0.),
         to: (0., 100.),
         tint: None,
@@ -548,4 +581,213 @@ fn fit_keeps_resolving_on_resize_until_camera_is_manually_adjusted() {
     camera.pan_by(30., -10.);
     let manual = CanvasFrame::new(world(), camera, viewport());
     assert_eq!(manual.camera, camera);
+}
+
+/// source -> gain -> pan with real identities and geometry, mirroring how
+/// [`CanvasWorld::positioned`] projects a service snapshot, for connection
+/// candidate tests.
+struct ChainWorld {
+    world: Arc<CanvasWorld>,
+    source_out: super::PortTarget,
+    gain_in: super::PortTarget,
+    gain_out: super::PortTarget,
+    pan_in: super::PortTarget,
+    gain: moiren_core::graph::NodeId,
+    pan: moiren_core::graph::NodeId,
+}
+
+fn chain_world() -> ChainWorld {
+    use super::{CanvasPort, PortDirection, PortTarget};
+    use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let gain = graph.create_node(NodeKind::Gain, 2).unwrap();
+    let pan = graph.create_node(NodeKind::Pan, 2).unwrap();
+    let source_out = graph.get_node(source).unwrap().outputs()[0].id();
+    let gain_in = graph.get_node(gain).unwrap().inputs()[0].id();
+    let gain_out = graph.get_node(gain).unwrap().outputs()[0].id();
+    let pan_in = graph.get_node(pan).unwrap().inputs()[0].id();
+    graph
+        .connect(source_out, gain_in, SendParams::default())
+        .unwrap();
+    graph
+        .connect(gain_out, pan_in, SendParams::default())
+        .unwrap();
+    let mut nodes = Vec::new();
+    for (id, at) in [
+        (source, (-320., 40.)),
+        (gain, (0., 40.)),
+        (pan, (320., 40.)),
+    ] {
+        let logical = graph.get_node(id).unwrap();
+        let mut card = node(&format!("{id:?}"), "n", "d")
+            .at(at.0, at.1)
+            .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty());
+        card.node_id = Some(id);
+        card.input_ports = logical
+            .inputs()
+            .iter()
+            .map(|port| CanvasPort {
+                id: port.id(),
+                channels: port.channels(),
+            })
+            .collect();
+        card.output_port = logical.outputs().first().map(|port| CanvasPort {
+            id: port.id(),
+            channels: port.channels(),
+        });
+        nodes.push(card);
+    }
+    let wires = graph
+        .edges()
+        .iter()
+        .map(|edge| {
+            let a = nodes
+                .iter()
+                .find(|n| n.node_id == Some(edge.src()))
+                .unwrap();
+            let b = nodes
+                .iter()
+                .find(|n| n.node_id == Some(edge.dst()))
+                .unwrap();
+            CanvasWire {
+                id: format!("{:?}", edge.id()),
+                source: a.id.clone(),
+                destination: b.id.clone(),
+                src: edge.src(),
+                dst: edge.dst(),
+                dst_port: edge.dst_port(),
+                from: NodeLayout::new(a).output.unwrap(),
+                to: NodeLayout::new(b).inputs[0],
+                tint: None,
+            }
+        })
+        .collect();
+    ChainWorld {
+        world: Arc::new(CanvasWorld::new(nodes, wires)),
+        source_out: PortTarget {
+            id: source_out,
+            direction: PortDirection::Output,
+        },
+        gain_in: PortTarget {
+            id: gain_in,
+            direction: PortDirection::Input,
+        },
+        gain_out: PortTarget {
+            id: gain_out,
+            direction: PortDirection::Output,
+        },
+        pan_in: PortTarget {
+            id: pan_in,
+            direction: PortDirection::Input,
+        },
+        gain,
+        pan,
+    }
+}
+
+#[test]
+fn would_cycle_mirrors_the_core_chain_rule() {
+    let chain = chain_world();
+    // pan -> gain closes the loop over the existing gain -> pan; the
+    // forward direction is that edge itself.
+    assert!(chain.world.would_cycle(chain.pan, chain.gain));
+    assert!(!chain.world.would_cycle(chain.gain, chain.pan));
+}
+
+#[test]
+fn resolve_candidate_covers_displacement_cycles_and_directions() {
+    use super::CandidateStatus;
+    let chain = chain_world();
+    let gain = chain.gain;
+    let pan = chain.pan;
+    // Occupied input: displaces whichever end was dragged.
+    assert_eq!(
+        chain
+            .world
+            .resolve_candidate(chain.source_out, chain.pan_in, pan, false)
+            .status,
+        CandidateStatus::Displacing
+    );
+    assert_eq!(
+        chain
+            .world
+            .resolve_candidate(chain.pan_in, chain.source_out, gain, false)
+            .status,
+        CandidateStatus::Displacing
+    );
+    // pan's output back into gain closes pan -> gain -> pan.
+    assert_eq!(
+        chain
+            .world
+            .resolve_candidate(chain.gain_out, chain.gain_in, gain, false)
+            .status,
+        CandidateStatus::Cycles
+    );
+    // Same-direction drops are incompatible, not connectable.
+    assert_eq!(
+        chain
+            .world
+            .resolve_candidate(chain.source_out, chain.gain_out, gain, false)
+            .status,
+        CandidateStatus::Incompatible
+    );
+    // A free compatible input connects cleanly: disconnect gain -> pan
+    // first, then pan's input is free.
+    let world = Arc::new(CanvasWorld::new(
+        chain.world.nodes.clone(),
+        chain
+            .world
+            .wires
+            .iter()
+            .filter(|wire| wire.dst != pan)
+            .cloned()
+            .collect(),
+    ));
+    assert_eq!(
+        world
+            .resolve_candidate(chain.source_out, chain.pan_in, pan, false)
+            .status,
+        CandidateStatus::Valid
+    );
+}
+
+#[test]
+fn connection_candidate_resolves_body_drops_to_the_nearest_input() {
+    let chain = chain_world();
+    let world = Arc::new(CanvasWorld::new(chain.world.nodes.clone(), Vec::new()));
+    let frame = CanvasFrame::new(
+        world,
+        Camera {
+            adjusted: true,
+            ..Default::default()
+        },
+        Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(1200.), px(600.)),
+        },
+    );
+    // Release at the gain card's center: no port within 8 px, so the body
+    // resolves to the single compatible input.
+    let gain_card = frame.nodes[1].card;
+    let center = (
+        gain_card.origin.x + gain_card.size.width / 2.,
+        gain_card.origin.y + gain_card.size.height / 2.,
+    );
+    let candidate = frame
+        .connection_candidate(center, chain.source_out)
+        .unwrap();
+    assert!(candidate.from_body);
+    assert_eq!(candidate.port.id, chain.gain_in.id);
+    // A release over the source card (no inputs) resolves nothing.
+    let source_card = frame.nodes[0].card;
+    let source_center = (
+        source_card.origin.x + source_card.size.width / 2.,
+        source_card.origin.y + source_card.size.height / 2.,
+    );
+    assert!(
+        frame
+            .connection_candidate(source_center, chain.source_out)
+            .is_none()
+    );
 }

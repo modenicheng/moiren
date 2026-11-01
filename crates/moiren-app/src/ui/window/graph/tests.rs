@@ -243,6 +243,94 @@ fn graph_port_drag_onto_occupied_input_displaces_the_old_edge(cx: &mut gpui_kit:
 }
 
 #[gpui_kit::test]
+fn graph_connection_drop_on_node_body_connects(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    settle_panels(cx);
+    // Dragging source's output and releasing over the middle of pan's card
+    // must resolve to pan's input and displace the gain -> pan edge, no
+    // port-dot precision required (design 18 A2).
+    let frame = canvas_frame(&view, cx);
+    let (source_output, pan_input) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        let source = &graph.nodes()[0];
+        let pan = &graph.nodes()[2];
+        (source.outputs()[0].id(), pan.inputs()[0].id())
+    });
+    let source_anchor = frame.nodes[0].output.unwrap();
+    let pan_card = frame.nodes[2].card;
+    let from = frame.bounds.origin + point(px(source_anchor.0), px(source_anchor.1));
+    let body = frame.bounds.origin
+        + point(
+            px(pan_card.origin.x + pan_card.size.width / 2.),
+            px(pan_card.origin.y + pan_card.size.height / 3.),
+        );
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(body, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    cx.simulate_mouse_up(body, MouseButton::Left, Modifiers::default());
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .graph
+            .edges()
+            .iter()
+            .any(|edge| edge.src_port() == source_output && edge.dst_port() == pan_input)
+    });
+    view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        assert_eq!(graph.edges().len(), 3);
+        assert!(
+            graph
+                .edges()
+                .iter()
+                .all(|edge| edge.dst_port() != pan_input || edge.src_port() == source_output)
+        );
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn graph_connection_cycle_drop_on_node_body_is_rejected(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    settle_panels(cx);
+    // Pan's output into gain's body closes pan -> gain -> pan; the hover
+    // verdict is Cycles and the release must not dispatch anything.
+    let frame = canvas_frame(&view, cx);
+    let pan_anchor = frame.nodes[2].output.unwrap();
+    let gain_card = frame.nodes[1].card;
+    let from = frame.bounds.origin + point(px(pan_anchor.0), px(pan_anchor.1));
+    let body = frame.bounds.origin
+        + point(
+            px(gain_card.origin.x + gain_card.size.width / 2.),
+            px(gain_card.origin.y + gain_card.size.height / 3.),
+        );
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(body, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert!(shell.connection_drag.is_some());
+    });
+    cx.simulate_mouse_up(body, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, cx| {
+        assert!(shell.connection_drag.is_none());
+        assert!(!shell.state.read(cx).pending_request);
+        assert_eq!(shell.state.read(cx).snapshot.graph.graph.edges().len(), 3);
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn graph_backspace_removes_selected_node_and_its_edges(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));

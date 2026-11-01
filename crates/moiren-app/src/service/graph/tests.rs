@@ -800,10 +800,12 @@ fn failed_connect_replacing_leaves_the_displaced_edge_intact() {
     assert_eq!(before.graph, after.graph);
     assert_eq!(before.candidate_revision, after.candidate_revision);
     assert!(after.last_error.is_some());
-    assert!(after
-        .faults
-        .iter()
-        .any(|fault| fault.subject == GraphSubject::Route(pan_out, gain_in)));
+    assert!(
+        after
+            .faults
+            .iter()
+            .any(|fault| fault.subject == GraphSubject::Route(pan_out, gain_in))
+    );
     let _ = source;
 }
 

@@ -8,7 +8,8 @@ use gpui_kit::*;
 use rust_i18n::t;
 
 use super::graph_canvas::{
-    Camera, CanvasFrame, CanvasNode, CanvasWorld, HitTarget, PortDirection, PortTarget, WireCurve,
+    Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, PortDirection,
+    PortTarget, WireCurve,
 };
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::observe::TestObserve;
@@ -48,7 +49,7 @@ pub struct CanvasCallbacks {
     /// time so meter motion repaints without rebuilding this element tree.
     pub node_levels: Rc<NodeLevelsFn>,
     pub on_port_down: Rc<WindowAppCallback<(PortTarget, (f32, f32))>>,
-    pub on_port_up: Rc<WindowAppCallback<Option<PortTarget>>>,
+    pub on_port_up: Rc<WindowAppCallback<Option<ConnectionCandidate>>>,
     pub on_connection_move: Rc<WindowAppCallback<(f32, f32)>>,
     pub on_delete: Rc<WindowAppCallback<()>>,
     pub on_cancel: Rc<WindowAppCallback<()>>,
@@ -97,6 +98,7 @@ fn paint_canvas_layer(
     selected_nodes: &[String],
     selected_wire: Option<&str>,
     node_levels: &NodeLevelsFn,
+    connection: Option<(PortTarget, (f32, f32))>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -150,8 +152,113 @@ fn paint_canvas_layer(
                     );
                 }
             }
+            if let Some((port, cursor)) = connection {
+                paint_connection_drag(frame, port, cursor, window);
+            }
         },
     );
+}
+
+/// The connection drag's ghost line and hover verdict: the line snaps to
+/// the resolved candidate port when the drop would land (port or body),
+/// colors itself by the verdict, and rings the target so the release is
+/// never a surprise (design 18 A3).
+fn paint_connection_drag(
+    frame: &CanvasFrame,
+    port: PortTarget,
+    cursor: (f32, f32),
+    window: &mut Window,
+) {
+    use super::graph_canvas::CandidateStatus;
+    let Some(anchor) = frame.port_position(port) else {
+        return;
+    };
+    let cursor = frame.camera.world_to_canvas(cursor);
+    let window_cursor = (
+        cursor.0 + f32::from(frame.bounds.origin.x),
+        cursor.1 + f32::from(frame.bounds.origin.y),
+    );
+    let candidate = frame.connection_candidate(window_cursor, port);
+    let snap = candidate
+        .as_ref()
+        .filter(|candidate| {
+            matches!(
+                candidate.status,
+                CandidateStatus::Valid | CandidateStatus::Displacing
+            )
+        })
+        .and_then(|candidate| frame.port_position(candidate.port));
+    let (from, to) = match port.direction {
+        PortDirection::Output => (anchor, snap.unwrap_or(cursor)),
+        PortDirection::Input => (snap.unwrap_or(cursor), anchor),
+    };
+    let color = match candidate.as_ref().map(|candidate| candidate.status) {
+        Some(CandidateStatus::Incompatible | CandidateStatus::Cycles) => theme::DANGER,
+        Some(CandidateStatus::Displacing) => theme::WARNING,
+        _ => theme::PRIMARY,
+    };
+    let origin = (
+        f32::from(frame.bounds.origin.x),
+        f32::from(frame.bounds.origin.y),
+    );
+    if let Ok(path) = WireCurve::new(from, to)
+        .project(Camera {
+            zoom: 1.,
+            adjusted: true,
+            ..Default::default()
+        })
+        .stroke(2., origin)
+    {
+        window.paint_path(path, color);
+    }
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let status_color = match candidate.status {
+        CandidateStatus::Valid => theme::PRIMARY,
+        CandidateStatus::Displacing => theme::WARNING,
+        CandidateStatus::Incompatible | CandidateStatus::Cycles => theme::DANGER,
+    };
+    if let Some(anchor) = frame.port_position(candidate.port) {
+        let radius = 9.;
+        window.paint_quad(fill(
+            frame.window_rect(Bounds {
+                origin: point(anchor.0 - radius, anchor.1 - radius),
+                size: size(radius * 2., radius * 2.),
+            }),
+            theme::soft(status_color),
+        ));
+    }
+    if candidate.from_body
+        && let Some((_, layout)) = frame
+            .world
+            .nodes
+            .iter()
+            .zip(&frame.nodes)
+            .find(|(node, _)| node.node_id == Some(candidate.node))
+    {
+        let card = frame.window_rect(layout.card);
+        window.paint_quad(PaintQuad {
+            bounds: card,
+            corner_radii: (6. * layout.scale).into(),
+            background: transparent_black().into(),
+            border_widths: 1.5f32.into(),
+            border_color: status_color,
+            border_style: BorderStyle::default(),
+        });
+    }
+    // A displacing drop fades the wire it would replace before the
+    // release commits it.
+    if candidate.status == CandidateStatus::Displacing
+        && let Some(index) = frame
+            .world
+            .wires
+            .iter()
+            .position(|wire| wire.dst_port == candidate.port.id)
+        && let Ok(path) = frame.wires[index].stroke(3., origin)
+    {
+        window.paint_path(path, theme::WINDOW_BG.opacity(0.55));
+    }
 }
 
 /// Port dots straddle the card edge by their radius; pad the ghost so they
@@ -348,39 +455,10 @@ pub fn graph_canvas_view(
                         &selected_nodes,
                         selected_wire.as_deref(),
                         node_levels.as_ref(),
+                        connection,
                         window,
                         cx,
                     );
-                    if let Some((port, cursor)) = connection
-                        && let Some(anchor) = frame.port_position(port)
-                    {
-                        let cursor = frame.camera.world_to_canvas(cursor);
-                        let (from, to) = match port.direction {
-                            PortDirection::Output => (anchor, cursor),
-                            PortDirection::Input => (cursor, anchor),
-                        };
-                        let origin = (
-                            f32::from(frame.bounds.origin.x),
-                            f32::from(frame.bounds.origin.y),
-                        );
-                        window.with_content_mask(
-                            Some(ContentMask {
-                                bounds: frame.bounds,
-                            }),
-                            |window| {
-                                if let Ok(path) = WireCurve::new(from, to)
-                                    .project(Camera {
-                                        zoom: 1.,
-                                        adjusted: true,
-                                        ..Default::default()
-                                    })
-                                    .stroke(2., origin)
-                                {
-                                    window.paint_path(path, theme::PRIMARY);
-                                }
-                            },
-                        );
-                    }
                 },
             )
             .size_full(),
@@ -483,17 +561,17 @@ pub fn graph_canvas_view(
                     let input_move = input_move.clone();
                     let prepared = prepared.clone();
                     let on_port_up = on_port_up.clone();
+                    let drag_port = connection.map(|(port, _)| port);
                     move |event, window, cx| {
-                        let port = prepared.read().and_then(|frame| {
-                            match frame.hit_test((
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                            )) {
-                                Some(HitTarget::Port(port)) => Some(port),
-                                _ => None,
-                            }
+                        let candidate = prepared.read().and_then(|frame| {
+                            drag_port.and_then(|drag| {
+                                frame.connection_candidate(
+                                    (f32::from(event.position.x), f32::from(event.position.y)),
+                                    drag,
+                                )
+                            })
                         });
-                        on_port_up(port, window, cx);
+                        on_port_up(candidate, window, cx);
                         input_move((event.position, None), window, cx);
                     }
                 })

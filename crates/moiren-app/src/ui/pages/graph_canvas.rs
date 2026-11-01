@@ -19,6 +19,39 @@ pub use wire::{WireCurve, WireGeometry};
 #[cfg(test)]
 mod tests;
 
+/// One port on a canvas node: identity plus the channel count connection
+/// compatibility is judged against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanvasPort {
+    pub id: moiren_core::graph::PortId,
+    pub channels: usize,
+}
+
+/// Where a connection drag would land, with the app-side compatibility
+/// verdict that drives hover feedback and the release path. Commit-side
+/// validation stays authoritative.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConnectionCandidate {
+    pub port: PortTarget,
+    /// The drop resolved through the node body rather than the port dot.
+    pub from_body: bool,
+    /// Node the candidate port belongs to, for the body halo.
+    pub node: moiren_core::graph::NodeId,
+    pub status: CandidateStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateStatus {
+    /// Free compatible port: the drop connects.
+    Valid,
+    /// The destination input already has an edge: the drop displaces it.
+    Displacing,
+    /// Same-direction target or channel mismatch.
+    Incompatible,
+    /// The edge would close a cycle, including self-connection.
+    Cycles,
+}
+
 /// World-space node descriptor for the candidate session graph.
 #[derive(Debug, Clone)]
 pub struct CanvasNode {
@@ -30,8 +63,8 @@ pub struct CanvasNode {
     pub x: f32,
     pub y: f32,
     pub input_count: usize,
-    pub input_ports: Vec<moiren_core::graph::PortId>,
-    pub output_port: Option<moiren_core::graph::PortId>,
+    pub input_ports: Vec<CanvasPort>,
+    pub output_port: Option<CanvasPort>,
     pub has_output: bool,
     pub tint: Option<Hsla>,
     pub gain: f64,
@@ -80,6 +113,9 @@ pub struct CanvasWire {
     pub id: String,
     pub source: String,
     pub destination: String,
+    pub src: moiren_core::graph::NodeId,
+    pub dst: moiren_core::graph::NodeId,
+    pub dst_port: moiren_core::graph::PortId,
     pub from: (f32, f32),
     pub to: (f32, f32),
     pub tint: Option<Hsla>,
@@ -227,8 +263,18 @@ impl CanvasWorld {
                 state.mixer.gain
             };
             card.balance = (logical.kind() == NodeKind::Pan).then_some(state.pan);
-            card.input_ports = logical.inputs().iter().map(|port| port.id()).collect();
-            card.output_port = logical.outputs().first().map(|port| port.id());
+            card.input_ports = logical
+                .inputs()
+                .iter()
+                .map(|port| CanvasPort {
+                    id: port.id(),
+                    channels: port.channels(),
+                })
+                .collect();
+            card.output_port = logical.outputs().first().map(|port| CanvasPort {
+                id: port.id(),
+                channels: port.channels(),
+            });
             nodes.push(card);
         }
         let wires = graph
@@ -249,6 +295,9 @@ impl CanvasWorld {
                     id: format!("{:?}", edge.id()),
                     source: a.id.clone(),
                     destination: b.id.clone(),
+                    src: edge.src(),
+                    dst: edge.dst(),
+                    dst_port: edge.dst_port(),
                     from: NodeLayout::new(a).output?,
                     to: *NodeLayout::new(b).inputs.get(input)?,
                     tint: Some(if edge.params().mute {
@@ -283,6 +332,107 @@ impl CanvasWorld {
                 origin: graph_bounds.origin - point(8., 8.),
                 size: graph_bounds.size + size(16., 16.),
             },
+        }
+    }
+
+    /// The node a port belongs to, by direction-aware identity.
+    pub fn node_of_port(&self, port: PortTarget) -> Option<moiren_core::graph::NodeId> {
+        self.nodes
+            .iter()
+            .find(|node| match port.direction {
+                PortDirection::Input => node.input_ports.iter().any(|p| p.id == port.id),
+                PortDirection::Output => node.output_port.is_some_and(|p| p.id == port.id),
+            })
+            .and_then(|node| node.node_id)
+    }
+
+    /// The channel count of a port on this world's nodes.
+    fn channels_of(&self, port: PortTarget) -> Option<usize> {
+        self.nodes.iter().find_map(|node| match port.direction {
+            PortDirection::Input => node
+                .input_ports
+                .iter()
+                .find(|p| p.id == port.id)
+                .map(|p| p.channels),
+            PortDirection::Output => node
+                .output_port
+                .filter(|p| p.id == port.id)
+                .map(|p| p.channels),
+        })
+    }
+
+    /// Whether an edge `src -> dst` would close a cycle over this world's
+    /// wires: it does when `src` is already reachable from `dst`. Mirrors
+    /// the core's `would_cycle` (private there) for hover feedback only;
+    /// commit-side validation stays authoritative.
+    pub fn would_cycle(
+        &self,
+        src: moiren_core::graph::NodeId,
+        dst: moiren_core::graph::NodeId,
+    ) -> bool {
+        let mut stack = vec![dst];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            if current == src {
+                return true;
+            }
+            for wire in &self.wires {
+                if wire.src == current {
+                    stack.push(wire.dst);
+                }
+            }
+        }
+        false
+    }
+
+    /// Compatibility verdict for a drag `drag` released onto `target`
+    /// (a port of `node`). The displaced edge, when one exists, is the one
+    /// feeding the destination input whichever end was dragged.
+    pub fn resolve_candidate(
+        &self,
+        drag: PortTarget,
+        target: PortTarget,
+        node: moiren_core::graph::NodeId,
+        from_body: bool,
+    ) -> ConnectionCandidate {
+        let status = if target.direction == drag.direction {
+            CandidateStatus::Incompatible
+        } else {
+            let (source, destination) = match drag.direction {
+                PortDirection::Output => (drag.id, target.id),
+                PortDirection::Input => (target.id, drag.id),
+            };
+            let source_node = self.node_of_port(PortTarget {
+                id: source,
+                direction: PortDirection::Output,
+            });
+            let destination_node = self.node_of_port(PortTarget {
+                id: destination,
+                direction: PortDirection::Input,
+            });
+            match (source_node, destination_node) {
+                (Some(src), Some(dst)) if src == dst => CandidateStatus::Cycles,
+                (Some(src), Some(dst)) if self.would_cycle(src, dst) => CandidateStatus::Cycles,
+                _ if self.channels_of(drag).is_none()
+                    || self.channels_of(target).is_none()
+                    || self.channels_of(drag) != self.channels_of(target) =>
+                {
+                    CandidateStatus::Incompatible
+                }
+                _ if self.wires.iter().any(|wire| wire.dst_port == destination) => {
+                    CandidateStatus::Displacing
+                }
+                _ => CandidateStatus::Valid,
+            }
+        };
+        ConnectionCandidate {
+            port: target,
+            from_body,
+            node,
+            status,
         }
     }
 }
