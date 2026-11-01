@@ -409,6 +409,26 @@ impl ManagedDriver {
         }
         driver
     }
+    /// Read-only diagnostic pin supplier. No audio resource or editable DTO
+    /// can construct a native collector through this control-only reader.
+    #[cfg(windows)]
+    pub fn native_observation_reader(
+        &self,
+    ) -> impl Fn() -> Option<moiren_windows_audio::engine_backend::NativeObservationReadHandle>
+    + Send
+    + 'static {
+        let registry = self.native_observations.clone();
+        move || {
+            registry.as_ref().and_then(|registry| {
+                registry
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref()
+                    .and_then(|registry| registry.retain_session())
+            })
+        }
+    }
+
     fn queue(&mut self) -> &CompletionQueue<Completion> {
         self.completions
             .get_or_insert_with(|| CompletionQueue::new(thread::current()))

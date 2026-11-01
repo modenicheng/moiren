@@ -6,6 +6,12 @@ use std::sync::{
     atomic::{AtomicU64, Ordering::SeqCst},
 };
 
+mod archive;
+pub use archive::{
+    InterpolationTrace, InterpolationTraceChunk, InterpolationTraceCollector,
+    InterpolationTraceRefusal, MAX_TRACE_EVENTS,
+};
+
 const CAPACITY: usize = 256;
 const FIELDS: usize = 9;
 pub(crate) const QUANTUM_FRAMES: usize = 32;

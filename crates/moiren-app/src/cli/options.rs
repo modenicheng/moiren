@@ -13,6 +13,7 @@ pub(super) struct MonitorOptions {
     pub seconds: u16,
     pub measure_seconds: Option<u16>,
     pub startup_timeout_ms: u64,
+    pub cursor_trace_directory: Option<std::path::PathBuf>,
     pub audio: AudioSettings,
     target: Option<u32>,
     capacity: Option<u32>,
@@ -39,6 +40,7 @@ impl Default for MonitorOptions {
             seconds: 30,
             measure_seconds: None,
             startup_timeout_ms: 15000,
+            cursor_trace_directory: None,
             audio: AudioSettings::default(),
             target: None,
             capacity: None,
@@ -111,6 +113,13 @@ impl MonitorOptions {
                 .with_context(|| format!("invalid {flag} value"))
         };
         match flag {
+            "--cursor-trace-directory" => {
+                ensure!(
+                    !value.trim().is_empty() && !value.contains('\0'),
+                    "cursor trace directory must be nonempty"
+                );
+                self.cursor_trace_directory = Some(value.into());
+            }
             "--process" => self.pid = Some(number()?),
             "--output" => self.output = Some(value.into()),
             "--seconds" => self.seconds = value.parse().context("invalid --seconds value")?,

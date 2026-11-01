@@ -48,7 +48,24 @@ fn monitor_compatibility_does_not_invent_explicit_queue_or_output_requests() {
     );
     assert_eq!(options.audio.output.buffer_frames, None);
     assert_eq!(options.seconds, 30);
+    assert!(options.cursor_trace_directory.is_none());
     assert_eq!(options.audio.processing.precision, ProcessingPrecision::F32);
+}
+
+#[test]
+fn cursor_archive_is_optional_and_requires_a_nonempty_directory() {
+    let options = monitor(&["--cursor-trace-directory", "diagnostics/cursors"]).unwrap();
+    assert_eq!(
+        options.cursor_trace_directory.as_deref(),
+        Some(std::path::Path::new("diagnostics/cursors"))
+    );
+    assert_eq!(
+        options.transport().unwrap(),
+        TransportLatencySettings::default()
+    );
+    for invalid in ["", "   ", "bad\0path"] {
+        assert!(monitor(&["--cursor-trace-directory", invalid]).is_err());
+    }
 }
 
 #[test]

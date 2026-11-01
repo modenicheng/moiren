@@ -36,6 +36,9 @@ Delivery bounds are declared assumptions, not measured periods or latency.
 Independent Process policy (compatible or declared; not measured mode):
   --max-ingress-elapsed-100ns N Positive host time since publication began;
                                not source sample age or physical latency
+Optional diagnostic (all monitor modes):
+  --cursor-trace-directory PATH New control-side actual SRC chunk archive;
+                               diagnostic only, must not already exist
 Measured Process input budget (exactly three budget fields; no packet/gap bounds):
   --measure-seconds 1..60       Measure a compatible baseline before applying
   --target-frames N --capacity-frames N --jitter-frames N

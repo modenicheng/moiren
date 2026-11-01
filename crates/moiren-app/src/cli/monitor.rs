@@ -10,6 +10,8 @@ use std::{
 };
 
 use super::options::MonitorOptions;
+#[cfg(windows)]
+mod cursor_trace;
 #[cfg(any(windows, test))]
 mod measured;
 #[cfg(windows)]
@@ -325,7 +327,41 @@ pub(super) fn run(options: MonitorOptions) -> Result<MonitorReport> {
             creation_time_100ns: process.creation_time_100ns,
         };
         let duration = Duration::from_secs(u64::from(options.seconds));
-        run_with_driver(options, source, ManagedDriver::windows(), duration)
+        let driver = ManagedDriver::windows();
+        let trace = options
+            .cursor_trace_directory
+            .as_ref()
+            .map(|path| {
+                cursor_trace::CursorTraceWorker::spawn(
+                    path,
+                    driver.native_observation_reader(),
+                    process,
+                    if options.measure_seconds.is_some() {
+                        2
+                    } else {
+                        1
+                    },
+                )
+            })
+            .transpose()?;
+        let result = run_with_driver(options, source, driver, duration);
+        let archive = trace.map_or(Ok(()), |trace| trace.finish());
+        match (result, archive) {
+            (Ok(report), Ok(())) => Ok(report),
+            (Ok(mut report), Err(archive)) => {
+                // Keep the normal post-join native report even if this opt-in
+                // diagnostic failed; CLI prints it before returning failure.
+                report.failure = Some(match report.failure.take() {
+                    Some(run) => format!("{run}; cursor archive: {archive:#}"),
+                    None => format!("cursor archive: {archive:#}"),
+                });
+                Ok(report)
+            }
+            (Err(run), Err(archive)) => {
+                Err(anyhow::anyhow!("{run:#}; cursor archive: {archive:#}"))
+            }
+            (Err(error), Ok(())) => Err(error),
+        }
     }
     #[cfg(not(windows))]
     {

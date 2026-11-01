@@ -10,6 +10,7 @@ mod recovery;
 pub use native_observations::{
     NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
     NativeObservationSnapshot, NativeObservations, NativeProcessDeliveryObservation,
+    NativeProcessInterpolationCollector, NativeProcessInterpolationOrigin,
     NativeProcessTraceCollector, NativeProcessWindowCandidate, NativeRenderPaddingObservation,
     NativeSrcBoundaryTrace, NativeSrcChunkBoundary, NativeSrcRouteObservation, NativeSrcTrace,
     NativeSrcTraceChunk, NativeSrcTraceCollector, NativeStreamKind, NativeStreamObservation,

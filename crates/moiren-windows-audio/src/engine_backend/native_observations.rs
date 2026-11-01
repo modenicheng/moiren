@@ -21,6 +21,12 @@ pub use process_trace::{
     NativeProcessTraceCollector, NativeProcessWindowCandidate, PreparedNativeProcessWindow,
 };
 
+#[path = "native_observations/interpolation_trace.rs"]
+mod interpolation_trace;
+pub use interpolation_trace::{
+    NativeProcessInterpolationCollector, NativeProcessInterpolationOrigin,
+};
+
 #[path = "native_observations/src_trace.rs"]
 mod src_trace;
 pub use src_trace::{

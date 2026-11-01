@@ -5,6 +5,16 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [continuous Process cursor archive](2026-11-02-process-cursor-archive.md)
+adds bounded control collection, native-owner pinning and opt-in independent
+CLI persistence. A remote feature smoke exposes backend-local generation reuse;
+an identity regression and fix retain both baseline and replacement histories.
+Independent full-chunk audits verify14930/89932events without sequence gaps.
+The first fixed run has no recorded delivery/drop/underrun/reset fault;
+a later post-review smoke retains three gap-bound violations and all four
+unchanged waveform refusals despite complete cursor histories. Native PCM/OBS
+correspondence and physical qualification are still open; defaults are unchanged.
+
 The [actual Process interpolation slice](2026-11-02-process-interpolation-observations.md)
 adds bounded source-owned phase/step spans, exact-bit JSON export and requested
 output frontiers including priming/failed tails. Independent PCM reconstruction,
