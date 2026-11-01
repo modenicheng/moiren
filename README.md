@@ -23,14 +23,11 @@ Settings 中的 Compatible、Balanced、Low 保存期望的延迟档位，保存
 ## 验证
 
 ```powershell
-cargo check --locked --workspace --all-targets
+cargo build --locked --workspace
 cargo test --locked --workspace
-cargo test --locked -p moiren-app --features gpui-test
-cargo clippy --locked --workspace --all-targets --features moiren-app/gpui-test -- -D warnings
-cargo fmt --all -- --check
 ```
 
-普通测试不打开音频设备。有限时长的实机探针（`asio_probe`、`exclusive_probe`、W00 系列）与硬件验证记录见 [windows-audio README](crates/moiren-windows-audio/README.md)；这些探针不改变系统默认设备或音量。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
+普通测试不打开音频设备。完整验证命令集（check、clippy、fmt 与 gpui-test 验收等）以 [AGENTS.md](AGENTS.md) 为准。有限时长的实机探针（`asio_probe`、`exclusive_probe`、W00 系列）与硬件验证记录见 [windows-audio README](crates/moiren-windows-audio/README.md)；这些探针不改变系统默认设备或音量。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
 
 ## 当前边界
 

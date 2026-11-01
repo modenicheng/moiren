@@ -1324,6 +1324,75 @@ fn inspector_hot_layer_paints_the_registered_meter_tracks(cx: &mut gpui_kit::Tes
 }
 
 #[gpui_kit::test]
+fn graph_page_readout_editors_keep_focus_and_their_undo(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{AppRequest, GraphEdit};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([gpui_kit::KeyBinding::new(
+            "ctrl-z",
+            super::app_view::Undo,
+            None,
+        )]);
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    // Give the journal one undoable edit so a leaked ctrl-z would show up
+    // as a node count change.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: moiren_core::graph::NodeKind::Eq,
+                channels: 2,
+            }));
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 5
+        })
+    });
+    // The shell boots on the graph page, where keep_graph_focus hands
+    // keystrokes back to the canvas whenever no known text field owns
+    // focus. EVERY mixer editor family (send gains and the strip/inspector
+    // readouts: fader, balance, node gain, node pan) must count as a text
+    // field: otherwise the canvas steals focus on the next render and
+    // ctrl-z steps the journal mid-edit.
+    let handles = view.update(cx, |shell, cx| {
+        use gpui_kit::Focusable;
+        shell
+            .mixer
+            .text_input_entities()
+            .map(|input| input.read(cx).focus_handle(cx))
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        handles.len() >= 5,
+        "expected send editors plus the four readout families, got {}",
+        handles.len()
+    );
+    for handle in &handles {
+        cx.update(|window, cx| window.focus(handle, cx));
+        cx.update(|window, cx| window.render_frame(cx));
+        view.update(cx, |shell, cx| {
+            assert!(shell.typing_focus(handle, cx));
+        });
+    }
+    cx.simulate_keystrokes("ctrl-z");
+    // Give a (wrongly) dispatched undo time to reach the service; the
+    // journal must still be where it was.
+    std::thread::sleep(Duration::from_millis(400));
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+        assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), 5);
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {

@@ -5,6 +5,8 @@
 > 变更背景见 professional-only 后端计划（2026-10-27；计划文档已于 2026-10-31
 > 从仓库移除，见 git 历史：`git log -- docs/superpowers/plans`）。
 > 本文是延迟档位语义的 canonical 文档；README 中的档位描述以本文为准。
+> 现行行为是通过显式 buffer-frame 请求表达延迟意图，实现见
+> `crates/moiren-app/src/service/latency.rs`。
 
 ## 生命周期与路由
 

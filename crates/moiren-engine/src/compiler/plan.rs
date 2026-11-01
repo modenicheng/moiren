@@ -138,10 +138,7 @@ impl<S: ProcessingSample> Builder<S> {
             NodeKind::Source | NodeKind::Sink => match binding {
                 Some(Binding::Io(processor)) => self.processor(BoundIo(processor))?,
                 Some(Binding::ReusedIo(basis, previous)) => {
-                    let id = ProcessorId(
-                        u64::try_from(self.instances.len())
-                            .map_err(|_| CompileError::TooManyProcessors)?,
-                    );
+                    let id = self.reserved_id()?;
                     let (instance, parameters) = basis
                         .reserve_io(previous, id)
                         .map_err(|_| CompileError::BindingKind { node })?;
@@ -466,9 +463,7 @@ fn lower_rack<S: ProcessingSample>(
     // execute in the single global order declared by RackSettings.
     for slot in settings.slots.iter().filter(|slot| !slot.bypass) {
         let io = layout.slots[&slot.id];
-        let processor = ProcessorId(
-            u64::try_from(builder.instances.len()).map_err(|_| CompileError::TooManyProcessors)?,
-        );
+        let processor = builder.reserved_id()?;
         let (kernel, parameters) = crate::rack::prepare_slot::<S>(
             &slot.processor,
             io.input_channels,
@@ -477,6 +472,9 @@ fn lower_rack<S: ProcessingSample>(
         )
         .map_err(|_| CompileError::BindingKind { node: id })?;
         let prepared = builder.processor(BoundIo(kernel))?;
+        // prepare_slot keyed the parameter schema to `processor`; nothing
+        // reserves in between, so the committed instance carries that id.
+        debug_assert_eq!(prepared, processor);
         builder.params.extend(parameters);
         let output = builder.slot(io.output_channels);
         builder.ops.push(DraftOp {

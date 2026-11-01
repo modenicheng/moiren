@@ -318,14 +318,15 @@ fn bus_and_pan_handle_repeated_inputs_fan_out_and_cross_block_automation_without
 
 #[test]
 fn builtins_render_without_allocation_or_deallocation_even_with_full_telemetry() {
-    let (mut engine, mut control, mut meter, _) = pipeline(true, 16, 16);
+    let (mut engine, mut control, probe, _) = pipeline(true, 16, 16);
     for frame in 1..=8 {
         control.submit(request(frame, ApplyAt::Frame(frame), 2.0, 16), 0);
     }
     let (result, counts) = track_allocations(|| engine.render(16));
     result.unwrap();
     assert_eq!(counts, (0, 0));
-    assert!(meter.latest().is_some());
+    assert_eq!(probe.frames(), 16);
+    assert_eq!(probe.peak(), 0.25);
     engine.render(16).unwrap();
-    assert!(meter.latest().unwrap().dropped_snapshots > 0);
+    assert_eq!(probe.frames(), 32);
 }

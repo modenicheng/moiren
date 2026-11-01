@@ -1,8 +1,9 @@
 # ASIO v1 acceptance
 
 As of 2026-10-18, the production application uses ProfessionalBackend for
-explicit professional settings, including ASIO. This is not a new alternative
-host or a replacement of the existing engine graph/control architecture.
+all settings, including ASIO; it is now the only audio backend. This is not a
+new alternative host or a replacement of the existing engine graph/control
+architecture.
 
 ## Implemented scope
 
@@ -62,9 +63,9 @@ not a measured analog round-trip result.
 Ordinary tests never activate drivers:
 
 ```powershell
-cargo test --locked -p moiren-windows-audio --lib professional
+cargo test --locked -p moiren-windows-audio --lib asio
 cargo test --locked -p moiren-windows-audio --example asio_probe
-cargo test --locked --manifest-path crates/moiren-windows-audio/src/professional/rt-check/Cargo.toml
+cargo test --locked --manifest-path tools/rt-check/Cargo.toml
 ```
 
 The probe requires the exact authorized FL Studio ASIO CLSID. Query-only is the

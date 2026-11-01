@@ -1,0 +1,582 @@
+//! TEMPORARY metering-latency probe — run once against the default output
+//! device, report, then delete. Not part of the regression suite.
+//!
+//! Stages measured:
+//! 1. Level-stream delivery lag: how far behind real time a FIFO subscriber
+//!    of `tone/output/level` reads, anchored at the first window after a
+//!    subscribe-before-start (AudioWindow carries no wall-clock stamp, only
+//!    `timeline_epoch`/`frame_start`/`frame_end`/`sample_rate`).
+//! 2. End-to-end render→subscriber proxy: the lag above includes every stage
+//!    ahead of the subscriber; the engine frontier cross-check comes from
+//!    `AppSnapshot::elapsed` (wall time since the session turned Running).
+//! 3. Ballistics step response: modeled (ChannelBallistics is pub(super)).
+//! 4. Device queue duration under the default Compatible profile with
+//!    RenderQueuePolicy::FullCapacity, read from a live shared render report.
+
+mod common;
+
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use moiren_app::service::{
+    AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase, SessionSpec,
+};
+use moiren_app::tone::{ToneConfig, prepare_tone};
+use moiren_engine::meter::signal::AudioWindow;
+use moiren_signal::SubscriptionOptions;
+use moiren_windows_audio::latency::{RenderQueuePolicy, TelemetryMode};
+use moiren_windows_audio::render::{DemandRenderer, RenderOptions, start_render};
+use moiren_windows_audio::shared_stream::SharedPeriodPolicy;
+
+/// One real output device: keep the hardware probes sequential.
+static DEVICE: Mutex<()> = Mutex::new(());
+
+const WINDOW_DEPTH: usize = 16;
+const PROCESSING_RATE: f64 = 48_000.0;
+
+fn percentile(sorted: &[f64], fraction: f64) -> f64 {
+    let index = ((sorted.len() - 1) as f64 * fraction).round() as usize;
+    sorted[index]
+}
+
+fn report(label: &str, mut values: Vec<f64>, unit: &str) {
+    if values.is_empty() {
+        println!("  {label}: no samples");
+        return;
+    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    let median = percentile(&values, 0.5);
+    let p95 = percentile(&values, 0.95);
+    println!(
+        "  {label}: median {median:.3} {unit}, p95 {p95:.3} {unit}, min {:.3}, max {:.3} (n={})",
+        values[0],
+        values[values.len() - 1],
+        values.len()
+    );
+}
+
+/// Stage 1+2: subscribe before Start, run a tone for ~10 s, and measure how
+/// far each delivered window trails real time.
+#[test]
+#[ignore = "opens the real default output device; run explicitly with --ignored"]
+fn tone_level_stream_delivery_lag_and_cadence() {
+    let _device = DEVICE.lock().unwrap();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::windows()).unwrap();
+    let handle = runtime.handle();
+
+    handle
+        .try_request(AppRequest::RefreshCatalog)
+        .expect("catalog request");
+    let default_output = common::wait_for(Duration::from_secs(5), || {
+        handle
+            .try_snapshot()
+            .and_then(|snapshot| snapshot.catalog.default_output_endpoint_id.clone())
+    });
+    println!("default output endpoint: {default_output}");
+
+    let topic = handle
+        .try_snapshot()
+        .expect("snapshot")
+        .signal_topics
+        .tone_output
+        .clone();
+    let mut ticket = handle
+        .subscribe_topic(
+            topic,
+            SubscriptionOptions {
+                stream_depth: Some(WINDOW_DEPTH),
+            },
+        )
+        .expect("subscribe request");
+    let mut subscriber =
+        common::wait_for(Duration::from_secs(2), || ticket.try_take().ok().flatten());
+    println!("subscriber delivered before start");
+
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+            output_endpoint_id: default_output,
+            limit: RunLimit::UntilStopped,
+            gain: 0.01,
+            pan: 0.0,
+            max_block_frames: 256,
+        }))
+        .expect("start request");
+    let start_issued = Instant::now();
+    common::wait_until(Duration::from_secs(10), || {
+        handle
+            .try_snapshot()
+            .is_some_and(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    println!("phase Running after {:?}", start_issued.elapsed());
+
+    let mut arrivals: Vec<(Instant, AudioWindow)> = Vec::new();
+    let mut frontier_samples: Vec<(Instant, Duration, u64)> = Vec::new();
+    let mut last_snapshot = Instant::now();
+    let collect_for = Duration::from_secs(10);
+    let begin = Instant::now();
+    while begin.elapsed() < collect_for {
+        let mut drained = false;
+        while let Some(window) = subscriber.next() {
+            arrivals.push((Instant::now(), *window.header()));
+            drained = true;
+        }
+        if !drained {
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        if last_snapshot.elapsed() >= Duration::from_millis(250)
+            && let Some(snapshot) = handle.try_snapshot()
+        {
+            let frontier = arrivals.last().map(|(_, header)| header.frame_end);
+            if let (Some(frontier), false) = (frontier, snapshot.elapsed.is_zero()) {
+                frontier_samples.push((Instant::now(), snapshot.elapsed, frontier));
+                last_snapshot = Instant::now();
+            }
+        }
+    }
+
+    let tone_session = handle
+        .try_snapshot()
+        .is_some_and(|snapshot| snapshot.tone_session);
+    let native_streams = handle.try_snapshot().and_then(|snapshot| {
+        snapshot
+            .native_observations
+            .as_ref()
+            .map(|native| native.observation.streams.clone())
+    });
+    println!("tone_session flag: {tone_session}");
+    if let Some(streams) = native_streams {
+        for stream in &streams {
+            println!(
+                "native observation: kind={:?} timing={:?} render_queue={:?} shared_period actual={:?} engine={:?} desired_ms={:?}",
+                stream.kind,
+                stream.timing,
+                stream.render_queue,
+                stream
+                    .shared_period
+                    .as_ref()
+                    .and_then(|p| p.actual_period_frames),
+                stream
+                    .shared_period
+                    .as_ref()
+                    .and_then(|p| p.engine_period_frames),
+                stream
+                    .shared_period
+                    .as_ref()
+                    .and_then(|p| p.desired_period_ms),
+            );
+        }
+    } else {
+        println!("native_observations: not published for this session path");
+    }
+
+    assert!(
+        arrivals.len() > 1000,
+        "expected a steady 240 Hz window stream, got {}",
+        arrivals.len()
+    );
+    let first = &arrivals[0].1;
+    println!(
+        "first window: frames [{}, {}) rate {} at +{:?} after Running",
+        first.frame_start,
+        first.frame_end,
+        first.sample_rate,
+        begin.elapsed()
+    );
+
+    // Stage 1: delivery lag. The first window's content (frames 0..200) was
+    // rendered within ~1 ms of stream start, so the anchor carries a few ms of
+    // systematic (publication+delivery) offset; report it as such.
+    let anchor = arrivals[0].0;
+    let steady_from = anchor + Duration::from_secs(1);
+    let mut lags_ms = Vec::new();
+    let mut gaps_ms = Vec::new();
+    let mut window_ms = Vec::new();
+    let mut contiguous = 0usize;
+    for index in 0..arrivals.len() {
+        let (arrival, header) = &arrivals[index];
+        let lag = arrival.saturating_duration_since(anchor).as_secs_f64() * 1e3
+            - header.frame_end as f64 * 1e3 / header.sample_rate;
+        if *arrival >= steady_from {
+            lags_ms.push(lag);
+        }
+        window_ms.push((header.frame_end - header.frame_start) as f64 * 1e3 / header.sample_rate);
+        if index > 0 {
+            let gap = arrival.saturating_duration_since(arrivals[index - 1].0);
+            if *arrival >= steady_from && arrivals[index - 1].0 >= steady_from {
+                gaps_ms.push(gap.as_secs_f64() * 1e3);
+            }
+            if header.frame_start == arrivals[index - 1].1.frame_end {
+                contiguous += 1;
+            }
+        }
+    }
+    println!(
+        "windows: {} arrivals, {}/{} contiguous frame ranges ({} breaks)",
+        arrivals.len(),
+        contiguous,
+        arrivals.len() - 1,
+        arrivals.len() - 1 - contiguous
+    );
+    report("window duration ms", window_ms, "ms");
+    report("inter-arrival gap ms", gaps_ms, "ms");
+    report(
+        "delivery lag ms (anchor=first window)",
+        lags_ms.clone(),
+        "ms",
+    );
+
+    // Drift: least-squares frame_end over arrival time. A slope at the
+    // processing rate means the subscriber keeps pace with real time.
+    let steady: Vec<&(Instant, AudioWindow)> = arrivals
+        .iter()
+        .filter(|(arrival, _)| *arrival >= steady_from)
+        .collect();
+    let n = steady.len() as f64;
+    let mean_t = steady
+        .iter()
+        .map(|(arrival, _)| arrival.saturating_duration_since(anchor).as_secs_f64())
+        .sum::<f64>()
+        / n;
+    let mean_f = steady
+        .iter()
+        .map(|(_, header)| header.frame_end as f64)
+        .sum::<f64>()
+        / n;
+    let mut covariance = 0.0;
+    let mut variance = 0.0;
+    for (arrival, header) in &steady {
+        let t = arrival.saturating_duration_since(anchor).as_secs_f64() - mean_t;
+        let f = header.frame_end as f64 - mean_f;
+        covariance += t * f;
+        variance += t * t;
+    }
+    let slope = covariance / variance;
+    println!(
+        "measured content rate: {:.3} fps ({:+.1} ppm vs 48000)",
+        slope,
+        (slope - PROCESSING_RATE) / PROCESSING_RATE * 1e6
+    );
+
+    // Stage 2 cross-check: engine frontier from AppSnapshot::elapsed against
+    // the newest delivered frame_end. Same engine-timeline domain, so this is
+    // the subscriber backlog plus the running_since/engine-start offset.
+    let mut cross_check = Vec::new();
+    for (wall, elapsed, frontier) in &frontier_samples {
+        cross_check.push(elapsed.as_secs_f64() * 1e3 - *frontier as f64 * 1e3 / PROCESSING_RATE);
+        let _ = wall;
+    }
+    report("engine frontier minus newest window ms", cross_check, "ms");
+
+    common::finish(runtime);
+}
+
+/// Stage 4: actual shared-mode period and buffer under the default Compatible
+/// policy (RenderQueuePolicy::FullCapacity), read from a live render report.
+#[test]
+#[ignore = "opens the real default output device; run explicitly with --ignored"]
+fn default_output_shared_stream_queue_duration() {
+    let _device = DEVICE.lock().unwrap();
+    let catalog = moiren_windows_audio::catalog_snapshot().unwrap();
+    let default_output = catalog
+        .defaults
+        .iter()
+        .find(|default| default.flow == "render")
+        .and_then(|default| default.id.clone())
+        .expect("default render endpoint");
+    let endpoint_row = catalog
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == default_output);
+    println!(
+        "catalog default period: {:?} (100ns units)",
+        endpoint_row.and_then(|endpoint| endpoint.default_period_100ns)
+    );
+
+    let tone = prepare_tone(ToneConfig {
+        gain: 0.01,
+        ..ToneConfig::default()
+    })
+    .unwrap();
+    let renderer = DemandRenderer::new(tone.compiled.engine, tone.output).unwrap();
+    let session = start_render(
+        RenderOptions {
+            queue: RenderQueuePolicy::default(),
+            latency_telemetry: TelemetryMode::Summary,
+            shared_period: SharedPeriodPolicy::default(),
+            endpoint_id: default_output,
+            duration: moiren_windows_audio::SessionDuration::UntilStopped,
+        },
+        renderer,
+    )
+    .unwrap();
+    let ran_for = Duration::from_millis(1200);
+    std::thread::sleep(ran_for);
+    session.request_stop().unwrap();
+    let report = session.join().unwrap();
+
+    let sample_rate = f64::from(report.sample_rate);
+    println!("render sample_rate: {}", report.sample_rate);
+    println!(
+        "buffer_frames (device allocation): {:?}",
+        report.buffer_frames
+    );
+    println!("engine_period_frames: {:?}", report.engine_period_frames);
+    println!(
+        "stream_latency: {:?} ms",
+        report
+            .stream_latency_100ns
+            .map(|value| value as f64 / 10_000.0)
+    );
+    if let Some(queue) = report.queue {
+        println!(
+            "prepared render queue: capacity {} frames ({:.2} ms), target {} frames ({:.2} ms), deadline_budget {:?}",
+            queue.capacity_frames,
+            f64::from(queue.capacity_frames) / sample_rate * 1e3,
+            queue.target_frames,
+            f64::from(queue.target_frames) / sample_rate * 1e3,
+            queue.deadline_budget_frames,
+        );
+    }
+    println!(
+        "shared period: desired_ms={:?} requested={:?} actual={:?} frames engine={:?} frames @ {:?} Hz autoconvert={}",
+        report.shared_period.desired_period_ms,
+        report.shared_period.requested_period_frames,
+        report.shared_period.actual_period_frames,
+        report.shared_period.engine_period_frames,
+        report.shared_period.engine_sample_rate,
+        report.shared_period.windows_auto_conversion,
+    );
+    println!(
+        "stats: primed={} submitted={} max_writable={} wake kinds audio={} timeout={}",
+        report.stats.primed_frames,
+        report.stats.submitted_frames,
+        report.stats.max_writable_frames,
+        report.stats.audio_wakes,
+        report.stats.timeout_wakes,
+    );
+    let capacity = report
+        .queue
+        .map(|queue| u64::from(queue.capacity_frames))
+        .or(report.buffer_frames.map(u64::from))
+        .expect("render queue capacity observed");
+    assert!(capacity > 0);
+    assert!(
+        report.stats.submitted_frames > ran_for.as_secs() * 24_000,
+        "stream did not run at real time: {} frames in {ran_for:?}",
+        report.stats.submitted_frames
+    );
+}
+
+/// Stage 3: ChannelBallistics is `pub(super)`, so this re-implements the exact
+/// math of `ui/monitoring/ballistics.rs` (one-pole mean-square integrator with
+/// tau = RMS_INTEGRATION = 150 ms, window-duration-weighted ingest; per read:
+/// first-read snap, then bar/body = max(target, previous - falloff*dt), body
+/// target = 10log10(mean square), displayed amplitude = 10^(dB/20)) and drives
+/// it with 200-frame (4.1667 ms) windows at 33 ms display reads.
+#[test]
+fn ballistics_step_response_model() {
+    const WINDOW_SECS: f64 = 200.0 / PROCESSING_RATE;
+    const TAU_SECS: f64 = 0.150;
+    const READ_EVERY: Duration = Duration::from_millis(33);
+    const FALLOFF_DB_PER_S: f64 = 40.0; // MeterFalloff::Fast (default)
+
+    #[derive(Default)]
+    struct Model {
+        mean_square: f64,
+        body_db: f64,
+        bar_db: f64,
+        peak_since_read: f64,
+        ticked: bool,
+    }
+    impl Model {
+        fn ingest(&mut self, peak: f64, rms: f64) {
+            self.peak_since_read = self.peak_since_read.max(peak);
+            let fraction = 1.0 - (-WINDOW_SECS / TAU_SECS).exp();
+            self.mean_square += (rms * rms - self.mean_square) * fraction;
+        }
+        fn advance(&mut self, dt: f64) {
+            if !self.ticked {
+                self.bar_db = amplitude_db(self.peak_since_read);
+                self.body_db = mean_square_db(self.mean_square);
+                self.peak_since_read = 0.0;
+                self.ticked = true;
+                return;
+            }
+            let release = FALLOFF_DB_PER_S * dt;
+            self.bar_db = amplitude_db(self.peak_since_read).max(self.bar_db - release);
+            self.body_db = mean_square_db(self.mean_square).max(self.body_db - release);
+            self.peak_since_read = 0.0;
+        }
+        fn body_amplitude(&self) -> f64 {
+            db_to_amplitude(self.body_db)
+        }
+        fn bar_amplitude(&self) -> f64 {
+            db_to_amplitude(self.bar_db)
+        }
+    }
+    fn amplitude_db(amplitude: f64) -> f64 {
+        if amplitude > 0.0 {
+            20.0 * amplitude.log10()
+        } else {
+            f64::NEG_INFINITY
+        }
+    }
+    fn mean_square_db(mean_square: f64) -> f64 {
+        if mean_square > 0.0 {
+            10.0 * mean_square.log10()
+        } else {
+            f64::NEG_INFINITY
+        }
+    }
+    fn db_to_amplitude(db: f64) -> f64 {
+        if db.is_finite() {
+            10f64.powf(db / 20.0)
+        } else {
+            0.0
+        }
+    }
+
+    // Drive window and display timelines independently: every 4.1667 ms a
+    // window is ingested; every time the window timeline passes a 33 ms read
+    // deadline the ballistics advance (mirrors poll_windows + advance_display).
+    let step_onset = Duration::from_millis(500);
+    let run = |loud_from: Option<Duration>, quiet_from: Option<Duration>, total: Duration| {
+        let mut model = Model::default();
+        let mut reads: Vec<(Duration, f64, f64)> = Vec::new();
+        let mut window_end = Duration::ZERO;
+        let mut next_read = READ_EVERY;
+        while window_end < total {
+            let loud = loud_from.is_some_and(|from| window_end > from);
+            let silent_release = quiet_from.is_some_and(|from| window_end > from);
+            let level = if loud {
+                1.0
+            } else if silent_release {
+                0.0
+            } else if quiet_from.is_some() {
+                10f64.powf(-60.0 / 20.0)
+            } else {
+                0.0
+            };
+            model.ingest(level, level);
+            window_end = Duration::from_secs_f64(window_end.as_secs_f64() + WINDOW_SECS);
+            while next_read <= window_end {
+                model.advance(READ_EVERY.as_secs_f64());
+                reads.push((next_read, model.body_amplitude(), model.bar_amplitude()));
+                next_read += READ_EVERY;
+            }
+        }
+        reads
+    };
+
+    // Silence -> full-scale step: window stream is silence, then rms/peak 1.0.
+    let reads = run(Some(step_onset), None, Duration::from_secs(4));
+    let crossing = |fraction: f64, up: bool| -> Duration {
+        for (time, body, _bar) in &reads {
+            let crossed = if up {
+                *body >= fraction
+            } else {
+                *body <= fraction
+            };
+            if crossed {
+                return time.saturating_sub(step_onset);
+            }
+        }
+        Duration::ZERO
+    };
+    println!("rise 0 dBFS step (RMS body, 33 ms reads, Fast falloff):");
+    println!(
+        "  10% of full scale: {:?} ({} windows to onset), 50%: {:?}, 90%: {:?}",
+        crossing(0.10, true),
+        (crossing(0.10, true).as_secs_f64() / WINDOW_SECS).round(),
+        crossing(0.50, true),
+        crossing(0.90, true),
+    );
+    let bar_visible = reads
+        .iter()
+        .find(|(_, _, bar)| *bar >= 1.0)
+        .map(|(time, _, _)| time.saturating_sub(step_onset))
+        .expect("bar reaches full scale");
+    println!("  peak bar full scale: {bar_visible:?} (instant rise, display-quantized)");
+
+    // Continuous-time references from 1 - exp(-t/tau).
+    let reference =
+        |fraction: f64| Duration::from_secs_f64(-TAU_SECS * (1.0 - fraction * fraction).ln());
+    println!(
+        "  continuous references: 10% {:?}, 50% {:?}, 90% {:?}",
+        reference(0.10),
+        reference(0.50),
+        reference(0.90),
+    );
+
+    // Release full-scale -> silence: displayed body decays through the
+    // integrator (~28.95 dB/s of displayed dB) unless the preference is slower.
+    let release_onset = Duration::from_millis(500);
+    let release_reads: Vec<(Duration, f64)> = run(
+        Some(Duration::ZERO),
+        Some(release_onset),
+        Duration::from_secs(4),
+    )
+    .into_iter()
+    .map(|(time, body, _bar)| (time, amplitude_db(body)))
+    .collect();
+    let db_crossing = |target_db: f64| -> Duration {
+        release_reads
+            .iter()
+            .find(|(_, db)| *db <= target_db)
+            .map(|(time, _)| time.saturating_sub(release_onset))
+            .unwrap_or(Duration::from_secs(99))
+    };
+    let effective_rate = {
+        let t1 = db_crossing(-6.0206).as_secs_f64();
+        let t2 = db_crossing(-40.0).as_secs_f64();
+        if t2 > t1 {
+            (40.0 - 6.0206) / (t2 - t1)
+        } else {
+            f64::NAN
+        }
+    };
+    println!("release 0 dBFS -> silence (RMS body):");
+    println!(
+        "  to -6 dB (50%): {:?}, to -20 dB (10%): {:?}, to -40 dB (1%): {:?}",
+        db_crossing(-6.0206),
+        db_crossing(-20.0),
+        db_crossing(-40.0),
+    );
+    println!("  effective displayed-dB fall rate: {effective_rate:.2} dB/s (preference 40 dB/s)");
+
+    // 60 dB-down -> silence release: crossings measured relative to the -60 dB
+    // starting level (10/50/90% of that step: -66/-78/-114 dB).
+    let quiet_release_reads: Vec<(Duration, f64)> =
+        run(None, Some(release_onset), Duration::from_secs(6))
+            .into_iter()
+            .map(|(time, body, _bar)| (time, amplitude_db(body)))
+            .collect();
+    let db_crossing_from = |target_db: f64| -> Duration {
+        quiet_release_reads
+            .iter()
+            .find(|(_, db)| *db <= target_db)
+            .map(|(time, _)| time.saturating_sub(release_onset))
+            .unwrap_or(Duration::from_secs(99))
+    };
+    println!("release -60 dBFS -> silence (RMS body):");
+    println!(
+        "  10% of step (-66 dB): {:?}, 50% (-78 dB): {:?}, 90% (-114 dB): {:?}",
+        db_crossing_from(-66.0),
+        db_crossing_from(-78.0),
+        db_crossing_from(-114.0),
+    );
+
+    // Peak bar release: no hold, falls at the preference rate.
+    println!(
+        "peak bar release 0 dBFS (40 dB/s, no hold): -6 dB {:?}, -20 dB {:?}, -40 dB {:?}",
+        Duration::from_millis((6.0206 / FALLOFF_DB_PER_S * 1e3) as u64),
+        Duration::from_millis((20.0 / FALLOFF_DB_PER_S * 1e3) as u64),
+        Duration::from_millis((40.0 / FALLOFF_DB_PER_S * 1e3) as u64),
+    );
+
+    assert!(crossing(0.90, true) > Duration::from_millis(150));
+    assert!(crossing(0.10, true) <= Duration::from_millis(100));
+}

@@ -308,18 +308,11 @@ impl<S: ProcessingSample> NodeBindings<S> {
     ) -> Result<(), CompileError> {
         self.insert(node, Binding::Rack(settings))
     }
-    pub fn bind_meter(
-        &mut self,
-        node: NodeId,
-        settings: crate::meter::MeterSettings,
-    ) -> Result<crate::meter::MeterReader, CompileError> {
-        if !settings.valid() {
-            return Err(CompileError::BindingKind { node });
-        }
-        let (meter, reader) = crate::meter::level_meter(settings.window_frames as u64, 8)
-            .map_err(|_| CompileError::BindingKind { node })?;
-        self.insert(node, Binding::Observed(NodeKind::Meter, Box::new(meter)))?;
-        Ok(reader)
+    /// Bind a node whose processing is the implicit PassThrough, with all
+    /// observation attached through the signal path instead (Meter nodes:
+    /// their level signal is prepared by the host's `prepare_levels`).
+    pub fn bind_unmanaged(&mut self, node: NodeId, kind: NodeKind) -> Result<(), CompileError> {
+        self.insert(node, Binding::Unmanaged(kind))
     }
     pub fn bind_recorder(
         &mut self,

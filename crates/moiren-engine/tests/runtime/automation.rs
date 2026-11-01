@@ -66,7 +66,7 @@ fn stopped_controls_preserve_every_terminal_reply_under_backpressure() {
 #[test]
 fn event_at_end_waits_until_next_block_and_ramps_cross_blocks() {
     for in_place in [false, true] {
-        let (mut engine, mut control, mut meter, samples) = pipeline(in_place, 16, 16);
+        let (mut engine, mut control, probe, samples) = pipeline(in_place, 16, 16);
         assert_eq!(
             control
                 .submit(request(1, ApplyAt::Frame(3), 2.0, 2), 0)
@@ -90,9 +90,9 @@ fn event_at_end_waits_until_next_block_and_ramps_cross_blocks() {
         engine.render(1).unwrap();
         assert_eq!(values(&samples, 9)[8], 0.0);
         assert_eq!(control.poll_applied().unwrap().effective_frame, 8);
-        let pre_gain = meter.latest().unwrap();
-        assert_eq!(pre_gain.peak, 0.25);
-        assert_eq!(pre_gain.rms, 0.25);
+        // The pre-gain observer saw every frame of the constant source.
+        assert_eq!(probe.frames(), 9);
+        assert_eq!(probe.peak(), 0.25);
     }
 }
 

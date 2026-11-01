@@ -209,6 +209,17 @@ pub fn db_text(gain: f64) -> String {
     }
 }
 
+/// The unit-less form of [`db_text`] for tight inline slots that carry their
+/// unit elsewhere (the mixer's send rows): −∞ or a signed one-decimal dB
+/// value with no trailing unit.
+pub fn db_text_bare(gain: f64) -> String {
+    if gain == 0. {
+        "−∞".into()
+    } else {
+        format!("{:+.1}", 20. * gain.log10())
+    }
+}
+
 /// A level amplitude as a signed dBFS readout; exact digital silence is
 /// −∞ dBFS, spelled with the same U+2212 minus as [`db_text`].
 pub fn dbfs_text(amplitude: f32) -> String {
@@ -333,7 +344,7 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{db_text, dbfs_text, step_db};
+    use super::{db_text, db_text_bare, dbfs_text, step_db};
 
     #[test]
     fn db_text_reads_signed_db_and_one_infinity_for_silence() {
@@ -351,6 +362,15 @@ mod tests {
         // Negative amplitudes are as absent as silence: ballistics never
         // produce them, and silence is the honest rendering if they appear.
         assert_eq!(dbfs_text(-0.5), "−∞ dBFS");
+    }
+
+    #[test]
+    fn bare_readouts_keep_their_slot_formats() {
+        // The send rows' unit-less label: signed one-decimal dB, −∞ spelled
+        // with the same U+2212 minus as db_text.
+        assert_eq!(db_text_bare(0.), "−∞");
+        assert_eq!(db_text_bare(1.), "+0.0");
+        assert_eq!(db_text_bare(10f64.powf(-6. / 20.)), "-6.0");
     }
 
     #[test]

@@ -105,10 +105,7 @@ fn compile_transform(kind: NodeKind) -> CompiledGraph<f64> {
         NodeKind::ChannelMapper => bindings
             .bind_channel_mapper(transform, ChannelMapperSettings::default())
             .unwrap(),
-        NodeKind::Meter => bindings
-            .bind_meter(transform, moiren_engine::meter::MeterSettings::default())
-            .map(|_| ())
-            .unwrap(),
+        NodeKind::Meter => bindings.bind_unmanaged(transform, NodeKind::Meter).unwrap(),
         NodeKind::Recorder => bindings
             .bind_recorder(
                 transform,

@@ -8,7 +8,7 @@ use std::{
 };
 
 use moiren_core::{
-    graph::{EdgeId, LogicalGraph, NodeId},
+    graph::{EdgeId, LogicalGraph, NodeId, NodeKind},
     protocol::{ParamValue, ProcessorId},
 };
 
@@ -312,9 +312,9 @@ fn bind_host_processors<S: ProcessingSample>(
                 .map(|reader| {
                     readers.recorders.insert(node, Some(reader));
                 }),
-            NodeConfig::Meter(settings) => bindings.bind_meter(node, *settings).map(|reader| {
-                readers.meters.insert(node, Some(reader));
-            }),
+            // Meter nodes pass audio through unmodified; their level signal is
+            // published by `prepare_levels` at the configured window cadence.
+            NodeConfig::Meter(_) => bindings.bind_unmanaged(node, NodeKind::Meter),
             NodeConfig::SpectrumAnalyzer(settings) => {
                 let channels = job
                     .project
@@ -434,9 +434,6 @@ fn compile_update_ready<S: ProcessingSample>(
     // Only a successfully validated observer transfer may keep its original
     // reader. Placeholder endpoints are reclaimed here, never on RT.
     for &(node, _) in &job.observer_reuse {
-        if let Some(reader) = readers.meters.get_mut(&node) {
-            *reader = None;
-        }
         if let Some(reader) = readers.recorders.get_mut(&node) {
             *reader = None;
         }

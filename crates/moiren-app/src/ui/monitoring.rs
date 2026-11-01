@@ -680,9 +680,8 @@ impl MeterSubscription {
     }
 
     /// Step the display ballistics. Runs on every pump (display frame or
-    /// control-side timer), so decay and peak release continue smoothly
-    /// between publications; the display is `None` exactly when the raw
-    /// observation is.
+    /// control-side timer); a frame that drained no window holds every
+    /// layer, and the display is `None` exactly when the raw observation is.
     fn advance_display(&mut self, now: Instant) {
         let Some(levels) = self.levels.as_deref() else {
             self.display = None;

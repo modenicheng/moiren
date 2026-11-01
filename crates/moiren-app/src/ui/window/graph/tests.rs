@@ -1750,8 +1750,8 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             window.draw(cx).clear(cx);
         });
     }
-    // Stop the source so the measured fall is display ballistics, not fresh
-    // publications resetting the bar upward.
+    // Stop the source so the measured hold is the delivery-gap semantics,
+    // not fresh publications resetting the bar upward.
     backend_state.pause_audio.store(true, Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(20));
     cx.update(|window, cx| {
@@ -1785,9 +1785,13 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             trace.graph_renders, renders_before,
             "bar motion must not rebuild the cached graph page"
         );
-        assert!(
-            state.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
-            "the repainted bars must follow the decaying ballistics"
+        // A stalled publisher ingests no windows, so the delivery-gap
+        // semantics hold the bar: the frames above still repaint it (see
+        // the paint count) without reading the stall as a level dip.
+        assert_eq!(
+            state.node_meters.channel_levels(node).unwrap()[0].bar,
+            bar_before,
+            "a publisher stall must hold the bar instead of reading as a dip"
         );
     });
     finish_service(runtime);

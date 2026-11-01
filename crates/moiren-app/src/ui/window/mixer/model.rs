@@ -375,6 +375,17 @@ impl EditableValueFamily {
             ),
         }
     }
+
+    /// The family's Enter/blur commit, so one match drives both the family's
+    /// input subscription and [`commit_active_editor`].
+    fn commit(self) -> fn(&mut StudioShell, &NodeId, &str, &mut App) {
+        match self {
+            Self::Fader => commit_mixer_gain,
+            Self::Balance => commit_mixer_balance,
+            Self::NodeGain => commit_node_gain,
+            Self::NodePan => commit_node_pan,
+        }
+    }
 }
 
 /// Click handler that opens one editable numeric readout: enters the family's
@@ -545,19 +556,19 @@ fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut Ap
 }
 
 /// Enter/blur commit for the send gain editor; the input subscription and
-/// [`commit_active_editor`] share it. The parse goes through the shared
-/// [`parse_gain_db`] so the send editor accepts exactly the same silence
-/// spellings and entry domain as every other dB editor.
-fn commit_send_gain(shell: &mut StudioShell, id: EdgeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_send != Some(id) {
+/// [`commit_active_editor`] share it. Parsing goes through [`parse_gain_db`]
+/// like every fader readout, so the send and fader entries accept the same
+/// silence spellings and domain.
+fn commit_send_gain(shell: &mut StudioShell, id: &EdgeId, text: &str, cx: &mut App) {
+    if shell.mixer.editing_send != Some(*id) {
         return;
     }
     shell.mixer.editing_send = None;
     if let Some(gain) = parse_gain_db(text) {
         shell.state.update(cx, |state, _| {
-            if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
+            if let Ok(edge) = state.snapshot.graph.graph.get_edge(*id) {
                 state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
-                    edge: id,
+                    edge: *id,
                     params: SendParams {
                         gain,
                         ..*edge.params()
@@ -576,47 +587,33 @@ fn commit_send_gain(shell: &mut StudioShell, id: EdgeId, text: &str, cx: &mut Ap
 /// notifies only then).
 pub(in crate::ui::window) fn commit_active_editor(shell: &mut StudioShell, cx: &mut App) -> bool {
     let mut active = false;
-    if let Some(id) = shell.mixer.editing_value {
+    for family in [
+        EditableValueFamily::Fader,
+        EditableValueFamily::Balance,
+        EditableValueFamily::NodeGain,
+        EditableValueFamily::NodePan,
+    ] {
+        let (editing, inputs) = family.parts(shell);
+        let Some(id) = *editing else {
+            continue;
+        };
         active = true;
-        if let Some(input) = shell.mixer.value_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_mixer_gain(shell, &id, &text, cx);
+        if let Some(text) = inputs
+            .get(&id)
+            .map(|input| input.read(cx).value().to_string())
+        {
+            (family.commit())(shell, &id, &text, cx);
         } else {
-            shell.mixer.editing_value = None;
+            *editing = None;
         }
     }
-    if let Some(id) = shell.mixer.editing_balance {
-        active = true;
-        if let Some(input) = shell.mixer.balance_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_mixer_balance(shell, &id, &text, cx);
-        } else {
-            shell.mixer.editing_balance = None;
-        }
-    }
-    if let Some(id) = shell.mixer.editing_node_gain {
-        active = true;
-        if let Some(input) = shell.mixer.node_gain_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_node_gain(shell, &id, &text, cx);
-        } else {
-            shell.mixer.editing_node_gain = None;
-        }
-    }
-    if let Some(id) = shell.mixer.editing_node_pan {
-        active = true;
-        if let Some(input) = shell.mixer.node_pan_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_node_pan(shell, &id, &text, cx);
-        } else {
-            shell.mixer.editing_node_pan = None;
-        }
-    }
+    // The send family is EdgeId-keyed, so it stays explicit rather than
+    // joining the NodeId-keyed loop above.
     if let Some(id) = shell.mixer.editing_send {
         active = true;
         if let Some(input) = shell.mixer.send_inputs.get(&id) {
             let text = input.read(cx).value().to_string();
-            commit_send_gain(shell, id, &text, cx);
+            commit_send_gain(shell, &id, &text, cx);
         } else {
             shell.mixer.editing_send = None;
         }
@@ -910,34 +907,21 @@ impl StudioShell {
             &mut self.mixer.inspector_faders,
             fader_rows(&graph),
         );
-        for edge in graph.graph.edges() {
-            let id = edge.id();
-            let input = self.mixer.send_inputs.entry(id).or_insert_with(|| {
-                let input = cx.new(|cx| component::input::InputState::new(window, cx));
-                cx.subscribe(
-                    &input,
-                    move |shell, input, event: &component::input::InputEvent, cx| {
-                        if matches!(
-                            event,
-                            component::input::InputEvent::PressEnter { .. }
-                                | component::input::InputEvent::Blur
-                        ) {
-                            let text = input.read(cx).value().to_string();
-                            commit_send_gain(shell, id, &text, cx);
-                            cx.notify();
-                        }
-                    },
-                )
-                .detach();
-                input
-            });
-            // InputState::set_value notifies even for identical text; skip
-            // the write when the readout is already current.
-            let text = gain_db_text(edge.params().gain);
-            if self.mixer.editing_send != Some(id) && input.read(cx).value() != text {
-                input.update(cx, |input, cx| input.set_value(text, window, cx));
-            }
-        }
+        // The send family rides the same editor sync as the NodeId-keyed
+        // families below; only its commit is EdgeId-addressed.
+        sync_value_inputs(
+            window,
+            cx,
+            &mut self.mixer.send_inputs,
+            self.mixer.editing_send.as_ref(),
+            graph
+                .graph
+                .edges()
+                .iter()
+                .map(|edge| (edge.id(), gain_db_text(edge.params().gain)))
+                .collect(),
+            commit_send_gain,
+        );
         let sends = graph
             .graph
             .edges()

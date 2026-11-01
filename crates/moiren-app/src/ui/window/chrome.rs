@@ -12,19 +12,12 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
     }
     let this = cx.entity();
     let state = shell.state.read(cx);
-    let limit = if shell.compact { 16 } else { 24 };
-    let project_label = if shell.project_name.chars().count() > limit {
-        format!(
-            "{}…",
-            shell
-                .project_name
-                .chars()
-                .take(limit - 1)
-                .collect::<String>()
-        )
-    } else {
-        shell.project_name.clone()
-    };
+    // The toolbar's project label shares the status bar's truncation, at a
+    // tighter limit when the window goes compact.
+    let project_label = truncate_name(
+        &shell.project_name,
+        if shell.compact { 16 } else { STATUS_NAME_LIMIT },
+    );
     let running = matches!(
         state.snapshot.phase,
         SessionPhase::Running | SessionPhase::Starting
@@ -307,10 +300,14 @@ fn endpoint_name<'a>(rows: &'a [crate::service::DeviceRow], endpoint_id: &'a str
 }
 
 /// Status-bar names must survive long Windows device names.
-fn truncate_name(name: &str) -> String {
-    const LIMIT: usize = 24;
-    if name.chars().count() > LIMIT {
-        format!("{}…", name.chars().take(LIMIT - 1).collect::<String>())
+const STATUS_NAME_LIMIT: usize = 24;
+
+/// Truncates `name` to `limit` characters, reserving one slot for the
+/// ellipsis so the result never exceeds the limit. Long Windows device names
+/// and the toolbar's project label share it at their own limits.
+fn truncate_name(name: &str, limit: usize) -> String {
+    if name.chars().count() > limit {
+        format!("{}…", name.chars().take(limit - 1).collect::<String>())
     } else {
         name.to_string()
     }
@@ -324,9 +321,10 @@ fn route_label(
     catalog: &crate::service::DeviceCatalog,
 ) -> String {
     let source = match source {
-        crate::service::InputSelection::Physical { endpoint_id } => {
-            truncate_name(endpoint_name(&catalog.inputs, endpoint_id))
-        }
+        crate::service::InputSelection::Physical { endpoint_id } => truncate_name(
+            endpoint_name(&catalog.inputs, endpoint_id),
+            STATUS_NAME_LIMIT,
+        ),
         crate::service::InputSelection::Process {
             pid,
             creation_time_100ns,
@@ -334,13 +332,16 @@ fn route_label(
             .processes
             .iter()
             .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
-            .map(|row| truncate_name(&row.name))
+            .map(|row| truncate_name(&row.name, STATUS_NAME_LIMIT))
             .unwrap_or_else(|| format!("#{pid}")),
         crate::service::InputSelection::Tone { frequency_hz } => {
             t!("Tone generator · %{hz} Hz", hz = frequency_hz).to_string()
         }
     };
-    let sink = truncate_name(endpoint_name(&catalog.outputs, output_endpoint_id));
+    let sink = truncate_name(
+        endpoint_name(&catalog.outputs, output_endpoint_id),
+        STATUS_NAME_LIMIT,
+    );
     t!("%{source} → %{sink}", source = source, sink = sink).to_string()
 }
 
