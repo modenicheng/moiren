@@ -2,7 +2,23 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-10-31.
+verdict. Status updated 2026-11-01.
+
+## Latest fixed-driver software-route checkpoint - 2026-11-01
+
+The user-authorized [current-code regression](../../docs/validation/2026-11-01-current-vad-native-regression.md)
+uses497957e including353f0db, with installed611/oem205 and its original SYS hash
+unchanged. All71 requested host regressions pass. One exact Playback -> unity
+Bus -> MIC native acquisition negotiates144/144 frames, Engine32, and retains
+10114 packets/1456416 frames. Source submission/postroll complete, but runtime
+retirement fails slot0 `0x8007051A`; collection/cleanup and quality are incomplete.
+Nominal analysis resolves21/29 codes, not proved missing frames. Independent
+readback verifies91130 scalar checkpoints, preserving startup/tail XRUN and
+epoch barriers rather than promoting coarse zero steady counters to a pass.
+The archive is host-verified before removing only the exact terminal task.
+No owners/raw children remain; boot, six default roles and12 render controls
+match preflight. No driver/system-control change, physical output or latency
+qualification occurs. This is not an isolated SRC-fix A/B or a new driver result.
 
 ## Latest physical checkpoint - 2026-10-31
 

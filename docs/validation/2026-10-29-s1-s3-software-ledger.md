@@ -5,6 +5,18 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The user-authorized [current-code native regression](2026-11-01-current-vad-native-regression.md)
+runs all three requested host commands (71 tests pass) and one exact
+Playback -> Bus -> MIC collection with current497957e and unchanged611 driver.
+Actual144/144, Engine32 source submission/postroll complete, but retirement
+fails slot0 `0x8007051A`; collection/cleanup and quality remain incomplete.
+The verified archive retains30.342s PCM, nominal21/29 identity classification
+and complete91130-checkpoint scalar history with startup/tail fault barriers.
+No physical latency or isolated old/new SRC-fix comparison follows. Only the
+owned terminal task is removed after archival; driver, boot and audio settings
+remain unchanged. This later explicit request supersedes the prior no-replay
+scope only for this single bounded acquisition.
+
 The [current353f0db gate audit](2026-11-01-s1-s3-353f0db-gate-audit.md)
 rechecks all23 original requirement groups against current source/test witnesses
 and directly revalidates all44 historical both-minimum archive payloads plus
