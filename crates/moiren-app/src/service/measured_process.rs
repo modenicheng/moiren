@@ -202,7 +202,35 @@ impl MeasuredProcessProfile {
                 consumer_rate,
                 demand,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                use moiren_windows_audio::{
+                    latency::LatencyBudgetError,
+                    process_loopback::MeasuredAdmissionError,
+                };
+                if matches!(
+                    error,
+                    MeasuredAdmissionError::Budget(LatencyBudgetError::InsufficientInputBudget)
+                ) && let Ok(budget) = evidence.budget_for_consumer(
+                    process,
+                    request.native_owner_generation,
+                    consumer_rate,
+                    demand,
+                    request.jitter_frames,
+                ) {
+                    return format!(
+                        "{error}: target {} frames; minimum {} = demand {} + delivery gap {} + jitter {} + lookahead {} ({} Hz input frames); capacity {} is storage, not the operating target. This is a modeled reserve, not measured latency.",
+                        request.target_frames,
+                        budget.minimum_frames,
+                        budget.demand_frames,
+                        budget.delivery_gap_frames,
+                        budget.jitter_frames,
+                        budget.lookahead_frames,
+                        budget.input_sample_rate,
+                        request.capacity_frames,
+                    );
+                }
+                error.to_string()
+            })?;
         let bound = options
             .delivery
             .expect("typed measured evidence requires delivery");

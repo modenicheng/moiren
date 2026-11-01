@@ -247,6 +247,39 @@ fn historical_consumer_demand_is_rebound_upward_between_engine_rates() {
 }
 
 #[test]
+fn budget_details_keep_historical_whole_wake_rate_rounding_and_identity_fences() {
+    let mut observation = regular();
+    observation.consumer.events[1].frames = 200;
+    let evidence = measure_with(observation, 44_100, 220).unwrap();
+    let budget = evidence
+        .budget_for_consumer(&process(), 7, 48_000, 32, 16)
+        .unwrap();
+    assert_eq!(budget.demand_frames, 240);
+    assert_eq!(budget.minimum_frames, 354);
+    let accepted = admit(&evidence, target(2048, 354, 16), 48_000, 32).unwrap();
+    assert_eq!(accepted.max_demand_frames, 240);
+    assert_eq!(
+        accepted.prepare().unwrap().modeled_minimum_frames,
+        Some(budget.minimum_frames)
+    );
+    assert!(admit(&evidence, target(2048, 353, 16), 48_000, 32).is_err());
+    let mut replacement = process();
+    replacement.creation_time_100ns += 1;
+    assert!(matches!(
+        evidence.budget_for_consumer(&replacement, 7, 48_000, 32, 16),
+        Err(MeasuredAdmissionError::IdentityMismatch)
+    ));
+    assert!(matches!(
+        evidence.budget_for_consumer(&process(), 8, 48_000, 32, 16),
+        Err(MeasuredAdmissionError::GenerationMismatch)
+    ));
+    assert!(matches!(
+        evidence.budget_for_consumer(&process(), 7, 12_345, 32, 16),
+        Err(MeasuredAdmissionError::InvalidConsumer)
+    ));
+}
+
+#[test]
 fn packet_gap_and_full_drain_gap_both_constrain_admission_with_ceiling() {
     let mut observation = regular();
     observation.delivery.max_gap_100ns = 40_001;

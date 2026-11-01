@@ -911,6 +911,36 @@ fn measured_refusal_is_visible_and_preserves_editable_draft_and_previous_active_
 }
 
 #[gpui_kit::test]
+fn measured_insufficient_draft_shows_budget_terms_without_replacing_the_running_owner(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, true);
+    let old = fixture.initial.active_measured_process.clone().unwrap();
+    let (view, cx) = fixture.shell(cx);
+    select_target(cx);
+    cx.update(|window, cx| window.click("measured-target-2", cx));
+    let feedback = row(cx, "measured-process-feedback");
+    assert!(feedback.contains("target 128 frames"), "{feedback}");
+    assert!(
+        feedback.contains("minimum 194 = demand 96 + delivery gap 96 + jitter 0 + lookahead 2")
+    );
+    assert!(feedback.contains("capacity 2048 is storage"));
+    reveal(cx, "measured-process-apply");
+    cx.update(|window, cx| window.click("measured-process-apply", cx));
+    poll(&view, cx);
+    assert!(fixture.requests().is_empty());
+    view.update(cx, |shell, cx| {
+        let snapshot = &shell.state.read(cx).snapshot;
+        assert_eq!(snapshot.phase, SessionPhase::Running);
+        assert_eq!(snapshot.generation, fixture.initial.generation);
+        assert_eq!(snapshot.active_measured_process, Some(old));
+        assert_eq!(shell.settings.measured.draft.target_frames, 128);
+        assert!(!shell.settings.measured.busy());
+    });
+    fixture.finish();
+}
+
+#[gpui_kit::test]
 fn measured_missing_or_stale_evidence_blocks_click_without_changing_running_owner(
     cx: &mut TestAppContext,
 ) {

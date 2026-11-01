@@ -2,6 +2,7 @@ use moiren_windows_audio::latency::{
     LatencyBudgetError,
     transport::{
         DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy, prepare_transport_input,
+        transport_input_budget,
     },
 };
 
@@ -123,4 +124,56 @@ fn invalid_or_overflowing_bounds_are_refused_without_panicking() {
         ),
         Err(LatencyBudgetError::ArithmeticOverflow)
     );
+}
+
+#[test]
+fn budget_details_match_admission_at_exact_reserve_and_one_frame_below() {
+    for (input_rate, consumer_rate, demand, lookahead, jitter) in [
+        (48_000, 48_000, 96, 0, 16),
+        (48_000, 44_100, 128, 2, 32),
+        (44_100, 48_000, 128, 16, 0),
+        (96_000, 48_000, 256, 32, 96),
+    ] {
+        let delivery = InputDeliveryTiming {
+            sample_rate: input_rate,
+            ..delivery()
+        };
+        let budget =
+            transport_input_budget(delivery, consumer_rate, demand, lookahead, jitter).unwrap();
+        assert_eq!(budget.input_sample_rate, input_rate);
+        assert_eq!(budget.lookahead_frames, lookahead.max(2));
+        assert_eq!(
+            budget.minimum_frames,
+            budget.demand_frames
+                + budget.delivery_gap_frames
+                + budget.jitter_frames
+                + budget.lookahead_frames
+        );
+        for capacity_frames in [2048, 8192] {
+            let policy = |target_frames| TransportInputPolicy::Target {
+                capacity_frames,
+                target_frames,
+                jitter_frames: jitter,
+            };
+            let accepted = prepare_transport_input(
+                policy(budget.minimum_frames),
+                Some(delivery),
+                consumer_rate,
+                demand,
+                lookahead,
+            )
+            .unwrap();
+            assert_eq!(accepted.modeled_minimum_frames, Some(budget.minimum_frames));
+            assert_eq!(
+                prepare_transport_input(
+                    policy(budget.minimum_frames - 1),
+                    Some(delivery),
+                    consumer_rate,
+                    demand,
+                    lookahead,
+                ),
+                Err(LatencyBudgetError::InsufficientInputBudget)
+            );
+        }
+    }
 }

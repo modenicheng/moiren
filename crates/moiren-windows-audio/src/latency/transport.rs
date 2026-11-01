@@ -45,6 +45,50 @@ pub enum TransportInputPolicy {
     },
 }
 
+/// Preparation-time reserve in input-rate frames, not measured latency or a
+/// promise about future packet delivery. Shared by admission and diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TransportInputBudget {
+    pub input_sample_rate: u32,
+    pub demand_frames: u32,
+    pub delivery_gap_frames: u32,
+    pub jitter_frames: u32,
+    pub lookahead_frames: u32,
+    pub minimum_frames: u32,
+}
+
+pub fn transport_input_budget(
+    delivery: InputDeliveryTiming,
+    consumer_sample_rate: u32,
+    max_consumer_demand_frames: u32,
+    lookahead_frames: u32,
+    jitter_frames: u32,
+) -> Result<TransportInputBudget, LatencyBudgetError> {
+    delivery.validate()?;
+    if consumer_sample_rate == 0 || max_consumer_demand_frames == 0 {
+        return Err(LatencyBudgetError::InvalidDeliveryBound);
+    }
+    let demand = (u64::from(max_consumer_demand_frames) * u64::from(delivery.sample_rate))
+        .div_ceil(u64::from(consumer_sample_rate));
+    let demand_frames =
+        u32::try_from(demand).map_err(|_| LatencyBudgetError::ArithmeticOverflow)?;
+    // The interpolation pair is required even without extra FIR lookahead.
+    let lookahead_frames = lookahead_frames.max(2);
+    let minimum_frames = demand_frames
+        .checked_add(lookahead_frames)
+        .and_then(|frames| frames.checked_add(delivery.max_gap_frames))
+        .and_then(|frames| frames.checked_add(jitter_frames))
+        .ok_or(LatencyBudgetError::ArithmeticOverflow)?;
+    Ok(TransportInputBudget {
+        input_sample_rate: delivery.sample_rate,
+        demand_frames,
+        delivery_gap_frames: delivery.max_gap_frames,
+        jitter_frames,
+        lookahead_frames,
+        minimum_frames,
+    })
+}
+
 /// Resolve normal residency independently of spare ring capacity.
 ///
 /// Consumer demand is the maximum complete startup or callback burst, not the
@@ -72,18 +116,15 @@ pub fn prepare_transport_input(
         return Ok(PreparedInputQueue::compatible());
     };
     let delivery = delivery.ok_or(LatencyBudgetError::MissingDeliveryBound)?;
-    let demand = (u64::from(max_consumer_demand_frames) * u64::from(delivery.sample_rate))
-        .div_ceil(u64::from(consumer_sample_rate));
-    // ClockSource requires a two-frame interpolation pair even when the
-    // caller has no additional FIR lookahead.
-    let low_water = u32::try_from(demand)
-        .ok()
-        .and_then(|frames| frames.checked_add(lookahead_frames.max(2)))
-        .ok_or(LatencyBudgetError::ArithmeticOverflow)?;
-    let minimum = low_water
-        .checked_add(delivery.max_gap_frames)
-        .and_then(|frames| frames.checked_add(jitter_frames))
-        .ok_or(LatencyBudgetError::ArithmeticOverflow)?;
+    let budget = transport_input_budget(
+        delivery,
+        consumer_sample_rate,
+        max_consumer_demand_frames,
+        lookahead_frames,
+        jitter_frames,
+    )?;
+    let low_water = budget.demand_frames + budget.lookahead_frames;
+    let minimum = budget.minimum_frames;
     let high_water = capacity_frames
         .checked_sub(delivery.max_packet_frames)
         .ok_or(LatencyBudgetError::InvalidInputTarget)?;

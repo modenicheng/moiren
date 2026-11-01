@@ -120,6 +120,40 @@ fn selection_refuses_stale_origin_unknown_observations_and_insufficient_target()
 }
 
 #[test]
+fn insufficient_selection_reports_the_same_whole_demand_budget_that_admission_uses() {
+    let mut graph = LogicalGraph::new();
+    let node = graph.create_node(NodeKind::Source, 2).unwrap();
+    let mut request = MeasuredProcessRequest {
+        node,
+        session_generation: SessionGeneration(3),
+        native_owner_generation: 7,
+        graph_revision: 11,
+        capacity_frames: 2048,
+        target_frames: 209,
+        jitter_frames: 16,
+    };
+    let observed = observation(node);
+    let error = MeasuredProcessProfile::from_observation(1, request, &observed).unwrap_err();
+    for detail in [
+        "input target cannot cover render demand, capture gap, jitter and lookahead",
+        "target 209 frames",
+        "minimum 210 = demand 96 + delivery gap 96 + jitter 16 + lookahead 2",
+        "48000 Hz input frames",
+        "capacity 2048 is storage",
+    ] {
+        assert!(error.contains(detail), "missing {detail:?}: {error}");
+    }
+    request.target_frames = 210;
+    let accepted = MeasuredProcessProfile::from_observation(1, request, &observed).unwrap();
+    assert_eq!(accepted.summary().request.target_frames, 210);
+    request.target_frames = 209;
+    request.capacity_frames = 8192;
+    let larger = MeasuredProcessProfile::from_observation(1, request, &observed).unwrap_err();
+    assert!(larger.contains("minimum 210 = demand 96"));
+    assert!(larger.contains("capacity 8192 is storage"));
+}
+
+#[test]
 fn ingress_elapsed_active_observation_cannot_become_an_unlimited_measured_profile() {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Source, 2).unwrap();

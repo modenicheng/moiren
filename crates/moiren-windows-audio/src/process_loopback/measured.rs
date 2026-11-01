@@ -12,7 +12,8 @@ use crate::latency::{
     InputDeliverySnapshot, LatencyBudgetError,
     events::{EVENT_HISTORY_CAPACITY, EventHistorySnapshot},
     transport::{
-        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy, prepare_transport_input,
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputBudget, TransportInputPolicy,
+        prepare_transport_input, transport_input_budget,
     },
 };
 use serde::Serialize;
@@ -206,6 +207,56 @@ impl MeasuredProcessDelivery {
         if !matches!(input, TransportInputPolicy::Target { .. }) {
             return Err(MeasuredAdmissionError::TargetRequired);
         }
+        let (delivery, max_demand_frames) =
+            self.consumer_envelope(engine_sample_rate, max_demand_frames)?;
+        prepare_transport_input(
+            input,
+            Some(delivery),
+            engine_sample_rate,
+            max_demand_frames,
+            2,
+        )?;
+        Ok(ProcessBridgeOptions {
+            input,
+            delivery: Some(delivery),
+            engine_sample_rate,
+            max_demand_frames,
+            age_limit_100ns: None,
+            max_ingress_elapsed_100ns: None,
+        })
+    }
+
+    /// Explain the same all-phase reserve used by admission, including the
+    /// historical whole-wake demand. This does not admit or activate a target.
+    pub fn budget_for_consumer(
+        &self,
+        expected_process: &ProcessIdentity,
+        expected_generation: u64,
+        engine_sample_rate: u32,
+        max_demand_frames: u32,
+        jitter_frames: u32,
+    ) -> Result<TransportInputBudget, MeasuredAdmissionError> {
+        if !self.process.same_process(expected_process) {
+            return Err(MeasuredAdmissionError::IdentityMismatch);
+        }
+        if self.owner_generation != expected_generation {
+            return Err(MeasuredAdmissionError::GenerationMismatch);
+        }
+        let (delivery, demand) = self.consumer_envelope(engine_sample_rate, max_demand_frames)?;
+        Ok(transport_input_budget(
+            delivery,
+            engine_sample_rate,
+            demand,
+            2,
+            jitter_frames,
+        )?)
+    }
+
+    fn consumer_envelope(
+        &self,
+        engine_sample_rate: u32,
+        max_demand_frames: u32,
+    ) -> Result<(InputDeliveryTiming, u32), MeasuredAdmissionError> {
         validate_consumer(engine_sample_rate, max_demand_frames)?;
         // Preserve both observed demand and the old owner's full prepared
         // bound when moving to another engine rate. Neither graph segmentation
@@ -228,21 +279,7 @@ impl MeasuredProcessDelivery {
             max_gap_frames: self.max_gap_frames,
             source: DeliveryTimingSource::Empirical,
         };
-        prepare_transport_input(
-            input,
-            Some(delivery),
-            engine_sample_rate,
-            max_demand_frames,
-            2,
-        )?;
-        Ok(ProcessBridgeOptions {
-            input,
-            delivery: Some(delivery),
-            engine_sample_rate,
-            max_demand_frames,
-            age_limit_100ns: None,
-            max_ingress_elapsed_100ns: None,
-        })
+        Ok((delivery, max_demand_frames))
     }
 
     pub fn process(&self) -> &ProcessIdentity {
