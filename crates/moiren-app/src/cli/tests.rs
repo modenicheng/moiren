@@ -51,7 +51,36 @@ fn monitor_compatibility_does_not_invent_explicit_queue_or_output_requests() {
     assert!(options.cursor_trace_directory.is_none());
     assert!(options.cursor_trace_pcm_frames.is_none());
     assert!(options.process_pcm_config().unwrap().is_none());
+    assert_eq!(options.process_creation_time_100ns, None);
     assert_eq!(options.audio.processing.precision, ProcessingPrecision::F32);
+}
+
+#[test]
+fn monitor_accepts_exact_optional_process_creation_identity() {
+    let options = monitor(&["--process-creation-time-100ns", "134380443701788661"])
+        .expect("stable process identity should be expressible by the caller");
+    assert_eq!(
+        options.process_creation_time_100ns,
+        Some(134380443701788661)
+    );
+    for invalid in ["0", "-1", "1.5", "NaN", "18446744073709551616", ""] {
+        assert!(monitor(&["--process-creation-time-100ns", invalid]).is_err());
+    }
+    assert!(monitor(&["--process-creation-time-100ns", "18446744073709551615"]).is_ok());
+    assert!(
+        parse(args(&[
+            "monitor",
+            "--process",
+            "4294967294",
+            "--output",
+            "pinned-output",
+            "--process-creation-time-100ns",
+            "12345",
+            "--process-creation-time-100ns",
+            "12345",
+        ]))
+        .is_err()
+    );
 }
 
 #[test]
@@ -439,6 +468,8 @@ fn monitor_help_explains_two_phase_measured_run_without_qualification() {
         "not a latency qualification",
         "no packet/gap",
         "all five required together",
+        "--process-creation-time-100ns",
+        "target process tree",
     ] {
         assert!(help.contains(expected), "missing {expected:?}: {help}");
     }

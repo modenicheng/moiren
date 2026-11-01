@@ -5,6 +5,19 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [process-tree identity increment](2026-11-02-process-root-identity.md)
+resolves the old PID difference using the historical Windows parent/child event:
+native16768is the venv launcher, player24944its emitting child, consistent with
+intentional include-target-process-tree activation. Optional exact creation-time
+pinning now rejects caller-stale/reused PIDs before driver/archive/service setup.
+Schema3 explicitly distinguishes requested stamp, resolved root and tree scope.
+Independent workspace2171tests/8ignored, measured desktop20tests, strict
+workspace Clippy and formatting pass. Final CLI71tests include the additional
+schema/null assertions. A remote pre-native refusal/help smoke and read-only
+cleanup recheck pass; no audio or device is opened. Exact child lifetime,
+rendered epochs, native quality faults
+and physical calibration are not established by this provenance result.
+
 The [frozen actual-replay coverage](2026-11-02-process-replay-coverage.md)
 accounts for every frame of the retained82.112s OBS return without per-window
 refitting:33.002667s independently compatible,1s anchor training, one64-frame
@@ -13,8 +26,9 @@ outside-support intervals. All26new regressions and95related tests pass.
 One remote offline task and one narrow read-only onset diagnostic run without
 new live audio; compact plots are verified and reviewed. The onset residual is
 not established audible destruction and need not block independent development.
-Native8gap-bound violations, unknown rendered epochs, a player/native PID
-provenance discrepancy and unavailable physical calibration remain explicit.
+Native8gap-bound violations, unknown rendered epochs and unavailable physical
+calibration remain explicit. The player/native PID difference is explained by
+the later linked historical parent/child audit, not by waveform matching.
 The launcher lacks a numeric exit-code receipt despite final output/empty
 stderr/no remaining process; no exit0 or whole-run qualification is invented.
 No default, gate, recovery or first-packet policy changes.

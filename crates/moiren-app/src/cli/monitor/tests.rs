@@ -67,6 +67,61 @@ fn context_refuses_missing_or_mismatched_stable_identity_before_start() {
 }
 
 #[test]
+fn pinned_creation_time_refuses_same_pid_reuse_before_service_preparation() {
+    let mut options = options();
+    options
+        .set("--process-creation-time-100ns", "12345")
+        .expect("missing caller-provided process creation identity");
+    assert!(context(&options, source()).is_ok());
+    let reused = InputSelection::Process {
+        pid: 4294967294,
+        creation_time_100ns: 12346,
+    };
+    let error = context(&options, reused)
+        .err()
+        .expect("same-PID reuse must refuse")
+        .to_string();
+    assert!(error.contains("creation"), "{error}");
+}
+
+#[test]
+fn pinned_creation_refusal_never_prepares_or_starts_an_owner() {
+    let state = Arc::new(State::default());
+    let backend = FakeBackend(state.clone());
+    let driver = ManagedDriver::new(move |_| Ok(Box::new(backend.clone())));
+    let mut options = options();
+    options
+        .set("--process-creation-time-100ns", "12346")
+        .unwrap();
+    assert!(run_with_driver(options, source(), driver, Duration::from_millis(1)).is_err());
+    assert_eq!(state.prepares.load(Ordering::SeqCst), 0);
+    assert_eq!(state.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(state.stops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn monitor_report_distinguishes_pinned_tree_root_from_an_exact_emitter() {
+    let backend = FakeBackend::default();
+    let mut options = options();
+    options
+        .set("--process-creation-time-100ns", "12345")
+        .unwrap();
+    let report = run_with_driver(
+        options,
+        source(),
+        ManagedDriver::new(move |_| Ok(Box::new(backend.clone()))),
+        Duration::from_millis(20),
+    )
+    .unwrap();
+    let json = serde_json::to_value(report).unwrap();
+    assert_eq!(json["schema_version"], 3);
+    assert_eq!(json["process_capture_scope"], "target_process_tree");
+    assert_eq!(json["requested_process_creation_time_100ns"], 12345);
+    assert_eq!(json["process_creation_time_100ns"], 12345);
+    assert_eq!(json["process_pid"], 4294967294u32);
+}
+
+#[test]
 fn supervised_real_service_confirms_both_precisions_and_reaps_owner() {
     for precision in [ProcessingPrecision::F32, ProcessingPrecision::F64] {
         let state = Arc::new(State::default());
@@ -81,6 +136,13 @@ fn supervised_real_service_confirms_both_precisions_and_reaps_owner() {
         assert!(report.cleanup_complete, "{report:?}");
         assert_eq!(report.failure, None);
         assert!(!report.qualified);
+        let serialized = serde_json::to_value(&report).unwrap();
+        assert_eq!(serialized["schema_version"], 3);
+        assert_eq!(serialized["process_capture_scope"], "target_process_tree");
+        assert_eq!(
+            serialized["requested_process_creation_time_100ns"],
+            serde_json::Value::Null
+        );
         assert!(
             serde_json::to_value(&report)
                 .unwrap()

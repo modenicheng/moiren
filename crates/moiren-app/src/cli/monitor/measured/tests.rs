@@ -73,6 +73,8 @@ fn fixture() -> (AppSnapshot, MonitorReport, MeasuredProcessRequest) {
         schema_version: 1,
         qualified: false,
         route: "test",
+        process_capture_scope: "target_process_tree",
+        requested_process_creation_time_100ns: None,
         process_pid: 42,
         process_creation_time_100ns: 123,
         output_endpoint_id: "output".into(),

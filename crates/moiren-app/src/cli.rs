@@ -16,6 +16,11 @@ Use monitor --help for the finite Process -> Bus -> physical output route.";
 
 const MONITOR_HELP: &str = "Moiren Process monitor (not a latency qualification)
 Usage: moiren-app monitor --process PID --output ENDPOINT [OPTIONS]
+  --process-creation-time-100ns N Optional exact Windows process creation stamp;
+                               refuses PID reuse before service/archive preparation
+Process selection includes the target process tree, not an identified emitter.
+With a launcher, pin the intended root or the self-reported child explicitly;
+the monitor never discovers or substitutes a child by executable name.
   --seconds 1..600              Run duration after startup (default 30)
   --startup-timeout-ms 1..30000  Control-side startup deadline (default 15000)
   --engine-block-frames N       Supported Engine block size (default 256)

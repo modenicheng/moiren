@@ -37,6 +37,10 @@ pub(super) struct MonitorReport {
     pub schema_version: u32,
     pub qualified: bool,
     pub route: &'static str,
+    /// WASAPI includes descendants of this pinned root; it does not identify
+    /// an individual emitting child merely because its waveform was captured.
+    pub process_capture_scope: &'static str,
+    pub requested_process_creation_time_100ns: Option<u64>,
     pub process_pid: u32,
     pub process_creation_time_100ns: u64,
     pub output_endpoint_id: String,
@@ -253,6 +257,7 @@ fn context(
         Some(pid) == options.pid && creation_time_100ns != 0,
         "resolved process identity does not match requested PID"
     );
+    validate_process_creation(options, creation_time_100ns)?;
     let mut graph = LogicalGraph::new();
     let input = graph.create_node(NodeKind::Source, 2)?;
     let bus = graph.create_node(NodeKind::Bus, 2)?;
@@ -312,6 +317,20 @@ fn context(
     Ok((context, spec))
 }
 
+#[cfg(any(windows, test))]
+fn validate_process_creation(options: &MonitorOptions, actual: u64) -> Result<()> {
+    // Caller evidence may come from a launcher PID or a reused PID. Refuse
+    // before preparing a service or archive; never substitute a descendant.
+    ensure!(
+        options
+            .process_creation_time_100ns
+            .is_none_or(|expected| expected == actual),
+        "Process creation identity changed: expected {:?}, observed {actual}",
+        options.process_creation_time_100ns
+    );
+    Ok(())
+}
+
 pub(super) fn run(options: MonitorOptions) -> Result<MonitorReport> {
     #[cfg(windows)]
     {
@@ -322,6 +341,7 @@ pub(super) fn run(options: MonitorOptions) -> Result<MonitorReport> {
             options.pid.context("missing process PID")?,
         )
         .context("resolve Process monitor identity")?;
+        validate_process_creation(&options, process.creation_time_100ns)?;
         let source = InputSelection::Process {
             pid: process.pid,
             creation_time_100ns: process.creation_time_100ns,
@@ -407,9 +427,11 @@ fn run_with_driver(
         unreachable!("validated Process context")
     };
     let mut report = MonitorReport {
-        schema_version: 2,
+        schema_version: 3,
         qualified: false,
         route: "Process Loopback -> Bus -> physical render",
+        process_capture_scope: "target_process_tree",
+        requested_process_creation_time_100ns: options.process_creation_time_100ns,
         process_pid: pid,
         process_creation_time_100ns: creation_time_100ns,
         output_endpoint_id: spec.output_endpoint_id.clone(),

@@ -156,8 +156,11 @@ as requested by the user.
 The native run still has8delivery-gap-bound violations. Its binary is the
 earlier source-manifest build including preserved dirty sources, not an exact
 clean-commit run of this increment. Player receipts namePID24944 while native
-archives/cleanup identifyPID16768; waveform agreement does not resolve that
-process-lifetime provenance discrepancy. Final queue and packet histories retain
+archives/cleanup identifyPID16768; waveform agreement alone does not resolve that
+process-lifetime provenance discrepancy. A later [historical identity audit](2026-11-02-process-root-identity.md)
+proves16768is the launcher parent of24944, consistent with intentional process-tree
+capture. The child's exact old creation stamp and rendered epochs remain unknown.
+Final queue and packet histories retain
 only256events each. Sample-exact owner replacement and Engine/render epoch
 boundaries in OBS remain unknown. None of these is relabeled a physical or
 whole-native-quality PASS.

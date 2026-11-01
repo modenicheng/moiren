@@ -9,6 +9,7 @@ use moiren_engine::node::DeviceMode;
 #[derive(Debug, Clone)]
 pub(super) struct MonitorOptions {
     pub pid: Option<u32>,
+    pub process_creation_time_100ns: Option<u64>,
     pub output: Option<String>,
     pub seconds: u16,
     pub measure_seconds: Option<u16>,
@@ -37,6 +38,7 @@ impl Default for MonitorOptions {
     fn default() -> Self {
         Self {
             pid: None,
+            process_creation_time_100ns: None,
             output: None,
             seconds: 30,
             measure_seconds: None,
@@ -130,6 +132,11 @@ impl MonitorOptions {
                 self.cursor_trace_directory = Some(value.into());
             }
             "--process" => self.pid = Some(number()?),
+            "--process-creation-time-100ns" => {
+                let stamp = window_number()?;
+                ensure!(stamp != 0, "--process-creation-time-100ns must be positive");
+                self.process_creation_time_100ns = Some(stamp);
+            }
             "--output" => self.output = Some(value.into()),
             "--seconds" => self.seconds = value.parse().context("invalid --seconds value")?,
             "--measure-seconds" => {
@@ -295,6 +302,10 @@ impl MonitorOptions {
     }
 
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.process_creation_time_100ns != Some(0),
+            "--process-creation-time-100ns must be positive"
+        );
         if self.cursor_trace_pcm_frames.is_some() {
             ensure!(
                 self.cursor_trace_directory.is_some(),
