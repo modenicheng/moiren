@@ -11,6 +11,62 @@ fn draft(audio: AudioSettings) -> Draft {
 }
 
 #[test]
+fn render_queue_draft_rebases_independently_and_conflicts_without_losing_intent() {
+    use crate::service::{ExpertInputBuffer, ExpertRenderQueue, TransportLatencySettings};
+    let mut edited = draft(AudioSettings::default());
+    edited.transport.render = Some(ExpertRenderQueue {
+        target_frames: 512,
+        ..Default::default()
+    });
+    let current = TransportLatencySettings {
+        process: Some(ExpertInputBuffer::default()),
+        ..Default::default()
+    };
+    let merged = edited
+        .submission(&edited.audio, edited.profile, edited.density, current)
+        .unwrap();
+    assert_eq!(merged.transport.render, edited.transport.render);
+    assert_eq!(merged.transport.process, current.process);
+    assert!(merged.save_transport);
+    let conflict = TransportLatencySettings {
+        render: Some(ExpertRenderQueue::default()),
+        ..current
+    };
+    assert!(
+        edited
+            .submission(&edited.audio, edited.profile, edited.density, conflict)
+            .is_err()
+    );
+    assert_eq!(edited.transport.render.unwrap().target_frames, 512);
+}
+
+#[test]
+fn render_only_save_requires_new_measured_admission_not_the_old_active_proof() {
+    let mut editor = draft(AudioSettings::default());
+    editor.transport.render = Some(crate::service::ExpertRenderQueue {
+        target_frames: 512,
+        ..Default::default()
+    });
+    let mut snapshot = running_settings();
+    snapshot.measured_process = Some(measured(17));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    assert!(captured.save_transport);
+    assert!(captured.measured_process.is_none());
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.transport_latency = captured.transport;
+    snapshot.measured_process = None;
+    assert!(captured.matches_requested(&snapshot));
+    snapshot.active_transport_latency = Some(captured.transport);
+    assert!(
+        !captured.matches_active(&snapshot),
+        "the old measured proof cannot confirm a changed render envelope"
+    );
+    snapshot.active_measured_process = None;
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
 fn stale_device_draft_preserves_new_defaults_and_other_device_overrides() {
     let original = AudioSettings::default();
     let mut device = draft(original.clone());

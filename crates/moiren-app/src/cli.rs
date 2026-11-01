@@ -22,6 +22,12 @@ Usage: moiren-app monitor --process PID --output ENDPOINT [OPTIONS]
   --precision f32|f64           Engine processing precision (default f32)
   --output-buffer-frames N      Independent native output buffer request
   --output-mode shared|exclusive (default shared)
+Independent render queue (all three required; frames at the output rate):
+  --render-target-frames N
+  --render-wake-margin-frames N
+  --render-callback-budget-frames N
+Omission fills native capacity. Native preparation validates target against
+actual period, capacity and declared wake/callback reserves; no latency promise.
 Explicit Process input budget (all five required together, in 48 kHz frames):
   --target-frames N --capacity-frames N --jitter-frames N
   --max-packet-frames N --max-gap-frames N

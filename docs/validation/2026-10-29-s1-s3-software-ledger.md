@@ -5,6 +5,16 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [2026-11-02 application render-queue slice](2026-11-02-app-render-queue.md)
+exposes independent render target/wake/callback policy through persisted
+intent, CLI and desktop, preserving native capacity and actual-period guards.
+Remote exact336/render512/Engine64/measured Process1536 runs concurrently with
+local development for540seconds: zero dropped/silent/underrun/reset counters,
+normal cleanup, but35 delivery-gap-bound violations remain visible. This is
+configuration/operational evidence, not clean sustained-delivery, isolated
+waveform, calibrated physical latency or permission to promote new defaults.
+Changing render intent explicitly requires fresh measured Process admission.
+
 The [fresh desktop fault attribution](2026-11-01-live-gui-vad-revision-fault.md)
 confirms a separate live generation3 VAD PCM `0x8007051A` at13:02:26+08:00,
 not merely native-probe shutdown. The running application's INFO log cannot

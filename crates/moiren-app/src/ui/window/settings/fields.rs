@@ -241,9 +241,16 @@ pub(in super::super) fn footer(
                 .gpui_test_observe(),
         )
         .when(clears_measured, |view| {
-            view.child(label(t!(
-                "Saving changed input buffers clears the requested measured Process selection. The running owner changes only on restart."
-            )))
+            let warning = t!(
+                "Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart."
+            );
+            view.child(
+                div()
+                    .id(SharedString::from(format!("{prefix}-measured-invalidation")))
+                    .aria_label(warning.clone())
+                    .child(label(warning))
+                    .gpui_test_observe(),
+            )
         })
         .child(
             div()

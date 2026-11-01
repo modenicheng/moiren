@@ -121,6 +121,12 @@ impl Draft {
         transport: TransportLatencySettings,
     ) -> Result<Submission, String> {
         let merged_transport = TransportLatencySettings {
+            render: merge_value(
+                self.original.3.render,
+                self.transport.render,
+                transport.render,
+                &t!("Render queue"),
+            )?,
             process_max_ingress_elapsed_100ns: merge_value(
                 self.original.3.process_max_ingress_elapsed_100ns,
                 self.transport.process_max_ingress_elapsed_100ns,
@@ -173,8 +179,9 @@ impl Draft {
             snapshot.transport_latency,
         )?;
         // SetTransportLatency intentionally clears measured intent, including
-        // VAD-only changes. Otherwise preserve the latest service selection,
-        // never a profile captured when this desktop draft was opened.
+        // VAD-only and render-only changes. A changed consumer envelope needs
+        // fresh admission; never reuse a finite-window proof for another one.
+        // Otherwise preserve the latest service selection, not the old draft.
         if !submitted.save_transport {
             submitted.measured_process = snapshot.measured_process.clone();
         }

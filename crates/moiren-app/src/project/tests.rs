@@ -22,6 +22,27 @@ use crate::service::{
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn render_queue_preferences_preserve_three_independent_bounds() {
+    let directory = TestDirectory::new();
+    let path = directory.file("render-queue.json");
+    fs::write(&path, br#"{"version":2,"transport_latency":{"render":{"target_frames":512,"wake_margin_frames":64,"callback_budget_frames":64}}}"#).unwrap();
+    let preferences = load_preferences_at(&path).unwrap();
+    save_preferences_at(&path, &preferences).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(value["transport_latency"]["render"]["target_frames"], 512);
+    assert_eq!(
+        value["transport_latency"]["render"]["wake_margin_frames"],
+        64
+    );
+    assert_eq!(
+        value["transport_latency"]["render"]["callback_budget_frames"],
+        64
+    );
+    fs::write(&path, br#"{"version":2,"transport_latency":{"render":{"target_frames":0,"wake_margin_frames":64,"callback_budget_frames":64}}}"#).unwrap();
+    assert!(load_preferences_at(&path).is_err());
+}
+
+#[test]
 fn audio_defaults_and_directional_overrides_round_trip_without_active_state() {
     use moiren_engine::{
         audio_config::{AudioBackend, ProcessingPrecision, SampleFormat},

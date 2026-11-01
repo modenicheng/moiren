@@ -77,6 +77,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .flex_col()
         .gap(px(18.))
         .child(super::measured::editor(shell, cx))
+        .child(render_editor(shell, cx))
         .child(heading(t!("Expert input buffers")))
         .child(
             div()
@@ -90,6 +91,71 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(label(t!("All input bounds use 48 kHz frames. Capacity is spare storage; target is normal residency. The native owner validates the full output demand before activation.")))
         .child(input_editor(shell, Input::Process, cx))
         .child(input_editor(shell, Input::Vad, cx))
+}
+
+fn render_editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
+    let selected = shell.settings.global.transport.render;
+    let mut view = div().flex().flex_col().gap(px(10.))
+        .pt(px(12.)).border_t_1().border_color(theme::BORDER)
+        .child(heading(t!("Render queue")))
+        .child(label(t!("Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.")))
+        .child(choices(shell, Editor::Global, "render-policy", selected.is_some(),
+            [(false, t!("Full native capacity").into()), (true, t!("Explicit render target").into())],
+            |draft, enabled| draft.transport.render = enabled.then(|| draft.transport.render.unwrap_or_default()), cx));
+    if let Some(render) = selected {
+        for (key, title, current, mut values) in [
+            (
+                "target",
+                "Render target",
+                render.target_frames,
+                vec![128, 256, 384, 512, 768, 1024, 2048, 4096],
+            ),
+            (
+                "wake",
+                "Render wake margin",
+                render.wake_margin_frames,
+                vec![0, 32, 64, 96, 128, 256, 480],
+            ),
+            (
+                "callback",
+                "Render callback budget",
+                render.callback_budget_frames,
+                vec![16, 32, 64, 96, 128, 256, 480],
+            ),
+        ] {
+            if !values.contains(&current) {
+                values.push(current);
+                values.sort_unstable();
+            }
+            view = view.child(field(
+                &t!(title),
+                choices(
+                    shell,
+                    Editor::Global,
+                    &format!("render-{key}"),
+                    current,
+                    values.into_iter().map(|value| (value, value.to_string())),
+                    move |draft, value| {
+                        if let Some(render) = &mut draft.transport.render {
+                            match key {
+                                "target" => render.target_frames = value,
+                                "wake" => render.wake_margin_frames = value,
+                                _ => render.callback_budget_frames = value,
+                            }
+                        }
+                    },
+                    cx,
+                ),
+            ));
+        }
+    }
+    view
+}
+
+pub(super) fn render_summary(settings: crate::service::TransportLatencySettings) -> String {
+    settings.render.map_or_else(|| t!("Full native capacity").into(), |render| t!(
+        "Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate",
+        target=render.target_frames, wake=render.wake_margin_frames, callback=render.callback_budget_frames).into())
 }
 
 fn input_editor(shell: &StudioShell, input: Input, cx: &Context<StudioShell>) -> Div {

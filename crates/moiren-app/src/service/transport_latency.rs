@@ -62,9 +62,45 @@ impl ExpertInputBuffer {
     }
 }
 
+/// Output-rate frames. Native capacity and measured input residency are separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpertRenderQueue {
+    pub target_frames: u32,
+    pub wake_margin_frames: u32,
+    pub callback_budget_frames: u32,
+}
+
+impl Default for ExpertRenderQueue {
+    fn default() -> Self {
+        Self {
+            target_frames: 1024,
+            wake_margin_frames: 64,
+            callback_budget_frames: 64,
+        }
+    }
+}
+
+impl ExpertRenderQueue {
+    pub fn validate(self) -> Result<(), String> {
+        if !(1..=262_144).contains(&self.target_frames)
+            || self.wake_margin_frames > 262_144
+            || !(1..=262_144).contains(&self.callback_budget_frames)
+            || self.target_frames <= self.wake_margin_frames + self.callback_budget_frames
+        {
+            return Err("render target must cover positive native period, wake margin and positive callback budget within the supported frame range".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TransportLatencySettings {
+    /// None fills the native capacity. Explicit targets are admitted only
+    /// against the prepared output period, capacity and complete wake budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render: Option<ExpertRenderQueue>,
     /// None preserves the platform's Compatible policy. All explicit frame
     /// bounds refer to the fixed 48 kHz input transport, not Engine segments.
     pub process: Option<ExpertInputBuffer>,
@@ -81,6 +117,9 @@ pub struct TransportLatencySettings {
 
 impl TransportLatencySettings {
     pub fn validate(self) -> Result<(), String> {
+        if let Some(render) = self.render {
+            render.validate()?;
+        }
         if self.process_max_ingress_elapsed_100ns == Some(0) {
             return Err("Process: ingress elapsed limit must be positive".into());
         }
@@ -104,6 +143,19 @@ impl TransportLatencySettings {
             }
         }
         Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn render_options(self) -> moiren_windows_audio::latency::RenderQueuePolicy {
+        use moiren_windows_audio::latency::RenderQueuePolicy;
+        self.render
+            .map_or(RenderQueuePolicy::FullCapacity, |render| {
+                RenderQueuePolicy::Target {
+                    frames: render.target_frames,
+                    wake_margin_frames: render.wake_margin_frames,
+                    callback_budget_frames: render.callback_budget_frames,
+                }
+            })
     }
 
     #[cfg(windows)]
@@ -167,6 +219,52 @@ fn delivery(
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_queue_options_admit_actual_period_and_preserve_capacity() {
+        use moiren_windows_audio::latency::{NativeStreamTiming, prepare_render_queue};
+        let mut settings = TransportLatencySettings {
+            render: Some(ExpertRenderQueue {
+                target_frames: 512,
+                wake_margin_frames: 64,
+                callback_budget_frames: 64,
+            }),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        let timing = NativeStreamTiming {
+            sample_rate: 48_000,
+            period_frames: Some(336),
+            capacity_frames: 738,
+        };
+        let queue = prepare_render_queue(timing, settings.render_options()).unwrap();
+        assert_eq!(queue.target_frames, 512);
+        assert_eq!(queue.capacity_frames, 738);
+        assert_eq!(queue.deadline_budget_frames, Some(464));
+        settings.render.as_mut().unwrap().target_frames = 400;
+        settings.validate().unwrap();
+        assert!(prepare_render_queue(timing, settings.render_options()).is_err());
+        settings.render.as_mut().unwrap().target_frames = 739;
+        assert!(prepare_render_queue(timing, settings.render_options()).is_err());
+        settings.render.as_mut().unwrap().target_frames = 512;
+        assert!(
+            prepare_render_queue(
+                NativeStreamTiming {
+                    period_frames: None,
+                    ..timing
+                },
+                settings.render_options()
+            )
+            .is_err()
+        );
+        settings.render = None;
+        assert_eq!(
+            prepare_render_queue(timing, settings.render_options())
+                .unwrap()
+                .target_frames,
+            738
+        );
+    }
 
     #[test]
     fn ingress_elapsed_native_options_preserve_policy_and_whole_consumer_demand() {

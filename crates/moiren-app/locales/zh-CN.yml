@@ -233,6 +233,36 @@ _version: 2
 "Requested device period (frames)":
   en: Requested device period (frames)
   zh-CN: 请求设备周期（帧）
+"Render queue":
+  en: Render queue
+  zh-CN: 渲染队列
+"Full native capacity":
+  en: Full native capacity
+  zh-CN: 填满原生缓冲
+"Explicit render target":
+  en: Explicit render target
+  zh-CN: 显式渲染目标
+"Render target":
+  en: Render target
+  zh-CN: 渲染目标
+"Render wake margin":
+  en: Render wake margin
+  zh-CN: 渲染唤醒余量
+"Render callback budget":
+  en: Render callback budget
+  zh-CN: 渲染回调预算
+"Requested render queue":
+  en: Requested render queue
+  zh-CN: 请求渲染队列
+"Active render queue":
+  en: Active render queue
+  zh-CN: 活动渲染队列
+"Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.":
+  en: Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.
+  zh-CN: 单位为输出采样率下的帧。原生准备要求目标不小于实际周期、唤醒余量与回调预算之和，且不超过容量。输入目标独立设置；此配置不保证延迟。
+"Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate":
+  en: Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate
+  zh-CN: 目标 %{target}；唤醒余量 %{wake}；回调预算 %{callback}（输出采样率下的帧）
 "Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.":
   en: Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.
   zh-CN: 共享模式设备周期必须为 64～4096 帧的整数；留空使用驱动默认值。
@@ -2149,3 +2179,6 @@ _version: 2
 "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.":
   en: "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export."
   zh-CN: "虚拟扬声器：其他应用播放到 Moiren 输入。虚拟麦克风：Moiren 输出供其他应用录音。绑定时须匹配声道；每个 IO 仅属于一个导出。"
+"Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart.":
+  en: "Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart."
+  zh-CN: "保存传输设置（包括渲染队列）会清除实测进程选择，需要重新准入。运行中的所有者仅在重启后改变。"

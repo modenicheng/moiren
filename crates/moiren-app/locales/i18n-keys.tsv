@@ -76,6 +76,16 @@ Sample encoding	-	detail 标签
 Determined by ASIO driver	-	detail 值
 Requested device buffer (frames / ms)	-	字段名
 Requested device period (frames)	-	共享模式设备精确周期字段名
+Render queue	-	渲染队列设置与冲突域
+Full native capacity	-	保持填满原生容量的兼容策略
+Explicit render target	-	独立渲染目标策略
+Render target	-	渲染目标帧数
+Render wake margin	-	渲染唤醒余量帧数
+Render callback budget	-	渲染回调预算帧数
+Requested render queue	-	已请求渲染策略
+Active render queue	-	活动渲染策略
+Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.	-	原生渲染准入说明
+Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate	target=target_frames|wake=wake_margin_frames|callback=callback_budget_frames	渲染队列请求摘要
 Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.	-	设备周期输入校验
 Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.	-	设备周期说明
 Unsaved changes	-	设置页脚状态文本
@@ -712,3 +722,4 @@ Limits host time since packet publication began, not source sample age or physic
 %{ticks} x 100 ns	ticks	任意正整数上限保留完整数值和单位
 %{milliseconds} ms	milliseconds	主机经过时间预设毫秒数
 Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.	-	VAD 应用侧方向说明
+Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart.	-	修改渲染或输入设置后明确要求重新实测准入

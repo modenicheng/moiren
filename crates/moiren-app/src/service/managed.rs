@@ -355,6 +355,7 @@ impl ManagedDriver {
                 .validate()
                 .map_err(host::BackendError::Unsupported)?;
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f32>::new()?
+                .with_render_queue(transport.render_options())?
                 .with_process_bridge(transport.process_options())?
                 .with_virtual_buffer(transport.virtual_options())?;
             let backend = if let Some(profile) = measured {
@@ -379,6 +380,7 @@ impl ManagedDriver {
                 .validate()
                 .map_err(host::BackendError::Unsupported)?;
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f64>::new()?
+                .with_render_queue(transport.render_options())?
                 .with_process_bridge(transport.process_options())?
                 .with_virtual_buffer(transport.virtual_options())?;
             let backend = if let Some(profile) = measured {

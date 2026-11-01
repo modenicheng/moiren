@@ -40,7 +40,9 @@ pub use measured_process::{
 };
 pub use moiren_engine::audio_config::*;
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
-pub use transport_latency::{DeliveryProvenance, ExpertInputBuffer, TransportLatencySettings};
+pub use transport_latency::{
+    DeliveryProvenance, ExpertInputBuffer, ExpertRenderQueue, TransportLatencySettings,
+};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
 

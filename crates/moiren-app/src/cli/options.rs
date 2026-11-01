@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::service::{
-    AudioSettings, DeliveryProvenance, ExpertInputBuffer, ProcessWindowPolicy, ProcessingPrecision,
-    TransportLatencySettings,
+    AudioSettings, DeliveryProvenance, ExpertInputBuffer, ExpertRenderQueue, ProcessWindowPolicy,
+    ProcessingPrecision, TransportLatencySettings,
 };
 use moiren_engine::node::DeviceMode;
 
@@ -21,6 +21,9 @@ pub(super) struct MonitorOptions {
     gap: Option<u32>,
     age: Option<u64>,
     ingress_elapsed: Option<u64>,
+    render_target: Option<u32>,
+    render_wake_margin: Option<u32>,
+    render_callback_budget: Option<u32>,
     window_max_initial_unserved: Option<u64>,
     window_max_initial_prime_discarded: Option<u64>,
     window_min_output_frames: Option<u64>,
@@ -44,6 +47,9 @@ impl Default for MonitorOptions {
             gap: None,
             age: None,
             ingress_elapsed: None,
+            render_target: None,
+            render_wake_margin: None,
+            render_callback_budget: None,
             window_max_initial_unserved: None,
             window_max_initial_prime_discarded: None,
             window_min_output_frames: None,
@@ -117,6 +123,9 @@ impl MonitorOptions {
             }
             "--engine-block-frames" => self.audio.processing.block_frames = number()?,
             "--output-buffer-frames" => self.audio.output.buffer_frames = Some(number()?),
+            "--render-target-frames" => self.render_target = Some(number()?),
+            "--render-wake-margin-frames" => self.render_wake_margin = Some(number()?),
+            "--render-callback-budget-frames" => self.render_callback_budget = Some(number()?),
             "--output-mode" => {
                 self.audio.output.mode = match value {
                     "shared" => DeviceMode::Shared,
@@ -203,10 +212,31 @@ impl MonitorOptions {
 
     pub fn transport(&self) -> Result<TransportLatencySettings> {
         self.window_policy()?;
+        let render_fields = [
+            self.render_target,
+            self.render_wake_margin,
+            self.render_callback_budget,
+        ];
+        let supplied_render = render_fields.iter().filter(|field| field.is_some()).count();
+        ensure!(
+            supplied_render == 0 || supplied_render == 3,
+            "render target requires target, wake margin and callback budget together"
+        );
+        let render = self.render_target.map(|target_frames| ExpertRenderQueue {
+            target_frames,
+            wake_margin_frames: self.render_wake_margin.expect("complete render tuple"),
+            callback_budget_frames: self.render_callback_budget.expect("complete render tuple"),
+        });
+        if let Some(render) = render {
+            render.validate().map_err(anyhow::Error::msg)?;
+        }
         if self.measured_target()?.is_some() {
             // Start the observation phase with the unchanged compatible policy,
             // never guessed Empirical bounds or the unadmitted requested target.
-            return Ok(TransportLatencySettings::default());
+            return Ok(TransportLatencySettings {
+                render,
+                ..Default::default()
+            });
         }
         let fields = [
             self.target,
@@ -221,6 +251,7 @@ impl MonitorOptions {
             "explicit Process budget requires target, capacity, jitter, max-packet and max-gap together"
         );
         let mut settings = TransportLatencySettings {
+            render,
             process_max_ingress_elapsed_100ns: self.ingress_elapsed,
             ..Default::default()
         };

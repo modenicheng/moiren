@@ -9,6 +9,7 @@ use std::time::Duration;
 
 mod ingress_elapsed;
 mod native_period;
+mod render_queue;
 
 #[gpui_kit::test]
 fn toolbar_reserves_draggable_space_outside_interactive_controls(
