@@ -848,6 +848,123 @@ fn measured_invalid_exact_text_blocks_apply_instead_of_reusing_last_valid_target
     fixture.finish();
 }
 
+fn replace_exact_text(cx: &mut VisualTestContext, id: &'static str, text: &str) {
+    reveal(cx, id);
+    cx.update(|window, cx| {
+        window.click(id, cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.input(text, cx);
+    });
+}
+
+#[gpui_kit::test]
+fn invalid_exact_text_blocks_live_window_activation_before_a_new_frame(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(Evidence::Current, true);
+    let expected = fixture.expected();
+    let (view, cx) = fixture.shell(cx);
+    select_target(cx);
+    cx.update(|window, cx| window.click("measured-exact-open", cx));
+    open_live_window(cx);
+    choose_live_window_policy(cx);
+    reveal(cx, "measured-live-window-close");
+    cx.update(|window, cx| window.click("measured-live-window-close", cx));
+    for (id, invalid, valid) in [
+        ("measured-exact-capacity", "2048.5", "2048"),
+        ("measured-exact-target", "", "256"),
+        ("measured-exact-jitter", "-1", "0"),
+    ] {
+        replace_exact_text(cx, id, invalid);
+        // The policy was ready before typing. Do not render or navigate after
+        // the edit: a queued activation must inspect current text immediately.
+        view.update(cx, |shell, cx| shell.apply_live_process_window(cx));
+        poll(&view, cx);
+        assert!(fixture.requests().is_empty(), "invalid {id} dispatched");
+        view.update(cx, |shell, cx| {
+            assert!(
+                shell
+                    .settings
+                    .measured
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("integer")
+            );
+            assert!(!shell.settings.measured.busy());
+            assert_eq!(
+                shell.state.read(cx).snapshot.active_measured_process,
+                fixture.initial.active_measured_process
+            );
+        });
+        assert_draft(&view, cx, expected);
+        replace_exact_text(cx, id, valid);
+    }
+    open_live_window(cx);
+    view.update(cx, |shell, cx| shell.apply_live_process_window(cx));
+    wait_snapshot(&view, cx, |snapshot| snapshot.consumed_request_id.0 > 0);
+    assert_eq!(
+        fixture.requests(),
+        vec![AppRequest::ApplyWindowedProcessBridge {
+            request: expected,
+            policy: live_window_policy(),
+        }]
+    );
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn invalid_exact_text_blocks_evaluated_activation_before_a_new_frame(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    {
+        let mut control = fixture.control.lock().unwrap();
+        control.retain_prefix = true;
+        control.measured_prefix = true;
+    }
+    let (view, cx) = fixture.shell(cx);
+    wait_snapshot(&view, cx, |snapshot| snapshot.last_cleanup.is_some());
+    select_target(cx);
+    cx.update(|window, cx| window.click("measured-exact-open", cx));
+    for (id, invalid, valid) in [
+        ("measured-exact-capacity", "2048.5", "2048"),
+        ("measured-exact-target", "", "256"),
+        ("measured-exact-jitter", "-1", "0"),
+    ] {
+        view.update(cx, |shell, cx| shell.inject_software_window_candidate(cx));
+        replace_exact_text(cx, id, invalid);
+        // Even an event already queued by a previously admitted candidate must
+        // recheck current text before considering last-valid draft/token state.
+        view.update(cx, |shell, cx| shell.apply_evaluated_process(cx));
+        poll(&view, cx);
+        assert!(fixture.requests().is_empty(), "invalid {id} dispatched");
+        view.update(cx, |shell, cx| {
+            assert!(
+                shell
+                    .settings
+                    .measured
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("integer")
+            );
+            assert!(!shell.settings.measured.busy());
+            assert_eq!(shell.state.read(cx).snapshot.phase, SessionPhase::Idle);
+        });
+        assert_draft(&view, cx, fixture.expected());
+        replace_exact_text(cx, id, valid);
+    }
+    view.update(cx, |shell, cx| {
+        shell.inject_software_window_candidate(cx);
+        shell.apply_evaluated_process(cx);
+    });
+    wait_snapshot(&view, cx, |snapshot| snapshot.measured_process.is_some());
+    assert_eq!(fixture.requests().len(), 1);
+    assert!(matches!(
+        fixture.requests()[0],
+        AppRequest::ApplyEvaluatedProcessBridge(_)
+    ));
+    fixture.finish();
+}
+
 #[gpui_kit::test]
 fn measured_review_deadline_wakes_without_poll_render_or_new_confirmation(cx: &mut TestAppContext) {
     let fixture = Fixture::new(Evidence::Current, false);

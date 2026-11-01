@@ -253,7 +253,10 @@ impl StudioShell {
         cx.notify();
     }
 
-    fn apply_evaluated_process(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui::window::settings) fn apply_evaluated_process(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(error) = conflict(self, cx) {
             if !self.settings.measured.busy() {
                 self.settings.measured.error = Some(error);

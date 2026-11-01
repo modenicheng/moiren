@@ -201,7 +201,10 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
 }
 
 impl StudioShell {
-    fn apply_live_process_window(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui::window::settings) fn apply_live_process_window(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(error) = conflict(self, cx) {
             if !self.settings.measured.busy() {
                 self.settings.measured.error = Some(error);

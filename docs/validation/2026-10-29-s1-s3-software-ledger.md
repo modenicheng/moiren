@@ -5,6 +5,16 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [isolated Process waveform diagnostic](2026-11-02-isolated-process-waveform.md)
+records two separate lossless OBS tracks while desktop regression work proceeds.
+The exact native336/render512/input1536 configuration and normal cleanup are
+confirmed, but one delivery-gap-bound violation, failed exact control/reference
+correspondence and22of28unsupported noise windows remain visible. Six selected
+windows near47.48ms are uncalibrated OBS-relative candidates, not isolated or
+physical latency. The new12-test offline analyzer and alternate Apply event
+regressions strengthen measurement/refusal handling without blocking useful
+development, weakening admission or promoting smaller defaults.
+
 The [2026-11-02 exact measured-input slice](2026-11-02-exact-measured-input.md)
 removes the desktop preset-only restriction while retaining integer validation,
 native admission and exact requested/active owner confirmation. Remote UIA enters
