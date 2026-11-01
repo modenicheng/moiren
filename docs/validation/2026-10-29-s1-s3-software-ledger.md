@@ -1069,3 +1069,17 @@ policy. The fixture is a prefilled isolated burst, not native delivery cadence.
 Zero/wrong-gain exported-tree mutations fail as expected. Fresh workspace2101
 passed/8ignored, measured UI20passed, strict Clippy/fmt pass. Production behavior
 and defaults are unchanged; this closes a combination-test gap, not S1-S3.
+
+### Parallel eight-minute source and ten-minute application run
+
+The [parallel Process soak](2026-11-02-parallel-process-soak.md) completes600s
+of application operation with a480s changing source while owner-burst tests are
+developed locally. Source, monitor and owned OBS exit0 normally; user processes
+and controls stay unchanged. Final delivery telemetry retains72gap-bound
+violations, despite zero dropped/silent/underrun/reset counters. The entire
+separate4s control now has exact correspondence and a quiet return, for this
+run's retained interval only. Three of eight fixed affine waveform windows are
+compatible; five remain refused. Full RMS and fixed-window visualizations are
+generated remotely with verified compact downloads. Prior harness startup and
+CLI-duration refusals remain recorded. This supports continuing development,
+not lower-default promotion, whole-waveform or physical qualification.
