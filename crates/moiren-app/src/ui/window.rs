@@ -879,7 +879,8 @@ impl StudioShell {
     }
 
     /// True when a text field anywhere in the shell owns focus: graph
-    /// search, node rename, inspector editors, mixer send gains, and export
+    /// search, node rename, every mixer readout editor (send gains and the
+    /// strip/inspector value families), compressor inputs, and export
     /// fields all keep typing shortcuts (and their undo) for themselves.
     fn typing_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
         self.node_search.read(cx).focus_handle(cx) == *focused
@@ -891,8 +892,7 @@ impl StudioShell {
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
             || self
                 .mixer
-                .send_inputs
-                .values()
+                .editor_inputs()
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
             || self.export_controls.owns_focus(focused, cx)
     }

@@ -450,6 +450,76 @@ mod tests {
         samples
     }
 
+    fn read_tone(tone: &mut Tone, frames: usize) -> Vec<[f32; 2]> {
+        let mut arena = BufferArena::<f32>::new(
+            &[BufferSlotLayout {
+                channels: 2,
+                capacity_frames: frames,
+            }],
+            4096,
+        )
+        .unwrap();
+        let io = arena
+            .prepare_io(&[PortAccess::Write {
+                port: 0,
+                slot: arena.slot(0).unwrap(),
+            }])
+            .unwrap();
+        let ctx = ProcessContext {
+            timeline_epoch: 1,
+            timeline_start: 0,
+            frames,
+            processing_sr: f64::from(RATE),
+        };
+        let mut samples = Vec::new();
+        arena
+            .with_io(&io, 0..frames, |io| {
+                if let ProcessIo::Separate { mut outputs, .. } = io {
+                    let _ = tone.read(&ctx, outputs.get_mut(0).unwrap());
+                    let block = outputs.get_mut(0).unwrap();
+                    samples.extend(
+                        block
+                            .channel(0)
+                            .iter()
+                            .zip(block.channel(1))
+                            .map(|(left, right)| [*left, *right]),
+                    );
+                }
+            })
+            .unwrap();
+        samples
+    }
+
+    #[test]
+    fn tone_sine_peaks_at_one_tenth_on_both_channels_at_quarter_phase() {
+        let mut tone = Tone::new("moiren:tone:1000", RATE).unwrap();
+        // Quarter phase is the sine peak: sin(TAU / 4) == 1, so the first
+        // produced frame is the full 0.1 amplitude.
+        tone.phase = 0.25;
+        let samples = read_tone(&mut tone, 4);
+        let [left, right] = samples[0];
+        assert!((left - 0.1).abs() < 1e-9, "peak amplitude drifted: {left}");
+        assert!(
+            (right - 0.1).abs() < 1e-9,
+            "peak amplitude drifted: {right}"
+        );
+        // The tone is mono: both channels always carry the same value.
+        for [left, right] in &samples {
+            assert_eq!(left, right);
+        }
+    }
+
+    #[test]
+    fn tone_selector_rejects_zero_and_nyquist_and_accepts_midband() {
+        assert!(Tone::new("moiren:tone:0", RATE).is_err());
+        // Exactly half the processing rate (Nyquist) and above is out of band.
+        assert!(Tone::new("moiren:tone:24000", RATE).is_err());
+        assert!(Tone::new("moiren:tone:24001", RATE).is_err());
+        assert!(Tone::new("moiren:tone:-1000", RATE).is_err());
+        assert!(Tone::new("moiren:tone:23999.9", RATE).is_ok());
+        assert!(Tone::new("moiren:tone:1000", RATE).is_ok());
+    }
+
     #[test]
     fn backlog_recovery_discards_to_the_servo_reference_and_fades_in() {
         // target = 2*256 = 512; watermark = 1536.

@@ -150,7 +150,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             )));
         }
     }
-    content = content.child(label(t!("Configure never changes routing. Use next start on a device row updates the candidate graph.")));
+    content = content.child(label(t!("Configure never changes routing; choosing Use next start on a device row updates the candidate graph.")));
     div()
         .id("device-override-inspector")
         .flex_none()

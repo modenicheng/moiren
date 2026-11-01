@@ -2,13 +2,13 @@ use super::*;
 use crate::{
     buffer::{BufferArena, BufferSlotLayout, PortAccess},
     control::{ParamDomain, ParamSpec, parameter_channel},
-    meter::level_meter,
     runtime::{Engine, EngineConfig, ExecutionPlan, OpSpec, ProcessorInstance, RtResources},
 };
 use moiren_core::protocol::{ParamValue, ParameterKey, ProcessorId};
 
 const PROCESSOR: ProcessorId = ProcessorId(1);
 const METER: ProcessorId = ProcessorId(2);
+const SINK: ProcessorId = ProcessorId(3);
 
 mod bus;
 mod compressor;

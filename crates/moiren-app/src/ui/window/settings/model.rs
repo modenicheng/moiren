@@ -100,7 +100,7 @@ impl Draft {
                 self.original.1,
                 self.profile,
                 profile,
-                &t!("Recovery policy"),
+                &t!("Device buffer policy"),
             )?,
             density: merge_value(self.original.2, self.density, density, &t!("Density"))?,
         })

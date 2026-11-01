@@ -37,6 +37,14 @@ use recovery::RecoveryMonitor;
 use rtrb::RingBuffer;
 use std::{marker::PhantomData, sync::Arc};
 
+/// Preparation budget charged per native IO node: 32 bytes per capacity
+/// frame — two stereo-f64 (`StereoFrame`) spans, covering the node's queue
+/// ring plus the boundary resampler's frame buffer on the render side.
+const NATIVE_IO_BUDGET_BYTES_PER_FRAME: usize = 32;
+/// Fixed per-IO-node margin on top of the per-frame budget: 128 KiB of
+/// headroom above the capacity-scaled estimate.
+const NATIVE_IO_BUDGET_FIXED_MARGIN_BYTES: usize = 131_072;
+
 #[cfg(test)]
 #[path = "engine_backend/tests.rs"]
 mod virtual_tests;
@@ -260,7 +268,9 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             .count();
         let capacity = (request.project.processing.engine.max_block_frames * 8).max(16384);
         let prepared_bytes = io_count
-            .checked_mul(capacity * 32 + 131072)
+            .checked_mul(
+                capacity * NATIVE_IO_BUDGET_BYTES_PER_FRAME + NATIVE_IO_BUDGET_FIXED_MARGIN_BYTES,
+            )
             .ok_or_else(|| unsupported("native queue budget overflow"))?;
         if prepared_bytes > request.project.processing.audio_byte_budget {
             return Err(unsupported(

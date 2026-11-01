@@ -228,12 +228,7 @@ pub(super) fn sends(
             count += 1;
             let edge_id = edge.id();
             let pre = edge.params().tap == SendTap::PreFader;
-            let gain = edge.params().gain;
-            let value = if gain == 0. {
-                "−∞".into()
-            } else {
-                format!("{:+.1}", 20. * gain.log10())
-            };
+            let value = crate::ui::presentation::db_text_bare(edge.params().gain);
             let mut row = div()
                 .flex()
                 .items_center()

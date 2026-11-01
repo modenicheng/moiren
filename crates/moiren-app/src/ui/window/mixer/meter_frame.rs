@@ -312,13 +312,7 @@ impl Render for MixerMeterFrame {
                             levels.iter().map(|level| level.peak).fold(0f32, f32::max)
                         });
                         let text = peak
-                            .map(|peak| {
-                                if peak == 0. {
-                                    "\u{2212}\u{221e}".to_owned()
-                                } else {
-                                    format!("{:.1}", 20. * peak.log10())
-                                }
-                            })
+                            .map(crate::ui::presentation::dbfs_compact)
                             .unwrap_or_else(|| "\u{2014}".to_owned());
                         window.with_content_mask(Some(placement.mask), |window| {
                             let line = window.text_system().shape_line(

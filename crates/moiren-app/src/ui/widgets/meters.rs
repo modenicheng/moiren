@@ -11,12 +11,22 @@ use gpui_kit::*;
 /// Main Mixer bars fill exactly the shared fader track; there is no second
 /// ruler or independent dB interpolation here. Channel count is never inferred
 /// from a stereo projection of mono/multichannel data.
-pub(crate) fn channel_meter_width(channels: usize) -> f32 {
+/// Shared bar geometry for `channels` meters inside the fixed 40 px strip:
+/// the per-bar `width`, the inter-bar `gap`, and the effective channel
+/// `count` (mono renders one bar). The layout's reserved width and the
+/// canvas paint derive from the same numbers so the painted bars fill the
+/// reserved track exactly.
+fn bar_metrics(channels: usize) -> (f32, f32, f32) {
     let count = channels.max(1) as f32;
     let gap = (8. / count).min(3.);
     let width = (28. / count)
         .clamp(2., 10.)
         .min((40. - gap * (count - 1.)) / count);
+    (width, gap, count)
+}
+
+pub(crate) fn channel_meter_width(channels: usize) -> f32 {
+    let (width, gap, count) = bar_metrics(channels);
     width * count + gap * (count - 1.)
 }
 
@@ -29,11 +39,7 @@ pub(crate) fn paint_channel_meter(
     cx: &mut App,
 ) {
     use super::fader::{FaderScale, paint_text};
-    let count = channels.max(1) as f32;
-    let gap = (8. / count).min(3.);
-    let width = (28. / count)
-        .clamp(2., 10.)
-        .min((40. - gap * (count - 1.)) / count);
+    let (width, gap, _) = bar_metrics(channels);
     for index in 0..channels {
         let left = bounds.left() + px(index as f32 * (width + gap));
         let track = Bounds::new(

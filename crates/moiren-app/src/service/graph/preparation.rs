@@ -286,30 +286,6 @@ impl GraphPreparation {
             .iter()
             .find(|export| export.enabled && export.binding == Some(node))
     }
-    pub fn io_nodes(&self) -> Result<(NodeId, NodeId), String> {
-        self.validate_state()?;
-        let sources: Vec<_> = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Source)
-            .collect();
-        let sinks: Vec<_> = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Sink)
-            .collect();
-        if sources.len() != 1 || sinks.len() != 1 {
-            return Err("The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet".into());
-        }
-        if self.graph.get_node(sources[0].id()).unwrap().channels() != 2
-            || self.graph.get_node(sinks[0].id()).unwrap().channels() != 2
-        {
-            return Err("The current device bridge only supports stereo nodes".into());
-        }
-        Ok((sources[0].id(), sinks[0].id()))
-    }
     pub fn gain_pan_nodes(&self) -> Option<(NodeId, NodeId)> {
         Some((
             primary_node_of(&self.graph, NodeKind::Gain)?.id(),
@@ -373,8 +349,10 @@ impl GraphPreparation {
                         bindings.bind_channel_mapper(node.id(), settings)?;
                     }
                     BuiltinState::Rack(settings) => bindings.bind_rack(node.id(), settings)?,
-                    BuiltinState::Meter(settings) => {
-                        let _reader = bindings.bind_meter(node.id(), settings)?;
+                    // Meter nodes pass audio through; their level signal is
+                    // published by the managed host's signal preparation.
+                    BuiltinState::Meter(_) => {
+                        bindings.bind_unmanaged(node.id(), NodeKind::Meter)?;
                     }
                     BuiltinState::None => {}
                     BuiltinState::Recorder(_) | BuiltinState::SpectrumAnalyzer(_) => {

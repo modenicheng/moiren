@@ -8,6 +8,12 @@
 //! obeys the same fall-off preference. Peaks accumulate between display
 //! reads, so a transient that has already decayed before the next frame is
 //! still shown at full height.
+//!
+//! A frame that ingested no window holds every layer: true silence keeps
+//! publishing windows, so a windowless frame is a delivery gap, and its
+//! elapsed time joins the next data frame's interval instead of reading as
+//! a level dip. A genuine stoppage is reported by the subscription going
+//! stale, never by invented decay.
 use super::{ChannelLevel, DisplayLevel, Duration, Instant};
 use crate::project::MeterDisplayPreferences;
 
@@ -25,6 +31,7 @@ pub(super) struct ChannelBallistics {
     body_db: f32,
     mean_square: f64,
     peak_since_read: f32,
+    window_since_advance: bool,
     held_at: Option<Instant>,
     ticked_at: Option<Instant>,
     pub settings: MeterDisplayPreferences,
@@ -38,6 +45,7 @@ impl ChannelBallistics {
             body_db: f32::NEG_INFINITY,
             mean_square: 0.,
             peak_since_read: 0.,
+            window_since_advance: false,
             held_at: None,
             ticked_at: None,
             settings: MeterDisplayPreferences::default(),
@@ -46,6 +54,7 @@ impl ChannelBallistics {
 
     /// Consume one measurement window, weighted by its true duration.
     pub fn ingest(&mut self, raw: ChannelLevel, window: Duration, now: Instant) {
+        self.window_since_advance = true;
         self.peak_since_read = self.peak_since_read.max(raw.peak);
         let fraction = 1. - (-window.as_secs_f64() / RMS_INTEGRATION.as_secs_f64()).exp();
         let square = f64::from(raw.rms) * f64::from(raw.rms);
@@ -58,6 +67,13 @@ impl ChannelBallistics {
     }
 
     pub fn advance(&mut self, now: Instant) {
+        if !self.window_since_advance {
+            // A frame with no window is a delivery gap, not silence —
+            // silence keeps publishing — so every layer holds and the gap
+            // joins the next data frame's interval.
+            return;
+        }
+        self.window_since_advance = false;
         let Some(previous) = self.ticked_at else {
             // First data after (re)subscription: snap every layer to it.
             self.bar_db = amplitude_db(self.peak_since_read);
@@ -128,14 +144,19 @@ mod tests {
     const WINDOW: Duration = Duration::from_millis(4);
 
     #[test]
-    fn cached_frames_do_not_renew_hold_and_deadlines_use_partial_intervals() {
+    fn silence_windows_do_not_renew_hold_and_deadlines_use_partial_intervals() {
         let now = Instant::now();
         let rate = MeterFalloff::Fast.db_per_second();
         let mut meter = ChannelBallistics::new();
         meter.ingest(ChannelLevel { peak: 1., rms: 0. }, WINDOW, now);
         meter.advance(now);
-        meter.ingest(ChannelLevel { peak: 0., rms: 0. }, WINDOW, now + WINDOW);
         for ms in [100, 250, 490, 600] {
+            // Silence keeps publishing, so every frame is a data frame.
+            meter.ingest(
+                ChannelLevel { peak: 0., rms: 0. },
+                WINDOW,
+                now + Duration::from_millis(ms),
+            );
             meter.advance(now + Duration::from_millis(ms));
         }
         // The marker holds until PEAK_HOLD, then falls 100 ms at the rate.
@@ -153,6 +174,11 @@ mod tests {
         meter.ingest(ChannelLevel { peak: 1., rms: 0. }, WINDOW, now);
         meter.advance(now);
         meter.settings.peak_hold = PeakHold::Off;
+        meter.ingest(
+            ChannelLevel { peak: 0., rms: 0. },
+            WINDOW,
+            now + Duration::from_millis(100),
+        );
         meter.advance(now + Duration::from_millis(100));
         let level = meter.level();
         assert!(
@@ -164,13 +190,21 @@ mod tests {
     #[test]
     fn decay_is_independent_of_refresh_rate_and_irregular_frames() {
         let now = Instant::now();
+        // Silence keeps publishing, so every frame ingests one window
+        // spanning that frame's interval.
         let run = |times: Vec<u64>| {
             let mut meter = ChannelBallistics::new();
             meter.ingest(ChannelLevel { peak: 1., rms: 0.5 }, WINDOW, now);
             meter.advance(now);
-            meter.ingest(ChannelLevel { peak: 0., rms: 0. }, WINDOW, now);
+            let mut previous = 0;
             for ns in times {
+                meter.ingest(
+                    ChannelLevel { peak: 0., rms: 0. },
+                    Duration::from_nanos(ns - previous),
+                    now + Duration::from_nanos(ns),
+                );
                 meter.advance(now + Duration::from_nanos(ns));
+                previous = ns;
             }
             meter.level()
         };
@@ -189,6 +223,65 @@ mod tests {
             1_000_000_000,
         ]);
         assert!((irregular.marker - reference.marker).abs() < 0.00001);
+        assert!((irregular.bar - reference.bar).abs() < 0.00001);
+    }
+
+    #[test]
+    fn a_frame_without_a_window_holds_every_layer() {
+        let now = Instant::now();
+        let mut meter = ChannelBallistics::new();
+        meter.ingest(
+            ChannelLevel {
+                peak: 0.5,
+                rms: 0.3,
+            },
+            WINDOW,
+            now,
+        );
+        meter.advance(now);
+        let steady = meter.level();
+        meter.advance(now + Duration::from_millis(20));
+        meter.advance(now + Duration::from_millis(41));
+        assert_eq!(
+            meter.level(),
+            steady,
+            "a delivery gap must not read as a level dip"
+        );
+        // The gap joins the next data frame's interval, and the steady
+        // target floors the catch-up fall: the bar returns at full height.
+        meter.ingest(
+            ChannelLevel {
+                peak: 0.5,
+                rms: 0.3,
+            },
+            WINDOW,
+            now + Duration::from_millis(41),
+        );
+        meter.advance(now + Duration::from_millis(41));
+        assert!((meter.level().bar - 0.5).abs() < 0.00001);
+        assert!((meter.level().marker - 0.5).abs() < 0.00001);
+    }
+
+    #[test]
+    fn a_delivery_gap_defers_the_fall_without_skipping_it() {
+        let now = Instant::now();
+        let rate = MeterFalloff::Fast.db_per_second();
+        let mut meter = ChannelBallistics::new();
+        meter.ingest(ChannelLevel { peak: 1., rms: 0. }, WINDOW, now);
+        meter.advance(now);
+        meter.advance(now + Duration::from_millis(80));
+        meter.ingest(
+            ChannelLevel { peak: 0., rms: 0. },
+            WINDOW,
+            now + Duration::from_millis(80),
+        );
+        meter.advance(now + Duration::from_millis(80));
+        let db = 20. * meter.level().bar.max(f32::MIN_POSITIVE).log10();
+        let expected = -rate * 0.08;
+        assert!(
+            (db - expected).abs() < 0.01,
+            "fell to {db} dB instead of the deferred {expected} dB"
+        );
     }
 
     #[test]

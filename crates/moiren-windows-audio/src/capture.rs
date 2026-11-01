@@ -19,10 +19,6 @@ pub enum CaptureError {
     InvalidEndpoint,
     #[error("capture duration must be between 1 and 600 seconds")]
     InvalidDuration,
-    #[error(
-        "invalid or unsupported capture mix descriptor; Shared compatibility requires a valid PCM/float format"
-    )]
-    UnsupportedFormat,
     #[error("invalid native capture packet pointer or frame count")]
     InvalidPacket,
     #[error("native capture buffer exceeds the 8 MiB preparation budget")]
@@ -35,8 +31,6 @@ pub enum CaptureError {
     WorkerSpawn { code: Option<i32> },
     #[error("capture worker panicked")]
     WorkerPanicked,
-    #[error(transparent)]
-    SharedPeriod(#[from] crate::format::SharedPeriodError),
     #[error(transparent)]
     LatencyBudget(#[from] crate::latency::LatencyBudgetError),
     #[error("capture startup channel closed before preparation completed")]
@@ -54,29 +48,13 @@ pub enum CaptureError {
     #[error("process audio activation exceeded the 10 second deadline")]
     ActivationTimeout,
 }
-#[derive(Debug, Clone)]
-pub struct CaptureOptions {
-    pub latency_telemetry: crate::latency::TelemetryMode,
-    pub shared_period: crate::format::SharedPeriodPolicy,
-    pub endpoint_id: String,
-    pub duration: SessionDuration,
-}
-impl CaptureOptions {
-    pub fn validate(&self) -> Result<(), CaptureError> {
-        if self.endpoint_id.trim().is_empty() || self.endpoint_id.contains('\0') {
-            return Err(CaptureError::InvalidEndpoint);
-        }
-        validate_duration(self.duration)?;
-        self.shared_period.validate()?;
-        Ok(())
-    }
-}
 pub(crate) fn validate_duration(duration: SessionDuration) -> Result<(), CaptureError> {
     if duration.validate().is_err() {
         return Err(CaptureError::InvalidDuration);
     }
     Ok(())
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSource {
@@ -93,7 +71,6 @@ pub enum CaptureStatus {
 }
 #[derive(Debug, Serialize)]
 pub struct CaptureReport {
-    pub input_queue: Option<crate::latency::PreparedInputQueue>,
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
     pub shared_period: crate::format::SharedPeriodReport,
@@ -124,7 +101,6 @@ impl CaptureReport {
     pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
             schema_version: 7,
-            input_queue: None,
             latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
                 .snapshot(),
             shared_period: crate::format::SharedPeriodReport::default(),

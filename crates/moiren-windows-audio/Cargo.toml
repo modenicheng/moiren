@@ -2,7 +2,7 @@
 name = "moiren-windows-audio"
 version = "0.1.0"
 edition = "2024"
-description = "Engine-backed WASAPI Shared capture/render, clock adaptation and opt-in probes"
+description = "Professional audio backend: WASAPI and ASIO capture/render, VAD support, clock adaptation and opt-in probes"
 
 [dependencies]
 moiren-core = { path = "../moiren-core" }

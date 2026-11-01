@@ -38,3 +38,6 @@ rustc-ice-*.txt
 /driver/**/x64/Release/
 /driver/**/ARM64/Debug/
 /driver/**/ARM64/Release/
+
+# local worktrees
+.worktrees/

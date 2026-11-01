@@ -14,8 +14,8 @@ pub use backend::*;
 pub use model::*;
 pub use project::*;
 pub use signals::{
-    ManagedLevelSubscription, ManagedLevelTopic, ManagedMeterReader, ManagedRecorderReader,
-    ManagedSignalSubscription, ManagedSpectrumSubscription, ManagedSpectrumTopic,
+    ManagedLevelSubscription, ManagedLevelTopic, ManagedRecorderReader, ManagedSignalSubscription,
+    ManagedSpectrumSubscription, ManagedSpectrumTopic,
 };
 pub use snapshot::*;
 
@@ -327,12 +327,6 @@ impl EngineObserver {
         node: moiren_core::graph::NodeId,
     ) -> Result<ManagedSpectrumSubscription, String> {
         self.shared.signals.subscribe_spectrum(node)
-    }
-    pub fn meter_reader(
-        &self,
-        node: moiren_core::graph::NodeId,
-    ) -> Result<ManagedMeterReader, String> {
-        self.shared.signals.meter_reader(node)
     }
     pub fn recorder_reader(
         &self,

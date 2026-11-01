@@ -23,21 +23,11 @@ Settings 中的 Compatible、Balanced、Low 保存期望的延迟档位，通过
 ## 验证
 
 ```powershell
-cargo check --locked --workspace --all-targets
+cargo build --locked --workspace
 cargo test --locked --workspace
-cargo test --locked -p moiren-app --features gpui-test
-cargo clippy --locked --workspace --all-targets --features moiren-app/gpui-test -- -D warnings
-cargo fmt --all -- --check
 ```
 
-普通测试不打开音频设备。`routing_probe` 提供有限时长、全输出静音的多输出/低延迟实机检查，不改变系统默认设备或音量：
-
-```powershell
-cargo run --locked -p moiren-windows-audio --example routing_probe -- --list
-cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '<master endpoint ID>' --output '<follower endpoint ID>' --seconds 10 --profile low
-```
-
-可重复指定 `--input '<capture endpoint ID>'`；不指定时混合两个软件音源。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
+普通测试不打开音频设备。完整验证命令集（check、clippy、fmt 与 gpui-test 验收等）以 [AGENTS.md](AGENTS.md) 为准。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
 
 ## 当前边界
 

@@ -148,8 +148,9 @@ pub struct SliderBehavior {
 /// Wheel direction as a step count: wheel up (or tilt right) is +1. gpui
 /// carries touchpad pixel deltas and discrete line notches with the same
 /// sign — positive scrolls the content down, i.e. the wheel moved up. The
-/// secondary axis covers shift+wheel and tilt wheels on horizontal sliders.
-fn wheel_direction(delta: &ScrollDelta) -> i32 {
+/// secondary axis covers shift+wheel and tilt wheels; also shared by the
+/// mixer's balance strip, whose plain vertical wheel reads the same axis.
+pub(crate) fn wheel_direction(delta: &ScrollDelta) -> i32 {
     let (x, y) = match delta {
         ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
         ScrollDelta::Lines(delta) => (delta.x, delta.y),

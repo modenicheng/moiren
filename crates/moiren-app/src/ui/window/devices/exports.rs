@@ -381,10 +381,11 @@ fn export_row(
         ))
         .child(detail(
             &t!("Engine-confirmed binding"),
-            status
-                .active_revision
-                .map(|revision| t!("Active revision %{revision}", revision = revision).to_string())
-                .unwrap_or_else(|| t!("Inactive").into()),
+            if status.active_revision.is_some() {
+                t!("Active").to_string()
+            } else {
+                t!("Inactive").into()
+            },
         ))
         .child(detail(
             &t!("Candidate graph binding"),

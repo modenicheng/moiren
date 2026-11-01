@@ -5,10 +5,10 @@ use crate::capture_packet::borrow_capture_packet;
 use crate::codec::SampleCodec;
 use crate::native::{NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame};
 use crate::negotiation::{
-    EnginePeriodicityPolicy, EnginePeriods, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
-    StageError, client3_rejects_format, exclusive_format_supported, exclusive_frames_duration,
-    friendly_name, initialize_exclusive, initialize_legacy_shared, parse_descriptor,
-    shared_engine_periods,
+    EnginePeriodicityPolicy, EnginePeriods, MAX_BUFFER_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ,
+    MIN_SAMPLE_RATE_HZ, SUBFORMAT_FLOAT, SUBFORMAT_PCM, SharedInitFlags, StageError,
+    client3_rejects_format, exclusive_format_supported, exclusive_frames_duration, friendly_name,
+    initialize_exclusive, initialize_shared, parse_descriptor, shared_engine_periods,
 };
 use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
@@ -41,11 +41,10 @@ pub struct WasapiOptions {
     pub input: bool,
 }
 
-/// D4: professional's PERIODICITY_LOCKED policy — an explicit Shared period
-/// is exact-or-fail, so the HRESULT surfaces instead of retrying with the
-/// engine's current period. The legacy shared stack retries exactly once;
-/// see `negotiation::EnginePeriodicityPolicy`. The assertion keeps this
-/// stack pinned to the documented policy at compile time.
+/// An explicit Shared period is exact-or-fail: the HRESULT surfaces instead
+/// of retrying with the engine's current period; see
+/// `negotiation::EnginePeriodicityPolicy`. The assertion keeps this pinned
+/// to the documented policy at compile time.
 const PERIODICITY_POLICY: EnginePeriodicityPolicy = EnginePeriodicityPolicy::ExactPeriod;
 const _: () = assert!(matches!(
     PERIODICITY_POLICY,
@@ -288,7 +287,7 @@ impl WasapiStream {
     fn open_inner(options: WasapiOptions) -> Result<Self, BackendError> {
         if options.endpoint_id.trim().is_empty()
             || options.endpoint_id.contains('\0')
-            || !(8_000..=384_000).contains(&options.sample_rate)
+            || !(MIN_SAMPLE_RATE_HZ..=MAX_SAMPLE_RATE_HZ).contains(&options.sample_rate)
             || options
                 .device
                 .period_frames
@@ -383,7 +382,7 @@ impl WasapiStream {
         };
         api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
         let capacity = api("GetBufferSize", unsafe { client.GetBufferSize() })?;
-        if capacity == 0 || capacity > 65536 {
+        if capacity == 0 || capacity > MAX_BUFFER_FRAMES {
             return Err(unsupported(
                 "native WASAPI buffer exceeds the prepared frame limit",
             ));
@@ -650,7 +649,8 @@ fn negotiate_shared_exact(
     let sample_format = selected.sample_format;
     let rate = format.Format.nSamplesPerSec;
     // Explicit requests are exact, not rounded to a convenient driver
-    // period. Legacy conversion cannot promise an exact event period.
+    // period. The compatibility initialization cannot promise an exact
+    // event period.
     let period = period_frames as u32;
     if selected.shared_conversion {
         log::warn!(
@@ -666,9 +666,9 @@ fn negotiate_shared_exact(
     }
     let client3: Option<IAudioClient3> = match client.cast() {
         Ok(client3) => Some(client3),
-        // The professional stack applies the kernel rejection
-        // matrix to this interface query as well; the legacy
-        // shared stack falls back on E_NOINTERFACE alone.
+        // The kernel rejection matrix applies to this interface query as
+        // well: an endpoint without Client3 falls back to compatibility
+        // initialization instead of failing the exact-period request.
         Err(error) if client3_rejects_format(error.code()) => {
             log::warn!(
                 target: "moiren::audio::wasapi",
@@ -721,8 +721,7 @@ fn negotiate_shared_exact(
                 // here (out-of-range periods are rejected above,
                 // never rounded), so PERIODICITY_LOCKED surfaces
                 // instead of retrying with the engine period
-                // (PERIODICITY_POLICY; the legacy shared stack
-                // retries exactly once).
+                // (PERIODICITY_POLICY).
                 api("InitializeSharedAudioStream", unsafe {
                     client3.InitializeSharedAudioStream(
                         AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -930,16 +929,16 @@ fn initialize_shared_legacy(
     format: &WAVEFORMATEX,
     stage: &'static str,
 ) -> Result<(), BackendError> {
-    // D4: professional keeps Windows' default persisted-session behavior
-    // (no NOPERSIST) and always converts between its fixed client format and
-    // the endpoint mix; the legacy shared stack passes its own combination.
+    // This backend keeps Windows' default persisted-session behavior (no
+    // NOPERSIST) and always converts between its fixed client format and
+    // the endpoint mix.
     // SAFETY: format is the caller's live descriptor for this call.
     api(stage, unsafe {
-        initialize_legacy_shared(
+        initialize_shared(
             client,
             std::ptr::from_ref(format),
             None,
-            LegacySharedInit {
+            SharedInitFlags {
                 auto_convert: true,
                 nopersist: false,
             },
@@ -988,7 +987,7 @@ fn wave_format(
         SampleFormat::Float64 => 64,
         SampleFormat::Native => return Err(unsupported("Native format needs a device descriptor")),
     };
-    if !(1..=32).contains(&channels) {
+    if !(1..=MAX_CHANNELS).contains(&channels) {
         return Err(unsupported("unsupported native channel layout"));
     }
     let float = matches!(format, SampleFormat::Float32 | SampleFormat::Float64);

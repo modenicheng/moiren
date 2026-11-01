@@ -323,7 +323,7 @@ fn language_choices(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
 fn latency_policy(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     use crate::service::AudioLatencyProfile;
     field(
-        &t!("Queue / recovery policy"),
+        &t!("Device buffer policy"),
         choices(
             shell,
             Editor::Global,
@@ -394,7 +394,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             stream_summary(requested.backend, requested.output),
         ))
         .child(detail(
-            &t!("Legacy recovery policy"),
+            &t!("Device buffer policy"),
             t!(snapshot.latency_profile.title()),
         ))
         .child(label(t!(

@@ -508,12 +508,16 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
     });
     view.read_with(cx, |shell, _| {
         let trace = shell.mixer.trace.borrow();
-        assert!(
-            shell.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
-            "cached controls must not freeze display ballistics between publications"
+        assert_eq!(
+            shell.node_meters.channel_levels(node).unwrap()[0].bar,
+            bar_before,
+            "a publisher stall must hold the bar instead of reading as a dip"
         );
         assert_eq!(trace.strip_renders, strips_before);
-        assert!(trace.meter_paints > paints_before);
+        assert!(
+            trace.meter_paints > paints_before,
+            "cached controls must not freeze the meter pump"
+        );
     });
     cx.update(|window, cx| window.click(SharedString::from(format!("meter-reset-{node:?}")), cx));
     assert!(view.read_with(cx, |shell, _| {

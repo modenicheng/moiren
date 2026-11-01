@@ -1,5 +1,7 @@
 # 托管路由与低延迟
 
+> **历史状态说明（2026-10-28）**：下文「档位和数字含义」的准入模型与「验证入口」描述的是已退役的旧音频栈；`routing_probe` 工具已删除。现行行为是通过显式 buffer-frame 请求表达延迟意图，见 `crates/moiren-app/src/service/latency.rs`。
+
 ## 生命周期与路由
 
 桌面服务提交真实 `LogicalGraph` 对应的 `EngineProject`，由 `EngineHost`

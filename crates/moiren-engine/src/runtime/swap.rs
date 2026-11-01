@@ -508,11 +508,10 @@ impl PlanSnapshot {
             .iter()
             .enumerate()
             .map(|(index, instance)| {
-                let io = plan
-                    .ops
-                    .iter()
-                    .find(|op| op.contains_runtime(index))
-                    .map(|op| match &op.kind {
+                let op_index = plan.ops.iter().position(|op| op.contains_runtime(index));
+                let io = op_index.map(|op_index| {
+                    let op = &plan.ops[op_index];
+                    match &op.kind {
                         PreparedOpKind::Mix { inputs, .. }
                             if inputs.iter().any(|input| input.runtime == index) =>
                         {
@@ -550,18 +549,16 @@ impl PlanSnapshot {
                             }
                             schema
                         }
-                    });
+                    }
+                });
                 ProcessorSchema {
                     id: instance.id,
                     state_type: instance.state_type,
                     role: instance.processor.role(),
                     latency: instance.processor.latency_frames(),
                     io,
-                    signals: plan
-                        .ops
-                        .iter()
-                        .position(|op| op.contains_runtime(index))
-                        .map(|op| plan.signal_bindings[op].clone())
+                    signals: op_index
+                        .map(|op_index| plan.signal_bindings[op_index].clone())
                         .unwrap_or_else(|| {
                             instance
                                 .processor

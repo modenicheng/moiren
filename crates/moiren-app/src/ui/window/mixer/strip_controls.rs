@@ -1,6 +1,7 @@
 //! Compact channel actions and the strip-specific balance control.
 
 use super::*;
+use crate::ui::widgets::fader::wheel_direction;
 
 fn control(button: impl IntoElement) -> Div {
     div().flex_1().min_w_0().child(button)
@@ -163,21 +164,6 @@ fn balance_value(position: Point<Pixels>, bounds: Bounds<Pixels>) -> f64 {
         .mul_add(2., -1.) as f64
 }
 
-/// Wheel direction as a step count: wheel up (or tilt right) is +1. Mirrors
-/// the fader's private helper: gpui carries touchpad pixel deltas and
-/// discrete line notches with the same sign — positive scrolls the content
-/// down, i.e. the wheel moved up. For the horizontal balance the vertical
-/// axis is the plain wheel gesture and the secondary axis covers shift+wheel
-/// and tilt wheels.
-fn wheel_direction(delta: &ScrollDelta) -> i32 {
-    let (x, y) = match delta {
-        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
-        ScrollDelta::Lines(delta) => (delta.x, delta.y),
-    };
-    let (x, y) = (x.signum(), y.signum());
-    if y != 0. { y as i32 } else { x as i32 }
-}
-
 fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut App) {
     this.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
@@ -258,7 +244,8 @@ pub(in crate::ui::window) fn balance(
                         // A wheel step rides the same dispatch as the drag and
                         // click edits; propagation stops here so adjusting the
                         // balance never scrolls the strip page or the
-                        // inspector panel underneath.
+                        // inspector panel underneath. The direction reading is
+                        // the fader's shared helper.
                         cx.stop_propagation();
                         let direction = wheel_direction(&event.delta);
                         if direction == 0 {

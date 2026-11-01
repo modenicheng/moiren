@@ -93,10 +93,10 @@ fn sum_render<S: ProcessingSample>(input_count: usize) {
         port: 0,
         slot: output,
     });
-    let (meter, mut reader) = level_meter(4, 2).unwrap();
+    let (writer, mut reader) = crate::boundary::audio_bridge::<S>(2, 8, 4096).unwrap();
     let resources = RtResources::<S>::new(vec![
         ProcessorInstance::new(PROCESSOR, Bus),
-        ProcessorInstance::new(METER, Observer(meter)),
+        ProcessorInstance::new(SINK, crate::boundary::SinkAdapter(writer)),
     ])
     .unwrap();
     let (_, parameters) = parameter_channel(vec![], 1, 1, 1, 16).unwrap();
@@ -106,7 +106,7 @@ fn sum_render<S: ProcessingSample>(input_count: usize) {
             io: arena.prepare_io(&accesses).unwrap(),
         },
         OpSpec {
-            processor: METER,
+            processor: SINK,
             io: arena
                 .prepare_io(&[PortAccess::Read {
                     port: 0,
@@ -129,13 +129,32 @@ fn sum_render<S: ProcessingSample>(input_count: usize) {
     .unwrap();
     let mut engine = Engine::new(plan, resources, parameters).unwrap();
     let level = 0.25 * input_count as f64;
-    for frames in [4, 4] {
-        engine.render(frames).unwrap();
-        let snapshot = reader.latest().unwrap();
-        assert_eq!(snapshot.channels, 2);
-        assert_eq!(snapshot.samples, (frames * 2) as u64);
-        assert_eq!(snapshot.peak, level * 2.0);
-        assert_eq!(snapshot.rms, (level * level * 2.5).sqrt());
+    let mut samples = vec![S::ZERO; 8];
+    for _ in [4, 4] {
+        engine.render(4).unwrap();
+        assert_eq!(
+            reader
+                .read_interleaved(&mut samples)
+                .unwrap()
+                .transferred_frames,
+            4
+        );
+        assert_eq!(
+            samples
+                .iter()
+                .map(|sample| sample.to_f64())
+                .collect::<Vec<_>>(),
+            vec![
+                level,
+                -2.0 * level,
+                level,
+                -2.0 * level,
+                level,
+                -2.0 * level,
+                level,
+                -2.0 * level
+            ]
+        );
     }
 }
 

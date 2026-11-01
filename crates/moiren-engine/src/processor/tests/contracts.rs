@@ -1,4 +1,64 @@
 use super::*;
+use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+struct Recording {
+    timeline_epoch: u64,
+    end_frame: u64,
+    peak: f64,
+    squares: f64,
+    samples: u64,
+}
+impl Recording {
+    fn rms(&self) -> f64 {
+        (self.squares / self.samples as f64).sqrt()
+    }
+}
+
+/// Minimal single-input observer recording what it saw, so the wrapper
+/// contract test does not depend on any specific measurement backend.
+struct RecordingObserver {
+    recording: Arc<Mutex<Recording>>,
+}
+impl RecordingObserver {
+    fn new() -> (Self, Arc<Mutex<Recording>>) {
+        let recording = Arc::new(Mutex::new(Recording::default()));
+        (
+            Self {
+                recording: Arc::clone(&recording),
+            },
+            recording,
+        )
+    }
+}
+impl RtObserver<f64> for RecordingObserver {
+    fn validate_inputs(&self, io: &crate::buffer::PreparedIo) -> Result<(), ProcessorError> {
+        if io.input_count() == 1 && io.input_channels(0).is_some() {
+            Ok(())
+        } else {
+            Err(ProcessorError::InvalidIo)
+        }
+    }
+    fn observe(
+        &mut self,
+        ctx: &ProcessContext,
+        inputs: crate::buffer::ReadPorts<'_, f64>,
+        _signals: crate::signal::ProcessSignals<'_>,
+    ) {
+        let input = inputs.get(0).expect("validated observer input");
+        let mut recording = self.recording.lock().unwrap();
+        for frame in 0..ctx.frames {
+            for channel in 0..input.channel_count() {
+                let sample = input.channel(channel)[frame];
+                recording.peak = recording.peak.max(sample.abs());
+                recording.squares += sample * sample;
+                recording.samples += 1;
+            }
+        }
+        recording.timeline_epoch = ctx.timeline_epoch;
+        recording.end_frame = ctx.timeline_start + ctx.frames as u64;
+    }
+}
 
 #[test]
 fn gain_and_sum_reject_invalid_port_contracts() {
@@ -62,8 +122,8 @@ fn observer_requires_read_only_io_and_delegates_input_validation_and_audio() {
     let b = arena.slot(1).unwrap();
     let input = PortAccess::Read { port: 0, slot: a };
     let output = PortAccess::Write { port: 0, slot: b };
-    let (meter, mut reader) = level_meter(4, 1).unwrap();
-    let mut observer = Observer(meter);
+    let (observer_probe, recording) = RecordingObserver::new();
+    let mut observer = Observer(observer_probe);
     assert_eq!(RtProcessor::<f64>::role(&observer), ProcessorRole::Observer);
     for ports in [
         vec![],
@@ -97,13 +157,15 @@ fn observer_requires_read_only_io_and_delegates_input_validation_and_audio() {
             )
         })
         .unwrap();
-    let snapshot = reader.latest().unwrap();
-    assert_eq!(snapshot.timeline_epoch, CONTEXT.timeline_epoch);
+    let recording = recording.lock().unwrap();
+    assert_eq!(recording.timeline_epoch, CONTEXT.timeline_epoch);
     assert_eq!(
-        snapshot.end_frame,
+        recording.end_frame,
         CONTEXT.timeline_start + CONTEXT.frames as u64
     );
-    assert_eq!(snapshot.peak, 4.0);
-    assert_eq!(snapshot.rms, 7.5_f64.sqrt());
+    assert_eq!(recording.peak, 4.0);
+    assert_eq!(recording.samples, 4);
+    assert_eq!(recording.rms(), 7.5_f64.sqrt());
+    drop(recording);
     assert_samples_exact(&mut arena, 0, &[&[1.0, -2.0, 3.0, -4.0]]);
 }

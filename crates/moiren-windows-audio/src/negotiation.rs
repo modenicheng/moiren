@@ -1,11 +1,9 @@
 //! Shared WASAPI negotiation kernel.
 //!
-//! Single source for the pieces the retired dual stacks had duplicated:
-//! PCM/floating-point sub-format GUIDs, WAVEFORMATEX descriptor parsing, the
-//! IAudioClient3 rejection matrix, endpoint friendly names, and the shared
-//! and exclusive initialization sequences (deliberate divergences stay
-//! explicit parameters; see decision D4 in
-//! `docs/superpowers/plans/2026-10-19-repo-steward-remediation.md`).
+//! Single source for the WASAPI negotiation pieces: PCM/floating-point
+//! sub-format GUIDs, WAVEFORMATEX descriptor parsing, the IAudioClient3
+//! rejection matrix, endpoint friendly names, and the shared and exclusive
+//! initialization sequences.
 
 #[cfg(feature = "probe-tools")]
 use windows::Win32::Media::Audio::{EDataFlow, IMMEndpoint};
@@ -37,10 +35,21 @@ pub(crate) const EXTENSIBLE_TAG: u16 = 0xfffe;
 pub(crate) const EXTENSION_BYTES: usize =
     size_of::<WAVEFORMATEXTENSIBLE>() - size_of::<WAVEFORMATEX>();
 
+/// Negotiation bound: the sample-rate span accepted for native streams.
+/// Open requests outside it are rejected before any COM call, and negotiated
+/// stream metadata is held to the same span.
+pub(crate) const MIN_SAMPLE_RATE_HZ: u32 = 8_000;
+pub(crate) const MAX_SAMPLE_RATE_HZ: u32 = 384_000;
+/// Negotiation bound: the largest buffer, in frames, a prepared native
+/// stream may report; larger native buffer sizes are rejected.
+pub(crate) const MAX_BUFFER_FRAMES: u32 = 65_536;
+/// Negotiation bound: the largest channel count of a native stream layout.
+pub(crate) const MAX_CHANNELS: usize = 32;
+
 /// One failed WASAPI COM stage: the call-site label and its raw HRESULT.
 ///
-/// The stage text is observable in per-stack reports; every stack converts
-/// this into its own error type without rewriting the label.
+/// The stage text is observable in reports; every caller converts this into
+/// its own error type without rewriting the label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StageError {
     pub stage: &'static str,
@@ -56,8 +65,8 @@ impl StageError {
     }
 }
 
-/// Label a COM result with its stage: the shared shape behind every stack's
-/// `api()` wrapper.
+/// Label a COM result with its stage: the shared shape behind the crate's
+/// `api()` wrappers.
 pub(crate) fn stage<T>(
     label: &'static str,
     result: windows::core::Result<T>,
@@ -160,7 +169,7 @@ fn synthesize_extensible(base: WAVEFORMATEX, sub_format: GUID) -> WAVEFORMATEXTE
 ///
 /// `pointer` must be valid for reads of `size_of::<WAVEFORMATEX>()` and,
 /// when the tag is EXTENSIBLE with sufficient `cbSize`, of the extension
-/// bytes. Both stacks only pass GetMixFormat-owned or test-owned complete
+/// bytes. Callers only pass GetMixFormat-owned or test-owned complete
 /// allocations; fields are read packed by value so no reference to an
 /// unaligned native field escapes.
 pub(crate) unsafe fn parse_descriptor(
@@ -181,14 +190,10 @@ pub(crate) unsafe fn parse_descriptor(
     }
 }
 
-/// HRESULTs that abandon the IAudioClient3 path in favor of the legacy
-/// shared initialization after a capability query (and, in the professional
-/// stack, after the interface query as well): the endpoint does not
-/// implement, or rejects the format for, the Client3 negotiation.
-///
-/// The legacy stack additionally treats a plain `E_NOINTERFACE` from the
-/// interface query alone as the narrower `Client3Unavailable` fallback; that
-/// stage strictness stays at its call site.
+/// HRESULTs that abandon the IAudioClient3 path in favor of the shared
+/// `IAudioClient::Initialize` compatibility path, both after the interface
+/// query and after the capability query: the endpoint does not implement,
+/// or rejects the format for, the Client3 negotiation.
 pub(crate) fn client3_rejects_format(code: windows::core::HRESULT) -> bool {
     matches!(
         code,
@@ -248,21 +253,21 @@ pub(crate) unsafe fn shared_engine_periods(
     Ok(periods)
 }
 
-/// Explicit legacy (`IAudioClient::Initialize`) flag selection (decision D4:
-/// parameterized, not silently unified).
+/// Explicit `IAudioClient::Initialize` flag selection for shared-mode
+/// streams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LegacySharedInit {
+pub(crate) struct SharedInitFlags {
     /// Add AUTOCONVERTPCM | SRC_DEFAULT_QUALITY so Windows converts between
     /// the client format and the endpoint mix format.
     pub auto_convert: bool,
-    /// Add NOPERSIST. The legacy shared stack opts out of persisting session
-    /// state across reboots; the professional stack keeps Windows' default
-    /// persisted-session behavior.
+    /// Add NOPERSIST, opting out of persisting session state across reboots.
+    /// This backend keeps Windows' default persisted-session behavior
+    /// (false).
     pub nopersist: bool,
 }
 
-/// Compose the legacy initialization flags (pure; unit-tested).
-pub(crate) fn legacy_shared_flags(init: LegacySharedInit) -> u32 {
+/// Compose the shared initialization flags (pure; unit-tested).
+pub(crate) fn shared_init_flags(init: SharedInitFlags) -> u32 {
     let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
     if init.nopersist {
         flags |= AUDCLNT_STREAMFLAGS_NOPERSIST;
@@ -324,7 +329,8 @@ pub(crate) unsafe fn initialize_exclusive(
     }
 }
 
-/// Legacy shared initialization through `IAudioClient::Initialize`.
+/// Shared initialization through `IAudioClient::Initialize` (the
+/// compatibility path next to IAudioClient3).
 ///
 /// IsFormatSupported does not account for AUTOCONVERTPCM; Initialize is
 /// authoritative. The stage label and error mapping stay with the caller.
@@ -333,17 +339,17 @@ pub(crate) unsafe fn initialize_exclusive(
 ///
 /// `format` must be valid for reads of the complete base+cbSize allocation
 /// for the duration of the call.
-pub(crate) unsafe fn initialize_legacy_shared(
+pub(crate) unsafe fn initialize_shared(
     client: &IAudioClient,
     format: *const WAVEFORMATEX,
     session_guid: Option<&GUID>,
-    init: LegacySharedInit,
+    init: SharedInitFlags,
 ) -> windows::core::Result<()> {
     // SAFETY: caller guarantees the descriptor (see above).
     unsafe {
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            legacy_shared_flags(init),
+            shared_init_flags(init),
             0,
             0,
             format,
@@ -368,7 +374,7 @@ pub(crate) fn friendly_name(device: &IMMDevice) -> windows::core::Result<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{EXTENSION_BYTES, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM};
+    use super::{EXTENSION_BYTES, SUBFORMAT_FLOAT, SUBFORMAT_PCM, SharedInitFlags};
     use windows::{
         Win32::{
             Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL},
@@ -495,23 +501,23 @@ mod tests {
     }
 
     #[test]
-    fn legacy_flags_compose_each_explicit_decision() {
+    fn shared_init_flags_compose_each_explicit_decision() {
         assert_eq!(
-            super::legacy_shared_flags(LegacySharedInit {
+            super::shared_init_flags(SharedInitFlags {
                 auto_convert: false,
                 nopersist: false,
             }),
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK
         );
         assert_eq!(
-            super::legacy_shared_flags(LegacySharedInit {
+            super::shared_init_flags(SharedInitFlags {
                 auto_convert: false,
                 nopersist: true,
             }),
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST
         );
         assert_eq!(
-            super::legacy_shared_flags(LegacySharedInit {
+            super::shared_init_flags(SharedInitFlags {
                 auto_convert: true,
                 nopersist: true,
             }),

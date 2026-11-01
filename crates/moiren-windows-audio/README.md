@@ -1,6 +1,6 @@
 # Moiren Windows audio
 
-Professional settings use `professional::ProfessionalBackend` for WASAPI
+All settings use `engine_backend::ProfessionalBackend` for WASAPI
 Shared/Exclusive and a single stereo ASIO driver, with f32/f64 processing.
 ASIO capability queries, native callback diagnostics, bounded notification
 recovery and finite opt-in probes are documented in the
@@ -11,17 +11,16 @@ opt-in W00 probes. It does not yet implement the complete W01–W17 backend cont
 
 ## Managed EngineHost backend
 
-`engine_backend::WindowsBackend` implements `moiren_engine::host::EngineBackend<f32>`
+`engine_backend::ProfessionalBackend` implements `moiren_engine::host::EngineBackend<f32>`
 without an application dependency. Open an `EngineHost<f32>` with an `EngineProject`
 and the adapter to prepare and activate automatically; dropping the host stops
 and joins the native owners before engine/control reclamation completes.
 
-Use `physical_input(EndpointSelector)`, `physical_output(EndpointSelector)`,
-`tone_input(frequency_hz)` and `process_input(&ProcessIdentity)` for project IO
-configurations. The process helper preserves both PID and creation time. Plain
-executable selectors are ambiguous and return `Unsupported`; an exited/recycled
-process is never silently replaced. Explicit endpoints wait for their exact ID;
-`FollowDefault` retains its role and follows changes to the default identity.
+Project IO is configured on the `EngineProject` through `moiren_engine::node`
+types (`InputSource`, `OutputTarget`, `DeviceOptions`); application capture is
+a persistent executable selector that the backend resolves to a live process
+identity. Explicit endpoints wait for their exact ID; `FollowDefault` retains
+its role and follows changes to the default identity.
 
 The graph transport remains 48 kHz stereo f32. Supported native Shared formats
 retain the Client3 period path: render uses 48 kHz stereo f32, while capture
@@ -60,18 +59,17 @@ every native stream to acknowledge Start; a stream failure stops the linked owne
 Compatible updates retain every active output consumer and transfer each sole
 writer at the block boundary. Managed attachment installs all required engine
 sink guards; arbitrary candidates that omit any protected sink reuse are retired and
-the current output continues. Legacy `DemandRenderer::new` still rejects engines
-with plan switching. `try_snapshot`/`managed_snapshot` make one bounded coherent
-read; the legacy `snapshot` returns its coherent preparation value if publication
-is in flight. Successful swaps publish the current revision and continuous frame.
+the current output continues. Successful swaps publish the current revision and
+continuous frame.
 
-`WindowsBackendConfig::latency_profile` selects Compatible, Balanced or Low.
-Relative queue budgets are derived from actual native timing and rejected when
-they cannot fit capacity; smaller periods are requests, not measurements.
-`WindowsBackend::observations()` publishes per-owner stream timing, initialization
+The application's `AudioLatencyProfile` (Compatible, Balanced or Low) maps to
+explicit `DeviceOptions::period_frames` buffer requests; see
+`crates/moiren-app/src/service/latency.rs`. Relative queue budgets are derived from
+actual native timing and rejected when they cannot fit capacity; smaller periods
+are requests, not measurements. `ProfessionalBackend::observations()` publishes
+per-owner stream timing, initialization
 fallback, prepared queues and bounded bridge counters. Process capture retains
-its distinct virtual timing boundary. See [managed routing and low latency](../../docs/designs/14-managed-routing-low-latency.md)
-and the finite muted `routing_probe` example for hardware verification.
+its distinct virtual timing boundary. See [managed routing and low latency](../../docs/designs/14-managed-routing-low-latency.md).
 
 Resource polling runs on one adapter-owned worker, with at most one outstanding
 probe per resource and coalesced bounded events. The configurable interval is
@@ -82,16 +80,9 @@ Closing cancels the probe wait and joins it. Endpoint probing supplies retry
 eligibility; actual stream preparation still establishes format and availability.
 
 Native attachment errors and caught audio/bookkeeping panics return the Engine
-to its non-RT joiner. `last_native_report` retains native render/capture failures
-along with owned-resource return. Deterministic tests use fake native owners.
-Separate muted hardware checks verify automatic Shared startup, same-owner hot
-updates, automatic output-selection replacement with a new epoch, and physical
-capture/render shutdown. Unplug/replug and occupation recovery remain covered by
+to its non-RT joiner. Deterministic tests use fake native owners.
+Unplug/replug and occupation recovery remain covered by
 controlled resource-event/probe tests rather than a physical unplug experiment.
-
-```text
-cargo test --locked -p moiren-windows-audio --test engine_backend -- --ignored --nocapture --test-threads=1
-```
 
 The examples enumerate active endpoints and audio sessions, capture an explicitly
 selected process tree, or probe explicit physical endpoints. Physical capture
@@ -130,59 +121,7 @@ window separately. Windows can disconnect shared sessions when Exclusive mode
 overrides them, so applications may stop, retry, or move to another endpoint.
 See the [experiment and results](../../docs/superpowers/plans/2026-10-15-exclusive-loopback.md).
 
-## First Engine-backed Shared output
-
-```powershell
-cargo run --locked -p moiren-app -- render --list
-cargo run --locked -p moiren-app -- render --endpoint '<reviewed render endpoint ID>' --seconds 10 --frequency 440 --gain 0.05
-```
-
-This opt-in command submits audible PCM from a compiler-prepared tone graph.
-The engine always submits 48 kHz stereo f32. A matching endpoint uses the native
-Client3 path; a valid stereo endpoint with another rate, bit depth or PCM
-subtype is opened through Windows Shared format conversion. Other channel
-counts or explicit masks other than front-left/right are rejected. The selector
-queries active render endpoints, without requiring capture or default devices.
-Per-endpoint errors remain visible; endpoint discovery marks conversion as a
-runtime compatibility requirement because catalog metadata alone cannot prove
-that Initialize will accept the flags. No volumes, mute settings or default
-endpoints are changed.
-
-`render::DemandRenderer` owns exactly one Engine and its matching, initially
-drained output reader. The WASAPI owner prepares COM/services, audio and separate
-stop events, bounded staging and optional MMCSS. It primes PCM before Start and
-renders `capacity - padding` frames on each audio wake, splitting processing into
-Engine maximum blocks. Zero demand skips DSP and buffer acquisition. DSP and
-bridge draining finish before acquiring the driver lease; only a bounded byte
-copy occurs during it. Every lease is paired on its acquiring thread; an
-abandoned shared-mode lease is cancelled with zero frames.
-
-The same-owner bridge converts planar Graph output to interleaved staging; it
-does not adapt independent clocks. Short transfers initialize missing samples
-and fail the stream instead of submitting a stale or partial packet. Persistent
-DSP counters include completed blocks even when their subsequent transfer fails;
-session processed frames exclude any earlier Engine processing.
-
-`RenderSession::request_stop` wakes independently of audio events. `join` returns
-after stop/release, and dropping an unjoined session requests stop and joins.
-`SessionDuration::For` accepts 1–600 seconds; `UntilStopped` has no artificial
-deadline and waits with native `INFINITE`, with the stop event always present.
-Finite waits use the remaining duration. The successful loop
-uses prepared storage and scalar counters, with no Rust allocation, log
-formatting or file writes. JSON is serialized after cleanup; optional period,
-ducking and MMCSS failures retain HRESULTs. Own-session ducking opt-out affects
-only this render session. `empty_padding_wakes` is diagnostic, not proof of an
-underrun; `GetStreamLatency == 0` is not evidence of zero end-to-end latency.
-
-The [10-second FreeDSP test](../../docs/experiments/windows/2026-10-08-shared-render.md)
-completed with nonzero PCM and user-confirmed sound. Device loss/recovery, long
-stress runs, SRC quality upgrades and plan replacement remain separate work.
-
 ## Engine-backed Process Loopback
-
-```powershell
-cargo run --locked -p moiren-app -- monitor --process <PID> --output '<reviewed render ID>' --seconds 10 --gain 0.05
-```
 
 `process_loopback::inspect_process(pid)` returns a PID, creation time in 100 ns
 units, and executable basename. `ProcessLoopbackOptions` requires that identity;
@@ -218,37 +157,28 @@ detection. Capture JSON schema 3 identifies source kind and process identity;
 
 Capture schema 3 and render schema 2 serialize `requested_seconds` as a number
 for finite runs and `null` for `UntilStopped`; monitor schema 2 embeds these
-reports. Existing CLI `--seconds` options explicitly select finite runs.
+reports.
 
-Worker-side `prepare_capture_with_gate`, `prepare_process_capture_with_gate`
-and `start_render_prepared_with_gate` negotiate native streams before one shared
-`ActivationGate` releases their owners. Ready does not mean Running: no capture
+Worker-side `prepare_process_capture_with_gate`
+negotiates the native stream before one shared
+`ActivationGate` releases its owners. Ready does not mean Running: no capture
 Start, render DSP, or render Start occurs before activation. Duration starts
 after native Start; `has_started` acknowledges only successful native Start.
-The immediate-start helpers preserve CLI behavior. Cancellation wakes both
+Cancellation wakes both
 prepared and running owners, including continuous runs.
 
-`RenderSession::join_with_renderer` returns a `RenderOwnerExit` after native COM
-cleanup on its owner thread; the pure Rust renderer is released by the joiner.
-Monitor preparation shares this gate, and `join_with_renderer` also returns its
-`ControlPort`. Cleanup workers must drain existing replies, call
-`retire_controls`, then drain and retry until it returns zero before dropping
-either endpoint. Accepted future requests terminate with `StaleRevision`, even
-when the reply queue was full at stop. Session drop requests stop and joins, so
-sessions must be transferred to cleanup workers before disposal by GUI code.
+Cleanup workers must drain existing replies, call `retire_controls`,
+then drain and retry until it returns zero before dropping either endpoint.
+Accepted future requests terminate with `StaleRevision`, even when the reply
+queue was full at stop. Session drop requests stop and joins, so sessions must
+be transferred to cleanup workers before disposal by GUI code.
 
 Implementation and acceptance: [Process Loopback plan](../../docs/superpowers/plans/2026-10-09-process-loopback.md).
 
 ## Physical capture and clock bridge
 
-```powershell
-cargo run --locked -p moiren-app -- monitor --list
-cargo run --locked -p moiren-app -- render --list
-cargo run --locked -p moiren-app -- monitor --input '<reviewed capture ID>' --output '<reviewed render ID>' --seconds 10 --gain 0.05 --pan 0
-```
-
-`capture::start_capture` prepares a Shared stream on a dedicated COM owner,
-and returns `PreparedCapture { session, source, observer, sample_rate, channels }`.
+Preparing a Shared stream on a dedicated COM owner returns
+`PreparedCapture { session, source, observer, sample_rate, channels }`.
 Supported native 44.1/48 kHz mono/stereo f32 retains its Client3 path; native mono
 is explicitly copied to both graph channels. Other valid mono/stereo PCM/float
 formats use Windows Shared conversion to 48 kHz f32, preserving channel count.
@@ -258,7 +188,7 @@ sample rate/channel count describes client
 packets, not the endpoint mix. The selector does not require a render/default
 endpoint. Conversion candidates have `format_supported: null` and
 `windows_conversion_required: true` until actual initialization verifies them.
-The command never changes device format or system/session settings.
+Preparation never changes device format or system/session settings.
 
 Both capture and render reports carry `shared_period.mix_format`, `client_format`,
 `windows_auto_conversion`, initialization API and fallback reason. Conversion
@@ -295,8 +225,7 @@ frame generation; interpolation never crosses generations. Stop is checked
 between packets and wins over audio events. `CaptureSession` supports
 `request_stop`, `is_finished`, `join`; Drop stops and joins the owner.
 
-To link both streams, pass `CaptureSession::stop_signal()` to
-`render::start_render_with_stop`. Both owners broadcast the shared kernel stop
+Both owners broadcast the shared kernel stop
 event before retiring their bridge or releasing native objects. A finished
 producer must not leave Render running while control waits for COM cleanup;
 this shutdown race was reproduced and fixed during hardware validation.
@@ -386,8 +315,7 @@ Stop/rebind must prepare a fresh bridge; Process Loopback, multiple devices,
 quality SRC and automatic recovery remain separate slices.
 
 The [implementation plan](../../docs/superpowers/plans/2026-10-09-audio-backend.md)
-and [validation record](../../docs/experiments/windows/2026-10-09-capture-clock-bridge.md)
-distinguish simulation from hardware testing. Repeat the two-hour synthetic
+distinguishes simulation from hardware testing. Repeat the two-hour synthetic
 drift test for both native rates and both ±1000 ppm signs:
 
 ```powershell
@@ -601,8 +529,8 @@ Pure statistics tests do not require hardware. Windows callback/BLOB lifetime
 tests use locally implemented COM objects, without activating an audio device.
 Demand splitting, shortfall, allocation counting and CLI tests are pure. Stop
 wake, format and render-lease tests use kernel events or local fake COM clients,
-without opening an audio device. Real device tests are opt-in examples or the
-app's explicit `render` command, never `cargo test`.
+without opening an audio device. Real device tests are opt-in examples, never
+`cargo test`.
 
 The W00 result is limited to the tested machine, application, format, and duration.
 Process isolation controls, include/exclude comparisons, browsers/children,
@@ -631,22 +559,11 @@ values are upper bounds with four buckets per octave, capped by the exact
 observed maximum. Render padding is recorded before refill. Capture submitted
 frames count frames accepted by its bridge, and Capture has no render-padding
 samples. Callback duration covers successful wake processing through the native
-transfer and sample statistics, excluding the subsequent telemetry recording;
-the benchmark reports that instrumentation cost separately. Startup prefill,
-activation-gate waits, Stop, and failed transfers are outside these histograms.
+transfer and sample statistics, excluding the subsequent telemetry recording.
+Startup prefill, activation-gate waits, Stop, and failed transfers are outside
+these histograms.
 
-Use explicit endpoint IDs to collect a baseline; the probe defaults to gain 0:
-
-```powershell
-cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --list
-cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode trace
-cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --benchmark
-```
-
-The portable benchmark measures the recorder; Windows additionally measures
-two QPC reads plus conversion and recording. Both exclude audio work. The probe
-reports raw `GetStreamLatency` separately and keeps end-to-end measurement
-method `unknown`. Queue observations and callback timings cannot establish
+Queue observations and callback timings cannot establish
 physical end-to-end latency. Bridge `last_qpc_100ns` belongs to the latest
 received valid packet, even if overflow drops it; it is not FIFO audio age.
 
@@ -673,18 +590,8 @@ and failed Client3 initialization return an error. No attempted initialization
 is retried on the same client and no automatic period/format-conflict retry is
 provided in this slice.
 
-Compare the device default, a small desired period, and an intermediate desire
-without changing the graph or gain:
-
-```powershell
-cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode summary --period-ms default
-cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode summary --period-ms 1
-cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode summary --period-ms 8
-```
-
-Using `cargo run` ensures that the probe reflects the current sources. Record
-actual periods and callback demand as well as capacity; the desired value and
-`GetStreamLatency` alone do not establish end-to-end latency.
+Record actual periods and callback demand as well as capacity; the desired value
+and `GetStreamLatency` alone do not establish end-to-end latency.
 
 ## Explicit render queue targets and preparation budgets
 
@@ -709,50 +616,13 @@ Compatible resolution preserves the 8192/2048 input settings and full output
 capacity, without claiming a modeled deadline. These calculations do not prove
 that actual device jitter fits the supplied assumptions.
 
-The physical Monitor and latency probe now use two-phase native owner
-preparation: both owners report actual timing before the control side creates
-the bridge and graph, then each owner receives its prepared runtime object.
-Process Loopback retains its independent initialization path. Compatible mode
-preserves the legacy 8192/2048 input budget; custom mode installs the admitted
-input targets in the physical Clock Bridge. Low-inventory servo/backlog
-enforcement remains separate follow-up work.
-
-```powershell
-cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 30 --gain 0 --mode summary --period-ms 5 --render-target-frames 480 --wake-margin-frames 96 --callback-budget-frames 48
-```
+Physical capture and render preparation is two-phase: both owners report actual
+timing before the control side creates the bridge and graph, then each owner
+receives its prepared runtime object. Process Loopback retains its independent
+initialization path. Compatible mode preserves the legacy 8192/2048 input
+budget; custom mode installs the admitted input targets in the physical Clock
+Bridge. Low-inventory servo/backlog enforcement remains separate follow-up work.
 
 The declared wake margin/callback budget are assumptions to validate, not
 measured values. An unsupported or too-large actual period rejects this custom
 queue before activation and cleans up both owners.
-
-## Muted multi-output qualification
-
-`routing_probe` prepares one managed Engine with explicit master/follower
-endpoints and an independent zero-gain guard for every output. Omit `--input`
-to mix two software tones; repeat it for supported physical capture endpoints.
-The probe changes no system default, endpoint format, volume, or mute setting.
-
-```powershell
-cargo run --locked -p moiren-windows-audio --example routing_probe -- --list
-cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '<master-id>' --output '<follower-id>' --soak-seconds 600 --profile low --trace
-```
-
-Default duration is five seconds. `--seconds 1..60` and explicit
-`--soak-seconds 60..1800` are mutually exclusive and cannot be repeated. A soak
-keeps one owner alive, applies a real compatible graph update, polls health,
-and verifies closure. Control-side native samples are bounded to 1801 entries.
-
-Trace mode additionally retains the most recent 128 native anomaly windows,
-including up to eight preceding callbacks, padding, demand, submitted-frame
-snapshots, render `IAudioClock` position/QPC/HRESULT samples and follower bridge
-observations. The report also retains the clock frequency. Overwritten windows
-are counted. Clock samples are correlation evidence, not an atomic transaction
-with padding; an unavailable clock is recorded without rejecting the stream.
-Empty padding, callback gaps, bridge recovery and underrun remain diagnostic
-evidence; none is a hardware XRUN or physical latency measurement. Summary mode
-leaves these windows and native clock samples disabled.
-
-The [continuous-run qualification record](../../docs/superpowers/plans/2026-10-16-low-latency-qualification.md)
-documents actual hardware, bounded demand-deficit models and profile limits.
-Successful preparation and healthy ownership alone do not qualify a profile
-for uninterrupted audio on a particular device combination.
