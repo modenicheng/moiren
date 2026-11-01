@@ -123,6 +123,25 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .connect(source, destination, SendParams::default())
                 .map_err(|e| e.to_string())?;
         }
+        GraphEdit::ConnectReplacing {
+            source,
+            destination,
+        } => {
+            // The candidate only swaps in on full success, so a failed
+            // connect half leaves the displaced edge exactly where it was.
+            if let Some(edge) = next
+                .graph
+                .edges()
+                .iter()
+                .find(|edge| edge.dst_port() == destination)
+                .map(|edge| edge.id())
+            {
+                next.graph.disconnect(edge).map_err(|e| e.to_string())?;
+            }
+            next.graph
+                .connect(source, destination, SendParams::default())
+                .map_err(|e| e.to_string())?;
+        }
         GraphEdit::Disconnect(edge) => {
             next.graph.disconnect(edge).map_err(|e| e.to_string())?;
         }

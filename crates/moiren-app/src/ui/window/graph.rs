@@ -516,9 +516,11 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                                 PortDirection::Output => (drag.port.id, target.id),
                                 PortDirection::Input => (target.id, drag.port.id),
                             };
+                            // Drops on an occupied input displace the old
+                            // edge instead of faulting (design 18 A1).
                             shell.state.update(cx, |state, _| {
                                 state.dispatch(AppRequest::EditGraph(
-                                    crate::service::GraphEdit::Connect {
+                                    crate::service::GraphEdit::ConnectReplacing {
                                         source,
                                         destination,
                                     },

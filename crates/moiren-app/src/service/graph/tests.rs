@@ -737,6 +737,77 @@ fn rejected_edits_are_atomic_and_do_not_consume_revision_or_node_ids() {
     assert_eq!(before.graph, service.snapshot.graph);
 }
 #[test]
+fn connect_replacing_displaces_the_occupied_input_in_one_revision() {
+    let mut service = ServiceGraph::default();
+    let (source, gain, pan, sink) = ids(&service);
+    let snapshot = service.snapshot();
+    let source_out = snapshot.graph.get_node(source).unwrap().outputs()[0].id();
+    let pan_in = snapshot.graph.get_node(pan).unwrap().inputs()[0].id();
+    service
+        .edit(GraphEdit::ConnectReplacing {
+            source: source_out,
+            destination: pan_in,
+        })
+        .unwrap();
+    let snapshot = service.snapshot();
+    let mut routes: Vec<_> = snapshot
+        .graph
+        .edges()
+        .iter()
+        .map(|edge| (edge.src(), edge.dst()))
+        .collect();
+    routes.sort();
+    assert_eq!(routes, vec![(source, gain), (source, pan), (pan, sink)]);
+    // The displaced input kept exactly one incoming edge: the new one.
+    let feeding_pan: Vec<_> = snapshot
+        .graph
+        .edges()
+        .iter()
+        .filter(|edge| edge.dst() == pan)
+        .collect();
+    assert_eq!(feeding_pan.len(), 1);
+    assert_eq!(feeding_pan[0].src(), source);
+    // One undo step covers the whole displacement.
+    assert!(service.undo());
+    let snapshot = service.snapshot();
+    let mut routes: Vec<_> = snapshot
+        .graph
+        .edges()
+        .iter()
+        .map(|edge| (edge.src(), edge.dst()))
+        .collect();
+    routes.sort();
+    assert_eq!(routes, vec![(source, gain), (gain, pan), (pan, sink)]);
+}
+#[test]
+fn failed_connect_replacing_leaves_the_displaced_edge_intact() {
+    let mut service = ServiceGraph::default();
+    let (source, gain, pan, _) = ids(&service);
+    let before = service.snapshot();
+    let pan_out = before.graph.get_node(pan).unwrap().outputs()[0].id();
+    let gain_in = before.graph.get_node(gain).unwrap().inputs()[0].id();
+    // Displacing gain's input from pan closes the pan -> gain -> pan cycle,
+    // so the connect half fails and the whole candidate rolls back.
+    assert!(
+        service
+            .edit(GraphEdit::ConnectReplacing {
+                source: pan_out,
+                destination: gain_in,
+            })
+            .is_err()
+    );
+    let after = service.snapshot();
+    assert_eq!(before.graph, after.graph);
+    assert_eq!(before.candidate_revision, after.candidate_revision);
+    assert!(after.last_error.is_some());
+    assert!(after
+        .faults
+        .iter()
+        .any(|fault| fault.subject == GraphSubject::Route(pan_out, gain_in)));
+    let _ = source;
+}
+
+#[test]
 fn candidate_edit_does_not_claim_native_application_and_stale_start_cannot_confirm_it() {
     let mut service = ServiceGraph::default();
     let old = service.snapshot.candidate_revision;

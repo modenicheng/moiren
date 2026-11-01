@@ -126,6 +126,15 @@ pub enum GraphEdit {
         source: PortId,
         destination: PortId,
     },
+    /// Connect that first displaces whatever currently feeds
+    /// `destination`. Input ports are single-connection, so a drop on an
+    /// occupied input reroutes it instead of failing: one candidate
+    /// revision, one undo step, and if the connect half fails the whole
+    /// candidate rolls back with the displaced edge intact.
+    ConnectReplacing {
+        source: PortId,
+        destination: PortId,
+    },
     Disconnect(EdgeId),
     SetSend {
         edge: EdgeId,
@@ -414,6 +423,10 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
         GraphEdit::Connect {
             source,
             destination,
+        }
+        | GraphEdit::ConnectReplacing {
+            source,
+            destination,
         } => GraphSubject::Route(*source, *destination),
         GraphEdit::Disconnect(edge) | GraphEdit::SetSend { edge, .. } => graph
             .get_edge(*edge)
@@ -455,6 +468,7 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         GraphEdit::AddNode { .. }
         | GraphEdit::RemoveNode(_)
         | GraphEdit::Connect { .. }
+        | GraphEdit::ConnectReplacing { .. }
         | GraphEdit::Disconnect(_)
         | GraphEdit::AddBusInput(_)
         | GraphEdit::RemoveBusInput { .. }

@@ -176,6 +176,73 @@ fn graph_port_drag_connects_real_topology_in_both_directions(cx: &mut gpui_kit::
 }
 
 #[gpui_kit::test]
+fn graph_port_drag_onto_occupied_input_displaces_the_old_edge(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    settle_panels(cx);
+    // The default rig wires source -> gain -> pan -> sink; pan's input is
+    // fed by gain. Dragging source's output onto it must reroute pan's
+    // input in one step instead of faulting (design 18 A1).
+    let frame = canvas_frame(&view, cx);
+    let (source_output, pan_input) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        let source = &graph.nodes()[0];
+        let pan = &graph.nodes()[2];
+        (source.outputs()[0].id(), pan.inputs()[0].id())
+    });
+    let (source_index, pan_index) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        let source_node = graph.nodes()[0].id();
+        let pan_node = graph.nodes()[2].id();
+        (
+            frame
+                .world
+                .nodes
+                .iter()
+                .position(|node| node.id == format!("{:?}", source_node))
+                .unwrap(),
+            frame
+                .world
+                .nodes
+                .iter()
+                .position(|node| node.id == format!("{:?}", pan_node))
+                .unwrap(),
+        )
+    });
+    let position = |anchor: (f32, f32)| frame.bounds.origin + point(px(anchor.0), px(anchor.1));
+    let from = position(frame.nodes[source_index].output.unwrap());
+    let to = position(frame.nodes[pan_index].inputs[0]);
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .graph
+            .edges()
+            .iter()
+            .any(|edge| edge.src_port() == source_output && edge.dst_port() == pan_input)
+    });
+    view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        assert_eq!(graph.edges().len(), 3);
+        assert!(
+            !graph
+                .edges()
+                .iter()
+                .any(|edge| edge.dst_port() == pan_input && edge.src_port() != source_output)
+        );
+        assert!(shell.state.read(cx).snapshot.graph.faults.is_empty());
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn graph_backspace_removes_selected_node_and_its_edges(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
