@@ -13,6 +13,10 @@ pub enum HitTarget<'a> {
         node: &'a str,
         control: super::KnobControl,
     },
+    /// The header's expander glyph; opens the node detail window.
+    Expand {
+        node: &'a str,
+    },
     Node(&'a str),
     Wire(&'a str),
 }
@@ -100,6 +104,9 @@ impl CanvasFrame {
                     id: port.id,
                     direction: PortDirection::Output,
                 }));
+            }
+            if layout.expand.contains(&point(local.0, local.1)) {
+                return Some(HitTarget::Expand { node: &node.id });
             }
             for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
                 if knob_layout.dial.contains(&point(local.0, local.1)) {

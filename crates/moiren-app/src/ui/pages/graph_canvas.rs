@@ -7,12 +7,14 @@ use crate::service::AppSnapshot;
 use crate::ui::theme;
 
 mod camera;
+pub mod curves;
 mod frame;
 mod knob;
 mod layout;
 mod wire;
 
 pub use camera::Camera;
+pub use curves::CurveSpec;
 pub use frame::{CanvasFrame, HitTarget, PortDirection, PortTarget};
 pub use knob::{CardKnob, KnobControl};
 pub use layout::{ChipLayout, KnobLayout, MeterLayout, NodeLayout, TextLayout};
@@ -89,6 +91,8 @@ pub struct CanvasNode {
     pub matrix: Option<Vec<Vec<f64>>>,
     /// Rack stage icon names, in chain order.
     pub rack_stages: Vec<&'static str>,
+    /// Static curve thumbnail (EQ response or dynamics transfer).
+    pub curve: Option<curves::CurveSpec>,
 }
 
 /// A card's IO binding chip: what the node is wired to outside the graph
@@ -143,6 +147,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         binding: None,
         matrix: None,
         rack_stages: Vec::new(),
+        curve: None,
     }
 }
 
@@ -165,6 +170,71 @@ pub struct CanvasWorld {
     pub nodes: Vec<CanvasNode>,
     pub wires: Vec<CanvasWire>,
     pub graph_bounds: Bounds<f32>,
+}
+
+/// The card's informational line, shared by the canvas projection and the
+/// detail window.
+pub fn detail_string(
+    kind: moiren_core::graph::NodeKind,
+    state: &crate::service::GraphNodeState,
+    channels: &str,
+) -> String {
+    use moiren_core::graph::NodeKind;
+    match kind {
+        NodeKind::Source if state.source.is_none() => t!("Choose a source").to_string(),
+        NodeKind::Sink if state.output_endpoint_id.is_none() => t!("Choose an output").to_string(),
+        NodeKind::Eq => state.builtin.eq().map_or_else(
+            || channels.to_string(),
+            |settings| {
+                format!(
+                    "{:.0} Hz · {:+.1} dB",
+                    settings.frequency_hz, settings.gain_db
+                )
+            },
+        ),
+        NodeKind::Delay => state.builtin.delay().map_or_else(
+            || channels.to_string(),
+            |settings| {
+                t!(
+                    "%{ms} ms · %{percent}% wet",
+                    ms = format!("{:.0}", settings.delay_ms),
+                    percent = format!("{:.0}", settings.mix * 100.)
+                )
+                .to_string()
+            },
+        ),
+        NodeKind::Recorder => state.builtin.recorder().map_or_else(
+            || channels.to_string(),
+            |settings| t!("%{frames} frame buffer", frames = settings.capacity_frames).to_string(),
+        ),
+        NodeKind::Meter => state.builtin.meter().map_or_else(
+            || channels.to_string(),
+            |settings| t!("%{frames} frame window", frames = settings.window_frames).to_string(),
+        ),
+        NodeKind::SpectrumAnalyzer => state.builtin.spectrum().map_or_else(
+            || channels.to_string(),
+            |settings| {
+                t!(
+                    "FFT %{fft} · hop %{hop}",
+                    fft = settings.fft_size,
+                    hop = settings.hop_frames
+                )
+                .to_string()
+            },
+        ),
+        NodeKind::Rack => state.builtin.rack().map_or_else(
+            || t!("Empty rack").to_string(),
+            |settings| {
+                // English keeps its plural; zh-CN shares one form for both keys.
+                if settings.slots.len() == 1 {
+                    t!("%{count} stage", count = settings.slots.len()).to_string()
+                } else {
+                    t!("%{count} stages", count = settings.slots.len()).to_string()
+                }
+            },
+        ),
+        _ => channels.to_string(),
+    }
 }
 
 /// One rack stage's glyph, matching the standalone card icons.
@@ -249,67 +319,7 @@ impl CanvasWorld {
             } else {
                 format!("{} ch", logical.channels())
             };
-            let detail = match logical.kind() {
-                NodeKind::Source if state.source.is_none() => t!("Choose a source").to_string(),
-                NodeKind::Sink if state.output_endpoint_id.is_none() => {
-                    t!("Choose an output").to_string()
-                }
-                NodeKind::Eq => state.builtin.eq().map_or_else(
-                    || channels.clone(),
-                    |settings| {
-                        format!(
-                            "{:.0} Hz · {:+.1} dB",
-                            settings.frequency_hz, settings.gain_db
-                        )
-                    },
-                ),
-                NodeKind::Delay => state.builtin.delay().map_or_else(
-                    || channels.clone(),
-                    |settings| {
-                        t!(
-                            "%{ms} ms · %{percent}% wet",
-                            ms = format!("{:.0}", settings.delay_ms),
-                            percent = format!("{:.0}", settings.mix * 100.)
-                        )
-                        .to_string()
-                    },
-                ),
-                NodeKind::Recorder => state.builtin.recorder().map_or_else(
-                    || channels.clone(),
-                    |settings| {
-                        t!("%{frames} frame buffer", frames = settings.capacity_frames).to_string()
-                    },
-                ),
-                NodeKind::Meter => state.builtin.meter().map_or_else(
-                    || channels.clone(),
-                    |settings| {
-                        t!("%{frames} frame window", frames = settings.window_frames).to_string()
-                    },
-                ),
-                NodeKind::SpectrumAnalyzer => state.builtin.spectrum().map_or_else(
-                    || channels.clone(),
-                    |settings| {
-                        t!(
-                            "FFT %{fft} · hop %{hop}",
-                            fft = settings.fft_size,
-                            hop = settings.hop_frames
-                        )
-                        .to_string()
-                    },
-                ),
-                NodeKind::Rack => state.builtin.rack().map_or_else(
-                    || t!("Empty rack").to_string(),
-                    |settings| {
-                        // English keeps its plural; zh-CN shares one form for both keys.
-                        if settings.slots.len() == 1 {
-                            t!("%{count} stage", count = settings.slots.len()).to_string()
-                        } else {
-                            t!("%{count} stages", count = settings.slots.len()).to_string()
-                        }
-                    },
-                ),
-                _ => channels,
-            };
+            let detail = detail_string(logical.kind(), state, &channels);
             let (icon, tint) = match logical.kind() {
                 NodeKind::Source => (
                     match state.source {
@@ -488,6 +498,39 @@ impl CanvasWorld {
                 card.matrix = Some(preview);
                 card.body_height = theme::card::MATRIX_CELL * rows as f32 + 4.;
                 let _ = cols;
+            }
+            // Curve thumbnails (design 18 B3): EQ response and the
+            // dynamics family's transfer curve, with a vertical meter.
+            match logical.kind() {
+                NodeKind::Eq => {
+                    card.curve = Some(curves::CurveSpec::Eq(
+                        state.builtin.eq().cloned().unwrap_or_default(),
+                    ));
+                }
+                NodeKind::Compressor => {
+                    card.curve = Some(curves::CurveSpec::Dynamics(
+                        curves::DynamicsCurve::compressor(&state.compressor),
+                    ));
+                }
+                NodeKind::Gate => {
+                    if let Some(settings) = state.builtin.gate() {
+                        card.curve = Some(curves::CurveSpec::Dynamics(
+                            curves::DynamicsCurve::gate(settings),
+                        ));
+                    }
+                }
+                NodeKind::Limiter => {
+                    if let Some(settings) = state.builtin.limiter() {
+                        card.curve = Some(curves::CurveSpec::Dynamics(
+                            curves::DynamicsCurve::limiter(settings),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            if card.curve.is_some() {
+                card.body_height = theme::card::CURVE_BODY_H;
+                card.meter_vertical = true;
             }
             // Rack chain: one glyph per stage.
             if logical.kind() == NodeKind::Rack

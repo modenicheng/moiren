@@ -55,6 +55,8 @@ pub struct CanvasCallbacks {
     pub on_knob_down: Rc<WindowAppCallback<(String, KnobControl, f32)>>,
     /// Wheel notches over a knob dial: positive = up = increase.
     pub on_knob_wheel: Rc<WindowAppCallback<(String, KnobControl, f32)>>,
+    /// The expander glyph was pressed; opens the detail window.
+    pub on_expand: Rc<WindowAppCallback<String>>,
     pub on_connection_move: Rc<WindowAppCallback<(f32, f32)>>,
     pub on_delete: Rc<WindowAppCallback<()>>,
     pub on_cancel: Rc<WindowAppCallback<()>>,
@@ -327,6 +329,7 @@ pub(in crate::ui) fn node_drag_preview(
         binding: None,
         matrix: None,
         rack_stages: Vec::new(),
+        curve: None,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
@@ -441,6 +444,7 @@ pub fn graph_canvas_view(
         on_port_up,
         on_knob_down,
         on_knob_wheel,
+        on_expand,
         on_connection_move,
         on_delete,
         on_cancel,
@@ -518,6 +522,7 @@ pub fn graph_canvas_view(
                     let prepared = prepared.clone();
                     let on_background_down = on_background_down.clone();
                     let on_knob_down = on_knob_down.clone();
+                    let on_expand = on_expand.clone();
                     move |event, window, cx| {
                         window.focus(&focus, cx);
                         let Some(frame) = prepared.read() else {
@@ -542,6 +547,9 @@ pub fn graph_canvas_view(
                                 window,
                                 cx,
                             ),
+                            Some(HitTarget::Expand { node }) => {
+                                on_expand(node.to_string(), window, cx)
+                            }
                             Some(HitTarget::Node(id)) => on_select_node(id, window, cx),
                             Some(HitTarget::Wire(id)) => on_select_wire(id, window, cx),
                             None => on_background_down((event.clone(), frame.bounds), window, cx),

@@ -3,9 +3,11 @@ use rust_i18n::t;
 use super::*;
 
 mod compressor;
+mod detail;
 mod library;
 pub(super) use compressor::CompressorControls;
 mod node_inspector;
+pub(in crate::ui::window) use detail::overlay as detail_overlay;
 pub(super) mod page;
 pub(super) use library::PendingNodeSpawn;
 pub(in crate::ui::window) use library::{library, library_rail};
@@ -638,6 +640,31 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                                 .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
                             cx.notify();
                         }
+                    })
+                }
+            }),
+            on_expand: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |id, window, cx| {
+                    this.update(cx, |shell, cx| {
+                        if shell.begin_pointer_session(window) {
+                            return;
+                        }
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        shell.selected_nodes.clear();
+                        shell.selected_nodes.insert(node_id);
+                        shell.selected_node = Some(node_id);
+                        shell.selected_route = None;
+                        shell.detail_node = Some(node_id);
+                        cx.notify();
                     })
                 }
             }),

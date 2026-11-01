@@ -153,6 +153,8 @@ pub struct StudioShell {
     selection_drag: Option<graph::SelectionDrag>,
     graph_focus: FocusHandle,
     connection_drag: Option<graph::ConnectionDrag>,
+    /// Node whose detail window is open (design 18 B4).
+    detail_node: Option<moiren_core::graph::NodeId>,
     /// Active card-knob value drag: node, control, press y, press value.
     knob_drag: Option<(
         moiren_core::graph::NodeId,
@@ -361,6 +363,7 @@ impl StudioShell {
             selection_drag: None,
             graph_focus: cx.focus_handle(),
             connection_drag: None,
+            detail_node: None,
             knob_drag: None,
             pending_node_spawn: None,
             node_search,
@@ -802,6 +805,9 @@ impl Render for StudioShell {
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
                 v.child(settings::overlay_for(self, window))
+            })
+            .when(self.detail_node.is_some(), |v| {
+                v.child(graph::detail_overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);

@@ -92,6 +92,8 @@ pub mod card {
     pub const CHIP_BODY_H: f32 = 26.;
     pub const CHIP_H: f32 = 22.;
     pub const CHIP_ICON: f32 = 14.;
+    /// Curve-thumbnail bodies (EQ response, dynamics transfer).
+    pub const CURVE_BODY_H: f32 = 64.;
     /// Matrix-preview cells.
     pub const MATRIX_CELL: f32 = 9.;
     pub const MATRIX_GAP: f32 = 2.;
