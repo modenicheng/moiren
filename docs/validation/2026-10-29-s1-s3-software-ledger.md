@@ -5,6 +5,18 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [2026-11-02 exact measured-input slice](2026-11-02-exact-measured-input.md)
+removes the desktop preset-only restriction while retaining integer validation,
+native admission and exact requested/active owner confirmation. Remote UIA enters
+16384/1536/96and confirms a180-second active hold concurrently with local
+development. Its first final diagnostic capture exposes missing accessible roles;
+the failed receipt and forced owned-app cleanup remain recorded rather than
+declared graceful completion. Explicit diagnostic Label roles have a RED/GREEN
+regression. The final role-plus-text-value build completes native UIA, exact
+336period/render512/input1536confirmation and normal Stop/Quit. Two gap-bound
+violations remain visible; no isolated waveform, stable preset or calibrated
+physical result is claimed.
+
 The [2026-11-02 application render-queue slice](2026-11-02-app-render-queue.md)
 exposes independent render target/wake/callback policy through persisted
 intent, CLI and desktop, preserving native capacity and actual-period guards.

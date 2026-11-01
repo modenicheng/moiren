@@ -639,6 +639,7 @@ impl Render for StudioShell {
         self.finish_measured_process(cx);
         self.keep_settings_focus(window, cx);
         self.sync_native_period_inputs(window, cx);
+        self.sync_measured_exact_inputs(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
@@ -945,6 +946,7 @@ impl StudioShell {
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
             || self.export_controls.owns_focus(focused, cx)
             || self.settings.period_owns_focus(focused, cx)
+            || self.settings.exact_owns_focus(focused, cx)
     }
 
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and

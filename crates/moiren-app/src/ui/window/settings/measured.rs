@@ -3,6 +3,7 @@ use super::*;
 use crate::service::{AppSnapshot, InputSelection, MeasuredProcessRequest, RequestId};
 use moiren_core::graph::NodeId;
 
+mod exact;
 #[cfg(windows)]
 mod live;
 mod state;
@@ -74,7 +75,8 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let mut view = div().flex().flex_col().gap(px(10.))
         .child(heading(t!("Measured Process input")))
         .child(label(t!("Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency.")))
-        .child(field(&t!("Process source"), sources));
+        .child(field(&t!("Process source"), sources))
+        .child(exact::toggle(shell, cx));
     for (kind, title, values, selected) in [
         (
             "capacity",
@@ -95,6 +97,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             measured.draft.jitter_frames,
         ),
     ] {
+        if measured.exact.enabled {
+            continue;
+        }
         let mut row = div().flex().flex_wrap().gap(px(4.));
         let mut values = values;
         if !values.contains(&selected) {
@@ -131,6 +136,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             );
         }
         view = view.child(field(&t!(title), row));
+    }
+    if measured.exact.enabled {
+        view = view.child(exact::editor(shell));
     }
     let view = view
         .child(
@@ -204,7 +212,7 @@ fn conflict(shell: &StudioShell, cx: &Context<StudioShell>) -> Option<String> {
     } else if shell.settings.global.dirty() || shell.settings.device.dirty() {
         Some(t!("Save or discard other settings drafts before applying a measured budget.").into())
     } else {
-        None
+        shell.settings.measured.exact.validate(cx).err()
     }
 }
 

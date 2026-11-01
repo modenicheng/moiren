@@ -1,6 +1,25 @@
 use super::model::*;
 use super::{AudioSettings, Density, SampleFormat, StreamSettings};
 
+#[test]
+fn native_diagnostic_rows_expose_a_named_accessibility_node() {
+    use gpui_kit::{Element, accesskit};
+
+    let row = super::native_detail(
+        ("native-timing-row", 0_usize),
+        "2 Output: effective prepared render queue",
+        "Target 512 / capacity 738 frames".into(),
+    );
+    assert_eq!(row.a11y_role(), Some(accesskit::Role::Label));
+    let mut node = accesskit::Node::new(accesskit::Role::Label);
+    row.write_a11y_info(&mut node);
+    assert_eq!(
+        node.label(),
+        Some("2 Output: effective prepared render queue: Target 512 / capacity 738 frames")
+    );
+    assert_eq!(node.value(), node.label());
+}
+
 fn draft(audio: AudioSettings) -> Draft {
     Draft::new(
         audio,

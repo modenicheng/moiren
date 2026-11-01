@@ -723,3 +723,8 @@ Limits host time since packet publication began, not source sample age or physic
 %{milliseconds} ms	milliseconds	主机经过时间预设毫秒数
 Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.	-	VAD 应用侧方向说明
 Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart.	-	修改渲染或输入设置后明确要求重新实测准入
+Enter exact input bounds	-	切换实测输入预算的精确整数编辑
+Use input presets	-	退出精确文本编辑，保留最后有效预算
+Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget.	-	无效整数不允许回退并提交旧值
+Exact input fields are not ready.	-	字段未创建时不允许准入
+Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.	-	说明精确预算单位和拒绝无效文本

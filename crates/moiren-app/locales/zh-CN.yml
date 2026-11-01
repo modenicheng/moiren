@@ -2182,3 +2182,18 @@ _version: 2
 "Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart.":
   en: "Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart."
   zh-CN: "保存传输设置（包括渲染队列）会清除实测进程选择，需要重新准入。运行中的所有者仅在重启后改变。"
+"Enter exact input bounds":
+  en: "Enter exact input bounds"
+  zh-CN: "输入精确输入预算"
+"Use input presets":
+  en: "Use input presets"
+  zh-CN: "使用输入预设"
+"Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget.":
+  en: "Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget."
+  zh-CN: "实测输入预算必须是受支持范围内的整数帧数，原生准备会验证完整预算。"
+"Exact input fields are not ready.":
+  en: "Exact input fields are not ready."
+  zh-CN: "精确输入字段尚未就绪。"
+"Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.":
+  en: "Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value."
+  zh-CN: "精确输入预算以 48 kHz 帧数为单位。无效文本会阻止应用，不取整，也不回退到上一个有效值。"

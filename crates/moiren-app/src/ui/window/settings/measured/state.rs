@@ -186,6 +186,7 @@ struct Pending {
 #[derive(Default)]
 pub(in crate::ui::window::settings) struct MeasuredEditor {
     pub draft: MeasuredDraft,
+    pub(super) exact: super::exact::ExactInputs,
     pub error: Option<String>,
     pub message: Option<String>,
     #[cfg(windows)]

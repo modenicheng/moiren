@@ -727,6 +727,128 @@ fn measured_review_absent_active_configuration_is_not_reported_as_compatible(
 }
 
 #[gpui_kit::test]
+fn measured_exact_bounds_accept_nonpreset_target_and_wait_for_exact_confirmation(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    let (view, cx) = fixture.shell(cx);
+    cx.update(|window, cx| {
+        window.click("measured-process-node-0", cx);
+        window.click("measured-exact-open", cx);
+    });
+    for (id, value) in [
+        ("measured-exact-capacity", "16384"),
+        ("measured-exact-target", "1536"),
+        ("measured-exact-jitter", "97"),
+    ] {
+        reveal(cx, id);
+        cx.update(|window, cx| {
+            window.click(id, cx);
+            window.press("ctrl-a", cx);
+            window.input(value, cx);
+            window.press("enter", cx);
+        });
+        cx.run_until_parked();
+    }
+    let expected = MeasuredProcessRequest {
+        capacity_frames: 16384,
+        target_frames: 1536,
+        jitter_frames: 97,
+        ..fixture.expected()
+    };
+    assert_draft(&view, cx, expected);
+    reveal(cx, "measured-process-apply");
+    cx.update(|window, cx| window.click("measured-process-apply", cx));
+    wait_snapshot(&view, cx, |snapshot| snapshot.measured_process.is_some());
+    assert_eq!(
+        fixture.requests(),
+        vec![AppRequest::ApplyMeasuredProcessBridge(expected)]
+    );
+    view.update(cx, |shell, _| assert!(shell.settings.measured.busy()));
+    fixture.control.lock().unwrap().confirmation = Some(Confirmation::Exact);
+    wait_snapshot(&view, cx, |snapshot| {
+        snapshot.active_measured_process.is_some()
+    });
+    view.update(cx, |shell, cx| {
+        assert!(!shell.settings.measured.busy());
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_measured_process
+                .as_ref()
+                .unwrap()
+                .request,
+            expected
+        );
+    });
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn measured_invalid_exact_text_blocks_apply_instead_of_reusing_last_valid_target(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    let (view, cx) = fixture.shell(cx);
+    cx.update(|window, cx| window.click("measured-exact-open", cx));
+    for (id, valid, invalid_values) in [
+        (
+            "measured-exact-capacity",
+            "8192",
+            ["", "8192.5", "-1", "3", "262145", "4294967296"],
+        ),
+        (
+            "measured-exact-target",
+            "2048",
+            ["", "1536.5", "-1", "1", "262144", "4294967296"],
+        ),
+        (
+            "measured-exact-jitter",
+            "96",
+            ["", "96.5", "-1", "-96", "262144", "4294967296"],
+        ),
+    ] {
+        for invalid in invalid_values {
+            reveal(cx, id);
+            cx.update(|window, cx| {
+                window.click(id, cx);
+                window.press("ctrl-a", cx);
+                window.press("backspace", cx);
+                window.input(invalid, cx);
+            });
+            // Recheck before another frame can disable a previously queued Apply.
+            view.update(cx, |shell, cx| shell.apply_measured_process(cx));
+            poll(&view, cx);
+            assert!(
+                fixture.requests().is_empty(),
+                "invalid {id} {invalid:?} dispatched"
+            );
+            assert!(row(cx, "measured-process-feedback").contains("integer"));
+            view.update(cx, |shell, _| {
+                assert!(!shell.settings.measured.busy());
+                assert_eq!(shell.settings.measured.draft.capacity_frames, 8192);
+                assert_eq!(shell.settings.measured.draft.target_frames, 2048);
+                assert_eq!(shell.settings.measured.draft.jitter_frames, 96);
+            });
+        }
+        cx.update(|window, cx| {
+            window.click(id, cx);
+            window.press("ctrl-a", cx);
+            window.input(valid, cx);
+        });
+        cx.run_until_parked();
+    }
+    reveal(cx, "measured-exact-close");
+    cx.update(|window, cx| window.click("measured-exact-close", cx));
+    view.update(cx, |shell, _| {
+        assert!(shell.settings.measured.error.is_none())
+    });
+    fixture.finish();
+}
+
+#[gpui_kit::test]
 fn measured_review_deadline_wakes_without_poll_render_or_new_confirmation(cx: &mut TestAppContext) {
     let fixture = Fixture::new(Evidence::Current, false);
     let expected = fixture.expected();

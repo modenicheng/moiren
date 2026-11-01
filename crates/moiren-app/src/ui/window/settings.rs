@@ -513,10 +513,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .enumerate()
     {
         view = view.child(
-            detail(&key, value.clone())
-                .id(("process-trace-row", index))
-                .aria_label(format!("{key}: {value}"))
-                .gpui_test_observe(),
+            native_detail(("process-trace-row", index), &key, value.clone()).gpui_test_observe(),
         );
     }
     for (index, (key, value)) in crate::ui::presentation::native_timing_rows(snapshot)
@@ -524,10 +521,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .enumerate()
     {
         view = view.child(
-            detail(&key, value.clone())
-                .id(("native-timing-row", index))
-                .aria_label(format!("{key}: {value}"))
-                .gpui_test_observe(),
+            native_detail(("native-timing-row", index), &key, value.clone()).gpui_test_observe(),
         );
     }
     let mut exports = div()
@@ -610,6 +604,17 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             .variant(ButtonVariant::Danger)
             .on_click(|_, _, cx| cx.quit()),
     )
+}
+
+fn native_detail(id: impl Into<ElementId>, key: &str, value: String) -> Stateful<Div> {
+    let accessible_text = format!("{key}: {value}");
+    detail(key, value.clone())
+        .id(id)
+        // A label alone does not emit a native accessibility node in GPUI.
+        .role(Role::Label)
+        .aria_label(accessible_text.clone())
+        // AccessKit's text role derives its UIA Name from the text value.
+        .aria_value(accessible_text)
 }
 
 pub(super) fn processing_summary(audio: &AudioSettings) -> String {
