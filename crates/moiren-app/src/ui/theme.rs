@@ -84,6 +84,10 @@ pub mod card {
     /// Shell body: one detail line. Kinds with richer bodies extend the
     /// node's `body_height` and the ports follow.
     pub const BODY_H: f32 = 18.;
+    /// Knob bodies: one dial row with label and value beside it.
+    pub const KNOB_BODY_H: f32 = 44.;
+    pub const DIAL_SIZE: f32 = 40.;
+    pub const DIAL_TRACK_W: f32 = 3.;
     pub const METER_H: f32 = 3.;
     pub const METER_CHANNEL_GAP: f32 = 2.;
     pub const METER_CHANNELS: usize = 2;
@@ -93,6 +97,8 @@ pub mod card {
     pub const PORT_SPACING: f32 = 18.;
     pub const PORT_BOTTOM: f32 = 14.;
     pub const HINT_SIZE: f32 = 9.;
+    /// Neutral knob pointer (same neutral as slider thumbs).
+    pub const THUMB: super::Hsla = gpui_kit::hsla(0., 0., 0.85098, 1.);
 }
 
 /// The user-selectable node tint palette (`GraphNodeState::tint` indexes

@@ -8,12 +8,14 @@ use crate::ui::theme;
 
 mod camera;
 mod frame;
+mod knob;
 mod layout;
 mod wire;
 
 pub use camera::Camera;
 pub use frame::{CanvasFrame, HitTarget, PortDirection, PortTarget};
-pub use layout::{MeterLayout, NodeLayout, TextLayout};
+pub use knob::{CardKnob, KnobControl};
+pub use layout::{KnobLayout, MeterLayout, NodeLayout, TextLayout};
 pub use wire::{WireCurve, WireGeometry};
 
 #[cfg(test)]
@@ -78,6 +80,9 @@ pub struct CanvasNode {
     /// right edge; everything else uses the horizontal strip.
     pub meter_vertical: bool,
     pub channels: usize,
+    /// Knob controls exposed on the body (design 18 B3); empty for kinds
+    /// whose body is informational.
+    pub knobs: Vec<CardKnob>,
 }
 
 impl CanvasNode {
@@ -119,6 +124,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         body_height: theme::card::BODY_H,
         meter_vertical: false,
         channels: 2,
+        knobs: Vec::new(),
     }
 }
 
@@ -305,6 +311,44 @@ impl CanvasWorld {
             card.faulted = faulted.contains(&id);
             card.preparing = preparing.contains(&id);
             card.channels = logical.channels();
+            let knob = |control: KnobControl, label: String| {
+                let value = control.current(state);
+                CardKnob {
+                    control,
+                    label,
+                    value_text: control.value_text(value),
+                    position: control.position(value),
+                }
+            };
+            match logical.kind() {
+                NodeKind::Gain => {
+                    card.knobs
+                        .push(knob(KnobControl::GainLevel, t!("Gain").to_string()));
+                }
+                NodeKind::Pan => {
+                    card.knobs
+                        .push(knob(KnobControl::PanPosition, t!("Balance").to_string()));
+                }
+                NodeKind::Delay => {
+                    card.knobs
+                        .push(knob(KnobControl::DelayTime, t!("Time").to_string()));
+                }
+                NodeKind::Source
+                    if matches!(
+                        state.source,
+                        Some(crate::service::InputSelection::Tone { .. })
+                    ) =>
+                {
+                    card.knobs.push(knob(
+                        KnobControl::ToneFrequency,
+                        t!("Frequency").to_string(),
+                    ));
+                }
+                _ => {}
+            }
+            if !card.knobs.is_empty() {
+                card.body_height = theme::card::KNOB_BODY_H;
+            }
             card.input_ports = logical
                 .inputs()
                 .iter()

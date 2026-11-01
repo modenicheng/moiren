@@ -1,10 +1,12 @@
 use gpui_kit::{
-    App, Axis, BorderStyle, Bounds, ContentMask, Corners, Font, FontWeight, Hsla, PaintQuad,
-    Pixels, ShapedLine, TextAlign, TextRun, TransformationMatrix, Window, font, point, px, size,
-    transparent_black,
+    App, Axis, BorderStyle, Bounds, ContentMask, Corners, Font, FontWeight, Hsla, PaintQuad, Path,
+    PathBuilder, Pixels, ShapedLine, TextAlign, TextRun, TransformationMatrix, Window, font, point,
+    px, size, transparent_black,
 };
 
-use super::super::graph_canvas::{CanvasFrame, CanvasNode, MeterLayout, NodeLayout, TextLayout};
+use super::super::graph_canvas::{
+    CanvasFrame, CanvasNode, CardKnob, KnobLayout, MeterLayout, NodeLayout, TextLayout,
+};
 use crate::ui::theme;
 
 fn shape_text(
@@ -181,6 +183,96 @@ pub(in crate::ui) fn paint_meter_bars(
     }
 }
 
+/// One knob dial: a neutral track arc with the value portion filled in
+/// `TRACK_FILL` (a lit track never reads as audio) and a pointer at the
+/// value angle. Screen angles run 135°..405° with y pointing down, so
+/// the sweep starts bottom-left, passes the top, and ends bottom-right.
+fn paint_knob(
+    frame: &CanvasFrame,
+    layout: &KnobLayout,
+    knob: &CardKnob,
+    scale: f32,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let dial = frame.window_rect(layout.dial);
+    let (cx_, cy_) = (
+        f32::from(dial.origin.x) + f32::from(dial.size.width) / 2.,
+        f32::from(dial.origin.y) + f32::from(dial.size.height) / 2.,
+    );
+    let radius = f32::from(dial.size.width) / 2. - theme::card::DIAL_TRACK_W * scale;
+    let stroke = theme::card::DIAL_TRACK_W * scale;
+    let arc = |from_deg: f32, to_deg: f32, width: f32| -> anyhow::Result<Path<Pixels>> {
+        let mut builder = PathBuilder::stroke(px(width));
+        let steps = (((to_deg - from_deg).abs() / 15.).ceil() as usize).max(1);
+        for step in 0..=steps {
+            let angle = (from_deg + (to_deg - from_deg) * step as f32 / steps as f32).to_radians();
+            let p = point(
+                px(cx_ + angle.cos() * radius),
+                px(cy_ + angle.sin() * radius),
+            );
+            if step == 0 {
+                builder.move_to(p);
+            } else {
+                builder.line_to(p);
+            }
+        }
+        builder.build()
+    };
+    if let Ok(path) = arc(135., 405., stroke) {
+        window.paint_path(path, theme::WINDOW_BG);
+    }
+    if knob.position > 0.001
+        && let Ok(path) = arc(135., 135. + 270. * knob.position, stroke)
+    {
+        window.paint_path(path, theme::TRACK_FILL);
+    }
+    // Pointer from the hub to the value angle.
+    let angle = (135. + 270. * knob.position).to_radians();
+    let inner = radius * 0.35;
+    let outer = radius - stroke;
+    if let Ok(path) = {
+        let mut builder = PathBuilder::stroke(px(stroke * 1.6));
+        builder.move_to(point(
+            px(cx_ + angle.cos() * inner),
+            px(cy_ + angle.sin() * inner),
+        ));
+        builder.line_to(point(
+            px(cx_ + angle.cos() * outer),
+            px(cy_ + angle.sin() * outer),
+        ));
+        builder.build()
+    } {
+        window.paint_path(path, theme::card::THUMB);
+    }
+    paint_label(
+        frame,
+        &layout.label,
+        Label {
+            text: &knob.label,
+            family: theme::FONT_UI,
+            color: theme::TEXT_FAINT,
+            right_aligned: false,
+            weight: FontWeight::NORMAL,
+        },
+        window,
+        cx,
+    );
+    paint_label(
+        frame,
+        &layout.value,
+        Label {
+            text: &knob.value_text,
+            family: theme::FONT_MONO,
+            color: theme::TEXT,
+            right_aligned: false,
+            weight: FontWeight::NORMAL,
+        },
+        window,
+        cx,
+    );
+}
+
 /// The preparing state's language-neutral marker: three dots in a soft
 /// chip, fixed width regardless of locale.
 fn paint_preparing_badge(frame: &CanvasFrame, layout: &NodeLayout, window: &mut Window) {
@@ -353,8 +445,8 @@ pub(super) fn paint_node(
             theme::TEXT_FAINT,
             cx,
         );
-        // Body: the detail line placeholder until the per-kind bodies
-        // land, with the preparing scrim keeping the header readable.
+        // Body: knobs where the kind exposes its main control, else the
+        // detail line; the preparing scrim keeps the header readable.
         if node.preparing {
             let mut scrim = frame.window_rect(layout.body);
             scrim.origin.y -= px(2. * layout.scale);
@@ -362,19 +454,25 @@ pub(super) fn paint_node(
                 card.origin.y + card.size.height - scrim.origin.y - px(2. * layout.scale);
             fill_quad(scrim, theme::WINDOW_BG.opacity(0.45), window);
         }
-        paint_label(
-            frame,
-            &layout.detail,
-            Label {
-                text: &node.detail,
-                family: theme::FONT_UI,
-                color: theme::TEXT_MUTED,
-                right_aligned: false,
-                weight: FontWeight::NORMAL,
-            },
-            window,
-            cx,
-        );
+        if node.knobs.is_empty() {
+            paint_label(
+                frame,
+                &layout.detail,
+                Label {
+                    text: &node.detail,
+                    family: theme::FONT_UI,
+                    color: theme::TEXT_MUTED,
+                    right_aligned: false,
+                    weight: FontWeight::NORMAL,
+                },
+                window,
+                cx,
+            );
+        } else {
+            for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
+                paint_knob(frame, knob_layout, knob, layout.scale, window, cx);
+            }
+        }
         paint_meter_bars(frame, layout, reading, window);
     });
     // Port dots straddle the card edge, outside the content mask; the

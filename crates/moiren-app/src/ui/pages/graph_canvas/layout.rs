@@ -59,6 +59,15 @@ impl MeterLayout {
     }
 }
 
+/// One knob on the body: the dial circle plus its label and value text
+/// beside it.
+#[derive(Debug, Clone)]
+pub struct KnobLayout {
+    pub dial: Bounds<f32>,
+    pub label: TextLayout,
+    pub value: TextLayout,
+}
+
 /// Design 18 card anatomy: header (icon, name, status glyphs), tint rail,
 /// per-kind body, meter strip, port rails with channel hints. World-space
 /// units; [`NodeLayout::project`] scales everything with the camera.
@@ -73,6 +82,7 @@ pub struct NodeLayout {
     pub body: Bounds<f32>,
     pub detail: TextLayout,
     pub meter: MeterLayout,
+    pub knobs: Vec<KnobLayout>,
     pub inputs: Vec<(f32, f32)>,
     pub input_hints: Vec<TextLayout>,
     pub output: Option<(f32, f32)>,
@@ -139,6 +149,38 @@ impl NodeLayout {
                 },
             }
         };
+        let knobs = node
+            .knobs
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let dial_x = node.x
+                    + theme::card::RAIL_W
+                    + padding
+                    + index as f32 * (theme::card::DIAL_SIZE + 16.);
+                let dial_y = body_top + (node.body_height - theme::card::DIAL_SIZE) / 2.;
+                let text_left = dial_x + theme::card::DIAL_SIZE + 8.;
+                let text_width = node.x + width - padding - text_left;
+                KnobLayout {
+                    dial: Bounds {
+                        origin: point(dial_x, dial_y),
+                        size: size(theme::card::DIAL_SIZE, theme::card::DIAL_SIZE),
+                    },
+                    label: TextLayout::new(
+                        text_left,
+                        dial_y + 3.,
+                        text_width,
+                        theme::card::HINT_SIZE,
+                    ),
+                    value: TextLayout::new(
+                        text_left,
+                        dial_y + theme::card::DIAL_SIZE - 14.,
+                        text_width,
+                        11.,
+                    ),
+                }
+            })
+            .collect();
         Self {
             card: Bounds {
                 origin: point(node.x, node.y),
@@ -186,6 +228,7 @@ impl NodeLayout {
                 theme::TEXT_XS,
             ),
             meter,
+            knobs,
             inputs,
             input_hints,
             output: node.has_output.then_some((node.x + width, port_y)),
@@ -205,6 +248,15 @@ impl NodeLayout {
             body: camera.project_rect(self.body),
             detail: self.detail.project(camera),
             meter: self.meter.project(camera),
+            knobs: self
+                .knobs
+                .iter()
+                .map(|knob| KnobLayout {
+                    dial: camera.project_rect(knob.dial),
+                    label: knob.label.project(camera),
+                    value: knob.value.project(camera),
+                })
+                .collect(),
             inputs: self
                 .inputs
                 .iter()

@@ -7,6 +7,12 @@ use super::{Camera, CanvasWorld, ConnectionCandidate, NodeLayout, WireCurve, Wir
 #[derive(Debug, PartialEq, Eq)]
 pub enum HitTarget<'a> {
     Port(PortTarget),
+    /// A knob dial on a card body; knobs win over the card so drags
+    /// adjust the value instead of moving the node.
+    Knob {
+        node: &'a str,
+        control: super::KnobControl,
+    },
     Node(&'a str),
     Wire(&'a str),
 }
@@ -94,6 +100,14 @@ impl CanvasFrame {
                     id: port.id,
                     direction: PortDirection::Output,
                 }));
+            }
+            for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
+                if knob_layout.dial.contains(&point(local.0, local.1)) {
+                    return Some(HitTarget::Knob {
+                        node: &node.id,
+                        control: knob.control,
+                    });
+                }
             }
             if layout.card.contains(&point(local.0, local.1)) {
                 return Some(HitTarget::Node(&node.id));

@@ -153,6 +153,13 @@ pub struct StudioShell {
     selection_drag: Option<graph::SelectionDrag>,
     graph_focus: FocusHandle,
     connection_drag: Option<graph::ConnectionDrag>,
+    /// Active card-knob value drag: node, control, press y, press value.
+    knob_drag: Option<(
+        moiren_core::graph::NodeId,
+        pages::graph_canvas::KnobControl,
+        f32,
+        f64,
+    )>,
     pending_node_spawn: Option<graph::PendingNodeSpawn>,
     node_search: Entity<component::input::InputState>,
     node_name: Entity<component::input::InputState>,
@@ -354,6 +361,7 @@ impl StudioShell {
             selection_drag: None,
             graph_focus: cx.focus_handle(),
             connection_drag: None,
+            knob_drag: None,
             pending_node_spawn: None,
             node_search,
             node_name,
@@ -524,6 +532,7 @@ impl StudioShell {
             || self.pan_grab.is_some()
             || self.node_drag.is_some()
             || self.connection_drag.is_some()
+            || self.knob_drag.is_some()
     }
 
     /// Whether any observed meter still moves: decaying ballistics, a held

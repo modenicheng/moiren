@@ -91,6 +91,7 @@ impl StudioShell {
         self.pan_grab = None;
         self.background_click = None;
         self.selection_drag = None;
+        self.knob_drag = None;
         self.sync_drag_demand();
         if self.hand_tool {
             let position = window.mouse_position();
@@ -115,6 +116,7 @@ impl StudioShell {
         self.pan_grab = None;
         self.background_click = None;
         self.selection_drag = None;
+        self.knob_drag = None;
         if cancelled {
             self.sync_drag_demand();
             cx.notify();
@@ -299,6 +301,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                 if !held {
                     shell.pan_grab = None;
                     shell.node_drag = None;
+                    shell.knob_drag = None;
                     let clicked = shell
                         .background_click
                         .take()
@@ -319,6 +322,26 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                     }
                     shell.sync_drag_demand();
                     return;
+                }
+                if let Some((id, control, start_y, start_value)) = shell.knob_drag {
+                    // Vertical drag on the dial; up increases. The value
+                    // math is anchored to the press so mid-drag camera or
+                    // concurrent edits cannot feedback-loop the knob.
+                    let value = control.drag(start_value, (y - start_y) as f64);
+                    let edit = {
+                        let state = shell.state.read(cx);
+                        state
+                            .snapshot
+                            .graph
+                            .node(id)
+                            .and_then(|entry| control.edit(id, entry, value))
+                    };
+                    if let Some(edit) = edit {
+                        shell
+                            .state
+                            .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
+                        cx.notify();
+                    }
                 }
                 if let Some(drag) = shell.selection_drag.as_mut() {
                     drag.current = (x, y);
@@ -532,6 +555,89 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                             });
                         }
                         cx.notify();
+                    })
+                }
+            }),
+            on_knob_down: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(id, control, y), window, cx| {
+                    this.update(cx, |shell, cx| {
+                        if shell.begin_pointer_session(window) {
+                            return;
+                        }
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        let current = shell
+                            .state
+                            .read(cx)
+                            .snapshot
+                            .graph
+                            .node(node_id)
+                            .map(|entry| control.current(entry));
+                        let Some(current) = current else {
+                            return;
+                        };
+                        // Double-click resets to the control's default,
+                        // mirroring the element sliders' behavior.
+                        if shell.element_double_clicked(StudioShell::element_key(
+                            "knob",
+                            (node_id, control),
+                        )) {
+                            let edit = {
+                                let state = shell.state.read(cx);
+                                state.snapshot.graph.node(node_id).and_then(|entry| {
+                                    control.edit(node_id, entry, control.spec().default)
+                                })
+                            };
+                            if let Some(edit) = edit {
+                                shell.state.update(cx, |state, _| {
+                                    state.dispatch(AppRequest::EditGraph(edit))
+                                });
+                            }
+                        } else {
+                            shell.knob_drag = Some((node_id, control, y, current));
+                            shell.sync_drag_demand();
+                        }
+                        cx.notify();
+                    })
+                }
+            }),
+            on_knob_wheel: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(id, control, notches), _, cx| {
+                    this.update(cx, |shell, cx| {
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        let edit = {
+                            let state = shell.state.read(cx);
+                            state.snapshot.graph.node(node_id).and_then(|entry| {
+                                control.edit(
+                                    node_id,
+                                    entry,
+                                    control.wheel(control.current(entry), notches as f64),
+                                )
+                            })
+                        };
+                        if let Some(edit) = edit {
+                            shell
+                                .state
+                                .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
+                            cx.notify();
+                        }
                     })
                 }
             }),

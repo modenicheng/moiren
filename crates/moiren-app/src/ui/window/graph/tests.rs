@@ -331,6 +331,115 @@ fn graph_connection_cycle_drop_on_node_body_is_rejected(cx: &mut gpui_kit::TestA
 }
 
 #[gpui_kit::test]
+fn graph_knob_wheel_drag_and_double_click_adjust_gain_without_touching_the_camera(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.camera = Camera {
+            pan_x: 100.,
+            pan_y: 80.,
+            zoom: 0.89,
+            adjusted: true,
+        };
+        cx.notify();
+    });
+    settle_panels(cx);
+    let before = canvas_frame(&view, cx);
+    // The gain card's dial: the default rig starts it at digital zero.
+    let dial = before.nodes[1].knobs[0].dial;
+    let dial_center = before.bounds.origin
+        + point(
+            px(dial.origin.x + dial.size.width / 2.),
+            px(dial.origin.y + dial.size.height / 2.),
+        );
+    let gain_node = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.nodes[1].id
+    });
+    assert_eq!(
+        view.update(cx, |shell, cx| shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(gain_node)
+            .unwrap()
+            .gain),
+        0.
+    );
+    assert_eq!(
+        before.world.nodes[1].knobs.len(),
+        1,
+        "the gain card projects its knob"
+    );
+
+    // Wheel-up over the dial steps the value up one dB from digital zero
+    // and never reaches the canvas zoom policy.
+    cx.simulate_mouse_move(dial_center, None, Modifiers::default());
+    cx.simulate_event(ScrollWheelEvent {
+        position: dial_center,
+        delta: ScrollDelta::Lines(point(0., 1.)),
+        modifiers: Modifiers::default(),
+        touch_phase: TouchPhase::Moved,
+    });
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .node(gain_node)
+            .is_some_and(|entry| entry.gain > 0.0011)
+    });
+    let after_wheel = canvas_frame(&view, cx);
+    assert_close(after_wheel.camera.zoom, 0.89);
+    assert_close(after_wheel.camera.pan_x, before.camera.pan_x);
+    assert_close(after_wheel.camera.pan_y, before.camera.pan_y);
+
+    // A vertical drag on the dial sweeps the value without moving the
+    // node or the camera.
+    let release = dial_center - point(px(0.), px(40.));
+    cx.simulate_mouse_down(dial_center, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(release, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    cx.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+    // 40 px up the 200 px sweep lifts the value about 17 dB from wherever
+    // the wheel left it; assert the sweep moved it up materially.
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .node(gain_node)
+            .is_some_and(|entry| entry.gain > 0.005)
+    });
+
+    // Double-click resets to the control's default: unity gain.
+    cx.simulate_mouse_down(dial_center, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(dial_center, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(dial_center, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(dial_center, MouseButton::Left, Modifiers::default());
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .node(gain_node)
+            .is_some_and(|entry| (entry.gain - 1.).abs() < 1e-6)
+    });
+    let after = canvas_frame(&view, cx);
+    assert_close(after.camera.zoom, 0.89);
+    let moved = after
+        .world
+        .nodes
+        .iter()
+        .find(|node| node.node_id == Some(gain_node))
+        .unwrap();
+    let original = before
+        .world
+        .nodes
+        .iter()
+        .find(|node| node.node_id == Some(gain_node))
+        .unwrap();
+    assert_close(moved.x, original.x);
+    assert_close(moved.y, original.y);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn graph_backspace_removes_selected_node_and_its_edges(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
@@ -1592,7 +1701,9 @@ fn graph_scroll_pinch_and_toolbar_zoom_preserve_their_canvas_anchors(
         cx.notify();
     });
     let before = canvas_frame(&view, cx);
-    let local = (180., 180.);
+    // Empty canvas: the default rig's tone and gain dials now consume
+    // wheel events over themselves (design 18 B3).
+    let local = (600., 600.);
     let position = before.bounds.origin + point(px(local.0), px(local.1));
     cx.simulate_mouse_move(position, None, Modifiers::default());
     cx.simulate_event(ScrollWheelEvent {

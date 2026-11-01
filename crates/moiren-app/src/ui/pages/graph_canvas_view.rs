@@ -8,8 +8,8 @@ use gpui_kit::*;
 use rust_i18n::t;
 
 use super::graph_canvas::{
-    Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, PortDirection,
-    PortTarget, WireCurve,
+    Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, KnobControl,
+    PortDirection, PortTarget, WireCurve,
 };
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::observe::TestObserve;
@@ -50,6 +50,11 @@ pub struct CanvasCallbacks {
     pub node_levels: Rc<NodeLevelsFn>,
     pub on_port_down: Rc<WindowAppCallback<(PortTarget, (f32, f32))>>,
     pub on_port_up: Rc<WindowAppCallback<Option<ConnectionCandidate>>>,
+    /// A knob dial press: canvas node id, control, window y. Starts a
+    /// value drag (or a double-click reset).
+    pub on_knob_down: Rc<WindowAppCallback<(String, KnobControl, f32)>>,
+    /// Wheel notches over a knob dial: positive = up = increase.
+    pub on_knob_wheel: Rc<WindowAppCallback<(String, KnobControl, f32)>>,
     pub on_connection_move: Rc<WindowAppCallback<(f32, f32)>>,
     pub on_delete: Rc<WindowAppCallback<()>>,
     pub on_cancel: Rc<WindowAppCallback<()>>,
@@ -312,6 +317,7 @@ pub(in crate::ui) fn node_drag_preview(
         body_height: theme::card::BODY_H,
         meter_vertical: false,
         channels: 2,
+        knobs: Vec::new(),
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
@@ -424,6 +430,8 @@ pub fn graph_canvas_view(
         connection,
         on_port_down,
         on_port_up,
+        on_knob_down,
+        on_knob_wheel,
         on_connection_move,
         on_delete,
         on_cancel,
@@ -500,6 +508,7 @@ pub fn graph_canvas_view(
                 .on_mouse_down(MouseButton::Left, {
                     let prepared = prepared.clone();
                     let on_background_down = on_background_down.clone();
+                    let on_knob_down = on_knob_down.clone();
                     move |event, window, cx| {
                         window.focus(&focus, cx);
                         let Some(frame) = prepared.read() else {
@@ -516,6 +525,11 @@ pub fn graph_canvas_view(
                                         f32::from(event.position.y),
                                     ))),
                                 ),
+                                window,
+                                cx,
+                            ),
+                            Some(HitTarget::Knob { node, control }) => on_knob_down(
+                                (node.to_string(), control, f32::from(event.position.y)),
                                 window,
                                 cx,
                             ),
@@ -603,10 +617,25 @@ pub fn graph_canvas_view(
                 .on_scroll_wheel({
                     let prepared = prepared.clone();
                     let on_zoom = on_zoom.clone();
+                    let on_knob_wheel = on_knob_wheel.clone();
                     move |event: &ScrollWheelEvent, window, cx| {
                         let Some(frame) = prepared.read() else {
                             return;
                         };
+                        // A knob under the cursor consumes the wheel before
+                        // the canvas zoom/pan policy sees it (design 18 B3);
+                        // positive notches are wheel-up = increase.
+                        if let Some(HitTarget::Knob { node, control }) = frame
+                            .hit_test((f32::from(event.position.x), f32::from(event.position.y)))
+                        {
+                            let notches = match event.delta {
+                                ScrollDelta::Lines(lines) => lines.y,
+                                ScrollDelta::Pixels(delta) => f32::from(delta.y) / 60.,
+                            };
+                            on_knob_wheel((node.to_string(), control, notches), window, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
                         #[cfg(windows)]
                         let control =
                             event.modifiers.control || crate::ui::touchpad::wheel_control();
