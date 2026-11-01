@@ -19,6 +19,9 @@ pub const OVERLAY_SCRIM: Hsla = Hsla {
     a: 0.58,
     ..WINDOW_BG
 };
+/// Neutral value-region fill for slider and fader tracks. Signal cyan stays
+/// reserved for meters and status, so a lit track never reads as audio.
+pub const TRACK_FILL: Hsla = hsla(0.597222, 0.151899, 0.309804, 1.0);
 
 // --- Lines -----------------------------------------------------------------
 pub const BORDER: Hsla = controls::BORDER;
@@ -80,7 +83,7 @@ pub mod card {
     pub const TRACK_WIDTH: f32 = 211.;
     pub const TRACK_HEIGHT: f32 = 4.;
     pub const VALUE_WIDTH: f32 = 25.;
-    pub const TRACK_FILL: super::Hsla = gpui_kit::hsla(0.597222, 0.151899, 0.309804, 1.);
+    pub const TRACK_FILL: super::Hsla = super::TRACK_FILL;
     pub const THUMB: super::Hsla = gpui_kit::hsla(0., 0., 0.85098, 1.);
 }
 

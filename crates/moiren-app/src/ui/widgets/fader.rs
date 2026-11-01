@@ -292,7 +292,7 @@ pub fn fader(
                     .bottom_0()
                     .w(px(6.))
                     .rounded(px(theme::RADIUS_SM))
-                    .bg(theme::SIGNAL_DEVICE.opacity(0.35)),
+                    .bg(theme::TRACK_FILL),
             )
             .child(
                 div()
@@ -301,7 +301,7 @@ pub fn fader(
                     .top(relative(FaderScale::position(1.)))
                     .w(px(10.))
                     .h(px(1.))
-                    .bg(theme::SIGNAL_DEVICE.opacity(0.45)),
+                    .bg(theme::TEXT_FAINT),
             )
             .child(
                 base::slider::SliderThumb::new(state)
@@ -384,7 +384,7 @@ pub fn hslider(
                     .w(relative(fill))
                     .h(px(6.))
                     .rounded_full()
-                    .bg(theme::SIGNAL_DEVICE.opacity(0.3)),
+                    .bg(theme::TRACK_FILL),
             )
             .child(
                 base::slider::SliderThumb::new(state)
