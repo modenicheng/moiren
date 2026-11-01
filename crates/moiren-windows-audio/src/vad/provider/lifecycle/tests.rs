@@ -1,6 +1,11 @@
 use super::*;
 use crate::vad::{Capabilities, EndpointSnapshot};
 
+#[path = "fault_tests.rs"]
+mod fault_tests;
+#[path = "gate_close_tests.rs"]
+mod gate_close_tests;
+
 fn id() -> VirtualEndpointId {
     VirtualEndpointId::from_bytes([0x31; 16])
 }
@@ -140,6 +145,8 @@ struct Fake {
     query_calls: usize,
     creating: bool,
     revoke_on_open: Option<Arc<Admission>>,
+    observe_close: Option<Arc<SessionState>>,
+    fail_close: bool,
 }
 impl Default for Fake {
     fn default() -> Self {
@@ -156,6 +163,8 @@ impl Default for Fake {
             query_calls: 0,
             creating: false,
             revoke_on_open: None,
+            observe_close: None,
+            fail_close: false,
         }
     }
 }
@@ -195,6 +204,17 @@ impl EndpointControl for Fake {
     ) -> Result<EndpointSnapshot, BackendError> {
         assert_eq!(stamp(previous), stamp(self.current));
         self.gates.push(open);
+        if !open {
+            if let Some(session) = &self.observe_close {
+                assert!(
+                    !session.admitted(),
+                    "local admission must be revoked before submitting native gate close"
+                );
+            }
+            if self.fail_close {
+                return Err(unavailable("SET_GATE close failure"));
+            }
+        }
         if open && (!previous.policy_prepared() || !previous.audio_ready()) {
             return Err(unavailable("SET_GATE requires prepared policy and audio"));
         }
@@ -1255,7 +1275,7 @@ fn pcm_cancel_active_query_failure_and_prior_worker_failure_stay_visible_on_join
 
 #[test]
 fn pcm_terminal_fault_observes_once_before_cleanup_without_recovery_or_error_replacement() {
-    for situation in 0..5 {
+    for situation in 0..7 {
         let admission = Arc::new(Admission::new());
         let session = SessionState::new(admission.clone());
         session.active.store(true, Ordering::Release);
@@ -1273,6 +1293,17 @@ fn pcm_terminal_fault_observes_once_before_cleanup_without_recovery_or_error_rep
             1 => session.revoke(),
             2 => control.current = snapshot(PdoState::Present, 4, 6, false),
             3 => control.fail_query = true,
+            5 => control.current = snapshot(PdoState::Present, 3, 6, true),
+            6 => {
+                control.current = snapshot_native(
+                    PdoState::Present,
+                    3,
+                    6,
+                    true,
+                    11,
+                    (StreamState::Paused, true, true),
+                );
+            }
             _ => {}
         }
         let admitted = session.admitted();

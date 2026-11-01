@@ -190,3 +190,73 @@ this diagnostic build; source changes are uncommitted and not pushed.
 
 - https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1300-1699-
 - https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getoverlappedresult
+
+## Follow-up: retained fault and verified diagnostic handoff
+
+At15:42:40.466+08:00 a fresh shared read of the original desktop log is still
+10875 bytes with SHA256
+`3319787822687DBC037DB84D98AEE5B4CAC43CC2EF3CBF6A3B5CB1D73EA2D142`.
+The last audio entry remains the13:02:26.831 fault; there is no later audio
+start or recovery entry. Original Moiren PID13120 and OBS PID12648 remain.
+Receipt: `remote-current-fault-20261101-154228.stdout.log` in the existing local
+evidence root. Process presence does not demonstrate resumed audio.
+
+The actual old `Start-Moiren.ps1` sets
+`info,moiren_windows_audio::vad=debug`. That module-path filter does not match
+the explicit `moiren::audio::vad` target used by the VAD lifecycle and transport
+macros. This explains missing DEBUG instrumentation, not the PCM fault. The
+logger regression checks both filters directly through the application's
+existing `flexi_logger::LogSpecification`, without changing the global logger
+or process environment. ERROR logging remains enabled by either filter.
+The fault-only ERROR events added in584c201 are absent from the older running
+e6076f9 binary and cannot be recovered retroactively.
+
+The existing diagnostic binary now has a separate, verified launcher:
+
+```text
+D:\MoirenTest\20261101-vad-fault-diagnostics-e6076f9\Start-Diagnostics.ps1
+launcher SHA256 0EF00934EA8FFB8AAC291721F5DD71A07B9D0C96F81D2A53B6D7A940DA8FA117
+RUST_LOG=info,moiren::audio::vad=debug
+```
+
+It pins the already-staged executable's SHA256, uses its own profile, restores
+the caller environment after exit and refuses any existing Moiren instance.
+At15:48:52.927+08:00, remote PowerShell5.1 parsing reports zero syntax errors.
+Invoking it while the original GUI is present reaches precisely the intended
+existing-owner rejection, before profile/environment changes or application
+launch. Executable length33873408 and SHA256
+`7D35CB763992F9C8F5CC254DA9AC870BC61A9082349EC8346F3B00F2B901710B`
+are reverified. Both audio processes retain their executable paths and creation
+identities. Receipt: `verify-diagnostic-handoff-20261101-154840.stdout.log`.
+This is a refusal-path smoke, not a new audio acquisition or successful GUI
+handover. The old launcher, live profile and running binary are not replaced.
+
+A new injected `EndpointControl`/`PcmIo` contract test deterministically models
+QUERY observing a Running/open epoch5, then a terminal PCM completion after
+the same stream becomes Paused/open epoch6. It checks original0x8007051A
+propagation, no refill or carrier publication, only the completed ticket
+retired, its peer still requiring drain, one fault-only query, no gate mutation,
+and zero reset/recovery changes. The existing fault-observation matrix adds
+same-stream/open newer epochs in both Running and Paused states (seven cases).
+These tests pass on current diagnostic code; they are not a newly failing
+production-defect reproduction and do not establish which transition happened
+in the desktop. No admission, pumping, cancellation or recovery behavior is
+changed in this follow-up.
+
+Fresh verification on9f1a262 plus these test-only changes:
+
+- `cargo test --locked -p moiren-windows-audio --lib`:729 passed,4 ignored,
+  zero failures; the new interleaving and seven-case fault observation pass.
+- `cargo test --locked -p moiren-app --lib logging::tests`:4 passed.
+- `cargo fmt --all -- --check`:passed.
+- `cargo clippy --locked -p moiren-windows-audio -p moiren-app --all-targets -- -D warnings`:
+  passed. No full-workspace, headless-UI, release-build or CI rerun is claimed
+  for this test-only increment.
+
+Earlier software suites and the separate Process-only OBS analysis remain
+their own evidence, not native VAD qualification. A real fault-time request
+stamp and endpoint observation still require a diagnostic run after normal,
+controlled ownership handover. There is no proven root repair, fresh VAD
+waveform pass or calibrated physical latency result. The unrelated `gate.log`
+remains byte-identical and excluded; no commit, push, restart, driver install,
+audio playback or recording is performed in this follow-up.

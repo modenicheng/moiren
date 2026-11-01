@@ -234,6 +234,9 @@ impl<C: EndpointControl> Lifecycle<C> {
                                 || record.error.is_some()
                                 || !record.sessions.iter().any(|s| s.admitted()))
                         {
+                            for session in &record.sessions {
+                                session.revoke();
+                            }
                             log::debug!(
                                 target: "moiren::audio::vad",
                                 "event=lifecycle_gate_close endpoint={:?} previous={previous:?} queried={snapshot:?} removing={} error={:?} admitted={}",
@@ -358,6 +361,13 @@ impl<C: EndpointControl> Lifecycle<C> {
             for session in &record.sessions {
                 session.admitted_ticket.store(ticket, Ordering::Release);
                 session.admitted_revision.store(revision, Ordering::Release);
+            }
+        } else {
+            // A validated close withdraws this endpoint's local permission
+            // before the native epoch changes, even if SET_GATE later fails.
+            // Do not cancel/drain here or revoke the shared sibling authority.
+            for session in &record.sessions {
+                session.revoke();
             }
         }
         match self.control.gate(current, open) {

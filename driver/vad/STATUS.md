@@ -17,6 +17,16 @@ later Process-only recording does not exercise this failed VAD owner.
 Fault-only diagnostics are under local validation; no root repair or new
 VAD runtime acceptance is claimed.
 
+A separate [gate-close admission regression](../../docs/validation/2026-11-01-vad-gate-close-admission.md)
+demonstrates that explicit close and preparation-fault polling could leave
+endpoint-local session admission current until after native gate IO, or even
+after successful close. The narrow repair revokes affected local sessions
+before validated close, preserving shared sibling authority, stale-dispatch
+refusal, original errors and drain/epoch obligations. This is a proved local
+contract defect, not the established cause of the13:02 desktop failure. It
+does not serialize PCM against native epoch changes or establish native
+recovery, continuity, latency or S1-S3 completion.
+
 The separate [retained OBS two-path analysis](../../docs/validation/2026-11-01-obs-two-path-analysis.md)
 now fixes numerical/spectral/search defects and passes14 analyzer regressions
 on host and target.43 strict broadband windows show relative path separation

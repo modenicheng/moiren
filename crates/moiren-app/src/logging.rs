@@ -159,4 +159,22 @@ mod tests {
             Some("moiren_2026-10-18_13-30-00.log".into())
         );
     }
+
+    #[test]
+    fn vad_diagnostic_filter_matches_the_explicit_log_target() {
+        let target = "moiren::audio::vad";
+        let diagnostic =
+            flexi_logger::LogSpecification::parse("info,moiren::audio::vad=debug").unwrap();
+        assert!(diagnostic.enabled(log::Level::Debug, target));
+        assert!(diagnostic.enabled(log::Level::Error, target));
+        assert!(!diagnostic.enabled(log::Level::Trace, target));
+        assert!(!diagnostic.enabled(log::Level::Debug, "moiren_app::service"));
+
+        // VAD uses an explicit log target, not its Rust module path. The old
+        // remote launcher accepted this filter but silently omitted VAD DEBUG.
+        let module_path =
+            flexi_logger::LogSpecification::parse("info,moiren_windows_audio::vad=debug").unwrap();
+        assert!(!module_path.enabled(log::Level::Debug, target));
+        assert!(module_path.enabled(log::Level::Error, target));
+    }
 }
