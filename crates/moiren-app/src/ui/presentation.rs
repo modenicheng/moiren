@@ -301,6 +301,7 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                         .to_string(),
                     ));
                 }
+                native_live::append_virtual_budget(&mut rows, &prefix, stream.virtual_budget);
             }
             for bridge in &status.observation.bridges {
                 let prefix = status

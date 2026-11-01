@@ -732,3 +732,12 @@ Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or 
 Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)	minimum,low,high	保留未知模型下限，区分水位储备和实测延迟
 Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget.	-	精确专家预算范围校验，最终仍需原生准入
 Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value.	-	专家输入以输入帧计，无效文本禁止保存和重启
+%{prefix}: virtual Engine demand	prefix	虚拟时钟的完整 Engine 帧需求
+%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods	rate,block,burst,cap	Engine 帧单位与原生储备分行，显示整次追赶需求
+%{prefix}: virtual native reserve	prefix	虚拟边界的原生储备
+Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)	transfer,fir,wake	原生 48 kHz 帧模型，不是实测延迟
+%{prefix}: virtual delivery evidence	prefix	保留交付依据与未知协商结果
+%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz	evidence,packet,gap,negotiated	声明或实测边界不冒充协商帧数
+Declared assumption	-	声明的交付假设
+Empirical observation	-	实测交付观测
+Native packet observation	-	原生数据包来源的交付边界

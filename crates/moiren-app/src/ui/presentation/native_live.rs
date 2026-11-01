@@ -4,7 +4,8 @@
 use moiren_core::graph::NodeId;
 use moiren_windows_audio::{
     clock_bridge::BridgeSnapshot, engine_backend::NativeObservationSnapshot,
-    latency::render::RenderPaddingSnapshot,
+    latency::render::RenderPaddingSnapshot, latency::transport::DeliveryTimingSource,
+    virtual_owner::PreparedVirtualBudget,
 };
 use rust_i18n::t;
 
@@ -38,6 +39,59 @@ fn stream_prefix(observation: &NativeObservationSnapshot, node: NodeId) -> Strin
 
 fn unknown() -> String {
     t!("Unknown").into()
+}
+
+pub(super) fn append_virtual_budget(
+    rows: &mut Vec<(String, String)>,
+    prefix: &str,
+    budget: Option<PreparedVirtualBudget>,
+) {
+    let Some(budget) = budget else { return };
+    let optional = |frames: Option<u32>| {
+        frames
+            .map(|frames| frames.to_string())
+            .unwrap_or_else(unknown)
+    };
+    let delivery = budget.requested.delivery;
+    // Prepared assumptions are not an actual client's negotiated packet shape.
+    // Engine frames and native 48 kHz frames deliberately stay on separate rows.
+    let evidence = match delivery.map(|timing| timing.source) {
+        Some(DeliveryTimingSource::Declared) => t!("Declared assumption"),
+        Some(DeliveryTimingSource::NativePacket) => t!("Native packet observation"),
+        Some(DeliveryTimingSource::Empirical) => t!("Empirical observation"),
+        None => t!("Compatible"),
+    };
+    rows.extend([
+        (
+            t!("%{prefix}: virtual Engine demand", prefix = prefix).into(),
+            t!(
+                "%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods",
+                rate = budget.engine_sample_rate,
+                block = budget.engine_block_frames,
+                burst = budget.engine_burst_frames,
+                cap = budget.recovery_cap_periods,
+            ).into(),
+        ),
+        (
+            t!("%{prefix}: virtual native reserve", prefix = prefix).into(),
+            t!(
+                "Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)",
+                transfer = budget.native_transfer_frames,
+                fir = budget.fir_lookahead_frames,
+                wake = optional(budget.wake_allowance_frames),
+            ).into(),
+        ),
+        (
+            t!("%{prefix}: virtual delivery evidence", prefix = prefix).into(),
+            t!(
+                "%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz",
+                evidence = evidence,
+                packet = optional(delivery.map(|timing| timing.max_packet_frames)),
+                gap = optional(delivery.map(|timing| timing.max_gap_frames)),
+                negotiated = optional(budget.native_packet_frames),
+            ).into(),
+        ),
+    ]);
 }
 
 fn frames(value: Option<u64>) -> String {

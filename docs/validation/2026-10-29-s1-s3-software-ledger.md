@@ -989,3 +989,31 @@ app/audio Clippy and Linux audio/RT compile checks. Its receipt preserves the
 initial unrelated UI timeout and passing isolated/full reruns without threshold
 changes, the repaired RT shadow compile failure and Clippy fixes. Batch remote
 delivery is recorded separately; individual source slices do not each push.
+
+## 2026-11-02 parallel application/native checkpoint
+
+The [exact Expert input editor](2026-11-02-exact-expert-inputs.md) accepts all
+five independent Process/VAD integer fields without preset rounding or fallback
+to preceding valid text. The [virtual budget diagnostics](2026-11-02-virtual-budget-diagnostics.md)
+project both prepared directions' Engine whole-burst demand, native transfer /
+FIR / wake reserve and delivery/negotiation provenance. The new six native UIA
+rows and normal Stop/Quit are verified remotely. Current software receipt:
+2096 workspace tests /8 ignored;629 GPUI app tests /3 ignored; strict
+workspace/GPUI all-target Clippy, fmt, diff and release pass. No algorithm,
+admission or default change follows from a presentation feature.
+
+The independently bounded [nine-minute Process2048 baseline](2026-11-02-process-baseline2048.md)
+completes operationally but retains seven delivery-gap-bound violations. The
+new [VAD945/cap1 recording](2026-11-02-vad945-cap1.md) preserves a running
+MIC0x8007051A, dropped1/silence13packets and clock clamps, plus the unchanged
+first-packet continuity refusal and a separate Quit-harness failure. Complete
+artifact storage is not lossless native audio or waveform qualification. The
+failed low candidate is not promoted or repeatedly scanned to obtain a PASS.
+PCM analysis/visualization stays remote with compact verified downloads.
+
+Per current user direction, application development and bounded isolated remote
+tests advance in parallel; host native audio/process operations are prohibited.
+First-packet investigation remains deferred. Physical calibration remains
+unavailable and unqualified, but does not block software progress. All eighteen
+preexisting dirty files are preserved/excluded; local atomic commits only, no
+push or memory update. S1-S3 qualification is not declared complete.

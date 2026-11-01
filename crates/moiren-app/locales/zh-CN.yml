@@ -2209,3 +2209,30 @@ _version: 2
 "Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value.":
   en: "Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value."
   zh-CN: "精确专家预算以 48 kHz 输入帧计。无效文本会阻止保存和重启音频，不取整，也不回退到上一个有效值。"
+"%{prefix}: virtual Engine demand":
+  en: "%{prefix}: virtual Engine demand"
+  zh-CN: "%{prefix}：虚拟 Engine 需求"
+"%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods":
+  en: "%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods"
+  zh-CN: "%{rate} Hz Engine；块 %{block} / 整次突发 %{burst} 帧；追赶上限 %{cap} 周期"
+"%{prefix}: virtual native reserve":
+  en: "%{prefix}: virtual native reserve"
+  zh-CN: "%{prefix}：虚拟原生储备"
+"Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)":
+  en: "Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)"
+  zh-CN: "传输 %{transfer} / FIR %{fir} / 唤醒 %{wake} 帧（48 kHz 模型值，不是延迟）"
+"%{prefix}: virtual delivery evidence":
+  en: "%{prefix}: virtual delivery evidence"
+  zh-CN: "%{prefix}：虚拟交付依据"
+"%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz":
+  en: "%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz"
+  zh-CN: "%{evidence}；数据包边界 %{packet} / 间隔边界 %{gap}；已协商数据包 %{negotiated} 帧（48 kHz）"
+"Declared assumption":
+  en: "Declared assumption"
+  zh-CN: "声明假设"
+"Empirical observation":
+  en: "Empirical observation"
+  zh-CN: "实测观测"
+"Native packet observation":
+  en: "Native packet observation"
+  zh-CN: "原生数据包观测"

@@ -100,6 +100,231 @@ fn value<'a>(rows: &'a [(String, String)], key: &str) -> &'a str {
 }
 
 #[test]
+fn native_live_rows_expose_virtual_whole_burst_budget_without_inventing_negotiation() {
+    use moiren_windows_audio::{
+        latency::transport::{DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy},
+        virtual_owner::VirtualBufferOptions,
+    };
+    let mut snapshot = live_snapshot();
+    let options = VirtualBufferOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 4800,
+            target_frames: 945,
+            jitter_frames: 96,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 480,
+            max_gap_frames: 480,
+            source: DeliveryTimingSource::Declared,
+        }),
+        recovery_cap_periods: Some(1),
+    };
+    let budget = options.prepare_recovery(48_000, 64).unwrap();
+    for (index, kind) in [
+        NativeStreamKind::VirtualPlayback,
+        NativeStreamKind::VirtualMicrophone,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let stream = &mut snapshot
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .streams[index];
+        stream.kind = kind;
+        stream.virtual_budget = Some(budget);
+        stream.input_queue = budget.queue;
+    }
+    for kind in ["1 Virtual playback", "2 Virtual microphone"] {
+        let rows = native_timing_rows(&snapshot);
+        assert_eq!(
+            value(&rows, &format!("{kind}: virtual Engine demand")),
+            "48000 Hz Engine; block 64 / whole burst 64 frames; recovery cap 1 periods"
+        );
+        assert_eq!(
+            value(&rows, &format!("{kind}: virtual native reserve")),
+            "Transfer 65 / FIR 32 / wake 96 frames at 48 kHz (modeled, not latency)"
+        );
+        assert_eq!(
+            value(&rows, &format!("{kind}: virtual delivery evidence")),
+            "Declared assumption; packet bound 480 / gap bound 480; negotiated packet Unknown frames at 48 kHz"
+        );
+    }
+    let stream = &mut snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .streams[1];
+    stream.virtual_budget = Some(budget.admit_native_packet(480).unwrap());
+    assert!(
+        value(
+            &native_timing_rows(&snapshot),
+            "2 Virtual microphone: virtual delivery evidence"
+        )
+        .contains("negotiated packet 480")
+    );
+    for (phase, generation, running) in [
+        (SessionPhase::Idle, SessionGeneration(8), true),
+        (SessionPhase::Running, SessionGeneration(9), true),
+        (SessionPhase::Running, SessionGeneration(8), false),
+    ] {
+        let mut stale = snapshot.clone();
+        stale.phase = phase;
+        stale.generation = generation;
+        stale
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .running = running;
+        assert!(
+            !native_timing_rows(&stale)
+                .iter()
+                .any(|(key, _)| key.contains("virtual Engine demand"))
+        );
+    }
+}
+
+#[test]
+fn native_live_rows_virtual_compatible_keeps_absent_bounds_unknown() {
+    let mut snapshot = live_snapshot();
+    let stream = &mut snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .streams[0];
+    stream.kind = NativeStreamKind::VirtualPlayback;
+    stream.virtual_budget = Some(
+        moiren_windows_audio::virtual_owner::VirtualBufferOptions::default()
+            .prepare_recovery(48_000, 64)
+            .unwrap(),
+    );
+    let rows = native_timing_rows(&snapshot);
+    assert_eq!(
+        value(&rows, "1 Virtual playback: virtual Engine demand"),
+        "48000 Hz Engine; block 64 / whole burst 512 frames; recovery cap 8 periods"
+    );
+    assert_eq!(
+        value(&rows, "1 Virtual playback: virtual native reserve"),
+        "Transfer 514 / FIR 32 / wake Unknown frames at 48 kHz (modeled, not latency)"
+    );
+    assert_eq!(
+        value(&rows, "1 Virtual playback: virtual delivery evidence"),
+        "Compatible; packet bound Unknown / gap bound Unknown; negotiated packet Unknown frames at 48 kHz"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|(key, _)| key == "2 Master output: virtual Engine demand")
+    );
+}
+
+#[test]
+fn native_live_rows_virtual_measured_bounds_do_not_supply_a_negotiated_packet() {
+    use moiren_windows_audio::{
+        latency::transport::{DeliveryTimingSource, InputDeliveryTiming},
+        virtual_owner::VirtualBufferOptions,
+    };
+    for (source, evidence) in [
+        (DeliveryTimingSource::Empirical, "Empirical observation"),
+        (
+            DeliveryTimingSource::NativePacket,
+            "Native packet observation",
+        ),
+    ] {
+        let mut snapshot = live_snapshot();
+        let stream = &mut snapshot
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .streams[0];
+        stream.kind = NativeStreamKind::VirtualPlayback;
+        stream.virtual_budget = Some(
+            VirtualBufferOptions {
+                delivery: Some(InputDeliveryTiming {
+                    sample_rate: 48_000,
+                    max_packet_frames: 480,
+                    max_gap_frames: 480,
+                    source,
+                }),
+                ..Default::default()
+            }
+            .prepare_recovery(48_000, 64)
+            .unwrap(),
+        );
+        assert_eq!(
+            value(
+                &native_timing_rows(&snapshot),
+                "1 Virtual playback: virtual delivery evidence"
+            ),
+            format!(
+                "{evidence}; packet bound 480 / gap bound 480; negotiated packet Unknown frames at 48 kHz"
+            )
+        );
+    }
+}
+
+#[test]
+fn native_live_rows_translate_virtual_budget_units_and_unknowns() {
+    let locale = crate::i18n::SIMPLIFIED_CHINESE;
+    for (key, expected) in [
+        ("%{prefix}: virtual Engine demand", "输入：虚拟 Engine 需求"),
+        ("%{prefix}: virtual native reserve", "输入：虚拟原生储备"),
+        ("%{prefix}: virtual delivery evidence", "输入：虚拟交付依据"),
+    ] {
+        assert_eq!(
+            rust_i18n::t!(key, locale = locale, prefix = "输入"),
+            expected
+        );
+    }
+    assert_eq!(
+        rust_i18n::t!(
+            "%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods",
+            locale = locale,
+            rate = 44100,
+            block = 64,
+            burst = 512,
+            cap = 8,
+        ),
+        "44100 Hz Engine；块 64 / 整次突发 512 帧；追赶上限 8 周期"
+    );
+    assert_eq!(
+        rust_i18n::t!(
+            "Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)",
+            locale = locale,
+            transfer = 514,
+            fir = 32,
+            wake = "未知",
+        ),
+        "传输 514 / FIR 32 / 唤醒 未知 帧（48 kHz 模型值，不是延迟）"
+    );
+    assert_eq!(
+        rust_i18n::t!(
+            "%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz",
+            locale = locale,
+            evidence = "声明假设",
+            packet = 480,
+            gap = 480,
+            negotiated = "未知",
+        ),
+        "声明假设；数据包边界 480 / 间隔边界 480；已协商数据包 未知 帧（48 kHz）"
+    );
+    for (key, expected) in [
+        ("Declared assumption", "声明假设"),
+        ("Empirical observation", "实测观测"),
+        ("Native packet observation", "原生数据包观测"),
+    ] {
+        assert_eq!(rust_i18n::t!(key, locale = locale), expected);
+    }
+}
+
+#[test]
 fn native_live_rows_expose_admitted_input_reserve_without_inventing_latency() {
     use moiren_windows_audio::latency::PreparedInputQueue;
 
