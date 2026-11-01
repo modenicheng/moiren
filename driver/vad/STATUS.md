@@ -17,6 +17,16 @@ later Process-only recording does not exercise this failed VAD owner.
 Fault-only diagnostics are under local validation; no root repair or new
 VAD runtime acceptance is claimed.
 
+The separate [retained OBS two-path analysis](../../docs/validation/2026-11-01-obs-two-path-analysis.md)
+now fixes numerical/spectral/search defects and passes14 analyzer regressions
+on host and target.43 strict broadband windows show relative path separation
+p50=105.466ms,p95=106.226ms, not calibrated physical latency. Source noise
+has64 complete reference windows with fixed141483-frame alignment and minimum
+correlation0.999999875, but the reference sweep tail loses that mapping.
+All rejected/non-noise candidates remain visible. No continuous returned-path,
+VAD MIC, fault-recovery or sub-10-ms acceptance follows; the fresh desktop
+`0x8007051A` remains open.
+
 Application/native testing is remote-only by user direction. Missing physical
 multichannel recording hardware defers calibrated physical measurement, not
 software/application progress. The separate [remote OBS/QQMusic smoke](../../docs/validation/2026-11-01-remote-obs-qqmusic.md)

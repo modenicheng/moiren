@@ -13,6 +13,15 @@ Preserved evidence and fault-only diagnostics do not constitute a root fix;
 the later Process-only recording cannot clear this failure. No quality gate
 or S1-S3 acceptance is relaxed.
 
+The [corrected retained OBS analysis](2026-11-01-obs-two-path-analysis.md)
+advances S1 measurement tooling:14 host/target regressions, bounded NCC,
+complex H1/coherence and a broad two-peak search that retains sub-10-ms
+negative-offset cases.43 strict noise windows give relative p50=105.466ms,
+p95=106.226ms;64 source/reference noise windows share one141483-frame offset.
+The source reference tail itself later mismatches, so returned-path quality,
+causation, matched VAD/Process and calibrated physical gates remain incomplete.
+Analysis runs remotely on unchanged files; no new audio owner is started.
+
 The user now requires remote-only application/native testing and has no
 simultaneous physical recording hardware. Physical calibration is deferred,
 not a blocker for application work. The [remote OBS/QQMusic checkpoint](2026-11-01-remote-obs-qqmusic.md)
