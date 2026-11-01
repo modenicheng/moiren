@@ -100,6 +100,168 @@ fn value<'a>(rows: &'a [(String, String)], key: &str) -> &'a str {
 }
 
 #[test]
+fn native_live_rows_expose_cumulative_virtual_clock_loss_as_engine_frames() {
+    use moiren_windows_audio::virtual_owner::{VirtualClockCounters, VirtualClockSnapshot};
+
+    let mut snapshot = live_snapshot();
+    snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .virtual_clock = Some(VirtualClockSnapshot {
+        schema_version: 1,
+        engine_sample_rate: 48_000,
+        engine_block_frames: 64,
+        recovery_cap_periods: 1,
+        counters: VirtualClockCounters {
+            rendered_periods: (1 << 53) + 1,
+            rendered_frames: u64::MAX,
+            late_wake_bursts: (1 << 53) + 3,
+            clamped_periods: (1 << 53) + 5,
+            clamped_frames: u64::MAX - 1,
+            timeline_resets: (1 << 53) + 7,
+            max_backlog_periods: (1 << 53) + 9,
+            counters_saturated: true,
+        },
+    });
+    let rows = native_timing_rows(&snapshot);
+    assert_eq!(
+        value(&rows, "Virtual clock observation"),
+        "Schema 1 (owner-local cumulative counters, not latency)"
+    );
+    assert_eq!(
+        value(&rows, "Virtual clock configuration"),
+        "48000 Hz Engine; block 64 frames; recovery cap 1 periods"
+    );
+    assert_eq!(
+        value(&rows, "Virtual clock rendered"),
+        "9007199254740993 periods / 18446744073709551615 Engine frames"
+    );
+    assert_eq!(
+        value(&rows, "Virtual clock recovery"),
+        "Late wakes 9007199254740995; skipped 9007199254740997 periods / 18446744073709551614 Engine frames (not native PCM drops)"
+    );
+    assert_eq!(
+        value(&rows, "Virtual clock timeline"),
+        "Resets 9007199254740999; maximum backlog 9007199254741001 periods (before cap)"
+    );
+    assert_eq!(
+        value(&rows, "Virtual clock counter saturation"),
+        "Saturated (counts are lower bounds)"
+    );
+    assert_eq!(
+        value(&rows, "Physical end-to-end latency"),
+        "Unknown / unqualified"
+    );
+}
+
+#[test]
+fn native_live_rows_keep_absent_or_unsupported_virtual_clock_counters_unknown() {
+    use moiren_windows_audio::virtual_owner::{VirtualClockCounters, VirtualClockSnapshot};
+
+    let mut snapshot = live_snapshot();
+    let unknown_keys = [
+        "Virtual clock configuration",
+        "Virtual clock rendered",
+        "Virtual clock recovery",
+        "Virtual clock timeline",
+        "Virtual clock counter saturation",
+    ];
+    let rows = native_timing_rows(&snapshot);
+    assert_eq!(value(&rows, "Virtual clock observation"), "Unknown");
+    for key in unknown_keys {
+        assert_eq!(value(&rows, key), "Unknown");
+    }
+    let clock = VirtualClockSnapshot {
+        schema_version: 2,
+        engine_sample_rate: 48_000,
+        engine_block_frames: 64,
+        recovery_cap_periods: 1,
+        counters: VirtualClockCounters::default(),
+    };
+    snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .virtual_clock = Some(clock);
+    let rows = native_timing_rows(&snapshot);
+    assert_eq!(
+        value(&rows, "Virtual clock observation"),
+        "Unsupported schema 2"
+    );
+    for key in unknown_keys {
+        assert_eq!(value(&rows, key), "Unknown");
+    }
+    snapshot
+        .native_observations
+        .as_mut()
+        .unwrap()
+        .observation
+        .virtual_clock = Some(VirtualClockSnapshot {
+        schema_version: 1,
+        ..clock
+    });
+    let rows = native_timing_rows(&snapshot);
+    assert_eq!(
+        value(&rows, "Virtual clock rendered"),
+        "0 periods / 0 Engine frames"
+    );
+    assert_eq!(
+        value(&rows, "Virtual clock counter saturation"),
+        "Not saturated"
+    );
+    for (phase, generation, running) in [
+        (SessionPhase::Idle, SessionGeneration(8), true),
+        (SessionPhase::Running, SessionGeneration(9), true),
+        (SessionPhase::Running, SessionGeneration(8), false),
+    ] {
+        let mut stale = snapshot.clone();
+        stale.phase = phase;
+        stale.generation = generation;
+        stale
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .running = running;
+        assert!(
+            !native_timing_rows(&stale)
+                .iter()
+                .any(|(key, _)| key.starts_with("Virtual clock"))
+        );
+    }
+}
+
+#[test]
+fn native_live_rows_translate_virtual_clock_loss_and_saturation_limits() {
+    let locale = crate::i18n::SIMPLIFIED_CHINESE;
+    assert_eq!(
+        rust_i18n::t!("Virtual clock recovery", locale = locale),
+        "虚拟时钟恢复"
+    );
+    assert_eq!(
+        rust_i18n::t!(
+            "Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)",
+            locale = locale,
+            late = 3,
+            periods = 5,
+            frames = 320,
+        ),
+        "迟到唤醒 3 次；跳过 5 周期 / 320 Engine 帧（不是原生 PCM 丢帧）"
+    );
+    assert_eq!(
+        rust_i18n::t!("Unsupported schema %{schema}", locale = locale, schema = 2),
+        "不支持的版本 2"
+    );
+    assert_eq!(
+        rust_i18n::t!("Saturated (counts are lower bounds)", locale = locale),
+        "已饱和（计数仅为下界）"
+    );
+}
+
+#[test]
 fn native_live_rows_expose_virtual_whole_burst_budget_without_inventing_negotiation() {
     use moiren_windows_audio::{
         latency::transport::{DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy},

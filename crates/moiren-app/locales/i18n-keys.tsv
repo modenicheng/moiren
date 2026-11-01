@@ -741,3 +741,17 @@ Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not 
 Declared assumption	-	声明的交付假设
 Empirical observation	-	实测交付观测
 Native packet observation	-	原生数据包来源的交付边界
+Virtual clock observation	-	虚拟时钟所属实例的累计观测
+Virtual clock configuration	-	实际时钟 Engine 速率和追赶上限
+Virtual clock rendered	-	累计已渲染 Engine 量
+Virtual clock recovery	-	迟到唤醒及被时钟跳过的 Engine 帧
+Virtual clock timeline	-	时间线重置及施加上限前的最大积欠
+Virtual clock counter saturation	-	饱和计数不是精确总量
+Schema 1 (owner-local cumulative counters, not latency)	-	累计计数不是延迟
+Unsupported schema %{schema}	schema	未知版本不能解释成健康零值
+%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods	rate,block,cap	Engine 配置不混用原生帧单位
+%{periods} periods / %{frames} Engine frames	periods,frames	精确整数累计渲染量
+Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)	late,periods,frames	跳过 Engine 帧不能当作原生 PCM 丢帧
+Resets %{resets}; maximum backlog %{backlog} periods (before cap)	resets,backlog	积欠保留施加追赶上限之前的峰值
+Saturated (counts are lower bounds)	-	已饱和计数仅为下界
+Not saturated	-	未饱和不代表没有故障

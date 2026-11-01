@@ -9,6 +9,8 @@ use moiren_windows_audio::{
 };
 use rust_i18n::t;
 
+mod virtual_clock;
+
 pub(super) fn append_rows(
     rows: &mut Vec<(String, String)>,
     observation: &NativeObservationSnapshot,
@@ -22,6 +24,7 @@ pub(super) fn append_rows(
         let prefix = stream_prefix(observation, padding.node);
         append_padding(rows, &prefix, padding.sample);
     }
+    virtual_clock::append_rows(rows, observation.virtual_clock);
     rows.push((
         t!("Physical end-to-end latency").into(),
         t!("Unknown / unqualified").into(),

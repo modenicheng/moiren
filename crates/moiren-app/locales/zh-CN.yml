@@ -2236,3 +2236,45 @@ _version: 2
 "Native packet observation":
   en: "Native packet observation"
   zh-CN: "原生数据包观测"
+"Virtual clock observation":
+  en: "Virtual clock observation"
+  zh-CN: "虚拟时钟观测"
+"Virtual clock configuration":
+  en: "Virtual clock configuration"
+  zh-CN: "虚拟时钟配置"
+"Virtual clock rendered":
+  en: "Virtual clock rendered"
+  zh-CN: "虚拟时钟已渲染量"
+"Virtual clock recovery":
+  en: "Virtual clock recovery"
+  zh-CN: "虚拟时钟恢复"
+"Virtual clock timeline":
+  en: "Virtual clock timeline"
+  zh-CN: "虚拟时钟时间线"
+"Virtual clock counter saturation":
+  en: "Virtual clock counter saturation"
+  zh-CN: "虚拟时钟计数器饱和状态"
+"Schema 1 (owner-local cumulative counters, not latency)":
+  en: "Schema 1 (owner-local cumulative counters, not latency)"
+  zh-CN: "版本 1（所属运行实例的累计计数，不是延迟）"
+"Unsupported schema %{schema}":
+  en: "Unsupported schema %{schema}"
+  zh-CN: "不支持的版本 %{schema}"
+"%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods":
+  en: "%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods"
+  zh-CN: "%{rate} Hz Engine；块 %{block} 帧；追赶上限 %{cap} 周期"
+"%{periods} periods / %{frames} Engine frames":
+  en: "%{periods} periods / %{frames} Engine frames"
+  zh-CN: "%{periods} 周期 / %{frames} Engine 帧"
+"Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)":
+  en: "Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)"
+  zh-CN: "迟到唤醒 %{late} 次；跳过 %{periods} 周期 / %{frames} Engine 帧（不是原生 PCM 丢帧）"
+"Resets %{resets}; maximum backlog %{backlog} periods (before cap)":
+  en: "Resets %{resets}; maximum backlog %{backlog} periods (before cap)"
+  zh-CN: "重置 %{resets} 次；最大积欠 %{backlog} 周期（施加上限之前）"
+"Saturated (counts are lower bounds)":
+  en: "Saturated (counts are lower bounds)"
+  zh-CN: "已饱和（计数仅为下界）"
+"Not saturated":
+  en: "Not saturated"
+  zh-CN: "未饱和"
