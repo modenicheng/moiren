@@ -156,6 +156,27 @@ impl WindowsVadProvider {
         Self::from_interface_configured(interface, None)
     }
 
+    /// Explicit bounded Playback evidence on the caller's selected control root.
+    /// Capture preparation rejects invalid budgets before any native connection.
+    pub fn from_interface_with_input_capture(
+        interface: &DeviceInterface,
+        endpoint: VirtualEndpointId,
+        frames: u32,
+    ) -> Result<(Arc<Self>, VadInputCaptureHandle), BackendError> {
+        Self::with_input_capture(endpoint, frames, |capture| {
+            Self::from_interface_configured(interface, Some(capture))
+        })
+    }
+
+    fn with_input_capture(
+        endpoint: VirtualEndpointId,
+        frames: u32,
+        connect: impl FnOnce(Arc<input_capture::CaptureShared>) -> Result<Arc<Self>, BackendError>,
+    ) -> Result<(Arc<Self>, VadInputCaptureHandle), BackendError> {
+        let (capture, handle) = input_capture::CaptureShared::new(endpoint, frames)?;
+        Ok((connect(capture)?, handle))
+    }
+
     fn from_interface_configured(
         interface: &DeviceInterface,
         input_capture: Option<Arc<input_capture::CaptureShared>>,
@@ -1318,6 +1339,51 @@ fn close_worker_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_interface_input_capture_rejects_invalid_budget_before_connect() {
+        for frames in [0, 480_001, u32::MAX] {
+            let connected = std::cell::Cell::new(false);
+            let result = WindowsVadProvider::with_input_capture(
+                VirtualEndpointId::from_bytes([0x42; 16]),
+                frames,
+                |_| {
+                    connected.set(true);
+                    Err(BackendError::ResourceUnavailable("connect sentinel".into()))
+                },
+            );
+            assert!(!connected.get(), "invalid budget {frames} reached connect");
+            assert!(matches!(
+                result,
+                Err(BackendError::Unsupported(message))
+                    if message == "input capture frames must be 1..=480000"
+            ));
+        }
+    }
+
+    #[test]
+    fn selected_interface_input_capture_valid_bounds_preserve_connect_error() {
+        let endpoint = VirtualEndpointId::from_bytes([0x42; 16]);
+        for frames in [1, 480_000] {
+            let connected = std::cell::Cell::new(false);
+            let failure = BackendError::ResourceUnavailable("connect sentinel".into());
+            let result = WindowsVadProvider::with_input_capture(endpoint, frames, |capture| {
+                connected.set(true);
+                assert!(
+                    capture
+                        .reserve(VirtualEndpointId::from_bytes([0x43; 16]))?
+                        .is_none()
+                );
+                assert!(capture.reserve(endpoint)?.is_some());
+                Err(failure.clone())
+            });
+            assert!(
+                connected.get(),
+                "valid budget {frames} never reached connect"
+            );
+            assert!(matches!(result, Err(error) if error == failure));
+        }
+    }
 
     #[test]
     fn publication_telemetry_worker_panic_retains_calls_and_invalidates_original_owner() {

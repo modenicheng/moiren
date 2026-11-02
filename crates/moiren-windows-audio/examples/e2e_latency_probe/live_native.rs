@@ -721,8 +721,21 @@ pub fn run_vad(
         .as_deref()
         .context("--name is required for live-vad")?;
     let (interface, root) = vad::discover_root().context("discover VAD control root")?;
-    let provider = WindowsVadProvider::from_interface(&interface)
-        .context("open VAD provider on the selected control root")?;
+    let (provider, input_reference) = if let Some(frames) = options.vad_input_capture_frames {
+        let (provider, handle) =
+            WindowsVadProvider::from_interface_with_input_capture(&interface, endpoint_id, frames)
+                .context("open VAD input capture on the selected control root")?;
+        (
+            provider,
+            Some(vad_input_reference::Recorder::new(handle, paths)?),
+        )
+    } else {
+        (
+            WindowsVadProvider::from_interface(&interface)
+                .context("open VAD provider on the selected control root")?,
+            None,
+        )
+    };
     // From CREATE onward every failure takes the same best-effort cleanup
     // path. The journal was declared first, so even unwinding stops native
     // owners before joining a potentially stalled filesystem worker.
@@ -753,6 +766,7 @@ pub fn run_vad(
         admission: None,
         last_health: None,
         engine_health: None,
+        input_reference,
     };
     if let Some(config) = collection_config {
         return vad_collection::collect(
@@ -884,6 +898,7 @@ pub(super) struct VadCleanup<'a> {
     pub(super) admission: Option<vad_collection::Admission>,
     pub(super) last_health: Option<vad_collection::Health>,
     engine_health: Option<engine_health::Tracker>,
+    input_reference: Option<vad_input_reference::Recorder>,
 }
 
 impl VadCleanup<'_> {
@@ -1601,6 +1616,9 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
             .as_ref()
             .map(|admission| admission.current.generations[0]);
         drop(self.host.take());
+        let input_export = self.input_reference.take().map_or(Ok(()), |capture| {
+            capture.finish(&mut self.report.vad_input_reference)
+        });
         let closed = self.observer.as_ref().map(|observer| observer.snapshot());
         self.report.backend_diagnostics = Some(final_backend_evidence(
             native.map(|view| view.snapshot()),
@@ -1630,7 +1648,7 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
                 "VAD EngineHost retained a terminal fault after shutdown"
             );
         }
-        src_export
+        soak_cleanup::combine(src_export, input_export)
     }
 
     fn invalidate_admission(&mut self) -> Result<()> {

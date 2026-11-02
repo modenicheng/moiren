@@ -5,6 +5,23 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [actual raw VAD input-reference connection](2026-11-02-vad-input-reference.md)
+wires the existing bounded collector into the direct probe behind an explicit
+frame cap, preserving the selected control root and requiring actual worker
+join before export. Exact bytes/identity/publication survive partial failures;
+empty and unavailable evidence never becomes delivery proof. Genuine RED/GREEN,
+seven focused tests, two constructor tests and exact-final example feature-off/on
+701/1ignored plus library767/4ignored pass. Full Windows feature-workspace
+2313/9ignored, all-target check/strict Clippy and fmt pass. One remote dry-run
+passes, then one
+new-question native attempt refuses both exact formats before source Start:
+raw HRESULT -2004287480, zero submitted frames, worker not started. It correctly
+retains unavailable evidence, normal exit1 and complete export removal rather
+than inventing PCM or retrying unchanged. All12compact receipts are hash/length
+verified; protected user processes/driver/boot and all27dirty/cache files stay
+unchanged. Native input-reference acceptance and MIC/output association remain
+open. No default, quality-gate, first-packet or physical-qualification change.
+
 The [Engine64/cap8 microphone reset contract](2026-11-02-cap8-microphone-reprime.md)
 adds four test-only cases for native480/target1536/capacity4800, including36
 compiled f32/f64 graph/SRC phase scenarios. One unchanged timestamp repays

@@ -65,6 +65,9 @@ use validation_policy::{ValidationMode, ValidationPolicy};
 #[path = "host_decode_call_gap.rs"]
 mod host_decode_call_gap;
 
+#[path = "vad_input_reference.rs"]
+mod vad_input_reference;
+
 #[cfg(any(windows, test))]
 #[path = "process_admission.rs"]
 mod process_admission;
@@ -153,6 +156,7 @@ struct LiveOptions {
     vad_recovery_cap_periods: Option<u64>,
     vad_minimum_period: bool,
     vad_microphone_minimum_period: bool,
+    vad_input_capture_frames: Option<u32>,
     render_target_frames: Option<u32>,
     wake_margin_frames: u32,
     callback_budget_frames: u32,
@@ -208,6 +212,7 @@ impl Default for LiveOptions {
             vad_recovery_cap_periods: None,
             vad_minimum_period: false,
             vad_microphone_minimum_period: false,
+            vad_input_capture_frames: None,
             render_target_frames: None,
             wake_margin_frames: DEFAULT_WAKE_MARGIN_FRAMES,
             callback_budget_frames: DEFAULT_CALLBACK_BUDGET_FRAMES,
@@ -296,6 +301,8 @@ struct LiveRunManifest {
     playback_source: Option<source::SourceProvenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_minimum_period: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_input_capture_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_route: Option<Value>,
     collection: Option<Value>,
@@ -391,6 +398,8 @@ struct NativeReport {
     controlled_load: Option<Value>,
     process_trace: Option<Value>,
     src_trace: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_input_reference: Option<Value>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -411,6 +420,10 @@ struct ArtifactPaths {
     process_trace: Option<String>,
     src_trace: Option<String>,
     src_trace_chunks: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_input_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_input_metadata: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -443,6 +456,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              Software capture has no independent delay reference and never qualifies physical latency.\n\
               Source schedules retain v1; waveform_version moiren-marker-xorshift32-indexed-v2 explicitly opts into index-coded markers (4 MiB precompute cap), not recorder clock alignment.\n\
              live-vad accepts --vad-recovery-cap-periods 1..8; omitted preserves 8.\n\
+             --vad-input-capture-frames 1..480000 explicitly retains a bounded raw Playback input prefix after its worker joins.\n\
+             Its format/identity/publication metadata is separate from graph delivery, recorder alignment and physical latency.\n\
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
              --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
              --vad-microphone-minimum-period separately requests the owned MIC recorder minimum; requires schema2 Exclusive collection.\n\
@@ -709,7 +724,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     }
 
     let exit_code = collection_exit_code(&options, &native, collection.as_ref());
-    let artifacts = artifact_report(&paths, &options, &measurement);
+    let artifacts = artifact_report(&paths, &options, &measurement, &native);
     let qualification = build_qualification_report(
         &options,
         &run_id,
@@ -774,6 +789,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             || options.process_collection.is_some())
         .then(|| source::SourceProvenance::new(source_plan)),
         vad_minimum_period: options.vad_minimum_period.then_some(true),
+        vad_input_capture_frames: options.vad_input_capture_frames,
         vad_route: options.route_intent(),
         collection: collection.clone(),
         output_endpoint_id: options.output_label(),
@@ -907,6 +923,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--max-packet-frames"
             | "--max-gap-frames"
             | "--vad-recovery-cap-periods"
+            | "--vad-input-capture-frames"
             | "--render-target-frames"
             | "--render-mode"
             | "--render-period-frames"
@@ -1058,6 +1075,14 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                 options.vad_recovery_cap_periods =
                     Some(value.parse().context("invalid VAD recovery cap")?);
             }
+            "--vad-input-capture-frames" => {
+                ensure!(
+                    options.vad_input_capture_frames.is_none(),
+                    "duplicate --vad-input-capture-frames"
+                );
+                options.vad_input_capture_frames =
+                    Some(value.parse().context("invalid VAD input capture frames")?);
+            }
             "--render-target-frames" => {
                 options.physical_render_options_explicit = true;
                 options.render_target_frames = if value == "capacity" {
@@ -1121,6 +1146,16 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 
 fn validate(options: &LiveOptions) -> Result<()> {
     options.validation.validate()?;
+    if let Some(frames) = options.vad_input_capture_frames {
+        ensure!(
+            options.source_kind == EvidenceSourceKind::VadPlayback && !options.diagnostic_soak,
+            "VAD input capture requires live-vad without diagnostic soak"
+        );
+        ensure!(
+            (1..=480_000).contains(&frames),
+            "VAD input capture frames must be 1..=480000"
+        );
+    }
     options
         .physical_render_request
         .validate(render_queue(options)?)?;
@@ -1391,6 +1426,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     let capture_pcm_metadata = options.artifact_dir.join("capture.metadata.json");
     let report_key = output_path_key(&report)?;
     let manifest_key = output_path_key(&manifest)?;
+    let (vad_input_raw, vad_input_metadata) =
+        vad_input_reference::reserve(options, &report, &manifest)?;
     let process_trace = options.artifact_dir.join("process-trace.json");
     let process_trace_key = output_path_key(&process_trace)?;
     let src_trace = options.artifact_dir.join("src-trace.json");
@@ -1593,6 +1630,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .then(|| src_trace.to_string_lossy().into_owned()),
         src_trace_chunks: (options.source_kind == EvidenceSourceKind::VadPlayback)
             .then(|| src_trace_chunks.to_string_lossy().into_owned()),
+        vad_input_raw,
+        vad_input_metadata,
     })
 }
 
@@ -1762,6 +1801,8 @@ impl ArtifactPaths {
             process_trace: self.process_trace.clone(),
             src_trace: self.src_trace.clone(),
             src_trace_chunks: self.src_trace_chunks.clone(),
+            vad_input_raw: self.vad_input_raw.clone(),
+            vad_input_metadata: self.vad_input_metadata.clone(),
         }
     }
 }
@@ -1770,6 +1811,7 @@ fn artifact_report(
     paths: &ArtifactPaths,
     options: &LiveOptions,
     measurement: &MeasurementEvidence,
+    native: &NativeReport,
 ) -> ArtifactReport {
     ArtifactReport {
         paths: paths.clone_for_manifest(),
@@ -1794,7 +1836,24 @@ fn artifact_report(
         } else {
             "missing"
         },
-        capture_pcm_status: if options.diagnostic_soak {
+        capture_pcm_status: if options.vad_input_capture_frames.is_some() {
+            if options.dry_run {
+                "not_collected_dry_run"
+            } else {
+                match native
+                    .vad_input_reference
+                    .as_ref()
+                    .and_then(|v| v["status"].as_str())
+                {
+                    Some("retained_not_delivery_proof") => {
+                        "raw_vad_input_retained_not_delivery_proof"
+                    }
+                    Some("retained_empty_unknown") => "raw_vad_input_empty_unknown",
+                    Some(_) => "raw_vad_input_unavailable_or_export_failed",
+                    None => "not_collected",
+                }
+            }
+        } else if options.diagnostic_soak {
             "disabled_diagnostic_soak"
         } else if options.source_kind == EvidenceSourceKind::VadPlayback {
             "not_applicable"
@@ -2811,7 +2870,7 @@ mod tests {
             calibration: None,
             gaps: Vec::new(),
         };
-        let artifacts = artifact_report(&paths, &options, &evidence);
+        let artifacts = artifact_report(&paths, &options, &evidence, &NativeReport::default());
         assert_eq!(artifacts.measurement_pcm_status, "collected_not_analyzed");
         assert!(
             build_qualification_report(
@@ -2830,7 +2889,8 @@ mod tests {
             ..options
         };
         assert_eq!(
-            artifact_report(&paths, &dry, &evidence).measurement_pcm_status,
+            artifact_report(&paths, &dry, &evidence, &NativeReport::default())
+                .measurement_pcm_status,
             "not_collected_dry_run"
         );
         fs::remove_dir_all(directory).unwrap();
