@@ -597,11 +597,12 @@ pub(in crate::ui) fn paint_spectrum_body(
         window,
         cx,
     );
-    // The curve: a Catmull-Rom spline through the grid points (each span a
-    // cubic Bézier whose handles are a sixth of the neighbor-to-neighbor
-    // chord, the classic conversion), filled under its stroke. Masked to
-    // the plot so the spline's slight overshoot at sharp peaks stays
-    // inside the frame; nothing while parked at the floor.
+    // The curve: a straight polyline through the grid points — the trace
+    // the reference analyzers draw (REW, ARTA, SPAN), whose smoothness
+    // comes from the band-power projection, never from the renderer:
+    // spline handles overshoot at sharp peaks and would display levels
+    // the spectrum does not contain. Masked to the plot so the stroke's
+    // width stays inside the frame; nothing while parked at the floor.
     let Some(curve) = curve else {
         return;
     };
@@ -624,22 +625,11 @@ pub(in crate::ui) fn paint_spectrum_body(
     fill.move_to(point(px(left), px(floor)));
     fill.line_to(point(px(start.0), px(start.1)));
     outline.move_to(point(px(start.0), px(start.1)));
-    for index in 0..count - 1 {
-        let previous = at(index.saturating_sub(1));
-        let from = at(index);
-        let to = at(index + 1);
-        let next = at(index + 2);
-        let control_a = point(
-            px(from.0 + (to.0 - previous.0) / 6.),
-            px(from.1 + (to.1 - previous.1) / 6.),
-        );
-        let control_b = point(
-            px(to.0 - (next.0 - from.0) / 6.),
-            px(to.1 - (next.1 - from.1) / 6.),
-        );
-        let end = point(px(to.0), px(to.1));
-        fill.cubic_bezier_to(end, control_a, control_b);
-        outline.cubic_bezier_to(end, control_a, control_b);
+    for index in 1..count {
+        let next = at(index);
+        let vertex = point(px(next.0), px(next.1));
+        fill.line_to(vertex);
+        outline.line_to(vertex);
     }
     fill.line_to(point(px(left + width), px(floor)));
     window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {

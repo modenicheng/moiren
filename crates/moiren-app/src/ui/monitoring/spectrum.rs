@@ -141,11 +141,16 @@ pub struct SpectrumCurve<'a> {
 /// frequency, instead of a single-bin maximum reading small at the top
 /// end. The result is independent of the FFT size. Each bin joins the
 /// bands it overlaps with its overlap fraction (a bin covers half a bin
-/// width either side of its center). A band narrower than one bin is below
-/// the transform's resolution and inherits the level of the bin nearest
-/// its center — the standard resolution-limited display, with no invented
-/// interpolation. DC never joins a band, and channels combine as the
-/// maximum of their band powers.
+/// width either side of its center). No band integrates over less than
+/// the transform's own resolution bandwidth — ENBW bins of Hann — a
+/// narrower band widens to that around its own center, so points spaced
+/// closer than the resolution bandwidth trace the analysis filter's
+/// continuous response instead of snapping to their nearest bin
+/// (Keysight AN 150, *Spectrum Analysis Basics*: a trace point reads
+/// the power inside the resolution bandwidth around it); at the axis
+/// edges the window is clipped by the transform's usable span and
+/// reads only the width it covers. DC never joins a band, and channels
+/// combine as the maximum of their band powers.
 pub fn project_spectrum(
     bins: &[f32],
     header: &SpectrumWindow,
@@ -156,7 +161,6 @@ pub fn project_spectrum(
     let bins_per_channel = header.fft_size / 2 + 1;
     let bin_hz = header.sample_rate / header.fft_size as f64;
     let half_bin = bin_hz / 2.;
-    let last_bin = bins_per_channel - 1;
     let channel = |index: usize| -> Box<[f32]> {
         bins[index * bins_per_channel..][..bins_per_channel]
             .iter()
@@ -186,19 +190,15 @@ pub fn project_spectrum(
         |power: f64| -> f32 { (10. * (power.max(1e-18) / params.enbw_bins).log10()) as f32 };
     for (index, point) in out.iter_mut().enumerate() {
         let (low, high) = grid.band(index);
-        let level = if high - low <= bin_hz {
-            // Sub-resolution band: the nearest bin's own ENBW band level.
-            let nearest = ((grid.centers[index] / bin_hz).round() as usize).clamp(1, last_bin);
-            channels
-                .iter()
-                .map(|amplitudes| level_of(f64::from(amplitudes[nearest]).powi(2)))
-                .fold(f32::MIN, f32::max)
-        } else {
-            channels
-                .iter()
-                .map(|amplitudes| level_of(band_power(amplitudes, low, high)))
-                .fold(f32::MIN, f32::max)
-        };
+        let center = grid.centers[index];
+        // The resolution-bandwidth floor: a band never integrates over
+        // less than ENBW bins, centered on its own center.
+        let width = (high - low).max(params.enbw_bins * bin_hz);
+        let (low, high) = (center - width / 2., center + width / 2.);
+        let level = channels
+            .iter()
+            .map(|amplitudes| level_of(band_power(amplitudes, low, high)))
+            .fold(f32::MIN, f32::max);
         *point = level.clamp(params.floor_db, params.ceiling_db);
     }
 }
@@ -664,20 +664,28 @@ mod tests {
         let mut out = vec![REST_DB; grid.centers.len()];
         project_spectrum(&bins, &head, &grid, &params, &mut out);
         let bin_hz = 48_000. / 1024.;
-        let (_low_lo, _low_hi) = grid.band(0);
         let (high_lo, high_hi) = grid.band(120);
-        let expected_low = 10. * (0.1f64 * 0.1 / params.enbw_bins).log10();
-        // Count the bins the top band covers with the same overlap weights
-        // the projection uses.
+        // Count the bins each extreme band covers with the same overlap
+        // weights the projection uses: the top band over its own width,
+        // the bottom band over the resolution bandwidth floored in —
+        // clipped at the transform's usable span, so below the first
+        // bin it covers less than the full window.
         let half = bin_hz / 2.;
-        let k_high: f64 = (1..1025)
-            .map(|bin| {
-                let bin_lo = bin as f64 * bin_hz - half;
-                (((bin_lo + bin_hz).min(high_hi) - bin_lo.max(high_lo)) / bin_hz).max(0.)
-            })
-            .sum();
+        let overlap_of = |low: f64, high: f64| {
+            (1..1025)
+                .map(|bin| {
+                    let bin_lo = bin as f64 * bin_hz - half;
+                    (((bin_lo + bin_hz).min(high) - bin_lo.max(low)) / bin_hz).max(0.)
+                })
+                .sum::<f64>()
+        };
+        let (low_lo, low_hi) = grid.band(0);
+        let center = grid.centers[0];
+        let width = (low_hi - low_lo).max(params.enbw_bins * bin_hz);
+        let k_low = overlap_of(center - width / 2., center + width / 2.);
+        let k_high = overlap_of(high_lo, high_hi);
+        let expected_low = 10. * (k_low * 0.1f64 * 0.1 / params.enbw_bins).log10();
         let expected_high = 10. * (k_high * 0.1f64 * 0.1 / params.enbw_bins).log10();
-        // The bottom band is narrower than a bin: it inherits it exactly.
         assert!((out[0] as f64 - expected_low).abs() < 0.01, "{}", out[0]);
         assert!(
             (out[120] as f64 - expected_high).abs() < 0.05,
@@ -685,9 +693,9 @@ mod tests {
             out[120]
         );
         assert!(
-            (f64::from(out[120] - out[0]) - 10. * k_high.log10()).abs() < 0.06,
-            "the top band accumulates 10·log10(K) = {} over the bottom: {}",
-            10. * k_high.log10(),
+            (f64::from(out[120] - out[0]) - 10. * (k_high / k_low).log10()).abs() < 0.06,
+            "the top band accumulates 10·log10(k_high/k_low) = {} over the bottom: {}",
+            10. * (k_high / k_low).log10(),
             out[120] - out[0]
         );
         // The accumulation must be FFT-size independent: a 2048 window of
@@ -708,12 +716,16 @@ mod tests {
     }
 
     #[test]
-    fn sub_resolution_bands_inherit_their_nearest_bin() {
+    fn sub_resolution_bands_trace_the_resolution_bandwidth() {
         // A 16-point FFT at 48 kHz puts bins 3 kHz apart: every 1/12-octave
-        // band is narrower than one bin, so the standard display follows
-        // the bins — each point reads the bin nearest its center, a
-        // staircase the spline smooths, with no invented interpolation
-        // between bins and no ramp at the axis edge.
+        // band is narrower than one bin, so each point integrates over the
+        // transform's own resolution bandwidth (Hann ENBW, 4.5 kHz here)
+        // centered on itself. The analysis filter's response then sweeps
+        // continuously across a tone — a flat top over the points whose
+        // window fully contains it, a shoulder rising and falling on either
+        // side — instead of the nearest-bin staircase, where every point
+        // below the resolution snaps to one bin and neighbors alias onto
+        // long flat ledges.
         let grid = OctaveGrid::twelfth(48_000.);
         let head = header(16, 48_000., 1);
         let params = SpectrumParams::default();
@@ -723,22 +735,36 @@ mod tests {
         let mut out = vec![REST_DB; grid.centers.len()];
         project_spectrum(&bins, &head, &grid, &params, &mut out);
         let bin_level = |amplitude: f32| 10. * (f64::from(amplitude).powi(2) / 1.5).log10();
-        // Points nearest bin 1 (up to 4.5 kHz) read its own ENBW band
-        // level, the axis edge included — the plateau real analyzers show
-        // below their resolution.
-        assert!((out[0] - bin_level(1.) as f32).abs() < 0.01, "{}", out[0]);
-        assert_eq!(out[0], out[34], "20 Hz and 1 kHz both resolve to bin 1");
-        assert_eq!(out[0], out[68]);
-        // Points nearest bin 2 follow it instead.
-        let near_6k = grid
+        let peak = grid
             .centers
             .iter()
-            .position(|center| (*center - 5_800.).abs() < 150.)
-            .expect("a point near 6 kHz");
+            .position(|center| (*center - 3_000.).abs() < 200.)
+            .expect("a point centered on the tone");
+        // The tone reads its own ENBW band level where the window holds it.
         assert!(
-            (out[near_6k] - bin_level(0.1) as f32).abs() < 0.01,
+            (out[peak] as f64 - bin_level(1.)).abs() < 0.05,
             "{}",
-            out[near_6k]
+            out[peak]
+        );
+        // The old display aliased 20 Hz, 141 Hz and 1 kHz onto the tone's
+        // bin as one flat ledge; the swept window separates them, rising
+        // toward the tone with every step.
+        assert!(
+            out[0] < out[34] && out[34] < out[68] && out[68] < out[peak],
+            "the rise is continuous: {:?}",
+            [out[0], out[34], out[68], out[peak]]
+        );
+        // Past the tone the response rolls off the same way, through the
+        // quieter 6 kHz bin's own shoulder, to the floor.
+        let past = grid
+            .centers
+            .iter()
+            .position(|center| (*center - 7_500.).abs() < 400.)
+            .expect("a point past the 6 kHz bin");
+        assert!(
+            out[peak] > out[95] && out[95] > out[past] && out[past] > out[120],
+            "the fall is continuous: {:?}",
+            [out[95], out[past], out[120]]
         );
         // The silent top of the spectrum sits at the floor.
         assert_eq!(out[120], REST_DB);
@@ -819,12 +845,13 @@ mod tests {
             assert!(!subscription.poll(now), "an unchanged curve must not wake");
         }
         assert!(!subscription.at_rest(), "a live tone is not at rest");
-        // The display sits at the tone's band level — the skirt only
-        // partly overlaps the 1 kHz band's edges here, so it reads just
-        // under the tone's own level — less the one decay step a poll
-        // takes after pinning (0.6 dB over 20 ms).
+        // The display sits at the tone's band level — the band is narrower
+        // than the transform's resolution, so it integrates the resolution
+        // bandwidth centered on 1 kHz, holding most of the tone's skirt
+        // and reading just under its own level — less the one decay step
+        // a poll takes after pinning (0.6 dB over 20 ms).
         let shown = subscription.points.as_deref().unwrap()[68];
-        assert!((-9.2..=-8.2).contains(&shown), "{shown}");
+        assert!((-8.6..=-7.7).contains(&shown), "{shown}");
         // Silence lifts the tone: that one change wakes, then the curve
         // falls at the release rate under a stream that keeps publishing
         // silence, and parks at the floor without waking again.

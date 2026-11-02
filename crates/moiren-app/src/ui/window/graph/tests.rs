@@ -2201,23 +2201,33 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
         assert_eq!(curve.points.len(), 121, "the full ISO grid at 48 kHz");
         assert!(!state.node_spectra.at_rest(), "a fed analyzer is in motion");
         // The fixture feeds DC: with the 2048-point default the first bin
-        // (23.4 Hz) carries the Hann leakage near full scale, and the
-        // standard resolution-limited display makes every band below the
-        // transform's resolution — grid points 0..=9, whose centers
-        // resolve to that bin — read its level together; the points past
-        // it resolve to the Hann null beside it and rest at the floor.
+        // (23.4 Hz) carries the Hann leakage near full scale, and points
+        // below the transform's resolution integrate over the resolution
+        // bandwidth (Hann ENBW, 35.2 Hz) around themselves: the points
+        // whose window fully contains that bin read its level together,
+        // then the analysis filter's response rolls off monotonically —
+        // a smooth shoulder, never the nearest-bin staircase.
         assert!(
             (-6. ..=0.).contains(&f64::from(curve.points[0])),
             "the DC leakage reads at its bin: {}",
             curve.points[0]
         );
-        assert_eq!(
-            curve.points[0],
-            curve.points[9],
-            "sub-resolution bands inherit their bin: {:?}",
-            &curve.points[..12]
+        assert!(
+            (curve.points[0] - curve.points[6]).abs() < 0.05,
+            "the flat top holds every point whose window contains the bin: {:?}",
+            &curve.points[..8]
         );
-        assert_eq!(curve.points[11], crate::ui::monitoring::REST_DB);
+        assert!(
+            curve.points[6] > curve.points[9] && curve.points[9] > curve.points[13],
+            "the shoulder rolls off continuously: {:?}",
+            &curve.points[..16]
+        );
+        assert_eq!(
+            curve.points[18],
+            crate::ui::monitoring::REST_DB,
+            "past the leakage skirt the curve rests: {:?}",
+            &curve.points[16..22]
+        );
         assert!(curve.points[120] <= -90., "high end {}", curve.points[120]);
     });
     // A stalled publisher: once no window lands past the stale fence the
