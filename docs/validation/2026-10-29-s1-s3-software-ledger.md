@@ -5,6 +5,18 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [Playback decode-call gap diagnostic](2026-11-02-host-decode-call-gap.md)
+adds a control-side comparison of the retained upward-rounded call envelope and
+declared gap, separate from jitter and actual supply/physical timing. Missing,
+faulted or mismatched evidence cannot claim within-bound usability; complete
+delivery remains unknown. Actual RED/GREEN, eight focused tests, feature-off/on
+example suites691passed/1ignored each, strict Clippy/fmt and release pass. One
+bounded180s target1536test is attempted remotely, but format preparation refuses
+before source Start/Engine admission:0submittedframes, no measurement, incomplete
+collection. Normal exit1and confirmed export removal are not a stability pass;
+both format-query HRESULTs remain unavailable. No rerun/default change/physical
+claim follows, and first-packet work remains deferred.
+
 The [clean Compatible MIC functional receipt](2026-11-02-clean-mic-compatible.md)
 adds one current native playback -> unity Bus -> MIC collection, not a repeat
 of the dirty945/cap1 candidate. Source20s/960000frames, collection997440frames

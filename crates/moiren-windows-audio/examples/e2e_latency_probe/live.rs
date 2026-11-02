@@ -62,6 +62,9 @@ mod process_trace;
 mod validation_policy;
 use validation_policy::{ValidationMode, ValidationPolicy};
 
+#[path = "host_decode_call_gap.rs"]
+mod host_decode_call_gap;
+
 #[cfg(any(windows, test))]
 #[path = "process_admission.rs"]
 mod process_admission;
@@ -333,6 +336,7 @@ struct LiveRunReport {
     observed_duration_seconds: f64,
     artifacts: ArtifactReport,
     native: NativeReport,
+    host_decode_call_gap_diagnostic: host_decode_call_gap::HostDecodeCallGapDiagnostic,
     collection: Option<Value>,
     qualification: Option<QualificationReport>,
     /// Retain opt-in rate hypotheses alongside any uncorrected distribution.
@@ -747,6 +751,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         observation_interval_seconds: options.observation_interval_seconds,
         observed_duration_seconds,
         artifacts,
+        host_decode_call_gap_diagnostic: host_decode_call_gap::project(&options, &native),
         native,
         collection: collection.clone(),
         qualification,
@@ -2225,6 +2230,33 @@ mod native;
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn host_decode_call_gap_diagnostic_dry_run_retains_declared_not_observed_bound() {
+        let directory = temp_dir("host-decode-call-gap");
+        let mut args = source_test_args(&directory);
+        args.extend(
+            [
+                "--input-target-frames",
+                "2048",
+                "--engine-block-frames",
+                "64",
+            ]
+            .map(str::to_owned),
+        );
+        assert_eq!(run(args).unwrap(), 1);
+        let value: Value =
+            serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+        let diagnostic = &value["host_decode_call_gap_diagnostic"];
+        assert_eq!(diagnostic["declared_gap"]["max_gap_frames"], 480);
+        assert_eq!(diagnostic["declared_gap"]["sample_rate"], 48_000);
+        assert_eq!(diagnostic["declared_jitter_frames"], 96);
+        assert_eq!(diagnostic["comparison"], "unavailable");
+        assert!(diagnostic["publication"].is_null());
+        assert!(diagnostic["complete_delivery_coverage"].is_null());
+        assert_eq!(value["status"], "unqualified");
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     fn physical_render_args(directory: &Path, source: &str) -> Vec<String> {
         let mut args = source_test_args(directory);
