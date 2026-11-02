@@ -5,6 +5,18 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [Engine64/cap8 microphone reset contract](2026-11-02-cap8-microphone-reprime.md)
+adds four test-only cases for native480/target1536/capacity4800, including36
+compiled f32/f64 graph/SRC phase scenarios. One unchanged timestamp repays
+eight64-frame blocks; actual carrier threshold, one45.3989ms deadline, bounded
+wait, counted480-frame empty fallback and cancellation/epoch fencing are checked.
+Three isolated mutations fail by assertion and restored tests pass; no production
+defect is claimed. Full Windows feature-workspace tests pass2311/9ignored;
+all-target workspace check/strict Clippy and fmt pass. Native failure/cleanup
+evidence stays unchanged, with no new
+audio run or default/quality-gate/first-packet change. This advances original S2
+coverage while independent development continues; physical qualification stays open.
+
 The [format-query receipt and target1536failure](2026-11-02-format-query-and-target1536.md)
 retains resolved Playback preparation identity and raw exact-format query codes,
 without changing selection/fallback or production policy. Actual RED/GREEN and

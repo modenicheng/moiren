@@ -113,8 +113,9 @@ fn prepared_reprime_preserves_immediate_initial_start_and_cancel_epoch_fences() 
     }
 }
 
-fn compiled_microphone<S: moiren_engine::sample::ProcessingSample>(
+pub(super) fn compiled_microphone<S: moiren_engine::sample::ProcessingSample>(
     sink: crate::virtual_owner::VirtualMicrophoneSink,
+    block_frames: usize,
 ) -> Engine<S> {
     use moiren_core::graph::edit::connect_to_new_bus_input;
     use moiren_engine::boundary::ConstantSource;
@@ -148,7 +149,7 @@ fn compiled_microphone<S: moiren_engine::sample::ProcessingSample>(
         CompileConfig {
             engine: EngineConfig {
                 processing_sr: 48_000.0,
-                max_block_frames: 256,
+                max_block_frames: block_frames,
                 max_events_per_block: 8,
             },
             audio_byte_budget: 1 << 20,
@@ -185,7 +186,7 @@ fn graph_reset_matrix<S: moiren_engine::sample::ProcessingSample>() {
                         sink.with_clock_drift()
                     }
                     .unwrap();
-                    let mut engine = compiled_microphone::<S>(sink);
+                    let mut engine = compiled_microphone::<S>(sink, 256);
                     engine.render(256).unwrap();
                     assert!(reader.available_frames() > 0);
                     state.reset_epoch.store(1, Ordering::Release);

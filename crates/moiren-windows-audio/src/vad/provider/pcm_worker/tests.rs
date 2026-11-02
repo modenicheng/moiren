@@ -7,6 +7,8 @@ mod sequence_tests;
 mod admission_tests;
 #[path = "input_capture_tests.rs"]
 mod input_capture_tests;
+#[path = "recovery_burst_tests.rs"]
+mod recovery_burst_tests;
 #[path = "reprime_tests.rs"]
 mod reprime_tests;
 #[path = "startup_poll_tests.rs"]
