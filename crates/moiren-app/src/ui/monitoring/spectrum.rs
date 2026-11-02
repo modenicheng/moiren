@@ -186,14 +186,6 @@ pub fn project_spectrum(
         |power: f64| -> f32 { (10. * (power.max(1e-18) / params.enbw_bins).log10()) as f32 };
     for (index, point) in out.iter_mut().enumerate() {
         let (low, high) = grid.band(index);
-        if index == 0 {
-            let nearest = ((grid.centers[index] / bin_hz).round() as usize).clamp(1, last_bin);
-            eprintln!(
-                "DBG band0 [{low:.3},{high:.3}] bin_hz {bin_hz:.3} nearest {nearest} amp {} -> level {}",
-                channels[0][nearest],
-                level_of(f64::from(channels[0][nearest]).powi(2))
-            );
-        }
         let level = if high - low <= bin_hz {
             // Sub-resolution band: the nearest bin's own ENBW band level.
             let nearest = ((grid.centers[index] / bin_hz).round() as usize).clamp(1, last_bin);
