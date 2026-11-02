@@ -5,6 +5,21 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [current exact336 VAD-to-DAWN functional recording](2026-11-02-vad-dawn-exact336-functional.md)
+uses a clean1267f8dapplication/probe export, exact48k/Engine64/Shared336,
+render512and Compatible VAD. Two independent20sProcess-tree recordings retain
+changing PCM with19energy islands each and zero artifact overflow/drop/
+discontinuity/timestamp-error; energy is not marker identity or continuity.
+Native UIA confirms the actual336period and738capacity without fallback.
+Fresh zero-refill5, analyzer/qualification51and measured-UI20tests pass.
+The source exits0and audio owner joins, but Quit automation times out with
+the button partly covered by the settings footer; only the owned app is
+terminated. Completed=falseand exit-1remain authoritative. No second audio
+run or stability scan follows. Cleanup preserves user processes, global
+settings and driver/boot; compact JSON/PNGare hash-verified. Native quality,
+matched waveform and physical qualification remain open; this does not block
+independent product work or justify speculative Quit/first-packet changes.
+
 The [desktop Process-scope correction and stopping boundary](2026-11-02-desktop-process-capture-scope.md)
 adds the missing English/Chinese Applications explanation: capture includes
 the selected process and descendants, not an individual browser tab/session.
