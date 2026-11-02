@@ -1887,3 +1887,48 @@ attempt or gate relaxation follows. Missing timing/state evidence remains a
 runner acceptance limitation, not a proven production audio defect or S1-S3
 completion. Original-scope audits identify no new mandatory software feature
 to add merely while waiting for native/physical evidence.
+
+### Start/Stop client timing localization
+
+The [timing investigation](2026-11-02-joined-receipt-native-acceptance.md#startstop-timing-investigation)
+adds bounded failure-persisted phase/state observations to the evidence runner,
+not the product. Start, Stop action, actual Stop Invoke and joined confirmation
+remain distinct; at most8state changes are retained with explicit unknown
+unread-enabled values. Actual RED/GREEN and independent review catch an added
+UIA enabled read, then preserve its original short-circuit behavior. Final9new
+and17existing checks pass without changing400/900ms or any admission policy.
+
+One STA run measures Start Invoke2018ms; a separately reviewed MTA-only worker
+comparison measures2008ms. Both exceed the unchanged900ms before any actual
+Stop Invoke, and both later start generation1during cleanup. MTA alone does not
+remove the delay; its cause remains open. The MTA package has5additional
+invariance checks after RED. All36compact acquired files are individually
+hash/length verified; the reviewed22-call comparison plot is client timing,
+not audio latency. Both sources complete/exit0, apps require bounded forced
+cleanup, and worker/supervisor tasks end1with no owners and unchanged protected
+processes/defaults/render controls/driver. No Evaluate/Apply or actual joined
+receipt audit is obtained, and no additional audio retry/default/timer/gate
+change follows. Further dispatch localization should use a stopped UI-only
+surface rather than repeat the same native acquisition. S1-S3 stays active.
+
+### Stopped-UI Startup Contract Boundary
+
+The [inner/outer follow-up](2026-11-02-joined-receipt-native-acceptance.md#stopped-ui-comparison-refused-before-measurement)
+launches once at2026-11-03 00:02:59 +08:00 with an evidence-only precompiled
+helper and single-app held supervisor. Eight source and six helper checks pass
+after a review regression RED. It nevertheless acquires zero Invoke samples:
+fresh preferences disabling project restoration trigger the existing automatic
+default-session startup, rather than the intended stopped UI. The runner fails
+before its first action; actual native opening/generation1, forced app exit-1
+and completed=false are retained. This is a runner startup-contract failure,
+not an inner/outer result or proof of a new production defect. Source and its
+existing regression identify the already-supported restored candidate graph /
+null-session stopped contract. No retry or production policy change follows.
+
+All11compact artifacts are hash/length verified. Task/worker/supervisor finish1
+with no app/source owners, unchanged protected processes/defaults/render controls/
+driver. A separately stalled read-only inspection is identified by full held
+process identity and command hash, then terminated; its failures remain archived.
+No normal Quit, candidate Apply, waveform or physical qualification is claimed.
+Unchanged soaks and further UIA experiments are not prerequisites for independent
+product work, and the original qualification objective remains active.
