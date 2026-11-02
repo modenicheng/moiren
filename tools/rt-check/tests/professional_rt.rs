@@ -37,6 +37,21 @@ mod bridge;
 mod codec;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/observations.rs"]
 mod observations;
+#[cfg(windows)]
+#[path = "../../../crates/moiren-windows-audio/src/negotiation.rs"]
+mod negotiation;
+#[cfg(not(windows))]
+mod negotiation {
+    // The professional owner imports the WASAPI negotiation limits; the
+    // module itself is Windows-only (it talks COM), but the limits are
+    // platform-neutral numbers. Mirror them here so the owner's realtime
+    // paths stay under test on the other platforms, exactly as before the
+    // negotiation split.
+    pub(crate) const MIN_SAMPLE_RATE_HZ: u32 = 8_000;
+    pub(crate) const MAX_SAMPLE_RATE_HZ: u32 = 384_000;
+    pub(crate) const MAX_BUFFER_FRAMES: u32 = 65_536;
+    pub(crate) const MAX_CHANNELS: usize = 32;
+}
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/owner.rs"]
 mod professional_owner;
 #[cfg(windows)]
@@ -53,7 +68,7 @@ mod engine_backend {
 mod owner {
     pub(crate) use super::professional_owner::*;
     #[cfg(windows)]
-    pub(crate) use super::windows_owner::Mmcss;
+    pub(crate) use super::windows_owner::{Mmcss, TaskMemory};
 }
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/recovery.rs"]
 mod recovery;

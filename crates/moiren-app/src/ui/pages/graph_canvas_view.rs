@@ -8,9 +8,10 @@ use gpui_kit::*;
 use rust_i18n::t;
 
 use super::graph_canvas::{
-    Camera, CanvasFrame, CanvasNode, CanvasWorld, HitTarget, PortDirection, PortTarget, WireCurve,
+    Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, KnobControl,
+    OverlayRects, PortDirection, PortTarget, WireCurve,
 };
-use crate::ui::monitoring::DisplayLevel;
+use crate::ui::monitoring::{DisplayLevel, SpectrumCurve};
 use crate::ui::observe::TestObserve;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::theme;
@@ -34,21 +35,74 @@ pub(in crate::ui) struct NodeMeterReading {
 
 pub(in crate::ui) type NodeLevelsFn =
     dyn Fn(moiren_core::graph::NodeId, &App) -> Option<NodeMeterReading>;
+/// One analyzer's curve for the cached canvas: an owned copy taken at
+/// rebuild time, so the paint closure needs no borrow into the shell's
+/// subscription table (the hot layer reads that table directly).
+pub(in crate::ui) struct NodeSpectrumReading {
+    pub points: Box<[f32]>,
+    pub lo_hz: f64,
+    pub hi_hz: f64,
+}
+
+impl NodeSpectrumReading {
+    pub fn curve(&self) -> SpectrumCurve<'_> {
+        SpectrumCurve {
+            points: &self.points,
+            lo_hz: self.lo_hz,
+            hi_hz: self.hi_hz,
+        }
+    }
+}
+
+pub(in crate::ui) type NodeSpectrumFn =
+    dyn Fn(moiren_core::graph::NodeId, &App) -> Option<NodeSpectrumReading>;
+
+/// What a card's live surfaces show in one paint: the meter reading and
+/// the analyzer curve, both read at paint time, neither part of the
+/// projection.
+#[derive(Clone, Copy, Default)]
+pub(in crate::ui) struct NodeLive<'a> {
+    pub meters: Option<&'a NodeMeterReading>,
+    pub spectrum: Option<SpectrumCurve<'a>>,
+}
+
+/// The shell's readers for those surfaces, consulted per visible card.
+#[derive(Clone, Copy)]
+struct LiveReaders<'a> {
+    levels: &'a NodeLevelsFn,
+    spectrum: &'a NodeSpectrumFn,
+}
 /// The frame the canvas prepaint projected most recently. Shell-owned so the
 /// page's hot layer can repaint bars over the cached canvas between cache
 /// rebuilds, exactly like the canvas painted them.
 pub(in crate::ui) type PreparedFrame = SharedFrame<CanvasFrame>;
 
-pub(in crate::ui) use nodes::paint_meter_bars;
+pub(in crate::ui) use nodes::{paint_fault_tooltip, paint_meter_bars, paint_spectrum_body};
 
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
-    pub connection: Option<(PortTarget, (f32, f32))>,
+    /// The connection drag in flight: the port it pulls from, the cursor in
+    /// world units, and — when the drag picked an edge up off its input —
+    /// that input, which the caller has already dropped from the world so
+    /// the head paints free.
+    pub connection: Option<(PortTarget, (f32, f32), Option<moiren_core::graph::PortId>)>,
     /// Live ballistics-smoothed bar readings per node, consulted at paint
     /// time so meter motion repaints without rebuilding this element tree.
     pub node_levels: Rc<NodeLevelsFn>,
+    /// Live spectrum curves per analyzer node, for the same reason.
+    pub node_spectrum: Rc<NodeSpectrumFn>,
     pub on_port_down: Rc<WindowAppCallback<(PortTarget, (f32, f32))>>,
-    pub on_port_up: Rc<WindowAppCallback<Option<PortTarget>>>,
+    pub on_port_up: Rc<WindowAppCallback<Option<ConnectionCandidate>>>,
+    /// A knob dial press: canvas node id, control, window y. Starts a
+    /// value drag (or a double-click reset).
+    pub on_knob_down: Rc<WindowAppCallback<(String, KnobControl, f32)>>,
+    /// Wheel notches over a knob dial: positive = up = increase.
+    pub on_knob_wheel: Rc<WindowAppCallback<(String, KnobControl, f32)>>,
+    /// The expander glyph was pressed; opens the detail window.
+    pub on_expand: Rc<WindowAppCallback<String>>,
+    /// A binding chip was pressed: canvas node id plus the chip's window
+    /// rect, which anchors the endpoint menu.
+    pub on_chip: Rc<WindowAppCallback<(String, Bounds<Pixels>)>>,
     pub on_connection_move: Rc<WindowAppCallback<(f32, f32)>>,
     pub on_delete: Rc<WindowAppCallback<()>>,
     pub on_cancel: Rc<WindowAppCallback<()>>,
@@ -96,7 +150,8 @@ fn paint_canvas_layer(
     frame: &CanvasFrame,
     selected_nodes: &[String],
     selected_wire: Option<&str>,
-    node_levels: &NodeLevelsFn,
+    readers: LiveReaders<'_>,
+    connection: Option<(PortTarget, (f32, f32))>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -139,19 +194,132 @@ fn paint_canvas_layer(
             }
             for (node, layout) in frame.world.nodes.iter().zip(&frame.nodes) {
                 if layout.card.intersects(&frame.viewport()) {
+                    let spectrum = node
+                        .spectrum
+                        .then(|| node.node_id.and_then(|id| (readers.spectrum)(id, cx)))
+                        .flatten();
+                    let meters = node.node_id.and_then(|id| (readers.levels)(id, cx));
                     nodes::paint_node(
                         frame,
                         node,
                         layout,
                         selected_nodes.iter().any(|selected| selected == &node.id),
-                        node.node_id.and_then(|id| node_levels(id, cx)).as_ref(),
+                        NodeLive {
+                            meters: meters.as_ref(),
+                            spectrum: spectrum.as_ref().map(NodeSpectrumReading::curve),
+                        },
                         window,
                         cx,
                     );
                 }
             }
+            if let Some((port, cursor)) = connection {
+                paint_connection_drag(frame, port, cursor, window);
+            }
         },
     );
+}
+
+/// The connection drag's ghost line and hover verdict: the line snaps to
+/// the resolved candidate port when the drop would land (port or body),
+/// colors itself by the verdict, and rings the target so the release is
+/// never a surprise (design 18 A3).
+fn paint_connection_drag(
+    frame: &CanvasFrame,
+    port: PortTarget,
+    cursor: (f32, f32),
+    window: &mut Window,
+) {
+    use super::graph_canvas::CandidateStatus;
+    let Some(anchor) = frame.port_position(port) else {
+        return;
+    };
+    let cursor = frame.camera.world_to_canvas(cursor);
+    let window_cursor = (
+        cursor.0 + f32::from(frame.bounds.origin.x),
+        cursor.1 + f32::from(frame.bounds.origin.y),
+    );
+    let candidate = frame.connection_candidate(window_cursor, port);
+    let snap = candidate
+        .as_ref()
+        .filter(|candidate| {
+            matches!(
+                candidate.status,
+                CandidateStatus::Valid | CandidateStatus::Displacing
+            )
+        })
+        .and_then(|candidate| frame.port_position(candidate.port));
+    let (from, to) = match port.direction {
+        PortDirection::Output => (anchor, snap.unwrap_or(cursor)),
+        PortDirection::Input => (snap.unwrap_or(cursor), anchor),
+    };
+    let color = match candidate.as_ref().map(|candidate| candidate.status) {
+        Some(CandidateStatus::Incompatible | CandidateStatus::Cycles) => theme::DANGER,
+        Some(CandidateStatus::Displacing) => theme::WARNING,
+        _ => theme::PRIMARY,
+    };
+    let origin = (
+        f32::from(frame.bounds.origin.x),
+        f32::from(frame.bounds.origin.y),
+    );
+    if let Ok(path) = WireCurve::new(from, to)
+        .project(Camera {
+            zoom: 1.,
+            adjusted: true,
+            ..Default::default()
+        })
+        .stroke(2., origin)
+    {
+        window.paint_path(path, color);
+    }
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let status_color = match candidate.status {
+        CandidateStatus::Valid => theme::PRIMARY,
+        CandidateStatus::Displacing => theme::WARNING,
+        CandidateStatus::Incompatible | CandidateStatus::Cycles => theme::DANGER,
+    };
+    if let Some(anchor) = frame.port_position(candidate.port) {
+        let radius = 9.;
+        window.paint_quad(fill(
+            frame.window_rect(Bounds {
+                origin: point(anchor.0 - radius, anchor.1 - radius),
+                size: size(radius * 2., radius * 2.),
+            }),
+            theme::soft(status_color),
+        ));
+    }
+    if candidate.from_body
+        && let Some((_, layout)) = frame
+            .world
+            .nodes
+            .iter()
+            .zip(&frame.nodes)
+            .find(|(node, _)| node.node_id == Some(candidate.node))
+    {
+        let card = frame.window_rect(layout.card);
+        window.paint_quad(PaintQuad {
+            bounds: card,
+            corner_radii: (theme::card::RADIUS * layout.scale).into(),
+            background: transparent_black().into(),
+            border_widths: theme::card::OUTLINE_W.into(),
+            border_color: status_color,
+            border_style: BorderStyle::default(),
+        });
+    }
+    // A displacing drop fades the wire it would replace before the
+    // release commits it.
+    if candidate.status == CandidateStatus::Displacing
+        && let Some(index) = frame
+            .world
+            .wires
+            .iter()
+            .position(|wire| wire.dst_port == candidate.port.id)
+        && let Ok(path) = frame.wires[index].stroke(3., origin)
+    {
+        window.paint_path(path, theme::WINDOW_BG.opacity(0.55));
+    }
 }
 
 /// Port dots straddle the card edge by their radius; pad the ghost so they
@@ -164,18 +332,23 @@ pub(in crate::ui) fn node_drag_preview(
     template: super::node_catalog::NodeTemplate,
 ) -> impl IntoElement {
     use super::node_catalog::NodeTemplate;
-    let (icon, tint) = match template {
-        NodeTemplate::Input => ("figma-input", theme::NODE_SOURCE),
-        NodeTemplate::Application => ("app", theme::NODE_SOURCE),
-        NodeTemplate::Tone => ("wave", theme::NODE_SOURCE),
-        NodeTemplate::Output => ("figma-output", theme::NODE_SINK),
-        NodeTemplate::Bus => ("figma-bus", theme::NODE_UTILITY),
-        NodeTemplate::Recorder => ("radio", theme::NODE_ANALYSIS),
-        NodeTemplate::Meter => ("activity", theme::NODE_ANALYSIS),
-        NodeTemplate::Spectrum => ("wave", theme::NODE_ANALYSIS),
-        NodeTemplate::Delay => ("clock", theme::NODE_DSP),
-        NodeTemplate::ChannelMapper | NodeTemplate::Rack => ("route", theme::NODE_UTILITY),
-        _ => ("figma-fader", theme::NODE_DSP),
+    // The ghost paints the library's own glyph for the kind, so the card
+    // that lands looks exactly like the card that was dragged.
+    let icon = template.icon();
+    let tint = match template {
+        NodeTemplate::Input | NodeTemplate::Application | NodeTemplate::Tone => theme::NODE_SOURCE,
+        NodeTemplate::Output => theme::NODE_SINK,
+        NodeTemplate::Bus | NodeTemplate::ChannelMapper | NodeTemplate::Rack => theme::NODE_UTILITY,
+        NodeTemplate::Recorder | NodeTemplate::Meter | NodeTemplate::Spectrum => {
+            theme::NODE_ANALYSIS
+        }
+        NodeTemplate::Delay
+        | NodeTemplate::Gain
+        | NodeTemplate::Balance
+        | NodeTemplate::Compressor
+        | NodeTemplate::Eq
+        | NodeTemplate::Gate
+        | NodeTemplate::Limiter => theme::NODE_DSP,
     };
     // A fresh card's port shape: sources only output, the sink only inputs.
     let (input_count, has_output) = match template {
@@ -183,6 +356,9 @@ pub(in crate::ui) fn node_drag_preview(
         NodeTemplate::Output => (1, false),
         _ => (1, true),
     };
+    // The analyzer's ghost is the analyzer's shape: the wide 4:3 card with
+    // its plot furniture, so the drop lands what the drag showed.
+    let spectrum = template == NodeTemplate::Spectrum;
     let node = CanvasNode {
         node_id: None,
         id: "drag-preview".into(),
@@ -200,8 +376,22 @@ pub(in crate::ui) fn node_drag_preview(
         output_port: None,
         has_output,
         tint: Some(tint),
-        gain: 1.,
-        balance: None,
+        faulted: false,
+        preparing: false,
+        faults: Vec::new(),
+        body_height: if spectrum {
+            theme::card::SPECTRUM_BODY_H
+        } else {
+            theme::card::BODY_H
+        },
+        meter_vertical: spectrum,
+        channels: 2,
+        knobs: Vec::new(),
+        binding: None,
+        matrix: None,
+        rack_stages: Vec::new(),
+        curve: None,
+        spectrum,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
@@ -224,8 +414,8 @@ pub(in crate::ui) fn node_drag_preview(
                 &frame,
                 &frame.world.nodes[0],
                 &frame.nodes[0],
-                true,
-                None,
+                false,
+                NodeLive::default(),
                 window,
                 cx,
             );
@@ -235,7 +425,7 @@ pub(in crate::ui) fn node_drag_preview(
     .h(px(size.1))
 }
 
-fn overview(prepared: PreparedFrame) -> impl IntoElement {
+fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElement {
     div()
         .absolute()
         .bottom(px(12.))
@@ -247,6 +437,7 @@ fn overview(prepared: PreparedFrame) -> impl IntoElement {
         .border_1()
         .border_color(theme::BORDER)
         .overflow_hidden()
+        .child(overlays.probe("overview"))
         .child(
             div()
                 .text_size(px(theme::TEXT_XS))
@@ -299,6 +490,7 @@ pub fn graph_canvas_view(
     selected_wire: Option<&str>,
     callbacks: CanvasCallbacks,
     prepared: PreparedFrame,
+    overlays: &OverlayRects,
 ) -> impl IntoElement {
     let CanvasCallbacks {
         on_drop_node,
@@ -310,16 +502,24 @@ pub fn graph_canvas_view(
         on_select_wire,
         on_camera_fit,
         node_levels,
+        node_spectrum,
         focus,
         connection,
         on_port_down,
         on_port_up,
+        on_knob_down,
+        on_knob_wheel,
+        on_expand,
+        on_chip,
         on_connection_move,
         on_delete,
         on_cancel,
     } = callbacks;
     let selected_nodes = selected_nodes.to_vec();
     let selected_wire = selected_wire.map(str::to_owned);
+    // The painter and the release path only need the head and the port it
+    // pulls from; the picked-up input already shaped the world.
+    let connection = connection.map(|(port, cursor, _)| (port, cursor));
     // The left handler moves `focus`; keep one clone for the right handler,
     // which must also focus the canvas so right-button drags keep keys alive.
     let right_focus = focus.clone();
@@ -347,40 +547,14 @@ pub fn graph_canvas_view(
                         &frame,
                         &selected_nodes,
                         selected_wire.as_deref(),
-                        node_levels.as_ref(),
+                        LiveReaders {
+                            levels: node_levels.as_ref(),
+                            spectrum: node_spectrum.as_ref(),
+                        },
+                        connection,
                         window,
                         cx,
                     );
-                    if let Some((port, cursor)) = connection
-                        && let Some(anchor) = frame.port_position(port)
-                    {
-                        let cursor = frame.camera.world_to_canvas(cursor);
-                        let (from, to) = match port.direction {
-                            PortDirection::Output => (anchor, cursor),
-                            PortDirection::Input => (cursor, anchor),
-                        };
-                        let origin = (
-                            f32::from(frame.bounds.origin.x),
-                            f32::from(frame.bounds.origin.y),
-                        );
-                        window.with_content_mask(
-                            Some(ContentMask {
-                                bounds: frame.bounds,
-                            }),
-                            |window| {
-                                if let Ok(path) = WireCurve::new(from, to)
-                                    .project(Camera {
-                                        zoom: 1.,
-                                        adjusted: true,
-                                        ..Default::default()
-                                    })
-                                    .stroke(2., origin)
-                                {
-                                    window.paint_path(path, theme::PRIMARY);
-                                }
-                            },
-                        );
-                    }
                 },
             )
             .size_full(),
@@ -419,6 +593,9 @@ pub fn graph_canvas_view(
                 .on_mouse_down(MouseButton::Left, {
                     let prepared = prepared.clone();
                     let on_background_down = on_background_down.clone();
+                    let on_knob_down = on_knob_down.clone();
+                    let on_expand = on_expand.clone();
+                    let on_chip = on_chip.clone();
                     move |event, window, cx| {
                         window.focus(&focus, cx);
                         let Some(frame) = prepared.read() else {
@@ -438,6 +615,26 @@ pub fn graph_canvas_view(
                                 window,
                                 cx,
                             ),
+                            Some(HitTarget::Knob { node, control }) => on_knob_down(
+                                (node.to_string(), control, f32::from(event.position.y)),
+                                window,
+                                cx,
+                            ),
+                            Some(HitTarget::Expand { node }) => {
+                                on_expand(node.to_string(), window, cx)
+                            }
+                            Some(HitTarget::Chip { node }) => {
+                                let anchor = frame
+                                    .world
+                                    .nodes
+                                    .iter()
+                                    .position(|candidate| candidate.id == node)
+                                    .and_then(|index| frame.nodes[index].chip.as_ref())
+                                    .map(|chip| frame.window_rect(chip.bounds));
+                                if let Some(anchor) = anchor {
+                                    on_chip((node.to_string(), anchor), window, cx)
+                                }
+                            }
                             Some(HitTarget::Node(id)) => on_select_node(id, window, cx),
                             Some(HitTarget::Wire(id)) => on_select_wire(id, window, cx),
                             None => on_background_down((event.clone(), frame.bounds), window, cx),
@@ -483,17 +680,17 @@ pub fn graph_canvas_view(
                     let input_move = input_move.clone();
                     let prepared = prepared.clone();
                     let on_port_up = on_port_up.clone();
+                    let drag_port = connection.map(|(port, _)| port);
                     move |event, window, cx| {
-                        let port = prepared.read().and_then(|frame| {
-                            match frame.hit_test((
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                            )) {
-                                Some(HitTarget::Port(port)) => Some(port),
-                                _ => None,
-                            }
+                        let candidate = prepared.read().and_then(|frame| {
+                            drag_port.and_then(|drag| {
+                                frame.connection_candidate(
+                                    (f32::from(event.position.x), f32::from(event.position.y)),
+                                    drag,
+                                )
+                            })
                         });
-                        on_port_up(port, window, cx);
+                        on_port_up(candidate, window, cx);
                         input_move((event.position, None), window, cx);
                     }
                 })
@@ -522,10 +719,25 @@ pub fn graph_canvas_view(
                 .on_scroll_wheel({
                     let prepared = prepared.clone();
                     let on_zoom = on_zoom.clone();
+                    let on_knob_wheel = on_knob_wheel.clone();
                     move |event: &ScrollWheelEvent, window, cx| {
                         let Some(frame) = prepared.read() else {
                             return;
                         };
+                        // A knob under the cursor consumes the wheel before
+                        // the canvas zoom/pan policy sees it (design 18 B3);
+                        // positive notches are wheel-up = increase.
+                        if let Some(HitTarget::Knob { node, control }) = frame
+                            .hit_test((f32::from(event.position.x), f32::from(event.position.y)))
+                        {
+                            let notches = match event.delta {
+                                ScrollDelta::Lines(lines) => lines.y,
+                                ScrollDelta::Pixels(delta) => f32::from(delta.y) / 60.,
+                            };
+                            on_knob_wheel((node.to_string(), control, notches), window, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
                         #[cfg(windows)]
                         let control =
                             event.modifiers.control || crate::ui::touchpad::wheel_control();
@@ -568,5 +780,5 @@ pub fn graph_canvas_view(
                 })
                 .gpui_test_observe(),
         )
-        .child(overview(prepared))
+        .child(overview(prepared, overlays))
 }

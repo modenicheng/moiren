@@ -2,11 +2,25 @@ use std::sync::Arc;
 
 use gpui_kit::{Bounds, Pixels, Size, point, px, size};
 
-use super::{Camera, CanvasWorld, NodeLayout, WireCurve, WireGeometry};
+use super::{Camera, CanvasWorld, ConnectionCandidate, NodeLayout, WireCurve, WireGeometry};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HitTarget<'a> {
     Port(PortTarget),
+    /// A knob dial on a card body; knobs win over the card so drags
+    /// adjust the value instead of moving the node.
+    Knob {
+        node: &'a str,
+        control: super::KnobControl,
+    },
+    /// The header's expander glyph; opens the node detail window.
+    Expand {
+        node: &'a str,
+    },
+    /// A source/sink card's binding chip; opens the endpoint menu.
+    Chip {
+        node: &'a str,
+    },
     Node(&'a str),
     Wire(&'a str),
 }
@@ -82,7 +96,7 @@ impl CanvasFrame {
             for (port, anchor) in node.input_ports.iter().zip(&layout.inputs) {
                 if near(*anchor) {
                     return Some(HitTarget::Port(PortTarget {
-                        id: *port,
+                        id: port.id,
                         direction: PortDirection::Input,
                     }));
                 }
@@ -91,9 +105,27 @@ impl CanvasFrame {
                 && layout.output.is_some_and(near)
             {
                 return Some(HitTarget::Port(PortTarget {
-                    id: port,
+                    id: port.id,
                     direction: PortDirection::Output,
                 }));
+            }
+            if layout.expand.contains(&point(local.0, local.1)) {
+                return Some(HitTarget::Expand { node: &node.id });
+            }
+            for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
+                if knob_layout.dial.contains(&point(local.0, local.1)) {
+                    return Some(HitTarget::Knob {
+                        node: &node.id,
+                        control: knob.control,
+                    });
+                }
+            }
+            if layout
+                .chip
+                .as_ref()
+                .is_some_and(|chip| chip.bounds.contains(&point(local.0, local.1)))
+            {
+                return Some(HitTarget::Chip { node: &node.id });
             }
             if layout.card.contains(&point(local.0, local.1)) {
                 return Some(HitTarget::Node(&node.id));
@@ -118,12 +150,87 @@ impl CanvasFrame {
                 PortDirection::Input => node
                     .input_ports
                     .iter()
-                    .position(|id| *id == port.id)
+                    .position(|candidate| candidate.id == port.id)
                     .and_then(|index| layout.inputs.get(index).copied()),
-                PortDirection::Output => (node.output_port == Some(port.id))
-                    .then_some(layout.output)
-                    .flatten(),
+                PortDirection::Output => node
+                    .output_port
+                    .filter(|candidate| candidate.id == port.id)
+                    .and(layout.output),
             })
+    }
+
+    /// Where a connection drag from `drag` would land at `window`: the
+    /// port under the cursor when one is hit (any direction —
+    /// same-direction targets come back `Incompatible` so the verdict can
+    /// be painted), else the topmost card under the cursor resolves to its
+    /// compatible port: the input nearest the cursor for an output drag,
+    /// the output for an input drag (design 18 A2). `None` when nothing
+    /// compatible is under the cursor; the drag simply cancels, as before.
+    pub fn connection_candidate(
+        &self,
+        window: (f32, f32),
+        drag: PortTarget,
+    ) -> Option<ConnectionCandidate> {
+        let local = self.local_position(window);
+        if !self.viewport().contains(&point(local.0, local.1)) {
+            return None;
+        }
+        let near = |anchor: (f32, f32)| (anchor.0 - local.0).hypot(anchor.1 - local.1) <= 8.;
+        for (index, layout) in self.nodes.iter().enumerate().rev() {
+            let node = &self.world.nodes[index];
+            let port_target = node
+                .input_ports
+                .iter()
+                .zip(&layout.inputs)
+                .map(|(port, anchor)| {
+                    (
+                        PortTarget {
+                            id: port.id,
+                            direction: PortDirection::Input,
+                        },
+                        *anchor,
+                    )
+                })
+                .chain(node.output_port.zip(layout.output).map(|(port, anchor)| {
+                    (
+                        PortTarget {
+                            id: port.id,
+                            direction: PortDirection::Output,
+                        },
+                        anchor,
+                    )
+                }))
+                .find(|(_, anchor)| near(*anchor))
+                .map(|(target, _)| target);
+            if let Some(target) = port_target {
+                let node_id = node.node_id?;
+                return Some(self.world.resolve_candidate(drag, target, node_id, false));
+            }
+            if layout.card.contains(&point(local.0, local.1)) {
+                let node_id = node.node_id?;
+                let target = match drag.direction {
+                    PortDirection::Output => node
+                        .input_ports
+                        .iter()
+                        .zip(&layout.inputs)
+                        .min_by(|(_, a), (_, b)| {
+                            (a.0 - local.0)
+                                .hypot(a.1 - local.1)
+                                .total_cmp(&(b.0 - local.0).hypot(b.1 - local.1))
+                        })
+                        .map(|(port, _)| PortTarget {
+                            id: port.id,
+                            direction: PortDirection::Input,
+                        }),
+                    PortDirection::Input => node.output_port.map(|port| PortTarget {
+                        id: port.id,
+                        direction: PortDirection::Output,
+                    }),
+                }?;
+                return Some(self.world.resolve_candidate(drag, target, node_id, true));
+            }
+        }
+        None
     }
 
     pub fn overview(&self, viewport: Size<f32>) -> Overview {

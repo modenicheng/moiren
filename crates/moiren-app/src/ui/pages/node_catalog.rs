@@ -134,12 +134,18 @@ impl NodeTemplate {
             Self::Tone => "wave",
             Self::Recorder => "radio",
             Self::Meter => "activity",
-            Self::Spectrum => "wave",
+            Self::Spectrum => "chart-histogram",
             Self::Delay => "clock",
-            Self::ChannelMapper | Self::Rack => "route",
+            Self::ChannelMapper => "route",
+            Self::Rack => "list-details",
             Self::Bus => "git-merge",
             Self::Output => "speaker",
-            _ => "sliders",
+            Self::Gain => "volume",
+            Self::Balance => "arrows-horizontal",
+            Self::Compressor => "arrows-minimize",
+            Self::Eq => "wave-square",
+            Self::Gate => "door",
+            Self::Limiter => "wall",
         }
     }
 

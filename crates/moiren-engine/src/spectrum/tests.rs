@@ -190,7 +190,7 @@ fn reference_amplitudes(samples: &[f64]) -> Vec<f64> {
 
 #[test]
 fn settings_defaults_bounds_and_bin_count_are_explicit() {
-    assert_eq!(SpectrumSettings::default(), settings(1024, 512));
+    assert_eq!(SpectrumSettings::default(), settings(2048, 1024));
     for fft_size in 0..=16_385 {
         let config = settings(fft_size, 1);
         assert_eq!(
@@ -220,10 +220,10 @@ fn settings_serde_defaults_and_unknown_fields_follow_the_public_contract() {
         ))
     };
     assert_eq!(decode(vec![]).unwrap(), SpectrumSettings::default());
-    assert_eq!(decode(vec![("fft_size", 64)]).unwrap(), settings(64, 512));
+    assert_eq!(decode(vec![("fft_size", 64)]).unwrap(), settings(64, 1024));
     assert_eq!(
         decode(vec![("hop_frames", 16)]).unwrap(),
-        settings(1024, 16)
+        settings(2048, 16)
     );
     assert_eq!(
         decode(vec![("fft_size", 64), ("hop_frames", 32)]).unwrap(),

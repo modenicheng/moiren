@@ -1127,9 +1127,9 @@ _version: 2
 "%{frames} frame window":
   en: "%{frames} frame window"
   zh-CN: "%{frames} 帧窗口"
-"FFT %{fft} · hop %{hop}":
-  en: "FFT %{fft} · hop %{hop}"
-  zh-CN: "FFT %{fft} · 跳点 %{hop}"
+"FFT %{fft}":
+  en: "FFT %{fft}"
+  zh-CN: "FFT %{fft}"
 "Empty rack":
   en: Empty rack
   zh-CN: 空机架

@@ -29,7 +29,14 @@ pub struct GraphNodeState {
     pub builtin: BuiltinState,
     pub source: Option<InputSelection>,
     pub output_endpoint_id: Option<String>,
+    /// User-chosen card tint as an index into the fixed theme palette
+    /// (see [`NODE_TINT_COUNT`]); `None` keeps the category tint.
+    pub tint: Option<u8>,
 }
+
+/// How many entries the node tint palette has. The palette itself is a
+/// UI concern; the service only guards the index.
+pub const NODE_TINT_COUNT: u8 = 8;
 
 /// Where a fault points, in user-visible terms: a channel strip, a route
 /// between two ports, or the project as a whole.
@@ -65,6 +72,10 @@ pub struct GraphSnapshot {
     /// Whether the undo/redo journal can step back / forward right now.
     pub can_undo: bool,
     pub can_redo: bool,
+    /// Nodes touched by structural edits since the last activation; the
+    /// engine is re-preparing these, so cards show the loading state. An
+    /// edit failure or activation clears the set.
+    pub preparing_nodes: Vec<NodeId>,
 }
 impl GraphSnapshot {
     pub fn node(&self, id: NodeId) -> Option<&GraphNodeState> {
@@ -126,6 +137,24 @@ pub enum GraphEdit {
         source: PortId,
         destination: PortId,
     },
+    /// Connect that first displaces whatever currently feeds
+    /// `destination`. Input ports are single-connection, so a drop on an
+    /// occupied input reroutes it instead of failing: one candidate
+    /// revision, one undo step, and if the connect half fails the whole
+    /// candidate rolls back with the displaced edge intact.
+    ConnectReplacing {
+        source: PortId,
+        destination: PortId,
+    },
+    /// Move an existing edge's destination, displacing whatever feeds the
+    /// new one: the drag-a-wire-head-off-an-input gesture commits as one
+    /// atomic edit, so a reroute is a single undo step and a failed
+    /// connect half rolls the moved edge (and the displaced one) back
+    /// exactly where they were.
+    Reconnect {
+        edge: EdgeId,
+        destination: PortId,
+    },
     Disconnect(EdgeId),
     SetSend {
         edge: EdgeId,
@@ -139,6 +168,10 @@ pub enum GraphEdit {
     SetLabel {
         node: NodeId,
         label: String,
+    },
+    SetNodeTint {
+        node: NodeId,
+        tint: Option<u8>,
     },
     SetGain {
         node: NodeId,
@@ -187,6 +220,7 @@ impl GraphEdit {
             Self::SetMixer { node, .. } => Some(format!("mixer:{node:?}")),
             Self::SetBuiltin { node, .. } => Some(format!("builtin:{node:?}")),
             Self::SetLabel { node, .. } => Some(format!("label:{node:?}")),
+            Self::SetNodeTint { node, .. } => Some(format!("tint:{node:?}")),
             _ => None,
         }
     }
@@ -284,6 +318,7 @@ impl Default for ServiceGraph {
                     frequency_hz: 440.0,
                 }),
                 output_endpoint_id: None,
+                tint: None,
             })
             .collect();
         Self {
@@ -298,6 +333,7 @@ impl Default for ServiceGraph {
                 faults: Vec::new(),
                 can_undo: false,
                 can_redo: false,
+                preparing_nodes: Vec::new(),
             },
             journal: UndoJournal::default(),
             pending_generation: None,
@@ -393,6 +429,55 @@ pub(crate) fn edit_parameter_values(edit: &GraphEdit) -> Vec<(ParameterTarget, P
         _ => Vec::new(),
     }
 }
+/// The node a port belongs to, for preparing-state placement.
+fn node_of_port(graph: &LogicalGraph, port: PortId) -> Option<NodeId> {
+    graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            node.inputs().iter().any(|candidate| candidate.id() == port)
+                || node
+                    .outputs()
+                    .iter()
+                    .any(|candidate| candidate.id() == port)
+        })
+        .map(|node| node.id())
+}
+
+/// Nodes a topology change touches: added or removed nodes plus both
+/// endpoints of every edge that appeared or disappeared.
+fn structural_diff_nodes(before: &LogicalGraph, after: &LogicalGraph) -> Vec<NodeId> {
+    let mut touched = std::collections::BTreeSet::new();
+    let edge_change = |from: &LogicalGraph,
+                       to: &LogicalGraph,
+                       touched: &mut std::collections::BTreeSet<NodeId>| {
+        let kept: std::collections::BTreeSet<_> = to.edges().iter().map(|edge| edge.id()).collect();
+        for edge in from.edges() {
+            if !kept.contains(&edge.id()) {
+                touched.insert(edge.src());
+                touched.insert(edge.dst());
+            }
+        }
+    };
+    edge_change(before, after, &mut touched);
+    edge_change(after, before, &mut touched);
+    let after_nodes: std::collections::BTreeSet<_> =
+        after.nodes().iter().map(|node| node.id()).collect();
+    for node in before.nodes() {
+        if !after_nodes.contains(&node.id()) {
+            touched.insert(node.id());
+        }
+    }
+    let before_nodes: std::collections::BTreeSet<_> =
+        before.nodes().iter().map(|node| node.id()).collect();
+    touched.extend(
+        after_nodes
+            .into_iter()
+            .filter(|id| !before_nodes.contains(id)),
+    );
+    touched.into_iter().collect()
+}
+
 /// The channel or route an edit names, for fault placement.
 pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubject {
     let node = |node: &NodeId| GraphSubject::Node(*node);
@@ -403,6 +488,7 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
         | GraphEdit::SetMixer { node: id, .. }
         | GraphEdit::RemoveNode(id)
         | GraphEdit::SetLabel { node: id, .. }
+        | GraphEdit::SetNodeTint { node: id, .. }
         | GraphEdit::SetGain { node: id, .. }
         | GraphEdit::SetPan { node: id, .. }
         | GraphEdit::SetMono { node: id, .. }
@@ -414,10 +500,18 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
         GraphEdit::Connect {
             source,
             destination,
+        }
+        | GraphEdit::ConnectReplacing {
+            source,
+            destination,
         } => GraphSubject::Route(*source, *destination),
         GraphEdit::Disconnect(edge) | GraphEdit::SetSend { edge, .. } => graph
             .get_edge(*edge)
             .map(|edge| GraphSubject::Route(edge.src_port(), edge.dst_port()))
+            .unwrap_or(GraphSubject::Graph),
+        GraphEdit::Reconnect { edge, destination } => graph
+            .get_edge(*edge)
+            .map(|moved| GraphSubject::Route(moved.src_port(), *destination))
             .unwrap_or(GraphSubject::Graph),
         GraphEdit::SetExports(_) | GraphEdit::BindExport { .. } | GraphEdit::AddNode { .. } => {
             GraphSubject::Graph
@@ -455,6 +549,8 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         GraphEdit::AddNode { .. }
         | GraphEdit::RemoveNode(_)
         | GraphEdit::Connect { .. }
+        | GraphEdit::ConnectReplacing { .. }
+        | GraphEdit::Reconnect { .. }
         | GraphEdit::Disconnect(_)
         | GraphEdit::AddBusInput(_)
         | GraphEdit::RemoveBusInput { .. }
@@ -473,7 +569,8 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::SetPan { .. }
         | GraphEdit::SetMono { .. }
         | GraphEdit::SetSwap { .. }
-        | GraphEdit::SetLabel { .. } => false,
+        | GraphEdit::SetLabel { .. }
+        | GraphEdit::SetNodeTint { .. } => false,
     }
 }
 /// Single source for per-node candidate-state domains. Every layer that
@@ -589,6 +686,40 @@ impl ServiceGraph {
         next.last_error = None;
         next.faults.clear();
         let structural = edit_affects_prepared_structure(&edit, &previous);
+        if structural {
+            // The engine will re-prepare these nodes; keep any still
+            // pending ones so cards stay in the loading state.
+            let mut pending: std::collections::BTreeSet<NodeId> =
+                next.preparing_nodes.drain(..).collect();
+            match &subject {
+                GraphSubject::Node(id) => {
+                    pending.insert(*id);
+                }
+                GraphSubject::Route(source, destination) => {
+                    pending.extend(node_of_port(&previous, *source));
+                    pending.extend(node_of_port(&previous, *destination));
+                    // A reroute also re-prepares the node it departs from.
+                    if let GraphEdit::Reconnect { edge, .. } = &edit
+                        && let Ok(moved) = previous.get_edge(*edge)
+                    {
+                        pending.extend(node_of_port(&previous, moved.dst_port()));
+                    }
+                }
+                GraphSubject::Graph => {
+                    // AddNode and export changes: the topology diff.
+                    let before: std::collections::BTreeSet<NodeId> =
+                        previous.nodes().iter().map(|node| node.id()).collect();
+                    pending.extend(
+                        next.graph
+                            .nodes()
+                            .iter()
+                            .map(|node| node.id())
+                            .filter(|id| !before.contains(id)),
+                    );
+                }
+            }
+            next.preparing_nodes = pending.into_iter().collect();
+        }
         self.journal.record(before, edit.undo_key());
         next.can_undo = !self.journal.undo.is_empty();
         next.can_redo = !self.journal.redo.is_empty();
@@ -626,6 +757,14 @@ impl ServiceGraph {
             .expect("revision headroom retained by undo depth");
         let can_undo = !self.journal.undo.is_empty();
         let can_redo = !self.journal.redo.is_empty();
+        // A topology step re-prepares the engine; mark what it changed so
+        // cards keep the loading state through the re-apply, and never
+        // inherit a stale set from the journal entry.
+        self.snapshot.preparing_nodes = if self.snapshot.graph != entry.graph {
+            structural_diff_nodes(&self.snapshot.graph, &entry.graph)
+        } else {
+            Vec::new()
+        };
         self.snapshot.exports = entry.exports;
         self.snapshot.graph = entry.graph;
         self.snapshot.nodes = entry.nodes;
@@ -771,10 +910,12 @@ impl ServiceGraph {
             self.snapshot.active_revision = Some(revision);
             self.snapshot.pending_revision = None;
             self.pending_generation = None;
+            self.snapshot.preparing_nodes.clear();
         }
     }
     pub fn stopped(&mut self) {
         self.snapshot.active_revision = None;
+        self.snapshot.preparing_nodes.clear();
     }
     /// Only a managed owner may call this after host/RT confirmation. An older
     /// applied topology may become active while a newer candidate is pending.
@@ -796,11 +937,13 @@ impl ServiceGraph {
     pub fn clear_pending(&mut self) {
         self.pending_generation = None;
         self.snapshot.pending_revision = None;
+        self.snapshot.preparing_nodes.clear();
     }
     pub fn preparation_failed(&mut self, generation: SessionGeneration, error: impl ToString) {
         if self.pending_generation == Some(generation) {
             self.snapshot.pending_revision = None;
             self.pending_generation = None;
+            self.snapshot.preparing_nodes.clear();
             self.record_error(error);
         }
     }
@@ -815,6 +958,7 @@ impl ServiceGraph {
         if self.pending_generation == Some(generation) {
             self.snapshot.pending_revision = None;
             self.pending_generation = None;
+            self.snapshot.preparing_nodes.clear();
             self.record_fault(fault);
             self.snapshot.last_error = Some(error);
         }

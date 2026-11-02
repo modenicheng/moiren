@@ -160,6 +160,15 @@ pub struct StudioShell {
     selection_drag: Option<graph::SelectionDrag>,
     graph_focus: FocusHandle,
     connection_drag: Option<graph::ConnectionDrag>,
+    /// Node whose detail window is open (design 18 B4).
+    detail_node: Option<moiren_core::graph::NodeId>,
+    /// Active card-knob value drag: node, control, press y, press value.
+    knob_drag: Option<(
+        moiren_core::graph::NodeId,
+        pages::graph_canvas::KnobControl,
+        f32,
+        f64,
+    )>,
     pending_node_spawn: Option<graph::PendingNodeSpawn>,
     node_search: Entity<component::input::InputState>,
     node_name: Entity<component::input::InputState>,
@@ -185,6 +194,20 @@ pub struct StudioShell {
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
     graph_canvas_frame: pages::graph_canvas_view::PreparedFrame,
+    /// Window rects of the graph page's HUD overlays (editing toolbar,
+    /// overview, library handle), registered by the cached panel's probes
+    /// and carved out of the meter frame's paint so live bars stay under
+    /// them.
+    graph_overlays: pages::graph_canvas::OverlayRects,
+    /// The meter frame's copy of the spectrum curve it is painting: the
+    /// subscription table cannot stay borrowed across the paint, and a
+    /// per-frame allocation would be a wakeup cost of its own.
+    spectrum_scratch: Vec<f32>,
+    /// The canvas card under the pointer, tracked on idle moves for the
+    /// fault tooltip the meter frame paints; never part of a panel key.
+    hovered_node: Option<moiren_core::graph::NodeId>,
+    /// The endpoint menu hanging off a source/sink card's binding chip.
+    binding_menu: Option<graph::BindingMenu>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
@@ -366,6 +389,8 @@ impl StudioShell {
             selection_drag: None,
             graph_focus: cx.focus_handle(),
             connection_drag: None,
+            detail_node: None,
+            knob_drag: None,
             pending_node_spawn: None,
             node_search,
             node_name,
@@ -384,6 +409,10 @@ impl StudioShell {
             graph_meter_frame,
             graph_controls,
             graph_canvas_frame,
+            graph_overlays: Default::default(),
+            spectrum_scratch: Vec::new(),
+            hovered_node: None,
+            binding_menu: None,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),
@@ -544,13 +573,16 @@ impl StudioShell {
             || self.pan_grab.is_some()
             || self.node_drag.is_some()
             || self.connection_drag.is_some()
+            || self.knob_drag.is_some()
     }
 
     /// Whether any observed meter still moves: decaying ballistics, a held
-    /// peak marker, or fresh readings above the scale bottom all keep the
-    /// display short of rest.
+    /// peak marker, fresh readings above the scale bottom, or a spectrum
+    /// curve still falling toward its floor all keep the display short of
+    /// rest.
     fn meters_in_motion(&self, cx: &App) -> bool {
-        !self.meters.at_rest() || !self.state.read(cx).node_meters.at_rest()
+        let state = self.state.read(cx);
+        !self.meters.at_rest() || !state.node_meters.at_rest() || !state.node_spectra.at_rest()
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -723,6 +755,7 @@ impl Render for StudioShell {
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
+        graph::sync_binding_menu(self, cx);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
@@ -815,6 +848,12 @@ impl Render for StudioShell {
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
                 v.child(settings::overlay_for(self, window))
+            })
+            .when(self.detail_node.is_some(), |v| {
+                v.child(graph::detail_overlay(self, window, cx))
+            })
+            .when(self.binding_menu.is_some(), |v| {
+                v.child(graph::binding_menu_overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);
