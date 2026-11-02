@@ -72,7 +72,7 @@ pub fn save_project(
 }
 
 /// Resolves a user-owned configuration directory without writing into the repo.
-pub fn preferences_path() -> Result<PathBuf, PersistenceError> {
+fn configuration_directory() -> Result<PathBuf, PersistenceError> {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA")
         .filter(|value| !value.is_empty())
@@ -86,8 +86,47 @@ pub fn preferences_path() -> Result<PathBuf, PersistenceError> {
                 .filter(|value| !value.is_empty())
                 .map(|value| PathBuf::from(value).join(".config"))
         });
-    base.map(|base| base.join("Moiren").join("preferences.json"))
+    base.map(|base| base.join("Moiren"))
         .ok_or(PersistenceError::ConfigurationDirectoryUnavailable)
+}
+
+pub fn preferences_path() -> Result<PathBuf, PersistenceError> {
+    configuration_directory().map(|directory| directory.join("preferences.json"))
+}
+
+const AUTOSAVE_FILENAME: &str = "autosave.moiren.json";
+
+/// The recovery document beside the preferences: a regular project document
+/// carrying the user's latest graph edits, so it can be restored at startup
+/// and also opened explicitly from disk like any saved project.
+pub fn autosave_path() -> Result<PathBuf, PersistenceError> {
+    Ok(autosave_at_preferences(&preferences_path()?))
+}
+
+pub(super) fn autosave_at_preferences(preferences: &Path) -> PathBuf {
+    preferences.with_file_name(AUTOSAVE_FILENAME)
+}
+
+/// A missing autosave means there is nothing to recover; a damaged one must
+/// never block startup, so it is reported and dropped.
+pub fn load_autosave_at(path: impl AsRef<Path>) -> Option<ProjectDocument> {
+    match load_project(path) {
+        Ok(document) => Some(document),
+        Err(PersistenceError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            None
+        }
+        Err(error) => {
+            eprintln!("Moiren autosave: {error}");
+            None
+        }
+    }
+}
+
+pub fn save_autosave_at(
+    path: impl AsRef<Path>,
+    document: &ProjectDocument,
+) -> Result<(), PersistenceError> {
+    save_project(path, document)
 }
 
 pub fn load_preferences() -> Result<AppPreferences, PersistenceError> {

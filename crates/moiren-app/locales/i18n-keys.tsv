@@ -96,6 +96,7 @@ User configuration directory is unavailable	-	project_message
 Could not save preferences: %{error}	error=save_preferences_at 的错误字符串	format! 原文 "Could not save preferences: {error}"，两处共用
 Preferences saved	-	project_message
 Preferences save queued	-	project_message
+Could not auto-save: %{error}	error=save_autosave_at 的错误字符串	自动保存失败提示（project_message）
 Inputs	-	设备页标签
 Outputs	-	设备页标签
 Applications	-	设备页标签

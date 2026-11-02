@@ -124,6 +124,13 @@ pub struct StudioShell {
     preference_save: Option<Task<()>>,
     preference_save_revision: u64,
     preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Recovery autosave: where the working document is written, the state it
+    /// was last saved from, and the in-flight debounce/write machinery.
+    autosave_path: Option<std::path::PathBuf>,
+    autosave_stamp: autosave::AutosaveStamp,
+    autosave_deadline: Option<Instant>,
+    autosave_timer: Option<Task<()>>,
+    autosave_write: Option<std::sync::Arc<std::sync::Mutex<autosave::AutosaveWriteCompletion>>>,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
     export_controls: devices::ExportControls,
@@ -333,6 +340,11 @@ impl StudioShell {
             preference_save: None,
             preference_save_revision: 0,
             preferences_quitting: Default::default(),
+            autosave_path: crate::project::autosave_path().ok(),
+            autosave_stamp: autosave::AutosaveStamp::default(),
+            autosave_deadline: None,
+            autosave_timer: None,
+            autosave_write: None,
             device_tab: devices::DeviceTab::Outputs,
             selected_device: None,
             export_controls,
@@ -405,6 +417,9 @@ impl StudioShell {
             }
             shell.project_path = shell.preferences.last_project_path.clone();
         }
+        // The restored startup state is already on disk (autosave or project);
+        // the first edit, not the launch, owns the first autosave write.
+        shell.autosave_stamp = autosave::AutosaveStamp::capture(&shell, cx);
         cx.observe_window_bounds(window, |shell, window, _| {
             if shell.presentation.visible {
                 shell.window_state = desktop::capture_window_state(window, shell.presentation.page);
@@ -440,14 +455,18 @@ impl StudioShell {
         // Quit observers run before GPUI drops the windows. Move the latest
         // write into shutdown ownership: it also owns every earlier queued
         // write, and must finish after the shell entity is gone.
-        cx.on_app_quit(|shell, _| {
+        cx.on_app_quit(|shell, cx| {
             shell
                 .preferences_quitting
                 .store(true, std::sync::atomic::Ordering::Release);
             let pending = shell.preference_save.take();
+            let autosave = shell.autosave_flush(cx);
             async move {
                 if let Some(pending) = pending {
                     pending.await;
+                }
+                if let Some(autosave) = autosave {
+                    autosave.await;
                 }
             }
         })
@@ -473,6 +492,7 @@ impl StudioShell {
                             changed
                         });
                         shell.finish_project_load(cx);
+                        shell.poll_autosave(cx);
                         let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
                         if changed || meters_changed {
                             cx.notify();
@@ -656,12 +676,14 @@ pub fn shell_for_tests(
     shell.test_page = Some(page);
     // Headless tests must never write the developer's real configuration.
     shell.preferences_path = None;
+    shell.autosave_path = None;
     shell
 }
 
 // Re-exported so the window submodules keep picking it up through `use super::*`.
 pub(crate) use crate::ui::observe::TestObserve;
 
+mod autosave;
 #[cfg(feature = "gpui-test")]
 mod capture;
 mod chrome;
