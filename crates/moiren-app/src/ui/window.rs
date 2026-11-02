@@ -195,6 +195,8 @@ pub struct StudioShell {
     /// The canvas card under the pointer, tracked on idle moves for the
     /// fault tooltip the meter frame paints; never part of a panel key.
     hovered_node: Option<moiren_core::graph::NodeId>,
+    /// The endpoint menu hanging off a source/sink card's binding chip.
+    binding_menu: Option<graph::BindingMenu>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
@@ -393,6 +395,7 @@ impl StudioShell {
             graph_canvas_frame,
             graph_overlays: Default::default(),
             hovered_node: None,
+            binding_menu: None,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),
@@ -723,6 +726,7 @@ impl Render for StudioShell {
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
+        graph::sync_binding_menu(self, cx);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
@@ -818,6 +822,9 @@ impl Render for StudioShell {
             })
             .when(self.detail_node.is_some(), |v| {
                 v.child(graph::detail_overlay(self, window, cx))
+            })
+            .when(self.binding_menu.is_some(), |v| {
+                v.child(graph::binding_menu_overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);

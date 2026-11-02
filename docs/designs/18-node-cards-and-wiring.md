@@ -215,6 +215,14 @@ gain from 0 dB unity — so a neutral value paints no arc at all. Track,
 value arc and the slim pointer are pill-ended (built as filled geometry,
 since the stroke builder exposes no line cap).
 
+The binding chip on source and sink cards is a hit target of its own:
+pressing it selects the card and hangs an endpoint menu off the chip
+rect (mounted at the shell root like the detail window, since the chip
+is canvas paint). The menu lists exactly what the inspector's picker
+lists — clear, tone, physical endpoints, exports, processes — with the
+current binding highlighted; a pick dispatches the same edit and
+closes, Escape or a press outside closes without one.
+
 Curve thumbnails are analytic and static per settings (peaking-band
 magnitude for EQ, static transfer curves for the dynamics family), so
 they repaint only when the snapshot changes — no per-frame cost. The

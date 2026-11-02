@@ -2510,3 +2510,86 @@ fn library_press_drops_the_canvas_selection_and_a_spawn_selects_only_itself(
     });
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.camera = Camera {
+            pan_x: 50.,
+            pan_y: 90.,
+            zoom: 0.89,
+            adjusted: true,
+        };
+        cx.notify();
+    });
+    settle_panels(cx);
+    // The sink card (last in the default rig) carries an output chip.
+    let frame = canvas_frame(&view, cx);
+    let sink = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.nodes()[3].id()
+    });
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|node| node.node_id == Some(sink))
+        .unwrap();
+    let chip = frame.nodes[index]
+        .chip
+        .as_ref()
+        .expect("sink carries a binding chip")
+        .bounds;
+    let center = frame.bounds.origin
+        + point(
+            px(chip.origin.x + chip.size.width / 2.),
+            px(chip.origin.y + chip.size.height / 2.),
+        );
+    let press = |cx: &mut VisualTestContext, at: Point<Pixels>| {
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    };
+    // Pressing the chip selects its card and hangs the menu off it, without
+    // starting a card drag.
+    press(cx, center);
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.binding_menu.map(|menu| menu.node), Some(sink));
+        assert_eq!(shell.selected_node, Some(sink));
+        assert!(shell.node_drag.is_none());
+    });
+    render(cx);
+    cx.update(|window, _| assert!(window.find("binding-menu").visible()));
+    // Escape closes it.
+    cx.simulate_keystrokes("escape");
+    view.update(cx, |shell, _| assert!(shell.binding_menu.is_none()));
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("binding-menu").is_none()));
+    // Reopened, a pick binds the output and closes the menu; without any
+    // output in the catalog a press outside the menu closes it instead.
+    press(cx, center);
+    render(cx);
+    let outputs = view.read_with(cx, |shell, cx| {
+        crate::ui::state::output_rows(
+            &shell.state.read(cx).snapshot.catalog,
+            moiren_engine::audio_config::AudioBackend::Wasapi,
+        )
+    });
+    if let Some(row) = outputs.first() {
+        let id = format!("chip-bind-output-{}", row.endpoint_id);
+        cx.update(|window, cx| window.click(gpui_kit::SharedString::from(id), cx));
+        let endpoint = row.endpoint_id.clone();
+        wait_for_graph(&view, cx, |graph| {
+            graph
+                .node(sink)
+                .is_some_and(|entry| entry.output_endpoint_id.as_deref() == Some(endpoint.as_str()))
+        });
+    } else {
+        let outside = frame.bounds.origin + point(px(20.), frame.bounds.size.height - px(20.));
+        press(cx, outside);
+    }
+    view.update(cx, |shell, _| assert!(shell.binding_menu.is_none()));
+    finish_service(runtime);
+}

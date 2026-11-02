@@ -61,6 +61,9 @@ pub struct CanvasCallbacks {
     pub on_knob_wheel: Rc<WindowAppCallback<(String, KnobControl, f32)>>,
     /// The expander glyph was pressed; opens the detail window.
     pub on_expand: Rc<WindowAppCallback<String>>,
+    /// A binding chip was pressed: canvas node id plus the chip's window
+    /// rect, which anchors the endpoint menu.
+    pub on_chip: Rc<WindowAppCallback<(String, Bounds<Pixels>)>>,
     pub on_connection_move: Rc<WindowAppCallback<(f32, f32)>>,
     pub on_delete: Rc<WindowAppCallback<()>>,
     pub on_cancel: Rc<WindowAppCallback<()>>,
@@ -451,6 +454,7 @@ pub fn graph_canvas_view(
         on_knob_down,
         on_knob_wheel,
         on_expand,
+        on_chip,
         on_connection_move,
         on_delete,
         on_cancel,
@@ -532,6 +536,7 @@ pub fn graph_canvas_view(
                     let on_background_down = on_background_down.clone();
                     let on_knob_down = on_knob_down.clone();
                     let on_expand = on_expand.clone();
+                    let on_chip = on_chip.clone();
                     move |event, window, cx| {
                         window.focus(&focus, cx);
                         let Some(frame) = prepared.read() else {
@@ -558,6 +563,18 @@ pub fn graph_canvas_view(
                             ),
                             Some(HitTarget::Expand { node }) => {
                                 on_expand(node.to_string(), window, cx)
+                            }
+                            Some(HitTarget::Chip { node }) => {
+                                let anchor = frame
+                                    .world
+                                    .nodes
+                                    .iter()
+                                    .position(|candidate| candidate.id == node)
+                                    .and_then(|index| frame.nodes[index].chip.as_ref())
+                                    .map(|chip| frame.window_rect(chip.bounds));
+                                if let Some(anchor) = anchor {
+                                    on_chip((node.to_string(), anchor), window, cx)
+                                }
                             }
                             Some(HitTarget::Node(id)) => on_select_node(id, window, cx),
                             Some(HitTarget::Wire(id)) => on_select_wire(id, window, cx),

@@ -2,9 +2,13 @@ use rust_i18n::t;
 
 use super::*;
 
+mod binding_menu;
 mod compressor;
 mod detail;
 mod library;
+pub(in crate::ui::window) use binding_menu::{
+    BindingMenu, overlay as binding_menu_overlay, sync as sync_binding_menu,
+};
 pub(super) use compressor::CompressorControls;
 mod node_inspector;
 pub(in crate::ui::window) use detail::overlay as detail_overlay;
@@ -130,8 +134,13 @@ impl StudioShell {
         self.background_click = None;
         self.selection_drag = None;
         self.knob_drag = None;
+        // Keyboard focus stays on the canvas while the page's popovers are
+        // open, so Escape lands here: it dismisses them too.
+        let dismissed = self.binding_menu.take().is_some() | self.detail_node.take().is_some();
         if cancelled {
             self.sync_drag_demand();
+        }
+        if cancelled || dismissed {
             cx.notify();
         }
     }
@@ -335,7 +344,8 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                         let id = match frame.hit_test((x, y))? {
                             HitTarget::Node(id)
                             | HitTarget::Knob { node: id, .. }
-                            | HitTarget::Expand { node: id } => id.to_owned(),
+                            | HitTarget::Expand { node: id }
+                            | HitTarget::Chip { node: id } => id.to_owned(),
                             HitTarget::Port(port) => return frame.world.node_of_port(port),
                             HitTarget::Wire(_) => return None,
                         };
@@ -737,6 +747,36 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                             shell.knob_drag = Some((node_id, control, y, current));
                             shell.sync_drag_demand();
                         }
+                        cx.notify();
+                    })
+                }
+            }),
+            on_chip: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(id, anchor), window, cx| {
+                    this.update(cx, |shell, cx| {
+                        if shell.begin_pointer_session(window) {
+                            return;
+                        }
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        // The chip selects its card like a press anywhere
+                        // on it, then hangs the endpoint menu off the chip.
+                        shell.selected_nodes.clear();
+                        shell.selected_nodes.insert(node_id);
+                        shell.selected_node = Some(node_id);
+                        shell.selected_route = None;
+                        shell.binding_menu = Some(BindingMenu {
+                            node: node_id,
+                            anchor,
+                        });
                         cx.notify();
                     })
                 }

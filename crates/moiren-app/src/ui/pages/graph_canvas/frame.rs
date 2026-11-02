@@ -17,6 +17,10 @@ pub enum HitTarget<'a> {
     Expand {
         node: &'a str,
     },
+    /// A source/sink card's binding chip; opens the endpoint menu.
+    Chip {
+        node: &'a str,
+    },
     Node(&'a str),
     Wire(&'a str),
 }
@@ -115,6 +119,13 @@ impl CanvasFrame {
                         control: knob.control,
                     });
                 }
+            }
+            if layout
+                .chip
+                .as_ref()
+                .is_some_and(|chip| chip.bounds.contains(&point(local.0, local.1)))
+            {
+                return Some(HitTarget::Chip { node: &node.id });
             }
             if layout.card.contains(&point(local.0, local.1)) {
                 return Some(HitTarget::Node(&node.id));
