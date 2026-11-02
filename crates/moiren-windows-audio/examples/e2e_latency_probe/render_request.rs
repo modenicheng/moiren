@@ -2,7 +2,10 @@
 use anyhow::{Result, ensure};
 #[cfg(any(windows, test))]
 use moiren_engine::node::DeviceOptions;
-use moiren_engine::{audio_config::BUFFER_SIZES, node::DeviceMode};
+use moiren_engine::{
+    audio_config::{BUFFER_SIZES, SHARED_PERIOD_RANGE},
+    node::DeviceMode,
+};
 use moiren_windows_audio::latency::RenderQueuePolicy;
 #[cfg(any(windows, test))]
 use moiren_windows_audio::latency::shared_period::SharedInitializationApi;
@@ -20,11 +23,13 @@ impl PhysicalRenderRequest {
     pub fn validate(self, queue: RenderQueuePolicy) -> Result<()> {
         if let Some(period) = self.period_frames {
             ensure!(
-                BUFFER_SIZES.contains(&period)
+                (self.mode.unwrap_or_default() == DeviceMode::Shared
+                    && SHARED_PERIOD_RANGE.contains(&period))
+                    || BUFFER_SIZES.contains(&period)
                     || (cfg!(feature = "vad-probe")
                         && period == 144
                         && self.mode == Some(DeviceMode::Exclusive)),
-                "--render-period-frames must be a power of two in 64..=4096, or explicit Exclusive 144 with vad-probe"
+                "Shared period must be in 64..=4096; Exclusive requires a power of two in that range, or explicit 144 with vad-probe"
             );
         }
         ensure!(
@@ -128,6 +133,45 @@ mod tests {
     }
 
     #[test]
+    fn physical_render_shared_exact_periods_follow_the_production_range() {
+        for period in [64, 65, 144, 336, 441, 480, 4095, 4096] {
+            for mode in [None, Some(DeviceMode::Shared)] {
+                let request = PhysicalRenderRequest {
+                    mode,
+                    period_frames: Some(period),
+                };
+                request
+                    .validate(RenderQueuePolicy::FullCapacity)
+                    .expect("exact Shared periods must not be restricted to Engine presets");
+                assert_eq!(
+                    request.apply(DeviceOptions::default()).period_frames,
+                    Some(period as usize)
+                );
+            }
+        }
+        for period in [0, 1, 63, 4097, u32::MAX] {
+            assert!(
+                PhysicalRenderRequest {
+                    mode: Some(DeviceMode::Shared),
+                    period_frames: Some(period)
+                }
+                .validate(RenderQueuePolicy::FullCapacity)
+                .is_err()
+            );
+        }
+        for period in [65, 336, 441, 480, 4095] {
+            assert!(
+                PhysicalRenderRequest {
+                    mode: Some(DeviceMode::Exclusive),
+                    period_frames: Some(period)
+                }
+                .validate(RenderQueuePolicy::FullCapacity)
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn physical_render_apply_preserves_non_period_configuration_and_omitted_defaults() {
         let base = DeviceOptions {
             backend: AudioBackend::Wasapi,
@@ -169,7 +213,7 @@ mod tests {
                 .is_ok()
             );
         }
-        for period in [0, 48, 63, 480, 8192, u32::MAX] {
+        for period in [0, 48, 63, 4097, 8192, u32::MAX] {
             assert!(
                 PhysicalRenderRequest {
                     period_frames: Some(period),
@@ -189,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_render_144_is_explicit_exclusive_only_and_never_accepts_alignment() {
+    fn physical_render_144_shared_is_exact_and_exclusive_keeps_its_feature_gate() {
         let request = PhysicalRenderRequest {
             mode: Some(DeviceMode::Exclusive),
             period_frames: Some(144),
@@ -202,7 +246,7 @@ mod tests {
             assert!(
                 PhysicalRenderRequest { mode, ..request }
                     .validate(RenderQueuePolicy::FullCapacity)
-                    .is_err()
+                    .is_ok()
             );
         }
         assert!(
@@ -245,6 +289,52 @@ mod tests {
                 }
                 .validate(RenderQueuePolicy::FullCapacity)
                 .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn physical_render_shared_336_requires_exact_native_acceptance_without_fallback() {
+        let request = PhysicalRenderRequest {
+            mode: Some(DeviceMode::Shared),
+            period_frames: Some(336),
+        };
+        let timing = NativeStreamTiming {
+            sample_rate: 48_000,
+            period_frames: Some(336),
+            capacity_frames: 738,
+        };
+        let shared = SharedPeriodReport {
+            requested_period_frames: Some(336),
+            actual_period_frames: Some(336),
+            initialization_api: Some(SharedInitializationApi::Client3),
+            ..Default::default()
+        };
+        for mode in [None, Some(DeviceMode::Shared)] {
+            let request = PhysicalRenderRequest { mode, ..request };
+            assert!(request.validate_observed(timing, Some(shared)).is_ok());
+            assert!(request.validate_observed(timing, None).is_err());
+            assert!(
+                request
+                    .validate_observed(
+                        NativeStreamTiming {
+                            period_frames: Some(480),
+                            ..timing
+                        },
+                        Some(shared)
+                    )
+                    .is_err()
+            );
+            assert!(
+                request
+                    .validate_observed(
+                        timing,
+                        Some(SharedPeriodReport {
+                            fallback_reason: Some(SharedFallbackReason::EnginePeriodLocked),
+                            ..shared
+                        })
+                    )
+                    .is_err()
             );
         }
     }

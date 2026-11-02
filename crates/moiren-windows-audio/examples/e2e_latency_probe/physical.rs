@@ -4,7 +4,10 @@ use super::{
     validation_policy::{ValidationMode, ValidationPolicy},
 };
 use anyhow::{Context, Result, bail, ensure};
-use moiren_engine::{audio_config::BUFFER_SIZES, node::DeviceMode};
+use moiren_engine::{
+    audio_config::{BUFFER_SIZES, SHARED_PERIOD_RANGE},
+    node::DeviceMode,
+};
 use moiren_windows_audio::latency::{LatencyBudgetPolicy, RenderQueuePolicy, TelemetryMode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -191,8 +194,10 @@ fn parse(arguments: Vec<String>) -> Result<Options> {
             .map(|value| -> Result<u32> {
                 let n = value.parse()?;
                 ensure!(
-                    BUFFER_SIZES.contains(&n),
-                    "{period} must be a power of two in 64..4096"
+                    BUFFER_SIZES.contains(&n)
+                        || (mode.unwrap_or_default() == DeviceMode::Shared
+                            && SHARED_PERIOD_RANGE.contains(&n)),
+                    "{period}: Shared requires 64..4096; Exclusive requires a power of two in that range"
                 );
                 Ok(n)
             })
@@ -335,7 +340,8 @@ const HELP: &str = "live-physical --input ID --output ID --recorder-config FILE 
 Exact physical Input -> Bus -> physical Output with a distinct bounded independent recorder.
 External signal and measurement wiring must be supplied separately; no source launch, calibration or latency claim.
 Optional --capture-mode shared|exclusive --capture-period-frames N and --render-mode shared|exclusive --render-period-frames N.
-N is 64..4096 power of two; omitted settings preserve native default periods. Explicit periods refuse fallback.
+Shared (also omitted mode) accepts exact N in 64..4096; Exclusive keeps power-of-two presets.
+Omitted periods preserve native defaults; explicit periods refuse fallback or mismatched native readback.
 Optional --input-target-frames N --input-capacity-frames N --input-jitter-frames N;
 --render-target-frames N|capacity --wake-margin-frames N --callback-budget-frames N; --engine-block-frames N.
 --validation-mode latency-sensitive|correctness --jitter-tolerance-ms 0..3000; --dry-run.
@@ -541,6 +547,75 @@ mod tests {
     }
 
     #[test]
+    fn physical_io_shared_exact_period_roundtrip_keeps_capture_and_render_distinct() {
+        for mode in [None, Some("shared")] {
+            let root = root();
+            let mut arguments = args(&root);
+            arguments.extend(
+                [
+                    "--capture-period-frames",
+                    "480",
+                    "--render-period-frames",
+                    "336",
+                ]
+                .map(str::to_owned),
+            );
+            if let Some(mode) = mode {
+                arguments
+                    .extend(["--capture-mode", mode, "--render-mode", mode].map(str::to_owned));
+            }
+            let options = parse(arguments.clone()).unwrap();
+            let prepared = topology::prepare(&options).unwrap();
+            let moiren_engine::host::NodeConfig::Input(input) =
+                &prepared.project.nodes[&prepared.input]
+            else {
+                panic!("input missing")
+            };
+            let moiren_engine::host::NodeConfig::Output(output) =
+                &prepared.project.nodes[&prepared.output]
+            else {
+                panic!("output missing")
+            };
+            assert_eq!(input.device.period_frames, Some(480));
+            assert_eq!(output.device.period_frames, Some(336));
+            assert_eq!(input.device.mode, DeviceMode::Shared);
+            assert_eq!(output.device.mode, DeviceMode::Shared);
+            assert_eq!(
+                run_with(arguments, |_, _, _| panic!("dry-run opened native audio")).unwrap(),
+                1
+            );
+            for name in ["manifest.json", "report.json"] {
+                let value: Value =
+                    serde_json::from_slice(&fs::read(root.join("run").join(name)).unwrap())
+                        .unwrap();
+                assert_eq!(value["requested"]["capture"]["period_frames"], 480);
+                assert_eq!(value["requested"]["render"]["period_frames"], 336);
+                assert_eq!(value["qualified"], false);
+                assert!(value["native"].is_null());
+            }
+            assert!(!root.join("run/measurement.f32le").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn physical_io_exclusive_directions_do_not_inherit_the_render_144_exception() {
+        for direction in ["capture", "render"] {
+            let root = root();
+            let mut arguments = args(&root);
+            arguments.extend([
+                format!("--{direction}-mode"),
+                "exclusive".into(),
+                format!("--{direction}-period-frames"),
+                "144".into(),
+            ]);
+            assert!(parse(arguments).is_err());
+            assert!(!root.join("run").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn physical_io_topology_is_exact_bus_route_with_separate_direction_requests() {
         use moiren_engine::{
             boundary::ClockRole,
@@ -682,7 +757,19 @@ mod tests {
             vec!["--capture-mode", "invalid"],
             vec!["--capture-mode", "shared", "--capture-mode", "exclusive"],
             vec!["--capture-period-frames", "0"],
-            vec!["--capture-period-frames", "480"],
+            vec!["--capture-period-frames", "4097"],
+            vec![
+                "--capture-mode",
+                "exclusive",
+                "--capture-period-frames",
+                "480",
+            ],
+            vec![
+                "--render-mode",
+                "exclusive",
+                "--render-period-frames",
+                "336",
+            ],
             vec!["--render-period-frames", "8192"],
             vec![
                 "--render-mode",

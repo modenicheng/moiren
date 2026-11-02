@@ -443,8 +443,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
              --vad-microphone-minimum-period separately requests the owned MIC recorder minimum; requires schema2 Exclusive collection.\n\
              Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
-             --render-mode shared|exclusive --render-period-frames 64|128|144|256|512|1024|2048|4096\n\
-             144 requires explicit Exclusive and vad-probe; exact native acceptance is still required.\n\
+             --render-mode shared|exclusive --render-period-frames N\n\
+             Shared (also omitted mode) accepts exact 64..4096, not just Engine presets.\n\
+             Exclusive keeps power-of-two presets; explicit Exclusive 144 requires vad-probe.\n\
              selects physical output only in both probe paths; omission preserves existing defaults.\n\
              Explicit periods refuse unknown/mismatched observations or Shared fallback; Exclusive requires capacity rendering.\n\
              Explicit input capacity/jitter/packet/gap flags require --input-target-frames; omission preserves compatibility.\n\
@@ -2244,6 +2245,37 @@ mod tests {
     }
 
     #[test]
+    fn physical_render_shared_exact_period_roundtrip_for_both_sources() {
+        for source in ["process-loopback", "vad-playback"] {
+            for mode in [None, Some("shared")] {
+                let directory = temp_dir(&format!(
+                    "shared-exact-{source}-{}",
+                    mode.unwrap_or("omitted")
+                ));
+                let mut args = physical_render_args(&directory, source);
+                args.extend(["--render-period-frames".into(), "336".into()]);
+                if let Some(mode) = mode {
+                    args.extend(["--render-mode".into(), mode.into()]);
+                }
+                assert_eq!(run(args).unwrap(), 1);
+                for name in ["manifest.json", "report.json"] {
+                    let value: Value =
+                        serde_json::from_slice(&fs::read(directory.join(name)).unwrap()).unwrap();
+                    assert_eq!(value["physical_render_request"]["period_frames"], 336);
+                    assert_eq!(
+                        value["physical_render_request"]["mode"],
+                        mode.map(Value::from).unwrap_or(Value::Null)
+                    );
+                    assert!(value["native"]["render"].is_null());
+                    assert_eq!(value["status"], "unqualified");
+                }
+                assert!(!directory.join("measurement.f32le").exists());
+                fs::remove_dir_all(directory).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn physical_render_parser_accepts_common_mode_period_for_both_sources() {
         let directory = temp_dir("physical-render-parser");
         for source in ["process-loopback", "vad-playback"] {
@@ -2262,7 +2294,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_render_parser_144_requires_explicit_exclusive_and_probe_feature() {
+    fn physical_render_parser_144_shared_is_exact_and_exclusive_requires_probe_feature() {
         let directory = temp_dir("physical-render-144");
         for source in ["process-loopback", "vad-playback"] {
             for mode in [None, Some("shared"), Some("exclusive")] {
@@ -2274,7 +2306,7 @@ mod tests {
                 let options = parse(args).unwrap();
                 assert_eq!(
                     validate(&options).is_ok(),
-                    mode == Some("exclusive") && cfg!(feature = "vad-probe")
+                    mode != Some("exclusive") || cfg!(feature = "vad-probe")
                 );
             }
         }
@@ -2296,7 +2328,13 @@ mod tests {
             ],
             vec!["--render-period-frames", "0"],
             vec!["--render-period-frames", "48"],
-            vec!["--render-period-frames", "480"],
+            vec!["--render-period-frames", "4097"],
+            vec![
+                "--render-mode",
+                "exclusive",
+                "--render-period-frames",
+                "336",
+            ],
             vec!["--render-period-frames", "8192"],
             vec!["--render-period-frames", "-64"],
             vec!["--render-period-frames", "4294967296"],

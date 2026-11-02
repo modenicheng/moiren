@@ -5,6 +5,17 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [exact Shared probe-period repair](2026-11-02-probe-exact-shared-period.md)
+removes a concrete S1 entry-point mismatch: production accepts exact Shared336,
+but direct Process/VAD/physical probes still required Engine presets. Their
+Shared request range now matches production64..4096 without changing native
+readback/fallback gates, Exclusive limits, input budgets or defaults. Direct
+and actual dry-run regressions fail before repair; final feature-off/on suites
+each pass683tests/1ignored. Strict Clippy/fmt/release and five bounded remote
+help/dry-run cases pass. No audio device is opened, no acquisition repeated,
+and preserved dirty top-level help is not staged. This fixes request expression,
+not native quality, matched physical comparison or the S1-S3 completion verdict.
+
 The [production master-FIR reconciliation](2026-11-02-master-render-fir-association.md)
 closes the unexplained residual in the current retained Process graph recording.
 The former reference omitted the real same-rate master FIR after the unity Bus.
