@@ -61,14 +61,41 @@ fn retained_apply_reopens_stopped_host_in_both_precisions_and_preserves_original
         r.request(AppRequest::SetAudioSettings(audio));
         let candidate = stopped(&mut r);
         let original = candidate.request();
+        let stopped_generation = r.c.core.generation();
+        let predecessor_cleanup = r.c.last_cleanup.as_ref().unwrap();
+        assert_eq!(predecessor_cleanup.generation, original.session_generation);
+        assert_eq!(
+            stopped_generation.0,
+            original.session_generation.0.checked_add(1).unwrap()
+        );
         r.request(AppRequest::ApplyEvaluatedProcessBridge(candidate));
         let selected = r.c.measured_process.as_ref().unwrap().summary().clone();
         assert_eq!(selected.request, original);
+        // Retained closed evidence keeps its predecessor identity. Only the
+        // separate live-prefix API adds observed_window metadata to a summary.
+        assert!(selected.observed_window.is_none());
         r.wait(|r| r.c.active_measured_process.as_ref() == Some(&selected));
-        assert_ne!(r.c.core.generation(), original.session_generation);
+        let replacement_generation = r.c.core.generation();
+        assert_eq!(
+            replacement_generation.0,
+            stopped_generation.0.checked_add(1).unwrap()
+        );
+        assert_eq!(r.c.core.owner_generation(), Some(replacement_generation));
+        assert_eq!(
+            r.c.active_measured_process.as_ref().unwrap().request,
+            original
+        );
         assert_eq!(r.state.starts.load(Ordering::SeqCst), 2);
         r.request(AppRequest::Stop);
         r.wait(|r| r.driver.is_drained());
+        assert_eq!(
+            r.c.core.generation().0,
+            replacement_generation.0.checked_add(1).unwrap()
+        );
+        assert_eq!(
+            r.c.last_cleanup.as_ref().unwrap().generation,
+            replacement_generation
+        );
     }
 }
 

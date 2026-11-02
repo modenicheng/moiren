@@ -5,6 +5,20 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [native service retained-prefix attempt](2026-11-03-service-retained-prefix.md)
+removes UIA from the short-window path: actual Stop enters/returns400ms,
+consumption is observed401ms and Closed cleanup/runtime join complete normally.
+Evaluate conservatively refuses one overlapping packet/read envelope pair;
+no candidate or replacement Apply occurs, and task/app failure1 remains.
+All34 compact files and the reviewed remote envelope plot are hash-verified;
+owners are gone and protected settings/processes/driver are unchanged.
+Concurrent software regression passes5SRC/51analyzer/20headless-UI tests.
+Unreached runner-only generation/live-window assumptions are repaired offline,
+without deployment or another native retry; software-host regression now checks
+the existing retained owner/request/cleanup contract in F32/F64. No production
+timing fix, audio-quality or physical claim follows. Native acceptance stays
+open without blocking independent development on repeated diagnostic runs.
+
 The [stopped input-boundary comparison](2026-11-03-stopped-input-boundary.md)
 completes one remote UI-only task with16effect-verified Settings/Close calls,
 normal Quit and exit0; no audio opens. Direct native AutoSetFocus=false still
