@@ -1521,3 +1521,26 @@ certify these four repaired rows natively. Live/closed-prefix native acceptance,
 waveform correspondence and calibrated physical qualification remain separate.
 No audio/default/gate/driver/fixture change or unchanged soak accompanies this
 metadata repair; the first-packet investigation stays deferred.
+
+### Frozen measured-content component identities
+
+The [component diagnostic](2026-11-02-measured-component-identities.md) retains
+the original graph whole-channel refusal while separately exposing the eleven
+eligible frozen windows. A new pure work planner preserves all indices and
+coordinates, explicit673-frame refusal, exact all-codebook work and aggregate
+refusal without partial PASS. Genuine RED and9 planner plus16related Python
+regressions pass. One isolated remote offline run on unchanged closed PCM
+completes0 in2.141s computation, charging264775680samples; no new audio starts.
+Source channels retain12unique codes11-22 each. Graph channels yield9unique
+codes12and14-21 from11analyzed windows, two section-agreement refusals and
+one673-frame NOT ANALYZED component each. Strongest11/13candidates remain
+unaccepted, not loss or corruption proof. Every accepted graph code has a
+source partner; independent unknown recording origins prohibit delay inference.
+
+All24compact artifacts and raw14file hashes are verified; a reviewed plot
+shows all components and separates admission from detector refusals. Final
+audit finds no owners and unchanged user OBS/QQMusic identities. Historical
+waveform refusals, original whole-channel refusal, unknown native epoch,
+unlocated render timeout and physical qualification remain open. This closes
+the previously unexecuted eligible-component diagnostic, without relaxing a
+gate, promoting a default, reopening first-packet work or completing S1-S3.
