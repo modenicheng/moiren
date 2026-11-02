@@ -84,6 +84,28 @@ new key inputs):
 Both drag directions (out → in and in → out) get identical treatment;
 reverse drags displace an occupied input exactly like forward drags.
 
+### A4. Picking a wire up off an input (`Reconnect`)
+
+Pressing an **occupied** input does not start a new reverse connection:
+it picks that edge's head up. The drag returns to the connecting stage
+with the edge's source output as its origin and the cursor as the free
+head; the canvas projection drops the edge for the drag's duration, so
+the old line disappears, the origin input paints empty, and the
+candidate verdicts never see the edge being moved (its own input reads
+`Valid`, not `Displacing`; cycles ignore it). Release:
+
+- on another connectable input (port or body drop): one atomic
+  `GraphEdit::Reconnect { edge, destination }` — the edge leaves its old
+  input, lands on the new one, and whatever fed the new one is displaced.
+  One candidate revision, one undo step, wholesale rollback if the
+  connect half fails; the departed node is re-prepared too.
+- back on its own input: nothing is committed.
+- anywhere else — empty canvas, outside the window, an incompatible or
+  cycling target: `Disconnect`. A free head let go is the
+  drag-to-disconnect gesture; Escape restores instead.
+
+Pressing an **empty** input keeps the reverse drag of A1–A3 unchanged.
+
 ## Part B — Node card rewrite
 
 ### B1. Card states

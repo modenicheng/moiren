@@ -44,7 +44,11 @@ pub(in crate::ui) use nodes::{paint_fault_tooltip, paint_meter_bars};
 
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
-    pub connection: Option<(PortTarget, (f32, f32))>,
+    /// The connection drag in flight: the port it pulls from, the cursor in
+    /// world units, and — when the drag picked an edge up off its input —
+    /// that input, which the caller has already dropped from the world so
+    /// the head paints free.
+    pub connection: Option<(PortTarget, (f32, f32), Option<moiren_core::graph::PortId>)>,
     /// Live ballistics-smoothed bar readings per node, consulted at paint
     /// time so meter motion repaints without rebuilding this element tree.
     pub node_levels: Rc<NodeLevelsFn>,
@@ -454,6 +458,9 @@ pub fn graph_canvas_view(
     } = callbacks;
     let selected_nodes = selected_nodes.to_vec();
     let selected_wire = selected_wire.map(str::to_owned);
+    // The painter and the release path only need the head and the port it
+    // pulls from; the picked-up input already shaped the world.
+    let connection = connection.map(|(port, cursor, _)| (port, cursor));
     // The left handler moves `focus`; keep one clone for the right handler,
     // which must also focus the canvas so right-button drags keep keys alive.
     let right_focus = focus.clone();

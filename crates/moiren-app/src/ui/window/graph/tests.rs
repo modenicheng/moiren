@@ -2316,3 +2316,144 @@ fn graph_hovering_a_faulted_card_tracks_it_for_the_tooltip(cx: &mut gpui_kit::Te
     assert_eq!(view.read_with(cx, |shell, _| shell.hovered_node), None);
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use pages::graph_canvas::PortDirection;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    settle_panels(cx);
+    // The default rig wires source -> gain -> pan -> sink.
+    let (source, gain, pan, sink) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        let node = |index: usize| {
+            let node = &graph.nodes()[index];
+            (
+                node.id(),
+                node.inputs().first().map(|port| port.id()),
+                node.outputs().first().map(|port| port.id()),
+            )
+        };
+        (node(0), node(1), node(2), node(3))
+    });
+    let index_of = |frame: &CanvasFrame, id: moiren_core::graph::NodeId| {
+        frame
+            .world
+            .nodes
+            .iter()
+            .position(|node| node.id == format!("{id:?}"))
+            .unwrap()
+    };
+    let position = |frame: &CanvasFrame, anchor: (f32, f32)| {
+        frame.bounds.origin + point(px(anchor.0), px(anchor.1))
+    };
+    let edges = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph.graph;
+            let mut routes: Vec<_> = graph
+                .edges()
+                .iter()
+                .map(|edge| (edge.src(), edge.dst()))
+                .collect();
+            routes.sort();
+            routes
+        })
+    };
+
+    // Move: pressing gain's occupied input picks source -> gain up; the
+    // drag pulls from source's output and the published frame no longer
+    // paints that wire. Dropping on pan reroutes it there, displacing
+    // gain -> pan, in one edit.
+    let frame = canvas_frame(&view, cx);
+    let gain_input = position(&frame, frame.nodes[index_of(&frame, gain.0)].inputs[0]);
+    let pan_input = position(&frame, frame.nodes[index_of(&frame, pan.0)].inputs[0]);
+    cx.simulate_mouse_down(gain_input, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, _| {
+        let drag = shell.connection_drag.as_ref().expect("drag started");
+        assert_eq!(drag.port.direction, PortDirection::Output);
+        assert_eq!(drag.port.id, source.2.unwrap());
+        assert_eq!(
+            drag.detached.map(|picked| picked.destination),
+            Some(gain.1.unwrap())
+        );
+    });
+    cx.simulate_mouse_move(pan_input, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    view.update(cx, |shell, _| {
+        let frame = shell.graph_canvas_frame.read().expect("canvas published");
+        assert_eq!(frame.world.wires.len(), 2, "the picked wire paints free");
+        assert!(
+            !frame
+                .world
+                .wires
+                .iter()
+                .any(|wire| wire.dst_port == gain.1.unwrap())
+        );
+    });
+    cx.simulate_mouse_up(pan_input, MouseButton::Left, Modifiers::default());
+    wait_for_graph(&view, cx, |graph| graph.graph.edges().len() == 2);
+    assert_eq!(edges(&view, cx), vec![(source.0, pan.0), (pan.0, sink.0)]);
+    view.update(cx, |shell, _| assert!(shell.connection_drag.is_none()));
+
+    // Drop: picking pan -> sink up off sink and letting go over empty
+    // canvas disconnects it.
+    let frame = canvas_frame(&view, cx);
+    let sink_input = position(&frame, frame.nodes[index_of(&frame, sink.0)].inputs[0]);
+    let void = frame.bounds.origin + point(px(40.), frame.bounds.size.height - px(40.));
+    cx.simulate_mouse_down(sink_input, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(void, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    cx.simulate_mouse_up(void, MouseButton::Left, Modifiers::default());
+    wait_for_graph(&view, cx, |graph| graph.graph.edges().len() == 1);
+    assert_eq!(edges(&view, cx), vec![(source.0, pan.0)]);
+
+    // Restore: picking source -> pan up and dropping it back on pan's own
+    // input commits nothing.
+    let frame = canvas_frame(&view, cx);
+    let pan_input = position(&frame, frame.nodes[index_of(&frame, pan.0)].inputs[0]);
+    cx.simulate_mouse_down(pan_input, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(void, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    cx.simulate_mouse_move(pan_input, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    cx.simulate_mouse_up(pan_input, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, cx| {
+        assert!(shell.connection_drag.is_none());
+        assert!(!shell.state.read(cx).pending_request);
+    });
+    assert_eq!(edges(&view, cx), vec![(source.0, pan.0)]);
+
+    // An empty input still starts the reverse drag: gain's input onto
+    // source's output connects source -> gain.
+    let frame = canvas_frame(&view, cx);
+    let gain_input = position(&frame, frame.nodes[index_of(&frame, gain.0)].inputs[0]);
+    let source_output = position(
+        &frame,
+        frame.nodes[index_of(&frame, source.0)].output.unwrap(),
+    );
+    cx.simulate_mouse_down(gain_input, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, _| {
+        let drag = shell
+            .connection_drag
+            .as_ref()
+            .expect("reverse drag started");
+        assert_eq!(drag.port.direction, PortDirection::Input);
+        assert!(drag.detached.is_none());
+    });
+    cx.simulate_mouse_move(source_output, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    cx.simulate_mouse_up(source_output, MouseButton::Left, Modifiers::default());
+    wait_for_graph(&view, cx, |graph| graph.graph.edges().len() == 2);
+    assert_eq!(
+        edges(&view, cx),
+        vec![(source.0, gain.0), (source.0, pan.0)]
+    );
+    finish_service(runtime);
+}

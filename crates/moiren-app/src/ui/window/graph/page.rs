@@ -29,7 +29,11 @@ pub(in crate::ui::window) struct ControlsKey {
     canvas: Option<(f32, f32)>,
     selected_nodes: Vec<moiren_core::graph::NodeId>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
-    connection: Option<(pages::graph_canvas::PortTarget, (f32, f32))>,
+    connection: Option<(
+        pages::graph_canvas::PortTarget,
+        (f32, f32),
+        Option<super::DetachedEdge>,
+    )>,
     hand_tool: bool,
     sidebar_open: bool,
     compact: bool,
@@ -49,7 +53,9 @@ impl ControlsKey {
             canvas: shell.canvas_size,
             selected_nodes: shell.selected_nodes.iter().copied().collect(),
             selected_route: shell.selected_route,
-            connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
+            connection: shell
+                .connection_drag
+                .map(|drag| (drag.port, drag.cursor, drag.detached)),
             hand_tool: shell.hand_tool,
             sidebar_open: shell.sidebar_open,
             compact: shell.compact,

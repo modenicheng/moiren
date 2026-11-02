@@ -16,10 +16,21 @@ pub(in crate::ui::window) use node_inspector::inspector;
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 
+/// An existing edge picked up off its input by a connection drag: the edge
+/// stays in the service until release commits, while the canvas shows the
+/// head as free and the drag pulls from the edge's source output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct DetachedEdge {
+    edge: moiren_core::graph::EdgeId,
+    destination: moiren_core::graph::PortId,
+}
+
+/// One port's wire end in flight during a connection drag.
 #[derive(Clone, Copy)]
 pub(super) struct ConnectionDrag {
     port: pages::graph_canvas::PortTarget,
     cursor: (f32, f32),
+    detached: Option<DetachedEdge>,
 }
 
 /// A rubber-band selection drag on the canvas background. Starts as a plain
@@ -190,10 +201,21 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
     // Meter bar readings are not baked in: the canvas paint consults the
     // live ballistics per draw, so meter motion repaints without the page
     // cache being invalidated or the world being re-projected.
-    let world = std::sync::Arc::new(pages::graph_canvas::CanvasWorld::positioned(
-        &state.snapshot,
-        &shell.node_positions,
-    ));
+    let mut world =
+        pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &shell.node_positions);
+    // A wire end picked up off an input is already in flight: drop it from
+    // the projection so the canvas paints the drag as a free head (no stale
+    // line, an empty origin port, and no phantom Displacing/Cycles verdicts
+    // against the edge being moved).
+    if let Some(destination) = shell
+        .connection_drag
+        .as_ref()
+        .and_then(|drag| drag.detached)
+        .map(|picked| picked.destination)
+    {
+        world.wires.retain(|wire| wire.dst_port != destination);
+    }
+    let world = std::sync::Arc::new(world);
     let camera = shell.camera;
     // The canvas view identifies nodes by their Debug id string; this is the
     // single NodeId -> canvas-id conversion on the render path.
@@ -516,7 +538,13 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         selected_wire.as_deref(),
         pages::graph_canvas_view::CanvasCallbacks {
             focus: shell.graph_focus.clone(),
-            connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
+            connection: shell.connection_drag.map(|drag| {
+                (
+                    drag.port,
+                    drag.cursor,
+                    drag.detached.map(|picked| picked.destination),
+                )
+            }),
             node_levels,
             on_port_down: std::rc::Rc::new({
                 let this = this.clone();
@@ -524,6 +552,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                 move |(port, cursor), window, cx| {
                     this.update(cx, |shell, cx| {
                         if !shell.begin_pointer_session(window) {
+                            use pages::graph_canvas::PortDirection;
                             shell.camera.adjusted = true;
                             for node in &nodes.nodes {
                                 if let Some(node_id) = node.node_id {
@@ -533,7 +562,49 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                                         .or_insert((node.x, node.y));
                                 }
                             }
-                            shell.connection_drag = Some(ConnectionDrag { port, cursor });
+                            // Dragging an occupied input picks its wire end
+                            // up instead of starting a fresh reverse
+                            // connection: the drag moves that edge's source
+                            // output (design 18 A4). An empty input keeps
+                            // the reverse drag.
+                            let picked = (port.direction == PortDirection::Input)
+                                .then(|| {
+                                    shell
+                                        .state
+                                        .read(cx)
+                                        .snapshot
+                                        .graph
+                                        .graph
+                                        .edges()
+                                        .iter()
+                                        .find(|edge| edge.dst_port() == port.id)
+                                        .map(|edge| DetachedEdge {
+                                            edge: edge.id(),
+                                            destination: port.id,
+                                        })
+                                })
+                                .flatten();
+                            let port = picked
+                                .map(|picked| {
+                                    let source = shell
+                                        .state
+                                        .read(cx)
+                                        .snapshot
+                                        .graph
+                                        .graph
+                                        .get_edge(picked.edge)
+                                        .map(|edge| edge.src_port());
+                                    pages::graph_canvas::PortTarget {
+                                        id: source.unwrap_or(port.id),
+                                        direction: PortDirection::Output,
+                                    }
+                                })
+                                .unwrap_or(port);
+                            shell.connection_drag = Some(ConnectionDrag {
+                                port,
+                                cursor,
+                                detached: picked,
+                            });
                             cx.notify();
                         }
                     })
@@ -558,6 +629,41 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                         let Some(drag) = shell.connection_drag.take() else {
                             return;
                         };
+                        if let Some(picked) = drag.detached {
+                            match candidate {
+                                // Back on a connectable input: its own port
+                                // restores the edge untouched, any other
+                                // reroutes it in one atomic edit.
+                                Some(candidate)
+                                    if matches!(
+                                        candidate.status,
+                                        CandidateStatus::Valid | CandidateStatus::Displacing
+                                    ) =>
+                                {
+                                    if candidate.port.id != picked.destination {
+                                        shell.state.update(cx, |state, _| {
+                                            state.dispatch(AppRequest::EditGraph(
+                                                crate::service::GraphEdit::Reconnect {
+                                                    edge: picked.edge,
+                                                    destination: candidate.port.id,
+                                                },
+                                            ))
+                                        });
+                                    }
+                                }
+                                // A picked head released in the void — or on
+                                // an incompatible target — disconnects the
+                                // edge: that is the drag-to-disconnect
+                                // gesture. Escape restores instead.
+                                _ => shell.state.update(cx, |state, _| {
+                                    state.dispatch(AppRequest::EditGraph(
+                                        crate::service::GraphEdit::Disconnect(picked.edge),
+                                    ))
+                                }),
+                            }
+                            cx.notify();
+                            return;
+                        }
                         if let Some(candidate) = candidate
                             && matches!(
                                 candidate.status,
