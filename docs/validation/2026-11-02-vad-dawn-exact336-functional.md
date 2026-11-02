@@ -129,8 +129,12 @@ application's Quit handler executed, nor a new audio-owner deadlock.
 The later owned-window close attempt logs GPUI errors0x80040102/0x80070578;
 the runner finally terminates only its exact held owned-app process.
 Result.Completed=false, Error=Quit deadline, FinalExitCode=-1are authoritative.
-This automation/exit limitation is retained for a focused no-audio follow-up,
-not a reason to rerun audio or change production Quit behavior speculatively.
+This automation/exit limitation is retained. The later
+[stopped-app viewport control](2026-11-02-desktop-quit-viewport.md) fully exposes
+Quit and exits normally with code0 on the same executable, without an audio
+owner. That separate result does not replace this run's Completed=false/exit-1
+or prove every post-audio shutdown path. No audio rerun or speculative production
+Quit change follows.
 
 After cleanup: owned MMDevice absent, no Moiren/probe processes, task Ready
 with result1, render volume/mute and default roles unchanged, driver/boot

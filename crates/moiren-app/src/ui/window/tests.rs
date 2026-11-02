@@ -7,6 +7,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, point, px};
 use std::time::Duration;
 
+mod diagnostics;
 mod ingress_elapsed;
 mod native_period;
 mod render_queue;

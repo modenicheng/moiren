@@ -17,7 +17,7 @@ use moiren_windows_audio::{
 };
 use std::sync::Arc;
 
-type ExpectedRows = [(&'static str, &'static str); 19];
+type ExpectedRows = [(&'static str, &'static str); 25];
 
 // Literal expectations deliberately do not call the presentation function.
 const LIVE_ROWS: ExpectedRows = [
@@ -75,6 +75,14 @@ const LIVE_ROWS: ExpectedRows = [
     ("Stream 2: observed render rate", "48000 Hz"),
     ("Stream 2: observed render period", "240 frames"),
     ("Stream 2: render sample sequence", "12"),
+    // Absent clock telemetry adds explicit Unknown rows; it must not silently
+    // become zero/healthy evidence or be mistaken for physical latency.
+    ("Virtual clock observation", "Unknown"),
+    ("Virtual clock configuration", "Unknown"),
+    ("Virtual clock rendered", "Unknown"),
+    ("Virtual clock recovery", "Unknown"),
+    ("Virtual clock timeline", "Unknown"),
+    ("Virtual clock counter saturation", "Unknown"),
     ("Physical end-to-end latency", "Unknown / unqualified"),
 ];
 

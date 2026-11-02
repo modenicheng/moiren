@@ -5,6 +5,20 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [desktop Quit viewport control](2026-11-02-desktop-quit-viewport.md)
+fully exposes the action above the existing fixed settings footer and normally
+exits0on the same clean executable, with no audio owner or forced cleanup.
+The earlier exact336recording retains its failed automation/exit verdict;
+this separate stopped control does not certify every post-audio shutdown path.
+New headless coverage checks both densities at1100x700and1440x900. Full app
+checks expose three old acceptance expectations missing six existing virtual
+clock rows; baseline RED and corrected GREEN receipts retain the unchanged
+production UI. Fresh full app719passed/4ignored (library657/3), strict
+app/gpui all-target Clippy and formatting pass. Read-only remote closure and
+compact-artifact hashes are verified; user
+OBS/QQMusic identities are unchanged. No production Quit/audio policy change,
+another stability scan or default promotion is justified by this evidence.
+
 The [current exact336 VAD-to-DAWN functional recording](2026-11-02-vad-dawn-exact336-functional.md)
 uses a clean1267f8dapplication/probe export, exact48k/Engine64/Shared336,
 render512and Compatible VAD. Two independent20sProcess-tree recordings retain
