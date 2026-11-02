@@ -1590,3 +1590,29 @@ unchanged. All27 original dirty/cache hashes remain intact. No native audio,
 production/RT/default/gate change, unchanged soak or first-packet work occurs.
 Historical waveform/quality and calibrated physical requirements remain open;
 this new evidence narrows the detector refusal rather than completing S1-S3.
+
+### Current clean Process native boundaries
+
+One [clean9b1af6c acquisition](2026-11-02-clean-process-native-boundaries.md)
+adds actual native PCM and complete interpolation archives to the existing
+10s baseline/20s measured1536 route while headless software regression runs
+concurrently. Source/monitor exit0, exact-process12s recorders complete, both
+owners close and independently replay without evidence loss, and no owned
+process remains. Baseline/replacement native markers0-9/10-29 and independent
+source11-22 resolve with confidence1.0. Independent graph recorder resolves
+only17-22; five strongest candidates fail unchanged nominal quarter gates,
+while a sixth fails global correlation/onset margin before quarter evaluation.
+No order-based identity, source/recorder origin fit or new
+native retry is used. Actual replay/recorder association remains unestablished.
+
+The replacement retains7delivery-gap bound violations and1render wait timeout,
+separately from zero bridge drop/silent/underrun/reset/recovery counters and
+explicit priming/UNKNOWN frames. These do not prove an audible production
+defect and do not yield a quality or physical PASS. Focused5zero-refill,
+51analyzer,20measuredUI and32native/11section/9planner Python tests pass;
+the initial isolated host Python missing-NumPy failure stays retained.
+All87 compact artifacts are verified and plots reviewed; the final remote
+audit rehashes620raw files and verifies protected processes/pins/no owners.
+All27 original dirty/cache hashes remain intact. No production/default change,
+push, first-packet reopening or unchanged soak follows. Independent development
+remains unblocked; original S1-S3 qualification is still open.
