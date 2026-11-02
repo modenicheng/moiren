@@ -1616,3 +1616,24 @@ audit rehashes620raw files and verifies protected processes/pins/no owners.
 All27 original dirty/cache hashes remain intact. No production/default change,
 push, first-packet reopening or unchanged soak follows. Independent development
 remains unblocked; original S1-S3 qualification is still open.
+
+### Frozen integer actual-replay association
+
+The [bounded actual-replay diagnostic](2026-11-02-frozen-integer-replay-association.md)
+now tests an explicit constant integer recorder mapping against freshly
+recomputed native SRC, using original unlabelled support windows and all owners.
+The first training-compatible anchor would freeze owner/shift/gain/DC before
+held-out evaluation; later windows cannot re-anchor or refit. One remote offline
+execution exits0, but neither twelve-window recording establishes an anchor.
+Graph first-quarter NCC0.986917-0.999708 is high; integer outer-training
+NRMSE0.056817-0.139838 remains above0.05. Source-control residuals are larger.
+No output identity, held-out association, waveform defect or latency follows.
+
+The helper has assertion RED then ten green regressions; review reproduces a
+cross-owner ambiguity defect with a new failing test and fixes it by retaining
+every other owner's strongest peak. Final12tests, native32/association21/
+coverage26 and Ruff checks pass. All19 compact artifacts are verified; the
+reviewed refusal plot keeps every component, and final audit rehashes626inputs
+with no owners and unchanged protected processes/SYS. All27 original dirty/cache
+files remain intact. No native audio, production/default/gate change, push or
+first-packet work occurs; current native/physical qualification stays open.
