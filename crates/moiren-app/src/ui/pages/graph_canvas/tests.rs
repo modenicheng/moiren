@@ -389,6 +389,30 @@ fn node_layout_matches_design18_header_body_and_port_measurements() {
 }
 
 #[test]
+fn ports_ride_the_card_wherever_it_sits_in_the_world() {
+    // The port rail is an offset from the card top, never from the world
+    // origin: a card deep in the world keeps its dots on its own edges. The
+    // old formula added `node.y` twice, which the clamp hid at y <= 0.
+    for (x, y) in [(0., 0.), (320., 540.), (-410., 1280.)] {
+        let mut card = node("gain", "Gain", "L/R").at(x, y).ports(true, true);
+        card.body_height = theme::card::KNOB_BODY_H;
+        let layout = NodeLayout::new(&card);
+        let expected = y + card.port_offset();
+        assert_position(layout.inputs[0], (x, expected));
+        assert_position(layout.output.unwrap(), (x + card.width(), expected));
+        assert_close(
+            layout.card.origin.y + layout.card.size.height,
+            expected + theme::card::PORT_BOTTOM,
+        );
+        assert_close(
+            layout.input_hints[0].bounds.origin.y,
+            expected - theme::card::HINT_SIZE / 2. - 1.,
+        );
+        assert!(layout.card.contains(&point(x + 1., expected)));
+    }
+}
+
+#[test]
 fn adaptive_wire_geometry_tracks_the_projected_cubic_at_every_zoom() {
     for (from, to) in [
         ((0., 0.), (12., 700.)),

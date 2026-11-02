@@ -108,13 +108,18 @@ impl CanvasNode {
     pub fn width(&self) -> f32 {
         theme::NODE_WIDTH
     }
-    pub fn height(&self) -> f32 {
+    /// The first port's distance below the card top: under the body and the
+    /// meter strip, never above the base rail a one-line body settles at.
+    /// Relative to the card so the layout and the card height agree
+    /// wherever the node sits in the world.
+    pub fn port_offset(&self) -> f32 {
         let meter_total = theme::card::METER_CHANNELS as f32 * theme::card::METER_H
             + theme::card::METER_CHANNEL_GAP;
         let body_bottom = theme::card::BODY_TOP + self.body_height;
-        let ports_at =
-            (body_bottom + meter_total + theme::card::PORT_BOTTOM).max(theme::card::PORT_Y);
-        ports_at
+        (body_bottom + meter_total + theme::card::PORT_BOTTOM).max(theme::card::PORT_Y)
+    }
+    pub fn height(&self) -> f32 {
+        self.port_offset()
             + self.input_count.saturating_sub(1) as f32 * theme::card::PORT_SPACING
             + theme::card::PORT_BOTTOM
     }

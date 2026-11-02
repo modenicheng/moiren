@@ -109,12 +109,8 @@ impl NodeLayout {
         let width = node.width();
         let body_top = node.y + theme::card::BODY_TOP;
         let body_bottom = body_top + node.body_height;
-        let meter_total = theme::card::METER_CHANNELS as f32 * theme::card::METER_H
-            + theme::card::METER_CHANNEL_GAP;
-        let ports_at =
-            (body_bottom + meter_total + theme::card::PORT_BOTTOM).max(theme::card::PORT_Y);
         let height = node.height();
-        let port_y = node.y + ports_at;
+        let port_y = node.y + node.port_offset();
         let padding = theme::card::PADDING;
         let inputs = (0..node.input_count)
             .map(|index| (node.x, port_y + index as f32 * theme::card::PORT_SPACING))
