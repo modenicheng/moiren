@@ -1069,6 +1069,179 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
     assert_eq!(topic.business_subscribers(), 0);
 }
 
+/// A running rig with a spectrum analyzer spliced between the pan and the
+/// sink, ticked until the bridge registered the analyzer's topic.
+fn spectrum_rig() -> (Rig, moiren_core::graph::NodeId) {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::SpectrumAnalyzer,
+        channels: 2,
+    }));
+    let spectrum = rig.node(NodeKind::SpectrumAnalyzer);
+    let snapshot = rig.c.graph.snapshot();
+    let pan = rig.node(NodeKind::Pan);
+    let sink = rig.node(NodeKind::Sink);
+    let final_edge = snapshot
+        .graph
+        .edges()
+        .iter()
+        .find(|edge| edge.dst() == sink)
+        .unwrap()
+        .id();
+    rig.request(AppRequest::EditGraph(GraphEdit::Disconnect(final_edge)));
+    for (source, destination) in [(pan, spectrum), (spectrum, sink)] {
+        rig.request(AppRequest::EditGraph(GraphEdit::Connect {
+            source: snapshot.graph.get_node(source).unwrap().outputs()[0].id(),
+            destination: snapshot.graph.get_node(destination).unwrap().inputs()[0].id(),
+        }));
+    }
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| rig.c.signals.topics.node_spectra.contains_key(&spectrum));
+    (rig, spectrum)
+}
+
+/// Pump the rig until a delivered window satisfies `accept`, which also
+/// asserts whatever must hold for every window on the way.
+fn wait_spectrum(
+    rig: &mut Rig,
+    subscriber: &mut moiren_signal::Subscriber<signals::SpectrumTopic>,
+    mut accept: impl FnMut(&moiren_engine::spectrum::SpectrumWindow, &[f32]) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        rig.tick();
+        rig.c.signals.pump_if_due(Instant::now());
+        let mut matched = false;
+        while let Some(window) = subscriber.next() {
+            matched |= accept(window.header(), window.elements());
+        }
+        if matched {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "spectrum analyzer did not publish: {:?}",
+            rig.c.graph.snapshot().last_error
+        );
+    }
+}
+
+#[test]
+fn spectrum_bridge_relays_fft_windows_only_on_demand() {
+    let (mut rig, spectrum) = spectrum_rig();
+    let topic = rig.c.signals.topics.node_spectra[&spectrum].clone();
+    assert_eq!(topic.business_subscribers(), 0);
+    for _ in 0..5 {
+        rig.tick();
+    }
+    assert_eq!(
+        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        0,
+        "no subscriber, no engine-side FFT demand"
+    );
+    let (mut ticket, request) =
+        crate::service::signals::subscription_request(topic.clone(), Default::default());
+    rig.c.signals.execute(request);
+    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    // The fake backend feeds DC 1.0: once the analysis window has filled,
+    // the one-sided magnitudes read 1.0 at the DC bin of each channel and
+    // nothing mid-band, channel-major at the default 1024-point shape.
+    wait_spectrum(&mut rig, &mut subscriber, |header, bins| {
+        assert_eq!(header.fft_size, 1024);
+        assert_eq!(header.channels, 2);
+        assert!(header.sample_rate > 0.);
+        assert!(header.frame_end > header.frame_start);
+        assert_eq!(bins.len(), 2 * 513);
+        (bins[0] - 1.).abs() < 0.02 && (bins[513] - 1.).abs() < 0.02 && bins[256].abs() < 1e-3
+    });
+    assert_eq!(rig.driver.meters.as_ref().unwrap().demanded_spectra(), 1);
+    drop(subscriber);
+    assert_eq!(topic.business_subscribers(), 0);
+    for _ in 0..5 {
+        rig.tick();
+    }
+    assert_eq!(
+        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        0,
+        "dropping the last subscriber releases the engine subscription"
+    );
+}
+
+#[test]
+fn fft_resize_reregisters_the_spectrum_topic() {
+    let (mut rig, spectrum) = spectrum_rig();
+    let before = rig.c.signals.topics.node_spectra[&spectrum].clone();
+    rig.request(AppRequest::EditGraph(GraphEdit::SetBuiltin {
+        node: spectrum,
+        state: crate::service::BuiltinState::SpectrumAnalyzer(
+            moiren_engine::spectrum::SpectrumSettings {
+                fft_size: 2048,
+                hop_frames: 1024,
+            },
+        ),
+    }));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| {
+        rig.c
+            .signals
+            .topics
+            .node_spectra
+            .get(&spectrum)
+            .is_some_and(|topic| *topic != before)
+    });
+    let after = rig.c.signals.topics.node_spectra[&spectrum].clone();
+    let (mut ticket, request) =
+        crate::service::signals::subscription_request(after, Default::default());
+    rig.c.signals.execute(request);
+    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    wait_spectrum(&mut rig, &mut subscriber, |header, bins| {
+        assert_eq!(header.fft_size, 2048);
+        assert_eq!(bins.len(), 2 * 1025);
+        true
+    });
+    assert_eq!(rig.c.signals.topics.node_spectra.len(), 1);
+}
+
+/// A topic only closes once no publisher leases it. The bridge must let go
+/// of a departed node's slot — and activate a table without it — before
+/// asking the bus to unregister, or every later poll fails the same way.
+#[test]
+fn removing_a_node_closes_its_level_topic_without_stalling_the_bridge() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    let bus = rig.node(NodeKind::Bus);
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| rig.c.signals.topics.node_levels.contains_key(&bus));
+    rig.request(AppRequest::EditGraph(GraphEdit::RemoveNode(bus)));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| {
+        !rig.c.signals.topics.node_levels.contains_key(&bus)
+            && rig.c.graph.snapshot().active_revision
+                == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    for _ in 0..5 {
+        rig.tick();
+    }
+    let snapshot = rig.c.graph.snapshot();
+    assert!(
+        !snapshot
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Node meters")),
+        "{:?}",
+        snapshot.last_error
+    );
+    assert_eq!(
+        rig.c.signals.topics.node_levels.len(),
+        snapshot.graph.nodes().len()
+    );
+}
+
 #[test]
 fn compressor_updates_are_acknowledged_live_without_rebuilding_or_touching_other_nodes() {
     use crate::service::CompressorParameter;
