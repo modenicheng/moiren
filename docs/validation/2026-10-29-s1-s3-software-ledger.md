@@ -1568,3 +1568,25 @@ proof. No physical latency, path winner, lower-default or stability-soak claim
 is added. Original27 dirty/cache hashes and path status are preserved. This
 advances a bounded acceptance gap while independent development remains free
 to proceed; first-packet work remains deferred and the overall goal is active.
+
+### Fixed strongest-candidate section explanation
+
+The [fixed-section diagnostic](2026-11-02-fixed-candidate-sections.md) now
+explains which unchanged quarter gates reject the two retained graph strongest
+candidates, without rerunning search or fitting rate/phase/gain. One isolated
+remote offline run completes0 in3.563s computation, reproducing all46 existing
+channel-window scores and section verdicts; two673-frame component0 records
+stay NOT ANALYZED. Source quarters remain1.0; nine previously accepted graph
+windows remain at least0.831046 per quarter. Component1/candidate11 fails Q3/Q4
+at0.658886/0.326252, while component3/candidate13 fails Q1 at0.640430; RMS floors
+pass. These localize template disagreement, not its cause, accepted identities,
+sample loss or latency. Original raw missing/refused results remain unchanged.
+
+The127-line pure helper has genuine assertion RED then11 GREEN; parent fresh
+11helper/9planner/16spacing tests pass. All7 compact artifacts are verified,
+heatmap/raw-amplitude overlays visually reviewed, and final audit verifies all
+23 original/prior inputs unchanged, no owners and protected user processes
+unchanged. All27 original dirty/cache hashes remain intact. No native audio,
+production/RT/default/gate change, unchanged soak or first-packet work occurs.
+Historical waveform/quality and calibrated physical requirements remain open;
+this new evidence narrows the detector refusal rather than completing S1-S3.
