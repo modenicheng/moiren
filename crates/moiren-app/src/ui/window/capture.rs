@@ -342,6 +342,45 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .await;
                     capture(cx, directory.join(format!("{name}.png")));
                 }
+                // Card states speak through the outline alone, and the fault
+                // tooltip follows the hovered card (design 18 B1): fault the
+                // first card the way the service would and hover it. No
+                // await before the capture — the control-side poll would
+                // put the service's own snapshot back — and `capture`
+                // draws synchronously, so the rebuilt panel shows the fault
+                // outline and the meter frame the tooltip in that draw.
+                shell.update(cx, |shell, cx| {
+                    shell.camera = Camera {
+                        pan_x: 24.,
+                        pan_y: 64.,
+                        zoom: 1.,
+                        adjusted: true,
+                    };
+                    let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+                    let id = snapshot.graph.graph.topological_order().unwrap()[0];
+                    std::sync::Arc::make_mut(&mut snapshot.graph).faults.push(
+                        crate::service::GraphFault {
+                            subject: crate::service::GraphSubject::Node(id),
+                            cause: "Output endpoint unavailable".into(),
+                            hint: Some("Choose another output".into()),
+                        },
+                    );
+                    shell
+                        .state
+                        .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
+                    shell.hovered_node = Some(id);
+                    cx.notify();
+                });
+                capture(cx, directory.join("graph-fault-tooltip.png"));
+                shell.update(cx, |shell, cx| {
+                    let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+                    std::sync::Arc::make_mut(&mut snapshot.graph).faults.clear();
+                    shell
+                        .state
+                        .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
+                    shell.hovered_node = None;
+                    cx.notify();
+                });
                 let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
                 for (name, page) in [
                     ("node-inspector", Page::Graph),
