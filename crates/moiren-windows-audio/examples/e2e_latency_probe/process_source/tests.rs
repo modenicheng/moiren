@@ -367,6 +367,467 @@ fn owned_process_source_worker_protocol_accepts_explicit_correctness_policy() {
 }
 
 #[test]
+fn owned_process_source_shared_period_parser_accepts_exact_decimal_requests() {
+    for period in ["64", "336", "4096"] {
+        let arguments = [
+            "--source-endpoint",
+            "Exact Endpoint ",
+            "--source-schedule",
+            "schedule.json",
+            "--run-directory",
+            "new dir",
+            "--seconds",
+            "5",
+            "--validation-mode",
+            "correctness",
+            "--jitter-tolerance-ms",
+            "3000",
+            "--source-write-witness",
+            "--source-shared-period-frames",
+            period,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let (config, _, witness) = parse(arguments).unwrap();
+        assert_eq!(config.shared_period_frames, Some(period.parse().unwrap()));
+        assert!(witness);
+    }
+}
+
+#[test]
+fn owned_process_source_shared_period_parser_rejects_invalid_and_duplicate_requests() {
+    let args = || {
+        [
+            "--source-endpoint",
+            "endpoint",
+            "--source-schedule",
+            "schedule.json",
+            "--run-directory",
+            "new-dir",
+            "--seconds",
+            "5",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    };
+    assert_eq!(parse(args()).unwrap().0.shared_period_frames, None);
+    for raw in [
+        "",
+        "0",
+        "63",
+        "4097",
+        "+64",
+        " 64",
+        "64 ",
+        "64.0",
+        "4294967296",
+    ] {
+        let mut values = args();
+        values.extend(["--source-shared-period-frames".into(), raw.into()]);
+        assert!(parse(values).is_err(), "accepted {raw:?}");
+    }
+    let mut missing = args();
+    missing.push("--source-shared-period-frames".into());
+    assert!(parse(missing).is_err());
+    let mut duplicate = args();
+    for _ in 0..2 {
+        duplicate.extend(["--source-shared-period-frames".into(), "336".into()]);
+    }
+    assert!(parse(duplicate).is_err());
+    for frames in [0, 63, 4097, u32::MAX] {
+        let mut config = config();
+        config.shared_period_frames = Some(frames);
+        assert!(config.validate().is_err());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn owned_process_source_shared_period_parent_command_roundtrips_without_launch() {
+    for frames in [None, Some(64), Some(336), Some(4096)] {
+        let mut config = config();
+        config.shared_period_frames = frames;
+        let command = native::worker_command(
+            Path::new("unused-probe.exe"),
+            &config,
+            Path::new("source schedule.json"),
+            Path::new("new directory"),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args[0], "process-source-worker");
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "--source-shared-period-frames")
+                .count(),
+            usize::from(frames.is_some())
+        );
+        let (restored, directory, witness) = parse(args[1..].to_vec()).unwrap();
+        assert_eq!(restored.shared_period_frames, frames);
+        assert_eq!(restored.source_endpoint, config.source_endpoint);
+        assert_eq!(restored.validation, config.validation);
+        assert_eq!(restored.source_schedule, Path::new("source schedule.json"));
+        assert_eq!(directory, Path::new("new directory"));
+        assert!(!witness);
+    }
+}
+
+fn exact_shared_period() -> Value {
+    let format = serde_json::json!({
+        "sample_rate": 48_000, "channels": 2, "container_bits": 32,
+        "valid_bits": 32, "channel_mask": 3, "floating_point": true,
+    });
+    serde_json::json!({
+        "requested_period_frames": 336,
+        "actual_period_frames": 336,
+        "engine_period_frames": 336,
+        "engine_sample_rate": 48_000,
+        "mix_format": format,
+        "client_format": format,
+        "initialization_api": "client3",
+        "windows_auto_conversion": false,
+        "fallback_reason": null,
+        "client3_failure": null,
+        "period_selection_failure": null,
+        "actual_period_hresult": 0,
+    })
+}
+
+fn explicit_period_receipt(phase: Phase) -> Receipt {
+    let mut explicit = receipt(phase);
+    explicit.requested_shared_period_frames = Some(336);
+    explicit.playback["shared_period"] = exact_shared_period();
+    if phase == Phase::Final {
+        explicit.playback["shared_period_attempt"] = exact_shared_period();
+        explicit.playback["mmdevice_id"] = serde_json::json!("Exact Endpoint ");
+        explicit.playback["source_mode"] = serde_json::json!("shared_explicit_mmdevice");
+        explicit.playback["native_buffer_frames"] = serde_json::json!(480);
+        explicit.playback["packet_format"] = serde_json::json!("Float32");
+    }
+    explicit
+}
+
+#[test]
+fn owned_process_source_shared_period_final_requires_native_readback_and_attempt() {
+    let mut requested = config();
+    requested.shared_period_frames = Some(336);
+    let final_receipt = explicit_period_receipt(Phase::Final);
+    validate_receipt(
+        &final_receipt,
+        Phase::Final,
+        &final_receipt.identity,
+        &requested,
+        &final_receipt.schedule,
+    )
+    .unwrap();
+    for field in [
+        "shared_period",
+        "shared_period_attempt",
+        "packet_format",
+        "native_buffer_frames",
+        "mmdevice_id",
+        "source_mode",
+    ] {
+        let mut changed = final_receipt.clone();
+        changed.playback.as_object_mut().unwrap().remove(field);
+        assert!(
+            validate_receipt(
+                &changed,
+                Phase::Final,
+                &changed.identity,
+                &requested,
+                &changed.schedule
+            )
+            .is_err(),
+            "explicit final accepted missing {field}"
+        );
+    }
+    let mut changed = final_receipt.clone();
+    changed.playback["shared_period_attempt"]["actual_period_frames"] = serde_json::json!(480);
+    assert!(
+        validate_receipt(
+            &changed,
+            Phase::Final,
+            &changed.identity,
+            &requested,
+            &changed.schedule
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn owned_process_source_shared_period_ready_and_final_pin_engine_and_native_format() {
+    let mut requested = config();
+    requested.shared_period_frames = Some(336);
+    for phase in [Phase::Ready, Phase::Final] {
+        let baseline = explicit_period_receipt(phase);
+        validate_receipt(
+            &baseline,
+            phase,
+            &baseline.identity,
+            &requested,
+            &baseline.schedule,
+        )
+        .unwrap();
+        for field in [
+            "requested_period_frames",
+            "actual_period_frames",
+            "engine_period_frames",
+            "engine_sample_rate",
+            "initialization_api",
+            "windows_auto_conversion",
+            "fallback_reason",
+            "client3_failure",
+            "actual_period_hresult",
+            "client_format",
+            "mix_format",
+        ] {
+            let mut changed = baseline.clone();
+            changed.playback["shared_period"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            if phase == Phase::Final {
+                changed.playback["shared_period_attempt"] =
+                    changed.playback["shared_period"].clone();
+            }
+            assert!(
+                validate_receipt(
+                    &changed,
+                    phase,
+                    &changed.identity,
+                    &requested,
+                    &changed.schedule
+                )
+                .is_err(),
+                "{phase:?} accepted missing {field}"
+            );
+        }
+        for (field, value) in [
+            ("engine_period_frames", 480),
+            ("engine_sample_rate", 96_000),
+        ] {
+            let mut changed = baseline.clone();
+            changed.playback["shared_period"][field] = serde_json::json!(value);
+            if phase == Phase::Final {
+                changed.playback["shared_period_attempt"] =
+                    changed.playback["shared_period"].clone();
+            }
+            assert!(
+                validate_receipt(
+                    &changed,
+                    phase,
+                    &changed.identity,
+                    &requested,
+                    &changed.schedule
+                )
+                .is_err(),
+                "{phase:?} accepted mismatched {field}"
+            );
+        }
+        for (field, value) in [
+            ("sample_rate", serde_json::json!(96_000)),
+            ("channels", serde_json::json!(1)),
+            ("container_bits", serde_json::json!(16)),
+            ("valid_bits", serde_json::json!(24)),
+            ("channel_mask", serde_json::json!(0)),
+            ("floating_point", serde_json::json!(false)),
+        ] {
+            for missing in [false, true] {
+                let mut changed = baseline.clone();
+                for format in ["mix_format", "client_format"] {
+                    if missing {
+                        changed.playback["shared_period"][format]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove(field);
+                    } else {
+                        changed.playback["shared_period"][format][field] = value.clone();
+                    }
+                }
+                if phase == Phase::Final {
+                    changed.playback["shared_period_attempt"] =
+                        changed.playback["shared_period"].clone();
+                }
+                assert!(
+                    validate_receipt(
+                        &changed,
+                        phase,
+                        &changed.identity,
+                        &requested,
+                        &changed.schedule
+                    )
+                    .is_err(),
+                    "{phase:?} accepted invalid native format field {field}, missing={missing}"
+                );
+            }
+        }
+        let mut mismatched = baseline.clone();
+        mismatched.playback["shared_period"]["mix_format"]["channel_mask"] = serde_json::json!(0);
+        assert!(
+            validate_receipt(
+                &mismatched,
+                phase,
+                &mismatched.identity,
+                &requested,
+                &mismatched.schedule
+            )
+            .is_err()
+        );
+
+        let mut pcm16 = baseline.clone();
+        pcm16.playback["packet_format"] = serde_json::json!("Pcm16");
+        assert!(
+            validate_receipt(&pcm16, phase, &pcm16.identity, &requested, &pcm16.schedule).is_err()
+        );
+        for format in ["mix_format", "client_format"] {
+            pcm16.playback["shared_period"][format]["container_bits"] = serde_json::json!(16);
+            pcm16.playback["shared_period"][format]["valid_bits"] = serde_json::json!(16);
+            pcm16.playback["shared_period"][format]["floating_point"] = serde_json::json!(false);
+        }
+        if phase == Phase::Final {
+            pcm16.playback["shared_period_attempt"] = pcm16.playback["shared_period"].clone();
+        }
+        validate_receipt(&pcm16, phase, &pcm16.identity, &requested, &pcm16.schedule).unwrap();
+    }
+}
+
+#[test]
+fn owned_process_source_shared_period_ready_requires_exact_readback_without_fallback() {
+    let mut config = config();
+    config.shared_period_frames = Some(336);
+    let mut ready = receipt(Phase::Ready);
+    ready.requested_shared_period_frames = Some(336);
+    assert!(
+        validate_receipt(
+            &ready,
+            Phase::Ready,
+            &ready.identity,
+            &config,
+            &ready.schedule
+        )
+        .is_err(),
+        "an explicit period cannot accept Ready without native readback"
+    );
+    ready.playback["shared_period"] = exact_shared_period();
+    validate_receipt(
+        &ready,
+        Phase::Ready,
+        &ready.identity,
+        &config,
+        &ready.schedule,
+    )
+    .unwrap();
+    for (field, bad) in [
+        ("requested_period_frames", serde_json::json!(480)),
+        ("actual_period_frames", serde_json::json!(480)),
+        ("actual_period_frames", Value::Null),
+        ("initialization_api", serde_json::json!("legacy_client")),
+        ("initialization_api", Value::Null),
+        ("windows_auto_conversion", serde_json::json!(true)),
+        ("windows_auto_conversion", Value::Null),
+        ("fallback_reason", serde_json::json!("engine_period_locked")),
+        (
+            "client3_failure",
+            serde_json::json!({"stage":"initialization","hresult":-1}),
+        ),
+        (
+            "period_selection_failure",
+            serde_json::json!({"error":"invalid_capabilities"}),
+        ),
+        ("actual_period_hresult", serde_json::json!(-1)),
+    ] {
+        let mut changed = ready.clone();
+        changed.playback["shared_period"][field] = bad;
+        assert!(
+            validate_receipt(
+                &changed,
+                Phase::Ready,
+                &ready.identity,
+                &config,
+                &ready.schedule
+            )
+            .is_err(),
+            "accepted invalid native readback field {field}"
+        );
+    }
+    let mut unknown = ready.clone();
+    unknown.playback["shared_period"]
+        .as_object_mut()
+        .unwrap()
+        .remove("actual_period_frames");
+    assert!(
+        validate_receipt(
+            &unknown,
+            Phase::Ready,
+            &ready.identity,
+            &config,
+            &ready.schedule
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn owned_process_source_shared_period_receipts_pin_request_in_every_phase_and_keep_legacy() {
+    for phase in [Phase::Ready, Phase::Running, Phase::Submitted, Phase::Final] {
+        let legacy = receipt(phase);
+        let json = serde_json::to_value(&legacy).unwrap();
+        assert!(json.get("requested_shared_period_frames").is_none());
+        let restored: Receipt = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.requested_shared_period_frames, None);
+        validate_receipt(
+            &restored,
+            phase,
+            &legacy.identity,
+            &config(),
+            &legacy.schedule,
+        )
+        .unwrap();
+
+        let mut requested = config();
+        requested.shared_period_frames = Some(336);
+        let explicit = explicit_period_receipt(phase);
+        validate_receipt(
+            &explicit,
+            phase,
+            &legacy.identity,
+            &requested,
+            &legacy.schedule,
+        )
+        .unwrap();
+        for request in [None, Some(480)] {
+            let mut changed = explicit.clone();
+            changed.requested_shared_period_frames = request;
+            assert!(
+                validate_receipt(
+                    &changed,
+                    phase,
+                    &legacy.identity,
+                    &requested,
+                    &legacy.schedule
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_receipt(
+                &explicit,
+                phase,
+                &legacy.identity,
+                &config(),
+                &legacy.schedule
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn source_write_witness_switch_preserves_values_and_is_worker_only() {
     let args = || {
         [
@@ -609,6 +1070,7 @@ fn receipt(phase: Phase) -> Receipt {
         },
         source_endpoint: "Exact Endpoint ".into(),
         seconds: 5,
+        requested_shared_period_frames: None,
         validation: ValidationPolicy::default(),
         schedule: super::super::source::SourceSchedule {
             schema_version: 1,
@@ -642,6 +1104,7 @@ fn config() -> Config {
         source_endpoint: "Exact Endpoint ".into(),
         source_schedule: "schedule.json".into(),
         seconds: 5,
+        shared_period_frames: None,
         validation: ValidationPolicy::default(),
     }
 }

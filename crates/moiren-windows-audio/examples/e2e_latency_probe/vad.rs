@@ -11,6 +11,7 @@ use super::vad_collection::PlaybackProgress;
 use super::vad_period::{self, PeriodEvidence};
 use anyhow::{Context, Result, ensure};
 use moiren_engine::node::DeviceMode;
+use moiren_windows_audio::latency::shared_period::{SharedFormatInfo, SharedPeriodReport};
 use moiren_windows_audio::vad::{
     Channels, DeviceInterface, Intent, MAX_PACKET_FRAMES, SampleFormat, StableEndpointId,
     discover_present_interfaces, encode_interleaved,
@@ -72,6 +73,8 @@ pub struct PlaybackOutcome {
     pub info: Option<PlaybackInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period_request: Option<PeriodEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_period_attempt: Option<SharedPeriodReport>,
     /// Resolved identity before format selection, not a started native stream.
     pub preparation_identity: Option<PreparationIdentity>,
     pub format_queries: Vec<FormatQuery>,
@@ -117,6 +120,8 @@ pub struct FormatQuery {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaybackInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_period: Option<SharedPeriodReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_mode: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -258,10 +263,12 @@ enum PlaybackTarget {
         root: String,
         mode: DeviceMode,
         minimum_period: bool,
+        shared_period_frames: Option<u32>,
     },
     Shared {
         endpoint: String,
         witness: bool,
+        shared_period_frames: Option<u32>,
     },
 }
 
@@ -315,6 +322,7 @@ pub struct PlaybackSession {
 struct WorkerState {
     info: Option<PlaybackInfo>,
     period_request: Option<PeriodEvidence>,
+    shared_period_attempt: Option<SharedPeriodReport>,
     preparation_identity: Option<PreparationIdentity>,
     format_queries: Vec<FormatQuery>,
     provenance: Option<SourceProvenance>,
@@ -370,6 +378,7 @@ impl PlaybackSession {
         source_plan: Option<PreparedSource>,
         mode: DeviceMode,
         minimum_period: bool,
+        shared_period_frames: Option<u32>,
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
         Self::prepare_with_abort(
@@ -378,17 +387,23 @@ impl PlaybackSession {
             source_plan,
             mode,
             minimum_period,
+            shared_period_frames,
             || {},
             partial,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep source ownership and peer-stop cleanup explicit in this bounded probe"
+    )]
     pub(super) fn prepare_with_abort(
         stable_id: StableEndpointId,
         root_instance: String,
         source_plan: Option<PreparedSource>,
         mode: DeviceMode,
         minimum_period: bool,
+        shared_period_frames: Option<u32>,
         before_join: impl FnMut(),
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
@@ -396,12 +411,17 @@ impl PlaybackSession {
             !minimum_period || mode == DeviceMode::Exclusive,
             "minimum period requires Exclusive VAD source mode"
         );
+        ensure!(
+            shared_period_frames.is_none() || mode == DeviceMode::Shared,
+            "exact Shared source period requires Shared mode"
+        );
         Self::prepare_target(
             PlaybackTarget::Vad {
                 stable_id,
                 root: root_instance,
                 mode,
                 minimum_period,
+                shared_period_frames,
             },
             source_plan,
             before_join,
@@ -413,6 +433,7 @@ impl PlaybackSession {
         endpoint: String,
         plan: PreparedSource,
         witness: bool,
+        shared_period_frames: Option<u32>,
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
         ensure!(
@@ -422,7 +443,11 @@ impl PlaybackSession {
             "explicit shared endpoint required"
         );
         Self::prepare_target(
-            PlaybackTarget::Shared { endpoint, witness },
+            PlaybackTarget::Shared {
+                endpoint,
+                witness,
+                shared_period_frames,
+            },
             Some(plan),
             || {},
             partial,
@@ -607,6 +632,7 @@ fn join_outcome(
     PlaybackOutcome {
         info: state.info.clone(),
         period_request: state.period_request,
+        shared_period_attempt: state.shared_period_attempt,
         preparation_identity: state.preparation_identity.clone(),
         format_queries: state.format_queries.clone(),
         submitted_frames: state.progress.source.native_submitted_frames,
@@ -1140,7 +1166,12 @@ impl Stream {
         })
     }
 
-    fn prepare_shared(device: &IMMDevice, witness: bool) -> Result<Self> {
+    fn prepare_shared(
+        device: &IMMDevice,
+        witness: bool,
+        requested: Option<u32>,
+        latest: &Mutex<WorkerState>,
+    ) -> Result<Self> {
         let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
         let pointer = unsafe { client.GetMixFormat()? };
         struct Mix(*mut WAVEFORMATEX);
@@ -1180,16 +1211,41 @@ impl Stream {
                 && wave.nAvgBytesPerSec == 48_000 * wave.nBlockAlign as u32,
             "invalid shared mix alignment"
         );
-        unsafe {
-            client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                0,
-                0,
+        if let Some(requested) = requested {
+            let mut report = SharedPeriodReport::default();
+            let result = super::source_shared_period::native::initialize(
+                &client,
                 owned.0,
-                None,
-            )?
-        };
+                requested,
+                SharedFormatInfo {
+                    sample_rate: 48_000,
+                    channels: 2,
+                    container_bits: wave.wBitsPerSample,
+                    valid_bits: Some(wave.wBitsPerSample),
+                    channel_mask: Some(3),
+                    floating_point: format == SampleFormat::Float32,
+                },
+                &mut report,
+            );
+            // Retain failed negotiation even when no ready PlaybackInfo exists.
+            latest
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .shared_period_attempt = Some(report);
+            result?;
+        } else {
+            // Preserve legacy omission: no Client3 query, retry or period claim.
+            unsafe {
+                client.Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    0,
+                    0,
+                    owned.0,
+                    None,
+                )?
+            };
+        }
         let frames = unsafe { client.GetBufferSize()? };
         available_frames(frames, 0)?;
         let event =
@@ -1309,6 +1365,16 @@ fn run_worker(
 ) -> Result<()> {
     let _apartment = Apartment::new()?;
     let mode = target.mode();
+    let requested_shared_period = match &target {
+        PlaybackTarget::Vad {
+            shared_period_frames,
+            ..
+        }
+        | PlaybackTarget::Shared {
+            shared_period_frames,
+            ..
+        } => *shared_period_frames,
+    };
     let source_mode = target.source_mode();
     let witness = matches!(&target, PlaybackTarget::Shared { witness: true, .. });
     let enumerator: IMMDeviceEnumerator =
@@ -1360,7 +1426,7 @@ fn run_worker(
     });
     let mut stream = prepare_source_stream(
         mode,
-        || Stream::prepare_shared(&device, witness),
+        || Stream::prepare_shared(&device, witness, requested_shared_period, &latest),
         || Stream::prepare(&device, &latest),
     )?;
     let mut source = SourceCursor::new(source_plan);
@@ -1381,6 +1447,10 @@ fn run_worker(
     }
     latest.lock().unwrap_or_else(|p| p.into_inner()).provenance = Some(source.provenance());
     let mut info = PlaybackInfo {
+        shared_period: latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .shared_period_attempt,
         source_mode: Some(source_mode.into()),
         stable_endpoint_id,
         mmdevice_id,
@@ -1540,6 +1610,7 @@ mod tests {
                 root: "owned-root".into(),
                 mode,
                 minimum_period: false,
+                shared_period_frames: None,
             };
             assert_eq!(target.mode(), mode);
             assert_eq!(
@@ -1555,6 +1626,7 @@ mod tests {
         let target = PlaybackTarget::Shared {
             endpoint: "explicit-output".into(),
             witness: false,
+            shared_period_frames: None,
         };
         assert_eq!(target.source_mode(), "shared_explicit_mmdevice");
     }
@@ -1568,6 +1640,7 @@ mod tests {
             None,
             DeviceMode::Shared,
             true,
+            None,
             || panic!("no owner should start"),
             &mut partial,
         );
@@ -1576,6 +1649,56 @@ mod tests {
             "minimum period requires Exclusive VAD source mode"
         );
         assert!(partial.is_none());
+    }
+
+    #[test]
+    fn source_shared_period_failed_attempt_survives_join_without_ready_info() {
+        let report = SharedPeriodReport {
+            requested_period_frames: Some(480),
+            client3_failure: Some(moiren_windows_audio::latency::shared_period::SharedInitializationFailure {
+                stage: moiren_windows_audio::latency::shared_period::SharedInitializationStage::Initialization,
+                hresult: -2004287480,
+            }),
+            ..Default::default()
+        };
+        let latest = Mutex::new(WorkerState {
+            shared_period_attempt: Some(report),
+            ..Default::default()
+        });
+        let outcome = join_outcome(
+            thread::spawn(|| anyhow::bail!("exact source Shared initialization failed")),
+            &latest,
+            SourceProvenance::new(None),
+        );
+        let value = serde_json::to_value(outcome).unwrap();
+        assert!(value["info"].is_null());
+        assert_eq!(
+            value["shared_period_attempt"]["requested_period_frames"],
+            480
+        );
+        assert_eq!(
+            value["shared_period_attempt"]["client3_failure"]["stage"],
+            "initialization"
+        );
+        assert_eq!(
+            value["shared_period_attempt"]["client3_failure"]["hresult"],
+            -2004287480_i64
+        );
+        assert!(value["shared_period_attempt"]["actual_period_frames"].is_null());
+        assert_eq!(value["worker_joined"], true);
+        assert_eq!(value["started"], false);
+    }
+
+    #[test]
+    fn source_shared_period_omission_does_not_claim_native_period() {
+        let latest = Mutex::new(WorkerState::default());
+        let value = serde_json::to_value(join_outcome(
+            thread::spawn(|| Ok(())),
+            &latest,
+            SourceProvenance::new(None),
+        ))
+        .unwrap();
+        assert!(value.get("shared_period_attempt").is_none());
     }
 
     #[test]
@@ -2203,6 +2326,7 @@ mod tests {
             activation_attempted: false,
             unexpected_exit: AtomicBool::new(false),
             info: PlaybackInfo {
+                shared_period: None,
                 source_mode: None,
                 stable_endpoint_id: "test".into(),
                 mmdevice_id: "test".into(),

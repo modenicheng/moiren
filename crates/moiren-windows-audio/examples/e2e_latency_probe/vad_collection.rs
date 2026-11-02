@@ -3310,6 +3310,7 @@ mod tests {
     #[test]
     fn correctness_joined_source_late_timeout_retains_successful_operational_completion() {
         let mut source = super::super::vad::PlaybackOutcome {
+            shared_period_attempt: None,
             info: None,
             period_request: None,
             preparation_identity: None,
@@ -3636,6 +3637,7 @@ mod tests {
         );
         assert_eq!(source.event_timeouts, 0);
         let mut outcome = super::super::vad::PlaybackOutcome {
+            shared_period_attempt: None,
             info: None,
             period_request: None,
             preparation_identity: None,

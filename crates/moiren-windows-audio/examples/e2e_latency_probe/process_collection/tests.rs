@@ -1078,6 +1078,7 @@ fn process_collection_source_timeouts_keep_first_receipt_and_operational_result_
         },
         source_endpoint: "source-output".into(),
         seconds: 20,
+        requested_shared_period_frames: None,
         validation: correctness_policy(3000),
         schedule: SourceSchedule {
             schema_version: 1,

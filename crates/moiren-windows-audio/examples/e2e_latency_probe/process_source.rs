@@ -74,6 +74,8 @@ pub(crate) struct Receipt {
     pub(crate) identity: Identity,
     pub(crate) source_endpoint: String,
     pub(crate) seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) requested_shared_period_frames: Option<u32>,
     #[serde(default)]
     pub(super) validation: ValidationPolicy,
     pub(crate) schedule: super::source::SourceSchedule,
@@ -222,6 +224,7 @@ fn validate_receipt_budget(
     let envelope = serde_json::json!({
         "schema_version": 1, "phase": "final", "source_endpoint": config.source_endpoint,
         "seconds": config.seconds, "validation": config.validation, "schedule": schedule,
+        "requested_shared_period_frames": config.shared_period_frames,
         "identity": {"pid": u32::MAX, "creation_time_100ns": u64::MAX,
             "executable_name": "\0".repeat(260)},
         "playback": {"mmdevice_id": config.source_endpoint,
@@ -298,6 +301,7 @@ fn validate_receipt(
     ensure!(
         receipt.source_endpoint == config.source_endpoint
             && receipt.seconds == config.seconds
+            && receipt.requested_shared_period_frames == config.shared_period_frames
             && receipt.validation == config.validation
             && receipt.schedule == *schedule,
         "source receipt configuration/schedule mismatch"
@@ -312,11 +316,11 @@ fn validate_receipt(
         "source live receipt claims stop"
     );
     let data = &receipt.playback;
-    if phase == Phase::Ready {
+    if phase == Phase::Ready || (phase == Phase::Final && config.shared_period_frames.is_some()) {
         ensure!(
             data["mmdevice_id"].as_str() == Some(config.source_endpoint.as_str())
                 && data["source_mode"].as_str() == Some("shared_explicit_mmdevice"),
-            "source ready endpoint/mode mismatch"
+            "source native endpoint/mode mismatch"
         );
         ensure!(
             data["stable_endpoint_id"].is_null() && data["adapter_instance"].is_null(),
@@ -327,8 +331,51 @@ fn validate_receipt(
                 .as_u64()
                 .is_some_and(|frames| (1..=9600).contains(&frames))
                 && matches!(data["packet_format"].as_str(), Some("Float32" | "Pcm16")),
-            "source ready buffer/format invalid"
+            "source native buffer/format invalid"
         );
+        if let Some(frames) = config.shared_period_frames {
+            let shared = &data["shared_period"];
+            ensure!(
+                shared["requested_period_frames"].as_u64() == Some(u64::from(frames))
+                    && shared["actual_period_frames"].as_u64() == Some(u64::from(frames))
+                    && shared["engine_period_frames"].as_u64() == Some(u64::from(frames))
+                    && shared["engine_sample_rate"].as_u64() == Some(48_000)
+                    && shared["initialization_api"].as_str() == Some("client3")
+                    && shared["windows_auto_conversion"].as_bool() == Some(false)
+                    && shared.get("fallback_reason") == Some(&Value::Null)
+                    && shared.get("client3_failure") == Some(&Value::Null)
+                    && shared["period_selection_failure"].is_null()
+                    && (shared.get("actual_period_hresult") == Some(&Value::Null)
+                        || shared["actual_period_hresult"]
+                            .as_i64()
+                            .is_some_and(|value| (0..=i64::from(i32::MAX)).contains(&value))),
+                "source Shared period missing or not accepted exactly without fallback"
+            );
+            let (bits, floating) = match data["packet_format"].as_str() {
+                Some("Float32") => (32, true),
+                Some("Pcm16") => (16, false),
+                _ => anyhow::bail!("source native packet format missing"),
+            };
+            let client = &shared["client_format"];
+            ensure!(
+                client == &shared["mix_format"]
+                    && client["sample_rate"].as_u64() == Some(48_000)
+                    && client["channels"].as_u64() == Some(2)
+                    && client["container_bits"].as_u64() == Some(bits)
+                    && client["valid_bits"].as_u64() == Some(bits)
+                    && client["channel_mask"].as_u64() == Some(3)
+                    && client["floating_point"].as_bool() == Some(floating),
+                "source Shared format missing or differs from native 48k stereo packet format"
+            );
+            if phase == Phase::Final {
+                ensure!(
+                    data.get("shared_period_attempt") == Some(shared),
+                    "source final Shared attempt missing or differs from native readback"
+                );
+            }
+        }
+    }
+    if phase == Phase::Ready {
         return Ok(());
     }
     ensure!(
@@ -465,6 +512,7 @@ pub(crate) struct Config {
     pub(crate) source_endpoint: String,
     pub(crate) source_schedule: PathBuf,
     pub(crate) seconds: u64,
+    pub(crate) shared_period_frames: Option<u32>,
     pub(super) validation: ValidationPolicy,
 }
 
@@ -485,6 +533,11 @@ impl Config {
             !self.source_schedule.as_os_str().is_empty(),
             "explicit source schedule required"
         );
+        ensure!(
+            self.shared_period_frames
+                .is_none_or(|frames| (64..=4096).contains(&frames)),
+            "source Shared period must be 64..=4096 frames"
+        );
         Ok(())
     }
 }
@@ -492,7 +545,7 @@ impl Config {
 fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf, bool)> {
     let mut witness = false;
     ensure!(
-        (8..=13).contains(&arguments.len()),
+        (8..=15).contains(&arguments.len()),
         "process source worker requires bounded separate option pairs"
     );
     let mut values = BTreeMap::new();
@@ -511,6 +564,7 @@ fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf, bool)> {
                 "--seconds",
                 "--validation-mode",
                 "--jitter-tolerance-ms",
+                "--source-shared-period-frames",
             ]
             .contains(&option.as_str()),
             "unknown source worker option {}",
@@ -549,10 +603,21 @@ fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf, bool)> {
         );
         validation.jitter_tolerance_ms = raw.parse()?;
     }
+    let shared_period_frames = values
+        .get("--source-shared-period-frames")
+        .map(|raw| {
+            ensure!(
+                !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()),
+                "source Shared period requires decimal digits"
+            );
+            raw.parse::<u32>().context("invalid source Shared period")
+        })
+        .transpose()?;
     let config = Config {
         source_endpoint: required("--source-endpoint")?.into(),
         source_schedule: required("--source-schedule")?.into(),
         seconds: raw.parse()?,
+        shared_period_frames,
         validation,
     };
     config.validate()?;

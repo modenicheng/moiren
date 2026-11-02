@@ -65,6 +65,38 @@ impl supervision::Clock for RetirementClock {
     }
 }
 
+pub(super) fn worker_command(
+    executable: &Path,
+    config: &Config,
+    source_schedule: &Path,
+    directory: &Path,
+) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .args(["process-source-worker", "--source-endpoint"])
+        .arg(&config.source_endpoint)
+        .arg("--source-schedule")
+        .arg(source_schedule)
+        .arg("--run-directory")
+        .arg(directory)
+        .arg("--seconds")
+        .arg(config.seconds.to_string())
+        .arg("--validation-mode")
+        .arg(if config.validation.is_correctness() {
+            "correctness"
+        } else {
+            "latency-sensitive"
+        })
+        .arg("--jitter-tolerance-ms")
+        .arg(config.validation.jitter_tolerance_ms.to_string());
+    if let Some(frames) = config.shared_period_frames {
+        command
+            .arg("--source-shared-period-frames")
+            .arg(frames.to_string());
+    }
+    command
+}
+
 pub(crate) struct ProcessSourceSession {
     inner: super::session::Session<Child>,
     created: Instant,
@@ -126,27 +158,17 @@ impl ProcessSourceSession {
         file.sync_all()?;
         drop(file);
         let created = Instant::now();
-        let mut child = Command::new(std::env::current_exe()?)
-            .args(["process-source-worker", "--source-endpoint"])
-            .arg(&config.source_endpoint)
-            .arg("--source-schedule")
-            .arg(&source_schedule)
-            .arg("--run-directory")
-            .arg(&directory)
-            .arg("--seconds")
-            .arg(config.seconds.to_string())
-            .arg("--validation-mode")
-            .arg(if config.validation.is_correctness() {
-                "correctness"
-            } else {
-                "latency-sensitive"
-            })
-            .arg("--jitter-tolerance-ms")
-            .arg(config.validation.jitter_tolerance_ms.to_string())
+        let mut command = worker_command(
+            &std::env::current_exe()?,
+            &config,
+            &source_schedule,
+            &directory,
+        );
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+        let mut child = command.spawn()?;
         let identity = (|| -> Result<ProcessIdentity> {
             let pinned = creation(HANDLE(child.as_raw_handle()))?;
             let identity = inspect_process(child.id())?;
@@ -307,6 +329,7 @@ pub(super) fn run(config: Config, directory: PathBuf, witness: bool) -> Result<i
             config.source_endpoint.clone(),
             plan,
             witness,
+            config.shared_period_frames,
             &mut partial,
         )?);
         let owner = session.as_mut().unwrap();
@@ -316,6 +339,7 @@ pub(super) fn run(config: Config, directory: PathBuf, witness: bool) -> Result<i
             identity: identity.clone(),
             source_endpoint: config.source_endpoint.clone(),
             seconds: config.seconds,
+            requested_shared_period_frames: config.shared_period_frames,
             validation: config.validation,
             schedule: schedule.clone(),
             playback,
@@ -413,6 +437,7 @@ pub(super) fn run(config: Config, directory: PathBuf, witness: bool) -> Result<i
         identity,
         source_endpoint: config.source_endpoint,
         seconds: config.seconds,
+        requested_shared_period_frames: config.shared_period_frames,
         validation: config.validation,
         schedule,
         playback,

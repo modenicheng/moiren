@@ -51,6 +51,10 @@ mod vad_route;
 mod render_request;
 use render_request::PhysicalRenderRequest;
 
+#[cfg(any(windows, test))]
+#[path = "source_shared_period.rs"]
+mod source_shared_period;
+
 #[path = "physical.rs"]
 pub(crate) mod physical;
 
@@ -157,6 +161,7 @@ struct LiveOptions {
     max_gap_frames: u32,
     vad_recovery_cap_periods: Option<u64>,
     vad_source_mode: Option<moiren_engine::node::DeviceMode>,
+    source_shared_period_frames: Option<u32>,
     vad_minimum_period: bool,
     vad_microphone_minimum_period: bool,
     vad_input_capture_frames: Option<u32>,
@@ -215,6 +220,7 @@ impl Default for LiveOptions {
             max_gap_frames: DEFAULT_MAX_GAP_FRAMES,
             vad_recovery_cap_periods: None,
             vad_source_mode: None,
+            source_shared_period_frames: None,
             vad_minimum_period: false,
             vad_microphone_minimum_period: false,
             vad_input_capture_frames: None,
@@ -289,6 +295,9 @@ impl LiveOptions {
             "physical_render_queue_applicable": false,
             "meaning": "requested software route; source submission and duplicated stereo are not an independent delay reference",
             });
+            if let Some(frames) = self.source_shared_period_frames {
+                route["source_native_request"]["shared_period_frames"] = frames.into();
+            }
             if self.vad_microphone_minimum_period {
                 route["recorder_native_request"]["minimum_period"] = true.into();
             }
@@ -312,6 +321,8 @@ struct LiveRunManifest {
     playback_source: Option<source::SourceProvenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_source_mode: Option<moiren_engine::node::DeviceMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_shared_period_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_minimum_period: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -382,6 +393,8 @@ struct SourceReport {
     playback_source: Option<source::SourceProvenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_source_mode: Option<moiren_engine::node::DeviceMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_shared_period_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_minimum_period: Option<bool>,
 }
@@ -486,6 +499,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
              --vad-source-mode shared|exclusive selects the owned VAD client mode; omitted preserves Exclusive. No mode fallback.\n\
              Shared uses the exact 48 kHz stereo mix format and its default buffer; matching mode alone does not match source period/buffer.\n\
+             --source-shared-period-frames 64..4096 requests an exact Client3 source period, without fallback.\n\
+             Requires Shared VAD or owned Process source; omission preserves the legacy default initializer.\n\
              --vad-minimum-period requests the queried exclusive VAD minimum; conflicts with Shared source mode.\n\
              --vad-microphone-minimum-period separately requests the owned MIC recorder minimum; requires schema2 Exclusive collection.\n\
              Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
@@ -783,6 +798,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             .then(|| source::SourceProvenance::new(source_plan)),
             vad_source_mode: (options.source_kind == EvidenceSourceKind::VadPlayback)
                 .then(|| options.vad_source_mode()),
+            source_shared_period_frames: options.source_shared_period_frames,
             vad_minimum_period: options.vad_minimum_period.then_some(true),
         },
         output_endpoint_id: options.output_label(),
@@ -819,6 +835,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         .then(|| source::SourceProvenance::new(source_plan)),
         vad_source_mode: (options.source_kind == EvidenceSourceKind::VadPlayback)
             .then(|| options.vad_source_mode()),
+        source_shared_period_frames: options.source_shared_period_frames,
         vad_minimum_period: options.vad_minimum_period.then_some(true),
         vad_input_capture_frames: options.vad_input_capture_frames,
         vad_output_capture_frames: options.vad_output_capture_frames,
@@ -956,6 +973,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--max-gap-frames"
             | "--vad-recovery-cap-periods"
             | "--vad-source-mode"
+            | "--source-shared-period-frames"
             | "--vad-input-capture-frames"
             | "--vad-output-capture-frames"
             | "--render-target-frames"
@@ -979,6 +997,18 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             _ => bail!("unknown live option {flag}"),
         };
         match flag.as_str() {
+            "--source-shared-period-frames" => {
+                ensure!(
+                    options.source_shared_period_frames.is_none(),
+                    "duplicate source Shared period"
+                );
+                ensure!(
+                    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()),
+                    "source Shared period requires decimal frames"
+                );
+                options.source_shared_period_frames =
+                    Some(value.parse().context("invalid source Shared period")?);
+            }
             "--vad-source-mode" => {
                 ensure!(
                     options.vad_source_mode.is_none(),
@@ -1287,6 +1317,18 @@ fn validate(options: &LiveOptions) -> Result<()> {
         "correctness mode requires a supervised VAD or owned Process collection"
     );
     let owned = options.process_collection.is_some() || options.source_output.is_some();
+    if let Some(period) = options.source_shared_period_frames {
+        ensure!(
+            (64..=4096).contains(&period),
+            "source Shared period must be 64..4096"
+        );
+        ensure!(
+            (options.source_kind == EvidenceSourceKind::VadPlayback
+                && options.vad_source_mode() == moiren_engine::node::DeviceMode::Shared)
+                || (options.source_kind == EvidenceSourceKind::ProcessLoopback && owned),
+            "source Shared period requires a Shared VAD or owned Process source"
+        );
+    }
     if owned {
         ensure!(
             options.source_kind == EvidenceSourceKind::ProcessLoopback
@@ -3201,6 +3243,169 @@ mod tests {
             }
         }
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn source_shared_period_omission_preserves_microphone_request_shape() {
+        let directory = temp_dir("source-shared-period-omitted");
+        let options = parse(microphone_route_args(&directory)).unwrap();
+        let route = options.route_intent().unwrap();
+        assert!(
+            route["source_native_request"]
+                .get("shared_period_frames")
+                .is_none()
+        );
+        assert_eq!(options.source_shared_period_frames, None);
+    }
+
+    #[test]
+    fn source_shared_period_owned_process_dry_run_retains_request_without_child() {
+        let directory = temp_dir("owned-process-shared-period-dry");
+        let source = directory.with_extension("source.json");
+        let config = directory.with_extension("config.json");
+        fs::write(&source, source_plan_bytes()).unwrap();
+        fs::write(&config, br#"{"schema_version":1,"input_endpoint_id":"independent-recorder","ring_frames":1024,"max_pcm_bytes":1048576,"max_metadata_bytes":100000,"max_packets":1000,"preroll_ms":100,"postroll_ms":100}"#).unwrap();
+        let args = vec![
+            "--dry-run".into(),
+            "--source-output".into(),
+            "explicit-source".into(),
+            "--source-schedule".into(),
+            source.to_string_lossy().into_owned(),
+            "--process-collection".into(),
+            config.to_string_lossy().into_owned(),
+            "--output".into(),
+            "explicit-graph-output".into(),
+            "--artifact-dir".into(),
+            directory.to_string_lossy().into_owned(),
+            "--seconds".into(),
+            "14".into(),
+            "--source-shared-period-frames".into(),
+            "480".into(),
+        ];
+        assert_eq!(run(args).unwrap(), 1);
+        for name in ["report.json", "manifest.json"] {
+            let value: Value =
+                serde_json::from_slice(&fs::read(directory.join(name)).unwrap()).unwrap();
+            let source_request = if name == "report.json" {
+                &value["source"]
+            } else {
+                &value
+            };
+            assert_eq!(source_request["source_shared_period_frames"], 480);
+        }
+        assert!(!directory.join("process-source").exists());
+        assert!(!directory.join("measurement.f32le").exists());
+        fs::remove_dir_all(directory).unwrap();
+        fs::remove_file(source).unwrap();
+        fs::remove_file(config).unwrap();
+    }
+
+    #[test]
+    fn source_shared_period_dry_run_retains_request_without_actual_period() {
+        for microphone in [false, true] {
+            let directory = temp_dir("source-shared-period-dry");
+            let mut args = if microphone {
+                microphone_route_args(&directory)
+            } else {
+                source_test_args(&directory)
+            };
+            let source_path = directory.with_extension("source.json");
+            let collection_path = directory.with_extension("collection.json");
+            if microphone {
+                fs::write(&source_path, source_plan_bytes()).unwrap();
+                fs::write(&collection_path, br#"{"schema_version":2,"ring_frames":1024,"max_pcm_bytes":1048576,"max_metadata_bytes":100000,"max_packets":1000,"preroll_ms":100,"postroll_ms":200}"#).unwrap();
+                for (flag, path) in [
+                    ("--source-schedule", &source_path),
+                    ("--vad-collection", &collection_path),
+                ] {
+                    let index = args.iter().position(|value| value == flag).unwrap();
+                    args[index + 1] = path.to_string_lossy().into_owned();
+                }
+            }
+            args.extend([
+                "--vad-source-mode".into(),
+                "shared".into(),
+                "--source-shared-period-frames".into(),
+                "480".into(),
+            ]);
+            assert_eq!(run(args).unwrap(), 1);
+            let manifest: Value =
+                serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap())
+                    .unwrap();
+            let report: Value =
+                serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+            assert_eq!(manifest["source_shared_period_frames"], 480);
+            assert_eq!(report["source"]["source_shared_period_frames"], 480);
+            assert!(report["native"]["vad_playback"].is_null());
+            if microphone {
+                assert_eq!(
+                    report["vad_route"]["source_native_request"]["shared_period_frames"],
+                    480
+                );
+            }
+            fs::remove_dir_all(directory).unwrap();
+            if microphone {
+                fs::remove_file(source_path).unwrap();
+                fs::remove_file(collection_path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn source_shared_period_refuses_invalid_or_unowned_source_before_artifacts() {
+        let directory = temp_dir("source-shared-period-refusal");
+        for tail in [
+            vec!["--source-shared-period-frames"],
+            vec!["--source-shared-period-frames", "480"], // VAD defaults Exclusive.
+            vec![
+                "--vad-source-mode",
+                "shared",
+                "--source-shared-period-frames",
+                "0",
+            ],
+            vec![
+                "--vad-source-mode",
+                "shared",
+                "--source-shared-period-frames",
+                "4097",
+            ],
+            vec![
+                "--vad-source-mode",
+                "shared",
+                "--source-shared-period-frames",
+                "+480",
+            ],
+            vec![
+                "--vad-source-mode",
+                "shared",
+                "--source-shared-period-frames",
+                "480",
+                "--source-shared-period-frames",
+                "480",
+            ],
+        ] {
+            let mut args = source_test_args(&directory);
+            args.extend(tail.into_iter().map(str::to_owned));
+            assert!(parse(args).and_then(|options| validate(&options)).is_err());
+            assert!(!directory.exists());
+        }
+        let args = [
+            "--source-kind",
+            "process-loopback",
+            "--source-pid",
+            "42",
+            "--output",
+            "out",
+            "--artifact-dir",
+            "unused",
+            "--source-shared-period-frames",
+            "480",
+        ];
+        assert!(
+            parse(args.map(str::to_owned).to_vec())
+                .and_then(|options| validate(&options))
+                .is_err()
+        );
     }
 
     #[test]

@@ -1195,6 +1195,7 @@ impl VadCleanup<'_> {
                     source_plan,
                     options.vad_source_mode(),
                     options.vad_minimum_period,
+                    options.source_shared_period_frames,
                     abort,
                     &mut self.playback_outcome,
                 )
@@ -1205,6 +1206,7 @@ impl VadCleanup<'_> {
                     source_plan,
                     options.vad_source_mode(),
                     options.vad_minimum_period,
+                    options.source_shared_period_frames,
                     &mut self.playback_outcome,
                 )
             }

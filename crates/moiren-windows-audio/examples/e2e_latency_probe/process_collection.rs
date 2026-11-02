@@ -812,6 +812,7 @@ pub(super) fn collect(
                     .context("retained source schedule missing")?
                     .into(),
                 seconds: options.seconds,
+                shared_period_frames: options.source_shared_period_frames,
                 validation: options.validation,
             },
             &Path::new(&paths.directory).join("process-source"),
