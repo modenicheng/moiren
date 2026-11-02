@@ -71,6 +71,9 @@ pub struct PlaybackOutcome {
     pub info: Option<PlaybackInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period_request: Option<PeriodEvidence>,
+    /// Resolved identity before format selection, not a started native stream.
+    pub preparation_identity: Option<PreparationIdentity>,
+    pub format_queries: Vec<FormatQuery>,
     pub submitted_frames: u64,
     pub playback_source: SourceProvenance,
     pub source_progress: SourceProgress,
@@ -88,6 +91,27 @@ pub struct PlaybackOutcome {
     pub write_witness: Option<WriteWitness>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_controls: Option<SourceControls>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparationIdentity {
+    pub stable_endpoint_id: String,
+    pub mmdevice_id: String,
+    pub observed_name: String,
+    pub adapter_instance: String,
+    pub root_instance: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FormatQuery {
+    format: String,
+    mode: &'static str,
+    sample_rate: u32,
+    channels: u32,
+    activation_succeeded: bool,
+    activation_error_hresult: Option<i32>,
+    format_hresult: Option<i32>,
+    selected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -254,6 +278,8 @@ pub struct PlaybackSession {
 struct WorkerState {
     info: Option<PlaybackInfo>,
     period_request: Option<PeriodEvidence>,
+    preparation_identity: Option<PreparationIdentity>,
+    format_queries: Vec<FormatQuery>,
     provenance: Option<SourceProvenance>,
     progress: PlaybackProgress,
     elapsed_seconds: f64,
@@ -536,6 +562,8 @@ fn join_outcome(
     PlaybackOutcome {
         info: state.info.clone(),
         period_request: state.period_request,
+        preparation_identity: state.preparation_identity.clone(),
+        format_queries: state.format_queries.clone(),
         submitted_frames: state.progress.source.native_submitted_frames,
         playback_source: state.provenance.clone().unwrap_or(provenance),
         source_progress: state.progress.source.clone(),
@@ -912,6 +940,43 @@ struct Stream {
     witness_clock: Option<moiren_windows_audio::latency::QpcClock>,
 }
 
+fn select_exact_format<C>(
+    latest: &Mutex<WorkerState>,
+    mut activate: impl FnMut(SampleFormat) -> windows::core::Result<C>,
+    mut query: impl FnMut(&C, SampleFormat) -> i32,
+) -> Result<(C, SampleFormat)> {
+    // Exactly the existing two attempts, on the non-RT source owner. Publish
+    // raw query/error results before propagating failure; no lock over COM.
+    for format in [SampleFormat::Float32, SampleFormat::Pcm16] {
+        let client = activate(format);
+        // The typed Activate wrapper erases success HRESULTs; retain only
+        // observed success and the raw code on error, never fabricate S_OK.
+        let activation_succeeded = client.is_ok();
+        let activation_error_hresult = client.as_ref().err().map(|error| error.code().0);
+        let format_hresult = client.as_ref().ok().map(|client| query(client, format));
+        let selected = format_hresult == Some(S_OK.0);
+        latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .format_queries
+            .push(FormatQuery {
+                format: format!("{format:?}"),
+                mode: "exclusive",
+                sample_rate: 48_000,
+                channels: 2,
+                activation_succeeded,
+                activation_error_hresult,
+                format_hresult,
+                selected,
+            });
+        let client = client?;
+        if selected {
+            return Ok((client, format));
+        }
+    }
+    anyhow::bail!("VAD MMDevice has no exact Float32/PCM16 format")
+}
+
 fn prepare_alignment_retry(
     latest: &Mutex<WorkerState>,
     buffer_size: impl FnOnce() -> Result<u32>,
@@ -946,21 +1011,21 @@ fn prepare_alignment_retry(
 
 impl Stream {
     fn prepare(device: &IMMDevice, latest: &Mutex<WorkerState>) -> Result<Self> {
-        let mut selected = None;
-        for format in [SampleFormat::Float32, SampleFormat::Pcm16] {
-            let wave = descriptor(format);
-            // SAFETY: exact format descriptor and apartment-local device.
-            let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
-            let supported = unsafe {
-                client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &wave.Format, None)
-            };
-            if supported.is_ok() && supported == S_OK {
-                selected = Some((client, wave, format));
-                break;
-            }
-        }
-        let (mut client, wave, format) =
-            selected.context("VAD MMDevice has no exact Float32/PCM16 format")?;
+        let (mut client, format) = select_exact_format(
+            latest,
+            // SAFETY: apartment-local device and client, used on this owner.
+            |_| unsafe { device.Activate::<IAudioClient>(CLSCTX_ALL, None) },
+            |client, format| {
+                let wave = descriptor(format);
+                // SAFETY: exact descriptor stays alive for this synchronous query.
+                unsafe {
+                    client
+                        .IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &wave.Format, None)
+                        .0
+                }
+            },
+        )?;
+        let wave = descriptor(format);
         let mut evidence = latest
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1201,6 +1266,10 @@ fn run_worker(
     let witness = matches!(&target, PlaybackTarget::Shared { witness: true, .. });
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+    let root_instance = match &target {
+        PlaybackTarget::Vad { root, .. } => Some(root.clone()),
+        PlaybackTarget::Shared { .. } => None,
+    };
     let (device, mmdevice_id, observed_name, adapter_instance, stable_endpoint_id, shared) =
         match target {
             PlaybackTarget::Vad {
@@ -1233,6 +1302,16 @@ fn run_worker(
                 (device, id, name, String::new(), String::new(), true)
             }
         };
+    latest
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .preparation_identity = Some(PreparationIdentity {
+        stable_endpoint_id: stable_endpoint_id.clone(),
+        mmdevice_id: mmdevice_id.clone(),
+        observed_name: observed_name.clone(),
+        adapter_instance: adapter_instance.clone(),
+        root_instance,
+    });
     let mut stream = if shared {
         Stream::prepare_shared(&device, witness)?
     } else {
@@ -1379,6 +1458,118 @@ pub fn discover_root() -> Result<(DeviceInterface, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn format_preparation_failure_retains_unattempted_queries_without_native_info() {
+        let latest = Mutex::new(WorkerState::default());
+        let outcome = join_outcome(
+            thread::spawn(|| anyhow::bail!("failure before format activation")),
+            &latest,
+            SourceProvenance::new(None),
+        );
+        let value = serde_json::to_value(outcome).unwrap();
+        assert_eq!(value["format_queries"], serde_json::json!([]));
+        assert!(value["preparation_identity"].is_null());
+        assert_eq!(value["started"], false);
+        assert_eq!(value["submitted_frames"], 0);
+        assert!(value.get("packet_format").is_none());
+    }
+
+    #[test]
+    fn format_query_results_keep_raw_hresult_and_legacy_exact_selection() {
+        for (responses, selected) in [
+            ([0, -1], Some(SampleFormat::Float32)),
+            ([-2004287480, 0], Some(SampleFormat::Pcm16)),
+            ([1, 0], Some(SampleFormat::Pcm16)),
+            ([-2147023590, -2004287480], None),
+        ] {
+            let latest = Mutex::new(WorkerState {
+                preparation_identity: Some(PreparationIdentity {
+                    stable_endpoint_id: "owned-playback".into(),
+                    mmdevice_id: "exact-mmdevice".into(),
+                    observed_name: "observed Windows name".into(),
+                    adapter_instance: "owned-adapter".into(),
+                    root_instance: Some("owned-root".into()),
+                }),
+                ..WorkerState::default()
+            });
+            let mut calls = 0;
+            let result = select_exact_format(
+                &latest,
+                |format| {
+                    assert!(
+                        latest.try_lock().is_ok(),
+                        "COM activation outside publication lock"
+                    );
+                    Ok(format)
+                },
+                |client, format| {
+                    assert!(
+                        latest.try_lock().is_ok(),
+                        "format query outside publication lock"
+                    );
+                    assert_eq!(*client, format);
+                    let response = responses[calls];
+                    calls += 1;
+                    response
+                },
+            );
+            assert_eq!(result.as_ref().ok().map(|(_, format)| *format), selected);
+            let outcome = join_outcome(
+                thread::spawn(move || result.map(|_| ())),
+                &latest,
+                SourceProvenance::new(None),
+            );
+            let value = serde_json::to_value(outcome).unwrap();
+            assert_eq!(
+                value["preparation_identity"]["mmdevice_id"],
+                "exact-mmdevice"
+            );
+            assert_eq!(value["preparation_identity"]["root_instance"], "owned-root");
+            let queries = value["format_queries"].as_array().unwrap();
+            assert_eq!(queries.len(), calls);
+            for (index, query) in queries.iter().enumerate() {
+                assert_eq!(query["activation_succeeded"], true);
+                assert!(query["activation_error_hresult"].is_null());
+                assert_eq!(query["format_hresult"], responses[index]);
+                assert_eq!(query["selected"], responses[index] == 0);
+                assert_eq!(query["mode"], "exclusive");
+                assert_eq!(query["sample_rate"], 48000);
+                assert_eq!(query["channels"], 2);
+            }
+            assert_eq!(value["started"], false);
+            assert!(value.get("packet_format").is_none());
+        }
+    }
+
+    #[test]
+    fn format_activation_error_keeps_original_failure_and_does_not_query_or_fallback() {
+        let latest = Mutex::new(WorkerState::default());
+        let result = select_exact_format::<()>(
+            &latest,
+            |_| {
+                Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    -2147023590,
+                )))
+            },
+            |_, _| panic!("no query after activation failure"),
+        );
+        let outcome = join_outcome(
+            thread::spawn(move || result.map(|_| ())),
+            &latest,
+            SourceProvenance::new(None),
+        );
+        let value = serde_json::to_value(outcome).unwrap();
+        assert_eq!(value["format_queries"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["format_queries"][0]["activation_error_hresult"],
+            -2147023590_i64
+        );
+        assert!(value["format_queries"][0]["format_hresult"].is_null());
+        assert_eq!(value["format_queries"][0]["activation_succeeded"], false);
+        assert_eq!(value["format_queries"][0]["selected"], false);
+        assert!(value["failure"].as_str().unwrap().contains("8007051A"));
+    }
+
     #[test]
     fn source_controls_join_keeps_observation_and_original_audio_error() {
         use super::super::source_controls::{

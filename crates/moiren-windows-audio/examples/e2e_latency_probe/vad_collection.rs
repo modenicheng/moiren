@@ -3312,6 +3312,8 @@ mod tests {
         let mut source = super::super::vad::PlaybackOutcome {
             info: None,
             period_request: None,
+            preparation_identity: None,
+            format_queries: Vec::new(),
             submitted_frames: 48_480,
             write_witness: None,
             source_controls: None,
@@ -3636,6 +3638,8 @@ mod tests {
         let mut outcome = super::super::vad::PlaybackOutcome {
             info: None,
             period_request: None,
+            preparation_identity: None,
+            format_queries: Vec::new(),
             submitted_frames: 48_480,
             playback_source: super::super::source::SourceProvenance::new(None),
             source_progress: source.source,

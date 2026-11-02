@@ -5,6 +5,19 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [format-query receipt and target1536failure](2026-11-02-format-query-and-target1536.md)
+retains resolved Playback preparation identity and raw exact-format query codes,
+without changing selection/fallback or production policy. Actual RED/GREEN and
+corrected feature-off/on example suites694passed/1ignored each, strict
+Clippy/fmt/release pass. One instrumented remote repeat now selects Float32/S_OK
+and runs76.270s before a MIC gate_epoch1->2mismatch stops collection; recovery1
+and192virtual-clock clamped frames already coexist in the failure snapshot.
+Cleanup separately records0x8007051A. Source
+stops/joins, exports remove, but collection/cleanup remain false. Remote-only PCM
+analysis produces a reviewed/hash-verified plot without inferring waveform
+identity or E2E delay. A corrected activation-provenance reporter receives only
+dry-run, not another audio attempt. No default promotion or first-packet work.
+
 The [Playback decode-call gap diagnostic](2026-11-02-host-decode-call-gap.md)
 adds a control-side comparison of the retained upward-rounded call envelope and
 declared gap, separate from jitter and actual supply/physical timing. Missing,
