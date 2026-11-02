@@ -101,6 +101,8 @@ impl ManagedDriver {
                     process_trace: process_trace.map(|trace| trace.finish(&cleanup.state)),
                     ..cleanup
                 };
+                #[cfg(windows)]
+                crate::service::process_trace::receipt::emit(&cleanup);
                 completion.send_or_dispose(Completion::Reaped(cleanup), drop);
             });
             // Reserved before opening the host, so stop never needs additional

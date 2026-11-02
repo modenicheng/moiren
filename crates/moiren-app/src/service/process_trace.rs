@@ -7,6 +7,7 @@ use moiren_windows_audio::process_loopback::{
 
 pub(crate) mod candidate;
 mod evaluation;
+pub(crate) mod receipt;
 pub use candidate::EvaluatedProcessCandidate;
 #[cfg(test)]
 pub(crate) mod tests;

@@ -1824,3 +1824,36 @@ to free memory, and no guard is lowered. Successful native closed-prefix Apply,
 independent final-history receipt, waveform/stability and calibrated physical
 qualification remain separate open gates. The original goal stays active;
 resource-limited native testing does not block independent development.
+
+### Opt-in joined Process trace diagnostic
+
+The [joined-cleanup diagnostic](2026-11-02-joined-process-trace-receipt.md)
+makes the exact retained final measurement and full-archive summaries inspectable
+after actual host join, before cleanup publication. It is default-off,
+bounded128KiB, control-worker-only and never an imported native proof. Refused
+measurements retain matching post-join observations or explicit missing/stale/
+multiple status, rather than substituting live or suffix evidence. Software
+fixtures remain CallerSupplied and all payloads remain unqualified.
+
+Nine focused tests pass after actual RED; exact isolated source passes2351
+workspace tests/9ignored/0failed, all-target check, strict Clippy, fmt and release
+build. The evidence-only numeric/identity checker passes27tests both locally
+and in the remote isolated environment on actual Rust software fixtures;17PS5
+runner checks pass. An extra concurrent gpui suite records a meter-animation
+assertion failure; its unchanged isolated rerun passes, and the original failure
+is preserved. A subsequent complete serial feature-app run passes732/4ignored
+with the same source; default app604/3ignored also passes. No contention cause
+is established, no UI fix is invented and no assertion is weakened. A separate
+review finds swallowed checker nonzero exits in the evidence wrapper; its
+RED/GREEN assertion and exact0/1/2 exit propagation tests are retained.
+
+The new binary and runner are remotely staged/hash-verified, but23:00:56
+preflight has520120KiB free below the unchanged8388608KiB guard. No native task,
+run directory or audio owner starts, and protected OBS/QQMusic identities remain
+unchanged. A23:02:26 reading briefly passes at8781028KiB; the single subsequent
+launch command refuses its first memory check before task registration. The
+23:02:50audit at5218568KiB confirms no task/run/owner. No retry or resource
+workaround follows. The intended native Stop/join/Evaluate/Apply success and independent
+actual receipt remain unacquired. First-packet investigation stays deferred;
+no lower default, repeated unchanged soak, physical claim or S1-S3 completion
+follows. Development continues independently of unavailable physical equipment.
