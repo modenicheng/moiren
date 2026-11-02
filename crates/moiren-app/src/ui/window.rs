@@ -192,6 +192,10 @@ pub struct StudioShell {
     /// and carved out of the meter frame's paint so live bars stay under
     /// them.
     graph_overlays: pages::graph_canvas::OverlayRects,
+    /// The meter frame's copy of the spectrum curve it is painting: the
+    /// subscription table cannot stay borrowed across the paint, and a
+    /// per-frame allocation would be a wakeup cost of its own.
+    spectrum_scratch: Vec<f32>,
     /// The canvas card under the pointer, tracked on idle moves for the
     /// fault tooltip the meter frame paints; never part of a panel key.
     hovered_node: Option<moiren_core::graph::NodeId>,
@@ -394,6 +398,7 @@ impl StudioShell {
             graph_controls,
             graph_canvas_frame,
             graph_overlays: Default::default(),
+            spectrum_scratch: Vec::new(),
             hovered_node: None,
             binding_menu: None,
             compressor: graph::CompressorControls::default(),

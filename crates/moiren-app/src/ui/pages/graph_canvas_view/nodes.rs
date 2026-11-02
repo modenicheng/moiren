@@ -9,6 +9,7 @@ use super::super::graph_canvas::{
     BindingChip, CanvasFrame, CanvasNode, CardKnob, ChipLayout, CurveSpec, KnobLayout, MeterLayout,
     NodeLayout, TextLayout, curves,
 };
+use crate::ui::monitoring::{REST_DB, SPECTRUM_NOMINAL_SPAN_HZ, SpectrumCurve};
 use crate::ui::theme;
 
 fn shape_text(
@@ -460,6 +461,172 @@ fn paint_curve_thumb(
     }
 }
 
+/// One straight hairline between two window points.
+fn hairline(from: (f32, f32), to: (f32, f32), stroke: f32, color: Hsla, window: &mut Window) {
+    let mut builder = PathBuilder::stroke(px(stroke));
+    builder.move_to(point(px(from.0), px(from.1)));
+    builder.line_to(point(px(to.0), px(to.1)));
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// A single unwrapped line of UI text, anchored at its center or its right
+/// edge: the spectrum plot's tick labels sit on their grid lines.
+fn paint_anchored_text(
+    text: &str,
+    font_size: f32,
+    color: Hsla,
+    anchor: (f32, f32),
+    right_aligned: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let line = shape_text(
+        window,
+        text,
+        font_size,
+        font(theme::FONT_UI),
+        color,
+        f32::MAX,
+    );
+    let width = f32::from(line.width());
+    let left = if right_aligned {
+        anchor.0 - width
+    } else {
+        anchor.0 - width / 2.
+    };
+    let _ = line.paint(
+        point(px(left), px(anchor.1)),
+        px(font_size + 2.),
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
+/// The spectrum analyzer's body: a log-frequency / dBFS plot with its axis
+/// furniture and the live curve, painted whole by the cached canvas (one
+/// snapshot per rebuild) and by the hot layer (every frame), the way the
+/// meter bars are. The axis follows the curve's own span — the ISO grid
+/// clamped to the running Nyquist — and falls back to the nominal
+/// 20 Hz .. 20 kHz band before the first window lands. Grid lines sit at
+/// the decade-standard frequencies and every 24 dB; the curve fills down
+/// to the floor under a stroke in the card's tint.
+pub(in crate::ui) fn paint_spectrum_body(
+    frame: &CanvasFrame,
+    layout: &NodeLayout,
+    detail: &str,
+    tint: Hsla,
+    curve: Option<SpectrumCurve<'_>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(bounds) = layout.spectrum else {
+        return;
+    };
+    let scale = layout.scale;
+    let plot = frame.window_rect(bounds);
+    let left = f32::from(plot.origin.x);
+    let top = f32::from(plot.origin.y);
+    let width = f32::from(plot.size.width);
+    let height = f32::from(plot.size.height);
+    if width <= 0. || height <= 0. {
+        return;
+    }
+    rounded(plot, theme::WINDOW_BG, 3. * scale, window);
+    let (lo_hz, hi_hz) = curve
+        .map(|curve| (curve.lo_hz, curve.hi_hz))
+        .filter(|(lo, hi)| hi > lo)
+        .unwrap_or(SPECTRUM_NOMINAL_SPAN_HZ);
+    let span = hi_hz.log2() - lo_hz.log2();
+    let x_of = |hz: f64| left + ((hz.log2() - lo_hz.log2()) / span) as f32 * width;
+    // 0 dBFS sits a hair under the top edge; the floor is the plot bottom.
+    let headroom = 2. * scale;
+    let y_of = |db: f32| top + headroom + (db / REST_DB) * (height - headroom);
+    let stroke = scale.max(0.75);
+    for db in [-24., -48., -72.] {
+        let y = y_of(db);
+        hairline(
+            (left, y),
+            (left + width, y),
+            stroke,
+            theme::HAIRLINE,
+            window,
+        );
+    }
+    for hz in [
+        20., 50., 100., 200., 500., 1_000., 2_000., 5_000., 10_000., 20_000.,
+    ] {
+        if hz < lo_hz || hz > hi_hz {
+            continue;
+        }
+        let decade = hz == 100. || hz == 1_000. || hz == 10_000.;
+        let x = x_of(hz);
+        let color = if decade {
+            theme::BORDER_STRONG
+        } else {
+            theme::HAIRLINE
+        };
+        hairline((x, top), (x, top + height), stroke, color, window);
+    }
+    // Decade labels along the floor, the FFT detail in the top-right corner.
+    let label_size = theme::card::HINT_SIZE * scale;
+    for (hz, text) in [(100., "100"), (1_000., "1k"), (10_000., "10k")] {
+        if hz < lo_hz || hz > hi_hz {
+            continue;
+        }
+        paint_anchored_text(
+            text,
+            label_size,
+            theme::TEXT_FAINT,
+            (x_of(hz), top + height - label_size - 4. * scale),
+            false,
+            window,
+            cx,
+        );
+    }
+    paint_anchored_text(
+        detail,
+        label_size,
+        theme::TEXT_FAINT,
+        (left + width - 4. * scale, top + 3. * scale),
+        true,
+        window,
+        cx,
+    );
+    // The curve: filled under its stroke, nothing while parked at the floor.
+    let Some(curve) = curve else {
+        return;
+    };
+    if curve.points.len() < 2 || curve.points.iter().all(|point| *point <= REST_DB) {
+        return;
+    }
+    let step = width / (curve.points.len() - 1) as f32;
+    let floor = top + height;
+    let mut fill = PathBuilder::fill();
+    let mut outline = PathBuilder::stroke(px(1.5 * scale));
+    fill.move_to(point(px(left), px(floor)));
+    for (index, db) in curve.points.iter().enumerate() {
+        let x = left + index as f32 * step;
+        let y = y_of(db.clamp(REST_DB, 0.));
+        fill.line_to(point(px(x), px(y)));
+        if index == 0 {
+            outline.move_to(point(px(x), px(y)));
+        } else {
+            outline.line_to(point(px(x), px(y)));
+        }
+    }
+    fill.line_to(point(px(left + width), px(floor)));
+    if let Ok(path) = fill.build() {
+        window.paint_path(path, tint.opacity(0.28));
+    }
+    if let Ok(path) = outline.build() {
+        window.paint_path(path, tint);
+    }
+}
+
 /// A binding chip: what this source/sink card is wired to. Unbound chips
 /// sit quieter — surface fill, faint text — so the missing binding reads
 /// as a prompt rather than an error.
@@ -785,7 +952,7 @@ pub(super) fn paint_node(
     node: &CanvasNode,
     layout: &NodeLayout,
     selected: bool,
-    reading: Option<&super::NodeMeterReading>,
+    live: super::NodeLive<'_>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -881,6 +1048,8 @@ pub(super) fn paint_node(
                 window,
                 cx,
             );
+        } else if layout.spectrum.is_some() {
+            paint_spectrum_body(frame, layout, &node.detail, tint, live.spectrum, window, cx);
         } else if let (Some(spec), Some(bounds)) = (&node.curve, layout.curve) {
             paint_curve_thumb(frame, bounds, spec, layout.scale, window);
         } else {
@@ -898,7 +1067,7 @@ pub(super) fn paint_node(
                 cx,
             );
         }
-        paint_meter_bars(frame, layout, reading, window);
+        paint_meter_bars(frame, layout, live.meters, window);
     });
     // The outline last, above the rail and the body, so the ring stays
     // whole on every side whatever the state paints underneath.

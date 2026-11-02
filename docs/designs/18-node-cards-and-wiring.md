@@ -193,7 +193,7 @@ height):
 | ChannelMapper | matrix preview grid (weight-intensity cells) + meter | matrix editor |
 | Recorder | capacity/usage line + meter | buffer controls |
 | Meter | large per-channel bars + peak/RMS readout | — |
-| SpectrumAnalyzer | live spectrum (hot layer) + vertical meter | FFT/hop fields |
+| SpectrumAnalyzer | live spectrum plot on a square card (hot layer) + vertical meter | FFT/hop fields |
 | Bus | name + meter | — |
 | Rack | stage chain icons + meter | stage list |
 
@@ -230,6 +230,37 @@ spectrum node is the one live body: its bins arrive on a per-node signal
 topic (mirroring `node/{id}/level`), and the hot layer paints them next
 to the meters.
 
+The analyzer rides the unified signal bus end to end. The engine's
+`SignalSpectrumAnalyzer` publishes demand-gated FFT windows on its host
+directory; the managed bridge relays the latest window onto an
+application `node/{id}/spectrum` stream topic (depth 4) registered at the
+shape the active plan publishes — a changed FFT size re-registers the
+topic under a new identity, which is how subscribers learn to follow —
+and the UI's `NodeSpectra` subscribes per visible card, on the Graph page
+only. Demand flows back the same way: no visible card, no subscriber, no
+FFT on the audio thread.
+
+The plot is drawn to the industry's logarithmic conventions, never a
+linear axis. Frequency runs on the ISO 266 base-2 fractional-octave grid
+— 1/12-octave points anchored on 1 kHz from 19.7 Hz to 20.2 kHz (121
+points), clamped to the running Nyquist — so the points are equally
+spaced on the axis and the decade-standard grid lines (20, 50, 100, 200,
+500, 1 k, 2 k, 5 k, 10 k, 20 k; 100/1 k/10 k labeled) fall where an
+analyzer's do. Level is dBFS over the meters' −96 dB floor with lines
+every 24 dB. A band takes the maximum bin magnitude across channels (the
+engine's magnitudes are coherent-gain normalized, so a tone reads its
+amplitude at its peak bin); a band narrower than a bin interpolates on
+the dB-versus-log2-frequency line between its bracketing bins, and bands
+under the first non-DC bin hold its level. The display rises instantly
+and falls at 30 dB/s in the dB domain; at the floor the curve counts as
+at rest, so a silent analyzer stands the frame loop down exactly as a
+silent meter does, and only a moving projection or a status change wakes
+the interface. The card is square — the body is sized so header, body,
+meter reserve and port margins add up to the card width — with the
+curve-node vertical meter down its right edge; the curve is a tinted
+fill under a stroke, repainted whole by the hot layer (and by the cached
+canvas as a snapshot, so a connection drag never blanks it).
+
 ### B4. Detail window
 
 A settings-style in-window overlay (scrim + occlusion + Escape and
@@ -254,7 +285,8 @@ is pushed after phase 1 so CI carries the load from there.
 7. Remaining bodies: bindings, matrix, rack, recorder, meter (B3)
 8. Curve thumbnails (B3)
 9. Detail window + EQ point editor (B4)
-10. Spectrum topic + subscription + hot-layer paint (B3)
+10. Spectrum topic + subscription + hot-layer paint (B3) — bus relay,
+    ISO fractional-octave projection, square card
 11. Icons: dedicated Tabler glyphs for the kinds that share fallbacks,
     registered in the `ActionAssets` allowlist
 12. Capture states + acceptance screenshots

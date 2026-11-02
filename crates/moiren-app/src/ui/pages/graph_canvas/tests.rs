@@ -854,3 +854,46 @@ fn connection_candidate_resolves_body_drops_to_the_nearest_input() {
             .is_none()
     );
 }
+
+/// The spectrum analyzer is the one card that is not a strip: its body is
+/// sized so the card comes out square, its meter runs vertically down the
+/// right edge, and the plot keeps clear of both meter channels.
+#[test]
+fn spectrum_card_is_square_with_a_vertical_meter_and_a_clear_plot() {
+    let mut card = node("spectrum", "Spectrum analyzer", "FFT 1024 · hop 512");
+    card.spectrum = true;
+    card.body_height = theme::card::SPECTRUM_BODY_H;
+    card.meter_vertical = true;
+    card.input_count = 1;
+    card.has_output = true;
+    card.x = 120.;
+    card.y = -40.;
+    assert_close(theme::card::SPECTRUM_BODY_H, 198.);
+    assert_close(card.height(), theme::NODE_WIDTH);
+    let layout = NodeLayout::new(&card);
+    let plot = layout.spectrum.expect("the analyzer lays out a plot");
+    assert!(layout.curve.is_none(), "a plot is not a curve thumbnail");
+    let MeterLayout::Vertical { bounds: meter } = layout.meter else {
+        panic!("the analyzer's meter runs vertically");
+    };
+    let stride = theme::card::METER_H + theme::card::METER_CHANNEL_GAP;
+    assert_close(plot.origin.x, layout.body.origin.x);
+    assert_close(plot.origin.y, layout.body.origin.y);
+    assert_close(plot.size.height, theme::card::SPECTRUM_BODY_H);
+    assert!(
+        plot.origin.x + plot.size.width <= meter.origin.x - stride,
+        "the plot stops short of the second meter channel"
+    );
+    assert_close(meter.size.height, plot.size.height);
+    // The plot projects with the rest of the card.
+    let camera = Camera {
+        pan_x: 10.,
+        pan_y: 20.,
+        zoom: 0.5,
+        adjusted: true,
+    };
+    let projected = layout.project(camera);
+    let plot = projected.spectrum.expect("projected plot");
+    assert_close(plot.size.height, theme::card::SPECTRUM_BODY_H * 0.5);
+    assert_close(plot.origin.x, camera.project_rect(layout.body).origin.x);
+}

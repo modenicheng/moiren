@@ -72,6 +72,22 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
     Ok(service)
 }
 
+/// A plausible program spectrum for the capture on the analyzer's 121-point
+/// grid: a pink-ish slope with a low-end bump, a tone at 1 kHz and a
+/// presence peak.
+fn demo_spectrum_curve() -> Vec<f32> {
+    (0..121)
+        .map(|index| {
+            let position = index as f32 / 120.;
+            let peak = |center: f32, width: f32, height: f32| {
+                height * (-((index as f32 - center) / width).powi(2)).exp()
+            };
+            (-22. - 26. * position + peak(28., 6., 9.) + peak(68., 2.5, 16.) + peak(92., 8., 5.))
+                .clamp(-96., 0.)
+        })
+        .collect()
+}
+
 pub fn run_ui_capture() -> anyhow::Result<()> {
     let directory = std::env::args()
         .nth(1)
@@ -411,6 +427,54 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 capture(cx, directory.join("graph-binding-menu.png"));
                 shell.update(cx, |shell, cx| {
                     shell.binding_menu = None;
+                    cx.notify();
+                });
+                // The spectrum analyzer's live body (design 18 B3): put an
+                // analyzer on the canvas and hand it a curve the way a
+                // relayed window would — synchronously, so the rebuilt
+                // panel and the meter frame both paint it in this draw.
+                let analyzer = shell.update(cx, |shell, cx| {
+                    let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+                    let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+                    let id = graph
+                        .graph
+                        .create_node(moiren_core::graph::NodeKind::SpectrumAnalyzer, 2)
+                        .expect("analyzer card");
+                    graph.nodes.push(crate::service::GraphNodeState {
+                        id,
+                        label: "Spectrum analyzer".into(),
+                        gain: 1.,
+                        pan: 0.,
+                        mono: false,
+                        swap: false,
+                        mixer: Default::default(),
+                        compressor: Default::default(),
+                        builtin: crate::service::BuiltinState::SpectrumAnalyzer(
+                            Default::default(),
+                        ),
+                        source: None,
+                        output_endpoint_id: None,
+                        tint: None,
+                    });
+                    shell.node_positions.insert(id, (530., 200.));
+                    let curve = demo_spectrum_curve();
+                    shell.state.update(cx, |state, _| {
+                        state.snapshot = std::sync::Arc::new(snapshot);
+                        state.node_spectra.inject_curve(id, &curve);
+                    });
+                    cx.notify();
+                    id
+                });
+                capture(cx, directory.join("graph-spectrum.png"));
+                shell.update(cx, |shell, cx| {
+                    let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+                    let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+                    let _ = graph.graph.remove_node(analyzer);
+                    graph.nodes.retain(|node| node.id != analyzer);
+                    shell.node_positions.remove(&analyzer);
+                    shell
+                        .state
+                        .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
                     cx.notify();
                 });
                 let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));

@@ -47,7 +47,7 @@ use crate::project::MeterDisplayPreferences;
 use ballistics::ChannelBallistics;
 #[cfg(test)]
 use ballistics::{PEAK_HOLD, RMS_INTEGRATION};
-pub use spectrum::{NodeSpectra, OctaveGrid, SpectrumCurve};
+pub use spectrum::{NodeSpectra, OctaveGrid, SPECTRUM_NOMINAL_SPAN_HZ, SpectrumCurve};
 
 /// Ballistics-processed presentation reading for one channel: the moving
 /// peak-programme bar fill, the held recent-maximum marker, and the smoothed

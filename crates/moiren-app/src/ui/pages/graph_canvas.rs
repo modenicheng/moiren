@@ -100,6 +100,10 @@ pub struct CanvasNode {
     pub rack_stages: Vec<&'static str>,
     /// Static curve thumbnail (EQ response or dynamics transfer).
     pub curve: Option<curves::CurveSpec>,
+    /// The spectrum analyzer's live plot body (design 18 B3): the geometry
+    /// is projected here, the curve itself reaches the screen through the
+    /// hot layer at paint time and never enters the projection.
+    pub spectrum: bool,
 }
 
 /// A card's IO binding chip: what the node is wired to outside the graph
@@ -170,6 +174,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         matrix: None,
         rack_stages: Vec::new(),
         curve: None,
+        spectrum: false,
     }
 }
 
@@ -558,6 +563,14 @@ impl CanvasWorld {
             }
             if card.curve.is_some() {
                 card.body_height = theme::card::CURVE_BODY_H;
+                card.meter_vertical = true;
+            }
+            // The spectrum analyzer's live body (design 18 B3): a square
+            // card with a log-frequency plot the hot layer paints into, and
+            // the vertical meter the curve nodes use.
+            if logical.kind() == NodeKind::SpectrumAnalyzer {
+                card.spectrum = true;
+                card.body_height = theme::card::SPECTRUM_BODY_H;
                 card.meter_vertical = true;
             }
             // Rack chain: one glyph per stage.

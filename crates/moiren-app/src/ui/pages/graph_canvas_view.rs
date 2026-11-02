@@ -11,7 +11,7 @@ use super::graph_canvas::{
     Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, KnobControl,
     OverlayRects, PortDirection, PortTarget, WireCurve,
 };
-use crate::ui::monitoring::DisplayLevel;
+use crate::ui::monitoring::{DisplayLevel, SpectrumCurve};
 use crate::ui::observe::TestObserve;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::theme;
@@ -35,12 +35,49 @@ pub(in crate::ui) struct NodeMeterReading {
 
 pub(in crate::ui) type NodeLevelsFn =
     dyn Fn(moiren_core::graph::NodeId, &App) -> Option<NodeMeterReading>;
+/// One analyzer's curve for the cached canvas: an owned copy taken at
+/// rebuild time, so the paint closure needs no borrow into the shell's
+/// subscription table (the hot layer reads that table directly).
+pub(in crate::ui) struct NodeSpectrumReading {
+    pub points: Box<[f32]>,
+    pub lo_hz: f64,
+    pub hi_hz: f64,
+}
+
+impl NodeSpectrumReading {
+    pub fn curve(&self) -> SpectrumCurve<'_> {
+        SpectrumCurve {
+            points: &self.points,
+            lo_hz: self.lo_hz,
+            hi_hz: self.hi_hz,
+        }
+    }
+}
+
+pub(in crate::ui) type NodeSpectrumFn =
+    dyn Fn(moiren_core::graph::NodeId, &App) -> Option<NodeSpectrumReading>;
+
+/// What a card's live surfaces show in one paint: the meter reading and
+/// the analyzer curve, both read at paint time, neither part of the
+/// projection.
+#[derive(Clone, Copy, Default)]
+pub(in crate::ui) struct NodeLive<'a> {
+    pub meters: Option<&'a NodeMeterReading>,
+    pub spectrum: Option<SpectrumCurve<'a>>,
+}
+
+/// The shell's readers for those surfaces, consulted per visible card.
+#[derive(Clone, Copy)]
+struct LiveReaders<'a> {
+    levels: &'a NodeLevelsFn,
+    spectrum: &'a NodeSpectrumFn,
+}
 /// The frame the canvas prepaint projected most recently. Shell-owned so the
 /// page's hot layer can repaint bars over the cached canvas between cache
 /// rebuilds, exactly like the canvas painted them.
 pub(in crate::ui) type PreparedFrame = SharedFrame<CanvasFrame>;
 
-pub(in crate::ui) use nodes::{paint_fault_tooltip, paint_meter_bars};
+pub(in crate::ui) use nodes::{paint_fault_tooltip, paint_meter_bars, paint_spectrum_body};
 
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
@@ -52,6 +89,8 @@ pub struct CanvasCallbacks {
     /// Live ballistics-smoothed bar readings per node, consulted at paint
     /// time so meter motion repaints without rebuilding this element tree.
     pub node_levels: Rc<NodeLevelsFn>,
+    /// Live spectrum curves per analyzer node, for the same reason.
+    pub node_spectrum: Rc<NodeSpectrumFn>,
     pub on_port_down: Rc<WindowAppCallback<(PortTarget, (f32, f32))>>,
     pub on_port_up: Rc<WindowAppCallback<Option<ConnectionCandidate>>>,
     /// A knob dial press: canvas node id, control, window y. Starts a
@@ -111,7 +150,7 @@ fn paint_canvas_layer(
     frame: &CanvasFrame,
     selected_nodes: &[String],
     selected_wire: Option<&str>,
-    node_levels: &NodeLevelsFn,
+    readers: LiveReaders<'_>,
     connection: Option<(PortTarget, (f32, f32))>,
     window: &mut Window,
     cx: &mut App,
@@ -155,12 +194,20 @@ fn paint_canvas_layer(
             }
             for (node, layout) in frame.world.nodes.iter().zip(&frame.nodes) {
                 if layout.card.intersects(&frame.viewport()) {
+                    let spectrum = node
+                        .spectrum
+                        .then(|| node.node_id.and_then(|id| (readers.spectrum)(id, cx)))
+                        .flatten();
+                    let meters = node.node_id.and_then(|id| (readers.levels)(id, cx));
                     nodes::paint_node(
                         frame,
                         node,
                         layout,
                         selected_nodes.iter().any(|selected| selected == &node.id),
-                        node.node_id.and_then(|id| node_levels(id, cx)).as_ref(),
+                        NodeLive {
+                            meters: meters.as_ref(),
+                            spectrum: spectrum.as_ref().map(NodeSpectrumReading::curve),
+                        },
                         window,
                         cx,
                     );
@@ -337,6 +384,7 @@ pub(in crate::ui) fn node_drag_preview(
         matrix: None,
         rack_stages: Vec::new(),
         curve: None,
+        spectrum: false,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
@@ -360,7 +408,7 @@ pub(in crate::ui) fn node_drag_preview(
                 &frame.world.nodes[0],
                 &frame.nodes[0],
                 false,
-                None,
+                NodeLive::default(),
                 window,
                 cx,
             );
@@ -447,6 +495,7 @@ pub fn graph_canvas_view(
         on_select_wire,
         on_camera_fit,
         node_levels,
+        node_spectrum,
         focus,
         connection,
         on_port_down,
@@ -491,7 +540,10 @@ pub fn graph_canvas_view(
                         &frame,
                         &selected_nodes,
                         selected_wire.as_deref(),
-                        node_levels.as_ref(),
+                        LiveReaders {
+                            levels: node_levels.as_ref(),
+                            spectrum: node_spectrum.as_ref(),
+                        },
                         connection,
                         window,
                         cx,

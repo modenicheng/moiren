@@ -280,13 +280,18 @@ fn paint_graph_meter_frame(
                 }
                 // The canvas paints cards in frame order, later ones on
                 // top. A later card overlapping this node's meter tracks
-                // would be cut into by the overlay's opaque tracks, so
-                // leave those bars to the cached canvas until the next
-                // rebuild.
+                // (or its spectrum plot) would be cut into by the overlay's
+                // opaque paint, so leave those to the cached canvas until
+                // the next rebuild.
                 let covered = frame.world.nodes[index + 1..]
                     .iter()
                     .zip(&frame.nodes[index + 1..])
-                    .any(|(_, later)| later.card.intersects(&layout.meter.bounds()));
+                    .any(|(_, later)| {
+                        later.card.intersects(&layout.meter.bounds())
+                            || layout
+                                .spectrum
+                                .is_some_and(|plot| later.card.intersects(&plot))
+                    });
                 if covered {
                     continue;
                 }
@@ -299,8 +304,41 @@ fn paint_graph_meter_frame(
                         }
                     })
                 };
-                for piece in pages::graph_canvas::carve(frame.window_rect(layout.card), &overlays) {
+                // The curve borrows the subscription table, which the paint
+                // below cannot hold across its `cx`: copy it into the
+                // shell's scratch buffer (sized once, never reallocated at
+                // steady state).
+                let axis = if layout.spectrum.is_some() {
+                    let state = shell.state.read(cx);
+                    let curve = state.node_spectra.curve(id);
+                    shell.spectrum_scratch.clear();
+                    if let Some(curve) = curve {
+                        shell.spectrum_scratch.extend_from_slice(curve.points);
+                    }
+                    curve.map(|curve| (curve.lo_hz, curve.hi_hz))
+                } else {
+                    None
+                };
+                let pieces = pages::graph_canvas::carve(frame.window_rect(layout.card), &overlays);
+                for piece in pieces {
                     window.with_content_mask(Some(ContentMask { bounds: piece }), |window| {
+                        if layout.spectrum.is_some() {
+                            let curve =
+                                axis.map(|(lo_hz, hi_hz)| crate::ui::monitoring::SpectrumCurve {
+                                    points: &shell.spectrum_scratch,
+                                    lo_hz,
+                                    hi_hz,
+                                });
+                            pages::graph_canvas_view::paint_spectrum_body(
+                                frame,
+                                layout,
+                                &node.detail,
+                                node.tint(),
+                                curve,
+                                window,
+                                cx,
+                            );
+                        }
                         pages::graph_canvas_view::paint_meter_bars(
                             frame,
                             layout,
@@ -316,6 +354,26 @@ fn paint_graph_meter_frame(
     {
         shell.trace.borrow_mut().graph_meter_paints += 1;
     }
+}
+
+/// The shell's live spectrum curve for the canvas paint closure, copied
+/// out at rebuild time (an analyzer's 121 points) so the cached paint owns
+/// what it draws. `None` paints the plot's furniture alone.
+pub(in crate::ui::window) fn node_spectrum(
+    this: &Entity<StudioShell>,
+) -> Rc<pages::graph_canvas_view::NodeSpectrumFn> {
+    let this = this.clone();
+    Rc::new(move |id, cx: &App| {
+        let state = this.read(cx).state.read(cx);
+        state
+            .node_spectra
+            .curve(id)
+            .map(|curve| pages::graph_canvas_view::NodeSpectrumReading {
+                points: curve.points.into(),
+                lo_hz: curve.lo_hz,
+                hi_hz: curve.hi_hz,
+            })
+    })
 }
 
 /// The shell's live meter readings for the canvas paint closure: display

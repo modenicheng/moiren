@@ -103,6 +103,13 @@ pub mod card {
     pub const CHIP_ICON: f32 = 14.;
     /// Curve-thumbnail bodies (EQ response, dynamics transfer).
     pub const CURVE_BODY_H: f32 = 64.;
+    /// The spectrum analyzer's live plot: the one body sized so the whole
+    /// card comes out square (header, body, meter reserve and the port
+    /// margins add up to the card width).
+    pub const SPECTRUM_BODY_H: f32 = super::NODE_WIDTH
+        - BODY_TOP
+        - (METER_CHANNELS as f32 * METER_H + METER_CHANNEL_GAP)
+        - 2. * PORT_BOTTOM;
     /// Matrix-preview cells.
     pub const MATRIX_CELL: f32 = 9.;
     pub const MATRIX_GAP: f32 = 2.;

@@ -25,6 +25,10 @@ const GRID_STEP_OCTAVES: f64 = 1. / 12.;
 /// Band edges sit a twenty-fourth of an octave either side of a center.
 const GRID_HALF_BAND_OCTAVES: f64 = 1. / 24.;
 
+/// The nominal axis span before any window lands: the grid's own bounds
+/// at a rate whose Nyquist clears 20 kHz (a test pins the two together).
+pub const SPECTRUM_NOMINAL_SPAN_HZ: (f64, f64) = (19.686_266_405, 20_158.736_798);
+
 /// Band level release in dB per second; the display falls at this rate
 /// between windows and parks at the floor, where frames stop.
 const RELEASE_DB_PER_SEC: f32 = 30.;
@@ -507,6 +511,8 @@ mod tests {
         );
         assert!((grid.lo_hz() - 19.686).abs() < 1e-3, "{}", grid.lo_hz());
         assert!((grid.hi_hz() - 20_158.7).abs() < 0.1, "{}", grid.hi_hz());
+        assert!((grid.lo_hz() - SPECTRUM_NOMINAL_SPAN_HZ.0).abs() < 1e-6);
+        assert!((grid.hi_hz() - SPECTRUM_NOMINAL_SPAN_HZ.1).abs() < 1e-3);
         // A slow rate clamps the top of the axis at its Nyquist only.
         let slow = OctaveGrid::twelfth(8_000.);
         assert!(slow.hi_hz() <= 4_000.);

@@ -245,6 +245,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
     });
     let this = cx.entity();
     let node_levels = page::node_levels(&this);
+    let node_spectrum = page::node_spectrum(&this);
 
     // Canvas view with interaction plumbed to the shell entity.
     let on_zoom = {
@@ -556,6 +557,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                 )
             }),
             node_levels,
+            node_spectrum,
             on_port_down: std::rc::Rc::new({
                 let this = this.clone();
                 let nodes = world.clone();

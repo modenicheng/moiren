@@ -2063,6 +2063,162 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
     finish_service(runtime);
 }
 
+/// The analyzer's curve is live pixels like the bars: the meter frame
+/// repaints it on every animation-only frame while the cached page stays
+/// flat, and once the publisher stalls past the stale fence the curve parks
+/// at the floor so the loop can stand down.
+#[gpui_kit::test]
+fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_stale(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{
+        AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceGraph,
+        ServiceRuntime, SessionPhase, SessionSpec,
+    };
+    use moiren_core::graph::NodeKind;
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let backend_state = backend.0.clone();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    // Splice an analyzer between the pan and the sink of the template graph.
+    let mut graph = ServiceGraph::default();
+    graph
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::SpectrumAnalyzer,
+            channels: 2,
+        })
+        .unwrap();
+    let snapshot = graph.snapshot();
+    let find = |kind| {
+        snapshot
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == kind)
+            .unwrap()
+    };
+    let (pan, analyzer, sink) = (
+        find(NodeKind::Pan),
+        find(NodeKind::SpectrumAnalyzer),
+        find(NodeKind::Sink),
+    );
+    let final_edge = snapshot
+        .graph
+        .edges()
+        .iter()
+        .find(|edge| edge.dst() == sink.id())
+        .unwrap()
+        .id();
+    graph.edit(GraphEdit::Disconnect(final_edge)).unwrap();
+    graph
+        .edit(GraphEdit::Connect {
+            source: pan.outputs()[0].id(),
+            destination: analyzer.inputs()[0].id(),
+        })
+        .unwrap();
+    graph
+        .edit(GraphEdit::Connect {
+            source: analyzer.outputs()[0].id(),
+            destination: sink.inputs()[0].id(),
+        })
+        .unwrap();
+    let spectrum = analyzer.id();
+    let snapshot = graph.snapshot();
+    handle
+        .try_request(AppRequest::ReplaceGraph {
+            graph: snapshot.graph,
+            nodes: snapshot.nodes,
+        })
+        .unwrap();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    // The fitted camera registers the analyzer as visible; its demand
+    // reaches the engine through the bridge, and the first relayed window
+    // projects a curve.
+    wait_until(Duration::from_secs(5), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_spectra.curve(spectrum).is_some()
+        })
+    });
+    std::thread::sleep(Duration::from_millis(900));
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    let (paints_before, renders_before) = view.read_with(cx, |shell, _| {
+        let trace = shell.trace.borrow();
+        (trace.graph_meter_paints, trace.graph_renders)
+    });
+    for _ in 0..10 {
+        cx.update(|window, cx| {
+            assert!(window.simulate_next_frame(cx) > 0);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
+        let trace = shell.trace.borrow();
+        assert!(
+            trace.graph_meter_paints >= paints_before + 10,
+            "the meter frame must repaint the analyzer per animation frame"
+        );
+        assert_eq!(
+            trace.graph_renders, renders_before,
+            "curve motion must not rebuild the cached graph page"
+        );
+        let curve = state.node_spectra.curve(spectrum).expect("live curve");
+        assert_eq!(curve.points.len(), 121, "the full ISO grid at 48 kHz");
+        assert!(!state.node_spectra.at_rest(), "a fed analyzer is in motion");
+        // The fixture feeds DC: Hann leakage puts full scale into the first
+        // bin, so the bottom of the axis reads near 0 dBFS and the top of
+        // the band sits at the floor.
+        assert!(curve.points[0] > -3., "low end {}", curve.points[0]);
+        assert!(curve.points[120] <= -90., "high end {}", curve.points[120]);
+    });
+    // A stalled publisher: once no window lands past the stale fence the
+    // curve blanks and parks, exactly as the bars do.
+    backend_state.pause_audio.store(true, Ordering::SeqCst);
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| shell.state.read(cx).node_spectra.at_rest())
+    });
+    finish_service(runtime);
+}
+
 /// HC-9: meter demand must follow the user's camera. Zooming until only one
 /// node is on screen must drop the off-screen node from the demand set,
 /// release its level subscription once the grace elapses, keep the on-screen

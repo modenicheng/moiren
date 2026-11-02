@@ -97,6 +97,9 @@ pub struct NodeLayout {
     pub matrix: Option<Bounds<f32>>,
     pub rack: Option<Bounds<f32>>,
     pub curve: Option<Bounds<f32>>,
+    /// The spectrum analyzer's plot, laid out like a curve thumbnail: the
+    /// body less the vertical meter's strip on the right.
+    pub spectrum: Option<Bounds<f32>>,
     pub inputs: Vec<(f32, f32)>,
     pub input_hints: Vec<TextLayout>,
     pub output: Option<(f32, f32)>,
@@ -234,16 +237,16 @@ impl NodeLayout {
             origin: point(node.x + theme::card::RAIL_W + padding, body_top),
             size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
         });
-        let curve = node.curve.is_some().then(|| {
-            let meter_stride = theme::card::METER_H + theme::card::METER_CHANNEL_GAP;
-            Bounds {
-                origin: point(node.x + theme::card::RAIL_W + padding, body_top),
-                size: size(
-                    width - theme::card::RAIL_W - 2. * padding - 2. * meter_stride - 4.,
-                    node.body_height,
-                ),
-            }
-        });
+        let meter_stride = theme::card::METER_H + theme::card::METER_CHANNEL_GAP;
+        let plot = Bounds {
+            origin: point(node.x + theme::card::RAIL_W + padding, body_top),
+            size: size(
+                width - theme::card::RAIL_W - 2. * padding - 2. * meter_stride - 4.,
+                node.body_height,
+            ),
+        };
+        let curve = node.curve.is_some().then_some(plot);
+        let spectrum = node.spectrum.then_some(plot);
         Self {
             card: Bounds {
                 origin: point(node.x, node.y),
@@ -296,6 +299,7 @@ impl NodeLayout {
             matrix,
             rack,
             curve,
+            spectrum,
             inputs,
             input_hints,
             output: node.has_output.then_some((node.x + width, port_y)),
@@ -333,6 +337,7 @@ impl NodeLayout {
             matrix: self.matrix.map(|bounds| camera.project_rect(bounds)),
             rack: self.rack.map(|bounds| camera.project_rect(bounds)),
             curve: self.curve.map(|bounds| camera.project_rect(bounds)),
+            spectrum: self.spectrum.map(|bounds| camera.project_rect(bounds)),
             inputs: self
                 .inputs
                 .iter()
