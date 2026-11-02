@@ -1405,3 +1405,22 @@ and unchanged protected user processes, defaults, controls and driver. No defaul
 promotion, additional soak or interactive/audio retry follows. Original S1-S3
 qualification remains incomplete; independent development need not wait for
 missing physical equipment.
+
+### Disabled action accessibility repair
+
+The [scoped widget repair](2026-11-02-action-disabled-accessibility.md) supplies
+the disabled AccessKit property omitted by the locked base Button. It decorates
+the existing ActionButton/IconButton native element without another layout or
+accessibility node, preserving the original focus/click suppression. A genuine
+disabled-state assertion fails before the fix and passes afterward. Exact
+ID/role/label/actions and repeated same-ID re-enabling, input and bounds checks
+are covered separately; the upstream inner observation snapshot is not passed
+off as the decorated native node.
+
+Clean `f533869` plus only these widget edits passes 2307 feature-enabled
+workspace tests (9 ignored), all 13 UI acceptance cases, workspace/all-targets
+strict Clippy and fmt. The separate application library passes 661 (3 ignored);
+counts overlap. Independent static review finds no concrete defect. This is
+node-level software evidence, not a new Windows UIA/desktop PASS: interactive
+startup, waveform/native quality and calibrated physical gates remain open.
+No audio behavior/default, driver, threshold, push or memory update changes.
