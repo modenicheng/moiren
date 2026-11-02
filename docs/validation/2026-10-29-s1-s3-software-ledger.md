@@ -5,6 +5,22 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [frozen Playback replay](2026-11-03-vad-playback-frozen-replay.md) reproduces
+8416 synthetic actual callback frames byte-for-byte before one remote offline
+analysis of the closed Shared VAD recording. All six OBS pulse-support windows
+match the same immutable archived-step Playback plus nominal master FIR map;
+the earlier unknown transient and original nominal identity refusals remain.
+The [entire-recording audit](2026-11-03-vad-whole-recording-accounting.md) then
+accounts for all874496recorder frames without fitting:487248outside,
+5615unknown,372416uninformative,8192informative-compatible,730training,
+256strict local residuals and39mixed-context frames. Small known-support
+absolute errors do not erase the four refused64-frame blocks. Helper29tests,
+122relevant host script tests and65remote tests pass; one finite offline task
+finishes0 with unchanged original hashes and no native audio/UI activity.
+These diagnostics do not authenticate the absent prepared route or native
+submission, qualify continuous output/physical delay, or justify another
+unchanged soak, speculative production fix or lower-default promotion.
+
 The [Compatible whole-wake correction](2026-11-03-compatible-whole-wake-budget.md)
 repairs a reproduced original-S2 production mismatch: physical-master virtual
 workers previously retained provisional demand while observations published
