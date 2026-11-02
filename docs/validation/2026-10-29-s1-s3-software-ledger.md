@@ -1341,3 +1341,23 @@ owned native/analysis process and unchanged protected user identities. No new
 recording or stability scan is launched. Remaining waveform/native/physical
 qualification and historical faults stay open; first-packet work stays deferred,
 and independent product development need not wait for missing physical equipment.
+
+### Shared code 6 nominal-template refusal boundary
+
+The [bounded retained-recording diagnostic](2026-11-02-shared-code6-nominal-refusal.md)
+reproduces the existing Process/VAD refusal for zero-based code 6 without changing
+gates or assigning identity by order. Exact generated controls 5/6/7 bit-match
+both source channels; reviewed nominal searches reproduce the Rust results.
+Process fails late-quarter correlation and onset margin; VAD fails its final
+quarter. Independent fixed half-sample two-tap controls also fail these nominal
+gates without inserted/dropped source samples, but alter waveform shape and
+are neither bit-exact waveform preservation nor a replay of native SRC.
+Actual cause and continuity remain unresolved; existing 18/19 and 17/19
+verdicts are not upgraded.
+
+One remote isolated offline run exits 0 normally in approximately 2.1 seconds of
+computation. All 24 input hashes remain unchanged, compact 773650-byte downloads
+are verified, and protected OBS/QQMusic identities stay unchanged. No new
+audio, recording, production patch, default change, threshold relaxation or
+unchanged soak follows. This closes the bounded nominal-refusal question,
+not the native waveform/physical qualification or original S1-S3 objective.
