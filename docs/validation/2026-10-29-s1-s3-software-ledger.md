@@ -5,6 +5,18 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [clean Compatible MIC functional receipt](2026-11-02-clean-mic-compatible.md)
+adds one current native playback -> unity Bus -> MIC collection, not a repeat
+of the dirty945/cap1 candidate. Source20s/960000frames, collection997440frames
+and both exports complete normal Stop/join/Removed with exit0; no forced kill.
+Running counters and final virtual clock retain no reported drop/clamp; teardown
+resets remain separate. Raw quality stays false for the first capture packet;
+unchanged packet diagnostics also retain1784nominal-QPC interval refusals.
+Both channels have19components but only17accepted indexed identities, with two
+section refusals. One remote closed-PCM analysis produces a reviewed PNG;
+all57compact artifacts are hash-verified. No threshold/default/code change,
+smaller-setting scan, second audio run or physical delay claim follows.
+
 The [exact Shared probe-period repair](2026-11-02-probe-exact-shared-period.md)
 removes a concrete S1 entry-point mismatch: production accepts exact Shared336,
 but direct Process/VAD/physical probes still required Engine presets. Their
