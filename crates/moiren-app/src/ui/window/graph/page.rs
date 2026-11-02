@@ -175,8 +175,36 @@ impl HotSurface for GraphMeters {
         shell.update(cx, |shell, cx| {
             paint_graph_meter_frame(frame, shell, window, cx);
             paint_box_select_band(frame, shell, window, cx);
+            paint_fault_tooltip(frame, shell, window, cx);
         });
     }
+}
+
+/// The fault tooltip for the hovered card, when it wears one. Hover lives
+/// on the shell outside every panel key, so it reaches the screen through
+/// this layer alone: one notified frame paints it, and it stands until
+/// the next hover change repaints.
+fn paint_fault_tooltip(
+    frame: &CanvasFrame,
+    shell: &StudioShell,
+    window: &mut Window,
+    cx: &mut Context<StudioShell>,
+) {
+    let Some(id) = shell.hovered_node else {
+        return;
+    };
+    let Some(index) = frame
+        .world
+        .nodes
+        .iter()
+        .position(|node| node.node_id == Some(id))
+    else {
+        return;
+    };
+    if !frame.world.nodes[index].faulted {
+        return;
+    }
+    pages::graph_canvas_view::paint_fault_tooltip(frame, index, window, cx);
 }
 
 /// The rubber band, painted from the live drag state by the hot layer once

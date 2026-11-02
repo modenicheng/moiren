@@ -3,6 +3,7 @@ use gpui_kit::{
     PathBuilder, Pixels, ShapedLine, TextAlign, TextRun, TransformationMatrix, Window, font, point,
     px, size, transparent_black,
 };
+use rust_i18n::t;
 
 use super::super::graph_canvas::{
     BindingChip, CanvasFrame, CanvasNode, CardKnob, ChipLayout, CurveSpec, KnobLayout, MeterLayout,
@@ -106,17 +107,6 @@ fn rounded(bounds: Bounds<Pixels>, color: Hsla, radius: f32, window: &mut Window
     window.paint_quad(PaintQuad {
         bounds,
         corner_radii: radius.into(),
-        background: color.into(),
-        border_widths: 0f32.into(),
-        border_color: transparent_black(),
-        border_style: BorderStyle::default(),
-    });
-}
-
-fn fill_quad(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
-    window.paint_quad(PaintQuad {
-        bounds,
-        corner_radii: 0f32.into(),
         background: color.into(),
         border_widths: 0f32.into(),
         border_color: transparent_black(),
@@ -538,27 +528,115 @@ fn paint_rack_chain(
     }
 }
 
-/// The preparing state's language-neutral marker: three dots in a soft
-/// chip, fixed width regardless of locale.
-fn paint_preparing_badge(frame: &CanvasFrame, layout: &NodeLayout, window: &mut Window) {
-    let badge = frame.window_rect(layout.badge);
-    fill_quad(badge, theme::soft(theme::PRIMARY), window);
-    let dot = 2. * layout.scale;
-    let gap = 3. * layout.scale;
-    let total = 3. * dot + 2. * gap;
-    let top = badge.origin.y + px((f32::from(badge.size.height) - dot) / 2.);
-    let left = badge.origin.x + px((f32::from(badge.size.width) - total) / 2.);
-    for index in 0..3 {
-        rounded(
-            Bounds {
-                origin: point(left + px(index as f32 * (dot + gap)), top),
-                size: size(px(dot), px(dot)),
-            },
-            theme::PRIMARY.opacity(0.85),
-            dot / 2.,
-            window,
-        );
+/// The fault tooltip under a hovered faulted card: every fault's cause
+/// with its hint beneath, translated from the catalog keys the service
+/// published exactly as the error strip does. Painted in window pixels —
+/// a tooltip reads the same at every zoom — below the card, flipping
+/// above it when the canvas bottom is too close, and above every card
+/// because the hot layer paints it.
+pub(in crate::ui) fn paint_fault_tooltip(
+    frame: &CanvasFrame,
+    index: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    const PAD: f32 = 8.;
+    const GAP: f32 = 6.;
+    const ICON: f32 = 14.;
+    const MAX_LINE: f32 = 360.;
+    let node = &frame.world.nodes[index];
+    if node.faults.is_empty() {
+        return;
     }
+    let line_height = theme::TEXT_SM + 6.;
+    let mut lines: Vec<(ShapedLine, bool)> = Vec::new();
+    for fault in &node.faults {
+        lines.push((
+            shape_text(
+                window,
+                &t!(fault.cause.as_str()),
+                theme::TEXT_SM,
+                Font {
+                    weight: FontWeight::SEMIBOLD,
+                    ..font(theme::FONT_UI)
+                },
+                theme::DANGER,
+                MAX_LINE,
+            ),
+            true,
+        ));
+        if let Some(hint) = &fault.hint {
+            lines.push((
+                shape_text(
+                    window,
+                    &t!(hint.as_str()),
+                    theme::TEXT_SM,
+                    font(theme::FONT_UI),
+                    theme::TEXT,
+                    MAX_LINE,
+                ),
+                false,
+            ));
+        }
+    }
+    let text_width = lines
+        .iter()
+        .map(|(line, _)| f32::from(line.width()))
+        .fold(0., f32::max);
+    let width = PAD + ICON + 6. + text_width + PAD;
+    let height = 2. * PAD + lines.len() as f32 * line_height;
+    let card = frame.window_rect(frame.nodes[index].card);
+    let canvas = frame.bounds;
+    let canvas_left = f32::from(canvas.origin.x);
+    let canvas_right = canvas_left + f32::from(canvas.size.width);
+    let canvas_bottom = f32::from(canvas.origin.y) + f32::from(canvas.size.height);
+    let left = f32::from(card.origin.x)
+        .min(canvas_right - width)
+        .max(canvas_left);
+    let below = f32::from(card.origin.y + card.size.height) + GAP;
+    let top = if below + height > canvas_bottom {
+        f32::from(card.origin.y) - GAP - height
+    } else {
+        below
+    };
+    window.with_content_mask(Some(ContentMask { bounds: canvas }), |window| {
+        window.paint_quad(PaintQuad {
+            bounds: Bounds {
+                origin: point(px(left), px(top)),
+                size: size(px(width), px(height)),
+            },
+            corner_radii: theme::RADIUS_SM.into(),
+            background: theme::SURFACE.into(),
+            border_widths: 1f32.into(),
+            border_color: theme::BORDER_STRONG,
+            border_style: BorderStyle::default(),
+        });
+        let text_left = left + PAD + ICON + 6.;
+        for (row, (line, cause)) in lines.iter().enumerate() {
+            let row_top = top + PAD + row as f32 * line_height;
+            if *cause {
+                let _ = window.paint_svg(
+                    Bounds {
+                        origin: point(px(left + PAD), px(row_top + (line_height - ICON) / 2.)),
+                        size: size(px(ICON), px(ICON)),
+                    },
+                    "icons/alert-triangle.svg".into(),
+                    None,
+                    TransformationMatrix::unit(),
+                    theme::DANGER,
+                    cx,
+                );
+            }
+            let _ = line.paint(
+                point(px(text_left), px(row_top)),
+                px(line_height),
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+    });
 }
 
 /// One port anchor: the dot straddles the card edge (filled disc when
@@ -614,12 +692,14 @@ fn paint_port(
     }
 }
 
-/// The design 18 node card: header with icon, display name and status
-/// glyphs; full-height tint rail; per-kind body (the detail line until
-/// the body widgets land); the meter strip; and port rails with channel
-/// hints. Every card wears a gray outline so stacked cards keep their
-/// edges; states recolor it: selected = primary, faulted = danger (plus
-/// the badge), preparing = dots badge + body scrim.
+/// The design 18 node card: header with icon, display name and the
+/// expander glyph; full-height tint rail; per-kind body (the detail line
+/// until the body widgets land); the meter strip; and port rails with
+/// channel hints. Every card wears a gray outline so stacked cards keep
+/// their edges, and the outline alone carries state — danger while a
+/// fault names the node, warning while the engine re-prepares it, the
+/// primary highlight while selected — so a card's body never changes
+/// with its state. Faults themselves surface in [`paint_fault_tooltip`].
 pub(super) fn paint_node(
     frame: &CanvasFrame,
     node: &CanvasNode,
@@ -634,6 +714,8 @@ pub(super) fn paint_node(
     let radius = theme::card::RADIUS * layout.scale;
     let outline = if node.faulted {
         theme::DANGER
+    } else if node.preparing {
+        theme::WARNING
     } else if selected {
         theme::PRIMARY
     } else {
@@ -692,18 +774,6 @@ pub(super) fn paint_node(
             window,
             cx,
         );
-        if node.faulted {
-            let _ = window.paint_svg(
-                frame.window_rect(layout.badge),
-                "icons/alert-triangle.svg".into(),
-                None,
-                TransformationMatrix::unit(),
-                theme::DANGER,
-                cx,
-            );
-        } else if node.preparing {
-            paint_preparing_badge(frame, layout, window);
-        }
         let _ = window.paint_svg(
             frame.window_rect(layout.expand),
             "figma-nodes/more.svg".into(),
@@ -713,14 +783,8 @@ pub(super) fn paint_node(
             cx,
         );
         // Body: knobs where the kind exposes its main control, else the
-        // detail line; the preparing scrim keeps the header readable.
-        if node.preparing {
-            let mut scrim = frame.window_rect(layout.body);
-            scrim.origin.y -= px(2. * layout.scale);
-            scrim.size.height =
-                card.origin.y + card.size.height - scrim.origin.y - px(2. * layout.scale);
-            fill_quad(scrim, theme::WINDOW_BG.opacity(0.45), window);
-        }
+        // detail line. States never touch the body — a faulted or
+        // preparing card keeps every control usable under its outline.
         if !node.knobs.is_empty() {
             for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
                 paint_knob(frame, knob_layout, knob, layout.scale, window, cx);

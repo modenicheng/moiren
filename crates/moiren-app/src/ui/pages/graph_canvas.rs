@@ -74,9 +74,14 @@ pub struct CanvasNode {
     pub has_output: bool,
     pub tint: Option<Hsla>,
     /// Card states beyond selection: a fault landed on this node, or the
-    /// engine is re-preparing it (design 18 B1).
+    /// engine is re-preparing it (design 18 B1). Both speak only through
+    /// the outline color; the faults themselves surface in the hover
+    /// tooltip.
     pub faulted: bool,
     pub preparing: bool,
+    /// The service faults naming this node (or a route at one of its
+    /// ports), as catalog keys translated at paint time.
+    pub faults: Vec<CardFault>,
     /// Body region height in world units; kinds with richer bodies extend
     /// this and the port rail follows.
     pub body_height: f32,
@@ -104,6 +109,15 @@ pub struct BindingChip {
     pub label: String,
     pub icon: &'static str,
     pub unbound: bool,
+}
+
+/// One fault a card wears: the service's cause and hint, kept as the
+/// catalog keys it published so the tooltip translates them like the
+/// error strip does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardFault {
+    pub cause: String,
+    pub hint: Option<String>,
 }
 
 impl CanvasNode {
@@ -147,6 +161,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         tint: Some(theme::PRIMARY),
         faulted: false,
         preparing: false,
+        faults: Vec::new(),
         body_height: theme::card::BODY_H,
         meter_vertical: false,
         channels: 2,
@@ -268,8 +283,9 @@ impl CanvasWorld {
         use moiren_core::graph::NodeKind;
         let graph = &snapshot.graph;
         // Card states (design 18 B1): a fault marks the node it names, or
-        // both endpoint cards of a route; the preparing set comes straight
-        // from the service's structural-edit tracking.
+        // both endpoint cards of a route, and rides along for the hover
+        // tooltip; the preparing set comes straight from the service's
+        // structural-edit tracking.
         let node_of_port =
             |port: moiren_core::graph::PortId| -> Option<moiren_core::graph::NodeId> {
                 graph
@@ -282,17 +298,22 @@ impl CanvasWorld {
                     })
                     .map(|node| node.id())
             };
-        let mut faulted = std::collections::BTreeSet::new();
+        let mut faulted: std::collections::BTreeMap<moiren_core::graph::NodeId, Vec<CardFault>> =
+            std::collections::BTreeMap::new();
         for fault in &graph.faults {
-            match fault.subject {
-                crate::service::GraphSubject::Node(id) => {
-                    faulted.insert(id);
-                }
-                crate::service::GraphSubject::Route(source, destination) => {
-                    faulted.extend(node_of_port(source));
-                    faulted.extend(node_of_port(destination));
-                }
-                crate::service::GraphSubject::Graph => {}
+            let subjects: Vec<moiren_core::graph::NodeId> = match fault.subject {
+                crate::service::GraphSubject::Node(id) => vec![id],
+                crate::service::GraphSubject::Route(source, destination) => node_of_port(source)
+                    .into_iter()
+                    .chain(node_of_port(destination))
+                    .collect(),
+                crate::service::GraphSubject::Graph => Vec::new(),
+            };
+            for id in subjects {
+                faulted.entry(id).or_default().push(CardFault {
+                    cause: fault.cause.clone(),
+                    hint: fault.hint.clone(),
+                });
             }
         }
         let preparing: std::collections::BTreeSet<moiren_core::graph::NodeId> =
@@ -364,7 +385,8 @@ impl CanvasWorld {
             .with_tint(state.tint.and_then(theme::node_tint).unwrap_or(tint));
             card.input_count = logical.inputs().len();
             card.node_id = Some(id);
-            card.faulted = faulted.contains(&id);
+            card.faults = faulted.remove(&id).unwrap_or_default();
+            card.faulted = !card.faults.is_empty();
             card.preparing = preparing.contains(&id);
             card.channels = logical.channels();
             let knob = |control: KnobControl, label: String| {

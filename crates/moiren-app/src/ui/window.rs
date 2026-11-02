@@ -192,6 +192,9 @@ pub struct StudioShell {
     /// and carved out of the meter frame's paint so live bars stay under
     /// them.
     graph_overlays: pages::graph_canvas::OverlayRects,
+    /// The canvas card under the pointer, tracked on idle moves for the
+    /// fault tooltip the meter frame paints; never part of a panel key.
+    hovered_node: Option<moiren_core::graph::NodeId>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
@@ -389,6 +392,7 @@ impl StudioShell {
             graph_controls,
             graph_canvas_frame,
             graph_overlays: Default::default(),
+            hovered_node: None,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),

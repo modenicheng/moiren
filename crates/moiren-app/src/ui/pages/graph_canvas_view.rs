@@ -40,7 +40,7 @@ pub(in crate::ui) type NodeLevelsFn =
 /// rebuilds, exactly like the canvas painted them.
 pub(in crate::ui) type PreparedFrame = SharedFrame<CanvasFrame>;
 
-pub(in crate::ui) use nodes::paint_meter_bars;
+pub(in crate::ui) use nodes::{paint_fault_tooltip, paint_meter_bars};
 
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
@@ -322,6 +322,7 @@ pub(in crate::ui) fn node_drag_preview(
         tint: Some(tint),
         faulted: false,
         preparing: false,
+        faults: Vec::new(),
         body_height: theme::card::BODY_H,
         meter_vertical: false,
         channels: 2,

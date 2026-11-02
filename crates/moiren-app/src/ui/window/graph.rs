@@ -304,6 +304,30 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                     shell.pan_grab = None;
                     shell.node_drag = None;
                     shell.knob_drag = None;
+                    // Hover for the fault tooltip: tracked here, painted by
+                    // the meter frame, so a change costs one frame and never
+                    // a page rebuild. Anything on a card counts, port dots
+                    // included.
+                    let hovered = shell.graph_canvas_frame.read().and_then(|frame| {
+                        use pages::graph_canvas::HitTarget;
+                        let id = match frame.hit_test((x, y))? {
+                            HitTarget::Node(id)
+                            | HitTarget::Knob { node: id, .. }
+                            | HitTarget::Expand { node: id } => id.to_owned(),
+                            HitTarget::Port(port) => return frame.world.node_of_port(port),
+                            HitTarget::Wire(_) => return None,
+                        };
+                        frame
+                            .world
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                    });
+                    if shell.hovered_node != hovered {
+                        shell.hovered_node = hovered;
+                        cx.notify();
+                    }
                     let clicked = shell
                         .background_click
                         .take()

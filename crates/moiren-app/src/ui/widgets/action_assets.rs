@@ -124,10 +124,6 @@ impl AssetSource for ActionAssets {
             "icons/chevron-down.svg" => {
                 Some(include_bytes!("../../../assets/icons/chevron-down.svg"))
             }
-            "icons/arrows-diagonal.svg" => {
-                Some(include_bytes!("../../../assets/icons/arrows-diagonal.svg"))
-            }
-            "icons/progress.svg" => Some(include_bytes!("../../../assets/icons/progress.svg")),
             "icons/list-details.svg" => {
                 Some(include_bytes!("../../../assets/icons/list-details.svg"))
             }
@@ -274,7 +270,6 @@ mod tests {
             "list-details",
             "devices",
             "speaker",
-            "progress",
         ];
         // Assets the node painter requests straight from figma-nodes/ without
         // the name routing above: port anchors and the overflow marker.
@@ -286,9 +281,8 @@ mod tests {
             "icons/zoom-scan.svg",     // inspector zoom-to-scan button
             "brand/mark.svg",          // toolbar brand mark
         ];
-        // Design 18 node-card glyphs. The error badge is painted today; the
-        // per-kind icons, dropdown, expander, loading and rack markers land
-        // with their body phases in the same change.
+        // Design 18 node-card glyphs: the per-kind icons, the chip dropdown,
+        // the rack markers, and the alert the fault tooltip leads with.
         const DESIGN18_REQUESTS: &[&str] = &[
             "icons/alert-triangle.svg",
             "icons/volume.svg",
@@ -299,8 +293,6 @@ mod tests {
             "icons/wall.svg",
             "icons/chart-histogram.svg",
             "icons/chevron-down.svg",
-            "icons/arrows-diagonal.svg",
-            "icons/progress.svg",
             "icons/list-details.svg",
         ];
 

@@ -2251,3 +2251,68 @@ fn graph_hud_overlays_register_their_rects_for_the_meter_frame(cx: &mut gpui_kit
     );
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn graph_hovering_a_faulted_card_tracks_it_for_the_tooltip(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{GraphFault, GraphSubject};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        shell.camera = Camera {
+            pan_x: 50.,
+            pan_y: 90.,
+            zoom: 0.89,
+            adjusted: true,
+        };
+        cx.notify();
+    });
+    settle_panels(cx);
+    // A fault naming the first node, delivered the way the service does.
+    let target = view.update(cx, |shell, cx| {
+        let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+        let id = snapshot.graph.graph.nodes()[0].id();
+        Arc::make_mut(&mut snapshot.graph).faults.push(GraphFault {
+            subject: GraphSubject::Node(id),
+            cause: "Output endpoint unavailable".into(),
+            hint: Some("Choose another output".into()),
+        });
+        shell
+            .state
+            .update(cx, |state, _| state.snapshot = Arc::new(snapshot));
+        cx.notify();
+        id
+    });
+    settle_panels(cx);
+    // The projection carries the fault text for the tooltip, not only the
+    // outline flag.
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|node| node.node_id == Some(target))
+        .expect("faulted node projected");
+    assert!(frame.world.nodes[index].faulted);
+    assert_eq!(
+        frame.world.nodes[index].faults,
+        vec![pages::graph_canvas::CardFault {
+            cause: "Output endpoint unavailable".into(),
+            hint: Some("Choose another output".into()),
+        }]
+    );
+    // An idle move over the card tracks it; the frame the notify draws
+    // paints the tooltip through the meter layer.
+    cx.simulate_mouse_move(node_position(&frame, index), None, Modifiers::default());
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.hovered_node),
+        Some(target)
+    );
+    render(cx);
+    // Leaving every card clears it again.
+    let empty = frame.bounds.origin + point(px(6.), frame.bounds.size.height - px(6.));
+    cx.simulate_mouse_move(empty, None, Modifiers::default());
+    assert_eq!(view.read_with(cx, |shell, _| shell.hovered_node), None);
+    finish_service(runtime);
+}

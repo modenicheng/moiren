@@ -88,12 +88,32 @@ reverse drags displace an occupied input exactly like forward drags.
 
 ### B1. Card states
 
+Every card wears a 1.5 px outline (window pixels, unscaled, so stacked
+cards keep a crisp edge at every zoom) and the outline color alone
+carries state. A state never changes the card body: a faulted or
+re-preparing card keeps every knob, chip and meter exactly where and how
+it is, so the user can fix the problem in place.
+
 | State | Trigger | Visual |
 |---|---|---|
-| Normal | — | `SURFACE_3` card, 3px category-tint left rail, no outline |
-| Selected | in `selected_nodes` | restrained 1px `GRIP` outline (unchanged) |
-| Error | a `GraphFault` whose subject is this node, or a route touching it | 1px `DANGER` outline + warning glyph in the header |
-| Loading | node in the new `GraphSnapshot::preparing_nodes` set | desaturated scrim over the body + "preparing" chip |
+| Normal | — | `SURFACE_3` card, 3px category-tint left rail seated inside a `GRIP` outline |
+| Selected | in `selected_nodes` | `PRIMARY` outline |
+| Error | a `GraphFault` whose subject is this node, or a route touching it | `DANGER` outline; hovering the card shows a tooltip under it with every fault's cause and hint |
+| Loading | node in the new `GraphSnapshot::preparing_nodes` set | `WARNING` outline |
+
+Precedence when states overlap: error > loading > selected.
+
+The fault tooltip is painted by the graph page's hot layer, in window
+pixels (a tooltip reads the same at every zoom), below the card and
+flipping above it near the canvas bottom. Hover is tracked on idle
+pointer moves into `StudioShell::hovered_node` outside every panel key:
+a hover change costs one notified frame, never a page rebuild. The card
+carries its faults as the service's catalog keys (`CanvasNode::faults`)
+and the tooltip translates them exactly as the error strip does.
+
+(Acceptance round 2 revision: the first cut marked error with a header
+glyph and loading with a body scrim plus chip; both touched the body and
+read as two different languages, so states collapsed onto the outline.)
 
 `GraphFault` already carries `GraphSubject::Node(id)` end to end (service
 `edit_subject` + driver `project_fault`), so the error set is a pure
