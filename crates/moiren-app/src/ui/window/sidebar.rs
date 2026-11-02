@@ -365,6 +365,7 @@ pub(super) fn inspector_host(
             shell.inspector_open,
             Side::Right,
             this,
+            None,
         ))
 }
 
@@ -408,6 +409,14 @@ pub(super) fn library_host(
             shell.sidebar_open,
             Side::Left,
             this,
+            // The handle protrudes over the canvas inside the cached panel;
+            // the graph meter frame paints around its registered rect.
+            Some(
+                shell
+                    .graph_overlays
+                    .probe("library-handle")
+                    .into_any_element(),
+            ),
         ))
 }
 
@@ -443,6 +452,7 @@ fn edge_handle(
     open: bool,
     side: Side,
     this: Entity<StudioShell>,
+    probe: Option<AnyElement>,
 ) -> impl IntoElement {
     // A left panel's handle sits on its right edge and points with the panel;
     // a right panel's handle mirrors that on its left edge. The attached side
@@ -485,6 +495,7 @@ fn edge_handle(
         .text_color(theme::PRIMARY)
         .cursor_pointer()
         .hover(|style| style.bg(theme::SURFACE_4))
+        .when_some(probe, |handle, probe| handle.child(probe))
         .child(
             component::Icon::default()
                 .path(icon)

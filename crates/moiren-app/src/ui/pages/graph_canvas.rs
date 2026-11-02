@@ -11,6 +11,7 @@ pub mod curves;
 mod frame;
 mod knob;
 mod layout;
+mod overlays;
 mod wire;
 
 pub use camera::Camera;
@@ -18,6 +19,7 @@ pub use curves::CurveSpec;
 pub use frame::{CanvasFrame, HitTarget, PortDirection, PortTarget};
 pub use knob::{CardKnob, KnobControl};
 pub use layout::{ChipLayout, KnobLayout, MeterLayout, NodeLayout, TextLayout};
+pub use overlays::{OverlayRects, carve};
 pub use wire::{WireCurve, WireGeometry};
 
 #[cfg(test)]

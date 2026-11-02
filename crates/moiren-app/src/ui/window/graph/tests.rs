@@ -2195,3 +2195,59 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
     });
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn graph_hud_overlays_register_their_rects_for_the_meter_frame(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    settle_panels(cx);
+    let canvas = render(cx);
+    let handle = cx.update(|window, _| window.find("library-toggle").bounds());
+    let rects = view.read_with(cx, |shell, _| shell.graph_overlays.rects());
+    assert_eq!(
+        rects.len(),
+        3,
+        "toolbar, overview, library handle: {rects:?}"
+    );
+    let contains = |rect: &Bounds<Pixels>, target: Bounds<Pixels>| {
+        rect.contains(&target.origin)
+            && rect.contains(&(target.origin + point(target.size.width, target.size.height)))
+    };
+    // The editing toolbar sits 12 px inside the canvas's top-left corner
+    // and spans its five controls.
+    let toolbar = rects
+        .iter()
+        .find(|rect| {
+            (f32::from(rect.origin.x - canvas.origin.x) - 12.).abs() <= 3.
+                && (f32::from(rect.origin.y - canvas.origin.y) - 12.).abs() <= 3.
+        })
+        .unwrap_or_else(|| panic!("no toolbar rect near the canvas corner in {rects:?}"));
+    assert!(f32::from(toolbar.size.width) > 150. && f32::from(toolbar.size.height) < 60.);
+    // The overview hugs the canvas's bottom-right corner at its fixed width.
+    let overview = rects
+        .iter()
+        .find(|rect| {
+            let right = rect.origin.x + rect.size.width;
+            let bottom = rect.origin.y + rect.size.height;
+            (f32::from(canvas.origin.x + canvas.size.width - right) - 12.).abs() <= 3.
+                && (f32::from(canvas.origin.y + canvas.size.height - bottom) - 12.).abs() <= 3.
+        })
+        .unwrap_or_else(|| panic!("no overview rect at the canvas's bottom-right in {rects:?}"));
+    assert!(
+        (f32::from(overview.size.width) - 164.).abs() <= 4.,
+        "{overview:?}"
+    );
+    // The library's protruding handle is the third overlay; its rect wraps
+    // the handle whole, border included, with the pixel of clearance the
+    // meter frame keeps from every overlay.
+    assert!(
+        rects.iter().any(|rect| contains(rect, handle)),
+        "no rect wraps the handle {handle:?}: {rects:?}"
+    );
+    finish_service(runtime);
+}

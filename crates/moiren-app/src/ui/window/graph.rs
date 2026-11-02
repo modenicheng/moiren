@@ -721,6 +721,7 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         // Shared with the meter frame: its overlay repaints bars at this
         // frame's geometry between cache rebuilds.
         shell.graph_canvas_frame.clone(),
+        &shell.graph_overlays,
     );
 
     div()
@@ -769,7 +770,10 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         .rounded(px(theme::RADIUS_MD))
         .bg(theme::SURFACE)
         .border_1()
-        .border_color(theme::BORDER);
+        .border_color(theme::BORDER)
+        // The meter frame paints around this rect (it is a later sibling of
+        // the cached panel, so live bars would otherwise cover the HUD).
+        .child(shell.graph_overlays.probe("toolbar"));
     for (id, name, icon, hand) in [
         ("tool-select", t!("Select"), ActionIcon::Cursor, false),
         ("tool-hand", t!("Hand"), ActionIcon::HandMove, true),

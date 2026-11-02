@@ -227,6 +227,10 @@ fn paint_graph_meter_frame(
     if shell.connection_drag.is_some() {
         return;
     }
+    // The HUD overlays (editing toolbar, overview, library handle) live in
+    // the cached panel beneath this layer: carve their rects out of every
+    // card's mask so live bars never paint over them.
+    let overlays = shell.graph_overlays.rects();
     window.with_content_mask(
         Some(ContentMask {
             bounds: frame.bounds,
@@ -261,19 +265,16 @@ fn paint_graph_meter_frame(
                         }
                     })
                 };
-                window.with_content_mask(
-                    Some(ContentMask {
-                        bounds: frame.window_rect(layout.card),
-                    }),
-                    |window| {
+                for piece in pages::graph_canvas::carve(frame.window_rect(layout.card), &overlays) {
+                    window.with_content_mask(Some(ContentMask { bounds: piece }), |window| {
                         pages::graph_canvas_view::paint_meter_bars(
                             frame,
                             layout,
                             reading.as_ref(),
                             window,
                         );
-                    },
-                );
+                    });
+                }
             }
         },
     );

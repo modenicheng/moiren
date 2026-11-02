@@ -187,6 +187,11 @@ pub struct StudioShell {
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
     graph_canvas_frame: pages::graph_canvas_view::PreparedFrame,
+    /// Window rects of the graph page's HUD overlays (editing toolbar,
+    /// overview, library handle), registered by the cached panel's probes
+    /// and carved out of the meter frame's paint so live bars stay under
+    /// them.
+    graph_overlays: pages::graph_canvas::OverlayRects,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
@@ -383,6 +388,7 @@ impl StudioShell {
             graph_meter_frame,
             graph_controls,
             graph_canvas_frame,
+            graph_overlays: Default::default(),
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),

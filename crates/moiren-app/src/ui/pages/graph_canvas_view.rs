@@ -9,7 +9,7 @@ use rust_i18n::t;
 
 use super::graph_canvas::{
     Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, KnobControl,
-    PortDirection, PortTarget, WireCurve,
+    OverlayRects, PortDirection, PortTarget, WireCurve,
 };
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::observe::TestObserve;
@@ -363,7 +363,7 @@ pub(in crate::ui) fn node_drag_preview(
     .h(px(size.1))
 }
 
-fn overview(prepared: PreparedFrame) -> impl IntoElement {
+fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElement {
     div()
         .absolute()
         .bottom(px(12.))
@@ -375,6 +375,7 @@ fn overview(prepared: PreparedFrame) -> impl IntoElement {
         .border_1()
         .border_color(theme::BORDER)
         .overflow_hidden()
+        .child(overlays.probe("overview"))
         .child(
             div()
                 .text_size(px(theme::TEXT_XS))
@@ -427,6 +428,7 @@ pub fn graph_canvas_view(
     selected_wire: Option<&str>,
     callbacks: CanvasCallbacks,
     prepared: PreparedFrame,
+    overlays: &OverlayRects,
 ) -> impl IntoElement {
     let CanvasCallbacks {
         on_drop_node,
@@ -695,5 +697,5 @@ pub fn graph_canvas_view(
                 })
                 .gpui_test_observe(),
         )
-        .child(overview(prepared))
+        .child(overview(prepared, overlays))
 }
