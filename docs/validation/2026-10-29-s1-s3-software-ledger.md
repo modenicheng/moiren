@@ -1857,3 +1857,33 @@ workaround follows. The intended native Stop/join/Evaluate/Apply success and ind
 actual receipt remain unacquired. First-packet investigation stays deferred;
 no lower default, repeated unchanged soak, physical claim or S1-S3 completion
 follows. Development continues independently of unavailable physical equipment.
+
+### First joined-receipt native attempt
+
+The [native acceptance follow-up](2026-11-02-joined-receipt-native-acceptance.md)
+identifies an exact obsolete owned remote report reader behind the resource
+pressure. Held-identity cleanup restores memory without touching the host or
+protected OBS/QQMusic processes and without lowering the8GiB guard. One actual
+task then reaches the desktop but fails an exact summary Text assertion after
+scrolling, before source activation or audio Start. The original failure,
+bounded forced app cleanup and normal source exit remain explicit; five compact
+artifacts are hash/length verified. No owners remain, and defaults, render
+controls, driver and protected process identities are unchanged. This runner
+failure neither proves an audio defect nor acquires the missing native receipt.
+The original S1-S3 goal remains active; first-packet work stays deferred.
+
+The corrected runner reads all three exact owned ValuePattern editors together
+and separately checks any evaluated feedback's tuple. Nine regression checks
+and17existing runner checks pass; independent review confirms unchanged policy,
+hot-window and owner-cleanup gates. A separate2320root preserves the first
+failure and reuses the unchanged app hash. Its one native attempt passes the
+draft readback but fails enabled Stop confirmation within900ms. Generation1
+actually starts during cleanup; the runner's never-updated `audio_started=false`
+is not authoritative. No hot timing receipt, joined evaluation or Apply follows.
+The source submits completely/exits0, app requires bounded forced cleanup, and
+worker/supervisor exit1. All18compact artifacts are verified; no owners remain
+and protected processes/defaults/render controls/driver are unchanged. No third
+attempt or gate relaxation follows. Missing timing/state evidence remains a
+runner acceptance limitation, not a proven production audio defect or S1-S3
+completion. Original-scope audits identify no new mandatory software feature
+to add merely while waiting for native/physical evidence.

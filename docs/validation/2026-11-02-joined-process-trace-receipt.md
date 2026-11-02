@@ -112,3 +112,10 @@ remains deferred. Successful native closed-prefix Apply and its actual joined
 receipt, waveform quality and calibrated physical qualification remain open.
 Independent software development need not wait for physical equipment, and an
 unchanged stability soak is not used as a substitute for a new acceptance test.
+
+The preceding no-launch/resource observations are historical. The subsequent
+[native acceptance record](2026-11-02-joined-receipt-native-acceptance.md)
+documents exact obsolete report-reader cleanup and the first actual task.
+That task fails a UI summary assertion before source activation or audio Start;
+it is not successful native Evaluate/Apply or joined-receipt evidence. Original
+refusals and failure receipts remain intact.
