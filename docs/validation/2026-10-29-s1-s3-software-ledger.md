@@ -1932,3 +1932,24 @@ process identity and command hash, then terminated; its failures remain archived
 No normal Quit, candidate Apply, waveform or physical qualification is claimed.
 Unchanged soaks and further UIA experiments are not prerequisites for independent
 product work, and the original qualification objective remains active.
+
+### Stopped Desktop Fixture Regression
+
+The [stopped-startup repair](2026-11-03-stopped-desktop-startup.md) adds a fixed,
+bounded restored-empty-graph fixture with null session and no exports, rather
+than changing production automatic startup. Missing-helper and junction-ancestor
+regressions fail before repair; final ten filesystem cases pass on PS5/PS7.
+Actual project parsing/context tests pass36plus the existing automatic-startup
+test1; full default app library passes556/2ignored. Strict app library/tests
+Clippy and workspace fmt pass on an isolated
+clean archive with explicit overlays. Earlier formatting-header/PS7 failures
+remain retained, not mislabelled product defects or regression RED.
+
+One remote control observes the intended stopped startup and matching documents,
+but its first owned-window click plan refuses an obscured/different-child point
+before posting. No Settings/Close/Quit or audio Start/Stop success follows;
+forced app exit-1and task1remain explicit. All13compact files are verified,
+owners are gone and protected processes/settings/driver stay unchanged. The
+hit-test guard is not relaxed and no retry follows. Original native closed-prefix
+success and waveform/physical qualification remain open; independent work is
+not gated on another unchanged UI experiment or soak.

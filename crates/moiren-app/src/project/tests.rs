@@ -961,6 +961,48 @@ fn unbound_candidate_graph_saves_without_creating_an_active_session() {
 }
 
 #[test]
+fn stopped_ui_fixture_restores_empty_candidate_and_suppresses_default_startup_selection() {
+    let directory = TestDirectory::new();
+    let project_path = directory.file("stopped.moiren");
+    let preferences_path = directory.file("preferences.json");
+    // This is the deliberately narrow fixture in desktop-stopped-startup.ps1.
+    // An absent restored project selects automatic startup in start_service;
+    // gain zero or restore_last_project=false does not keep devices closed.
+    fs::write(
+        &project_path,
+        br#"{"version":2,"name":"Stopped UI control","session":null,"graph":{"nodes":[],"edges":[]},"exports":[]}"#,
+    )
+    .unwrap();
+    let mut preferences = serde_json::json!({
+        "version": 2,
+        "language": "en",
+        "restore_last_project": true,
+        "last_project_path": project_path,
+    });
+    fs::write(&preferences_path, serde_json::to_vec(&preferences).unwrap()).unwrap();
+    let startup = StartupDocuments::load_at(&preferences_path).unwrap();
+    assert!(
+        startup.project.is_some(),
+        "restoration disables automatic startup"
+    );
+    let context = startup.into_context().unwrap();
+    assert_eq!(context.core.phase(), crate::service::SessionPhase::Idle);
+    assert!(context.core.desired().is_none());
+    assert!(context.graph.snapshot().graph.nodes().is_empty());
+    assert!(context.graph.snapshot().exports.is_empty());
+    assert!(context.graph.snapshot().active_revision.is_none());
+    assert!(context.graph.snapshot().pending_revision.is_none());
+
+    preferences["restore_last_project"] = serde_json::json!(false);
+    fs::write(&preferences_path, serde_json::to_vec(&preferences).unwrap()).unwrap();
+    let startup = StartupDocuments::load_at(&preferences_path).unwrap();
+    assert!(
+        startup.project.is_none(),
+        "false is not a stopped startup contract"
+    );
+}
+
+#[test]
 fn balance_monitor_controls_round_trip_without_changing_legacy_documents() {
     let mut service = ServiceGraph::default();
     let pan = service
