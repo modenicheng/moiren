@@ -1,5 +1,5 @@
 use gpui_kit::{
-    App, Axis, BorderStyle, Bounds, ContentMask, Corners, Font, FontWeight, Hsla, PaintQuad, Path,
+    App, Axis, BorderStyle, Bounds, ContentMask, Font, FontWeight, Hsla, PaintQuad, Path,
     PathBuilder, Pixels, ShapedLine, TextAlign, TextRun, TransformationMatrix, Window, font, point,
     px, size, transparent_black,
 };
@@ -617,8 +617,9 @@ fn paint_port(
 /// The design 18 node card: header with icon, display name and status
 /// glyphs; full-height tint rail; per-kind body (the detail line until
 /// the body widgets land); the meter strip; and port rails with channel
-/// hints. States map as: selected = restrained gray border, faulted =
-/// danger border + badge, preparing = dots badge + body scrim.
+/// hints. Every card wears a gray outline so stacked cards keep their
+/// edges; states recolor it: selected = primary, faulted = danger (plus
+/// the badge), preparing = dots badge + body scrim.
 pub(super) fn paint_node(
     frame: &CanvasFrame,
     node: &CanvasNode,
@@ -630,36 +631,37 @@ pub(super) fn paint_node(
 ) {
     let tint = node.tint();
     let card = frame.window_rect(layout.card);
-    let (border_width, border_color) = if node.faulted {
-        (1., theme::DANGER)
+    let radius = theme::card::RADIUS * layout.scale;
+    let outline = if node.faulted {
+        theme::DANGER
     } else if selected {
-        (1., theme::GRIP)
+        theme::PRIMARY
     } else {
-        (0., transparent_black())
+        theme::GRIP
     };
-    window.paint_quad(PaintQuad {
-        bounds: card,
-        corner_radii: (6. * layout.scale).into(),
-        background: theme::SURFACE_3.into(),
-        border_widths: border_width.into(),
-        border_color,
-        border_style: BorderStyle::default(),
-    });
+    rounded(card, theme::SURFACE_3, radius, window);
     window.with_content_mask(Some(ContentMask { bounds: card }), |window| {
-        // Tint rail with the card's rounded left corners.
+        // Tint rail: the card's own left edge just inside the outline. A
+        // rail-wide quad cannot carry the card's corner radius (gpui clamps
+        // radii to the quad's size and the corners poke out square), so
+        // paint the inset card in tint and mask it down to the rail strip.
+        let inset = px(theme::card::OUTLINE_W);
+        let inner = Bounds {
+            origin: card.origin + point(inset, inset),
+            size: size(card.size.width - inset * 2., card.size.height - inset * 2.),
+        };
         let rail = frame.window_rect(layout.rail);
-        window.paint_quad(PaintQuad {
-            bounds: rail,
-            corner_radii: Corners {
-                top_left: px(6. * layout.scale),
-                bottom_left: px(6. * layout.scale),
-                top_right: px(0.),
-                bottom_right: px(0.),
-            },
-            background: tint.into(),
-            border_widths: 0f32.into(),
-            border_color: transparent_black(),
-            border_style: BorderStyle::default(),
+        let strip = Bounds {
+            origin: inner.origin,
+            size: size(rail.size.width, inner.size.height),
+        };
+        window.with_content_mask(Some(ContentMask { bounds: strip }), |window| {
+            rounded(
+                inner,
+                tint,
+                (radius - theme::card::OUTLINE_W).max(0.),
+                window,
+            );
         });
         // Header.
         if let Some(name) = node.icon {
@@ -756,6 +758,16 @@ pub(super) fn paint_node(
             );
         }
         paint_meter_bars(frame, layout, reading, window);
+    });
+    // The outline last, above the rail and the body, so the ring stays
+    // whole on every side whatever the state paints underneath.
+    window.paint_quad(PaintQuad {
+        bounds: card,
+        corner_radii: radius.into(),
+        background: transparent_black().into(),
+        border_widths: theme::card::OUTLINE_W.into(),
+        border_color: outline,
+        border_style: BorderStyle::default(),
     });
     // Port dots straddle the card edge, outside the content mask; the
     // channel hints sit just inside. Occupied inputs render as filled

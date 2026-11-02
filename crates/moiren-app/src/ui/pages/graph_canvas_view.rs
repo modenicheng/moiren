@@ -247,9 +247,9 @@ fn paint_connection_drag(
         let card = frame.window_rect(layout.card);
         window.paint_quad(PaintQuad {
             bounds: card,
-            corner_radii: (6. * layout.scale).into(),
+            corner_radii: (theme::card::RADIUS * layout.scale).into(),
             background: transparent_black().into(),
-            border_widths: 1.5f32.into(),
+            border_widths: theme::card::OUTLINE_W.into(),
             border_color: status_color,
             border_style: BorderStyle::default(),
         });
@@ -352,7 +352,7 @@ pub(in crate::ui) fn node_drag_preview(
                 &frame,
                 &frame.world.nodes[0],
                 &frame.nodes[0],
-                true,
+                false,
                 None,
                 window,
                 cx,
