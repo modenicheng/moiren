@@ -7,6 +7,8 @@ mod sequence_tests;
 mod admission_tests;
 #[path = "input_capture_tests.rs"]
 mod input_capture_tests;
+#[path = "output_capture_tests.rs"]
+mod output_capture_tests;
 #[path = "recovery_burst_tests.rs"]
 mod recovery_burst_tests;
 #[path = "reprime_tests.rs"]
@@ -847,6 +849,7 @@ fn microphone_clock_reset_stops_old_slots_before_encoding_fresh_carrier() {
         &mut bridge,
         &mut reader,
         &mut tickets,
+        None,
     );
     let mut observed = 0;
     assert!(!quiesce_microphone(
@@ -946,6 +949,7 @@ fn microphone_reset_waits_for_late_graph_write_before_discard() {
         &mut bridge,
         &mut reader,
         &mut tickets,
+        None,
     );
     let mut reader = reader.unwrap();
     let mut observed = 0;

@@ -298,6 +298,7 @@ fn input_capture_session_join_and_drop_retain_error_and_panic_without_early_take
             state: state.clone(),
             worker: Some(worker),
             capture: Some(f.shared.clone()),
+            output_capture: None,
         };
         exited_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(state.drained.load(Ordering::Acquire));

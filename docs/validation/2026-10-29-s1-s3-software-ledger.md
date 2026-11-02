@@ -1727,3 +1727,45 @@ reviewed refusal plot keeps every component, and final audit rehashes626inputs
 with no owners and unchanged protected processes/SYS. All27 original dirty/cache
 files remain intact. No native audio, production/default/gate change, push or
 first-packet work occurs; current native/physical qualification stays open.
+
+### Actual encoded MIC output witness
+
+The [bounded output witness](2026-11-02-vad-output-reference.md) extends S1
+from actual Playback input bytes to actual post-encode, pre-WRITE MIC bytes.
+An explicit bounded flag leaves defaults and transport policy unchanged;
+opaque-ticket matching separates attempts, acceptance and observed completion,
+and actual join gates export. Fifteen collector and six actual-pump/session
+tests pass, including capacity equivalence, allocation-free hooks, races and
+stop/Drop/panic join behavior. Genuine assertion RED and a disabled-hook
+sensitivity control are retained. Final library790/4ignored, example709/1ignored
+off and on, and full Windows feature-workspace2336/9ignored/0failed pass;
+all-target check, strict Clippy, fmt and release build pass separately.
+
+One bounded remote acquisition retains650actual input packets/312000frames
+and679actual PCM16MIC output packets/325920frames. All679WRITE submissions are
+accepted with observed successful completions, zero bridge zero-fill and
+current identity after submission. The separate native recorder also retains
+679packets, but one discontinuity flag makes the unchanged collection gate
+refuse the run. Source submission and cleanup complete; collection does not.
+This establishes joined byte-witness acquisition, not source-route waveform
+correctness, steady-state qualification or physical latency. The
+first-packet issue remains deferred rather than being exempted or reopened.
+
+Closed-data analysis then finds exact equality between all651840 decoded MIC
+output and Float32 recorder stored samples at index zero, without any offset,
+gain or drift fit. Seven pure helper tests and independent review pass; the
+final remote offline run exits0 in6.501s with all13original artifact hashes
+unchanged. Independent-origin raw/RMS plots are verified and visually reviewed.
+This narrows the evidence gap to source/input-to-output interpretation and
+clock mapping; it does not remove the recorder flag or infer a delay. Wrapper
+preflight and provenance fixes preserve their prior failed/superseded receipts;
+neither triggers another native acquisition.
+
+The preceding [publication query](2026-11-02-vad-format-publication-query.md)
+finds both exact exclusive formats supported on both directions at the2000and
+5000ms observations, with no Initialize, Start or PCM. It does not reproduce
+the earlier format refusal or justify a retry/delay fix. Native tests remain
+remote-only and bounded; software development and headless regression proceed
+independently. Protected external processes, driver and boot remain unchanged;
+no owners remain. No lower default, threshold change, path winner, push or
+S1-S3 completion is claimed.

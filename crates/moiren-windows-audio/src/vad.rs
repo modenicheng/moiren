@@ -46,6 +46,11 @@ pub use provider::{
 };
 #[cfg(windows)]
 pub use provider::{
+    VadCaptureProvider, VadOutputCaptureArtifact, VadOutputCaptureHandle, VadOutputCaptureIdentity,
+    VadOutputCapturePacket,
+};
+#[cfg(windows)]
+pub use provider::{
     VadInputCaptureArtifact, VadInputCaptureHandle, VadInputCaptureIdentity, VadInputCapturePacket,
 };
 

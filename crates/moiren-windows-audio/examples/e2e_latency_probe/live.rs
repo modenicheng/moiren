@@ -67,6 +67,8 @@ mod host_decode_call_gap;
 
 #[path = "vad_input_reference.rs"]
 mod vad_input_reference;
+#[path = "vad_output_reference.rs"]
+mod vad_output_reference;
 
 #[cfg(any(windows, test))]
 #[path = "process_admission.rs"]
@@ -157,6 +159,7 @@ struct LiveOptions {
     vad_minimum_period: bool,
     vad_microphone_minimum_period: bool,
     vad_input_capture_frames: Option<u32>,
+    vad_output_capture_frames: Option<u32>,
     render_target_frames: Option<u32>,
     wake_margin_frames: u32,
     callback_budget_frames: u32,
@@ -213,6 +216,7 @@ impl Default for LiveOptions {
             vad_minimum_period: false,
             vad_microphone_minimum_period: false,
             vad_input_capture_frames: None,
+            vad_output_capture_frames: None,
             render_target_frames: None,
             wake_margin_frames: DEFAULT_WAKE_MARGIN_FRAMES,
             callback_budget_frames: DEFAULT_CALLBACK_BUDGET_FRAMES,
@@ -303,6 +307,8 @@ struct LiveRunManifest {
     vad_minimum_period: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_input_capture_frames: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_output_capture_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_route: Option<Value>,
     collection: Option<Value>,
@@ -400,6 +406,8 @@ struct NativeReport {
     src_trace: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_input_reference: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_output_reference: Option<Value>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -424,6 +432,10 @@ struct ArtifactPaths {
     vad_input_raw: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_input_metadata: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_output_raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_output_metadata: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -431,6 +443,8 @@ struct ArtifactReport {
     paths: ArtifactPaths,
     measurement_pcm_status: &'static str,
     capture_pcm_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_output_reference_status: Option<&'static str>,
     calibration_status: &'static str,
 }
 
@@ -790,6 +804,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         .then(|| source::SourceProvenance::new(source_plan)),
         vad_minimum_period: options.vad_minimum_period.then_some(true),
         vad_input_capture_frames: options.vad_input_capture_frames,
+        vad_output_capture_frames: options.vad_output_capture_frames,
         vad_route: options.route_intent(),
         collection: collection.clone(),
         output_endpoint_id: options.output_label(),
@@ -924,6 +939,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--max-gap-frames"
             | "--vad-recovery-cap-periods"
             | "--vad-input-capture-frames"
+            | "--vad-output-capture-frames"
             | "--render-target-frames"
             | "--render-mode"
             | "--render-period-frames"
@@ -1083,6 +1099,14 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                 options.vad_input_capture_frames =
                     Some(value.parse().context("invalid VAD input capture frames")?);
             }
+            "--vad-output-capture-frames" => {
+                ensure!(
+                    options.vad_output_capture_frames.is_none(),
+                    "duplicate --vad-output-capture-frames"
+                );
+                options.vad_output_capture_frames =
+                    Some(value.parse().context("invalid VAD output capture frames")?);
+            }
             "--render-target-frames" => {
                 options.physical_render_options_explicit = true;
                 options.render_target_frames = if value == "capacity" {
@@ -1146,6 +1170,18 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 
 fn validate(options: &LiveOptions) -> Result<()> {
     options.validation.validate()?;
+    if let Some(frames) = options.vad_output_capture_frames {
+        ensure!(
+            options.source_kind == EvidenceSourceKind::VadPlayback
+                && !options.diagnostic_soak
+                && options.microphone_target()?.is_some(),
+            "VAD output capture requires live-vad microphone route without diagnostic soak"
+        );
+        ensure!(
+            (1..=480_000).contains(&frames),
+            "VAD output capture frames must be 1..=480000"
+        );
+    }
     if let Some(frames) = options.vad_input_capture_frames {
         ensure!(
             options.source_kind == EvidenceSourceKind::VadPlayback && !options.diagnostic_soak,
@@ -1428,6 +1464,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     let manifest_key = output_path_key(&manifest)?;
     let (vad_input_raw, vad_input_metadata) =
         vad_input_reference::reserve(options, &report, &manifest)?;
+    let (vad_output_raw, vad_output_metadata) =
+        vad_output_reference::reserve(options, &report, &manifest)?;
     let process_trace = options.artifact_dir.join("process-trace.json");
     let process_trace_key = output_path_key(&process_trace)?;
     let src_trace = options.artifact_dir.join("src-trace.json");
@@ -1632,6 +1670,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .then(|| src_trace_chunks.to_string_lossy().into_owned()),
         vad_input_raw,
         vad_input_metadata,
+        vad_output_raw,
+        vad_output_metadata,
     })
 }
 
@@ -1803,6 +1843,8 @@ impl ArtifactPaths {
             src_trace_chunks: self.src_trace_chunks.clone(),
             vad_input_raw: self.vad_input_raw.clone(),
             vad_input_metadata: self.vad_input_metadata.clone(),
+            vad_output_raw: self.vad_output_raw.clone(),
+            vad_output_metadata: self.vad_output_metadata.clone(),
         }
     }
 }
@@ -1871,6 +1913,24 @@ fn artifact_report(
         } else {
             "missing"
         },
+        vad_output_reference_status: options.vad_output_capture_frames.map(|_| {
+            if options.dry_run {
+                "not_collected_dry_run"
+            } else {
+                match native
+                    .vad_output_reference
+                    .as_ref()
+                    .and_then(|v| v["status"].as_str())
+                {
+                    Some("retained_not_delivery_proof") => {
+                        "raw_vad_output_retained_not_delivery_proof"
+                    }
+                    Some("retained_empty_unknown") => "raw_vad_output_empty_unknown",
+                    Some(_) => "raw_vad_output_unavailable_or_export_failed",
+                    None => "not_collected",
+                }
+            }
+        }),
     }
 }
 
@@ -2288,6 +2348,20 @@ mod native;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vad_output_reference_flag_parses_before_native_open() {
+        let parsed = parse(
+            ["--vad-output-capture-frames", "480000"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        );
+        assert!(
+            parsed.is_ok(),
+            "explicit bounded output capture: {parsed:?}"
+        );
+    }
     use std::fs;
 
     #[test]

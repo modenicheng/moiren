@@ -721,18 +721,41 @@ pub fn run_vad(
         .as_deref()
         .context("--name is required for live-vad")?;
     let (interface, root) = vad::discover_root().context("discover VAD control root")?;
-    let (provider, input_reference) = if let Some(frames) = options.vad_input_capture_frames {
-        let (provider, handle) =
-            WindowsVadProvider::from_interface_with_input_capture(&interface, endpoint_id, frames)
-                .context("open VAD input capture on the selected control root")?;
-        (
-            provider,
-            Some(vad_input_reference::Recorder::new(handle, paths)?),
+    let microphone = options.microphone_target()?;
+    let (provider, input_reference, output_reference) = if options
+        .vad_input_capture_frames
+        .is_some()
+        || options.vad_output_capture_frames.is_some()
+    {
+        let output = options
+            .vad_output_capture_frames
+            .map(|frames| {
+                microphone
+                    .as_ref()
+                    .map(|target| (target.endpoint_id, frames))
+                    .context("VAD output capture microphone target missing")
+            })
+            .transpose()?;
+        let (provider, input, output) = WindowsVadProvider::from_interface_with_captures(
+            &interface,
+            options
+                .vad_input_capture_frames
+                .map(|frames| (endpoint_id, frames)),
+            output,
         )
+        .context("open VAD captures on the selected control root")?;
+        let input = input
+            .map(|handle| vad_input_reference::Recorder::new(handle, paths))
+            .transpose()?;
+        let output = output
+            .map(|handle| vad_output_reference::Recorder::new(handle, paths))
+            .transpose()?;
+        (provider, input, output)
     } else {
         (
             WindowsVadProvider::from_interface(&interface)
                 .context("open VAD provider on the selected control root")?,
+            None,
             None,
         )
     };
@@ -742,7 +765,7 @@ pub fn run_vad(
     let mut cleanup = VadCleanup {
         provider: &provider,
         endpoint_id,
-        microphone: options.microphone_target()?,
+        microphone,
         owned_exports: Vec::with_capacity(2),
         created_exports: Vec::with_capacity(2),
         exports_prepared: false,
@@ -767,6 +790,7 @@ pub fn run_vad(
         last_health: None,
         engine_health: None,
         input_reference,
+        output_reference,
     };
     if let Some(config) = collection_config {
         return vad_collection::collect(
@@ -899,6 +923,7 @@ pub(super) struct VadCleanup<'a> {
     pub(super) last_health: Option<vad_collection::Health>,
     engine_health: Option<engine_health::Tracker>,
     input_reference: Option<vad_input_reference::Recorder>,
+    output_reference: Option<vad_output_reference::Recorder>,
 }
 
 impl VadCleanup<'_> {
@@ -1619,6 +1644,10 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
         let input_export = self.input_reference.take().map_or(Ok(()), |capture| {
             capture.finish(&mut self.report.vad_input_reference)
         });
+        // Do not short-circuit the peer witness when either exporter fails.
+        let output_export = self.output_reference.take().map_or(Ok(()), |capture| {
+            capture.finish(&mut self.report.vad_output_reference)
+        });
         let closed = self.observer.as_ref().map(|observer| observer.snapshot());
         self.report.backend_diagnostics = Some(final_backend_evidence(
             native.map(|view| view.snapshot()),
@@ -1634,21 +1663,30 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
         } else {
             Ok(())
         };
-        if let Some(snapshot) = closed {
-            self.report.engine_cleanup = Some(engine_snapshot_value(&snapshot));
-            if let Some(error) = snapshot.cleanup_error {
-                bail!("VAD EngineHost cleanup: {error}");
+        let host_cleanup = (|| -> Result<()> {
+            if let Some(snapshot) = closed {
+                self.report.engine_cleanup = Some(engine_snapshot_value(&snapshot));
+                if let Some(error) = snapshot.cleanup_error {
+                    bail!("VAD EngineHost cleanup: {error}");
+                }
+                ensure!(
+                    snapshot.host == moiren_engine::host::HostState::Closed,
+                    "VAD EngineHost did not confirm Closed after shutdown"
+                );
+                ensure!(
+                    snapshot.fault.is_none(),
+                    "VAD EngineHost retained a terminal fault after shutdown"
+                );
             }
-            ensure!(
-                snapshot.host == moiren_engine::host::HostState::Closed,
-                "VAD EngineHost did not confirm Closed after shutdown"
-            );
-            ensure!(
-                snapshot.fault.is_none(),
-                "VAD EngineHost retained a terminal fault after shutdown"
-            );
-        }
-        soak_cleanup::combine(src_export, input_export)
+            Ok(())
+        })();
+        soak_cleanup::combine(
+            host_cleanup,
+            soak_cleanup::combine(
+                src_export,
+                soak_cleanup::combine(input_export, output_export),
+            ),
+        )
     }
 
     fn invalidate_admission(&mut self) -> Result<()> {

@@ -432,6 +432,7 @@ pub(super) fn playback_recorded<C: PcmIo>(
     })
 }
 
+#[cfg(test)]
 pub(super) fn microphone<C: PcmIo>(
     owner: &mut C,
     bridge: &mut PcmMicrophoneBridge,
@@ -439,7 +440,19 @@ pub(super) fn microphone<C: PcmIo>(
     pump: &mut MicrophonePump,
     state: &SessionState,
     epoch: u64,
+    now: impl FnMut() -> Instant,
+) -> Result<PumpState, BackendError> {
+    microphone_recorded(owner, bridge, tickets, pump, (state, epoch), now, None)
+}
+
+pub(super) fn microphone_recorded<C: PcmIo>(
+    owner: &mut C,
+    bridge: &mut PcmMicrophoneBridge,
+    tickets: &mut Vec<PcmTicket>,
+    pump: &mut MicrophonePump,
+    (state, epoch): (&SessionState, u64),
     mut now: impl FnMut() -> Instant,
+    mut capture: Option<&mut output_capture::CaptureWorker>,
 ) -> Result<PumpState, BackendError> {
     if !pump.observe(state, epoch, now()) {
         return Ok(PumpState::Reset);
@@ -451,7 +464,12 @@ pub(super) fn microphone<C: PcmIo>(
         // Quota completions are terminal for the ticket, transient for the
         // owner (see `playback`); drop the ticket and let the fill path
         // resubmit once the retired owner's requests stop occupying quota.
-        let completion = match owner.complete(ticket) {
+        let completion = owner.complete(ticket);
+        // Preserve actual IO facts before later order/shape checks can fail.
+        if let Some(capture) = capture.as_mut() {
+            capture.completed(ticket, &completion);
+        }
+        let completion = match completion {
             Ok(completion) => completion,
             Err(ClientError::KernelPcmQuotaFull) => {
                 state.telemetry.quota_drop();
@@ -550,15 +568,26 @@ pub(super) fn microphone<C: PcmIo>(
         // unchanged PcmOwner samples its real QPC only when submitting this PCM.
         let packet_frames = bridge.packet_frames();
         let (packet, silence_frames) = bridge.encode_packet_with_metrics()?;
+        let record = capture
+            .as_mut()
+            .and_then(|capture| capture.encoded(state, epoch, packet, silence_frames));
         state
             .telemetry
             .submission_attempt(packet_frames, silence_frames);
         if !pump.observe(state, epoch, now()) || !state.admitted() {
+            if let Some(capture) = capture.as_mut() {
+                capture.fenced(record);
+            }
             state.telemetry.carrier_drop();
             return Ok(PumpState::Reset);
         }
         let submitted_at = now();
-        match owner.write(packet) {
+        let submitted = owner.write(packet);
+        if let Some(capture) = capture.as_mut() {
+            let current = capture.publication_current(state, epoch);
+            capture.submitted(record, &submitted, current);
+        }
+        match submitted {
             Ok(ticket) => {
                 state.telemetry.submission_accepted();
                 tickets.push(ticket);

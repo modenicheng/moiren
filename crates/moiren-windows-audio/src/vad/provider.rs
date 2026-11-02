@@ -38,6 +38,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 mod input_capture;
 mod lifecycle;
+mod output_capture;
 mod pcm_worker;
 mod telemetry;
 mod transport;
@@ -45,6 +46,10 @@ pub use input_capture::{
     VadInputCaptureArtifact, VadInputCaptureHandle, VadInputCaptureIdentity, VadInputCapturePacket,
 };
 use lifecycle::{Admission, ExportSpec, ExportView, Lifecycle};
+pub use output_capture::{
+    VadOutputCaptureArtifact, VadOutputCaptureHandle, VadOutputCaptureIdentity,
+    VadOutputCapturePacket,
+};
 use telemetry::PcmTelemetry;
 pub use telemetry::{PublicationIdentity, PublicationSnapshot, VadPcmTelemetrySnapshot};
 
@@ -118,7 +123,15 @@ pub struct WindowsVadProvider {
     name_reader: Mutex<super::endpoint_name::WindowsEndpointNameReader>,
     name_clock: Mutex<super::endpoint_name::WindowsObserverClock>,
     input_capture: Option<Arc<input_capture::CaptureShared>>,
+    output_capture: Option<Arc<output_capture::CaptureShared>>,
 }
+
+/// Detached capture handles share neither native ownership nor audio admission.
+pub type VadCaptureProvider = (
+    Arc<WindowsVadProvider>,
+    Option<VadInputCaptureHandle>,
+    Option<VadOutputCaptureHandle>,
+);
 
 impl WindowsVadProvider {
     pub fn discover() -> Result<Arc<Self>, BackendError> {
@@ -177,9 +190,54 @@ impl WindowsVadProvider {
         Ok((connect(capture)?, handle))
     }
 
+    /// Reserve either bounded diagnostic independently before native connection.
+    /// Both directions still use the caller's one selected control root.
+    pub fn from_interface_with_captures(
+        interface: &DeviceInterface,
+        input: Option<(VirtualEndpointId, u32)>,
+        output: Option<(VirtualEndpointId, u32)>,
+    ) -> Result<VadCaptureProvider, BackendError> {
+        Self::with_captures(input, output, |input, output| {
+            Self::from_interface_captures(interface, input, output)
+        })
+    }
+
+    fn with_captures(
+        input: Option<(VirtualEndpointId, u32)>,
+        output: Option<(VirtualEndpointId, u32)>,
+        connect: impl FnOnce(
+            Option<Arc<input_capture::CaptureShared>>,
+            Option<Arc<output_capture::CaptureShared>>,
+        ) -> Result<Arc<Self>, BackendError>,
+    ) -> Result<VadCaptureProvider, BackendError> {
+        let (input, input_handle) = match input {
+            Some((id, frames)) => {
+                let (capture, handle) = input_capture::CaptureShared::new(id, frames)?;
+                (Some(capture), Some(handle))
+            }
+            None => (None, None),
+        };
+        let (output, output_handle) = match output {
+            Some((id, frames)) => {
+                let (capture, handle) = output_capture::CaptureShared::new(id, frames)?;
+                (Some(capture), Some(handle))
+            }
+            None => (None, None),
+        };
+        Ok((connect(input, output)?, input_handle, output_handle))
+    }
+
     fn from_interface_configured(
         interface: &DeviceInterface,
         input_capture: Option<Arc<input_capture::CaptureShared>>,
+    ) -> Result<Arc<Self>, BackendError> {
+        Self::from_interface_captures(interface, input_capture, None)
+    }
+
+    fn from_interface_captures(
+        interface: &DeviceInterface,
+        input_capture: Option<Arc<input_capture::CaptureShared>>,
+        output_capture: Option<Arc<output_capture::CaptureShared>>,
     ) -> Result<Arc<Self>, BackendError> {
         let control = ControlClient::connect(interface).map_err(client_error)?;
         control
@@ -195,6 +253,7 @@ impl WindowsVadProvider {
             )),
             name_clock: Mutex::new(super::endpoint_name::WindowsObserverClock::new()),
             input_capture,
+            output_capture,
         }))
     }
 
@@ -450,7 +509,19 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
         let (writer, reader) = audio_bridge(2, capacity, request.audio_byte_budget)
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
         let (control, endpoint, state) = self.endpoint(request, Intent::Microphone, cancel)?;
-        let session = VadSession::spawn(
+        let capture = match self
+            .output_capture
+            .as_ref()
+            .map(|capture| capture.reserve(request.endpoint_id))
+            .transpose()
+        {
+            Ok(capture) => capture.flatten(),
+            Err(error) => {
+                state.drained.store(true, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let session = VadSession::spawn_captures(
             WorkerConfig::Microphone {
                 control,
                 endpoint,
@@ -460,6 +531,8 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
                 budget,
             },
             state,
+            None,
+            capture,
         )?;
         Ok(PreparedVirtualMicrophone {
             carrier: writer,
@@ -583,26 +656,36 @@ struct VadSession {
     state: Arc<SessionState>,
     worker: Option<JoinHandle<()>>,
     capture: Option<Arc<input_capture::CaptureShared>>,
+    output_capture: Option<Arc<output_capture::CaptureShared>>,
 }
 
 impl VadSession {
-    fn spawn(config: WorkerConfig, state: Arc<SessionState>) -> Result<Self, BackendError> {
-        Self::spawn_captured(config, state, None)
-    }
-
     fn spawn_captured(
         config: WorkerConfig,
         state: Arc<SessionState>,
         capture: Option<input_capture::CaptureWorker>,
     ) -> Result<Self, BackendError> {
+        Self::spawn_captures(config, state, capture, None)
+    }
+
+    fn spawn_captures(
+        config: WorkerConfig,
+        state: Arc<SessionState>,
+        capture: Option<input_capture::CaptureWorker>,
+        output_capture: Option<output_capture::CaptureWorker>,
+    ) -> Result<Self, BackendError> {
         let capture_shared = capture.as_ref().map(|capture| capture.shared());
+        let output_shared = output_capture.as_ref().map(|capture| capture.shared());
         let worker_state = state.clone();
         let worker = thread::Builder::new()
             .name("moiren-vad-pcm".into())
-            .spawn(move || run_worker(config, worker_state, capture))
+            .spawn(move || run_worker(config, worker_state, capture, output_capture))
             .map_err(|error| {
                 state.drained.store(true, Ordering::Release);
                 if let Some(capture) = &capture_shared {
+                    capture.spawn_failed();
+                }
+                if let Some(capture) = &output_shared {
                     capture.spawn_failed();
                 }
                 BackendError::Failed(format!("start VAD worker: {error}"))
@@ -611,6 +694,7 @@ impl VadSession {
             state,
             worker: Some(worker),
             capture: capture_shared,
+            output_capture: output_shared,
         })
     }
 
@@ -668,6 +752,9 @@ impl VirtualResourceSession for VadSession {
             if let Some(capture) = &self.capture {
                 capture.joined(result.is_err());
             }
+            if let Some(capture) = &self.output_capture {
+                capture.joined(result.is_err());
+            }
             result.map_err(|_| BackendError::WorkerPanicked)?;
         }
         match self.status() {
@@ -687,6 +774,9 @@ impl Drop for VadSession {
             if let Some(capture) = &self.capture {
                 capture.joined(result.is_err());
             }
+            if let Some(capture) = &self.output_capture {
+                capture.joined(result.is_err());
+            }
         }
     }
 }
@@ -695,6 +785,7 @@ fn run_worker(
     config: WorkerConfig,
     state: Arc<SessionState>,
     mut capture: Option<input_capture::CaptureWorker>,
+    mut output_capture: Option<output_capture::CaptureWorker>,
 ) {
     // Match the physical paths' scheduling class: this thread paces bounded
     // PCM IO against native deadlines. Registration failure is non-fatal.
@@ -729,13 +820,16 @@ fn run_worker(
             endpoint,
             channels,
             Some(reader),
-            byte_budget,
-            budget,
+            (byte_budget, budget),
             &state,
+            output_capture.as_mut(),
         ),
     });
     state.revoke();
     if let Some(capture) = capture.as_mut() {
+        capture.finished(&result);
+    }
+    if let Some(capture) = output_capture.as_mut() {
         capture.finished(&result);
     }
     if let Err(error) = result {
@@ -1107,9 +1201,9 @@ fn run_microphone(
     endpoint: TransportEndpoint,
     channels: Channels,
     mut reader: Option<AudioReader<f32>>,
-    byte_budget: usize,
-    budget: crate::virtual_owner::PreparedVirtualBudget,
+    (byte_budget, budget): (usize, crate::virtual_owner::PreparedVirtualBudget),
     state: &SessionState,
+    mut capture: Option<&mut output_capture::CaptureWorker>,
 ) -> Result<(), BackendError> {
     let mut current = endpoint.snapshot;
     let mut owner: Option<PcmOwner> = None;
@@ -1131,6 +1225,9 @@ fn run_microphone(
                     transport_started,
                 )?;
                 current = queried;
+                if let Some(capture) = capture.as_mut() {
+                    capture.observe(current, state);
+                }
                 if state.reset_epoch.load(Ordering::Acquire) != observed_reset {
                     teardown_microphone(
                         &mut retired,
@@ -1138,6 +1235,7 @@ fn run_microphone(
                         &mut bridge,
                         &mut reader,
                         &mut tickets,
+                        capture.as_deref_mut(),
                     );
                     if !pcm_worker::quiesce_microphone(
                         state,
@@ -1155,6 +1253,8 @@ fn run_microphone(
                 }
                 if transport::microphone_running(current, state) {
                     if owner.is_none() {
+                        let admission_ticket = state.admitted_ticket.load(Ordering::Acquire);
+                        let active_revision = state.admitted_revision.load(Ordering::Acquire);
                         let shape = current
                             .pcm_shape(control.capabilities())
                             .map_err(|e| client_error(e.into()))?;
@@ -1179,6 +1279,18 @@ fn run_microphone(
                             reader.take().expect("microphone carrier is free"),
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
+                        if let Some(capture) = capture.as_mut() {
+                            capture.bind(output_capture::VadOutputCaptureIdentity {
+                                stable_id: current.stable_id().to_le_bytes(),
+                                native_stamp: lifecycle::stamp(current),
+                                reset_epoch: observed_reset,
+                                admission_ticket,
+                                active_revision,
+                                format: shape.format() as u32,
+                                channels: shape.channels() as u32,
+                                packet_frames: shape.frames(),
+                            });
+                        }
                         transport_started = true;
                         tickets.clear();
                         let mut fresh = pcm_worker::MicrophonePump::prepared(reprime);
@@ -1188,14 +1300,14 @@ fn run_microphone(
                         }
                         pump = Some(fresh);
                     }
-                    match pcm_worker::microphone(
+                    match pcm_worker::microphone_recorded(
                         owner.as_mut().expect("microphone owner"),
                         bridge.as_mut().expect("microphone bridge"),
                         &mut tickets,
                         pump.as_mut().expect("microphone pump"),
-                        state,
-                        observed_reset,
+                        (state, observed_reset),
                         Instant::now,
+                        capture.as_deref_mut(),
                     ) {
                         Ok(pcm_worker::PumpState::Current) => {
                             if let Err(error) = pcm_worker::wait_for_microphone(
@@ -1215,6 +1327,7 @@ fn run_microphone(
                                     &mut bridge,
                                     &mut reader,
                                     &mut tickets,
+                                    capture.as_deref_mut(),
                                 );
                             }
                             continue;
@@ -1230,6 +1343,7 @@ fn run_microphone(
                                 &mut bridge,
                                 &mut reader,
                                 &mut tickets,
+                                capture.as_deref_mut(),
                             );
                         }
                     }
@@ -1240,6 +1354,7 @@ fn run_microphone(
                         &mut bridge,
                         &mut reader,
                         &mut tickets,
+                        capture.as_deref_mut(),
                     );
                 }
             } else {
@@ -1249,6 +1364,7 @@ fn run_microphone(
                     &mut bridge,
                     &mut reader,
                     &mut tickets,
+                    capture.as_deref_mut(),
                 );
             }
             retired.poll();
@@ -1271,6 +1387,7 @@ fn run_microphone(
         &mut bridge,
         &mut reader,
         &mut tickets,
+        capture,
     );
     let drain_result = retired.finish();
     combine_worker_results(combine_worker_results(result, close_result), drain_result)
@@ -1295,8 +1412,12 @@ fn teardown_microphone(
     bridge: &mut Option<PcmMicrophoneBridge>,
     reader: &mut Option<AudioReader<f32>>,
     tickets: &mut Vec<PcmTicket>,
+    capture: Option<&mut output_capture::CaptureWorker>,
 ) {
     if let Some(pcm) = owner.take() {
+        if let Some(capture) = capture {
+            capture.retired();
+        }
         retired.retire(pcm, "microphone");
     }
     tickets.clear();
@@ -1339,6 +1460,58 @@ fn close_worker_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_interface_dual_capture_rejects_either_budget_before_connect() {
+        let id = VirtualEndpointId::from_bytes([0x51; 16]);
+        for (input, output) in [
+            (None, Some((id, 0))),
+            (None, Some((id, 480_001))),
+            (Some((id, 480)), Some((id, u32::MAX))),
+            (Some((id, 0)), Some((id, 480))),
+        ] {
+            let connected = std::cell::Cell::new(false);
+            let result = WindowsVadProvider::with_captures(input, output, |_, _| {
+                connected.set(true);
+                Err(BackendError::ResourceUnavailable("connect sentinel".into()))
+            });
+            assert!(!connected.get());
+            assert!(matches!(result, Err(BackendError::Unsupported(_))));
+        }
+    }
+
+    #[test]
+    fn selected_interface_dual_capture_reserves_independently_and_preserves_connect_error() {
+        let input = VirtualEndpointId::from_bytes([0x51; 16]);
+        let output = VirtualEndpointId::from_bytes([0x52; 16]);
+        for (want_input, want_output) in
+            [(true, false), (false, true), (true, true), (false, false)]
+        {
+            let connected = std::cell::Cell::new(false);
+            let result = WindowsVadProvider::with_captures(
+                want_input.then_some((input, 1)),
+                want_output.then_some((output, 480_000)),
+                |playback, microphone| {
+                    connected.set(true);
+                    assert_eq!(playback.is_some(), want_input);
+                    assert_eq!(microphone.is_some(), want_output);
+                    if let Some(capture) = playback {
+                        assert!(capture.reserve(output)?.is_none());
+                        assert!(capture.reserve(input)?.is_some());
+                    }
+                    if let Some(capture) = microphone {
+                        assert!(capture.reserve(input)?.is_none());
+                        assert!(capture.reserve(output)?.is_some());
+                    }
+                    Err(BackendError::ResourceUnavailable("connect sentinel".into()))
+                },
+            );
+            assert!(connected.get());
+            assert!(
+                matches!(result, Err(BackendError::ResourceUnavailable(text)) if text == "connect sentinel")
+            );
+        }
+    }
 
     #[test]
     fn selected_interface_input_capture_rejects_invalid_budget_before_connect() {
