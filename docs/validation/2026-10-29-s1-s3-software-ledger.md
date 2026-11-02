@@ -1326,3 +1326,18 @@ quality/latency winner. Final audit finds no owners, protected identities and
 controls unchanged. Four fresh CLI regressions pass on the clean export. No
 native scan, default change, first-packet investigation or S1-S3completion claim
 follows from this bounded evidence increment.
+
+### Fresh integrated software checkpoint
+
+The [integration checkpoint](2026-11-02-s1-s3-integration-checkpoint.md) tests
+an independent clean export of `db1be9f`, excluding the uncommitted changes in
+the eighteen preexisting dirty paths. Workspace2178/8ignored, application
+gpui-test library657/3ignored,
+headless UI acceptance13, probe678/1ignored, render preflight5, standalone RT239
+and all226Python regressions pass. Formatting, all-target workspace check and
+strict all-target workspace Clippy with gpui-test exit0. These are separate invocations, not a
+unique-case sum or a Linux/CI/Miri rerun. A read-only remote audit confirms no
+owned native/analysis process and unchanged protected user identities. No new
+recording or stability scan is launched. Remaining waveform/native/physical
+qualification and historical faults stay open; first-packet work stays deferred,
+and independent product development need not wait for missing physical equipment.
