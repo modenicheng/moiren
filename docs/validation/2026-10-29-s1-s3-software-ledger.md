@@ -1795,3 +1795,32 @@ remote audit has no owners and unchanged protected processes/SYS/boot. All27
 original dirty/cache hashes remain intact. No native rerun, production/default
 change, push, physical claim or S1-S3 completion follows; development proceeds
 to the next independent acceptance gap rather than another unchanged soak.
+
+### Closed-prefix final measured coverage fence
+
+The [closed-coverage correction](2026-11-02-closed-prefix-measured-coverage.md)
+aligns final full-prefix authorization with the existing live coverage gate.
+Real headless regressions show that an overwritten whole-wake maximum and
+missing drain/wake tails were previously accepted; a separate real producer
+overwrite regression also fails before the fix. The narrow control-side change
+reuses the frozen full-archive coverage check, retaining raw trace access and
+ordinary suffix measurement semantics. It demonstrates an evidence-validation
+defect, not an observed native underrun; the production704-frame prepared floor
+is unchanged. A corrected older fixture performs actual bounded graph segments
+covering its64/128-frame whole wakes, without changing replay gates.
+
+Focused24tests and library796/4ignored both default and vad-probe pass. The
+exact two-file-overlay feature-workspace passes2342/9ignored/0failed; all-target
+check, strict Clippy, formatting and release build exit0. The clean preceding
+baseline separately passes5zero-refill/51analyzer/20measuredUI checks. Independent
+static reviews find no remaining blocker. All27 original dirty/cache files
+remain unchanged; no push, default change or first-packet work occurs.
+
+One bounded desktop Evaluate/conditional Apply test is prepared while software
+work continues. The fixed app and pinned runner are deployed/hash-verified
+remotely, but22:25:53 preflight has1656272KiB free below the existing8388608KiB
+guard. No task or native owner is started; no protected/user process is killed
+to free memory, and no guard is lowered. Successful native closed-prefix Apply,
+independent final-history receipt, waveform/stability and calibrated physical
+qualification remain separate open gates. The original goal stays active;
+resource-limited native testing does not block independent development.

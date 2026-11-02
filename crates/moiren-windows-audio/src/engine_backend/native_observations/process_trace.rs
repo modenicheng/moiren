@@ -324,32 +324,25 @@ impl NativeProcessTraceCollector {
                     .to_string(),
             );
         }
-        let counters = source.bridge.snapshot();
-        let delivery = counters
-            .native_delivery
-            .ok_or("final Process delivery observations are missing")?;
+        let evidence = WindowEvidence::snapshot(source)?;
+        let artifact = self.collector.artifact();
+        // Closed native writers do not make truncated measurement histories
+        // complete: admission must cover the same full archive as live replay.
+        evidence.require_coverage(&artifact)?;
         let measured = MeasuredProcessDelivery::from_observations(
             source.process.clone(),
             self.owner_generation(),
             source.input_sample_rate,
             source.consumer_sample_rate,
             source.prepared_consumer_demand_frames,
-            delivery,
-            source
-                .bridge
-                .delivery_events()
-                .ok_or("final Process drain observations are missing")?,
-            source
-                .consumer
-                .as_ref()
-                .and_then(|observer| observer.snapshot())
-                .ok_or("final Process whole-wake observations are missing")?,
+            evidence.delivery,
+            evidence.producer,
+            evidence.consumer,
         )
         .map_err(|error| error.to_string())?;
         // Packet publication is bracketed, while delivery/drain observations
         // use point timestamps. Exact replay must fit the conservative outer
         // envelope too, including rounding at native frame boundaries.
-        let artifact = self.collector.artifact();
         measured
             .with_publication_gap_100ns(publication_gap_100ns(&artifact)?)
             .map_err(|error| error.to_string())

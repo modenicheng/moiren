@@ -395,7 +395,14 @@ fn pinned_final_measurement_keeps_original_whole_wake_and_late_delivery_after_re
         delivery.callback_burst(4);
         f.ingress.record_native_delivery_event(4, Some(stamp));
         f.ingress.publish_native_delivery(delivery.snapshot());
-        consumer.record(64, Some(stamp + 10));
+        // event() read four frames; keep every segment within the original
+        // four-frame bound while completing this 64-frame whole wake.
+        for offset in 11..26 {
+            f.source
+                .read_interleaved_with_publication_clock(&mut [0.; 8], || Some(stamp + offset))
+                .unwrap();
+        }
+        consumer.record(64, Some(stamp + 26));
     }
     assert!(
         collector.final_measurement().is_err(),
@@ -408,7 +415,12 @@ fn pinned_final_measurement_keeps_original_whole_wake_and_late_delivery_after_re
     delivery.callback_burst(4);
     f.ingress.record_native_delivery_event(4, Some(1400));
     f.ingress.publish_native_delivery(delivery.snapshot());
-    consumer.record(128, Some(1410));
+    for stamp in 1411..1442 {
+        f.source
+            .read_interleaved_with_publication_clock(&mut [0.; 8], || Some(stamp))
+            .unwrap();
+    }
+    consumer.record(128, Some(1442));
     drop(f.ingress);
     drop(f.source);
     drop(consumer);
@@ -434,6 +446,17 @@ fn pinned_final_measurement_keeps_original_whole_wake_and_late_delivery_after_re
     assert_eq!(measured.owner_generation(), 7);
     assert_eq!(f.registry.snapshot().unwrap().owner_generation, 8);
     assert_eq!(collector.artifact().packet_history.total_events, 5);
+    assert_eq!(
+        collector
+            .artifact()
+            .queue_history
+            .events
+            .iter()
+            .map(|event| event.sample.requested_frames)
+            .sum::<u64>(),
+        4 * 64 + 128,
+        "real graph segments cover every declared whole wake"
+    );
 }
 
 #[test]
@@ -944,4 +967,188 @@ fn prepared_native_window_widens_gap_using_unsealed_full_artifact_tail() {
     let prefix = candidate.report().prefix.as_ref().unwrap();
     assert_eq!(prefix.observed_packet_events, 12);
     assert_eq!(prefix.replayed_packet_events, 11);
+}
+
+#[test]
+fn closed_final_measurement_refuses_overwritten_whole_wake_prefix() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    // Drain two packets per callback so the producer history stays complete.
+    // Only the consumer's first, larger whole wake falls out of its real ring.
+    for n in 0..258 {
+        f.packet(n);
+        let stamp = 1_000_000 + n * 20_000;
+        f.delivery.packet(96, Some(stamp + 20));
+        if n % 2 == 1 {
+            f.delivery.callback_burst(192);
+            f.f.ingress
+                .record_native_delivery_event(192, Some(stamp + 100));
+        }
+        f.f.ingress.publish_native_delivery(f.delivery.snapshot());
+        f.read(n);
+        if n == 1 {
+            f.consumer.record(192, Some(stamp + 1001));
+        } else if n > 1 {
+            f.consumer.record(96, Some(stamp + 1001));
+        }
+        if n.is_multiple_of(32) {
+            collector.poll();
+        }
+    }
+    let retained = f.f.registry.retain_session().unwrap();
+    let metadata = &retained.0.process_delivery[0];
+    let producer = metadata.bridge.delivery_events().unwrap();
+    let consumer = metadata.consumer.as_ref().unwrap().snapshot().unwrap();
+    assert_eq!(producer.total_events, 129);
+    assert_eq!(producer.overwritten_events, 0);
+    assert_eq!(consumer.total_events, 257);
+    assert_eq!(consumer.overwritten_events, 1);
+    assert!(consumer.events.iter().all(|event| event.frames == 96));
+    drop(f.f.ingress);
+    drop(f.f.source);
+    drop(f.consumer);
+    collector.poll();
+    let artifact = collector.artifact();
+    assert_eq!(artifact.collection_refusal, None);
+    assert_eq!(artifact.packet_history.total_events, 258);
+    assert_eq!(artifact.queue_history.total_events, 516);
+    assert!(artifact.packet_history.writer_finished && artifact.queue_history.writer_finished);
+    assert!(collector.ordered_trace().is_ok());
+    match collector.final_measurement() {
+        Err(error) => assert!(error.contains("cover"), "{error}"),
+        Ok(measured) => {
+            let options = measured
+                .admit_for_consumer(
+                    &f.f.process,
+                    7,
+                    crate::latency::transport::TransportInputPolicy::Target {
+                        capacity_frames: 2048,
+                        target_frames: 1024,
+                        jitter_frames: 0,
+                    },
+                    48_000,
+                    96,
+                )
+                .unwrap();
+            panic!(
+                "closed final measurement accepted suffix-only demand {}; original first whole wake was 192, prepared demand 96",
+                options.max_demand_frames
+            );
+        }
+    }
+    assert!(collector.ordered_trace().is_ok());
+    assert_eq!(collector.artifact().collection_refusal, None);
+}
+
+#[test]
+fn closed_final_measurement_refuses_overwritten_complete_drain_prefix() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    for n in 0..257 {
+        f.packet(n);
+        f.complete_delivery(n);
+        f.read(n);
+        if n % 2 == 1 || n == 256 {
+            let frames = if n == 256 { 96 } else { 192 };
+            f.consumer.record(frames, Some(1_001_001 + n * 20_000));
+        }
+        if n.is_multiple_of(32) {
+            collector.poll();
+        }
+    }
+    let retained = f.f.registry.retain_session().unwrap();
+    let metadata = &retained.0.process_delivery[0];
+    let producer = metadata.bridge.delivery_events().unwrap();
+    let consumer = metadata.consumer.as_ref().unwrap().snapshot().unwrap();
+    assert_eq!(producer.total_events, 257);
+    assert_eq!(producer.overwritten_events, 1);
+    assert_eq!(consumer.total_events, 129);
+    assert_eq!(consumer.overwritten_events, 0);
+    drop(f.f.ingress);
+    drop(f.f.source);
+    drop(f.consumer);
+    collector.poll();
+    let artifact = collector.artifact();
+    assert_eq!(artifact.collection_refusal, None);
+    assert_eq!(artifact.packet_history.total_events, 257);
+    assert_eq!(artifact.queue_history.total_events, 514);
+    assert!(artifact.packet_history.writer_finished && artifact.queue_history.writer_finished);
+    assert!(collector.ordered_trace().is_ok());
+    match collector.final_measurement() {
+        Err(error) => assert!(error.contains("cover"), "{error}"),
+        Ok(_) => panic!("closed final measurement accepted an overwritten complete-drain prefix"),
+    }
+    assert!(collector.ordered_trace().is_ok());
+    assert_eq!(collector.artifact().collection_refusal, None);
+}
+
+#[test]
+fn closed_final_measurement_refuses_uncovered_whole_wake_tail() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    f.populate();
+    f.packet(12);
+    f.complete_delivery(12);
+    f.read(12);
+    // The queue retained both graph segments, but no completed whole wake.
+    drop(f.f.ingress);
+    drop(f.f.source);
+    drop(f.consumer);
+    collector.poll();
+    let artifact = collector.artifact();
+    assert_eq!(artifact.collection_refusal, None);
+    assert_eq!(artifact.packet_history.total_events, 13);
+    assert_eq!(artifact.queue_history.total_events, 26);
+    assert!(collector.ordered_trace().is_ok());
+    let error = collector
+        .final_measurement()
+        .expect_err("closed queue tail without whole-wake coverage must refuse");
+    assert!(error.contains("cover"), "{error}");
+    assert!(collector.ordered_trace().is_ok());
+    assert_eq!(collector.artifact().collection_refusal, None);
+}
+
+#[test]
+fn closed_final_measurement_refuses_uncovered_complete_drain_tail() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    f.populate();
+    f.packet(12);
+    f.read(12);
+    f.consumer.record(96, Some(1_241_000));
+    // The native packet is archived, but its drain/cumulative delivery is absent.
+    drop(f.f.ingress);
+    drop(f.f.source);
+    drop(f.consumer);
+    collector.poll();
+    let artifact = collector.artifact();
+    assert_eq!(artifact.collection_refusal, None);
+    assert_eq!(artifact.packet_history.total_events, 13);
+    assert_eq!(artifact.queue_history.total_events, 26);
+    assert!(collector.ordered_trace().is_ok());
+    let error = collector
+        .final_measurement()
+        .expect_err("closed native packet tail without complete-drain coverage must refuse");
+    assert!(error.contains("cover"), "{error}");
+    assert!(collector.ordered_trace().is_ok());
+    assert_eq!(collector.artifact().collection_refusal, None);
+}
+
+#[test]
+fn closed_final_measurement_accepts_complete_drain_and_whole_wake_coverage() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    f.populate();
+    drop(f.f.ingress);
+    drop(f.f.source);
+    drop(f.consumer);
+    collector.poll();
+    assert_eq!(collector.artifact().collection_refusal, None);
+    assert!(collector.ordered_trace().is_ok());
+    let measured = collector.final_measurement().unwrap();
+    let options = measured
+        .admit_for_consumer(&f.f.process, 7, window_input(), 48_000, 96)
+        .unwrap();
+    assert_eq!(options.max_demand_frames, 96);
+    assert_eq!(measured.owner_generation(), 7);
 }
