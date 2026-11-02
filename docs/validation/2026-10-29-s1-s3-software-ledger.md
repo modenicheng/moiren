@@ -1478,3 +1478,27 @@ identities/controls/SYS pin. All25 compact artifacts are byte/hash verified.
 This closes that finite Compatible native lifecycle gap, not custom measured
 desktop replacement or content/physical qualification. The trace prefix remains
 explicitly refused at EventLimit; no waveform/default/S1-S3 completion follows.
+
+### Current ordinary measured desktop acceptance
+
+The [current measured desktop receipt](2026-11-02-current-measured-desktop.md)
+closes the ordinary per-wake desktop surface on clean7508720: exact1024/
+16384/96 refuses with native disabled/noInvoke and a1335-frame minimum,
+leaving requested/active Compatible and owner1 intact. Changing only target
+to1536 and invoking once confirms matching requested/active source identity,
+actual Prime1536/capacity16384 and unchanged Shared336/capacity738/render512/
+Engine64. App owner1 joins/reaps before owner2 starts. Measured confirmation
+occurs20.3676714s into the40s changing schedule; all1,920,000source frames are
+submitted before Stop. Owner2 joins/reaps, Quit is fully revealed and app,
+source, worker and supervisor exit0 normally. Final task Ready0 has no owners;
+protected user processes/defaults/controls/SYS are unchanged. All33 compact
+files are length/hash verified; UTF8 poll-reader failures stay recorded and
+are corrected read-only without another native run.
+
+This is lifecycle and exact configuration acceptance, not captured waveform
+continuity or whole-run quality evidence. EventLimit stays refused. Live-window
+and evaluated closed-prefix native surfaces are not covered; older waveform
+refusals, NOT ANALYZED graph admission and physical qualification remain open.
+First-packet work remains deferred; defaults and quality gates do not change.
+Independent software work proceeds in parallel rather than waiting on these
+measurement gaps or repeating unchanged long tests.
