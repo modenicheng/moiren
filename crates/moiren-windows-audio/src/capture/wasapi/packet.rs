@@ -80,7 +80,15 @@ pub(super) fn transfer_packet(
         unsafe { borrow_capture_packet(data, frames, capacity, flags & SILENT != 0, frame_bytes) }
             .map_err(|_| CaptureError::InvalidPacket)?;
     if let Some(artifact) = artifact.as_mut() {
-        artifact.record_packet(bytes, frames, flags, position)?;
+        artifact.record_native_packet(
+            bytes,
+            crate::capture::PcmEvidencePacket {
+                frames,
+                flags,
+                device_position_frames: position,
+                qpc_100ns: qpc,
+            },
+        )?;
     }
     if let Some(evidence) = evidence {
         evidence.record_packet(

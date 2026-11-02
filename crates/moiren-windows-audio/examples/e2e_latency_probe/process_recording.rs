@@ -15,13 +15,15 @@ use std::{
 const MAX_PCM_BYTES: usize = 256 * 1024 * 1024;
 const FRAME_BYTES: usize = 2 * size_of::<f32>();
 const HELP: &str = "record-process --source-pid PID --source-created-100ns N
-    --artifact-dir NEW_DIR --seconds 1..600 --max-frames 1..33554432 [--dry-run]
+    --artifact-dir NEW_DIR --seconds 1..600 --max-frames 1..33554432 [--max-packets 1..65536] [--dry-run]
 Records only the selected process tree's output, converted by Windows to
 48 kHz stereo f32le. The caller must supply the process creation timestamp.
 No render client, source process, volume or default-device write is performed.
 The unused compatibility bridge is not the recording tap; its overflow is
 separate from PCM artifact loss. Process positions do not prove continuity.
 Raw PCM, metadata and partial capture reports are retained in new files.
+Optional packet history retains raw flags/positions/QPC and offered/stored frame
+frontiers, with explicit omission counts. It is not a calibrated packet timeline.
 Exit1 is always unqualified; exit2 means invalid input or report IO failure.";
 
 struct Options {
@@ -30,6 +32,7 @@ struct Options {
     directory: PathBuf,
     seconds: u64,
     max_frames: usize,
+    max_packets: Option<usize>,
     dry_run: bool,
 }
 
@@ -50,6 +53,7 @@ fn parse(arguments: Vec<String>) -> Result<Options> {
                 "--artifact-dir",
                 "--seconds",
                 "--max-frames",
+                "--max-packets",
             ]
             .contains(&flag.as_str()),
             "unknown process recording option {flag}"
@@ -100,12 +104,21 @@ fn parse(arguments: Vec<String>) -> Result<Options> {
         !directory.trim().is_empty() && !directory.contains('\0'),
         "artifact directory must be nonempty without NUL"
     );
+    let max_packets = values
+        .get("--max-packets")
+        .map(|value| value.parse::<usize>().context("invalid packet history cap"))
+        .transpose()?;
+    ensure!(
+        max_packets.is_none_or(|cap| (1..=65_536).contains(&cap)),
+        "packet history cap must be 1..65536"
+    );
     Ok(Options {
         pid,
         creation_time_100ns,
         directory: directory.into(),
         seconds,
         max_frames,
+        max_packets,
         dry_run,
     })
 }
@@ -121,6 +134,8 @@ struct Report {
     requested_seconds: u64,
     max_frames: usize,
     max_pcm_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_packets: Option<usize>,
     dry_run: bool,
     recording_complete: bool,
     artifact_persisted: bool,
@@ -143,7 +158,7 @@ pub(crate) fn run(arguments: Vec<String>) -> Result<i32> {
     // create_dir reserves exactly this new evidence directory, including races.
     fs::create_dir(&options.directory).context("reserve process recording directory")?;
     let mut report = Report {
-        schema_version: 1,
+        schema_version: if options.max_packets.is_some() { 2 } else { 1 },
         mode: "process_output_recording",
         qualified: false,
         requested_pid: options.pid,
@@ -152,6 +167,7 @@ pub(crate) fn run(arguments: Vec<String>) -> Result<i32> {
         requested_seconds: options.seconds,
         max_frames: options.max_frames,
         max_pcm_bytes: options.max_frames * FRAME_BYTES,
+        max_packets: options.max_packets,
         dry_run: options.dry_run,
         recording_complete: false,
         artifact_persisted: false,
@@ -213,8 +229,26 @@ fn persist_artifact(directory: &Path, artifact: &PcmArtifact, max_frames: usize)
         file.flush().context("flush process PCM")
     })();
     // Retain metadata even when opening/writing PCM fails.
-    let metadata = write_new_json(&directory.join("capture.metadata.json"), &metadata);
-    let failures: Vec<_> = [pcm, metadata]
+    let aggregate = write_new_json(&directory.join("capture.metadata.json"), &metadata);
+    let packets = (|| -> Result<()> {
+        if metadata.packet_history.is_none() {
+            return Ok(());
+        }
+        // Serialize only after native join, never from the packet lease path.
+        let mut file = std::io::BufWriter::new(
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(directory.join("capture.packet-history.jsonl"))
+                .context("create native packet history")?,
+        );
+        for row in artifact.packet_history() {
+            serde_json::to_writer(&mut file, row)?;
+            file.write_all(b"\n")?;
+        }
+        file.flush().context("flush native packet history")
+    })();
+    let failures: Vec<_> = [pcm, aggregate, packets]
         .into_iter()
         .filter_map(Result::err)
         .map(|error| format!("{error:#}"))
@@ -249,7 +283,10 @@ fn collect(options: &Options, report: &mut Report) -> Result<()> {
     let gate = ActivationGate::new(stop.clone())?;
     let prepared = prepare_process_capture_with_gate_returning_with_abort(
         ProcessLoopbackOptions {
-            artifact: Some(PcmArtifactConfig::new(options.max_frames)),
+            artifact: Some(
+                PcmArtifactConfig::new(options.max_frames)
+                    .with_packet_capacity(options.max_packets.unwrap_or(0)),
+            ),
             bridge: ProcessBridgeOptions::default(),
             latency_telemetry: TelemetryMode::Summary,
             target,
@@ -319,7 +356,10 @@ fn collect(options: &Options, report: &mut Report) -> Result<()> {
                 && report.artifact_persisted
                 && metadata.stored_frames > 0
                 && metadata.dropped_frames == 0
-                && metadata.overflow_events == 0;
+                && metadata.overflow_events == 0
+                && metadata
+                    .packet_history
+                    .is_none_or(|history| history.complete);
         }
         report.native_capture = Some(serde_json::to_value(capture)?);
     }
@@ -356,6 +396,7 @@ mod tests {
                 .unwrap();
         assert_eq!(metadata["sample_rate"], 48_000);
         assert_eq!(metadata["stored_frames"], 2);
+        assert!(!fixture.path("capture.packet-history.jsonl").exists());
     }
 
     #[test]
@@ -374,5 +415,119 @@ mod tests {
         assert!(persist_artifact(&fixture.path("."), &artifact(), 3).is_err());
         assert!(!fixture.path("capture.f32le").exists());
         assert!(!fixture.path("capture.metadata.json").exists());
+    }
+
+    fn packet_artifact() -> PcmArtifact {
+        let mut recorder =
+            PcmRecorder::new(PcmArtifactConfig::new(4).with_packet_capacity(2), 48_000, 2).unwrap();
+        recorder
+            .record_native_packet(
+                &[0; 16],
+                moiren_windows_audio::capture::PcmEvidencePacket {
+                    frames: 2,
+                    flags: 0,
+                    device_position_frames: 0,
+                    qpc_100ns: 0,
+                },
+            )
+            .unwrap();
+        recorder.finish()
+    }
+
+    #[test]
+    fn process_recording_packet_history_is_explicit_and_preserves_raw_fields() {
+        let fixture = Fixture::new();
+        persist_artifact(&fixture.path("."), &packet_artifact(), 4).unwrap();
+        let raw = fs::read_to_string(fixture.path("capture.packet-history.jsonl")).unwrap();
+        let row: Value = serde_json::from_str(raw.trim()).unwrap();
+        assert_eq!(raw.lines().count(), 1);
+        assert_eq!(row["packet_sequence"], 1);
+        assert_eq!(row["qpc_100ns"], 0);
+        assert_eq!(row["stored_frame_start"], 0);
+        assert_eq!(row["stored_frames"], 2);
+        assert_eq!(row["device_position_frames"], 0);
+        assert!(!row.as_object().unwrap().contains_key("epoch"));
+    }
+
+    #[test]
+    fn process_recording_packet_file_refusal_retains_pcm_and_aggregate_metadata() {
+        let fixture = Fixture::new();
+        let packets = fixture.path("capture.packet-history.jsonl");
+        fs::write(&packets, b"retained").unwrap();
+        assert!(persist_artifact(&fixture.path("."), &packet_artifact(), 4).is_err());
+        assert_eq!(fs::read(&packets).unwrap(), b"retained");
+        assert!(fixture.path("capture.f32le").exists());
+        assert!(fixture.path("capture.metadata.json").exists());
+    }
+
+    #[test]
+    fn process_recording_cli_packet_capacity_is_default_off_and_bounded() {
+        let args = || {
+            [
+                "--source-pid",
+                "1",
+                "--source-created-100ns",
+                "1",
+                "--artifact-dir",
+                "unused",
+                "--seconds",
+                "1",
+                "--max-frames",
+                "4",
+                "--dry-run",
+            ]
+            .map(String::from)
+            .to_vec()
+        };
+        assert_eq!(parse(args()).unwrap().max_packets, None);
+        for value in ["1", "65536"] {
+            let mut input = args();
+            input.extend(["--max-packets".into(), value.into()]);
+            assert_eq!(
+                parse(input).unwrap().max_packets,
+                Some(value.parse().unwrap())
+            );
+        }
+        for value in ["0", "65537", "-1", "no", "18446744073709551616"] {
+            let mut input = args();
+            input.extend(["--max-packets".into(), value.into()]);
+            assert!(parse(input).is_err(), "{value}");
+        }
+        let mut duplicate = args();
+        duplicate.extend(["--max-packets", "1", "--max-packets", "2"].map(String::from));
+        assert!(parse(duplicate).is_err());
+        let mut missing = args();
+        missing.push("--max-packets".into());
+        assert!(parse(missing).is_err());
+    }
+
+    #[test]
+    fn process_recording_dry_run_reports_exact_packet_request_without_native_preparation() {
+        let fixture = Fixture::new();
+        let directory = fixture.path("packet-dry");
+        let args = vec![
+            "--source-pid".into(),
+            "1".into(),
+            "--source-created-100ns".into(),
+            "1".into(),
+            "--artifact-dir".into(),
+            directory.to_string_lossy().into_owned(),
+            "--seconds".into(),
+            "1".into(),
+            "--max-frames".into(),
+            "4".into(),
+            "--max-packets".into(),
+            "3".into(),
+            "--dry-run".into(),
+        ];
+        assert_eq!(run(args).unwrap(), 1);
+        let report: Value =
+            serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["schema_version"], 2);
+        assert_eq!(report["max_packets"], 3);
+        assert_eq!(report["qualified"], false);
+        assert_eq!(report["recording_complete"], false);
+        assert!(report["native_capture"].is_null());
+        assert!(!directory.join("capture.packet-history.jsonl").exists());
     }
 }

@@ -3,15 +3,26 @@ use serde::Serialize;
 use thiserror::Error;
 
 const BYTES_PER_F32: usize = std::mem::size_of::<f32>();
+const MAX_PACKET_HISTORY: usize = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PcmArtifactConfig {
     pub capacity_frames: usize,
+    /// Zero preserves PCM-only behavior; packet storage is prepared before Start.
+    pub packet_capacity: usize,
 }
 
 impl PcmArtifactConfig {
     pub const fn new(capacity_frames: usize) -> Self {
-        Self { capacity_frames }
+        Self {
+            capacity_frames,
+            packet_capacity: 0,
+        }
+    }
+
+    pub const fn with_packet_capacity(mut self, packets: usize) -> Self {
+        self.packet_capacity = packets;
+        self
     }
 }
 
@@ -25,6 +36,8 @@ pub enum PcmArtifactError {
     InvalidSampleRate,
     #[error("PCM artifact storage size overflow")]
     StorageOverflow,
+    #[error("PCM artifact packet history exceeds its 65536-record preparation budget")]
+    PacketHistoryBudget,
     #[error("PCM artifact packet length does not match the configured format")]
     InvalidPacket,
 }
@@ -47,6 +60,33 @@ pub struct PcmArtifactMetadata {
     pub gap_frames: u64,
     pub discontinuity_events: u64,
     pub timestamp_error_packets: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packet_history: Option<PcmPacketHistoryMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PcmPacketHistoryMetadata {
+    pub capacity_packets: usize,
+    pub stored_packets: u64,
+    pub omitted_packets: u64,
+    pub omitted_frames: u64,
+    pub counters_saturated: bool,
+    /// All offered packet records retained, not PCM/timestamp/quality acceptance.
+    pub complete: bool,
+}
+
+/// An actual GetBuffer offer, before ReleaseBuffer; no native epoch is inferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PcmPacketRecord {
+    pub packet_sequence: u64,
+    pub observed_frame_start: u64,
+    pub stored_frame_start: u64,
+    pub frames: u32,
+    pub stored_frames: u32,
+    pub flags: u32,
+    pub device_position_frames: u64,
+    /// None for the legacy unstamped API; native zero is retained as Some(0).
+    pub qpc_100ns: Option<u64>,
 }
 
 /// A completed, bounded PCM capture. The byte payload is deliberately kept
@@ -55,6 +95,7 @@ pub struct PcmArtifactMetadata {
 pub struct PcmArtifact {
     metadata: PcmArtifactMetadata,
     pcm: Vec<u8>,
+    packets: Vec<PcmPacketRecord>,
 }
 
 impl PcmArtifact {
@@ -67,8 +108,20 @@ impl PcmArtifact {
         &self.pcm
     }
 
+    pub fn packet_history(&self) -> &[PcmPacketRecord] {
+        &self.packets
+    }
+
+    /// Legacy PCM-only decomposition; use `into_parts_with_packet_history` to
+    /// retain the separately opted-in packet payload.
     pub fn into_parts(self) -> (PcmArtifactMetadata, Vec<u8>) {
         (self.metadata, self.pcm)
+    }
+
+    pub fn into_parts_with_packet_history(
+        self,
+    ) -> (PcmArtifactMetadata, Vec<u8>, Vec<PcmPacketRecord>) {
+        (self.metadata, self.pcm, self.packets)
     }
 }
 
@@ -78,6 +131,7 @@ pub struct PcmRecorder {
     frame_bytes: usize,
     pcm: Vec<u8>,
     next_position: Option<u64>,
+    packets: Vec<PcmPacketRecord>,
 }
 
 impl PcmRecorder {
@@ -98,6 +152,9 @@ impl PcmRecorder {
         if config.capacity_frames == 0 {
             return Err(PcmArtifactError::ZeroCapacity);
         }
+        if config.packet_capacity > MAX_PACKET_HISTORY {
+            return Err(PcmArtifactError::PacketHistoryBudget);
+        }
         if sample_rate == 0 {
             return Err(PcmArtifactError::InvalidSampleRate);
         }
@@ -113,16 +170,25 @@ impl PcmRecorder {
             .ok_or(PcmArtifactError::StorageOverflow)?;
         Ok(Self {
             metadata: PcmArtifactMetadata {
-                schema_version: 2,
+                schema_version: if config.packet_capacity == 0 { 2 } else { 3 },
                 sample_rate,
                 channels,
                 capacity_frames: config.capacity_frames,
                 detect_position_gaps,
+                packet_history: (config.packet_capacity > 0).then_some(PcmPacketHistoryMetadata {
+                    capacity_packets: config.packet_capacity,
+                    stored_packets: 0,
+                    omitted_packets: 0,
+                    omitted_frames: 0,
+                    counters_saturated: false,
+                    complete: true,
+                }),
                 ..PcmArtifactMetadata::default()
             },
             frame_bytes,
             pcm: vec![0; bytes],
             next_position: None,
+            packets: Vec::with_capacity(config.packet_capacity),
         })
     }
 
@@ -135,6 +201,32 @@ impl PcmRecorder {
         flags: u32,
         device_position_frames: u64,
     ) -> Result<(), PcmArtifactError> {
+        self.record_packet_inner(bytes, frames, flags, device_position_frames, None)
+    }
+
+    /// The caller supplies the already-returned native QPC, never a new clock read.
+    pub fn record_native_packet(
+        &mut self,
+        bytes: &[u8],
+        packet: super::PcmEvidencePacket,
+    ) -> Result<(), PcmArtifactError> {
+        self.record_packet_inner(
+            bytes,
+            packet.frames,
+            packet.flags,
+            packet.device_position_frames,
+            Some(packet.qpc_100ns),
+        )
+    }
+
+    fn record_packet_inner(
+        &mut self,
+        bytes: &[u8],
+        frames: u32,
+        flags: u32,
+        device_position_frames: u64,
+        qpc_100ns: Option<u64>,
+    ) -> Result<(), PcmArtifactError> {
         if frames == 0 {
             return Ok(());
         }
@@ -145,6 +237,8 @@ impl PcmRecorder {
         if flags & SILENT == 0 && bytes.len() != packet_bytes {
             return Err(PcmArtifactError::InvalidPacket);
         }
+        let observed_frame_start = self.metadata.observed_frames;
+        let stored_frame_start = self.metadata.stored_frames;
         self.metadata.packets = self.metadata.packets.saturating_add(1);
         self.metadata.observed_frames = self.metadata.observed_frames.saturating_add(frames as u64);
         if flags & SILENT != 0 {
@@ -194,6 +288,33 @@ impl PcmRecorder {
             }
             self.metadata.stored_frames = self.metadata.stored_frames.saturating_add(stored as u64);
         }
+        if let Some(history) = self.metadata.packet_history.as_mut() {
+            if self.metadata.packets == u64::MAX || self.metadata.observed_frames == u64::MAX {
+                history.counters_saturated = true;
+                history.complete = false;
+            }
+            if self.packets.len() < history.capacity_packets {
+                self.packets.push(PcmPacketRecord {
+                    packet_sequence: self.metadata.packets,
+                    observed_frame_start,
+                    stored_frame_start,
+                    frames: frames as u32,
+                    stored_frames: stored as u32,
+                    flags,
+                    device_position_frames,
+                    qpc_100ns,
+                });
+                history.stored_packets += 1;
+            } else {
+                // Saturating loss counters never overwrite the retained prefix,
+                // resize storage, block capture, or turn omission into success.
+                history.complete = false;
+                history.omitted_packets = history.omitted_packets.saturating_add(1);
+                history.omitted_frames = history.omitted_frames.saturating_add(frames as u64);
+                history.counters_saturated |=
+                    history.omitted_packets == u64::MAX || history.omitted_frames == u64::MAX;
+            }
+        }
         Ok(())
     }
 
@@ -203,6 +324,7 @@ impl PcmRecorder {
         PcmArtifact {
             metadata: self.metadata,
             pcm: self.pcm,
+            packets: self.packets,
         }
     }
 }
@@ -213,8 +335,7 @@ mod tests {
 
     #[test]
     fn recorder_preallocates_bounds_storage_and_reports_overflow() {
-        let mut recorder =
-            PcmRecorder::new(PcmArtifactConfig { capacity_frames: 2 }, 48_000, 2).unwrap();
+        let mut recorder = PcmRecorder::new(PcmArtifactConfig::new(2), 48_000, 2).unwrap();
         let packet = [
             0.25f32.to_le_bytes(),
             (-0.25f32).to_le_bytes(),
@@ -236,8 +357,7 @@ mod tests {
 
     #[test]
     fn recorder_counts_silent_packets_and_position_gaps_without_payload() {
-        let mut recorder =
-            PcmRecorder::new(PcmArtifactConfig { capacity_frames: 8 }, 48_000, 2).unwrap();
+        let mut recorder = PcmRecorder::new(PcmArtifactConfig::new(8), 48_000, 2).unwrap();
 
         recorder
             .record_packet(&[], 2, crate::stats::SILENT, 0)

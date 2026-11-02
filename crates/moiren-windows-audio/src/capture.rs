@@ -8,7 +8,8 @@ use thiserror::Error;
 mod artifact;
 mod evidence;
 pub use artifact::{
-    PcmArtifact, PcmArtifactConfig, PcmArtifactError, PcmArtifactMetadata, PcmRecorder,
+    PcmArtifact, PcmArtifactConfig, PcmArtifactError, PcmArtifactMetadata,
+    PcmPacketHistoryMetadata, PcmPacketRecord, PcmRecorder,
 };
 pub use evidence::{
     PcmEvidenceConfig, PcmEvidenceError, PcmEvidenceFrame, PcmEvidencePacket, PcmEvidenceReader,

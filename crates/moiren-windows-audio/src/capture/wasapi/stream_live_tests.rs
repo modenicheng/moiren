@@ -567,7 +567,7 @@ fn process_bounded_packet_run(
             started: &AtomicBool::new(false),
             sample_rate: 48_000,
             channels: 2,
-            artifact: Some(crate::capture::PcmArtifactConfig::new(32)),
+            artifact: Some(crate::capture::PcmArtifactConfig::new(32).with_packet_capacity(2)),
         },
         &sender,
         &mut report,
@@ -580,6 +580,35 @@ fn process_bounded_packet_run(
     let report = finish(result, &stop.event, &sender, report);
     let released = releases.borrow().clone();
     (result, report, released)
+}
+
+#[test]
+fn process_packet_history_keeps_actual_getbuffer_qpc_and_failed_release_offer() {
+    for fail_release in [false, true] {
+        let (result, report, released) =
+            process_bounded_packet_run(CaptureSource::ProcessLoopback, Ok(0), 8, fail_release);
+        assert_eq!(result.is_err(), fail_release);
+        let artifact = report.artifact.as_ref().unwrap();
+        let rows = artifact.packet_history();
+        assert_eq!(rows.len(), if fail_release { 1 } else { 2 });
+        assert_eq!(rows[0].qpc_100ns, Some(1));
+        assert_eq!(rows[0].device_position_frames, 0);
+        assert_eq!(rows[0].flags, SILENT);
+        assert_eq!(rows[0].frames, 8);
+        assert_eq!(rows[0].stored_frames, 8);
+        assert_eq!(
+            released.len(),
+            rows.len(),
+            "failed Release is still an actual offer"
+        );
+        assert!(!artifact.metadata().detect_position_gaps);
+        if !fail_release {
+            assert_eq!(rows[1].qpc_100ns, Some(1668));
+            assert_eq!(rows[1].device_position_frames, 8);
+            assert_eq!(rows[1].observed_frame_start, 8);
+            assert_eq!(rows[1].stored_frame_start, 8);
+        }
+    }
 }
 
 #[test]

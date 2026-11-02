@@ -66,6 +66,9 @@ Their actual `capture.metadata.json` is aggregate schema2 metadata, not a
 packet timeline. It is passed unchanged to the detector, which explicitly
 retains `invalid_packet_metadata` and its parser error. No synthetic timeline,
 timestamp interpolation or silent aggregate-to-packet conversion is created.
+The subsequent [opt-in packet-history increment](2026-11-02-capture-packet-history.md)
+preserves raw native offers for future recordings only. Its JSONL is not this
+analyzer's timeline schema and does not recover or change these old captures.
 All eight detector commands exit1, and every raw report retains
 `identity_set_complete=false`, `qualified=false`, and unknown native epoch.
 The identity component still searches the admitted PCM after that explicit

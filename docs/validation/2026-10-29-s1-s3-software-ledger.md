@@ -1220,3 +1220,23 @@ cover errors, mapping, corruption, ambiguity and binding. One25.765s remote
 offline task runs in a new isolated pinned environment; no native audio run.
 Eight native gap-bound violations and unknown/priming samples remain, so this
 is bounded association evidence, not whole-run continuity or physical latency.
+
+### Explicit bounded native packet history
+
+The [packet-history increment](2026-11-02-capture-packet-history.md) addresses
+the concrete missing per-packet evidence in the later exact336 marker review.
+Default-off, preallocated prefix storage keeps actual GetBuffer QPC, flags,
+positions and independent offered/stored frame frontiers. Failed releases retain
+their offers; overflow is explicit, not a growing or overwritten history.
+`record-process --max-packets` persists raw JSONL only after native join, keeps
+create-new/partial-evidence semantics and refuses complete recording on omission.
+No native epoch or analyzer-compatible timeline is inferred. Old recordings and
+refused identities are unchanged. Defaults, audio policy and quality gates remain
+unchanged; hardware-free regression is separate from native qualification.
+
+Fresh clean-export workspace2178passed/8ignored, probe664/1ignored, GPUI719/
+4ignored, core5, focused recorder12, marker/rate/qualification51, zero-refill5
+and standalone RT239 pass. Strict workspace/probe/GPUI all-target Clippy, fmt
+and release build pass. A separately hash-pinned remote dry-run verifies exact
+enabled/legacy/invalid-cap behavior without opening audio; no user process is
+touched. No further native soak or parameter scan is launched for this feature.
