@@ -2501,6 +2501,233 @@ fn automatic_startup_uses_catalog_defaults_once_and_stop_stays_authoritative() {
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
 }
 
+/// A service whose context already holds a restored project, the way
+/// `start_service` seeds it before the driver polls.
+fn resume_rig(catalog: Arc<FakeCatalog>, document: crate::project::ProjectDocument) -> Rig {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let driver = ManagedDriver::new(move |_| Ok(Box::new(backend.clone())))
+        .with_catalog(catalog)
+        .with_automatic_resume();
+    let mut c = ServiceContext::default();
+    c.load_project(document).expect("restored project loads");
+    Rig {
+        driver,
+        c,
+        pool: JobPool::new().unwrap(),
+        state,
+    }
+}
+
+/// The default chain bound to the fake catalog's devices at a non-default
+/// gain, plus whatever `extend` adds, saved as a project document.
+fn restored_document(
+    extend: impl FnOnce(&mut crate::service::ServiceGraph),
+) -> crate::project::ProjectDocument {
+    let mut graph = crate::service::ServiceGraph::default();
+    let snapshot = graph.snapshot();
+    let source = snapshot.node_of_kind(NodeKind::Source).unwrap().0.id();
+    let sink = snapshot.node_of_kind(NodeKind::Sink).unwrap().0.id();
+    let gain = snapshot.node_of_kind(NodeKind::Gain).unwrap().0.id();
+    graph
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+        })
+        .unwrap();
+    graph
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "output".into(),
+        })
+        .unwrap();
+    graph
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.7,
+        })
+        .unwrap();
+    extend(&mut graph);
+    crate::project::ProjectDocument::from_graph("Restored", &graph.snapshot()).unwrap()
+}
+
+fn add_physical_source(graph: &mut crate::service::ServiceGraph, label: &str, endpoint_id: &str) {
+    graph
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Source,
+            channels: 2,
+        })
+        .unwrap();
+    let node = graph
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .rfind(|node| node.kind() == NodeKind::Source)
+        .unwrap()
+        .id();
+    graph
+        .edit(GraphEdit::SetLabel {
+            node,
+            label: label.into(),
+        })
+        .unwrap();
+    graph
+        .edit(GraphEdit::BindSource {
+            node,
+            source: InputSelection::Physical {
+                endpoint_id: endpoint_id.into(),
+            },
+        })
+        .unwrap();
+}
+
+fn settled(rig: &Rig) -> bool {
+    let graph = rig.c.graph.snapshot();
+    graph.pending_revision.is_none() && graph.active_revision == Some(graph.candidate_revision)
+}
+
+#[test]
+fn restored_project_resumes_with_its_own_bindings_once_the_catalog_arrives() {
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), restored_document(|_| {}));
+    let before = rig.c.graph.snapshot();
+    rig.tick();
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running && settled(r));
+    let snapshot = rig.c.graph.snapshot();
+    assert_eq!(
+        snapshot.candidate_revision, before.candidate_revision,
+        "every device is present: resume edits nothing"
+    );
+    assert_eq!(snapshot.graph.nodes().len(), before.graph.nodes().len());
+    // Automatic startup would have rebound the catalog defaults and muted
+    // the chain; resume keeps the restored bindings and gain.
+    assert_eq!(
+        snapshot.node_of_kind(NodeKind::Source).unwrap().1.source,
+        Some(InputSelection::Physical {
+            endpoint_id: "input".into()
+        })
+    );
+    assert_eq!(snapshot.node_of_kind(NodeKind::Gain).unwrap().1.gain, 0.7);
+    assert!(snapshot.faults.is_empty());
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn resume_strips_offline_secondary_sources_and_reports_once_running() {
+    let document = restored_document(|graph| {
+        add_physical_source(graph, "Unplugged mic", "missing-input");
+    });
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
+    let before = rig.c.graph.snapshot().candidate_revision;
+    rig.tick();
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running && settled(r));
+    let snapshot = rig.c.graph.snapshot();
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .all(|node| node.label != "Unplugged mic"),
+        "the offline source leaves so the rest of the graph can run"
+    );
+    assert_eq!(
+        snapshot
+            .graph
+            .nodes()
+            .iter()
+            .filter(|node| node.kind() == NodeKind::Source)
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot.candidate_revision,
+        before + 1,
+        "one strip, one edit"
+    );
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    // The notice lands only after activation, which clears the fault group.
+    rig.wait(|r| !r.c.graph.snapshot().faults.is_empty());
+    let faults = rig.c.graph.snapshot().faults;
+    assert_eq!(faults.len(), 1);
+    assert_eq!(faults[0].subject, GraphSubject::Graph);
+    assert!(
+        faults[0].cause.contains("'Unplugged mic' (input)"),
+        "{}",
+        faults[0].cause
+    );
+    assert!(
+        faults[0]
+            .hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("undo"))
+    );
+    rig.tick();
+    rig.tick();
+    assert_eq!(
+        rig.c.graph.snapshot().faults.len(),
+        1,
+        "periodic confirmation must not clear the published notice"
+    );
+    // The strip is an ordinary journaled edit: undo brings the node back.
+    rig.request(AppRequest::UndoGraph);
+    assert!(
+        rig.c
+            .graph
+            .snapshot()
+            .nodes
+            .iter()
+            .any(|node| node.label == "Unplugged mic")
+    );
+}
+
+#[test]
+fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
+    let document = restored_document(|graph| {
+        let source = graph
+            .snapshot()
+            .node_of_kind(NodeKind::Source)
+            .unwrap()
+            .0
+            .id();
+        graph
+            .edit(GraphEdit::BindSource {
+                node: source,
+                source: InputSelection::Physical {
+                    endpoint_id: "missing-input".into(),
+                },
+            })
+            .unwrap();
+    });
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
+    let before = rig.c.graph.snapshot();
+    rig.tick();
+    // The apply still goes out: a real host parks in WaitingForResources
+    // and recovers when the device returns, which stripping would forfeit.
+    rig.wait(|r| r.state.starts.load(Ordering::SeqCst) == 1);
+    let snapshot = rig.c.graph.snapshot();
+    assert_eq!(snapshot.candidate_revision, before.candidate_revision);
+    assert_eq!(snapshot.graph.nodes().len(), before.graph.nodes().len());
+    assert_eq!(
+        snapshot.node_of_kind(NodeKind::Source).unwrap().1.source,
+        Some(InputSelection::Physical {
+            endpoint_id: "missing-input".into()
+        })
+    );
+    assert!(rig.driver.resume_notice.is_none());
+}
+
+#[test]
+fn explicit_requests_before_the_catalog_cancel_automatic_resume() {
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), restored_document(|_| {}));
+    rig.request(AppRequest::Stop);
+    rig.tick();
+    rig.wait(|r| r.c.catalog.outputs.len() == 1 && !r.driver.catalog.is_running());
+    assert!(!rig.driver.automatic_resume);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_rows() {
     let catalog = Arc::new(FakeCatalog::filled());

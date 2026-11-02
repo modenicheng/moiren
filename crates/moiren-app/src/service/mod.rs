@@ -58,8 +58,11 @@ pub fn start_service() -> Result<ServiceRuntime, ServiceStartError> {
             .into_context()
             .map_err(ServiceStartError::InvalidStartup)?;
         let driver = ManagedDriver::windows();
+        // A restored project carries its own device bindings; automatic
+        // startup would rebind the catalog defaults over them, so it resumes
+        // instead and the engine still comes up on launch.
         let driver = if restored {
-            driver
+            driver.with_automatic_resume()
         } else {
             driver.with_automatic_startup()
         };
