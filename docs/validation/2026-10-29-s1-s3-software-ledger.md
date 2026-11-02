@@ -5,6 +5,18 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [native direct measured Process service replacement](2026-11-03-measured-process-service.md)
+completes the existing fresh-evidence public API once: service owner1 ->2,
+predecessor cleanup1, exact requested/active Target16384/2048/96, then Stop/join
+and cleanup2. App/source/task exit0, with all38 compact files verified and no
+owners or protected-state changes. This is lifecycle-only evidence: the joined
+replacement retains one delivery gap-bound violation despite zero reported
+audio-fault counters, startup prime discard352 and no recorded waveform.
+No delivery-quality, retained-Evaluate, desktop, sustained or physical pass
+follows. Existing F32/F64 software-host regression now checks exact replacement
+generation, request origin and cleanup without conflating host-local native
+generations. Independent development continues; no unchanged soak is running.
+
 The [native service retained-prefix attempt](2026-11-03-service-retained-prefix.md)
 removes UIA from the short-window path: actual Stop enters/returns400ms,
 consumption is observed401ms and Closed cleanup/runtime join complete normally.

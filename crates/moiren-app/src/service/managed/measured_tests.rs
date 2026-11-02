@@ -189,9 +189,31 @@ fn measured_apply_replaces_owner_and_reaches_both_precision_factories() {
         let request = start_process(&mut r);
         r.request(AppRequest::ApplyMeasuredProcessBridge(request));
         let requested = r.c.measured_process.as_ref().unwrap().summary().clone();
+        assert_eq!(requested.request, request);
+        assert!(requested.observed_window.is_none());
         assert!(r.c.active_measured_process.is_none());
         r.wait(|r| r.c.active_measured_process.as_ref() == Some(&requested));
-        assert_ne!(r.c.core.generation(), request.session_generation);
+        let replacement_generation = r.c.core.generation();
+        assert_eq!(
+            replacement_generation.0,
+            request.session_generation.0.checked_add(1).unwrap()
+        );
+        assert_eq!(r.c.core.owner_generation(), Some(replacement_generation));
+        let predecessor_cleanup = r.c.last_cleanup.as_ref().unwrap();
+        assert_eq!(predecessor_cleanup.generation, request.session_generation);
+        // Engine generations are local to each new host. The service generation
+        // distinguishes replacements; the measured request keeps its origin.
+        assert_eq!(
+            r.driver
+                .owner
+                .as_ref()
+                .unwrap()
+                .observer
+                .read()
+                .state
+                .owner_generation,
+            request.native_owner_generation
+        );
         assert_eq!(r.state.starts.load(Ordering::SeqCst), 2);
         assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
         assert_eq!(
@@ -205,6 +227,14 @@ fn measured_apply_replaces_owner_and_reaches_both_precision_factories() {
         r.wait(|r| {
             r.c.core.phase() == SessionPhase::Running && r.c.active_measured_process.is_none()
         });
+        assert_eq!(
+            r.c.core.generation().0,
+            replacement_generation.0.checked_add(1).unwrap()
+        );
+        assert_eq!(
+            r.c.last_cleanup.as_ref().unwrap().generation,
+            replacement_generation
+        );
         assert_eq!(r.state.starts.load(Ordering::SeqCst), 3);
         r.request(AppRequest::Stop);
         r.wait(|r| r.driver.is_drained());
