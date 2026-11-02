@@ -1361,3 +1361,22 @@ are verified, and protected OBS/QQMusic identities stay unchanged. No new
 audio, recording, production patch, default change, threshold relaxation or
 unchanged soak follows. This closes the bounded nominal-refusal question,
 not the native waveform/physical qualification or original S1-S3 objective.
+
+### Current desktop lifecycle attempt: harness boundary
+
+The [current clean-build desktop attempt](2026-11-02-current-desktop-lifecycle-attempt.md)
+adds a release78967f4build,20measured-UIand9cleanup regressions, all passing.
+An initial remote attempt fails before source/app launch on PowerShell5 atomic
+replace marshalling; a corrected, independently reviewed retry reaches the
+scheduled-task four-minute cap before its first supervisor receipt/child launch
+is established. Exact interactive startup cause remains unknown. Both failures
+remain failed, no audio/recording or product regression is established, and no
+third native attempt follows. Read-only closure finds no owners, unchanged
+OBS/QQMusic identities, defaults, render controls and pinned running driver.
+
+Current native desktop lifecycle acceptance stays open, separate from prior
+CLI/stopped-Quit evidence. Original S1-S3 software review finds no additional
+mandatory implementation gap; waveform/native/physical qualification remains
+incomplete. Do not substitute unchanged long tests or speculative software work
+for those gaps, or block independent development on absent physical equipment.
+All eighteen original dirty paths and both Python cache directories are preserved.
