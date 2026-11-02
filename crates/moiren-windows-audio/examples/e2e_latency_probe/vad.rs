@@ -10,6 +10,7 @@ use super::source_write_witness::{self, SubmitError, WriteWitness};
 use super::vad_collection::PlaybackProgress;
 use super::vad_period::{self, PeriodEvidence};
 use anyhow::{Context, Result, ensure};
+use moiren_engine::node::DeviceMode;
 use moiren_windows_audio::vad::{
     Channels, DeviceInterface, Intent, MAX_PACKET_FRAMES, SampleFormat, StableEndpointId,
     discover_present_interfaces, encode_interleaved,
@@ -255,12 +256,48 @@ enum PlaybackTarget {
     Vad {
         stable_id: StableEndpointId,
         root: String,
+        mode: DeviceMode,
         minimum_period: bool,
     },
     Shared {
         endpoint: String,
         witness: bool,
     },
+}
+
+impl PlaybackTarget {
+    fn mode(&self) -> DeviceMode {
+        match self {
+            Self::Vad { mode, .. } => *mode,
+            Self::Shared { .. } => DeviceMode::Shared,
+        }
+    }
+
+    fn source_mode(&self) -> &'static str {
+        match self {
+            Self::Vad {
+                mode: DeviceMode::Shared,
+                ..
+            } => "shared_vad_mmdevice",
+            Self::Vad {
+                mode: DeviceMode::Exclusive,
+                ..
+            } => "exclusive_vad_mmdevice",
+            Self::Shared { .. } => "shared_explicit_mmdevice",
+        }
+    }
+}
+
+fn prepare_source_stream<T>(
+    mode: DeviceMode,
+    shared: impl FnOnce() -> Result<T>,
+    exclusive: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    // Mode is an experiment input. A failed open must not silently change it.
+    match mode {
+        DeviceMode::Shared => shared(),
+        DeviceMode::Exclusive => exclusive(),
+    }
 }
 
 pub struct PlaybackSession {
@@ -331,6 +368,7 @@ impl PlaybackSession {
         stable_id: StableEndpointId,
         root_instance: String,
         source_plan: Option<PreparedSource>,
+        mode: DeviceMode,
         minimum_period: bool,
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
@@ -338,6 +376,7 @@ impl PlaybackSession {
             stable_id,
             root_instance,
             source_plan,
+            mode,
             minimum_period,
             || {},
             partial,
@@ -348,14 +387,20 @@ impl PlaybackSession {
         stable_id: StableEndpointId,
         root_instance: String,
         source_plan: Option<PreparedSource>,
+        mode: DeviceMode,
         minimum_period: bool,
         before_join: impl FnMut(),
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
+        ensure!(
+            !minimum_period || mode == DeviceMode::Exclusive,
+            "minimum period requires Exclusive VAD source mode"
+        );
         Self::prepare_target(
             PlaybackTarget::Vad {
                 stable_id,
                 root: root_instance,
+                mode,
                 minimum_period,
             },
             source_plan,
@@ -1263,6 +1308,8 @@ fn run_worker(
     latest: Arc<Mutex<WorkerState>>,
 ) -> Result<()> {
     let _apartment = Apartment::new()?;
+    let mode = target.mode();
+    let source_mode = target.source_mode();
     let witness = matches!(&target, PlaybackTarget::Shared { witness: true, .. });
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
@@ -1270,38 +1317,37 @@ fn run_worker(
         PlaybackTarget::Vad { root, .. } => Some(root.clone()),
         PlaybackTarget::Shared { .. } => None,
     };
-    let (device, mmdevice_id, observed_name, adapter_instance, stable_endpoint_id, shared) =
-        match target {
-            PlaybackTarget::Vad {
-                stable_id, root, ..
-            } => {
-                let (device, id, name, adapter) = wait_playback(&enumerator, stable_id, &root)?;
-                (device, id, name, adapter, stable_id.to_string(), false)
-            }
-            PlaybackTarget::Shared { endpoint, .. } => {
-                let device = unsafe { enumerator.GetDevice(&HSTRING::from(&endpoint))? };
-                let id = take_string(unsafe { device.GetId()? })?;
-                ensure!(id == endpoint, "shared MMDevice identity mismatch");
-                let flow: windows::Win32::Media::Audio::IMMEndpoint =
-                    windows::core::Interface::cast(&device)?;
-                ensure!(
-                    unsafe { flow.GetDataFlow()? } == eRender,
-                    "shared source endpoint is not render"
-                );
-                let properties = unsafe { device.OpenPropertyStore(STGM_READ)? };
-                let property = unsafe { properties.GetValue(&PKEY_Device_FriendlyName)? };
-                let name = if property.vt() == VT_LPWSTR {
-                    unsafe { property.Anonymous.Anonymous.Anonymous.pwszVal.to_string()? }
-                } else {
-                    anyhow::bail!("shared source name is not a string")
-                };
-                ensure!(
-                    name.encode_utf16().count() <= 4096,
-                    "shared source name exceeds receipt budget"
-                );
-                (device, id, name, String::new(), String::new(), true)
-            }
-        };
+    let (device, mmdevice_id, observed_name, adapter_instance, stable_endpoint_id) = match target {
+        PlaybackTarget::Vad {
+            stable_id, root, ..
+        } => {
+            let (device, id, name, adapter) = wait_playback(&enumerator, stable_id, &root)?;
+            (device, id, name, adapter, stable_id.to_string())
+        }
+        PlaybackTarget::Shared { endpoint, .. } => {
+            let device = unsafe { enumerator.GetDevice(&HSTRING::from(&endpoint))? };
+            let id = take_string(unsafe { device.GetId()? })?;
+            ensure!(id == endpoint, "shared MMDevice identity mismatch");
+            let flow: windows::Win32::Media::Audio::IMMEndpoint =
+                windows::core::Interface::cast(&device)?;
+            ensure!(
+                unsafe { flow.GetDataFlow()? } == eRender,
+                "shared source endpoint is not render"
+            );
+            let properties = unsafe { device.OpenPropertyStore(STGM_READ)? };
+            let property = unsafe { properties.GetValue(&PKEY_Device_FriendlyName)? };
+            let name = if property.vt() == VT_LPWSTR {
+                unsafe { property.Anonymous.Anonymous.Anonymous.pwszVal.to_string()? }
+            } else {
+                anyhow::bail!("shared source name is not a string")
+            };
+            ensure!(
+                name.encode_utf16().count() <= 4096,
+                "shared source name exceeds receipt budget"
+            );
+            (device, id, name, String::new(), String::new())
+        }
+    };
     latest
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -1312,11 +1358,11 @@ fn run_worker(
         adapter_instance: adapter_instance.clone(),
         root_instance,
     });
-    let mut stream = if shared {
-        Stream::prepare_shared(&device, witness)?
-    } else {
-        Stream::prepare(&device, &latest)?
-    };
+    let mut stream = prepare_source_stream(
+        mode,
+        || Stream::prepare_shared(&device, witness),
+        || Stream::prepare(&device, &latest),
+    )?;
     let mut source = SourceCursor::new(source_plan);
     let mut controls = source_controls::prepare_if(witness, || {
         NativeControls::prepare(
@@ -1335,7 +1381,7 @@ fn run_worker(
     }
     latest.lock().unwrap_or_else(|p| p.into_inner()).provenance = Some(source.provenance());
     let mut info = PlaybackInfo {
-        source_mode: shared.then(|| "shared_explicit_mmdevice".into()),
+        source_mode: Some(source_mode.into()),
         stable_endpoint_id,
         mmdevice_id,
         observed_name,
@@ -1458,6 +1504,80 @@ pub fn discover_root() -> Result<(DeviceInterface, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vad_source_mode_dispatch_never_falls_back_after_selected_open_fails() {
+        for mode in [DeviceMode::Shared, DeviceMode::Exclusive] {
+            for success in [false, true] {
+                let calls = std::cell::RefCell::new(Vec::new());
+                let open = |selected| {
+                    calls.borrow_mut().push(selected);
+                    if success {
+                        Ok(selected)
+                    } else {
+                        anyhow::bail!("selected open failed")
+                    }
+                };
+                let result = prepare_source_stream(
+                    mode,
+                    || open(DeviceMode::Shared),
+                    || open(DeviceMode::Exclusive),
+                );
+                assert_eq!(*calls.borrow(), vec![mode]);
+                if success {
+                    assert_eq!(result.unwrap(), mode);
+                } else {
+                    assert_eq!(result.unwrap_err().to_string(), "selected open failed");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vad_source_mode_keeps_stable_root_target_separate_from_generic_shared() {
+        for mode in [DeviceMode::Shared, DeviceMode::Exclusive] {
+            let target = PlaybackTarget::Vad {
+                stable_id: StableEndpointId::new(7, 7),
+                root: "owned-root".into(),
+                mode,
+                minimum_period: false,
+            };
+            assert_eq!(target.mode(), mode);
+            assert_eq!(
+                target.source_mode(),
+                if mode == DeviceMode::Shared {
+                    "shared_vad_mmdevice"
+                } else {
+                    "exclusive_vad_mmdevice"
+                }
+            );
+            assert!(matches!(target, PlaybackTarget::Vad { root, .. } if root == "owned-root"));
+        }
+        let target = PlaybackTarget::Shared {
+            endpoint: "explicit-output".into(),
+            witness: false,
+        };
+        assert_eq!(target.source_mode(), "shared_explicit_mmdevice");
+    }
+
+    #[test]
+    fn vad_source_mode_shared_minimum_is_refused_before_spawn_or_native_resolution() {
+        let mut partial = None;
+        let result = PlaybackSession::prepare_with_abort(
+            StableEndpointId::new(7, 7),
+            "does-not-exist".into(),
+            None,
+            DeviceMode::Shared,
+            true,
+            || panic!("no owner should start"),
+            &mut partial,
+        );
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "minimum period requires Exclusive VAD source mode"
+        );
+        assert!(partial.is_none());
+    }
+
     #[test]
     fn format_preparation_failure_retains_unattempted_queries_without_native_info() {
         let latest = Mutex::new(WorkerState::default());

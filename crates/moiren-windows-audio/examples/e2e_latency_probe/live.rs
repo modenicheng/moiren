@@ -156,6 +156,7 @@ struct LiveOptions {
     max_packet_frames: u32,
     max_gap_frames: u32,
     vad_recovery_cap_periods: Option<u64>,
+    vad_source_mode: Option<moiren_engine::node::DeviceMode>,
     vad_minimum_period: bool,
     vad_microphone_minimum_period: bool,
     vad_input_capture_frames: Option<u32>,
@@ -213,6 +214,7 @@ impl Default for LiveOptions {
             max_packet_frames: DEFAULT_MAX_PACKET_FRAMES,
             max_gap_frames: DEFAULT_MAX_GAP_FRAMES,
             vad_recovery_cap_periods: None,
+            vad_source_mode: None,
             vad_minimum_period: false,
             vad_microphone_minimum_period: false,
             vad_input_capture_frames: None,
@@ -237,6 +239,11 @@ impl Default for LiveOptions {
 }
 
 impl LiveOptions {
+    fn vad_source_mode(&self) -> moiren_engine::node::DeviceMode {
+        self.vad_source_mode
+            .unwrap_or(moiren_engine::node::DeviceMode::Exclusive)
+    }
+
     fn vad_route_kind(&self) -> vad_route::RouteKind {
         if self.vad_microphone_id.is_some() {
             vad_route::RouteKind::Microphone
@@ -274,7 +281,7 @@ impl LiveOptions {
             "playback_stable_endpoint_id": self.stable_endpoint_id,
             "microphone_stable_endpoint_id": id.to_ascii_lowercase(),
             "microphone_requested_name": self.vad_microphone_name,
-            "source_native_request": {"mode": "exclusive", "sample_rate": 48000, "channels": 2},
+            "source_native_request": {"mode": self.vad_source_mode(), "sample_rate": 48000, "channels": 2},
             "recorder_native_request": {"mode": self.vad_recorder_mode, "sample_format": "float32", "sample_rate": 48000},
             "native_request_meaning": "client modes are distinct; negotiated recorder shape is retained in measurement.info, not inferred from requests",
             "boundary": "internal", "qualified": false,
@@ -303,6 +310,8 @@ struct LiveRunManifest {
     source_name: Option<String>,
     source_identity: Option<Value>,
     playback_source: Option<source::SourceProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_source_mode: Option<moiren_engine::node::DeviceMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_minimum_period: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -371,6 +380,8 @@ struct SourceReport {
     requested_name: Option<String>,
     identity: Option<Value>,
     playback_source: Option<source::SourceProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_source_mode: Option<moiren_engine::node::DeviceMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_minimum_period: Option<bool>,
 }
@@ -473,7 +484,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              --vad-input-capture-frames 1..480000 explicitly retains a bounded raw Playback input prefix after its worker joins.\n\
              Its format/identity/publication metadata is separate from graph delivery, recorder alignment and physical latency.\n\
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
-             --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
+             --vad-source-mode shared|exclusive selects the owned VAD client mode; omitted preserves Exclusive. No mode fallback.\n\
+             Shared uses the exact 48 kHz stereo mix format and its default buffer; matching mode alone does not match source period/buffer.\n\
+             --vad-minimum-period requests the queried exclusive VAD minimum; conflicts with Shared source mode.\n\
              --vad-microphone-minimum-period separately requests the owned MIC recorder minimum; requires schema2 Exclusive collection.\n\
              Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
              --render-mode shared|exclusive --render-period-frames N\n\
@@ -768,6 +781,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback
                 || options.process_collection.is_some())
             .then(|| source::SourceProvenance::new(source_plan)),
+            vad_source_mode: (options.source_kind == EvidenceSourceKind::VadPlayback)
+                .then(|| options.vad_source_mode()),
             vad_minimum_period: options.vad_minimum_period.then_some(true),
         },
         output_endpoint_id: options.output_label(),
@@ -802,6 +817,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback
             || options.process_collection.is_some())
         .then(|| source::SourceProvenance::new(source_plan)),
+        vad_source_mode: (options.source_kind == EvidenceSourceKind::VadPlayback)
+            .then(|| options.vad_source_mode()),
         vad_minimum_period: options.vad_minimum_period.then_some(true),
         vad_input_capture_frames: options.vad_input_capture_frames,
         vad_output_capture_frames: options.vad_output_capture_frames,
@@ -938,6 +955,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--max-packet-frames"
             | "--max-gap-frames"
             | "--vad-recovery-cap-periods"
+            | "--vad-source-mode"
             | "--vad-input-capture-frames"
             | "--vad-output-capture-frames"
             | "--render-target-frames"
@@ -961,6 +979,17 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             _ => bail!("unknown live option {flag}"),
         };
         match flag.as_str() {
+            "--vad-source-mode" => {
+                ensure!(
+                    options.vad_source_mode.is_none(),
+                    "duplicate --vad-source-mode"
+                );
+                options.vad_source_mode = Some(match value.as_str() {
+                    "shared" => moiren_engine::node::DeviceMode::Shared,
+                    "exclusive" => moiren_engine::node::DeviceMode::Exclusive,
+                    _ => bail!("--vad-source-mode must be shared or exclusive"),
+                });
+            }
             "--validation-mode" => {
                 ensure!(!validation_seen, "duplicate --validation-mode");
                 validation_seen = true;
@@ -1224,6 +1253,15 @@ fn validate(options: &LiveOptions) -> Result<()> {
     ensure!(
         !options.vad_minimum_period || options.source_kind == EvidenceSourceKind::VadPlayback,
         "--vad-minimum-period is only valid for live-vad"
+    );
+    ensure!(
+        options.vad_source_mode.is_none() || options.source_kind == EvidenceSourceKind::VadPlayback,
+        "--vad-source-mode is only valid for live-vad"
+    );
+    ensure!(
+        !options.vad_minimum_period
+            || options.vad_source_mode() == moiren_engine::node::DeviceMode::Exclusive,
+        "--vad-minimum-period requires Exclusive VAD source mode"
     );
     ensure!(
         !options.vad_microphone_minimum_period
@@ -3140,6 +3178,116 @@ mod tests {
             assert!(report["native"]["vad_playback"].is_null());
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn vad_source_mode_explicit_shared_dry_run_preserves_unstarted_request() {
+        let directory = temp_dir("vad-source-mode-shared-red");
+        let mut args = source_test_args(&directory);
+        args.extend(["--vad-source-mode".into(), "shared".into()]);
+        assert_eq!(run(args).unwrap(), 1);
+        for name in ["manifest.json", "report.json"] {
+            let report: Value =
+                serde_json::from_slice(&fs::read(directory.join(name)).unwrap()).unwrap();
+            let request = if name == "manifest.json" {
+                &report["vad_source_mode"]
+            } else {
+                &report["source"]["vad_source_mode"]
+            };
+            assert_eq!(request, "shared");
+            assert_eq!(report["status"], "unqualified");
+            if name == "report.json" {
+                assert!(report["native"]["vad_playback"].is_null());
+            }
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn vad_source_mode_defaults_exclusive_and_records_each_requested_route() {
+        for mode in [None, Some("exclusive"), Some("shared")] {
+            for microphone in [false, true] {
+                let directory = temp_dir("vad-source-mode-route");
+                let mut args = if microphone {
+                    microphone_route_args(&directory)
+                } else {
+                    source_test_args(&directory)
+                };
+                if let Some(mode) = mode {
+                    args.extend(["--vad-source-mode".into(), mode.into()]);
+                }
+                let options = parse(args).unwrap();
+                validate(&options).unwrap();
+                let expected = if mode == Some("shared") {
+                    "shared"
+                } else {
+                    "exclusive"
+                };
+                assert_eq!(
+                    serde_json::to_value(options.vad_source_mode()).unwrap(),
+                    expected
+                );
+                if microphone {
+                    assert_eq!(
+                        options.route_intent().unwrap()["source_native_request"]["mode"],
+                        expected
+                    );
+                }
+                assert!(
+                    !directory.exists(),
+                    "parsing does not open native IO or artifacts"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vad_source_mode_refuses_invalid_duplicate_process_and_shared_minimum() {
+        let directory = temp_dir("vad-source-mode-refusals");
+        for tail in [
+            vec!["--vad-source-mode"],
+            vec!["--vad-source-mode", "auto"],
+            vec!["--vad-source-mode", "Shared"],
+            vec![
+                "--vad-source-mode",
+                "shared",
+                "--vad-source-mode",
+                "exclusive",
+            ],
+            vec!["--vad-source-mode", "shared", "--vad-minimum-period"],
+            vec!["--vad-minimum-period", "--vad-source-mode", "shared"],
+        ] {
+            let mut args = source_test_args(&directory);
+            args.extend(tail.into_iter().map(str::to_owned));
+            assert!(parse(args).and_then(|options| validate(&options)).is_err());
+            assert!(!directory.exists());
+        }
+        for mode in ["shared", "exclusive"] {
+            let args = [
+                "--source-kind",
+                "process-loopback",
+                "--source-pid",
+                "42",
+                "--output",
+                "out",
+                "--artifact-dir",
+                "unused",
+                "--vad-source-mode",
+                mode,
+            ];
+            assert!(
+                parse(args.map(str::to_owned).to_vec())
+                    .and_then(|options| validate(&options))
+                    .is_err()
+            );
+        }
+        let mut args = source_test_args(&directory);
+        args.extend([
+            "--vad-source-mode".into(),
+            "exclusive".into(),
+            "--vad-minimum-period".into(),
+        ]);
+        validate(&parse(args).unwrap()).unwrap();
     }
 
     #[test]

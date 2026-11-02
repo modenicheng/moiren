@@ -1193,6 +1193,7 @@ impl VadCleanup<'_> {
                     stable_from_virtual(self.endpoint_id),
                     root,
                     source_plan,
+                    options.vad_source_mode(),
                     options.vad_minimum_period,
                     abort,
                     &mut self.playback_outcome,
@@ -1202,6 +1203,7 @@ impl VadCleanup<'_> {
                     stable_from_virtual(self.endpoint_id),
                     root,
                     source_plan,
+                    options.vad_source_mode(),
                     options.vad_minimum_period,
                     &mut self.playback_outcome,
                 )

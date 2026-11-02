@@ -5,6 +5,24 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [explicit owned VAD source-mode slice](2026-11-03-vad-source-mode.md)
+adds a missing original-S1 comparison control: Shared/Exclusive selection while
+retaining exact stable-ID/control-root resolution. Exclusive remains default;
+selected-open failure never falls back, and Shared/minimum conflicts refuse
+before native setup. Requested and actual mode stay separate. Six focused
+regressions,715example tests in each feature configuration and the clean
+workspace's2352tests/9ignored pass. This alone does not match source buffers or
+periods, repair Exclusive format refusal, change defaults or prove delivery.
+One isolated remote Shared attempt actually opens the owned VAD source,
+submits its schedule and joins normally. The retained input prefix and MIC
+recording are nonempty, but the MIC quality gate refuses4discontinuities and
+2position gaps/2208frames; task audit completion is not collection success.
+Both exports are Removed, no owners remain, protected state is unchanged,
+and all56compact artifacts are verified. No unchanged soak is started.
+Remote offline descriptive plots preserve independent input/MIC time origins,
+all flags/gaps and the sealed prefix; no marker alignment, continuity or delay
+pass follows. All4raw pins and56closed artifacts remain unchanged afterward.
+
 The [native direct measured Process service replacement](2026-11-03-measured-process-service.md)
 completes the existing fresh-evidence public API once: service owner1 ->2,
 predecessor cleanup1, exact requested/active Target16384/2048/96, then Stop/join
