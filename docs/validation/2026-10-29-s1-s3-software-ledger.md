@@ -5,6 +5,20 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [stopped input-boundary comparison](2026-11-03-stopped-input-boundary.md)
+completes one remote UI-only task with16effect-verified Settings/Close calls,
+normal Quit and exit0; no audio opens. Direct native AutoSetFocus=false still
+takes roughly2s, as do precompiled C# inner calls, so neither tested change
+removes the delay. Defaults2000/20000ms remain unchanged; matching a timeout
+value is not proof of its cause. Read-only hit observation finds a foreign
+LockScreenBackstopFrame at the Settings point, with all desktop names Default;
+no foreign window or security state is changed or inferred. All13compact
+artifacts are verified, owners are gone and protected settings/processes/driver
+remain unchanged. Concurrent clean-HEAD software regression passes5zero-refill,
+51analyzer and20headless measured-UI tests. Reviewed client-timing visualization
+is not audio latency. Close this hypothesis rather than repeat UIA/soaks;
+original native/physical gates remain open and independent development proceeds.
+
 The [actual raw VAD input-reference connection](2026-11-02-vad-input-reference.md)
 wires the existing bounded collector into the direct probe behind an explicit
 frame cap, preserving the selected control root and requiring actual worker
