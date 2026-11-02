@@ -186,6 +186,12 @@ retrieves the already-terminal task's files, without relaunching it.
 The original stalled observation handle is subsequently interrupted and exits1;
 this does not stop or restart any remote audio process.
 
+The subsequent [corrected native roundtrip](2026-11-02-capture-history-native-roundtrip.md)
+uses a new hash-pinned deployment and one-byte atomic controls. It completes
+the requested capture, resolves5/5codes on both channels and verifies the full
+retained source PCM bit-for-bit. This does not overwrite the incomplete attempt
+above or turn source-only diagnostics into graph/physical qualification.
+
 ## Qualification boundary
 
 This is acquisition-to-analysis plumbing, not a new detector, epoch journal,

@@ -1263,3 +1263,20 @@ readback and visualization verify the actual framed file, with zero nonzero
 samples and expected identity refusal. Protected user processes and all device
 controls remain unchanged; no repeated native run is launched. S1-S3 completion,
 whole-waveform continuity, matched-path and physical qualification remain open.
+
+### Corrected native packet-file roundtrip
+
+The [source-only native roundtrip](2026-11-02-capture-history-native-roundtrip.md)
+corrects only the external harness's empty activation token, verifies atomic
+one-byte publication before deployment, then completes one10s feature capture.
+All998actual offers/479040frames are retained and read by the existing strict
+analyzer; both channels resolve5/5original codes with NCC1and unchanged gates.
+A separate scalar PRNG audit finds the entire retained source PCM bit-exact:
+5120nonzero code frames,473920expected-zero frames, zero mismatches and exact
+relative spacing. This is source Process capture, not the VAD/SRC/Bus route or
+calibrated latency; invisible omissions within intentional silence remain
+unprovable. Source/task exit0and recorder's intentional unqualified exit1are
+retained separately. Protected processes and device controls stay unchanged,
+all owned processes exit normally, and compact JSON/PNG hashes are verified.
+The prior failed startup remains unchanged. No stability scan, production
+change or default promotion follows; original S1-S3 qualification stays open.
