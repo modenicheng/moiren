@@ -1280,3 +1280,27 @@ retained separately. Protected processes and device controls stay unchanged,
 all owned processes exit normally, and compact JSON/PNG hashes are verified.
 The prior failed startup remains unchanged. No stability scan, production
 change or default promotion follows; original S1-S3 qualification stays open.
+
+### Bounded graph acquisition after native packet roundtrip
+
+The [graph packet-history attempt](2026-11-02-matched-graph-packet-capture.md)
+retains one24s VAD source/Bus/DAWN recording pair under exact Shared336,
+Engine64and render512conditions, without tuning. Both actual packet histories
+have complete stored coverage. With unchanged indexed-v2 gates, source channels
+resolve19/19codes at NCC1; graph channels resolve17/19, retaining section-check
+refusals for codes1and6without inferring loss, source origin or physical delay.
+Remote isolated offline analysis and its six-panel visualization finish normally;
+original hashes and compact downloads are verified.
+
+The native VAD task remains failed: a new harness gate requires a nonexistent
+UIA Idle label despite enabled Start and actual joined-owner logs, then fallback
+close requires held-app termination. Its audio is not rerun. The separate Process
+attempt stalls in observation/control before any recorded Start, source expiry
+and exact-owned cleanup follow, and no Process graph recording exists. Therefore
+no completed matched A/B or normal-teardown pass is claimed. Both failed receipts
+remain immutable. Final audit confirms no owned processes and unchanged protected
+user processes, defaults, volumes, driver and application. Fresh zero-refill5,
+marker/rate/qualification51and measured UI20pass. Source review finds no further
+original S2/S3functional gap; unresolved waveform quality/native lower settings
+and calibrated physical qualification remain separate backlog. First-packet
+investigation stays deferred; no new soak loop or default promotion follows.
