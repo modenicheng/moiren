@@ -1424,3 +1424,31 @@ counts overlap. Independent static review finds no concrete defect. This is
 node-level software evidence, not a new Windows UIA/desktop PASS: interactive
 startup, waveform/native quality and calibrated physical gates remain open.
 No audio behavior/default, driver, threshold, push or memory update changes.
+
+### Post-replacement measured content acquisition
+
+The [single new content acquisition](2026-11-02-measured-process-content.md)
+extends the source to40s/39codes and records exact source/app Process trees
+for12s after the measured1536/16384/96 owner2 starts. A fresh10s baseline,
+20s replacement run and all normal joins complete on clean78967f4 with the
+same Shared336/Engine64/render512 route. Protected user processes, defaults,
+controls, app/SYS pins and all raw hashes remain unchanged; no native or
+analysis owner remains at the final audit. The UI-only6796878fix is independent.
+
+Source recordings resolve12/12windows/codes11-22 on each channel. Graph
+recordings retain12components, but the first padded673-frame window is shorter
+than1024, so the unchanged support admission refuses the entire channel batch
+before detector invocation. No component is removed/widened and no rerun follows.
+Graph changing activity is observable, not established identity correspondence,
+continuity, packet loss, a startup defect or physical latency. The content
+question remains incomplete. One render wait timeout remains unclassified;
+all final replacement bridge fault counters are zero, oldest sample age unknown.
+
+No-audio historical-report cap and Python3.10timestamp parser failures remain
+retained. A separate exact integer100ns parser correction and AST-only tests
+allow the one closed offline diagnostic; no signal/gate is changed. Verified
+visuals explicitly label graph **NOT ANALYZED**, rather than calling absent
+detector results misses. This does not reopen deferred first-packet work, erase
+older waveform refusals, promote defaults or complete S1-S3. Independent
+development and useful isolated remote tests can proceed in parallel; unchanged
+soaks are not a prerequisite to further product work.
