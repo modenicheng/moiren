@@ -5,6 +5,17 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [query-only Exclusive capability receipt](2026-11-03-exclusive-capability-and-scope.md)
+records the same DAWN endpoint's nominal144-frame minimum and PCM16 support,
+without Initialize/Start or a new audio run. Review corrects the proposed
+configuration-gap diagnosis: Exclusive presets are intentional, not a missing
+original-S3 feature. The diagnostic output144 exception already exists;
+production exact-Exclusive configuration is a separate unapproved extension.
+No new test, smaller default or admission relaxation is required by this query.
+The user's [parallel remote-test instruction](../vad-low-latency-goals-2026-10-28.md#2026-11-03-development-and-test-scheduling)
+is now explicit: finite isolated tests may accompany development, but no unchanged
+soak, deferred first-packet issue or missing physical equipment blocks it.
+
 The [development checkpoint](2026-11-03-s1-s3-development-checkpoint.md)
 records fresh targeted regression, bounded original-S3 audit and exact owned
 remote report-reader cleanup. One production CLI run now keeps a55second

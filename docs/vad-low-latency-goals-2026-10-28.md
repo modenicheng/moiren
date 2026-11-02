@@ -32,6 +32,26 @@ The canonical driver qualification verdict remains in
 - The VM has a roughly 64 GB system disk. Delete obsolete, owned scratch
   artifacts after verified archival; do not accumulate build trees or binaries.
 
+### 2026-11-03 development and test scheduling
+
+The user permits independent development and remote long-duration tests to run
+in parallel. Native audio, desktop UI, OBS and driver/device exercises remain
+remote-only; do not launch host audio/UI or operate existing host processes.
+Host compilation, pure/offline tests and headless UI tests are permitted.
+
+Run a long test only for a distinct unanswered question, with a pinned binary,
+isolated settings/evidence, a finite deadline and owned-process cleanup. Reuse
+the result while development continues; a new build does not retroactively
+change the revision under test. Serialize tests that share audio endpoints,
+drivers or recording resources. Preserve external OBS/QQMusic owners; unchanged
+process IDs alone do not prove their audio was uninterrupted.
+
+First-packet investigation remains deferred. The user's approximately ten-minute
+manual run is useful usability feedback, not calibrated latency or complete
+waveform evidence. Missing physical capture equipment and that deferred issue
+do not block independent product work. Do not repeat unchanged soaks or invent
+extra qualification requirements merely to keep this task active.
+
 ### 2026-10-31 target-device fallback
 
 Sub-10-ms remains the preferred objective, not a reason to stop useful
