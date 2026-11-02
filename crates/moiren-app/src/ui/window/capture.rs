@@ -74,9 +74,7 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
 
 /// A plausible program spectrum for the capture on the analyzer's 121-point
 /// grid: a pink-ish slope with a low-end bump, a tone at 1 kHz and a
-/// presence peak. The bottom ten points share one level, the flat stretch
-/// a projected window shows below the transform's resolution where every
-/// band inherits the first bin.
+/// presence peak.
 fn demo_spectrum_curve() -> Vec<f32> {
     let body = |index: f32| {
         let position = index / 120.;
@@ -85,16 +83,8 @@ fn demo_spectrum_curve() -> Vec<f32> {
         };
         -22. - 26. * position + peak(28., 6., 9.) + peak(68., 2.5, 16.) + peak(92., 8., 5.)
     };
-    let resolved = body(10.);
     (0..121)
-        .map(|index| {
-            let level = if index <= 9 {
-                resolved
-            } else {
-                body(index as f32)
-            };
-            level.clamp(-96., 0.)
-        })
+        .map(|index| body(index as f32).clamp(-96., 0.))
         .collect()
 }
 

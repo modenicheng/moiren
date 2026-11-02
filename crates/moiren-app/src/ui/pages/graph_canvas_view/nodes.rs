@@ -512,9 +512,10 @@ fn paint_anchored_text(
 /// snapshot per rebuild) and by the hot layer (every frame), the way the
 /// meter bars are. The axis follows the curve's own span — the ISO grid
 /// clamped to the running Nyquist — and falls back to the nominal
-/// 20 Hz .. 20 kHz band before the first window lands. Grid lines sit at
-/// the decade-standard frequencies and every 24 dB; the curve fills down
-/// to the floor under a stroke in the card's tint.
+/// 20 Hz .. 20 kHz band before the first window lands. Frequency grid
+/// lines sit logarithmically, like graph paper — strong at each power of
+/// ten, faint at every integer step inside the decade — and every 24 dB;
+/// the curve fills down to the floor under a stroke in the card's tint.
 pub(in crate::ui) fn paint_spectrum_body(
     frame: &CanvasFrame,
     layout: &NodeLayout,
@@ -557,20 +558,28 @@ pub(in crate::ui) fn paint_spectrum_body(
             window,
         );
     }
-    for hz in [
-        20., 50., 100., 200., 500., 1_000., 2_000., 5_000., 10_000., 20_000.,
-    ] {
-        if hz < lo_hz || hz > hi_hz {
-            continue;
+    // The frequency grid: logarithmic graph paper — a strong line at every
+    // power of ten, faint ones at each integer step inside the decade,
+    // bunching toward the decade's end. The 1-2-5 series this replaces is
+    // log-spaced too, but its repeating 1.32/1/1-octave pattern reads as
+    // uniform — not the axis the reference analyzers background.
+    let first_decade = 10f64.powi(lo_hz.log10().floor() as i32);
+    let decades = ((hi_hz / first_decade).log10().floor() as i32 + 1).max(1);
+    for decade in 0..decades {
+        let base = first_decade * 10f64.powi(decade);
+        for mantissa in 1..=9u32 {
+            let hz = base * f64::from(mantissa);
+            if hz < lo_hz || hz > hi_hz {
+                continue;
+            }
+            let x = x_of(hz);
+            let color = if mantissa == 1 {
+                theme::BORDER_STRONG
+            } else {
+                theme::HAIRLINE
+            };
+            hairline((x, top), (x, top + height), stroke, color, window);
         }
-        let decade = hz == 100. || hz == 1_000. || hz == 10_000.;
-        let x = x_of(hz);
-        let color = if decade {
-            theme::BORDER_STRONG
-        } else {
-            theme::HAIRLINE
-        };
-        hairline((x, top), (x, top + height), stroke, color, window);
     }
     // Decade labels along the floor, the FFT detail in the top-right corner.
     let label_size = theme::card::HINT_SIZE * scale;
@@ -597,11 +606,12 @@ pub(in crate::ui) fn paint_spectrum_body(
         window,
         cx,
     );
-    // The curve: a Catmull-Rom spline through the grid points (each span a
-    // cubic Bézier whose handles are a sixth of the neighbor-to-neighbor
-    // chord, the classic conversion), filled under its stroke. Masked to
-    // the plot so the spline's slight overshoot at sharp peaks stays
-    // inside the frame; nothing while parked at the floor.
+    // The curve: a straight polyline through the grid points — the trace
+    // the reference analyzers draw (REW, ARTA, SPAN), whose smoothness
+    // comes from the band-power projection, never from the renderer:
+    // spline handles overshoot at sharp peaks and would display levels
+    // the spectrum does not contain. Masked to the plot so the stroke's
+    // width stays inside the frame; nothing while parked at the floor.
     let Some(curve) = curve else {
         return;
     };
@@ -624,22 +634,11 @@ pub(in crate::ui) fn paint_spectrum_body(
     fill.move_to(point(px(left), px(floor)));
     fill.line_to(point(px(start.0), px(start.1)));
     outline.move_to(point(px(start.0), px(start.1)));
-    for index in 0..count - 1 {
-        let previous = at(index.saturating_sub(1));
-        let from = at(index);
-        let to = at(index + 1);
-        let next = at(index + 2);
-        let control_a = point(
-            px(from.0 + (to.0 - previous.0) / 6.),
-            px(from.1 + (to.1 - previous.1) / 6.),
-        );
-        let control_b = point(
-            px(to.0 - (next.0 - from.0) / 6.),
-            px(to.1 - (next.1 - from.1) / 6.),
-        );
-        let end = point(px(to.0), px(to.1));
-        fill.cubic_bezier_to(end, control_a, control_b);
-        outline.cubic_bezier_to(end, control_a, control_b);
+    for index in 1..count {
+        let next = at(index);
+        let vertex = point(px(next.0), px(next.1));
+        fill.line_to(vertex);
+        outline.line_to(vertex);
     }
     fill.line_to(point(px(left + width), px(floor)));
     window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
