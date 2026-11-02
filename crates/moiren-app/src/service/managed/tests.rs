@@ -1146,14 +1146,14 @@ fn spectrum_bridge_relays_fft_windows_only_on_demand() {
     let mut subscriber = ticket.try_take().unwrap().unwrap();
     // The fake backend feeds DC 1.0: once the analysis window has filled,
     // the one-sided magnitudes read 1.0 at the DC bin of each channel and
-    // nothing mid-band, channel-major at the default 1024-point shape.
+    // nothing mid-band, channel-major at the default 2048-point shape.
     wait_spectrum(&mut rig, &mut subscriber, |header, bins| {
-        assert_eq!(header.fft_size, 1024);
+        assert_eq!(header.fft_size, 2048);
         assert_eq!(header.channels, 2);
         assert!(header.sample_rate > 0.);
         assert!(header.frame_end > header.frame_start);
-        assert_eq!(bins.len(), 2 * 513);
-        (bins[0] - 1.).abs() < 0.02 && (bins[513] - 1.).abs() < 0.02 && bins[256].abs() < 1e-3
+        assert_eq!(bins.len(), 2 * 1025);
+        (bins[0] - 1.).abs() < 0.02 && (bins[1025] - 1.).abs() < 0.02 && bins[512].abs() < 1e-3
     });
     assert_eq!(rig.driver.meters.as_ref().unwrap().demanded_spectra(), 1);
     drop(subscriber);
@@ -1176,8 +1176,8 @@ fn fft_resize_reregisters_the_spectrum_topic() {
         node: spectrum,
         state: crate::service::BuiltinState::SpectrumAnalyzer(
             moiren_engine::spectrum::SpectrumSettings {
-                fft_size: 2048,
-                hop_frames: 1024,
+                fft_size: 4096,
+                hop_frames: 2048,
             },
         ),
     }));
@@ -1196,8 +1196,8 @@ fn fft_resize_reregisters_the_spectrum_topic() {
     rig.c.signals.execute(request);
     let mut subscriber = ticket.try_take().unwrap().unwrap();
     wait_spectrum(&mut rig, &mut subscriber, |header, bins| {
-        assert_eq!(header.fft_size, 2048);
-        assert_eq!(bins.len(), 2 * 1025);
+        assert_eq!(header.fft_size, 4096);
+        assert_eq!(bins.len(), 2 * 2049);
         true
     });
     assert_eq!(rig.c.signals.topics.node_spectra.len(), 1);

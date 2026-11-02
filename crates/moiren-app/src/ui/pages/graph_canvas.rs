@@ -246,14 +246,7 @@ pub fn detail_string(
         ),
         NodeKind::SpectrumAnalyzer => state.builtin.spectrum().map_or_else(
             || channels.to_string(),
-            |settings| {
-                t!(
-                    "FFT %{fft} · hop %{hop}",
-                    fft = settings.fft_size,
-                    hop = settings.hop_frames
-                )
-                .to_string()
-            },
+            |settings| t!("FFT %{fft}", fft = settings.fft_size).to_string(),
         ),
         NodeKind::Rack => state.builtin.rack().map_or_else(
             || t!("Empty rack").to_string(),

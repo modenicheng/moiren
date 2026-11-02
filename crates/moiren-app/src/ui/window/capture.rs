@@ -74,19 +74,26 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
 
 /// A plausible program spectrum for the capture on the analyzer's 121-point
 /// grid: a pink-ish slope with a low-end bump, a tone at 1 kHz and a
-/// presence peak, entering from the floor below the first FFT bin the way
-/// a projected window does.
+/// presence peak. The bottom ten points share one level, the flat stretch
+/// a projected window shows below the transform's resolution where every
+/// band inherits the first bin.
 fn demo_spectrum_curve() -> Vec<f32> {
+    let body = |index: f32| {
+        let position = index / 120.;
+        let peak = |center: f32, width: f32, height: f32| {
+            height * (-((index - center) / width).powi(2)).exp()
+        };
+        -22. - 26. * position + peak(28., 6., 9.) + peak(68., 2.5, 16.) + peak(92., 8., 5.)
+    };
+    let resolved = body(10.);
     (0..121)
         .map(|index| {
-            let position = index as f32 / 120.;
-            let peak = |center: f32, width: f32, height: f32| {
-                height * (-((index as f32 - center) / width).powi(2)).exp()
+            let level = if index <= 9 {
+                resolved
+            } else {
+                body(index as f32)
             };
-            let body =
-                -22. - 26. * position + peak(28., 6., 9.) + peak(68., 2.5, 16.) + peak(92., 8., 5.);
-            let entry = (index as f32 / 14.).min(1.);
-            (-96. + (body + 96.) * entry).clamp(-96., 0.)
+            level.clamp(-96., 0.)
         })
         .collect()
 }

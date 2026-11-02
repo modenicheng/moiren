@@ -49,8 +49,8 @@ impl SpectrumSettings {
 impl Default for SpectrumSettings {
     fn default() -> Self {
         Self {
-            fft_size: 1024,
-            hop_frames: 512,
+            fft_size: 2048,
+            hop_frames: 1024,
         }
     }
 }

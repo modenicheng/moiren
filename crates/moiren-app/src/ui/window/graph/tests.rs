@@ -2200,17 +2200,24 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
         let curve = state.node_spectra.curve(spectrum).expect("live curve");
         assert_eq!(curve.points.len(), 121, "the full ISO grid at 48 kHz");
         assert!(!state.node_spectra.at_rest(), "a fed analyzer is in motion");
-        // The fixture feeds DC: Hann leakage puts full scale into the first
-        // bin (46.9 Hz, grid point 15), so that band reads near 0 dBFS, the
-        // curve enters the plot from the floor below it instead of sitting
-        // on a plateau, and the top of the band rests at the floor.
-        assert_eq!(curve.points[0], crate::ui::monitoring::REST_DB);
-        assert!(curve.points[15] > -3., "first bin {}", curve.points[15]);
+        // The fixture feeds DC: with the 2048-point default the first bin
+        // (23.4 Hz) carries the Hann leakage near full scale, and the
+        // standard resolution-limited display makes every band below the
+        // transform's resolution — grid points 0..=9, whose centers
+        // resolve to that bin — read its level together; the points past
+        // it resolve to the Hann null beside it and rest at the floor.
         assert!(
-            curve.points[0] < curve.points[8] && curve.points[8] < curve.points[15],
-            "smooth entry {:?}",
-            &curve.points[..16]
+            (-6. ..=0.).contains(&f64::from(curve.points[0])),
+            "the DC leakage reads at its bin: {}",
+            curve.points[0]
         );
+        assert_eq!(
+            curve.points[0],
+            curve.points[9],
+            "sub-resolution bands inherit their bin: {:?}",
+            &curve.points[..12]
+        );
+        assert_eq!(curve.points[11], crate::ui::monitoring::REST_DB);
         assert!(curve.points[120] <= -90., "high end {}", curve.points[120]);
     });
     // A stalled publisher: once no window lands past the stale fence the

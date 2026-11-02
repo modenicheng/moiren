@@ -131,9 +131,11 @@ pub(in crate::ui) fn paint_meter_bars(
 ) {
     let stride = (theme::card::METER_H + theme::card::METER_CHANNEL_GAP) * layout.scale;
     for channel in 0..theme::card::METER_CHANNELS {
-        // The clip lamp reserves the last 3 world units of the row — the
-        // same loud-end indicator every meter surface uses; the fill never
-        // changes background for clipping.
+        // The clip lamp reserves the last 3 world units of the horizontal
+        // row's loud end — the same loud-end indicator every meter surface
+        // uses; the fill never changes background for clipping. Vertical
+        // tracks run the body's full height instead, so their bottom edge
+        // aligns with the plot below it.
         let (track, axis) = match layout.meter {
             MeterLayout::Horizontal { bounds } => {
                 let mut meter = bounds;
@@ -144,7 +146,6 @@ pub(in crate::ui) fn paint_meter_bars(
             MeterLayout::Vertical { bounds } => {
                 let mut meter = bounds;
                 meter.origin.x -= channel as f32 * stride;
-                meter.size.height -= 3. * layout.scale;
                 (meter, Axis::Vertical)
             }
         };

@@ -248,13 +248,26 @@ points), clamped to the running Nyquist — so the points are equally
 spaced on the axis and the decade-standard grid lines (20, 50, 100, 200,
 500, 1 k, 2 k, 5 k, 10 k, 20 k; 100/1 k/10 k labeled) fall where an
 analyzer's do. Level is dBFS over the meters' −96 dB floor with lines
-every 24 dB. A band takes the maximum bin magnitude across channels (the
-engine's magnitudes are coherent-gain normalized, so a tone reads its
-amplitude at its peak bin); a band narrower than a bin interpolates on
-the dB-versus-log2-frequency line between its bracketing bins, and below
-the first non-DC bin — where the FFT says nothing — the curve ramps on
-that same line from the floor at the axis edge up to the bin's level, a
-smooth entry rather than a plateau. The display rises instantly
+every 24 dB.
+
+Band levels are the standard FFT-analyzer band-power spectrum —
+`L_band = 10·log10(Σ_band wₖ·aₖ² / ENBW)` with the Hann window's
+effective-noise-bandwidth normalization (Heinzel et al.) and IEC 61260
+fractional-octave banding: each bin joins the bands it overlaps with its
+overlap fraction, so broadband power accumulates across every bin a band
+covers (the top of the axis, where a 1/12-octave band spans dozens of
+bins, no longer reads small) and the level is independent of the FFT
+size, while a tone whose skirt fits inside its band reads its own
+amplitude (a tone near a band edge shares its skirt with the neighbors —
+the inherent fractional-octave behavior). A band narrower than one bin
+is below the transform's resolution and inherits the level of the bin
+nearest its center, the standard resolution-limited display. Channels
+combine as the maximum of their band powers; DC never joins a band.
+Every projection knob — band width, grid anchor and extent, ENBW, dBFS
+bounds — lives in one `SpectrumParams` seam ready for parameter wiring;
+the UI exposes none of them yet. The default analysis is 2048 points at
+a 1024-frame hop, and the card's detail line carries the FFT size alone.
+The display rises instantly
 and falls at 30 dB/s in the dB domain; at the floor the curve counts as
 at rest, so a silent analyzer stands the frame loop down exactly as a
 silent meter does, and only a moving projection or a status change wakes
