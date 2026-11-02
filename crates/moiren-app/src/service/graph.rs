@@ -146,6 +146,15 @@ pub enum GraphEdit {
         source: PortId,
         destination: PortId,
     },
+    /// Move an existing edge's destination, displacing whatever feeds the
+    /// new one: the drag-a-wire-head-off-an-input gesture commits as one
+    /// atomic edit, so a reroute is a single undo step and a failed
+    /// connect half rolls the moved edge (and the displaced one) back
+    /// exactly where they were.
+    Reconnect {
+        edge: EdgeId,
+        destination: PortId,
+    },
     Disconnect(EdgeId),
     SetSend {
         edge: EdgeId,
@@ -500,6 +509,10 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
             .get_edge(*edge)
             .map(|edge| GraphSubject::Route(edge.src_port(), edge.dst_port()))
             .unwrap_or(GraphSubject::Graph),
+        GraphEdit::Reconnect { edge, destination } => graph
+            .get_edge(*edge)
+            .map(|moved| GraphSubject::Route(moved.src_port(), *destination))
+            .unwrap_or(GraphSubject::Graph),
         GraphEdit::SetExports(_) | GraphEdit::BindExport { .. } | GraphEdit::AddNode { .. } => {
             GraphSubject::Graph
         }
@@ -537,6 +550,7 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::RemoveNode(_)
         | GraphEdit::Connect { .. }
         | GraphEdit::ConnectReplacing { .. }
+        | GraphEdit::Reconnect { .. }
         | GraphEdit::Disconnect(_)
         | GraphEdit::AddBusInput(_)
         | GraphEdit::RemoveBusInput { .. }
@@ -684,6 +698,12 @@ impl ServiceGraph {
                 GraphSubject::Route(source, destination) => {
                     pending.extend(node_of_port(&previous, *source));
                     pending.extend(node_of_port(&previous, *destination));
+                    // A reroute also re-prepares the node it departs from.
+                    if let GraphEdit::Reconnect { edge, .. } = &edit
+                        && let Ok(moved) = previous.get_edge(*edge)
+                    {
+                        pending.extend(node_of_port(&previous, moved.dst_port()));
+                    }
                 }
                 GraphSubject::Graph => {
                     // AddNode and export changes: the topology diff.

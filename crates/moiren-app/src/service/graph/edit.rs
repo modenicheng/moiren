@@ -146,6 +146,31 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         GraphEdit::Disconnect(edge) => {
             next.graph.disconnect(edge).map_err(|e| e.to_string())?;
         }
+        GraphEdit::Reconnect { edge, destination } => {
+            // The candidate only swaps in on full success: a failed
+            // connect half leaves the moved edge feeding its old input and
+            // the displaced edge untouched.
+            let source = next
+                .graph
+                .get_edge(edge)
+                .map_err(|e| e.to_string())?
+                .src_port();
+            if let Some(displaced) = next
+                .graph
+                .edges()
+                .iter()
+                .find(|existing| existing.dst_port() == destination && existing.id() != edge)
+                .map(|existing| existing.id())
+            {
+                next.graph
+                    .disconnect(displaced)
+                    .map_err(|e| e.to_string())?;
+            }
+            next.graph.disconnect(edge).map_err(|e| e.to_string())?;
+            next.graph
+                .connect(source, destination, SendParams::default())
+                .map_err(|e| e.to_string())?;
+        }
         GraphEdit::SetSend { edge, params } => {
             next.graph
                 .set_send_params(edge, params)

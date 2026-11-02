@@ -809,6 +809,110 @@ fn failed_connect_replacing_leaves_the_displaced_edge_intact() {
     let _ = source;
 }
 
+fn routes(service: &ServiceGraph) -> Vec<(NodeId, NodeId)> {
+    let snapshot = service.snapshot();
+    let mut routes: Vec<_> = snapshot
+        .graph
+        .edges()
+        .iter()
+        .map(|edge| (edge.src(), edge.dst()))
+        .collect();
+    routes.sort();
+    routes
+}
+
+#[test]
+fn reconnect_moves_the_edge_and_displaces_the_targets_feeder_in_one_step() {
+    let mut service = ServiceGraph::default();
+    let (source, gain, pan, sink) = ids(&service);
+    let snapshot = service.snapshot();
+    let moved = snapshot
+        .graph
+        .edges()
+        .iter()
+        .find(|edge| edge.src() == source && edge.dst() == gain)
+        .unwrap()
+        .id();
+    let pan_in = snapshot.graph.get_node(pan).unwrap().inputs()[0].id();
+    // Picking source -> gain up off gain and dropping it on pan: the edge
+    // leaves gain, lands on pan, and gain -> pan (pan's old feeder) goes.
+    service
+        .edit(GraphEdit::Reconnect {
+            edge: moved,
+            destination: pan_in,
+        })
+        .unwrap();
+    assert_eq!(routes(&service), vec![(source, pan), (pan, sink)]);
+    // Every card the engine re-prepares: both ends of the new route and
+    // the input the edge departed from.
+    let preparing = service.snapshot().preparing_nodes;
+    for node in [source, pan, gain] {
+        assert!(
+            preparing.contains(&node),
+            "{node:?} missing in {preparing:?}"
+        );
+    }
+    assert!(service.undo());
+    assert_eq!(
+        routes(&service),
+        vec![(source, gain), (gain, pan), (pan, sink)]
+    );
+}
+
+#[test]
+fn reconnect_rolls_back_whole_when_the_move_would_cycle() {
+    let mut service = ServiceGraph::default();
+    let (_, gain, pan, sink) = ids(&service);
+    let before = service.snapshot();
+    let moved = before
+        .graph
+        .edges()
+        .iter()
+        .find(|edge| edge.src() == pan && edge.dst() == sink)
+        .unwrap()
+        .id();
+    let gain_in = before.graph.get_node(gain).unwrap().inputs()[0].id();
+    // pan -> sink onto gain's input would close gain -> pan -> gain: the
+    // displaced source -> gain and the moved edge both stay put.
+    assert!(
+        service
+            .edit(GraphEdit::Reconnect {
+                edge: moved,
+                destination: gain_in,
+            })
+            .is_err()
+    );
+    let after = service.snapshot();
+    assert_eq!(before.graph, after.graph);
+    assert_eq!(before.candidate_revision, after.candidate_revision);
+    assert!(after.last_error.is_some());
+}
+
+#[test]
+fn reconnect_onto_its_own_input_keeps_the_edge() {
+    let mut service = ServiceGraph::default();
+    let (source, gain, pan, sink) = ids(&service);
+    let snapshot = service.snapshot();
+    let moved = snapshot
+        .graph
+        .edges()
+        .iter()
+        .find(|edge| edge.src() == source && edge.dst() == gain)
+        .unwrap()
+        .id();
+    let gain_in = snapshot.graph.get_node(gain).unwrap().inputs()[0].id();
+    service
+        .edit(GraphEdit::Reconnect {
+            edge: moved,
+            destination: gain_in,
+        })
+        .unwrap();
+    assert_eq!(
+        routes(&service),
+        vec![(source, gain), (gain, pan), (pan, sink)]
+    );
+}
+
 #[test]
 fn node_tint_edits_roundtrip_documents_and_reject_unknown_indices() {
     let mut service = ServiceGraph::default();
