@@ -351,16 +351,14 @@ impl CanvasWorld {
             let (icon, tint) = match logical.kind() {
                 NodeKind::Source => (
                     match state.source {
-                        Some(crate::service::InputSelection::Physical { .. }) | None => {
-                            "figma-input"
-                        }
+                        Some(crate::service::InputSelection::Physical { .. }) | None => "mic",
                         Some(crate::service::InputSelection::Process { .. }) => "app",
                         Some(crate::service::InputSelection::Tone { .. }) => "wave",
                     },
                     theme::NODE_SOURCE,
                 ),
-                NodeKind::Sink => ("figma-output", theme::NODE_SINK),
-                NodeKind::Bus => ("figma-bus", theme::NODE_UTILITY),
+                NodeKind::Sink => ("speaker", theme::NODE_SINK),
+                NodeKind::Bus => ("git-merge", theme::NODE_UTILITY),
                 NodeKind::Recorder => ("radio", theme::NODE_ANALYSIS),
                 NodeKind::Meter => ("activity", theme::NODE_ANALYSIS),
                 NodeKind::SpectrumAnalyzer => ("chart-histogram", theme::NODE_ANALYSIS),

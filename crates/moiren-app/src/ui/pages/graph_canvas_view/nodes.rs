@@ -746,15 +746,12 @@ pub(super) fn paint_node(
             );
         });
         // Header.
+        // Every kind icon is a Tabler glyph (24-unit box, 2-unit padding,
+        // stroke 2), so all cards read at the same visual size.
         if let Some(name) = node.icon {
-            let path = if let Some(name) = name.strip_prefix("figma-") {
-                format!("figma-nodes/{name}.svg")
-            } else {
-                format!("icons/{name}.svg")
-            };
             let _ = window.paint_svg(
                 frame.window_rect(layout.icon),
-                path.into(),
+                format!("icons/{name}.svg").into(),
                 None,
                 TransformationMatrix::unit(),
                 tint,

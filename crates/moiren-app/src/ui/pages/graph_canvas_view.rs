@@ -282,24 +282,23 @@ pub(in crate::ui) fn node_drag_preview(
     template: super::node_catalog::NodeTemplate,
 ) -> impl IntoElement {
     use super::node_catalog::NodeTemplate;
-    let (icon, tint) = match template {
-        NodeTemplate::Input => ("figma-input", theme::NODE_SOURCE),
-        NodeTemplate::Application => ("app", theme::NODE_SOURCE),
-        NodeTemplate::Tone => ("wave", theme::NODE_SOURCE),
-        NodeTemplate::Output => ("figma-output", theme::NODE_SINK),
-        NodeTemplate::Bus => ("figma-bus", theme::NODE_UTILITY),
-        NodeTemplate::Recorder => ("radio", theme::NODE_ANALYSIS),
-        NodeTemplate::Meter => ("activity", theme::NODE_ANALYSIS),
-        NodeTemplate::Spectrum => ("chart-histogram", theme::NODE_ANALYSIS),
-        NodeTemplate::Delay => ("clock", theme::NODE_DSP),
-        NodeTemplate::ChannelMapper => ("route", theme::NODE_UTILITY),
-        NodeTemplate::Rack => ("list-details", theme::NODE_UTILITY),
-        NodeTemplate::Gain => ("volume", theme::NODE_DSP),
-        NodeTemplate::Balance => ("arrows-horizontal", theme::NODE_DSP),
-        NodeTemplate::Compressor => ("arrows-minimize", theme::NODE_DSP),
-        NodeTemplate::Eq => ("wave-square", theme::NODE_DSP),
-        NodeTemplate::Gate => ("door", theme::NODE_DSP),
-        NodeTemplate::Limiter => ("wall", theme::NODE_DSP),
+    // The ghost paints the library's own glyph for the kind, so the card
+    // that lands looks exactly like the card that was dragged.
+    let icon = template.icon();
+    let tint = match template {
+        NodeTemplate::Input | NodeTemplate::Application | NodeTemplate::Tone => theme::NODE_SOURCE,
+        NodeTemplate::Output => theme::NODE_SINK,
+        NodeTemplate::Bus | NodeTemplate::ChannelMapper | NodeTemplate::Rack => theme::NODE_UTILITY,
+        NodeTemplate::Recorder | NodeTemplate::Meter | NodeTemplate::Spectrum => {
+            theme::NODE_ANALYSIS
+        }
+        NodeTemplate::Delay
+        | NodeTemplate::Gain
+        | NodeTemplate::Balance
+        | NodeTemplate::Compressor
+        | NodeTemplate::Eq
+        | NodeTemplate::Gate
+        | NodeTemplate::Limiter => theme::NODE_DSP,
     };
     // A fresh card's port shape: sources only output, the sink only inputs.
     let (input_count, has_output) = match template {

@@ -85,13 +85,6 @@ pub(crate) fn register_fonts(cx: &App) -> Result<()> {
 impl AssetSource for ActionAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: Option<&'static [u8]> = match path {
-            "figma-nodes/input.svg" => {
-                Some(include_bytes!("../../../assets/figma-nodes/input.svg"))
-            }
-            "figma-nodes/output.svg" => {
-                Some(include_bytes!("../../../assets/figma-nodes/output.svg"))
-            }
-            "figma-nodes/bus.svg" => Some(include_bytes!("../../../assets/figma-nodes/bus.svg")),
             "figma-nodes/more.svg" => Some(include_bytes!("../../../assets/figma-nodes/more.svg")),
             "figma-nodes/input-port.svg" => {
                 Some(include_bytes!("../../../assets/figma-nodes/input-port.svg"))
@@ -205,14 +198,7 @@ mod tests {
                 "unregistered node icon asset: {path}"
             );
         }
-        for name in [
-            "input",
-            "output",
-            "bus",
-            "more",
-            "input-port",
-            "output-port",
-        ] {
+        for name in ["more", "input-port", "output-port"] {
             let path = format!("figma-nodes/{name}.svg");
             assert!(
                 ActionAssets.load(&path).ok().flatten().is_some(),
@@ -248,12 +234,11 @@ mod tests {
 
         // Icon names painted by the canvas node cards come from the `NodeKind`
         // match in ui/pages/graph_canvas.rs; keep this list in sync there.
-        // Names with the `figma-` prefix resolve to figma-nodes/, the rest to
-        // icons/ (same routing as graph_canvas_view/nodes.rs).
+        // All of them are Tabler glyphs under icons/, so every card's kind
+        // icon shares one box, padding and stroke weight.
         const CANVAS_NODE_ICONS: &[&str] = &[
-            "figma-input",
-            "figma-output",
-            "figma-bus",
+            "mic",
+            "git-merge",
             "app",
             "wave",
             "radio",
@@ -303,11 +288,7 @@ mod tests {
         used.extend(FIXED_REQUESTS.iter().map(|path| (*path).to_string()));
         used.extend(DESIGN18_REQUESTS.iter().map(|path| (*path).to_string()));
         for name in CANVAS_NODE_ICONS {
-            let path = match name.strip_prefix("figma-") {
-                Some(rest) => format!("figma-nodes/{rest}.svg"),
-                None => format!("icons/{name}.svg"),
-            };
-            used.insert(path);
+            used.insert(format!("icons/{name}.svg"));
         }
         for asset in FIGMA_NODE_ASSETS {
             used.insert(format!("figma-nodes/{asset}.svg"));
