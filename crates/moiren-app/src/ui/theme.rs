@@ -92,6 +92,11 @@ pub mod card {
     pub const KNOB_BODY_H: f32 = 44.;
     pub const DIAL_SIZE: f32 = 40.;
     pub const DIAL_TRACK_W: f32 = 3.;
+    /// The dial's sweep in screen degrees (y down): from bottom-left over
+    /// the top to bottom-right. Every knob turns through the same arc;
+    /// where its value arc anchors is the control's `KnobSpec::origin`.
+    pub const DIAL_SWEEP_START: f32 = 135.;
+    pub const DIAL_SWEEP_DEG: f32 = 270.;
     /// Binding-chip bodies (source/sink cards, rack chains).
     pub const CHIP_BODY_H: f32 = 26.;
     pub const CHIP_H: f32 = 22.;

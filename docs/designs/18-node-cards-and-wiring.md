@@ -205,6 +205,16 @@ it; wheel anywhere else pans/zooms exactly as today. Knob-driven value
 edits dispatch the same `GraphEdit`s the inspector uses, coalesced like
 fader drags.
 
+One dial painter serves every control. It is parameterized by the sweep
+(`DIAL_SWEEP_START`/`DIAL_SWEEP_DEG`: bottom-left over the top to
+bottom-right) and by the control's arc origin (`KnobSpec::origin`): the
+value arc fills from that origin to the value in whichever direction the
+value lies. Floor-anchored knobs (frequency, delay) fill from the left
+end; bipolar knobs fill from their neutral point — pan from the center,
+gain from 0 dB unity — so a neutral value paints no arc at all. Track,
+value arc and the slim pointer are pill-ended (built as filled geometry,
+since the stroke builder exposes no line cap).
+
 Curve thumbnails are analytic and static per settings (peaking-band
 magnitude for EQ, static transfer curves for the dynamics family), so
 they repaint only when the snapshot changes — no per-frame cost. The

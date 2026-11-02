@@ -174,10 +174,99 @@ pub(in crate::ui) fn paint_meter_bars(
     }
 }
 
-/// One knob dial: a neutral track arc with the value portion filled in
-/// `TRACK_FILL` (a lit track never reads as audio) and a pointer at the
-/// value angle. Screen angles run 135°..405° with y pointing down, so
-/// the sweep starts bottom-left, passes the top, and ends bottom-right.
+/// A filled pill between two points: straight sides plus semicircular
+/// caps. gpui's stroke builder has no reachable line-cap option, so pill
+/// ends are built as geometry.
+fn capsule_path(a: (f32, f32), b: (f32, f32), half: f32) -> anyhow::Result<Path<Pixels>> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length = dx.hypot(dy);
+    if length < 1e-3 {
+        anyhow::bail!("degenerate capsule");
+    }
+    let (ux, uy) = (dx / length, dy / length);
+    // Walk the +normal side a -> b, round the far end through the forward
+    // direction (normal - 90°), come back along the -normal side, and
+    // round the near end through the backward direction.
+    let normal = ux.atan2(-uy).to_degrees();
+    let mut builder = PathBuilder::fill();
+    builder.move_to(point(px(a.0 - uy * half), px(a.1 + ux * half)));
+    builder.line_to(point(px(b.0 - uy * half), px(b.1 + ux * half)));
+    cap(&mut builder, b, half, normal, normal - 180.);
+    builder.line_to(point(px(a.0 + uy * half), px(a.1 - ux * half)));
+    cap(&mut builder, a, half, normal + 180., normal);
+    builder.build()
+}
+
+/// A filled ring segment with pill ends, `half` thick either side of
+/// `radius`, swept between two screen angles in degrees (y down, so 90°
+/// points at the bottom).
+fn arc_capsule_path(
+    center: (f32, f32),
+    radius: f32,
+    half: f32,
+    from_deg: f32,
+    to_deg: f32,
+) -> anyhow::Result<Path<Pixels>> {
+    let (from, to) = if to_deg >= from_deg {
+        (from_deg, to_deg)
+    } else {
+        (to_deg, from_deg)
+    };
+    if to - from < 0.5 {
+        anyhow::bail!("degenerate arc");
+    }
+    let steps = ((to - from) / 6.).ceil().max(2.) as usize;
+    let on_ring = |angle_deg: f32, ring: f32| {
+        let angle = angle_deg.to_radians();
+        (center.0 + angle.cos() * ring, center.1 + angle.sin() * ring)
+    };
+    let mut builder = PathBuilder::fill();
+    for step in 0..=steps {
+        let angle = from + (to - from) * step as f32 / steps as f32;
+        let (x, y) = on_ring(angle, radius + half);
+        if step == 0 {
+            builder.move_to(point(px(x), px(y)));
+        } else {
+            builder.line_to(point(px(x), px(y)));
+        }
+    }
+    cap(&mut builder, on_ring(to, radius), half, to, to + 180.);
+    for step in 0..=steps {
+        let angle = to - (to - from) * step as f32 / steps as f32;
+        let (x, y) = on_ring(angle, radius - half);
+        builder.line_to(point(px(x), px(y)));
+    }
+    cap(
+        &mut builder,
+        on_ring(from, radius),
+        half,
+        from + 180.,
+        from + 360.,
+    );
+    builder.build()
+}
+
+/// Half-circle cap around `center` from one screen angle to another, as
+/// line segments appended to a path under construction.
+fn cap(builder: &mut PathBuilder, center: (f32, f32), half: f32, from_deg: f32, to_deg: f32) {
+    const STEPS: usize = 8;
+    for step in 1..=STEPS {
+        let angle = (from_deg + (to_deg - from_deg) * step as f32 / STEPS as f32).to_radians();
+        builder.line_to(point(
+            px(center.0 + angle.cos() * half),
+            px(center.1 + angle.sin() * half),
+        ));
+    }
+}
+
+/// One knob dial, parameterized by the sweep it turns through and where
+/// its value arc anchors: a neutral pill-ended track over the whole sweep,
+/// the value portion filled in `TRACK_FILL` from the control's origin to
+/// its position (unipolar knobs fill from the floor, bipolar ones from
+/// their neutral point, in whichever direction the value lies), and a
+/// slim pill pointer at the value angle. Screen angles run from
+/// `DIAL_SWEEP_START` with y pointing down, so the sweep starts bottom-
+/// left, passes the top, and ends bottom-right.
 fn paint_knob(
     frame: &CanvasFrame,
     layout: &KnobLayout,
@@ -187,53 +276,44 @@ fn paint_knob(
     cx: &mut App,
 ) {
     let dial = frame.window_rect(layout.dial);
-    let (cx_, cy_) = (
+    let center = (
         f32::from(dial.origin.x) + f32::from(dial.size.width) / 2.,
         f32::from(dial.origin.y) + f32::from(dial.size.height) / 2.,
     );
-    let radius = f32::from(dial.size.width) / 2. - theme::card::DIAL_TRACK_W * scale;
-    let stroke = theme::card::DIAL_TRACK_W * scale;
-    let arc = |from_deg: f32, to_deg: f32, width: f32| -> anyhow::Result<Path<Pixels>> {
-        let mut builder = PathBuilder::stroke(px(width));
-        let steps = (((to_deg - from_deg).abs() / 15.).ceil() as usize).max(1);
-        for step in 0..=steps {
-            let angle = (from_deg + (to_deg - from_deg) * step as f32 / steps as f32).to_radians();
-            let p = point(
-                px(cx_ + angle.cos() * radius),
-                px(cy_ + angle.sin() * radius),
-            );
-            if step == 0 {
-                builder.move_to(p);
-            } else {
-                builder.line_to(p);
-            }
-        }
-        builder.build()
+    let track = theme::card::DIAL_TRACK_W * scale;
+    let radius = f32::from(dial.size.width) / 2. - track;
+    let angle_at = |fraction: f32| {
+        theme::card::DIAL_SWEEP_START + theme::card::DIAL_SWEEP_DEG * fraction.clamp(0., 1.)
     };
-    if let Ok(path) = arc(135., 405., stroke) {
+    if let Ok(path) = arc_capsule_path(center, radius, track / 2., angle_at(0.), angle_at(1.)) {
         window.paint_path(path, theme::WINDOW_BG);
     }
-    if knob.position > 0.001
-        && let Ok(path) = arc(135., 135. + 270. * knob.position, stroke)
+    let (from, to) = if knob.position >= knob.origin {
+        (knob.origin, knob.position)
+    } else {
+        (knob.position, knob.origin)
+    };
+    if to - from > 0.002
+        && let Ok(path) = arc_capsule_path(center, radius, track / 2., angle_at(from), angle_at(to))
     {
         window.paint_path(path, theme::TRACK_FILL);
     }
-    // Pointer from the hub to the value angle.
-    let angle = (135. + 270. * knob.position).to_radians();
-    let inner = radius * 0.35;
-    let outer = radius - stroke;
-    if let Ok(path) = {
-        let mut builder = PathBuilder::stroke(px(stroke * 1.6));
-        builder.move_to(point(
-            px(cx_ + angle.cos() * inner),
-            px(cy_ + angle.sin() * inner),
-        ));
-        builder.line_to(point(
-            px(cx_ + angle.cos() * outer),
-            px(cy_ + angle.sin() * outer),
-        ));
-        builder.build()
-    } {
+    // Pointer from the hub to the track's inner edge: two thirds of the
+    // old 1.6× stroke, with pill ends.
+    let angle = angle_at(knob.position).to_radians();
+    let direction = (angle.cos(), angle.sin());
+    let (inner, outer) = (radius * 0.35, radius - track);
+    if let Ok(path) = capsule_path(
+        (
+            center.0 + direction.0 * inner,
+            center.1 + direction.1 * inner,
+        ),
+        (
+            center.0 + direction.0 * outer,
+            center.1 + direction.1 * outer,
+        ),
+        track * 0.8 / 2.,
+    ) {
         window.paint_path(path, theme::card::THUMB);
     }
     paint_label(
@@ -883,5 +963,68 @@ pub(super) fn paint_node(
             window,
             cx,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{Path, Pixels};
+
+    use super::{arc_capsule_path, capsule_path};
+
+    /// Total area of the tessellated triangles — a self-intersecting outline
+    /// (a cap bulging the wrong way) would not add up to the analytic shape.
+    fn area(path: &Path<Pixels>) -> f32 {
+        path.vertices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|vertices| {
+                let (a, b, c) = (
+                    vertices[0].xy_position,
+                    vertices[1].xy_position,
+                    vertices[2].xy_position,
+                );
+                ((f32::from(b.x - a.x) * f32::from(c.y - a.y)
+                    - f32::from(c.x - a.x) * f32::from(b.y - a.y))
+                    / 2.)
+                    .abs()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn capsule_covers_its_body_and_two_round_caps() {
+        for (a, b, half) in [
+            ((10., 10.), (60., 10.), 2.),
+            ((0., 0.), (30., 40.), 1.6),
+            ((50., 20.), (20., 50.), 3.),
+        ] {
+            let path = capsule_path(a, b, half).unwrap();
+            let length = (b.0 - a.0).hypot(b.1 - a.1);
+            let expected = 2. * half * length + std::f32::consts::PI * half * half;
+            let actual = area(&path);
+            assert!(
+                (actual - expected).abs() / expected < 0.02,
+                "{a:?}->{b:?}: {actual} vs {expected}"
+            );
+        }
+        assert!(capsule_path((5., 5.), (5., 5.), 2.).is_err());
+    }
+
+    #[test]
+    fn arc_capsule_covers_its_ring_segment_and_two_round_caps() {
+        for (from, to) in [(135., 405.), (270., 300.), (300., 270.), (135., 270.)] {
+            let (radius, half) = (17., 1.5);
+            let path = arc_capsule_path((40., 40.), radius, half, from, to).unwrap();
+            let sweep = (to - from).abs().to_radians();
+            let expected = 2. * half * radius * sweep + std::f32::consts::PI * half * half;
+            let actual = area(&path);
+            assert!(
+                (actual - expected).abs() / expected < 0.03,
+                "{from}..{to}: {actual} vs {expected}"
+            );
+        }
+        assert!(arc_capsule_path((0., 0.), 10., 1., 90., 90.2).is_err());
     }
 }

@@ -32,6 +32,8 @@ pub struct CardKnob {
     pub value_text: String,
     /// 0..1 across the knob's sweep, for the painted arc.
     pub position: f32,
+    /// 0..1 where the value arc anchors (see [`KnobSpec::origin`]).
+    pub origin: f32,
 }
 
 pub struct KnobSpec {
@@ -42,6 +44,11 @@ pub struct KnobSpec {
     /// log-domain tone knob).
     pub step: f64,
     pub log: bool,
+    /// The sweep fraction the value arc anchors at: 0.0 for floor-anchored
+    /// (unipolar) knobs, the neutral point's fraction for bipolar ones —
+    /// pan centers at 0.5, gain at its 0 dB unity — so one painter serves
+    /// both and a neutral value paints no arc at all.
+    pub origin: f64,
 }
 
 impl KnobControl {
@@ -53,6 +60,8 @@ impl KnobControl {
                 default: 0.,
                 step: 1.,
                 log: false,
+                // 0 dB unity sits 60/84 of the way up the sweep.
+                origin: 60. / 84.,
             },
             Self::PanPosition => KnobSpec {
                 min: -1.,
@@ -60,6 +69,7 @@ impl KnobControl {
                 default: 0.,
                 step: 0.05,
                 log: false,
+                origin: 0.5,
             },
             Self::ToneFrequency => KnobSpec {
                 min: 1.,
@@ -67,6 +77,7 @@ impl KnobControl {
                 default: 440.,
                 step: 2f64.powf(1. / 12.),
                 log: true,
+                origin: 0.,
             },
             Self::DelayTime => KnobSpec {
                 min: 0.,
@@ -74,6 +85,7 @@ impl KnobControl {
                 default: 250.,
                 step: 10.,
                 log: false,
+                origin: 0.,
             },
         }
     }
@@ -229,6 +241,17 @@ mod tests {
         assert_eq!(control.wheel(440., 0.), 440.);
         // Drags stay inside 1 Hz .. 23 999 Hz.
         assert_eq!(control.drag(440., DRAG_SWEEP_PX), 1.);
+    }
+
+    #[test]
+    fn value_arcs_anchor_at_the_floor_or_the_neutral_point() {
+        // Bipolar knobs paint no arc at their neutral value: pan centers,
+        // gain anchors at 0 dB unity; floor-anchored knobs fill from 0.
+        assert_eq!(KnobControl::PanPosition.spec().origin, 0.5);
+        let gain = KnobControl::GainLevel;
+        assert!((gain.spec().origin as f32 - gain.position(0.)).abs() < 1e-6);
+        assert_eq!(KnobControl::ToneFrequency.spec().origin, 0.);
+        assert_eq!(KnobControl::DelayTime.spec().origin, 0.);
     }
 
     #[test]

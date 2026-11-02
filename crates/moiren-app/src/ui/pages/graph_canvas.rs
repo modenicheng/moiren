@@ -394,6 +394,7 @@ impl CanvasWorld {
                     label,
                     value_text: control.value_text(value),
                     position: control.position(value),
+                    origin: control.spec().origin as f32,
                 }
             };
             match logical.kind() {
