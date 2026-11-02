@@ -91,8 +91,10 @@ pub struct SpectrumCurve<'a> {
 /// a tone reads its true amplitude at its peak bin and a band maximum
 /// cannot miss it. A band narrower than a bin interpolates on the
 /// dB-versus-log2-frequency line between the two bins bracketing its
-/// center — never linearly in frequency or amplitude — and a band below
-/// the first non-DC bin holds that bin's level.
+/// center — never linearly in frequency or amplitude. Below the first
+/// non-DC bin the FFT says nothing, so the curve ramps on that same line
+/// from the floor at the axis's low edge up to the first bin's level: a
+/// smooth entry into the plot instead of a plateau.
 pub fn project_spectrum(bins: &[f32], header: &SpectrumWindow, grid: &OctaveGrid, out: &mut [f32]) {
     let bins_per_channel = header.fft_size / 2 + 1;
     let bin_hz = header.sample_rate / header.fft_size as f64;
@@ -107,12 +109,21 @@ pub fn project_spectrum(bins: &[f32], header: &SpectrumWindow, grid: &OctaveGrid
     }
     let last_bin = bins_per_channel - 1;
     let hz_of = |bin: usize| bin as f64 * bin_hz;
+    let axis_lo = grid.lo_hz();
     for (index, (point, &center)) in out.iter_mut().zip(&grid.centers).enumerate() {
         let (low, high) = grid.band(index);
         let first = ((low / bin_hz).ceil() as usize).clamp(1, last_bin);
         let last = ((high / bin_hz).floor() as usize).clamp(1, last_bin);
         let level = if low <= hz_of(first) && hz_of(last) <= high && first <= last {
             bin_db[first..=last].iter().copied().fold(REST_DB, f32::max)
+        } else if center < hz_of(1) {
+            let span = hz_of(1).log2() - axis_lo.log2();
+            let position = if span > 0. {
+                ((center.log2() - axis_lo.log2()) / span).clamp(0., 1.)
+            } else {
+                1.
+            };
+            REST_DB + (bin_db[1] - REST_DB) * position as f32
         } else {
             let left = ((center / bin_hz).floor() as usize).clamp(1, last_bin.max(2) - 1);
             let right = (left + 1).min(last_bin);
@@ -573,8 +584,19 @@ mod tests {
         // A linear-in-frequency amplitude interpolation would read higher.
         let linear = 20. * (1. + (center - 3000.) / 3000. * (0.1 - 1.)).log10();
         assert!((f64::from(out[index]) - linear).abs() > 1., "{linear}");
-        // Below the first bin the curve holds that bin's level.
-        assert_eq!(out[0], 0.);
+        // Below the first bin the curve ramps from the floor at the axis
+        // edge up to that bin's level on the same dB-vs-log2-f line — no
+        // plateau: the edge sits at the floor, 1 kHz (78% of the way up to
+        // the 3 kHz bin) reads about -21 dB, and the entry is monotone.
+        assert_eq!(out[0], REST_DB);
+        let ramp = (1000f64.log2() - grid.lo_hz().log2()) / (3000f64.log2() - grid.lo_hz().log2());
+        let expected = REST_DB + (0. - REST_DB) * ramp as f32;
+        assert!(
+            (out[68] - expected).abs() < 0.05,
+            "{} vs {expected}",
+            out[68]
+        );
+        assert!(out[0] < out[34] && out[34] < out[51] && out[51] < out[68]);
     }
 
     #[test]

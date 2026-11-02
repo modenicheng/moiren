@@ -194,7 +194,7 @@ height):
 | ChannelMapper | matrix preview grid (weight-intensity cells) + meter | matrix editor |
 | Recorder | capacity/usage line + meter | buffer controls |
 | Meter | large per-channel bars + peak/RMS readout | — |
-| SpectrumAnalyzer | live spectrum plot on a square card (hot layer) + vertical meter | FFT/hop fields |
+| SpectrumAnalyzer | live spectrum plot on a wide 4:3 card (hot layer) + vertical meter | FFT/hop fields |
 | Bus | name + meter | — |
 | Rack | stage chain icons + meter | stage list |
 
@@ -251,16 +251,20 @@ analyzer's do. Level is dBFS over the meters' −96 dB floor with lines
 every 24 dB. A band takes the maximum bin magnitude across channels (the
 engine's magnitudes are coherent-gain normalized, so a tone reads its
 amplitude at its peak bin); a band narrower than a bin interpolates on
-the dB-versus-log2-frequency line between its bracketing bins, and bands
-under the first non-DC bin hold its level. The display rises instantly
+the dB-versus-log2-frequency line between its bracketing bins, and below
+the first non-DC bin — where the FFT says nothing — the curve ramps on
+that same line from the floor at the axis edge up to the bin's level, a
+smooth entry rather than a plateau. The display rises instantly
 and falls at 30 dB/s in the dB domain; at the floor the curve counts as
 at rest, so a silent analyzer stands the frame loop down exactly as a
 silent meter does, and only a moving projection or a status change wakes
-the interface. The card is square — the body is sized so header, body,
-meter reserve and port margins add up to the card width — with the
-curve-node vertical meter down its right edge; the curve is a tinted
-fill under a stroke, repainted whole by the hot layer (and by the cached
-canvas as a snapshot, so a connection drag never blanks it).
+the interface. The card is the one card wider than the strips, 4:3
+(`SPECTRUM_W` by a strip's width tall), with the curve-node vertical meter
+down its right edge; the curve is a Catmull-Rom spline through the grid
+points — each span a cubic Bézier, the FabFilter-style smoothness rather
+than a polyline — as a tinted fill under a stroke, masked to the plot,
+repainted whole by the hot layer (and by the cached canvas as a snapshot,
+so a connection drag never blanks it).
 
 ### B4. Detail window
 
@@ -287,7 +291,7 @@ is pushed after phase 1 so CI carries the load from there.
 8. Curve thumbnails (B3)
 9. Detail window + EQ point editor (B4)
 10. Spectrum topic + subscription + hot-layer paint (B3) — bus relay,
-    ISO fractional-octave projection, square card
+    ISO fractional-octave projection, wide 4:3 card
 11. Icons: dedicated Tabler glyphs for the kinds that share fallbacks,
     registered in the `ActionAssets` allowlist
 12. Capture states + acceptance screenshots

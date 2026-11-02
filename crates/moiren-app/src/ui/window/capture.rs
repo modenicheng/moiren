@@ -74,7 +74,8 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
 
 /// A plausible program spectrum for the capture on the analyzer's 121-point
 /// grid: a pink-ish slope with a low-end bump, a tone at 1 kHz and a
-/// presence peak.
+/// presence peak, entering from the floor below the first FFT bin the way
+/// a projected window does.
 fn demo_spectrum_curve() -> Vec<f32> {
     (0..121)
         .map(|index| {
@@ -82,8 +83,10 @@ fn demo_spectrum_curve() -> Vec<f32> {
             let peak = |center: f32, width: f32, height: f32| {
                 height * (-((index as f32 - center) / width).powi(2)).exp()
             };
-            (-22. - 26. * position + peak(28., 6., 9.) + peak(68., 2.5, 16.) + peak(92., 8., 5.))
-                .clamp(-96., 0.)
+            let body =
+                -22. - 26. * position + peak(28., 6., 9.) + peak(68., 2.5, 16.) + peak(92., 8., 5.);
+            let entry = (index as f32 / 14.).min(1.);
+            (-96. + (body + 96.) * entry).clamp(-96., 0.)
         })
         .collect()
 }
@@ -456,7 +459,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         output_endpoint_id: None,
                         tint: None,
                     });
-                    shell.node_positions.insert(id, (530., 200.));
+                    shell.node_positions.insert(id, (420., 230.));
                     let curve = demo_spectrum_curve();
                     shell.state.update(cx, |state, _| {
                         state.snapshot = std::sync::Arc::new(snapshot);

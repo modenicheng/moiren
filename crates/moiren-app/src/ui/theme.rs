@@ -106,9 +106,12 @@ pub mod card {
     pub const CHIP_ICON: f32 = 14.;
     /// Curve-thumbnail bodies (EQ response, dynamics transfer).
     pub const CURVE_BODY_H: f32 = 64.;
-    /// The spectrum analyzer's live plot: the one body sized so the whole
-    /// card comes out square (header, body, meter reserve and the port
-    /// margins add up to the card width).
+    /// The spectrum analyzer is the one card wider than the strips: a 4:3
+    /// plot gives its 20 Hz .. 20 kHz axis room to breathe.
+    pub const SPECTRUM_W: f32 = 360.;
+    /// Its plot height, sized so the card stands as tall as a strip is wide
+    /// (header, body, meter reserve and port margins add up to the strip
+    /// width), which with `SPECTRUM_W` makes the card 4:3.
     pub const SPECTRUM_BODY_H: f32 = super::NODE_WIDTH
         - BODY_TOP
         - (METER_CHANNELS as f32 * METER_H + METER_CHANNEL_GAP)

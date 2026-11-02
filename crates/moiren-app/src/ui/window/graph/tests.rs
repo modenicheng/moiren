@@ -2201,9 +2201,16 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
         assert_eq!(curve.points.len(), 121, "the full ISO grid at 48 kHz");
         assert!(!state.node_spectra.at_rest(), "a fed analyzer is in motion");
         // The fixture feeds DC: Hann leakage puts full scale into the first
-        // bin, so the bottom of the axis reads near 0 dBFS and the top of
-        // the band sits at the floor.
-        assert!(curve.points[0] > -3., "low end {}", curve.points[0]);
+        // bin (46.9 Hz, grid point 15), so that band reads near 0 dBFS, the
+        // curve enters the plot from the floor below it instead of sitting
+        // on a plateau, and the top of the band rests at the floor.
+        assert_eq!(curve.points[0], crate::ui::monitoring::REST_DB);
+        assert!(curve.points[15] > -3., "first bin {}", curve.points[15]);
+        assert!(
+            curve.points[0] < curve.points[8] && curve.points[8] < curve.points[15],
+            "smooth entry {:?}",
+            &curve.points[..16]
+        );
         assert!(curve.points[120] <= -90., "high end {}", curve.points[120]);
     });
     // A stalled publisher: once no window lands past the stale fence the

@@ -125,8 +125,14 @@ pub struct CardFault {
 }
 
 impl CanvasNode {
+    /// Every card is a strip of one width except the spectrum analyzer,
+    /// whose plot earns a wider, 4:3 card.
     pub fn width(&self) -> f32 {
-        theme::NODE_WIDTH
+        if self.spectrum {
+            theme::card::SPECTRUM_W
+        } else {
+            theme::NODE_WIDTH
+        }
     }
     /// The first port's distance below the card top: under the body and the
     /// meter strip, never above the base rail a one-line body settles at.

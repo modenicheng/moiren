@@ -356,6 +356,9 @@ pub(in crate::ui) fn node_drag_preview(
         NodeTemplate::Output => (1, false),
         _ => (1, true),
     };
+    // The analyzer's ghost is the analyzer's shape: the wide 4:3 card with
+    // its plot furniture, so the drop lands what the drag showed.
+    let spectrum = template == NodeTemplate::Spectrum;
     let node = CanvasNode {
         node_id: None,
         id: "drag-preview".into(),
@@ -376,15 +379,19 @@ pub(in crate::ui) fn node_drag_preview(
         faulted: false,
         preparing: false,
         faults: Vec::new(),
-        body_height: theme::card::BODY_H,
-        meter_vertical: false,
+        body_height: if spectrum {
+            theme::card::SPECTRUM_BODY_H
+        } else {
+            theme::card::BODY_H
+        },
+        meter_vertical: spectrum,
         channels: 2,
         knobs: Vec::new(),
         binding: None,
         matrix: None,
         rack_stages: Vec::new(),
         curve: None,
-        spectrum: false,
+        spectrum,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,

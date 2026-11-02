@@ -596,35 +596,59 @@ pub(in crate::ui) fn paint_spectrum_body(
         window,
         cx,
     );
-    // The curve: filled under its stroke, nothing while parked at the floor.
+    // The curve: a Catmull-Rom spline through the grid points (each span a
+    // cubic Bézier whose handles are a sixth of the neighbor-to-neighbor
+    // chord, the classic conversion), filled under its stroke. Masked to
+    // the plot so the spline's slight overshoot at sharp peaks stays
+    // inside the frame; nothing while parked at the floor.
     let Some(curve) = curve else {
         return;
     };
-    if curve.points.len() < 2 || curve.points.iter().all(|point| *point <= REST_DB) {
+    let count = curve.points.len();
+    if count < 2 || curve.points.iter().all(|point| *point <= REST_DB) {
         return;
     }
-    let step = width / (curve.points.len() - 1) as f32;
+    let step = width / (count - 1) as f32;
     let floor = top + height;
+    let at = |index: usize| {
+        let index = index.min(count - 1);
+        (
+            left + index as f32 * step,
+            y_of(curve.points[index].clamp(REST_DB, 0.)),
+        )
+    };
     let mut fill = PathBuilder::fill();
     let mut outline = PathBuilder::stroke(px(1.5 * scale));
+    let start = at(0);
     fill.move_to(point(px(left), px(floor)));
-    for (index, db) in curve.points.iter().enumerate() {
-        let x = left + index as f32 * step;
-        let y = y_of(db.clamp(REST_DB, 0.));
-        fill.line_to(point(px(x), px(y)));
-        if index == 0 {
-            outline.move_to(point(px(x), px(y)));
-        } else {
-            outline.line_to(point(px(x), px(y)));
-        }
+    fill.line_to(point(px(start.0), px(start.1)));
+    outline.move_to(point(px(start.0), px(start.1)));
+    for index in 0..count - 1 {
+        let previous = at(index.saturating_sub(1));
+        let from = at(index);
+        let to = at(index + 1);
+        let next = at(index + 2);
+        let control_a = point(
+            px(from.0 + (to.0 - previous.0) / 6.),
+            px(from.1 + (to.1 - previous.1) / 6.),
+        );
+        let control_b = point(
+            px(to.0 - (next.0 - from.0) / 6.),
+            px(to.1 - (next.1 - from.1) / 6.),
+        );
+        let end = point(px(to.0), px(to.1));
+        fill.cubic_bezier_to(end, control_a, control_b);
+        outline.cubic_bezier_to(end, control_a, control_b);
     }
     fill.line_to(point(px(left + width), px(floor)));
-    if let Ok(path) = fill.build() {
-        window.paint_path(path, tint.opacity(0.28));
-    }
-    if let Ok(path) = outline.build() {
-        window.paint_path(path, tint);
-    }
+    window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
+        if let Ok(path) = fill.build() {
+            window.paint_path(path, tint.opacity(0.28));
+        }
+        if let Ok(path) = outline.build() {
+            window.paint_path(path, tint);
+        }
+    });
 }
 
 /// A binding chip: what this source/sink card is wired to. Unbound chips
