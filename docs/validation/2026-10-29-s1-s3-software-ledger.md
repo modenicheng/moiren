@@ -1380,3 +1380,28 @@ mandatory implementation gap; waveform/native/physical qualification remains
 incomplete. Do not substitute unchanged long tests or speculative software work
 for those gaps, or block independent development on absent physical equipment.
 All eighteen original dirty paths and both Python cache directories are preserved.
+
+### Current clean-build measured CLI activation
+
+The [current measured1536 CLI receipt](2026-11-02-current-measured-cli.md)
+confirms a fresh10000ms baseline, exact1536/16384/96 measured admission,
+app-owner generation1 cleanup/reap before generation2,8002ms running and
+joined app/source exit0 on clean78967f4. Actual Shared336/capacity738/render512
+and Engine64 remain unchanged. Native generation1 is backend-local; source
+identity, app generation, active request and logs establish replacement.
+The session0 elevated SSH route is explicitly not Limited Interactive desktop.
+
+Replacement-owner bridge counters retain800packets with zero packet/gap-bound,
+drop/silence/underrun/reset counters; render retains one wait timeout of unknown
+run/teardown placement. The10s source schedule ends near baseline completion,
+so this is not changing-content quality exposure, waveform continuity or a
+latency result. No1024/512/256candidate fits the fresh1350-frame minimum.
+The old desktop failures and Process18/19/VAD17/19refusals remain unchanged.
+
+Thirteen fresh measured-CLI regressions pass. Remote isolated closed-report
+visualization and verified compact downloads follow native exit; bounded tails
+are labeled partial, not whole-run proof. Final read-only audit finds no owners
+and unchanged protected user processes, defaults, controls and driver. No default
+promotion, additional soak or interactive/audio retry follows. Original S1-S3
+qualification remains incomplete; independent development need not wait for
+missing physical equipment.
