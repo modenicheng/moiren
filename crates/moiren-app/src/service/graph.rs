@@ -323,6 +323,7 @@ pub fn default_label(kind: NodeKind) -> &'static str {
         NodeKind::Meter => "Meter",
         NodeKind::SpectrumAnalyzer => "Spectrum Analyzer",
         NodeKind::Rack => "Rack",
+        NodeKind::Plugin => "Plugin",
     }
 }
 /// Real-time parameter intent derived from a graph edit. This mapping is the

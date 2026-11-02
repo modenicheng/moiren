@@ -4544,8 +4544,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "moiren-core",
+ "moiren-plugins",
  "moiren-signal",
  "rtrb",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "moiren-plugins"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.8.9",
  "serde",
  "thiserror 2.0.21",
 ]

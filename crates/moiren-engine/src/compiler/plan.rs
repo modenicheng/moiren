@@ -238,6 +238,18 @@ impl<S: ProcessingSample> Builder<S> {
             }
             // Rack lowering prepares the explicit multi-port boundary separately.
             NodeKind::Rack => return Err(CompileError::MissingBinding { node }),
+            // A plugin kernel arrives with its own parameter schema; both
+            // commit together, like every `prepared` kernel.
+            NodeKind::Plugin => {
+                let Some(Binding::Plugin(processor)) = binding else {
+                    return Err(CompileError::MissingBinding { node });
+                };
+                let id = self.reserved_id()?;
+                let specs = processor.specs(id);
+                self.instances.push(ProcessorInstance::new(id, processor));
+                self.params.extend(specs);
+                id
+            }
             NodeKind::Bus => self.processor(Bus)?,
         })
     }

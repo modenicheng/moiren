@@ -38,6 +38,9 @@ pub(super) enum Binding<S: ProcessingSample> {
     Delay(DelaySettings),
     ChannelMapper(ChannelMapperSettings),
     Rack(crate::rack::RackSettings),
+    /// A live plugin instance with the parameter schema it serves; the
+    /// schema must reach the plan's spec table alongside the kernel.
+    Plugin(crate::processor::plugin::PluginProcessor<S>),
     Observed(NodeKind, Box<dyn crate::processor::RtObserver<S>>),
     Unmanaged(NodeKind),
 }
@@ -176,6 +179,8 @@ impl<S: ProcessingSample> NodeBindings<S> {
                 | (NodeKind::Delay, Binding::Delay(_))
                 | (NodeKind::ChannelMapper, Binding::ChannelMapper(_))
                 | (NodeKind::Rack, Binding::Rack(_)) => true,
+                // Plugin nodes bind their processor plus the schema it serves.
+                (NodeKind::Plugin, Binding::Plugin(_)) => true,
                 (kind, Binding::Unmanaged(expected)) => kind == *expected,
                 (kind, Binding::Observed(expected, _)) => kind == *expected,
                 _ => false,
@@ -307,6 +312,13 @@ impl<S: ProcessingSample> NodeBindings<S> {
         settings: crate::rack::RackSettings,
     ) -> Result<(), CompileError> {
         self.insert(node, Binding::Rack(settings))
+    }
+    pub fn bind_plugin(
+        &mut self,
+        node: NodeId,
+        processor: crate::processor::plugin::PluginProcessor<S>,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::Plugin(processor))
     }
     /// Bind a node whose processing is the implicit PassThrough, with all
     /// observation attached through the signal path instead (Meter nodes:

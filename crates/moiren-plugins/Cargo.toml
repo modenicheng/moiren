@@ -1,0 +1,12 @@
+[package]
+name = "moiren-plugins"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+libloading = "0.8"

@@ -67,6 +67,7 @@ pub enum GraphNodeKind {
     Meter,
     SpectrumAnalyzer,
     Rack,
+    Plugin,
 }
 
 impl From<NodeKind> for GraphNodeKind {
@@ -87,6 +88,7 @@ impl From<NodeKind> for GraphNodeKind {
             NodeKind::Meter => Self::Meter,
             NodeKind::SpectrumAnalyzer => Self::SpectrumAnalyzer,
             NodeKind::Rack => Self::Rack,
+            NodeKind::Plugin => Self::Plugin,
         }
     }
 }
@@ -109,6 +111,7 @@ impl From<GraphNodeKind> for NodeKind {
             GraphNodeKind::Meter => Self::Meter,
             GraphNodeKind::SpectrumAnalyzer => Self::SpectrumAnalyzer,
             GraphNodeKind::Rack => Self::Rack,
+            GraphNodeKind::Plugin => Self::Plugin,
         }
     }
 }

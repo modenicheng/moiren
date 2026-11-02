@@ -208,6 +208,9 @@ impl GraphPreparation {
                     .node_config(node.kind())?
                     .ok_or_else(|| format!("missing settings for {:?} node", node.kind()))?,
                 NodeKind::Bus => NodeConfig::Bus,
+                NodeKind::Plugin => {
+                    return Err(format!("plugin node {node:?} has no plugin assignment yet"));
+                }
             };
             project.nodes.insert(node.id(), config);
             let values = match node.kind() {
