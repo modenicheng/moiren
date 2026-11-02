@@ -5,6 +5,16 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [exact336 VAD/DAWN marker identity review](2026-11-02-vad-dawn-marker-review.md)
+reuses existing closed PCM remotely with the unchanged detector and thresholds.
+Both source channels resolve19/19identities0..18; both graph channels resolve
+16/19and retain three global/section refusals. Every window competes against
+all59original codes. Missing packet timelines remain explicit parser refusals;
+all raw commands exit1and no continuity, dropped-marker or latency PASS follows.
+One5.125sisolated offline task produces a verified/reviewed PNG and compact JSON;
+45fresh detector regressions pass. No native rerun, production fix, parameter
+scan, buffer increase or lowered gate is justified by these partial identities.
+
 The [desktop Quit viewport control](2026-11-02-desktop-quit-viewport.md)
 fully exposes the action above the existing fixed settings footer and normally
 exits0on the same clean executable, with no audio owner or forced cleanup.

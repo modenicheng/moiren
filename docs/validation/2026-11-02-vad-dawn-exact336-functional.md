@@ -115,6 +115,14 @@ show changing signal presence only, not lossless marker correspondence.
 This capture is application output before a calibrated physical return;
 neither Windows process loopback nor a7ms period proves physical latency.
 
+The later [unchanged-detector identity review](2026-11-02-vad-dawn-marker-review.md)
+reuses these exact closed PCM files remotely without another native run.
+Both source channels resolve19/19window identities0..18against all59original
+codes; both graph channels resolve16/19, retaining three nominal-template
+section/global refusals. The absent packet timeline remains an explicit parser
+refusal, not reconstructed evidence. These bounded identities improve on energy
+counting but do not establish three lost markers, continuity or latency.
+
 ## Exit failure and cleanup
 
 The source stops before application Stop. The native owner cleanup finishes
