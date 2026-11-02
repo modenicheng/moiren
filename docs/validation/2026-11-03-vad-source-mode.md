@@ -168,6 +168,14 @@ the lower-latency winner.
 
 ## Offline visualization and next boundary
 
+The subsequent [frozen dual-FIR MIC replay](2026-11-03-shared-microphone-frozen-replay.md)
+uses this recording's actual two-boundary trace and pinned provider encoding,
+not another acquisition. All327552retained stereo frames exactly match one
+frozen integer map. This narrows the unexplained waveform question without
+waiving the original flags/gaps, authenticating absent native submission,
+estimating physical delay or upgrading the refused collection. Its outer
+analysis task1/partial JSON is retained separately from complete child outputs.
+
 The four exact PCM/metadata artifacts are analyzed remotely, without another
 audio run. The isolated existing Python environment uses `-I -B`, local cache
 directories and one retained60s child deadline. Actual analysis takes12.088s,

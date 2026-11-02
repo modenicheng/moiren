@@ -5,6 +5,20 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [Shared MIC frozen dual-FIR replay](2026-11-03-shared-microphone-frozen-replay.md)
+uses the closed recording's actual two-boundary SRC trace and pinned PCM16
+admission. All327552retained stereo frames,327027outside training, exactly
+match one frozen integer map with gain1/DC0; all six pulse windows agree.
+Full-frame accounting still separates8192informative,318720uninformative,
+525training and115mixed-context frames. This is conditional projection, not a
+native output witness, continuous-delivery pass or physical delay. Original
+4flags/2position gaps and native refusal remain. All11held analysis children
+exit0, but outer task1/partial JSON from a Path-serialization bug is preserved;
+independent closed-output verification is not wrapper success. All34compact
+files are verified, original pins/protected state remain unchanged and no
+owner/soak remains. The future wrapper fix passes19mocked tests only, without
+redeployment or another acquisition. First-packet work stays deferred.
+
 The [query-only Exclusive capability receipt](2026-11-03-exclusive-capability-and-scope.md)
 records the same DAWN endpoint's nominal144-frame minimum and PCM16 support,
 without Initialize/Start or a new audio run. Review corrects the proposed
