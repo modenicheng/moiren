@@ -5,6 +5,19 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [production master-FIR reconciliation](2026-11-02-master-render-fir-association.md)
+closes the unexplained residual in the current retained Process graph recording.
+The former reference omitted the real same-rate master FIR after the unity Bus.
+An unchanged production FIR/Float32 projection retains UNKNOWN dependencies and
+the native-count prefix. One frozen map gives12/12held-out compatibility;
+an all-frame audit finds575568/575568stereo frames bit-equal over11.991s,
+including574976nontraining frames. No rate/kernel fit or gate change occurs.
+This is not per-submission provenance or physical delay; original7gap-bound
+violations and1render timeout remain. Focused checks, workspace2179tests/8ignored,
+strict workspace Clippy and formatting pass. No new
+native soak, production audio change or default promotion is justified;
+first-packet work stays deferred and development proceeds independently.
+
 The [exact336 VAD/DAWN marker identity review](2026-11-02-vad-dawn-marker-review.md)
 reuses existing closed PCM remotely with the unchanged detector and thresholds.
 Both source channels resolve19/19identities0..18; both graph channels resolve
