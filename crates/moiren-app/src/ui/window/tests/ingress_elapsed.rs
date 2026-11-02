@@ -197,6 +197,12 @@ fn ingress_elapsed_click_restart_keeps_requested_and_active_distinct_until_confi
         );
         window.click("settings-diagnostics", cx);
         window.render_frame(cx);
+        // A test-observed label is not enough: native UIA needs a role and value.
+        for id in ["process-input-requested", "process-input-active"] {
+            let row = window.find(id);
+            assert_eq!(row.role(), Some(gpui_kit::Role::Label));
+            assert_eq!(row.value(), row.label());
+        }
         assert!(
             window
                 .find("process-input-requested")
@@ -230,6 +236,9 @@ fn ingress_elapsed_click_restart_keeps_requested_and_active_distinct_until_confi
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
+        let active = window.find("process-input-active");
+        assert_eq!(active.role(), Some(gpui_kit::Role::Label));
+        assert_eq!(active.value(), active.label());
         assert!(
             window
                 .find("process-input-active")

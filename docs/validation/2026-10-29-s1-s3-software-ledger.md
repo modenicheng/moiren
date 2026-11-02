@@ -1452,3 +1452,29 @@ detector results misses. This does not reopen deferred first-packet work, erase
 older waveform refusals, promote defaults or complete S1-S3. Independent
 development and useful isolated remote tests can proceed in parallel; unchanged
 soaks are not a prerequisite to further product work.
+
+### Native requested/active diagnostics omission
+
+The [current desktop accessibility reproduction](2026-11-02-process-diagnostics-accessibility.md)
+confirms disabled Apply natively on clean6bd0a9c, then demonstrates that the
+Diagnostics requested/active Process rows lack native UIA nodes despite their
+headless-observed labels. The finite lifecycle attempt stays failed; source
+activation/Stop/join/Quit were not reached and held failure cleanup forces the
+app to exit. Native/output/Compatible tuple confirmation is not a whole-run
+PASS. Exact owners are absent afterward; protected processes, controls and
+driver remain unchanged. Bootstrap failures and the separately failed old
+diagnostic cleanup receipt are retained without causal startup claims.
+
+The two affected rows now reuse the existing named native Label/value helper.
+A genuine roleNone versus Some(Label) assertion fails before repair and passes
+afterward, including requested/active divergence and confirmation. The clean
+two-source-file repair passes2307 feature workspace tests (9ignored),13 UI
+acceptance cases, all-target strict Clippy and fmt; counts overlap. A changed-
+binary finite native attempt then confirms both requested/active rows, disabled
+Apply and the exact Compatible route, activates the changing source, completes
+Stop with joined/reaped owner1, fully reveals Quit and exits app/source/worker/
+supervisor0 normally. Final task Ready0, no owned processes, unchanged protected
+identities/controls/SYS pin. All25 compact artifacts are byte/hash verified.
+This closes that finite Compatible native lifecycle gap, not custom measured
+desktop replacement or content/physical qualification. The trace prefix remains
+explicitly refused at EventLimit; no waveform/default/S1-S3 completion follows.

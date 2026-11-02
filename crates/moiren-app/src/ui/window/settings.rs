@@ -442,13 +442,12 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             "Unsaved edits stay in the Audio draft until Save or Restart Audio."
         )))
         .child(
-            detail(&t!("Requested process input"), requested_process.clone())
-                .id("process-input-requested")
-                .aria_label(format!(
-                    "{}: {requested_process}",
-                    t!("Requested process input")
-                ))
-                .gpui_test_observe(),
+            native_detail(
+                "process-input-requested",
+                &t!("Requested process input"),
+                requested_process,
+            )
+            .gpui_test_observe(),
         )
         .child(detail(
             &t!("Requested VAD input"),
@@ -487,13 +486,12 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             transport::process_summary(active, snapshot.active_measured_process.as_ref());
         view = view
             .child(
-                detail(&t!("Active process request"), active_process.clone())
-                    .id("process-input-active")
-                    .aria_label(format!(
-                        "{}: {active_process}",
-                        t!("Active process request")
-                    ))
-                    .gpui_test_observe(),
+                native_detail(
+                    "process-input-active",
+                    &t!("Active process request"),
+                    active_process,
+                )
+                .gpui_test_observe(),
             )
             .child(detail(
                 &t!("Active VAD request"),
