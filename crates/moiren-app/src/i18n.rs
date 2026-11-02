@@ -75,6 +75,17 @@ mod tests {
     }
 
     #[test]
+    fn native_rename_notice_translates_without_promising_a_windows_name_change() {
+        assert_eq!(
+            rust_i18n::t!(
+                "Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "重命名会重新创建 Windows 端点，可能中断音频，或需要其他应用重新选择端点。请求的名称不代表 Windows 显示名称已更新；请核对上方读回的名称。"
+        );
+    }
+
+    #[test]
     fn application_capture_scope_translates_without_promising_tab_isolation() {
         assert_eq!(
             rust_i18n::t!(

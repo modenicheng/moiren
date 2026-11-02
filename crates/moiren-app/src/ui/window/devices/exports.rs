@@ -476,7 +476,18 @@ fn export_row(
         row = row.child(shape);
         if let Some(draft) = shell.export_controls.names.get(&id) {
             let this = cx.entity();
+            let rename_help = t!(
+                "Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above."
+            );
             row = row
+                .child(
+                    label(rename_help.clone())
+                        .id(SharedString::from(format!("export-rename-help-{id}")))
+                        .role(Role::Label)
+                        .aria_label(rename_help.clone())
+                        .aria_value(rename_help)
+                        .gpui_test_observe(),
+                )
                 .child(label(t!("Endpoint name")))
                 .child(
                     component::input::Input::new(&draft.input)

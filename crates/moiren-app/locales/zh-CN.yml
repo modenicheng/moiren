@@ -2281,3 +2281,6 @@ _version: 2
 "Not saturated":
   en: "Not saturated"
   zh-CN: "未饱和"
+"Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.":
+  en: "Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above."
+  zh-CN: "重命名会重新创建 Windows 端点，可能中断音频，或需要其他应用重新选择端点。请求的名称不代表 Windows 显示名称已更新；请核对上方读回的名称。"

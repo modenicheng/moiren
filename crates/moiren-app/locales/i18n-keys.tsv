@@ -756,3 +756,4 @@ Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not na
 Resets %{resets}; maximum backlog %{backlog} periods (before cap)	resets,backlog	积欠保留施加追赶上限之前的峰值
 Saturated (counts are lower bounds)	-	已饱和计数仅为下界
 Not saturated	-	未饱和不代表没有故障
+Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.	-	重命名会重建端点，不能把请求名称当成 Windows 名称已生效

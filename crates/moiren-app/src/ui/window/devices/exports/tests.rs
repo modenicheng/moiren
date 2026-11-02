@@ -409,6 +409,103 @@ mod headless {
     }
 
     #[gpui_kit::test]
+    fn rename_controls_explain_native_recreation_without_claiming_windows_success(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::service::{AppRequest, GraphEdit, ServiceContext, ServiceMailbox};
+
+        let mut context = ServiceContext::default();
+        let endpoints = [ExportDirection::Playback, ExportDirection::Microphone].map(|direction| {
+            let endpoint_id = super::id(if direction == ExportDirection::Playback {
+                11
+            } else {
+                12
+            });
+            crate::service::ExportIntent {
+                endpoint_id,
+                direction,
+                name: format!("Requested {direction:?}"),
+                channels: 2,
+                enabled: true,
+                binding: None,
+            }
+        });
+        context
+            .graph
+            .edit(GraphEdit::SetExports(endpoints.to_vec()))
+            .unwrap();
+        let (handle, mailbox) = ServiceMailbox::with_snapshot(
+            std::thread::current(),
+            crate::service::snapshot(&context),
+        );
+        let initial = handle.try_snapshot().unwrap();
+        let original_graph = initial.graph.clone();
+        let state = cx.new(|_| UiState::new(handle, initial));
+        let (view, cx) = super::super::super::super::test_harness::shell_with_state(cx, state);
+        while mailbox.try_request().is_some() {}
+        view.update(cx, |shell, cx| {
+            shell.presentation.page = pages::Page::Devices;
+            shell.device_tab = devices::DeviceTab::Exports;
+            shell.inspector_open = false;
+            shell.sidebar_open = false;
+            cx.notify();
+        });
+        for viewport in [size(px(1440.), px(1600.)), size(px(1024.), px(720.))] {
+            for endpoint in &endpoints {
+                let key =
+                    SharedString::from(format!("export-rename-help-{}", endpoint.endpoint_id));
+                cx.update(|window, cx| {
+                    window.resize(viewport);
+                    window.render_frame(cx);
+                    assert!(
+                        window.try_find(key.clone()).is_some(),
+                        "each native rename control must explain interruption and Windows-name limits"
+                    );
+                });
+                scroll_to_control(cx, key.clone());
+                cx.update(|window, _| {
+                    let help = window.find(key.clone());
+                    assert!(help.visible());
+                    assert_eq!(
+                        help.label(),
+                        Some("Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.")
+                    );
+                    let bounds = help.bounds();
+                    let page = window.find("devices-page").bounds();
+                    assert!(bounds.left() >= page.left() && bounds.right() <= page.right());
+                });
+            }
+        }
+        assert!(mailbox.try_request().is_none());
+        let playback = &endpoints[0];
+        cx.update(|window, cx| {
+            view.update(cx, |shell, cx| {
+                shell.export_controls.names[&playback.endpoint_id]
+                    .input
+                    .update(cx, |input, cx| {
+                        input.set_value("New playback intent", window, cx)
+                    });
+            });
+            window.render_frame(cx);
+        });
+        let rename = SharedString::from(format!("export-rename-{}", playback.endpoint_id));
+        scroll_to_control(cx, rename.clone());
+        cx.update(|window, cx| window.click(rename, cx));
+        let AppRequest::EditGraph(GraphEdit::SetExports(updated)) = mailbox.try_request().unwrap()
+        else {
+            panic!("rename must only dispatch candidate intent, not start/apply audio");
+        };
+        assert_eq!(updated[0].name, "New playback intent");
+        assert_eq!(updated[0].endpoint_id, playback.endpoint_id);
+        assert_eq!(updated[0].binding, playback.binding);
+        assert_eq!(updated[1], endpoints[1]);
+        view.update(cx, |shell, cx| {
+            assert_eq!(shell.state.read(cx).snapshot.graph, original_graph);
+        });
+        assert!(mailbox.try_request().is_none());
+    }
+
+    #[gpui_kit::test]
     fn export_controls_create_rename_bind_unbind_toggle_and_remove(
         cx: &mut gpui_kit::TestAppContext,
     ) {
