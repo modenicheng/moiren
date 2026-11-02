@@ -110,18 +110,19 @@ Pressing an **empty** input keeps the reverse drag of A1–A3 unchanged.
 
 ### B1. Card states
 
-Every card wears a 1.5 px outline (window pixels, unscaled, so stacked
-cards keep a crisp edge at every zoom) and the outline color alone
-carries state. A state never changes the card body: a faulted or
-re-preparing card keeps every knob, chip and meter exactly where and how
-it is, so the user can fix the problem in place.
+Every card wears an outline (window pixels, unscaled, so stacked cards
+keep a crisp edge at every zoom): 1 px at rest and while loading, 1.5 px
+when selected or faulted, and the outline color alone carries state. A
+state never changes the card body: a faulted or re-preparing card keeps
+every knob, chip and meter exactly where and how it is, so the user can
+fix the problem in place.
 
 | State | Trigger | Visual |
 |---|---|---|
-| Normal | — | `SURFACE_3` card, 3px category-tint left rail seated inside a `GRIP` outline |
-| Selected | in `selected_nodes` | `PRIMARY` outline |
-| Error | a `GraphFault` whose subject is this node, or a route touching it | `DANGER` outline; hovering the card shows a tooltip under it with every fault's cause and hint |
-| Loading | node in the new `GraphSnapshot::preparing_nodes` set | `WARNING` outline |
+| Normal | — | `SURFACE_3` card, 3px category-tint left rail seated inside a thin `GRIP` outline |
+| Selected | in `selected_nodes` | heavier `PRIMARY` outline |
+| Error | a `GraphFault` whose subject is this node, or a route touching it | heavier `DANGER` outline; hovering the card shows a tooltip under it with every fault's cause and hint |
+| Loading | node in the new `GraphSnapshot::preparing_nodes` set | thin `WARNING` outline |
 
 Precedence when states overlap: error > loading > selected.
 

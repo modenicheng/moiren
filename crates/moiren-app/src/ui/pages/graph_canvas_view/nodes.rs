@@ -959,14 +959,14 @@ pub(super) fn paint_node(
     let tint = node.tint();
     let card = frame.window_rect(layout.card);
     let radius = theme::card::RADIUS * layout.scale;
-    let outline = if node.faulted {
-        theme::DANGER
+    let (outline, outline_width) = if node.faulted {
+        (theme::DANGER, theme::card::OUTLINE_W)
     } else if node.preparing {
-        theme::WARNING
+        (theme::WARNING, theme::card::OUTLINE_REST_W)
     } else if selected {
-        theme::PRIMARY
+        (theme::PRIMARY, theme::card::OUTLINE_W)
     } else {
-        theme::GRIP
+        (theme::GRIP, theme::card::OUTLINE_REST_W)
     };
     rounded(card, theme::SURFACE_3, radius, window);
     window.with_content_mask(Some(ContentMask { bounds: card }), |window| {
@@ -1075,7 +1075,7 @@ pub(super) fn paint_node(
         bounds: card,
         corner_radii: radius.into(),
         background: transparent_black().into(),
-        border_widths: theme::card::OUTLINE_W.into(),
+        border_widths: outline_width.into(),
         border_color: outline,
         border_style: BorderStyle::default(),
     });

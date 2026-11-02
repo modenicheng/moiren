@@ -76,8 +76,11 @@ pub mod card {
     pub const RAIL_W: f32 = 3.;
     pub const RADIUS: f32 = 6.;
     /// Card outline in window pixels, unscaled so stacked cards keep a
-    /// crisp edge at every zoom; selection and faults recolor it.
+    /// crisp edge at every zoom. A card at rest or re-preparing wears the
+    /// thin outline; selection and faults draw the heavier one so they
+    /// stand out from the graph without any other change to the card.
     pub const OUTLINE_W: f32 = 1.5;
+    pub const OUTLINE_REST_W: f32 = 1.;
     pub const ICON_SIZE: f32 = 16.;
     pub const TITLE_SIZE: f32 = 12.;
     pub const TITLE_WIDTH: f32 = 170.;
