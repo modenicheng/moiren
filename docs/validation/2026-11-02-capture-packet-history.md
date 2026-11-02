@@ -157,6 +157,12 @@ length/hash-verified against the remote file. Compact receipts only are moved.
 
 ## Qualification remains open
 
+The subsequent [capture-history analysis integration](2026-11-02-capture-history-analysis.md)
+adds explicit framing and strict import into the existing analyzers. This does
+not retroactively make the raw unframed files described above compatible. Its
+single native source-startup attempt is incomplete because of a harness token
+error; only offline readback of that retained partial evidence succeeds.
+
 This repairs future evidence acquisition only. Existing refused marker windows,
 native delivery-bound violations and missing epoch/physical calibration remain
 open, with first-packet investigation deferred by user direction. No repeated

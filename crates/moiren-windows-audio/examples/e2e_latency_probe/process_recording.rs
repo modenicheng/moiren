@@ -23,7 +23,9 @@ The unused compatibility bridge is not the recording tap; its overflow is
 separate from PCM artifact loss. Process positions do not prove continuity.
 Raw PCM, metadata and partial capture reports are retained in new files.
 Optional packet history retains raw flags/positions/QPC and offered/stored frame
-frontiers, with explicit omission counts. It is not a calibrated packet timeline.
+frontiers, with a versioned aggregate header and explicit omission counts. The
+existing PCM analyzers accept this framed JSONL as diagnostic packet evidence,
+not calibrated time, successful Release or native capture completion.
 Exit1 is always unqualified; exit2 means invalid input or report IO failure.";
 
 struct Options {
@@ -242,6 +244,17 @@ fn persist_artifact(directory: &Path, artifact: &PcmArtifact, max_frames: usize)
                 .open(directory.join("capture.packet-history.jsonl"))
                 .context("create native packet history")?,
         );
+        // The aggregate binds exact prefix length/omissions to this file. Raw
+        // offers alone cannot distinguish complete storage from truncation.
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({
+                "schema_version": 1,
+                "format": "moiren_native_capture_packet_history",
+                "capture": metadata,
+            }),
+        )?;
+        file.write_all(b"\n")?;
         for row in artifact.packet_history() {
             serde_json::to_writer(&mut file, row)?;
             file.write_all(b"\n")?;
@@ -439,14 +452,23 @@ mod tests {
         let fixture = Fixture::new();
         persist_artifact(&fixture.path("."), &packet_artifact(), 4).unwrap();
         let raw = fs::read_to_string(fixture.path("capture.packet-history.jsonl")).unwrap();
-        let row: Value = serde_json::from_str(raw.trim()).unwrap();
-        assert_eq!(raw.lines().count(), 1);
+        let mut lines = raw.lines();
+        let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(header["format"], "moiren_native_capture_packet_history");
+        assert_eq!(header["capture"]["packet_history"]["stored_packets"], 1);
+        let row: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert!(lines.next().is_none());
         assert_eq!(row["packet_sequence"], 1);
         assert_eq!(row["qpc_100ns"], 0);
         assert_eq!(row["stored_frame_start"], 0);
         assert_eq!(row["stored_frames"], 2);
         assert_eq!(row["device_position_frames"], 0);
         assert!(!row.as_object().unwrap().contains_key("epoch"));
+        let timeline =
+            crate::pcm::PacketTimeline::read(raw.as_bytes(), 100_000, 2, 2, 48_000).unwrap();
+        assert!(timeline.diagnostic_invalid(), "native zero remains unknown");
+        let evidence = serde_json::to_value(timeline.diagnostic_evidence()).unwrap();
+        assert_eq!(evidence["startup"]["capture_record"], row);
     }
 
     #[test]
@@ -529,5 +551,127 @@ mod tests {
         assert_eq!(report["recording_complete"], false);
         assert!(report["native_capture"].is_null());
         assert!(!directory.join("capture.packet-history.jsonl").exists());
+    }
+
+    #[test]
+    fn process_recording_file_feeds_existing_indexed_cli_and_retains_all_refusals() {
+        use crate::{
+            indexed_pcm::{IndexedConfig, RecorderWindow},
+            live::source::{INDEXED_WAVEFORM_VERSION, SourceCursor, SourceSchedule},
+        };
+        use moiren_windows_audio::capture::PcmEvidencePacket;
+
+        for fault in ["none", "omitted", "unknown_time", "truncated"] {
+            let fixture = Fixture::new();
+            let source = SourceSchedule {
+                schema_version: 1,
+                schedule_id: "native-history-indexed-roundtrip".into(),
+                waveform_version: INDEXED_WAVEFORM_VERSION.into(),
+                sample_rate: 48_000,
+                channels: 2,
+                marker_frames: 64,
+                marker_amplitude: 0.1,
+                total_source_frames: 1000,
+                starts: vec![100, 500, 900],
+            };
+            let mut cursor = SourceCursor::new(Some(source.clone().prepare(1).unwrap()));
+            let mut samples = vec![0.0; 2048];
+            cursor.submit(&mut samples, false, |_| Ok(())).unwrap();
+            let mut recorder = PcmRecorder::new(
+                PcmArtifactConfig::new(1024).with_packet_capacity(if fault == "omitted" {
+                    127
+                } else {
+                    128
+                }),
+                48_000,
+                2,
+            )
+            .unwrap();
+            for (index, packet) in samples.chunks_exact(16).enumerate() {
+                let bytes: Vec<_> = packet.iter().flat_map(|s| s.to_le_bytes()).collect();
+                if fault == "unknown_time" && index == 0 {
+                    recorder.record_packet(&bytes, 8, 0, 100).unwrap();
+                } else {
+                    recorder
+                        .record_native_packet(
+                            &bytes,
+                            PcmEvidencePacket {
+                                frames: 8,
+                                flags: 0,
+                                device_position_frames: 100 + index as u64 * 8,
+                                qpc_100ns: 1_000_000 + index as u64 * 8 * 10_000_000 / 48_000,
+                            },
+                        )
+                        .unwrap();
+                }
+            }
+            persist_artifact(&fixture.path("."), &recorder.finish(), 1024).unwrap();
+            let packets = fixture.path("capture.packet-history.jsonl");
+            if fault == "truncated" {
+                let raw = fs::read_to_string(&packets).unwrap();
+                let lines: Vec<_> = raw.lines().collect();
+                fs::write(
+                    &packets,
+                    format!("{}\n", lines[..lines.len() - 1].join("\n")),
+                )
+                .unwrap();
+            }
+            write_new_json(&fixture.path("source.json"), &source).unwrap();
+            write_new_json(
+                &fixture.path("config.json"),
+                &IndexedConfig {
+                    schema_version: 1,
+                    recorder_origin: "stored_pcm_frame_zero".into(),
+                    sample_rate: 48_000,
+                    channel: 0,
+                    max_pcm_frames: 4096,
+                    max_correlation_samples: 1_000_000,
+                    min_correlation: 0.7,
+                    min_peak_margin: 0.05,
+                    min_rms: 0.001,
+                    windows: [80, 480, 880]
+                        .map(|start_frame| RecorderWindow {
+                            start_frame,
+                            frames: 128,
+                        })
+                        .to_vec(),
+                },
+            )
+            .unwrap();
+            let args = [
+                "analyze-indexed-pcm".into(),
+                "--pcm".into(),
+                fixture.path("capture.f32le").to_string_lossy().into_owned(),
+                "--source-schedule".into(),
+                fixture.path("source.json").to_string_lossy().into_owned(),
+                "--analysis-config".into(),
+                fixture.path("config.json").to_string_lossy().into_owned(),
+                "--packets".into(),
+                packets.to_string_lossy().into_owned(),
+                "--max-input-bytes".into(),
+                "100000".into(),
+                "--max-packets".into(),
+                "128".into(),
+                "--output".into(),
+                fixture.path("analysis.json").to_string_lossy().into_owned(),
+            ];
+            let code = crate::cli::run(args.to_vec()).unwrap();
+            assert_eq!(code, i32::from(fault != "none"), "{fault}");
+            let result: Value =
+                serde_json::from_slice(&fs::read(fixture.path("analysis.json")).unwrap()).unwrap();
+            assert_eq!(result["qualified"], false);
+            assert_eq!(result["identity_set_complete"], fault == "none", "{fault}");
+            assert_eq!(result["native_epoch"], "not_recorded");
+            assert_eq!(result["source_to_recorder_origin"], "unknown_not_estimated");
+            assert!(result.get("delay_frames").is_none());
+            for index in 0..3 {
+                assert_eq!(result["results"][index]["identity_index"], index);
+            }
+            if fault == "truncated" {
+                assert_eq!(result["issues"][0], "invalid_packet_metadata");
+            } else {
+                assert_eq!(result["packet_evidence"]["schema_version"], 2);
+            }
+        }
     }
 }

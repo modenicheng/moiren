@@ -10,6 +10,13 @@ const MAX_METADATA_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PACKETS: usize = 1_000_000;
 const MAX_RECORD_BYTES: usize = 1024;
 
+#[cfg(test)]
+#[path = "capture_history_tests.rs"]
+mod capture_history_tests;
+
+#[path = "capture_history.rs"]
+mod capture_history;
+
 // Exactly measurement_sink::PacketMetadata; notably, there is no epoch field.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -26,7 +33,9 @@ struct PacketMetadata {
 struct PacketObservation {
     record_index: usize,
     #[serde(flatten)]
-    packet: PacketMetadata,
+    packet: Option<PacketMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_record: Option<capture_history::Record>,
     issues: Vec<&'static str>,
 }
 
@@ -35,6 +44,8 @@ struct StartupEvidence {
     scope: &'static str,
     marker_phase: &'static str,
     packet: Option<PacketMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_record: Option<capture_history::Record>,
     issues: Vec<&'static str>,
 }
 
@@ -51,6 +62,8 @@ pub struct PacketEvidence {
     startup: StartupEvidence,
     observations: Vec<PacketObservation>,
     coverage_error: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_history: Option<capture_history::Evidence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +133,7 @@ impl PacketTimeline {
             scope: "first_retained_capture_packet_only_not_steady_state",
             marker_phase: "not_recorded",
             packet: None,
+            capture_record: None,
             issues: Vec::new(),
         };
         let mut previous: Option<PacketMetadata> = None;
@@ -128,6 +142,7 @@ impl PacketTimeline {
         let mut coverage_complete = true;
         let mut unknown_timestamp_packets = 0;
         let mut unknown_position_packets = 0;
+        let mut capture_state = None;
         loop {
             record.clear();
             // Limit before read_until: neither an unterminated line nor a
@@ -148,9 +163,26 @@ impl PacketTimeline {
                 record.last() == Some(&b'\n'),
                 "unterminated packet metadata record"
             );
+            if consumed == count as u64
+                && let Ok(header) = serde_json::from_slice::<capture_history::Header>(&record)
+            {
+                capture_state = Some(capture_history::State::new(header, frames, sample_rate)?);
+                continue;
+            }
             ensure!(spans.len() < max_packets, "packet count cap exceeded");
-            let packet: PacketMetadata = serde_json::from_slice(&record)
-                .with_context(|| format!("parse packet metadata record {}", spans.len()))?;
+            let capture_record = if let Some(state) = capture_state.as_mut() {
+                let row: capture_history::Record = serde_json::from_slice(&record)
+                    .with_context(|| format!("parse capture history packet {}", spans.len()))?;
+                state.accept(row)?;
+                Some(row)
+            } else {
+                None
+            };
+            let packet: PacketMetadata = match capture_record {
+                Some(row) => row.packet(),
+                None => serde_json::from_slice(&record)
+                    .with_context(|| format!("parse packet metadata record {}", spans.len()))?,
+            };
             ensure!(packet.frames > 0, "packet frames must be nonzero");
             ensure!(
                 packet.packet_sequence > 0,
@@ -158,7 +190,9 @@ impl PacketTimeline {
             );
             let end = packet
                 .stored_start_frame
-                .checked_add(u64::from(packet.frames))
+                .checked_add(u64::from(
+                    capture_record.map_or(packet.frames, |row| row.stored_frames()),
+                ))
                 .context("stored packet range overflow")?;
             let position_end = packet
                 .device_position_frames
@@ -225,11 +259,13 @@ impl PacketTimeline {
             let invalid = !issues.is_empty();
             if previous.is_none() {
                 startup.issues = issues;
-                startup.packet = Some(packet);
+                startup.packet = capture_record.is_none().then_some(packet);
+                startup.capture_record = capture_record;
             } else if invalid {
                 observations.push(PacketObservation {
                     record_index: spans.len(),
-                    packet,
+                    packet: capture_record.is_none().then_some(packet),
+                    capture_record,
                     issues,
                 });
             }
@@ -242,9 +278,16 @@ impl PacketTimeline {
         }
         ensure!(!spans.is_empty(), "empty packet metadata");
         coverage_complete &= next_stored == frames;
+        let capture_history = capture_state
+            .map(|state| {
+                let (evidence, complete) = state.finish()?;
+                coverage_complete &= complete;
+                Ok::<_, anyhow::Error>(evidence)
+            })
+            .transpose()?;
         Ok(Self {
             evidence: PacketEvidence {
-                schema_version: 1,
+                schema_version: if capture_history.is_some() { 2 } else { 1 },
                 packet_count: spans.len(),
                 coverage_complete,
                 native_epoch: "not_recorded",
@@ -255,6 +298,7 @@ impl PacketTimeline {
                 startup,
                 observations,
                 coverage_error: (!coverage_complete).then_some("metadata does not cover PCM exactly once in stored order; all windows invalidated"),
+                capture_history,
             },
             spans,
         })

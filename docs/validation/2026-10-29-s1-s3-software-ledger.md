@@ -1240,3 +1240,26 @@ and standalone RT239 pass. Strict workspace/probe/GPUI all-target Clippy, fmt
 and release build pass. A separately hash-pinned remote dry-run verifies exact
 enabled/legacy/invalid-cap behavior without opening audio; no user process is
 touched. No further native soak or parameter scan is launched for this feature.
+
+### Framed native capture history through the actual analyzers
+
+The [capture-history integration](2026-11-02-capture-history-analysis.md) closes
+the concrete record-process/analyzer file-format gap. Explicit framing binds
+raw native offers to exact aggregate prefix/storage/omission counts. Strict
+bounded readers preserve legacy sink files, nullable QPC and existing refusals;
+loss/saturation invalidates coverage and inconsistent files are refused. Real
+recorder-to-indexed-CLI regression retains diagnostic identities under faults
+without inventing delay, source origin or an epoch. Default audio is unchanged.
+
+Independent static review identifies and resolves three strict-reader gaps with
+behavioral REDs and an exhaustive omitted-offer feasibility regression. Final
+probe678passed/1ignored, history13, recorder13, workspace2178/8ignored and
+measured UI20 pass. Strict example/workspace all-target Clippy, fmt and release
+build pass. One separate
+remote10s feature attempt stops before source Start because the harness writes
+an invalid empty activation token; it is not a device failure or a native PASS.
+Its partial35520-frame/74-packet artifact is retained. Remote isolated offline
+readback and visualization verify the actual framed file, with zero nonzero
+samples and expected identity refusal. Protected user processes and all device
+controls remain unchanged; no repeated native run is launched. S1-S3 completion,
+whole-waveform continuity, matched-path and physical qualification remain open.
