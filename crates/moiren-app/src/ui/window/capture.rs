@@ -381,6 +381,38 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell.hovered_node = None;
                     cx.notify();
                 });
+                // The output card's binding chip hangs its endpoint menu off
+                // the chip rect the last canvas prepaint published.
+                shell.update(cx, |shell, cx| {
+                    let sink = shell
+                        .state
+                        .read(cx)
+                        .snapshot
+                        .graph
+                        .graph
+                        .nodes()
+                        .iter()
+                        .find(|node| node.kind() == moiren_core::graph::NodeKind::Sink)
+                        .map(|node| node.id());
+                    let anchor = shell.graph_canvas_frame.read().and_then(|frame| {
+                        let index = frame
+                            .world
+                            .nodes
+                            .iter()
+                            .position(|node| node.node_id.is_some() && node.node_id == sink)?;
+                        let chip = frame.nodes[index].chip.as_ref()?;
+                        Some(frame.window_rect(chip.bounds))
+                    });
+                    if let (Some(node), Some(anchor)) = (sink, anchor) {
+                        shell.binding_menu = Some(graph::BindingMenu { node, anchor });
+                        cx.notify();
+                    }
+                });
+                capture(cx, directory.join("graph-binding-menu.png"));
+                shell.update(cx, |shell, cx| {
+                    shell.binding_menu = None;
+                    cx.notify();
+                });
                 let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
                 for (name, page) in [
                     ("node-inspector", Page::Graph),
