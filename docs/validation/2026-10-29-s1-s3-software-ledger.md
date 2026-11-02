@@ -5,6 +5,17 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [development checkpoint](2026-11-03-s1-s3-development-checkpoint.md)
+records fresh targeted regression, bounded original-S3 audit and exact owned
+remote report-reader cleanup. One production CLI run now keeps a55second
+changing source active across fresh measurement, measured1536replacement and
+40000msconfirmed running, then joins normally. Its six gap-bound violations,
+one phase-unknown render timeout and overwritten event histories remain; no
+waveform, desktop or physical acceptance follows. All17compact files and the
+reviewed operational plot are verified. This separates software integration
+from native/physical acceptance rather than inventing more offline requirements.
+First-packet investigation stays deferred; there is no unchanged retry or soak.
+
 The [frozen Playback replay](2026-11-03-vad-playback-frozen-replay.md) reproduces
 8416 synthetic actual callback frames byte-for-byte before one remote offline
 analysis of the closed Shared VAD recording. All six OBS pulse-support windows
