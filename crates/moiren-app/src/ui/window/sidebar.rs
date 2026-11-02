@@ -388,21 +388,27 @@ pub(super) fn library_host(
             "library-rail-width",
             !shell.sidebar_open,
             theme::LIBRARY_RAIL_WIDTH,
-            shell
-                .library_rail_panel
-                .clone()
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
+            deselecting(
+                shell
+                    .library_rail_panel
+                    .clone()
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element(),
+                &this,
+            ),
         ))
         .child(panel(
             "library-panel-width",
             shell.sidebar_open,
             theme::LIBRARY_WIDTH,
-            shell
-                .library_panel
-                .clone()
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
+            deselecting(
+                shell
+                    .library_panel
+                    .clone()
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element(),
+                &this,
+            ),
         ))
         .child(edge_handle(
             "library-toggle",
@@ -423,6 +429,34 @@ pub(super) fn library_host(
 enum Side {
     Left,
     Right,
+}
+
+/// A press anywhere on the node library — a card about to spawn or be
+/// dragged, the collapsed rail, the search — drops the canvas selection,
+/// so the node that spawns is the only thing the drag that usually follows
+/// can move. Capture phase: the cards' own click and drag handlers must not
+/// be able to swallow the press first. The inspector deliberately has no
+/// such wrapper: pressing it edits the selection, never clears it.
+fn deselecting(content: AnyElement, this: &Entity<StudioShell>) -> AnyElement {
+    let this = this.clone();
+    div()
+        .size_full()
+        .capture_any_mouse_down(move |event, _, cx| {
+            if event.button != MouseButton::Left {
+                return;
+            }
+            this.update(cx, |shell, cx| {
+                if shell.selected_node.is_some()
+                    || !shell.selected_nodes.is_empty()
+                    || shell.selected_route.is_some()
+                {
+                    shell.clear_canvas_selection();
+                    cx.notify();
+                }
+            });
+        })
+        .child(content)
+        .into_any_element()
 }
 
 /// The animated width sleeve. The inner content keeps its full fixed width so

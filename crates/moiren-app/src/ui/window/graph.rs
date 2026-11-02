@@ -136,7 +136,7 @@ impl StudioShell {
         }
     }
 
-    fn clear_canvas_selection(&mut self) {
+    pub(in crate::ui::window) fn clear_canvas_selection(&mut self) {
         self.selected_nodes.clear();
         self.selected_node = None;
         self.selected_route = None;

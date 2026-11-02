@@ -2457,3 +2457,56 @@ fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it
     );
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn library_press_drops_the_canvas_selection_and_a_spawn_selects_only_itself(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let (previous, baseline) = view.update(cx, |shell, cx| {
+        let (id, baseline) = {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            (graph.graph.nodes()[1].id(), graph.nodes.len())
+        };
+        shell.selected_nodes.insert(id);
+        shell.selected_node = Some(id);
+        cx.notify();
+        (id, baseline)
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // Pressing a library card drops the selection before anything spawns,
+    // so the old node can never ride along with the new one's first drag.
+    cx.update(|window, cx| window.click("add-Gain", cx));
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.selected_nodes.is_empty(),
+            "{:?}",
+            shell.selected_nodes
+        );
+        assert!(shell.selected_node.is_none());
+    });
+    wait_for_graph(&view, cx, |graph| graph.nodes.len() == baseline + 1);
+    // The spawn finished on that render: the new node is the whole selection.
+    view.update(cx, |shell, _| {
+        let spawned = shell.selected_node.expect("spawned node selected");
+        assert_ne!(spawned, previous);
+        assert_eq!(
+            shell.selected_nodes.iter().copied().collect::<Vec<_>>(),
+            vec![spawned]
+        );
+    });
+    // The inspector keeps the selection it edits: pressing its title area
+    // changes nothing.
+    let inspector = cx.update(|window, _| window.find("graph-inspector").bounds());
+    let title = inspector.origin + point(px(12.), px(12.));
+    cx.simulate_mouse_down(title, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(title, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, _| {
+        assert!(shell.selected_node.is_some());
+        assert_eq!(shell.selected_nodes.len(), 1);
+    });
+    finish_service(runtime);
+}
