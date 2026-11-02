@@ -180,7 +180,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     .child(
         div()
             .id("process-window-admission")
+            .role(Role::Label)
             .aria_label(admission.clone())
+            .aria_value(admission.clone())
             .text_size(px(theme::TEXT_SM))
             .child(admission)
             .gpui_test_observe(),
@@ -204,7 +206,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     .child(
         div()
             .id("process-window-activation")
+            .role(Role::Label)
             .aria_label(activation.clone())
+            .aria_value(activation.clone())
             .text_size(px(theme::TEXT_SM))
             .child(activation)
             .gpui_test_observe(),
@@ -212,7 +216,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     .child(
         div()
             .id("process-window-feedback")
+            .role(Role::Label)
             .aria_label(feedback.clone())
+            .aria_value(feedback.clone())
             .text_size(px(theme::TEXT_SM))
             .child(feedback)
             .gpui_test_observe(),

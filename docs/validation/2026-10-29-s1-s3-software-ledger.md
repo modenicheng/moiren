@@ -1502,3 +1502,22 @@ refusals, NOT ANALYZED graph admission and physical qualification remain open.
 First-packet work remains deferred; defaults and quality gates do not change.
 Independent software work proceeds in parallel rather than waiting on these
 measurement gaps or repeating unchanged long tests.
+
+### Live and closed-prefix feedback accessibility
+
+The [software-only feedback repair](2026-11-02-window-feedback-accessibility.md)
+adds native Label role and matching text value to four existing live-window/
+closed-prefix status rows. Two focused regressions genuinely fail before the
+eight-line production fix; all20 measured-UI tests pass afterward. Independent
+clean-export workspace verification passes2307/9ignored/0failed across71
+surfaces including13 UI acceptance cases; strict all-target Clippy and fmt
+exit0. Only three source/test files differ from1336 tracked baseline files,
+and all27 preexisting dirty/cache hashes stay unchanged. Static review finds
+no concrete defect; exact pending/stale rendered metadata coverage is bounded
+explicitly rather than described as a complete state matrix.
+
+The parallel ordinary1536 native run uses the earlier binary and does not
+certify these four repaired rows natively. Live/closed-prefix native acceptance,
+waveform correspondence and calibrated physical qualification remain separate.
+No audio/default/gate/driver/fixture change or unchanged soak accompanies this
+metadata repair; the first-packet investigation stays deferred.

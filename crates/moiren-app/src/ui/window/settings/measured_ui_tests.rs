@@ -676,6 +676,16 @@ fn row(cx: &mut VisualTestContext, id: &'static str) -> String {
     cx.update(|window, _| {
         let element = window.find(id);
         assert!(element.visible(), "{id} must be visible");
+        if matches!(
+            id,
+            "measured-live-window-feedback"
+                | "process-window-admission"
+                | "process-window-activation"
+                | "process-window-feedback"
+        ) {
+            assert_eq!(element.role(), Some(gpui_kit::Role::Label), "{id}");
+            assert_eq!(element.value(), element.label(), "{id}");
+        }
         element
             .label()
             .expect("visible diagnostic aria label")

@@ -168,7 +168,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     .child(
         div()
             .id("measured-live-window-feedback")
+            .role(Role::Label)
             .aria_label(feedback.clone())
+            .aria_value(feedback.clone())
             .text_size(px(theme::TEXT_SM))
             .text_color(if measured.error.is_some() {
                 theme::DANGER
