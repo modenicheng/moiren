@@ -18,6 +18,12 @@ mod packet_phase;
 #[path = "tests/src_route.rs"]
 mod src_route;
 
+#[path = "tests/compatible_demand.rs"]
+mod compatible_demand;
+
+#[path = "tests/compatible_cleanup.rs"]
+mod compatible_cleanup;
+
 fn virtual_project(channels: usize, rate: u32) -> EngineProject {
     let mut project = EngineProject::default();
     project.processing.engine.processing_sr = f64::from(rate);
@@ -690,7 +696,7 @@ fn prepared_sessions_join_after_provider_binding_or_cancellation_failure() {
 }
 
 #[test]
-fn native_prepare_failures_join_every_virtual_session_without_fallback() {
+fn native_prepare_failures_do_not_prepare_virtual_sessions_or_fallback() {
     let mut project = virtual_project(2, 88_200);
     add_physical_output(&mut project, 2);
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
@@ -722,7 +728,10 @@ fn native_prepare_failures_join_every_virtual_session_without_fallback() {
             &native,
         );
         assert!(result.is_err());
-        assert_sessions_joined(&probe, 2);
+        assert_sessions_joined(&probe, 0);
+        assert!(probe.requests.lock().unwrap().is_empty());
+        assert!(probe.playback.lock().unwrap().is_empty());
+        assert!(probe.microphones.lock().unwrap().is_empty());
         assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 0);
         assert_eq!(probe.activated.load(Ordering::Acquire), 0);
         assert_eq!(native.probe.started.load(Ordering::Acquire), 0);

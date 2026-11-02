@@ -445,9 +445,13 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 .checked_mul(recovery_cap_periods as u32)
                 .ok_or_else(|| unsupported("virtual burst demand overflow"))?
         };
-        // Compatible resources keep their existing preparation/cleanup order.
-        // Explicit targets wait for the physical master's negotiated demand.
-        let virtual_prepared = if self.virtual_buffer == Default::default() {
+        // A physical master negotiates the full wake below. Even Compatible
+        // microphone workers retain this demand for reset reprime, so prepare
+        // them only after it is known; diagnostics must not advertise a newer
+        // budget than the worker actually owns. Pure virtual order is unchanged.
+        let virtual_prepared = if clock == ProjectClock::VirtualRealtime
+            && self.virtual_buffer == Default::default()
+        {
             Some(virtual_io::prepare(
                 &request,
                 self.virtual_provider.as_deref(),

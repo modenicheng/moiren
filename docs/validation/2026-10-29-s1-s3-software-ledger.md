@@ -5,6 +5,28 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [Compatible whole-wake correction](2026-11-03-compatible-whole-wake-budget.md)
+repairs a reproduced original-S2 production mismatch: physical-master virtual
+workers previously retained provisional demand while observations published
+the later negotiated demand. Default virtual preparation now waits for that
+physical negotiation; pure-virtual ordering, defaults and budget formulas stay
+unchanged. Actual RED shows512versus704 Engine frames, affecting the modeled
+MIC reset reprime1026versus1218frames. New F32/F64 rate/block and failure-unwind
+regressions pass, and the clean audio library passes800tests/4ignored in both
+feature configurations. Full Windows feature-workspace tests pass2356/9ignored
+across71harnesses; all-target check, strict Clippy, fmt and release probe build
+pass, with715probe example tests/1ignored. Independent review finds no blocker.
+This is not an identified cause or repair of earlier
+native failures, particularly the preceding pure-virtual Shared recording.
+One remote physical-master Compatible smoke activates/writes and joins cleanly:
+actual Shared336/capacity738, render target512, published whole-wake704,
+386912native written frames and full288000source submission. All43compact
+artifacts are verified; tasks finish0, exports remove, no owners remain and
+protected state is unchanged. This route has no MIC reset or waveform recorder;
+private provider-budget equality comes from software regression. Startup and
+joined cleanup/reset observations remain explicit, not a zero-fault/latency pass.
+First-packet work remains deferred; native and physical acceptance stay open.
+
 The [explicit owned VAD source-mode slice](2026-11-03-vad-source-mode.md)
 adds a missing original-S1 comparison control: Shared/Exclusive selection while
 retaining exact stable-ID/control-root resolution. Exclusive remains default;
