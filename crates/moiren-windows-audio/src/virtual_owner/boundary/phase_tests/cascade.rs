@@ -348,3 +348,6 @@ fn src_cascade_export_compiled_bus_fixture() {
         run_rate::<f64>(rate, Some(&root));
     }
 }
+
+#[path = "cascade/amplitude.rs"]
+mod amplitude;

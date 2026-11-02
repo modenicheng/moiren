@@ -1769,3 +1769,29 @@ remote-only and bounded; software development and headless regression proceed
 independently. Protected external processes, driver and boot remain unchanged;
 no owners remain. No lower default, threshold change, path winner, push or
 S1-S3 completion is claimed.
+
+### Closed VAD dual-FIR content reconciliation
+
+The [closed cascade replay](2026-11-02-vad-cascade-waveform-replay.md) now
+reconstructs the actual retained input through both production FIRs, unity
+f32 Bus and VAD PCM16 codec, using exact archived steps/cursors without fitting.
+One remote offline operation checks5121callbacks per boundary and projects5113
+before the first retirement barrier. All325920actual output frames/651840scalar
+samples equal the reconstructed FIFO prefix exactly, with zero LSB residual.
+The0.049835peak is reproduced by that transformation; no extra gain/audio
+production fix is justified. Unconsumed2556input and1524replayed tail frames
+stay explicit. This resolves the retained waveform-shape question, not clock
+mapping, filter perceptual qualification or physical delay. The original native
+collection refusal remains unchanged, and first-packet work remains deferred.
+
+A separate Engine64 compiled-route amplitude/DC regression covers f32/f64,
+production dual-FIR controls and independent PCM16 quantization. Wrong-gain and
+wrong-codec mutations both fail before restoration. Clean-export library tests
+pass791/4ignored default and with vad-probe; strict scoped Clippy/fmt pass.
+Replay tooling has20passing tests and plot tooling five, with assertion RED
+records. All14compact artifacts are individually verified, the residual plot
+is visually reviewed, and all13native input hashes remain unchanged. Final
+remote audit has no owners and unchanged protected processes/SYS/boot. All27
+original dirty/cache hashes remain intact. No native rerun, production/default
+change, push, physical claim or S1-S3 completion follows; development proceeds
+to the next independent acceptance gap rather than another unchanged soak.
