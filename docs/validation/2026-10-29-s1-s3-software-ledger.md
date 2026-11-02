@@ -1544,3 +1544,27 @@ waveform refusals, original whole-channel refusal, unknown native epoch,
 unlocated render timeout and physical qualification remain open. This closes
 the previously unexecuted eligible-component diagnostic, without relaxing a
 gate, promoting a default, reopening first-packet work or completing S1-S3.
+
+### Current native window refusal acceptance
+
+The [current-pin native acceptance](2026-11-02-window-native-refusals.md) runs
+once remotely with the `c6a34a3` feedback repair included. Live missing-policy,
+closed-prefix missing-evidence and retained EventLimit feedback are readable
+as owned native Text labels. Six disabled inspections across three distinct
+controls find no InvokePattern.
+Explicit4096/4096/480/2/100000 live policy is refused on EventLimit without
+altering requested/active Compatible settings or replacing the original owner.
+Normal Stop joins/reaps that owner; the retained closed prefix still refuses
+evaluation/Apply and normal Quit succeeds. Task, supervisor, worker, app and
+source exit0, with no owners left; protected user processes, defaults, render
+controls and driver remain unchanged. All33 compact artifacts are verified.
+
+Concurrent exact-pin headless checks pass5 zero-refill,51 marker/qualification
+and20 measured-UI tests, all exit0. This is not a new full workspace run.
+Three repaired rows now have native refusal-state evidence; the empty
+activation message and successful live/closed-prefix replacement remain
+outside this run. Source submission is complete, not recorded waveform
+proof. No physical latency, path winner, lower-default or stability-soak claim
+is added. Original27 dirty/cache hashes and path status are preserved. This
+advances a bounded acceptance gap while independent development remains free
+to proceed; first-packet work remains deferred and the overall goal is active.
