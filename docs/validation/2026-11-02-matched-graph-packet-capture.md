@@ -172,3 +172,12 @@ tasks terminal, protected OBS/QQMusic creation identities unchanged, unchanged
 default roles/render volumes, and the same running SYS/application hashes.
 The18original dirty file hashes remain independently checked; no pycache,
 production code, host audio, user process or memory file is changed.
+
+## Later Process CLI acquisition
+
+The separate [production CLI acquisition](2026-11-02-process-cli-packet-capture.md)
+subsequently completes the missing Process source/Bus/DAWN recording without
+UIA. Its native task and source/monitor cleanup finish normally; source channels
+resolve19/19and graph channels18/19, retaining code6refusal under unchanged
+gates. It does not alter either failed attempt above, prove the failed desktop
+control sequence or establish a calibrated path winner/physical latency.

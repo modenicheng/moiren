@@ -1304,3 +1304,25 @@ marker/rate/qualification51and measured UI20pass. Source review finds no further
 original S2/S3functional gap; unresolved waveform quality/native lower settings
 and calibrated physical qualification remain separate backlog. First-packet
 investigation stays deferred; no new soak loop or default promotion follows.
+
+### Process acquisition through the existing production CLI
+
+The [finite Process CLI recording](2026-11-02-process-cli-packet-capture.md)
+avoids the stalled UIA path without changing application code or audio policy.
+Same source schedule, Engine64and confirmed Shared336/capacity738/render512
+conditions are retained; Process input remains Compatible8192/2048. Source,
+32s monitor and bounded task exit0normally with matching post-join confirmation.
+Both24s tree recordings retain complete actual native packet histories. Source
+channels resolve19/19at NCC1; graph channels18/19, with code6still refused by
+unchanged onset/section gates. The800ms recorder allowance is explicitly unknown
+readiness; marker coverage is checked afterward rather than inferred from spawn.
+
+Remote isolated offline analysis, hash audit and six-panel visualization finish
+normally; compact downloads are byte/hash verified. Compatible has no declared
+delivery bound, so zero violation counters are not an explicit deadline PASS.
+The prior VAD17/19and failed desktop/Process receipts stay unchanged. Sequential
+entry-point/source-route differences and absent physical calibration forbid a
+quality/latency winner. Final audit finds no owners, protected identities and
+controls unchanged. Four fresh CLI regressions pass on the clean export. No
+native scan, default change, first-packet investigation or S1-S3completion claim
+follows from this bounded evidence increment.
