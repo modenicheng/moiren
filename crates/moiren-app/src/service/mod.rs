@@ -32,7 +32,9 @@ pub use graph::{
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
 pub use moiren_engine::audio_config::*;
-pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
+pub use signals::{
+    LevelTopic, SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket,
+};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
 

@@ -552,10 +552,12 @@ impl StudioShell {
     }
 
     /// Whether any observed meter still moves: decaying ballistics, a held
-    /// peak marker, or fresh readings above the scale bottom all keep the
-    /// display short of rest.
+    /// peak marker, fresh readings above the scale bottom, or a spectrum
+    /// curve still falling toward its floor all keep the display short of
+    /// rest.
     fn meters_in_motion(&self, cx: &App) -> bool {
-        !self.meters.at_rest() || !self.state.read(cx).node_meters.at_rest()
+        let state = self.state.read(cx);
+        !self.meters.at_rest() || !state.node_meters.at_rest() || !state.node_spectra.at_rest()
     }
 
     /// Refresh every meter observation once: reads the latest windows,

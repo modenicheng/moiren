@@ -49,6 +49,9 @@ impl StudioShell {
             None
         };
         let preferences = self.preferences.meters;
+        // Only the graph card paints a spectrum body: a Mixer strip or an
+        // inspector selection must not keep an analyzer's FFT demanded.
+        let spectra_visible = visible && self.presentation.page == Page::Graph;
         self.state.update(cx, |state, _| {
             state.node_meters.set_preferences(preferences);
             // Borrow the registered set straight through: the pump runs at
@@ -58,14 +61,24 @@ impl StudioShell {
             // registration set, which belongs to the canvases alone.
             if visible {
                 let points = self.node_meter_points.borrow();
-                state.node_meters.update(
+                let meters = state.node_meters.update(
                     &state.snapshot,
                     points.iter().copied().chain(inspector_selected),
-                )
+                );
+                let spectra = if spectra_visible {
+                    state
+                        .node_spectra
+                        .update(&state.snapshot, points.iter().copied())
+                } else {
+                    state.node_spectra.update(&state.snapshot, [])
+                };
+                meters || spectra
             } else {
                 // Nothing is registered and the inspector demand (above)
                 // cannot exist without visibility: release everything.
-                state.node_meters.update(&state.snapshot, [])
+                let meters = state.node_meters.update(&state.snapshot, []);
+                let spectra = state.node_spectra.update(&state.snapshot, []);
+                meters || spectra
             }
         })
     }
