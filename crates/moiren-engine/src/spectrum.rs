@@ -51,9 +51,13 @@ impl SpectrumSettings {
 }
 
 impl Default for SpectrumSettings {
+    /// 8192 points at 48 kHz resolve 5.9 Hz per bin, so the 1/12-octave
+    /// display grid sits above the transform's resolution from ~100 Hz up;
+    /// a 1024-frame hop keeps ~47 windows a second. Affordable because the
+    /// transform runs off the audio thread.
     fn default() -> Self {
         Self {
-            fft_size: 2048,
+            fft_size: 8192,
             hop_frames: 1024,
         }
     }
