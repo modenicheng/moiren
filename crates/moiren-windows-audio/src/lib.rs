@@ -21,6 +21,7 @@ pub(crate) mod format;
 pub mod latency;
 pub mod native;
 pub mod process_loopback;
+pub mod render_evidence;
 pub(crate) mod resample;
 pub(crate) mod servo;
 pub mod stats;

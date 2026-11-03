@@ -2237,3 +2237,22 @@ quality/physical PASS, new Cargo claim, push or background audio soak follows.
 The integrated bounded CLI passes19tests plus105existing offline VAD tests,
 reproduces the actual sealed joint ledger exactly and refuses overwrite. Its
 suite is wired into the always-run CI format job; remote CI is not claimed.
+
+### Encoded Render Evidence Storage
+
+The [bounded evidence foundation](2026-11-03-render-evidence-foundation.md)
+preserves exact encoded mono/stereo bytes and caller-supplied release outcomes
+with preallocated staging and whole-packet diagnostic loss accounting. The
+8 MiB payload budget includes staging. Pending close, rejected release, evidence
+overflow and sequence/counter exhaustion remain explicit. Both endpoints must
+be retained through native join for control-side reclamation; no native tap or
+backend/CLI collector is installed by this slice.
+
+API RED, sequence-limit RED/GREEN, two independent mutations and 20 focused
+tests are retained. Final isolated audio library passes 822/4ignored/0failed;
+workspace all-target check, strict audio all-target Clippy and fmt exit zero.
+An earlier stale deliberately mutated binary and its six failures remain
+archived as test-tool provenance. No unchanged audio rerun follows. Remote
+cleanup verifies and stops only two old owned report readers, restoring free
+memory without touching protected OBS/QQMusic, audio settings or drivers.
+Native submission evidence and physical acceptance remain open; no push.
