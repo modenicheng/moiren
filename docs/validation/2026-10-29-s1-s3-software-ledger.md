@@ -5,6 +5,20 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [bounded-audit repair](2026-11-03-bounded-native-audit.md) addresses the
+observed43.7MB evidence-wrapper amplification without another audio run.
+Engine/graph histories become explicitly unvalidated path/bytes/hash/JSON
+section references; literal quality/backend fields and original reports remain.
+CreateNew1MiB audits and an explicit PS5 depth guard refuse overflow rather
+than widening the32MiB report cap. Final21helper checks pass locally/remotely
+on PS5/PS7;257existing runner checks and actual assignment/Save/stdout replay
+pass per host shell. Both independent-review findings are closed offline.
+Remote closed-data replay preserves92original pins, quality=false and Ready1;
+four compact outputs are archive/entry verified. Concurrent clean feature
+workspace passes2359/9ignored/0failed, all-target check, strict Clippy and fmt.
+This is evidence plumbing, not a new native/physical acceptance or a running
+soak. No defaults, RT behavior, first-packet work or original dirty files change.
+
 The [continuous MIC witness](2026-11-03-continuous-microphone-witness.md)
 adds a reusable pinned closed-output adapter and one new-question six-second
 Shared recording with continuously changing indexed content. All329856recorder
