@@ -47,6 +47,10 @@ Optional diagnostic (all monitor modes):
   --cursor-trace-pcm-frames N   Also retain native PCM with exact packet mapping;
                                requires trace directory, <=8 MiB native ring,
                                <=512 MiB PCM/packet files per owner; opt-in only
+  --render-evidence-frames N    Retain actual encoded native output and release
+                               outcomes; requires trace directory, 1..131072,
+                               native packet and 8 MiB preparation cap apply;
+                               <=512 MiB per owner, not physical latency
 Measured Process input budget (exactly three budget fields; no packet/gap bounds):
   --measure-seconds 1..60       Measure a compatible baseline before applying
   --target-frames N --capacity-frames N --jitter-frames N

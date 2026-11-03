@@ -487,3 +487,19 @@ fn native_unobserved_reservations_do_not_fabricate_release_outcomes() {
     assert!(writer.snapshot().counters_saturated);
     assert_eq!(writer.snapshot().unobserved_frames, u64::MAX);
 }
+
+#[test]
+fn final_render_summary_requires_control_join_publication_not_just_writer_close() {
+    let (mut writer, mut reader) = render_evidence_stream(config(2, 2), format()).unwrap();
+    writer.stage_packet(&[7; 8], 1).unwrap();
+    writer.finish_packet(0).unwrap();
+    assert!(reader.final_summary().is_none());
+    writer.close();
+    assert!(reader.final_summary().is_none(), "close is not join");
+    writer.publish_joined();
+    assert_eq!(reader.final_summary().unwrap().accepted_frames, 1);
+    assert!(!reader.is_finished());
+    reader.pop().unwrap();
+    assert!(reader.is_finished());
+    assert_eq!(reader.final_summary().unwrap().stored_frames, 1);
+}

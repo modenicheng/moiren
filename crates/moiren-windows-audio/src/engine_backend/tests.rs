@@ -24,6 +24,9 @@ mod compatible_demand;
 #[path = "tests/compatible_cleanup.rs"]
 mod compatible_cleanup;
 
+#[path = "tests/render_evidence.rs"]
+mod render_evidence;
+
 fn virtual_project(channels: usize, rate: u32) -> EngineProject {
     let mut project = EngineProject::default();
     project.processing.engine.processing_sr = f64::from(rate);

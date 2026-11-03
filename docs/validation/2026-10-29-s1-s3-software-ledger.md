@@ -2283,3 +2283,44 @@ PS5 stderr-wrapper failure and fast-child exit-status control failure remain;
 both are reproduced and corrected before the distinct final task. Compact logs
 are length/hash-verified; final audit has no owners/tasks and unchanged protected
 OBS/QQMusic. This verifies the tap only, not a full app waveform or physical delay.
+
+### Application Render Evidence Collection
+
+The [application collector](2026-11-03-app-render-evidence-collector.md) retains
+the actual encoded native output through immutable backend owner readers and
+the production Process monitor. Both precision factories preserve opt-in
+instrumentation across measured replacement. Generation labels are not global
+owner identities. Terminal evidence is published only after control-side join;
+closure/destruction alone is insufficient. Per-owner exact encoded samples,
+packet/HRESULT maps and conservative final receipts use bounded control-side IO.
+An independent review catches early finalization after render setup failure;
+the error remains sticky while independent PCM/cursor collection continues.
+
+Initial integrated focused audio42/nativeignored, final CLI95 and corrected RT249
+pass. These are software checks, not full-workspace or native-quality claims.
+The separate remote full-library software wrapper times out and its closed log
+has no terminal summary; no successful exit, cause or native fault is invented.
+No repeat-for-green, gate/default change, first-packet work or physical claim
+follows. Final integration and the distinct full-application acquisition are
+recorded in the linked receipt; S1-S3 acceptance remains separate.
+
+The isolated workspace run passes2425/10ignored/0failed across71harnesses;
+its app harness predates the final parent repair, covered independently by
+final CLI95. Final-source workspace all-target check/strict Clippy with gpui-test,
+fmt and release build exit0. A separate final-source app/gpui-test run exits0:
+757passed/4ignored/0failed across13harnesses, including20measured-UI tests and
+CLI95; library698passes. The one distinct actual-app Process acquisition
+completes with clean app/source/isolated-OBS exits and two immutable archives:
+289releases/97120encoded frames and1145releases/384896frames, zero evidence
+loss/rejection/unobserved counts. Input PCM/cursor archives also complete.
+
+The frozen remote actual-render/OBS analysis retains the entire1075200-frame
+recording. Predecessor training associates, but its whole support is excluded
+by the two training searches; replacement training refuses association. All
+frames therefore remain unknown, not a zero-error/continuity pass. No refit,
+weakened gate, window enlargement or second audio acquisition follows. PNG
+is inspected; compact364379bytes/12payloads are fully length/hash-verified,
+with raw audio staying remote. Final audit has no owned processes, unchanged
+protected OBS/QQMusic/settings/driver/barebus and all evidence pins unchanged.
+This delivers the collector, not a waveform/physical verdict or lower default;
+the inconclusive recorder association does not block independent development.

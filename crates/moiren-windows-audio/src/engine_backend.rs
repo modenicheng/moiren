@@ -11,9 +11,10 @@ pub use native_observations::{
     NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
     NativeObservationSnapshot, NativeObservations, NativeProcessDeliveryObservation,
     NativeProcessInterpolationCollector, NativeProcessInterpolationOrigin,
-    NativeProcessTraceCollector, NativeProcessWindowCandidate, NativeRenderPaddingObservation,
-    NativeSrcBoundaryTrace, NativeSrcChunkBoundary, NativeSrcRouteObservation, NativeSrcTrace,
-    NativeSrcTraceChunk, NativeSrcTraceCollector, NativeStreamKind, NativeStreamObservation,
+    NativeProcessTraceCollector, NativeProcessWindowCandidate, NativeRenderEvidenceOrigin,
+    NativeRenderEvidenceReader, NativeRenderPaddingObservation, NativeSrcBoundaryTrace,
+    NativeSrcChunkBoundary, NativeSrcRouteObservation, NativeSrcTrace, NativeSrcTraceChunk,
+    NativeSrcTraceCollector, NativeStreamKind, NativeStreamObservation,
     PreparedNativeProcessWindow, PreparedSrcRoute, SRC_TRACE_MAX_CHECKPOINTS, SrcTraceRefusal,
 };
 #[cfg(windows)]
@@ -65,6 +66,7 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     virtual_clock: Arc<dyn VirtualClockFactory>,
     process_bridge: crate::process_loopback::ProcessBridgeOptions,
     process_pcm_capture: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
+    render_evidence_capacity: Option<usize>,
     measured_process_bridges: Vec<process_admission::MeasuredBridgeRequest>,
     virtual_buffer: crate::virtual_owner::VirtualBufferOptions,
     render_queue: RenderQueuePolicy,
@@ -82,6 +84,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             virtual_clock: Arc::new(QpcClockFactory),
             process_bridge: Default::default(),
             process_pcm_capture: None,
+            render_evidence_capacity: None,
             measured_process_bridges: Vec::new(),
             virtual_buffer: Default::default(),
             render_queue: RenderQueuePolicy::default(),
@@ -92,6 +95,19 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
     }
     pub fn observations(&self) -> ProfessionalObservations {
         self.observations.clone()
+    }
+    /// Diagnostic storage only, never a queue target or saved audio setting.
+    pub fn with_render_evidence(
+        mut self,
+        capacity_frames: Option<usize>,
+    ) -> Result<Self, BackendError> {
+        if capacity_frames.is_some_and(|frames| !(1..=131_072).contains(&frames)) {
+            return Err(unsupported(
+                "render evidence capacity must be 1..131072 frames",
+            ));
+        }
+        self.render_evidence_capacity = capacity_frames;
+        Ok(self)
     }
     pub fn native_observations(&self) -> NativeObservations {
         self.native_observations.clone()
@@ -606,18 +622,41 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             let factory = native.factory(&group, rate)?;
             let queue = self.render_queue;
             let renders = group.output.is_some();
+            let evidence_capacity = self.render_evidence_capacity;
             let worker_request = WorkerRequest {
                 factory: Box::new(move || {
                     let mut stream = factory()?;
                     if renders {
                         stream.configure_render_queue(queue)?;
                     }
-                    *owner_metadata.lock().unwrap_or_else(|p| p.into_inner()) = Some((
+                    let prepared = (
                         stream.prepared_timing(),
                         stream.shared_period(),
                         stream.render_queue(),
                         stream.render_padding_observer(),
-                    ));
+                    );
+                    // Attach last: an installed writer must return through the
+                    // owner guard, never an early metadata/factory error path.
+                    let evidence = if renders && let Some(capacity_frames) = evidence_capacity {
+                        let format = stream
+                            .render_evidence_format()
+                            .ok_or_else(|| unsupported("native render evidence unavailable"))?;
+                        let config = crate::render_evidence::RenderEvidenceConfig {
+                            capacity_frames,
+                            max_packet_frames: stream.info().buffer_frames as usize,
+                        };
+                        let (writer, reader) =
+                            crate::render_evidence::render_evidence_stream(config, format)
+                                .map_err(unsupported)?;
+                        stream
+                            .attach_render_evidence(writer)
+                            .map_err(|failure| failure.0)?;
+                        Some((format, config, reader))
+                    } else {
+                        None
+                    };
+                    *owner_metadata.lock().unwrap_or_else(|p| p.into_inner()) =
+                        Some((prepared.0, prepared.1, prepared.2, prepared.3, evidence));
                     Ok(stream)
                 }),
                 capture: capture_tx,
@@ -646,7 +685,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             );
             let (worker, info) = spawn(worker_request, cancel)?;
             transport.workers.push(worker);
-            let (timing, shared_period, render_queue, padding) = metadata
+            let (timing, shared_period, render_queue, padding, evidence) = metadata
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .take()
@@ -774,6 +813,25 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                     .push((observation(input, true, false, info), counters.clone()));
             }
             if let Some(output) = &group.output {
+                if let Some((format, config, reader)) = evidence {
+                    transport.native_render_evidence.push(
+                        native_observations::RenderEvidenceSource::new(
+                            native_observations::NativeRenderEvidenceOrigin {
+                                schema_version: 1,
+                                owner_generation: request.owner_generation,
+                                node: output.node,
+                                kind: if group.master() {
+                                    NativeStreamKind::MasterOutput
+                                } else {
+                                    NativeStreamKind::FollowerOutput
+                                },
+                                format,
+                                config,
+                            },
+                            reader,
+                        ),
+                    );
+                }
                 transport.native_streams.push(NativeStreamObservation {
                     node: output.node,
                     kind: if group.master() {

@@ -16,6 +16,7 @@ pub(super) struct MonitorOptions {
     pub startup_timeout_ms: u64,
     pub cursor_trace_directory: Option<std::path::PathBuf>,
     pub cursor_trace_pcm_frames: Option<usize>,
+    pub render_evidence_capacity: Option<usize>,
     pub audio: AudioSettings,
     target: Option<u32>,
     capacity: Option<u32>,
@@ -45,6 +46,7 @@ impl Default for MonitorOptions {
             startup_timeout_ms: 15000,
             cursor_trace_directory: None,
             cursor_trace_pcm_frames: None,
+            render_evidence_capacity: None,
             audio: AudioSettings::default(),
             target: None,
             capacity: None,
@@ -117,6 +119,13 @@ impl MonitorOptions {
                 .with_context(|| format!("invalid {flag} value"))
         };
         match flag {
+            "--render-evidence-frames" => {
+                self.render_evidence_capacity = Some(
+                    value
+                        .parse()
+                        .context("invalid --render-evidence-frames value")?,
+                );
+            }
             "--cursor-trace-pcm-frames" => {
                 self.cursor_trace_pcm_frames = Some(
                     value
@@ -302,6 +311,7 @@ impl MonitorOptions {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.render_evidence_config()?;
         ensure!(
             self.process_creation_time_100ns != Some(0),
             "--process-creation-time-100ns must be positive"
@@ -363,5 +373,19 @@ impl MonitorOptions {
                 Ok(config)
             })
             .transpose()
+    }
+
+    pub fn render_evidence_config(&self) -> Result<Option<usize>> {
+        if let Some(frames) = self.render_evidence_capacity {
+            ensure!(
+                self.cursor_trace_directory.is_some(),
+                "--render-evidence-frames requires --cursor-trace-directory"
+            );
+            ensure!(
+                (1..=131_072).contains(&frames),
+                "render evidence capacity must be 1..131072 frames; native packet admission also applies"
+            );
+        }
+        Ok(self.render_evidence_capacity)
     }
 }

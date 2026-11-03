@@ -39,6 +39,15 @@ pub(super) mod src_route;
 pub use src_route::{NativeSrcRouteObservation, PreparedSrcRoute};
 
 #[cfg(test)]
+#[path = "native_observations/render_evidence_tests.rs"]
+mod render_evidence_tests;
+
+#[path = "native_observations/render_evidence.rs"]
+mod render_evidence;
+pub(super) use render_evidence::RenderEvidenceSource;
+pub use render_evidence::{NativeRenderEvidenceOrigin, NativeRenderEvidenceReader};
+
+#[cfg(test)]
 #[path = "native_observations/src_trace_tests.rs"]
 mod src_trace_tests;
 
@@ -287,6 +296,7 @@ pub(super) struct Session {
     )>,
     renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
     virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
+    render_evidence: Vec<RenderEvidenceSource>,
 }
 impl NativeObservationReadHandle {
     /// Immutable initial topology plus conservative invalidation. This is not
@@ -504,7 +514,7 @@ impl NativeObservations {
         );
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn publish_with_route(
         &self,
@@ -521,6 +531,37 @@ impl NativeObservations {
         virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
         route: Arc<src_route::RouteState>,
     ) {
+        self.publish_with_render_evidence(
+            generation,
+            streams,
+            bridges,
+            probes,
+            renders,
+            process_delivery,
+            virtual_clock,
+            route,
+            vec![],
+        );
+    }
+
+    #[cfg(any(windows, test))]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn publish_with_render_evidence(
+        &self,
+        generation: u64,
+        streams: Vec<NativeStreamObservation>,
+        bridges: Vec<(NodeId, BridgeObserver)>,
+        probes: Vec<(
+            NodeId,
+            NativeStreamKind,
+            Arc<crate::virtual_owner::BoundaryProbe>,
+        )>,
+        renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+        process_delivery: Vec<ProcessDeliverySource>,
+        virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
+        route: Arc<src_route::RouteState>,
+        render_evidence: Vec<RenderEvidenceSource>,
+    ) {
         let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         if let Some(previous) = state.as_ref() {
             previous.running.store(false, Ordering::Release);
@@ -535,6 +576,7 @@ impl NativeObservations {
             bridges,
             renders,
             virtual_clock,
+            render_evidence,
         }));
     }
 

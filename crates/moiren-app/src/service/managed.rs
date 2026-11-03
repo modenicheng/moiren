@@ -322,6 +322,7 @@ impl ManagedDriver {
         Self::windows_with_provider(
             moiren_windows_audio::vad::WindowsVadProvider::discover().ok(),
             None,
+            None,
         )
     }
 
@@ -337,6 +338,30 @@ impl ManagedDriver {
         Ok(Self::windows_with_provider(
             moiren_windows_audio::vad::WindowsVadProvider::discover().ok(),
             Some(config),
+            None,
+        ))
+    }
+
+    /// Opt-in evidence for the monitor's exact owners, including replacements.
+    #[cfg(windows)]
+    pub fn windows_with_native_evidence(
+        process_pcm: Option<moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig>,
+        render_capacity: Option<usize>,
+    ) -> Result<Self, host::BackendError> {
+        if let Some(config) = process_pcm {
+            config
+                .validate()
+                .map_err(|error| host::BackendError::Unsupported(error.into()))?;
+        }
+        if render_capacity.is_some_and(|frames| !(1..=131_072).contains(&frames)) {
+            return Err(host::BackendError::Unsupported(
+                "render evidence capacity must be 1..131072 frames".into(),
+            ));
+        }
+        Ok(Self::windows_with_provider(
+            moiren_windows_audio::vad::WindowsVadProvider::discover().ok(),
+            process_pcm,
+            render_capacity,
         ))
     }
 
@@ -351,13 +376,17 @@ impl ManagedDriver {
             moiren_windows_audio::vad::WindowsVadProvider::discover_with_input_capture(
                 endpoint, frames,
             )?;
-        Ok((Self::windows_with_provider(Some(provider), None), capture))
+        Ok((
+            Self::windows_with_provider(Some(provider), None, None),
+            capture,
+        ))
     }
 
     #[cfg(windows)]
     fn windows_with_provider(
         virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
         process_pcm: Option<moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig>,
+        render_evidence: Option<usize>,
     ) -> Self {
         let process_pcm_frames = process_pcm.map(|config| config.capacity_frames);
         let native_observations = Arc::new(std::sync::Mutex::new(None));
@@ -376,6 +405,7 @@ impl ManagedDriver {
                 .map_err(host::BackendError::Unsupported)?;
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f32>::new()?
                 .with_render_queue(transport.render_options())?
+                .with_render_evidence(render_evidence)?
                 .with_process_bridge(transport.process_options())?
                 .with_process_pcm_capture(process_pcm_frames.map(|capacity_frames| {
                     moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {
@@ -406,6 +436,7 @@ impl ManagedDriver {
                 .map_err(host::BackendError::Unsupported)?;
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f64>::new()?
                 .with_render_queue(transport.render_options())?
+                .with_render_evidence(render_evidence)?
                 .with_process_bridge(transport.process_options())?
                 .with_process_pcm_capture(process_pcm_frames.map(|capacity_frames| {
                     moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {

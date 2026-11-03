@@ -142,6 +142,36 @@ fn cursor_pcm_archive_rejects_missing_directory_and_invalid_capacity() {
 }
 
 #[test]
+fn render_archive_is_explicit_bounded_and_requires_the_new_trace_directory() {
+    assert!(monitor(&[]).unwrap().render_evidence_capacity.is_none());
+    assert!(monitor(&["--render-evidence-frames", "16384"]).is_err());
+    let options = monitor(&[
+        "--cursor-trace-directory",
+        "diagnostics/cursors",
+        "--render-evidence-frames",
+        "16384",
+    ])
+    .unwrap();
+    assert_eq!(options.render_evidence_capacity, Some(16384));
+    assert_eq!(options.render_evidence_config().unwrap(), Some(16384));
+    for frames in ["0", "-1", "NaN", "131073", "262145", "18446744073709551615"] {
+        assert!(
+            monitor(&[
+                "--cursor-trace-directory",
+                "diagnostics/cursors",
+                "--render-evidence-frames",
+                frames
+            ])
+            .is_err()
+        );
+    }
+    assert_eq!(
+        options.transport().unwrap(),
+        TransportLatencySettings::default()
+    );
+}
+
+#[test]
 fn render_queue_cli_keeps_output_period_and_measured_input_target_independent() {
     let options = monitor(&[
         "--render-target-frames",

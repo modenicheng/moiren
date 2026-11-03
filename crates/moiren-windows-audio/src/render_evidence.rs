@@ -19,7 +19,7 @@ use serde::Serialize;
 use std::{
     mem::size_of,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -130,6 +130,7 @@ pub struct RenderEvidenceWriter {
     staged_frames: Option<usize>,
     frame_bytes: usize,
     summary: RenderEvidenceSummary,
+    joined: Arc<Mutex<Option<RenderEvidenceSummary>>>,
 }
 
 /// Single consumer. Keep it alive through native join; reclaim off the audio thread.
@@ -137,6 +138,7 @@ pub struct RenderEvidenceWriter {
 pub struct RenderEvidenceReader {
     rx: Consumer<RenderEvidenceFrame>,
     closed: Arc<AtomicBool>,
+    joined: Arc<Mutex<Option<RenderEvidenceSummary>>>,
 }
 
 /// Prepare all variable-size storage off the audio thread. The 8 MiB payload
@@ -169,6 +171,7 @@ pub fn render_evidence_stream(
     }
     let staging = vec![0; staging_bytes].into_boxed_slice();
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
+    let joined = Arc::new(Mutex::new(None));
     let closed = Arc::new(AtomicBool::new(false));
     Ok((
         RenderEvidenceWriter {
@@ -176,6 +179,7 @@ pub fn render_evidence_stream(
             closed: Arc::clone(&closed),
             staging,
             staged_frames: None,
+            joined: joined.clone(),
             frame_bytes,
             summary: RenderEvidenceSummary {
                 format,
@@ -196,7 +200,7 @@ pub fn render_evidence_stream(
                 sequence_exhausted: false,
             },
         },
-        RenderEvidenceReader { rx, closed },
+        RenderEvidenceReader { rx, closed, joined },
     ))
 }
 
@@ -294,6 +298,16 @@ impl RenderEvidenceWriter {
         self.summary
     }
 
+    /// Control-only, after the owning thread has joined. Never invoked by
+    /// close/Drop or streaming: closure alone cannot establish final teardown.
+    /// The caller supplies this lifecycle assertion; it is not authenticated
+    /// provenance. Native owners call it only from their control-side joiner.
+    #[doc(hidden)]
+    pub fn publish_joined(&mut self) {
+        self.close();
+        *self.joined.lock().unwrap_or_else(|p| p.into_inner()) = Some(self.summary);
+    }
+
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
@@ -376,6 +390,11 @@ impl Drop for RenderEvidenceWriter {
 }
 
 impl RenderEvidenceReader {
+    /// Immutable terminal tally published by the control-side native joiner.
+    /// This diagnostic tally does not certify successful audio or clean Stop.
+    pub fn final_summary(&self) -> Option<RenderEvidenceSummary> {
+        *self.joined.lock().unwrap_or_else(|p| p.into_inner())
+    }
     pub fn pop(&mut self) -> Option<RenderEvidenceFrame> {
         self.rx.pop().ok()
     }

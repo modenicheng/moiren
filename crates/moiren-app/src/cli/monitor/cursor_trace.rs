@@ -25,6 +25,8 @@ const PERSIST_INTERVAL: Duration = Duration::from_millis(50);
 
 mod pcm;
 use pcm::PcmArchive;
+mod render;
+use render::RenderArchive;
 
 pub(super) struct CursorTraceWorker {
     stop: Arc<AtomicBool>,
@@ -38,6 +40,9 @@ struct Session {
     finalized: bool,
     last_persist: Instant,
     pcm: Option<PcmArchive>,
+    render: Option<RenderArchive>,
+    render_required: bool,
+    render_initialization_error: Option<String>,
 }
 
 struct ChunkPersistence {
@@ -109,7 +114,14 @@ impl Session {
             return Ok(());
         }
         let closed = self.collector.finish();
-        if !stopping && (!closed || self.pcm.as_ref().is_some_and(|pcm| !pcm.writer_finished())) {
+        if !stopping
+            && (!closed
+                || self.pcm.as_ref().is_some_and(|pcm| !pcm.writer_finished())
+                || self
+                    .render
+                    .as_ref()
+                    .is_some_and(|render| !render.writer_finished()))
+        {
             return Ok(());
         }
         self.persist();
@@ -118,29 +130,40 @@ impl Session {
             let _ = write_new(&self.persistence.directory.join("failed-chunk.json"), chunk);
         }
         let completed = std::cell::Cell::new(false);
-        let result = finish_pcm_and_cursor(self.pcm.as_mut(), |pcm_error, pcm_complete| {
-            let result = write_new(
-                &self.persistence.directory.join("final.json"),
-                &serde_json::json!({
-                    "schema_version": 1, "origin": self.collector.origin(),
-                    "artifact": artifact, "final_history_available": closed,
-                    "unavailable_polls": self.collector.unavailable_polls(),
-                    "persisted_events": self.persistence.persisted_events,
-                    "persisted_chunks": self.persistence.persisted_chunks,
-                    "io_error": self.persistence.io_error,
-                    "native_pcm_enabled": pcm_complete.is_some(),
-                    "native_pcm_complete": pcm_complete,
-                    "native_pcm_error": pcm_error,
-                    "persistence_complete": closed && artifact.history_complete && self.persistence.io_error.is_none()
-                        && self.persistence.persisted_events == artifact.total_events
-                        && pcm_error.is_none()
-                        && pcm_complete.unwrap_or(true),
-                    "qualified": false,
-                }),
-            );
-            completed.set(result.is_ok());
-            result
-        });
+        let result = finish_render_and_independent(
+            self.render.as_mut(),
+            self.render_required,
+            self.render_initialization_error.as_deref(),
+            |render_error, render_complete| {
+                finish_pcm_and_cursor(self.pcm.as_mut(), |pcm_error, pcm_complete| {
+                    let result = write_new(
+                        &self.persistence.directory.join("final.json"),
+                        &serde_json::json!({
+                            "schema_version": 1, "origin": self.collector.origin(),
+                            "artifact": artifact, "final_history_available": closed,
+                            "unavailable_polls": self.collector.unavailable_polls(),
+                            "persisted_events": self.persistence.persisted_events,
+                            "persisted_chunks": self.persistence.persisted_chunks,
+                            "io_error": self.persistence.io_error,
+                            "native_pcm_enabled": pcm_complete.is_some(),
+                            "native_pcm_complete": pcm_complete,
+                            "native_pcm_error": pcm_error,
+                            "native_render_enabled": self.render_required,
+                            "native_render_complete": render_complete,
+                            "native_render_error": render_error,
+                            "persistence_complete": closed && artifact.history_complete && self.persistence.io_error.is_none()
+                                && self.persistence.persisted_events == artifact.total_events
+                                && pcm_error.is_none()
+                                && pcm_complete.unwrap_or(true) && render_error.is_none()
+                                && render_complete.unwrap_or(true),
+                            "qualified": false,
+                        }),
+                    );
+                    completed.set(result.is_ok());
+                    result
+                })
+            },
+        );
         self.finalized = completed.get();
         result
     }
@@ -155,7 +178,63 @@ impl Session {
                 .pcm
                 .as_ref()
                 .is_none_or(PcmArchive::persistence_complete)
+            && (!self.render_required
+                || self
+                    .render
+                    .as_ref()
+                    .is_some_and(RenderArchive::persistence_complete))
     }
+}
+
+/// A failed render initialization or final receipt must not discard an already
+/// retained PCM/cursor owner. Required-but-missing is not disabled evidence.
+fn finish_render_and_independent(
+    render: Option<&mut RenderArchive>,
+    required: bool,
+    initialization_error: Option<&str>,
+    write_independent: impl FnOnce(Option<&str>, Option<bool>) -> Result<()>,
+) -> Result<()> {
+    let mut result = Ok(());
+    if let Some(error) = initialization_error {
+        retain_error(
+            &mut result,
+            anyhow::anyhow!("render initialization: {error}"),
+        );
+    }
+    let complete = match render {
+        Some(render) => {
+            if let Err(error) = render.finish() {
+                retain_error(
+                    &mut result,
+                    anyhow::anyhow!("render final receipt: {error:#}"),
+                );
+            }
+            Some(render.persistence_complete())
+        }
+        None if required => {
+            retain_error(
+                &mut result,
+                anyhow::anyhow!("required render archive unavailable"),
+            );
+            Some(false)
+        }
+        None => None,
+    };
+    let error = result.as_ref().err().map(|error| format!("{error:#}"));
+    if let Err(error) = write_independent(error.as_deref(), complete) {
+        retain_error(&mut result, error);
+    }
+    result
+}
+
+fn retain_finished_owner_error(
+    finalized: bool,
+    error: anyhow::Error,
+    errors: &mut Result<()>,
+) -> Result<()> {
+    anyhow::ensure!(finalized, error);
+    retain_error(errors, error);
+    Ok(())
 }
 
 /// A PCM receipt failure must not suppress an independently retained cursor
@@ -185,6 +264,7 @@ impl CursorTraceWorker {
         process: ProcessIdentity,
         expected_owners: usize,
         pcm_config: Option<NativePcmConfig>,
+        render_enabled: bool,
     ) -> Result<Self> {
         if let Some(config) = pcm_config {
             config.validate().map_err(anyhow::Error::msg)?;
@@ -195,6 +275,7 @@ impl CursorTraceWorker {
         let stopping = stop.clone();
         let worker = thread::Builder::new().name("process-cursor-archive".into()).spawn(move || {
             let mut sessions: Vec<Session> = Vec::new();
+            let mut finalized_errors = Ok(());
             let mut result = (|| -> Result<()> {
                 loop {
                     if let Some(owner) = read() {
@@ -218,7 +299,24 @@ impl CursorTraceWorker {
                                         .map_err(anyhow::Error::msg)?;
                                     PcmArchive::new(&path, reader)
                                 }).transpose()?;
-                                sessions.push(Session {owner: owner.clone(), collector, persistence: ChunkPersistence::new(path), finalized: false, last_persist: Instant::now(), pcm});
+                                // Retain independent evidence before optional
+                                // render setup can fail (e.g. create-new IO).
+                                sessions.push(Session {owner: owner.clone(), collector, persistence: ChunkPersistence::new(path.clone()), finalized: false, last_persist: Instant::now(), pcm, render: None, render_required: render_enabled, render_initialization_error: None});
+                                if render_enabled {
+                                    let initialized = (|| -> Result<RenderArchive> {
+                                        let outputs = owner.render_evidence_origins();
+                                        anyhow::ensure!(outputs.len() == 1, "render archive requires exactly one native output per owner");
+                                        let reader = owner.render_evidence_reader(outputs[0].node, generation).map_err(anyhow::Error::msg)?;
+                                        RenderArchive::new(&path, reader)
+                                    })();
+                                    let session = sessions.last_mut().expect("owner just retained");
+                                    match initialized {
+                                        Ok(render) => session.render = Some(render),
+                                        // Do not end the independent collector:
+                                        // its final receipt needs native join.
+                                        Err(error) => session.render_initialization_error = Some(format!("{error:#}")),
+                                    }
+                                }
                             }
                         }
                     }
@@ -226,8 +324,13 @@ impl CursorTraceWorker {
                         if session.finalized { continue; }
                         session.collector.poll();
                         if let Some(pcm) = &mut session.pcm { pcm.poll(); }
+                        if let Some(render) = &mut session.render { render.poll(); }
                         if session.collector.artifact().writer_finished {
-                            session.finish(false)?;
+                            if let Err(error) = session.finish(false) {
+                                // A sealed failed owner cannot truncate a live
+                                // replacement's independently collected run.
+                                retain_finished_owner_error(session.finalized, error, &mut finalized_errors)?;
+                            }
                         } else if session.last_persist.elapsed() >= PERSIST_INTERVAL {
                             session.persist();
                         }
@@ -237,6 +340,7 @@ impl CursorTraceWorker {
                 }
                 Ok(())
             })();
+            if let Err(error) = finalized_errors { retain_error(&mut result, error); }
             // Preserve every owner's final receipt even if discovery/IO failed
             // for a different owner. Native audio is already independent.
             for session in &mut sessions {
@@ -249,9 +353,12 @@ impl CursorTraceWorker {
                 "schema_version": 1, "sessions": sessions.len(),
                 "expected_owners": expected_owners,
                 "native_pcm_enabled": pcm_config.is_some(),
+                "native_render_enabled": render_enabled,
                 "error": result.as_ref().err().map(|error| error.to_string()),
                 "qualified": false,
-                "scope": if pcm_config.is_some() {
+                "scope": if render_enabled {
+                    "actual Process SRC cursors, optional native input PCM and actual encoded native render attempts; not playback or physical qualification"
+                } else if pcm_config.is_some() {
                     "actual Process SRC cursors and offered/accepted native PCM mapping; not replay or physical qualification"
                 } else {
                     "actual Process SRC cursor archive only; not PCM mapping or physical qualification"
@@ -318,6 +425,78 @@ mod tests {
         assert!(validate_owner_count(2, 2).is_ok());
         assert!(validate_owner_count(3, 2).is_err());
         assert!(validate_owner_count(0, 1).is_err());
+    }
+
+    #[test]
+    fn sealed_owner_error_is_retained_without_truncating_the_replacement() {
+        let mut accumulated = Ok(());
+        retain_finished_owner_error(
+            true,
+            anyhow::anyhow!("baseline render refused"),
+            &mut accumulated,
+        )
+        .unwrap();
+        retain_finished_owner_error(
+            true,
+            anyhow::anyhow!("replacement render refused"),
+            &mut accumulated,
+        )
+        .unwrap();
+        let message = accumulated.unwrap_err().to_string();
+        assert!(message.contains("baseline render refused"));
+        assert!(message.contains("replacement render refused"));
+        let mut accumulated = Ok(());
+        let error = retain_finished_owner_error(
+            false,
+            anyhow::anyhow!("unsealed receipt failed"),
+            &mut accumulated,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unsealed receipt failed"));
+        assert!(accumulated.is_ok());
+    }
+
+    #[test]
+    fn required_but_uninitialized_render_retains_independent_receipts_and_refuses_complete() {
+        let directory = TemporaryDirectory::new();
+        let error = finish_render_and_independent(
+            None,
+            true,
+            Some("create-new denied"),
+            |render_error, render_complete| {
+                assert_eq!(render_complete, Some(false));
+                assert!(render_error.unwrap().contains("unavailable"));
+                assert!(render_error.unwrap().contains("create-new denied"));
+                write_new(
+                    &directory.0.join("independent-final.json"),
+                    &serde_json::json!({
+                        "native_render_complete": render_complete,
+                        "independent_retained": true,
+                        "qualified": false,
+                    }),
+                )
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("required render archive"));
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.0.join("independent-final.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["independent_retained"], true);
+        assert_eq!(saved["native_render_complete"], false);
+        let error = finish_render_and_independent(None, true, None, |_, _| {
+            anyhow::bail!("independent receipt also failed")
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("required render archive"));
+        assert!(error.contains("independent receipt also failed"));
+        finish_render_and_independent(None, false, None, |error, complete| {
+            assert!(error.is_none());
+            assert_eq!(complete, None);
+            Ok(())
+        })
+        .unwrap();
     }
 
     struct TemporaryDirectory(PathBuf);
@@ -398,7 +577,7 @@ mod tests {
             creation_time_100ns: 1,
             executable_name: "test.exe".into(),
         };
-        assert!(CursorTraceWorker::spawn(&directory.0, || None, process, 1, None).is_err());
+        assert!(CursorTraceWorker::spawn(&directory.0, || None, process, 1, None, false).is_err());
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
     }
 
@@ -411,7 +590,7 @@ mod tests {
             creation_time_100ns: 1,
             executable_name: "test.exe".into(),
         };
-        let worker = CursorTraceWorker::spawn(&path, || None, process, 1, None).unwrap();
+        let worker = CursorTraceWorker::spawn(&path, || None, process, 1, None, false).unwrap();
         assert!(
             worker
                 .finish()

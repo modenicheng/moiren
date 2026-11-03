@@ -183,6 +183,9 @@ impl Worker {
         if let Some(handle) = self.handle.take() {
             self.retired_render_evidence =
                 handle.join().map_err(|_| BackendError::WorkerPanicked)?;
+            if let Some(writer) = self.retired_render_evidence.as_mut() {
+                writer.publish_joined();
+            }
         }
         Ok(())
     }
@@ -654,6 +657,7 @@ pub(super) struct Transport<S: ProcessingSample> {
         Arc<crate::virtual_owner::BoundaryProbe>,
     )>,
     pub native_renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+    pub native_render_evidence: Vec<super::native_observations::RenderEvidenceSource>,
     pub virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
     pub generation: u64,
 }
@@ -675,6 +679,7 @@ impl<S: ProcessingSample> Transport<S> {
             native_process_delivery: Vec::new(),
             native_probes: Vec::new(),
             native_renders: Vec::new(),
+            native_render_evidence: Vec::new(),
             virtual_clock: None,
             generation,
         }
@@ -697,7 +702,7 @@ impl<S: ProcessingSample> Transport<S> {
         }))
     }
     fn activate(&self) -> Result<(), BackendError> {
-        self.native_observations.publish_with_route(
+        self.native_observations.publish_with_render_evidence(
             self.generation,
             self.native_streams.clone(),
             self.native_bridges.clone(),
@@ -706,6 +711,7 @@ impl<S: ProcessingSample> Transport<S> {
             self.native_process_delivery.clone(),
             self.virtual_clock.clone(),
             self.src_route.clone(),
+            self.native_render_evidence.clone(),
         );
         for auxiliary in &self.auxiliaries {
             if let Err(error) = auxiliary.activate() {
