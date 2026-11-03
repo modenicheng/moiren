@@ -107,6 +107,13 @@ pub struct ManagedDriver {
     cleaning: usize,
     catalog: CatalogRefresher,
     automatic_startup: bool,
+    /// Startup with a restored project: once the first catalog arrives the
+    /// restored graph starts as saved, minus IO nodes whose devices are
+    /// offline (the driver's resume path).
+    automatic_resume: bool,
+    /// What the resume stripped, published as a fault only after the resumed
+    /// session has activated, since activation clears the fault group.
+    resume_notice: Option<GraphFault>,
     exiting: bool,
     apply: bool,
     apply_audio_settings: Option<AudioSettings>,
@@ -169,6 +176,8 @@ impl ManagedDriver {
             cleaning: 0,
             catalog: CatalogRefresher::new(false),
             automatic_startup: false,
+            automatic_resume: false,
+            resume_notice: None,
             exiting: false,
             apply: false,
             apply_audio_settings: None,
@@ -200,6 +209,12 @@ impl ManagedDriver {
     }
     pub fn with_automatic_startup(mut self) -> Self {
         self.automatic_startup = true;
+        self
+    }
+    /// Startup with a restored project resumes it instead of binding the
+    /// catalog defaults, which would overwrite the restored devices.
+    pub fn with_automatic_resume(mut self) -> Self {
+        self.automatic_resume = true;
         self
     }
     #[cfg(windows)]

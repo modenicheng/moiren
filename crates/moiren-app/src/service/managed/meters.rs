@@ -1,8 +1,11 @@
 //! Copy bounded latest windows between the lifecycle-owned host directory and
-//! the stable application topics. Demand still decides whether RT meters run.
+//! the stable application topics, running the spectrum transform on the way.
+//! Demand still decides whether RT meters run.
 use super::*;
+use crate::service::signals::{SpectrumShape, SpectrumTopic};
 use moiren_core::graph::NodeKind;
-use moiren_engine::host::ManagedLevelSubscription;
+use moiren_engine::host::{ManagedLevelSubscription, ManagedSpectrumSubscription};
+use moiren_engine::spectrum::SpectrumAnalysis;
 use moiren_signal::{BindingKey, HostControl, OpSignalBindings, PreparedPublisher, RtHost, Topic};
 struct Slot {
     node: Option<moiren_core::graph::NodeId>,
@@ -13,12 +16,38 @@ struct Slot {
     subscription: Option<(moiren_core::graph::NodeId, ManagedLevelSubscription)>,
     sequence: u64,
 }
+/// One spectrum analyzer's relay: the engine's latest exact source window,
+/// transformed here on the service thread and published as magnitudes onto
+/// the application topic registered at the same shape. Demand-gated exactly
+/// like the level slots, so an analyzer nobody looks at captures nothing.
+struct SpectrumSlot {
+    node: NodeId,
+    shape: SpectrumShape,
+    key: BindingKey,
+    topic: Topic<SpectrumTopic>,
+    publisher: PreparedPublisher<SpectrumTopic>,
+    operation: OpSignalBindings,
+    subscription: Option<ManagedSpectrumSubscription>,
+    sequence: u64,
+    analysis: SpectrumAnalysis,
+    magnitudes: Vec<f32>,
+}
 pub(super) struct MeterBridge {
     control: HostControl,
     host: RtHost,
     slots: Vec<Slot>,
+    spectra: Vec<SpectrumSlot>,
 }
 impl MeterBridge {
+    /// How many analyzers the bridge currently holds an engine subscription
+    /// for — the demand the realtime window tap actually sees.
+    #[cfg(test)]
+    pub(super) fn demanded_spectra(&self) -> usize {
+        self.spectra
+            .iter()
+            .filter(|slot| slot.subscription.is_some())
+            .count()
+    }
     pub fn new(c: &mut ServiceContext) -> Result<Self, String> {
         let (control, mut host) = c.signals.create_bridge_host().map_err(|e| e.to_string())?;
         let topics = &c.signals.topics;
@@ -53,6 +82,7 @@ impl MeterBridge {
             control,
             host,
             slots: prepared,
+            spectra: Vec::new(),
         })
     }
     pub fn poll(&mut self, c: &mut ServiceContext, observer: &EngineObserver) {
@@ -60,7 +90,7 @@ impl MeterBridge {
         let Some(active) = snapshot.active else {
             return;
         };
-        if let Err(error) = self.sync_nodes(c, &active.graph) {
+        if let Err(error) = self.sync_nodes(c, &active) {
             c.graph.record_error(format!("Node meters: {error}"));
             return;
         }
@@ -116,25 +146,85 @@ impl MeterBridge {
                 let _ = write.commit(window.elements().len());
             }
         }
+        for slot in &mut self.spectra {
+            if slot.topic.business_subscribers() == 0 {
+                slot.subscription = None;
+                continue;
+            }
+            if slot
+                .subscription
+                .as_ref()
+                .is_none_or(|s| s.owner_generation != snapshot.state.owner_generation)
+            {
+                slot.subscription = observer.subscribe_spectrum(slot.node).ok();
+                slot.sequence = 0;
+            }
+            let Some(subscription) = &mut slot.subscription else {
+                continue;
+            };
+            let Some(window) = subscription.subscriber.read_latest() else {
+                continue;
+            };
+            if window.meta().sequence == slot.sequence {
+                continue;
+            }
+            slot.sequence = window.meta().sequence;
+            // A window of another shape belongs to a plan this slot has not
+            // been re-synced for yet; the next poll re-registers the topic.
+            if window.elements().len() != slot.shape.window_capacity()
+                || slot
+                    .analysis
+                    .analyze(window.elements(), &mut slot.magnitudes)
+                    .is_err()
+            {
+                continue;
+            }
+            let mut scope = self.host.scope(&slot.operation);
+            if let Ok(mut write) = scope.try_write(&slot.publisher.handle(), slot.magnitudes.len())
+            {
+                *write.header_mut() = *window.header();
+                write.elements_mut().copy_from_slice(&slot.magnitudes);
+                let _ = write.commit(slot.magnitudes.len());
+            }
+        }
     }
 
     fn sync_nodes(
         &mut self,
         c: &mut ServiceContext,
-        graph: &moiren_core::graph::LogicalGraph,
+        project: &host::EngineProject,
     ) -> Result<(), String> {
-        if self.slots.len() == graph.nodes().len() + 3
+        let graph = &project.graph;
+        let shapes = spectrum_shapes(project);
+        let levels_synced = self.slots.len() == graph.nodes().len() + 3
             && self
                 .slots
                 .iter()
                 .skip(3)
-                .all(|slot| slot.node.is_some_and(|id| graph.get_node(id).is_ok()))
-        {
+                .all(|slot| slot.node.is_some_and(|id| graph.get_node(id).is_ok()));
+        let spectra_synced = self.spectra.len() == shapes.len()
+            && self
+                .spectra
+                .iter()
+                .all(|slot| shapes.get(&slot.node) == Some(&slot.shape));
+        if levels_synced && spectra_synced {
             return Ok(());
         }
-        c.signals.prepare_node_levels(graph)?;
+        // A topic closes only once nothing leases it, and a slot leases its
+        // topic through the publisher, its operation handle and the active
+        // table alike. Release the departed slots — nodes that left, spectra
+        // whose shape changed — and activate a table without them before
+        // the topics are reconciled, so the bus can close theirs.
+        let kept = (self.slots.len(), self.spectra.len());
         self.slots
             .retain(|slot| slot.node.is_none_or(|id| graph.get_node(id).is_ok()));
+        self.spectra
+            .retain(|slot| shapes.get(&slot.node) == Some(&slot.shape));
+        if kept != (self.slots.len(), self.spectra.len()) {
+            self.activate_table()?;
+        }
+        c.signals.prepare_node_levels(graph)?;
+        c.signals.prepare_node_spectra(&shapes)?;
         for (&node, topic) in &c.signals.topics.node_levels {
             if self.slots.iter().any(|slot| slot.node == Some(node)) {
                 continue;
@@ -161,16 +251,64 @@ impl MeterBridge {
                 sequence: 0,
             });
         }
+        for (&node, topic) in &c.signals.topics.node_spectra {
+            if self.spectra.iter().any(|slot| slot.node == node) {
+                continue;
+            }
+            let Some(&shape) = shapes.get(&node) else {
+                continue;
+            };
+            let analysis = SpectrumAnalysis::new(shape.channels, shape.fft_size)
+                .map_err(|error| error.to_string())?;
+            let key = self
+                .control
+                .new_binding()
+                .map_err(|error| error.to_string())?;
+            let publisher = self
+                .control
+                .prepare(topic, key)
+                .map_err(|error| error.to_string())?;
+            let update = self
+                .control
+                .prepare_update(&[publisher.erase()])
+                .map_err(|error| error.to_string())?;
+            self.spectra.push(SpectrumSlot {
+                node,
+                shape,
+                key,
+                topic: topic.clone(),
+                publisher,
+                operation: update.op_bindings(key).map_err(|error| error.to_string())?,
+                subscription: None,
+                sequence: 0,
+                analysis,
+                magnitudes: vec![0.; shape.capacity()],
+            });
+        }
+        self.activate_table()
+    }
+
+    /// Levels and spectra share the bridge host, so they share its one
+    /// active binding table: every publisher goes into the same update, and
+    /// the retired table is dropped here, off the audio path, which is what
+    /// releases the leases of the publishers it no longer carries.
+    fn activate_table(&mut self) -> Result<(), String> {
         let bindings: Vec<_> = self
             .slots
             .iter()
             .map(|slot| slot.publisher.erase())
+            .chain(self.spectra.iter().map(|slot| slot.publisher.erase()))
             .collect();
         let update = self
             .control
             .prepare_update(&bindings)
             .map_err(|error| error.to_string())?;
         for slot in &mut self.slots {
+            slot.operation = update
+                .op_bindings(slot.key)
+                .map_err(|error| error.to_string())?;
+        }
+        for slot in &mut self.spectra {
             slot.operation = update
                 .op_bindings(slot.key)
                 .map_err(|error| error.to_string())?;
@@ -182,4 +320,26 @@ impl MeterBridge {
         );
         Ok(())
     }
+}
+
+/// The shape every spectrum analyzer of the running project publishes at,
+/// read from the configuration the engine actually prepared rather than
+/// from the editable graph, so a candidate edit never sizes a topic ahead
+/// of the plan that will feed it.
+fn spectrum_shapes(project: &host::EngineProject) -> BTreeMap<NodeId, SpectrumShape> {
+    project
+        .graph
+        .nodes()
+        .iter()
+        .filter_map(|node| match project.nodes.get(&node.id()) {
+            Some(host::NodeConfig::SpectrumAnalyzer(settings)) => Some((
+                node.id(),
+                SpectrumShape {
+                    channels: node.channels(),
+                    fft_size: settings.fft_size,
+                },
+            )),
+            _ => None,
+        })
+        .collect()
 }

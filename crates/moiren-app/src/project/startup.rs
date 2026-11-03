@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use super::{
-    AppPreferences, PersistenceError, ProjectDocument, load_preferences_at, load_project,
-    preferences_path,
+    AppPreferences, PersistenceError, ProjectDocument, autosave_at_preferences, load_autosave_at,
+    load_preferences_at, load_project, preferences_path,
 };
 
 /// All persisted intent is loaded and checked before any service/backend exists.
@@ -19,16 +19,22 @@ impl StartupDocuments {
     }
 
     pub fn load_at(path: impl AsRef<Path>) -> Result<Self, PersistenceError> {
-        let preferences = load_preferences_at(path)?;
-        let project = if preferences.restore_last_project {
-            preferences
-                .last_project_path
-                .as_ref()
-                .map(load_project)
-                .transpose()?
-        } else {
-            None
-        };
+        let preferences = load_preferences_at(&path)?;
+        // The autosave is the most recent editing state, so it outranks the
+        // last explicitly saved project; only a missing or unusable autosave
+        // falls back to it.
+        let project =
+            if let Some(autosave) = load_autosave_at(autosave_at_preferences(path.as_ref())) {
+                Some(autosave)
+            } else if preferences.restore_last_project {
+                preferences
+                    .last_project_path
+                    .as_ref()
+                    .map(load_project)
+                    .transpose()?
+            } else {
+                None
+            };
         Ok(Self {
             preferences,
             project,

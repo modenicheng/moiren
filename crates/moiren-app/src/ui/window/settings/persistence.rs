@@ -12,8 +12,21 @@ impl StudioShell {
     /// Serialize preference writes so rapid profile/density actions cannot let
     /// an older background write overwrite the user's latest choice.
     pub(in super::super) fn save_preferences(&mut self, cx: &mut Context<Self>) {
+        self.save_preferences_inner(cx, true);
+    }
+
+    /// Persists preferences without displacing user-facing feedback: for
+    /// bookkeeping writes such as remembering the last project file.
+    pub(in super::super) fn save_preferences_quiet(&mut self, cx: &mut Context<Self>) {
+        self.save_preferences_inner(cx, false);
+    }
+
+    fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
         let Some(path) = self.preferences_path.clone() else {
-            self.project_message = Some(t!("User configuration directory is unavailable").into());
+            if report {
+                self.project_message =
+                    Some(t!("User configuration directory is unavailable").into());
+            }
             return;
         };
         let previous = self.preference_save.take();
@@ -64,7 +77,8 @@ impl StudioShell {
             }
             let _ = this.update(cx, |shell, cx| {
                 if shell.preference_save_revision == revision {
-                    if let Err(error) = &result
+                    if report
+                        && let Err(error) = &result
                         && let Some((saved_revision, editor)) = shell.settings.save_revision
                         && saved_revision == revision
                     {
@@ -74,19 +88,23 @@ impl StudioShell {
                         );
                         draft.message = None;
                     }
-                    shell.project_message = Some(
-                        result
-                            .map(|_| t!("Preferences saved").into())
-                            .unwrap_or_else(|error| {
-                                t!("Could not save preferences: %{error}", error = error)
-                                    .to_string()
-                            }),
-                    );
-                    cx.notify();
+                    if report {
+                        shell.project_message = Some(
+                            result
+                                .map(|_| t!("Preferences saved").into())
+                                .unwrap_or_else(|error| {
+                                    t!("Could not save preferences: %{error}", error = error)
+                                        .to_string()
+                                }),
+                        );
+                        cx.notify();
+                    }
                 }
             });
         })
         .detach();
-        self.project_message = Some(t!("Preferences save queued").into());
+        if report {
+            self.project_message = Some(t!("Preferences save queued").into());
+        }
     }
 }

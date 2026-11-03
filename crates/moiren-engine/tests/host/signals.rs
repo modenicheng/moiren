@@ -93,7 +93,9 @@ fn wait_spectrum(subscription: &mut ManagedSpectrumSubscription, fft_size: usize
         let block = subscription.subscriber.read_latest()?;
         assert_eq!(block.header().fft_size, fft_size);
         assert_eq!(block.header().channels, 1);
-        assert_eq!(block.elements().len(), fft_size / 2 + 1);
+        // The host topic carries the exact source window; magnitudes are the
+        // reader's transform.
+        assert_eq!(block.elements().len(), fft_size);
         Some(())
     });
 }

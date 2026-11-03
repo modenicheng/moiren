@@ -85,16 +85,6 @@ pub(crate) fn register_fonts(cx: &App) -> Result<()> {
 impl AssetSource for ActionAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: Option<&'static [u8]> = match path {
-            "figma-nodes/input.svg" => {
-                Some(include_bytes!("../../../assets/figma-nodes/input.svg"))
-            }
-            "figma-nodes/output.svg" => {
-                Some(include_bytes!("../../../assets/figma-nodes/output.svg"))
-            }
-            "figma-nodes/fader.svg" => {
-                Some(include_bytes!("../../../assets/figma-nodes/fader.svg"))
-            }
-            "figma-nodes/bus.svg" => Some(include_bytes!("../../../assets/figma-nodes/bus.svg")),
             "figma-nodes/more.svg" => Some(include_bytes!("../../../assets/figma-nodes/more.svg")),
             "figma-nodes/input-port.svg" => {
                 Some(include_bytes!("../../../assets/figma-nodes/input-port.svg"))
@@ -106,6 +96,30 @@ impl AssetSource for ActionAssets {
                 "../../../../../assets/logos/moiren-2c-mark-light.svg"
             )),
             "icons/mic.svg" => Some(include_bytes!("../../../assets/icons/mic.svg")),
+            "icons/alert-triangle.svg" => {
+                Some(include_bytes!("../../../assets/icons/alert-triangle.svg"))
+            }
+            "icons/volume.svg" => Some(include_bytes!("../../../assets/icons/volume.svg")),
+            "icons/arrows-horizontal.svg" => Some(include_bytes!(
+                "../../../assets/icons/arrows-horizontal.svg"
+            )),
+            "icons/wave-square.svg" => {
+                Some(include_bytes!("../../../assets/icons/wave-square.svg"))
+            }
+            "icons/arrows-minimize.svg" => {
+                Some(include_bytes!("../../../assets/icons/arrows-minimize.svg"))
+            }
+            "icons/door.svg" => Some(include_bytes!("../../../assets/icons/door.svg")),
+            "icons/wall.svg" => Some(include_bytes!("../../../assets/icons/wall.svg")),
+            "icons/chart-histogram.svg" => {
+                Some(include_bytes!("../../../assets/icons/chart-histogram.svg"))
+            }
+            "icons/chevron-down.svg" => {
+                Some(include_bytes!("../../../assets/icons/chevron-down.svg"))
+            }
+            "icons/list-details.svg" => {
+                Some(include_bytes!("../../../assets/icons/list-details.svg"))
+            }
             "icons/activity.svg" => Some(include_bytes!("../../../assets/icons/activity.svg")),
             "icons/radio.svg" => Some(include_bytes!("../../../assets/icons/radio.svg")),
             "icons/sliders.svg" => Some(include_bytes!("../../../assets/icons/sliders.svg")),
@@ -184,15 +198,7 @@ mod tests {
                 "unregistered node icon asset: {path}"
             );
         }
-        for name in [
-            "input",
-            "output",
-            "bus",
-            "fader",
-            "more",
-            "input-port",
-            "output-port",
-        ] {
+        for name in ["more", "input-port", "output-port"] {
             let path = format!("figma-nodes/{name}.svg");
             assert!(
                 ActionAssets.load(&path).ok().flatten().is_some(),
@@ -228,19 +234,27 @@ mod tests {
 
         // Icon names painted by the canvas node cards come from the `NodeKind`
         // match in ui/pages/graph_canvas.rs; keep this list in sync there.
-        // Names with the `figma-` prefix resolve to figma-nodes/, the rest to
-        // icons/ (same routing as graph_canvas_view/nodes.rs).
+        // All of them are Tabler glyphs under icons/, so every card's kind
+        // icon shares one box, padding and stroke weight.
         const CANVAS_NODE_ICONS: &[&str] = &[
-            "figma-input",
-            "figma-output",
-            "figma-bus",
-            "figma-fader",
+            "mic",
+            "git-merge",
             "app",
             "wave",
             "radio",
             "activity",
             "clock",
             "route",
+            "volume",
+            "arrows-horizontal",
+            "wave-square",
+            "arrows-minimize",
+            "door",
+            "wall",
+            "chart-histogram",
+            "list-details",
+            "devices",
+            "speaker",
         ];
         // Assets the node painter requests straight from figma-nodes/ without
         // the name routing above: port anchors and the overflow marker.
@@ -252,18 +266,29 @@ mod tests {
             "icons/zoom-scan.svg",     // inspector zoom-to-scan button
             "brand/mark.svg",          // toolbar brand mark
         ];
+        // Design 18 node-card glyphs: the per-kind icons, the chip dropdown,
+        // the rack markers, and the alert the fault tooltip leads with.
+        const DESIGN18_REQUESTS: &[&str] = &[
+            "icons/alert-triangle.svg",
+            "icons/volume.svg",
+            "icons/arrows-horizontal.svg",
+            "icons/wave-square.svg",
+            "icons/arrows-minimize.svg",
+            "icons/door.svg",
+            "icons/wall.svg",
+            "icons/chart-histogram.svg",
+            "icons/chevron-down.svg",
+            "icons/list-details.svg",
+        ];
 
         let mut used: HashSet<String> = ActionIcon::ALL
             .iter()
             .map(|icon| icon.path().to_string())
             .collect();
         used.extend(FIXED_REQUESTS.iter().map(|path| (*path).to_string()));
+        used.extend(DESIGN18_REQUESTS.iter().map(|path| (*path).to_string()));
         for name in CANVAS_NODE_ICONS {
-            let path = match name.strip_prefix("figma-") {
-                Some(rest) => format!("figma-nodes/{rest}.svg"),
-                None => format!("icons/{name}.svg"),
-            };
-            used.insert(path);
+            used.insert(format!("icons/{name}.svg"));
         }
         for asset in FIGMA_NODE_ASSETS {
             used.insert(format!("figma-nodes/{asset}.svg"));

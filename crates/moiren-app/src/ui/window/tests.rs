@@ -1476,6 +1476,7 @@ fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
                     let mut shell = super::StudioShell::new(state, window, cx, None);
                     shell.test_page = Some(page);
                     shell.preferences_path = None;
+                    shell.autosave_path = None;
                     shell
                 })
             },

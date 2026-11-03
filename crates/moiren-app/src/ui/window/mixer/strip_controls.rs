@@ -298,7 +298,7 @@ pub(in crate::ui::window) fn balance(
                         .ml(px(-0.5))
                         .w(px(1.))
                         .h(px(11.))
-                        .bg(theme::SIGNAL_DEVICE.opacity(0.45)),
+                        .bg(theme::TEXT_FAINT),
                 )
                 .child(
                     div()

@@ -181,6 +181,7 @@ fn snapshot(graph: LogicalGraph, exports: Vec<ExportIntent>) -> GraphSnapshot {
         faults: Vec::new(),
         can_undo: false,
         can_redo: false,
+        preparing_nodes: Vec::new(),
     }
 }
 

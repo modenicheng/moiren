@@ -96,6 +96,7 @@ User configuration directory is unavailable	-	project_message
 Could not save preferences: %{error}	error=save_preferences_at 的错误字符串	format! 原文 "Could not save preferences: {error}"，两处共用
 Preferences saved	-	project_message
 Preferences save queued	-	project_message
+Could not auto-save: %{error}	error=save_autosave_at 的错误字符串	自动保存失败提示（project_message）
 Inputs	-	设备页标签
 Outputs	-	设备页标签
 Applications	-	设备页标签
@@ -371,7 +372,7 @@ Choose an output	-	画布节点 detail
 %{frames} frames	frames=settings.window_frames	电表观测窗口行数值
 %{frames} frame buffer	frames=settings.capacity_frames	format! 原文 "{} frame buffer"
 %{frames} frame window	frames=settings.window_frames	format! 原文 "{} frame window"
-FFT %{fft} · hop %{hop}	fft=settings.fft_size|hop=settings.hop_frames	format! 原文 "FFT {} · hop {}"
+FFT %{fft}	fft=settings.fft_size	画布节点 detail
 Empty rack	-	画布节点 detail
 %{count} stage	count=settings.slots.len()	机架单级（英文单数分支，中文与复数同形）
 %{count} stages	count=settings.slots.len()	format! 原文 "{} stage{}"（单复数拼接："{} stage" / "{} stages"，中文无需复数）

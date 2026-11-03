@@ -31,76 +31,279 @@ impl TextLayout {
     }
 }
 
+/// Where a card's level meter strip sits and which way it runs. The hot
+/// layer repaints these from the shared frame, so the geometry must round
+/// trip through [`Camera::project_rect`] like every other card region.
+#[derive(Debug, Clone, Copy)]
+pub enum MeterLayout {
+    Horizontal { bounds: Bounds<f32> },
+    Vertical { bounds: Bounds<f32> },
+}
+
+impl MeterLayout {
+    pub fn bounds(&self) -> Bounds<f32> {
+        match self {
+            Self::Horizontal { bounds } | Self::Vertical { bounds } => *bounds,
+        }
+    }
+
+    fn project(&self, camera: Camera) -> Self {
+        match *self {
+            Self::Horizontal { bounds } => Self::Horizontal {
+                bounds: camera.project_rect(bounds),
+            },
+            Self::Vertical { bounds } => Self::Vertical {
+                bounds: camera.project_rect(bounds),
+            },
+        }
+    }
+}
+
+/// One knob on the body: the dial circle plus its label and value text
+/// beside it.
+#[derive(Debug, Clone)]
+pub struct KnobLayout {
+    pub dial: Bounds<f32>,
+    pub label: TextLayout,
+    pub value: TextLayout,
+}
+
+/// A binding chip: the pill's rect with its icon slot, label, and the
+/// dropdown affordance at the right edge.
+#[derive(Debug, Clone)]
+pub struct ChipLayout {
+    pub bounds: Bounds<f32>,
+    pub icon: Bounds<f32>,
+    pub label: TextLayout,
+    pub chevron: Bounds<f32>,
+}
+
+/// Design 18 card anatomy: header (icon, name, status glyphs), tint rail,
+/// per-kind body, meter strip, port rails with channel hints. World-space
+/// units; [`NodeLayout::project`] scales everything with the camera.
 #[derive(Debug, Clone)]
 pub struct NodeLayout {
     pub card: Bounds<f32>,
+    pub rail: Bounds<f32>,
     pub icon: Bounds<f32>,
     pub title: TextLayout,
+    pub badge: Bounds<f32>,
+    pub expand: Bounds<f32>,
+    pub body: Bounds<f32>,
     pub detail: TextLayout,
-    pub more: Bounds<f32>,
-    pub meter: Bounds<f32>,
-    pub fader: Bounds<f32>,
-    pub balance: Bounds<f32>,
-    pub gain_value: TextLayout,
-    pub balance_value: TextLayout,
+    pub meter: MeterLayout,
+    pub knobs: Vec<KnobLayout>,
+    pub chip: Option<ChipLayout>,
+    pub matrix: Option<Bounds<f32>>,
+    pub rack: Option<Bounds<f32>>,
+    pub curve: Option<Bounds<f32>>,
+    /// The spectrum analyzer's plot, laid out like a curve thumbnail: the
+    /// body less the vertical meter's strip on the right.
+    pub spectrum: Option<Bounds<f32>>,
     pub inputs: Vec<(f32, f32)>,
+    pub input_hints: Vec<TextLayout>,
     pub output: Option<(f32, f32)>,
+    pub output_hint: Option<TextLayout>,
     pub scale: f32,
 }
 
 impl NodeLayout {
     pub fn new(node: &CanvasNode) -> Self {
-        let padding = theme::card::PADDING;
         let width = node.width();
-        let icon_size = theme::card::ICON_SIZE;
-        let text_left = node.x + padding + icon_size + 4.;
-        let text_width = theme::card::TITLE_WIDTH;
-        let title_top = node.y + theme::card::DECO_HEIGHT + padding + 2.;
-        let port_y = node.y + theme::card::PORT_Y;
+        let body_top = node.y + theme::card::BODY_TOP;
+        let body_bottom = body_top + node.body_height;
+        let height = node.height();
+        let port_y = node.y + node.port_offset();
+        let padding = theme::card::PADDING;
         let inputs = (0..node.input_count)
-            .map(|index| (node.x, port_y + index as f32 * 18.))
+            .map(|index| (node.x, port_y + index as f32 * theme::card::PORT_SPACING))
             .collect::<Vec<_>>();
+        let input_hints = (0..node.input_count)
+            .map(|index| {
+                TextLayout::new(
+                    node.x + theme::card::RAIL_W + padding,
+                    port_y + index as f32 * theme::card::PORT_SPACING
+                        - theme::card::HINT_SIZE / 2.
+                        - 1.,
+                    48.,
+                    theme::card::HINT_SIZE,
+                )
+            })
+            .collect();
+        let output_hint = node.has_output.then(|| {
+            TextLayout::new(
+                node.x + width - theme::card::RAIL_W - padding - 48.,
+                port_y - theme::card::HINT_SIZE / 2. - 1.,
+                48.,
+                theme::card::HINT_SIZE,
+            )
+        });
+        let meter = if node.meter_vertical {
+            MeterLayout::Vertical {
+                bounds: Bounds {
+                    origin: point(
+                        node.x + width - theme::card::RAIL_W - padding - theme::card::METER_H,
+                        body_top,
+                    ),
+                    size: size(theme::card::METER_H, body_bottom - body_top),
+                },
+            }
+        } else {
+            MeterLayout::Horizontal {
+                bounds: Bounds {
+                    origin: point(
+                        node.x + theme::card::RAIL_W + padding,
+                        body_bottom + theme::card::METER_CHANNEL_GAP,
+                    ),
+                    size: size(
+                        width - theme::card::RAIL_W - 2. * padding,
+                        theme::card::METER_H,
+                    ),
+                },
+            }
+        };
+        let knobs = node
+            .knobs
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let dial_x = node.x
+                    + theme::card::RAIL_W
+                    + padding
+                    + index as f32 * (theme::card::DIAL_SIZE + 16.);
+                let dial_y = body_top + (node.body_height - theme::card::DIAL_SIZE) / 2.;
+                let text_left = dial_x + theme::card::DIAL_SIZE + 8.;
+                let text_width = node.x + width - padding - text_left;
+                KnobLayout {
+                    dial: Bounds {
+                        origin: point(dial_x, dial_y),
+                        size: size(theme::card::DIAL_SIZE, theme::card::DIAL_SIZE),
+                    },
+                    label: TextLayout::new(
+                        text_left,
+                        dial_y + 3.,
+                        text_width,
+                        theme::card::HINT_SIZE,
+                    ),
+                    value: TextLayout::new(
+                        text_left,
+                        dial_y + theme::card::DIAL_SIZE - 14.,
+                        text_width,
+                        11.,
+                    ),
+                }
+            })
+            .collect();
+        let chip = node.binding.as_ref().map(|_| {
+            let bounds = Bounds {
+                origin: point(
+                    node.x + theme::card::RAIL_W + padding,
+                    body_top + (node.body_height - theme::card::CHIP_H) / 2.,
+                ),
+                size: size(
+                    width - theme::card::RAIL_W - 2. * padding,
+                    theme::card::CHIP_H,
+                ),
+            };
+            ChipLayout {
+                icon: Bounds {
+                    origin: point(
+                        bounds.origin.x + 5.,
+                        bounds.origin.y + (theme::card::CHIP_H - theme::card::CHIP_ICON) / 2.,
+                    ),
+                    size: size(theme::card::CHIP_ICON, theme::card::CHIP_ICON),
+                },
+                label: TextLayout::new(
+                    bounds.origin.x + theme::card::CHIP_ICON + 9.,
+                    bounds.origin.y + (theme::card::CHIP_H - 12.) / 2.,
+                    bounds.size.width - theme::card::CHIP_ICON - 9. - 18.,
+                    11.,
+                ),
+                chevron: Bounds {
+                    origin: point(
+                        bounds.origin.x + bounds.size.width - 15.,
+                        bounds.origin.y + (theme::card::CHIP_H - 12.) / 2.,
+                    ),
+                    size: size(12., 12.),
+                },
+                bounds,
+            }
+        });
+        let matrix = node.matrix.as_ref().map(|_| Bounds {
+            origin: point(node.x + theme::card::RAIL_W + padding, body_top),
+            size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
+        });
+        let rack = (!node.rack_stages.is_empty()).then(|| Bounds {
+            origin: point(node.x + theme::card::RAIL_W + padding, body_top),
+            size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
+        });
+        let meter_stride = theme::card::METER_H + theme::card::METER_CHANNEL_GAP;
+        let plot = Bounds {
+            origin: point(node.x + theme::card::RAIL_W + padding, body_top),
+            size: size(
+                width - theme::card::RAIL_W - 2. * padding - 2. * meter_stride - 4.,
+                node.body_height,
+            ),
+        };
+        let curve = node.curve.is_some().then_some(plot);
+        let spectrum = node.spectrum.then_some(plot);
         Self {
             card: Bounds {
                 origin: point(node.x, node.y),
-                size: size(width, node.height()),
+                size: size(width, height),
+            },
+            rail: Bounds {
+                origin: point(node.x, node.y),
+                size: size(theme::card::RAIL_W, height),
             },
             icon: Bounds {
-                origin: point(node.x + padding, node.y + padding + 6.),
-                size: size(icon_size, icon_size),
+                origin: point(
+                    node.x + theme::card::RAIL_W + 8.,
+                    node.y + (theme::card::HEADER_H - theme::card::ICON_SIZE) / 2.,
+                ),
+                size: size(theme::card::ICON_SIZE, theme::card::ICON_SIZE),
             },
-            title: TextLayout::new(text_left, title_top, text_width, 12.),
-            detail: TextLayout::new(text_left, title_top + 15., text_width, theme::TEXT_XS),
-            more: Bounds {
-                origin: point(node.x + width - padding - 16., node.y + 24.),
-                size: size(16., 16.),
-            },
-            meter: Bounds {
-                origin: point(node.x + padding, node.y + theme::card::METER_Y),
-                size: size(theme::card::TRACK_WIDTH, theme::card::METER_HEIGHT),
-            },
-            fader: Bounds {
-                origin: point(node.x + padding, node.y + theme::card::FADER_Y),
-                size: size(theme::card::TRACK_WIDTH, theme::card::TRACK_HEIGHT),
-            },
-            balance: Bounds {
-                origin: point(node.x + padding, node.y + theme::card::BALANCE_Y),
-                size: size(theme::card::TRACK_WIDTH, theme::card::TRACK_HEIGHT),
-            },
-            gain_value: TextLayout::new(
-                node.x + width - padding - theme::card::VALUE_WIDTH,
-                node.y + 60.,
-                theme::card::VALUE_WIDTH,
-                10.,
+            title: TextLayout::new(
+                node.x + theme::card::RAIL_W + 8. + theme::card::ICON_SIZE + 6.,
+                node.y + (theme::card::HEADER_H - theme::card::TITLE_SIZE - 2.) / 2.,
+                theme::card::TITLE_WIDTH,
+                theme::card::TITLE_SIZE,
             ),
-            balance_value: TextLayout::new(
-                node.x + width - padding - theme::card::VALUE_WIDTH,
-                node.y + 84.,
-                theme::card::VALUE_WIDTH,
-                10.,
+            badge: Bounds {
+                origin: point(
+                    node.x + width - padding - theme::card::BADGE_SIZE - 18.,
+                    node.y + (theme::card::HEADER_H - theme::card::BADGE_SIZE) / 2.,
+                ),
+                size: size(theme::card::BADGE_SIZE, theme::card::BADGE_SIZE),
+            },
+            expand: Bounds {
+                origin: point(
+                    node.x + width - padding - theme::card::BADGE_SIZE,
+                    node.y + (theme::card::HEADER_H - theme::card::BADGE_SIZE) / 2.,
+                ),
+                size: size(theme::card::BADGE_SIZE, theme::card::BADGE_SIZE),
+            },
+            body: Bounds {
+                origin: point(node.x + theme::card::RAIL_W + padding, body_top),
+                size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
+            },
+            detail: TextLayout::new(
+                node.x + theme::card::RAIL_W + padding,
+                body_top,
+                width - theme::card::RAIL_W - 2. * padding,
+                theme::TEXT_XS,
             ),
+            meter,
+            knobs,
+            chip,
+            matrix,
+            rack,
+            curve,
+            spectrum,
             inputs,
+            input_hints,
             output: node.has_output.then_some((node.x + width, port_y)),
+            output_hint,
             scale: 1.,
         }
     }
@@ -108,21 +311,45 @@ impl NodeLayout {
     pub fn project(&self, camera: Camera) -> Self {
         Self {
             card: camera.project_rect(self.card),
+            rail: camera.project_rect(self.rail),
             icon: camera.project_rect(self.icon),
             title: self.title.project(camera),
+            badge: camera.project_rect(self.badge),
+            expand: camera.project_rect(self.expand),
+            body: camera.project_rect(self.body),
             detail: self.detail.project(camera),
-            more: camera.project_rect(self.more),
-            meter: camera.project_rect(self.meter),
-            fader: camera.project_rect(self.fader),
-            balance: camera.project_rect(self.balance),
-            gain_value: self.gain_value.project(camera),
-            balance_value: self.balance_value.project(camera),
+            meter: self.meter.project(camera),
+            knobs: self
+                .knobs
+                .iter()
+                .map(|knob| KnobLayout {
+                    dial: camera.project_rect(knob.dial),
+                    label: knob.label.project(camera),
+                    value: knob.value.project(camera),
+                })
+                .collect(),
+            chip: self.chip.as_ref().map(|chip| ChipLayout {
+                bounds: camera.project_rect(chip.bounds),
+                icon: camera.project_rect(chip.icon),
+                label: chip.label.project(camera),
+                chevron: camera.project_rect(chip.chevron),
+            }),
+            matrix: self.matrix.map(|bounds| camera.project_rect(bounds)),
+            rack: self.rack.map(|bounds| camera.project_rect(bounds)),
+            curve: self.curve.map(|bounds| camera.project_rect(bounds)),
+            spectrum: self.spectrum.map(|bounds| camera.project_rect(bounds)),
             inputs: self
                 .inputs
                 .iter()
                 .map(|anchor| camera.world_to_canvas(*anchor))
                 .collect(),
+            input_hints: self
+                .input_hints
+                .iter()
+                .map(|hint| hint.project(camera))
+                .collect(),
             output: self.output.map(|anchor| camera.world_to_canvas(anchor)),
+            output_hint: self.output_hint.as_ref().map(|hint| hint.project(camera)),
             scale: camera.zoom,
         }
     }

@@ -29,7 +29,11 @@ pub(in crate::ui::window) struct ControlsKey {
     canvas: Option<(f32, f32)>,
     selected_nodes: Vec<moiren_core::graph::NodeId>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
-    connection: Option<(pages::graph_canvas::PortTarget, (f32, f32))>,
+    connection: Option<(
+        pages::graph_canvas::PortTarget,
+        (f32, f32),
+        Option<super::DetachedEdge>,
+    )>,
     hand_tool: bool,
     sidebar_open: bool,
     compact: bool,
@@ -49,7 +53,9 @@ impl ControlsKey {
             canvas: shell.canvas_size,
             selected_nodes: shell.selected_nodes.iter().copied().collect(),
             selected_route: shell.selected_route,
-            connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
+            connection: shell
+                .connection_drag
+                .map(|drag| (drag.port, drag.cursor, drag.detached)),
             hand_tool: shell.hand_tool,
             sidebar_open: shell.sidebar_open,
             compact: shell.compact,
@@ -175,8 +181,36 @@ impl HotSurface for GraphMeters {
         shell.update(cx, |shell, cx| {
             paint_graph_meter_frame(frame, shell, window, cx);
             paint_box_select_band(frame, shell, window, cx);
+            paint_fault_tooltip(frame, shell, window, cx);
         });
     }
+}
+
+/// The fault tooltip for the hovered card, when it wears one. Hover lives
+/// on the shell outside every panel key, so it reaches the screen through
+/// this layer alone: one notified frame paints it, and it stands until
+/// the next hover change repaints.
+fn paint_fault_tooltip(
+    frame: &CanvasFrame,
+    shell: &StudioShell,
+    window: &mut Window,
+    cx: &mut Context<StudioShell>,
+) {
+    let Some(id) = shell.hovered_node else {
+        return;
+    };
+    let Some(index) = frame
+        .world
+        .nodes
+        .iter()
+        .position(|node| node.node_id == Some(id))
+    else {
+        return;
+    };
+    if !frame.world.nodes[index].faulted {
+        return;
+    }
+    pages::graph_canvas_view::paint_fault_tooltip(frame, index, window, cx);
 }
 
 /// The rubber band, painted from the live drag state by the hot layer once
@@ -227,6 +261,10 @@ fn paint_graph_meter_frame(
     if shell.connection_drag.is_some() {
         return;
     }
+    // The HUD overlays (editing toolbar, overview, library handle) live in
+    // the cached panel beneath this layer: carve their rects out of every
+    // card's mask so live bars never paint over them.
+    let overlays = shell.graph_overlays.rects();
     window.with_content_mask(
         Some(ContentMask {
             bounds: frame.bounds,
@@ -242,13 +280,18 @@ fn paint_graph_meter_frame(
                 }
                 // The canvas paints cards in frame order, later ones on
                 // top. A later card overlapping this node's meter tracks
-                // would be cut into by the overlay's opaque tracks, so
-                // leave those bars to the cached canvas until the next
-                // rebuild.
+                // (or its spectrum plot) would be cut into by the overlay's
+                // opaque paint, so leave those to the cached canvas until
+                // the next rebuild.
                 let covered = frame.world.nodes[index + 1..]
                     .iter()
                     .zip(&frame.nodes[index + 1..])
-                    .any(|(_, later)| later.card.intersects(&layout.meter));
+                    .any(|(_, later)| {
+                        later.card.intersects(&layout.meter.bounds())
+                            || layout
+                                .spectrum
+                                .is_some_and(|plot| later.card.intersects(&plot))
+                    });
                 if covered {
                     continue;
                 }
@@ -261,19 +304,49 @@ fn paint_graph_meter_frame(
                         }
                     })
                 };
-                window.with_content_mask(
-                    Some(ContentMask {
-                        bounds: frame.window_rect(layout.card),
-                    }),
-                    |window| {
+                // The curve borrows the subscription table, which the paint
+                // below cannot hold across its `cx`: copy it into the
+                // shell's scratch buffer (sized once, never reallocated at
+                // steady state).
+                let axis = if layout.spectrum.is_some() {
+                    let state = shell.state.read(cx);
+                    let curve = state.node_spectra.curve(id);
+                    shell.spectrum_scratch.clear();
+                    if let Some(curve) = curve {
+                        shell.spectrum_scratch.extend_from_slice(curve.points);
+                    }
+                    curve.map(|curve| (curve.lo_hz, curve.hi_hz))
+                } else {
+                    None
+                };
+                let pieces = pages::graph_canvas::carve(frame.window_rect(layout.card), &overlays);
+                for piece in pieces {
+                    window.with_content_mask(Some(ContentMask { bounds: piece }), |window| {
+                        if layout.spectrum.is_some() {
+                            let curve =
+                                axis.map(|(lo_hz, hi_hz)| crate::ui::monitoring::SpectrumCurve {
+                                    points: &shell.spectrum_scratch,
+                                    lo_hz,
+                                    hi_hz,
+                                });
+                            pages::graph_canvas_view::paint_spectrum_body(
+                                frame,
+                                layout,
+                                &node.detail,
+                                node.tint(),
+                                curve,
+                                window,
+                                cx,
+                            );
+                        }
                         pages::graph_canvas_view::paint_meter_bars(
                             frame,
                             layout,
                             reading.as_ref(),
                             window,
                         );
-                    },
-                );
+                    });
+                }
             }
         },
     );
@@ -281,6 +354,26 @@ fn paint_graph_meter_frame(
     {
         shell.trace.borrow_mut().graph_meter_paints += 1;
     }
+}
+
+/// The shell's live spectrum curve for the canvas paint closure, copied
+/// out at rebuild time (an analyzer's 121 points) so the cached paint owns
+/// what it draws. `None` paints the plot's furniture alone.
+pub(in crate::ui::window) fn node_spectrum(
+    this: &Entity<StudioShell>,
+) -> Rc<pages::graph_canvas_view::NodeSpectrumFn> {
+    let this = this.clone();
+    Rc::new(move |id, cx: &App| {
+        let state = this.read(cx).state.read(cx);
+        state
+            .node_spectra
+            .curve(id)
+            .map(|curve| pages::graph_canvas_view::NodeSpectrumReading {
+                points: curve.points.into(),
+                lo_hz: curve.lo_hz,
+                hi_hz: curve.hi_hz,
+            })
+    })
 }
 
 /// The shell's live meter readings for the canvas paint closure: display

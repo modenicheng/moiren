@@ -1,8 +1,11 @@
+use moiren_core::graph::NodeId;
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
+use moiren_engine::spectrum::SpectrumWindow;
 use moiren_signal::{
     BlockInit, Bus, BusConfig, PumpBudget, PumpReport, RegisterError, Shape, StreamBlock,
     SubscribeError, Subscriber, SubscriptionOptions, Topic,
 };
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -15,11 +18,41 @@ use std::time::{Duration, Instant};
 /// their peaks. Sixteen queued slots hold ~67 ms of backlog for slower readers.
 const LEVEL_STREAM_DEPTH: usize = 16;
 
+/// Spectrum windows stream too, so the relay never overwrites a window the
+/// display has not drained; a display only needs the newest frame to look
+/// right, so four slots (~40 ms at the default hop cadence) are plenty.
+const SPECTRUM_STREAM_DEPTH: usize = 4;
+
 pub type LevelTopic = StreamBlock<AudioWindow, ChannelLevel>;
+pub type SpectrumTopic = StreamBlock<SpectrumWindow, f32>;
+
+/// The shape a spectrum topic is registered for: one publication carries
+/// `channels × (fft_size / 2 + 1)` one-sided magnitudes, so either change
+/// re-registers the topic under a new identity the subscribers follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpectrumShape {
+    pub channels: usize,
+    pub fft_size: usize,
+}
+
+impl SpectrumShape {
+    /// Magnitudes one application-topic publication carries.
+    pub fn capacity(&self) -> usize {
+        self.channels * (self.fft_size / 2 + 1)
+    }
+
+    /// Frames one engine window carries: the block the bridge transforms.
+    pub fn window_capacity(&self) -> usize {
+        self.channels * self.fft_size
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignalTopics {
-    pub node_levels: std::collections::BTreeMap<moiren_core::graph::NodeId, Topic<LevelTopic>>,
+    pub node_levels: BTreeMap<NodeId, Topic<LevelTopic>>,
+    /// One topic per spectrum analyzer node of the running graph, at the
+    /// shape its active configuration publishes.
+    pub node_spectra: BTreeMap<NodeId, Topic<SpectrumTopic>>,
     pub monitor_input: Topic<LevelTopic>,
     pub monitor_output: Topic<LevelTopic>,
     pub tone_output: Topic<LevelTopic>,
@@ -28,6 +61,7 @@ pub struct SignalTopics {
 pub(crate) struct SignalService {
     bus: Bus,
     pub topics: SignalTopics,
+    spectrum_shapes: BTreeMap<NodeId, SpectrumShape>,
     next_poll: Instant,
     copy_budget: usize,
     poll_timer: moiren_engine::meter::MeterPollingTimer,
@@ -48,6 +82,7 @@ impl SignalService {
         Ok(Self {
             bus,
             topics,
+            spectrum_shapes: Default::default(),
             next_poll: Instant::now(),
             copy_budget: 256 * 1024,
             poll_timer: Default::default(),
@@ -102,6 +137,7 @@ impl SignalTopics {
         };
         Ok(Self {
             node_levels: Default::default(),
+            node_spectra: Default::default(),
             monitor_input: bus.register_stream_block(
                 "monitor/input/output/level",
                 initial,
@@ -134,14 +170,14 @@ impl SignalService {
             .copied()
             .collect();
         for id in removed {
-            let topic = self
-                .topics
-                .node_levels
-                .remove(&id)
-                .expect("existing level topic");
+            // Unregister before forgetting the topic: a refused close (the
+            // bridge still leasing the publisher) must retry next time
+            // instead of leaking the topic until the owner retires.
+            let topic = self.topics.node_levels[&id].clone();
             self.bus
                 .unregister(&topic)
                 .map_err(|error| error.to_string())?;
+            self.topics.node_levels.remove(&id);
         }
         for node in graph.nodes() {
             if self.topics.node_levels.contains_key(&node.id()) {
@@ -171,6 +207,66 @@ impl SignalService {
 
     pub(super) fn clear_node_levels(&mut self) {
         for topic in std::mem::take(&mut self.topics.node_levels).into_values() {
+            let _ = self.bus.unregister(&topic);
+        }
+    }
+
+    /// Register one spectrum topic per analyzer node at the shape its
+    /// running configuration publishes. A node whose shape changed (FFT
+    /// size, channel count) or that left the graph is unregistered first:
+    /// the fresh registration is a new identity, which is how subscribers
+    /// learn to resubscribe at the right capacity.
+    pub(super) fn prepare_node_spectra(
+        &mut self,
+        shapes: &BTreeMap<NodeId, SpectrumShape>,
+    ) -> Result<(), String> {
+        let stale: Vec<_> = self
+            .topics
+            .node_spectra
+            .keys()
+            .filter(|id| self.spectrum_shapes.get(*id) != shapes.get(*id))
+            .copied()
+            .collect();
+        for id in stale {
+            let topic = self.topics.node_spectra[&id].clone();
+            self.bus
+                .unregister(&topic)
+                .map_err(|error| error.to_string())?;
+            self.topics.node_spectra.remove(&id);
+            self.spectrum_shapes.remove(&id);
+        }
+        for (&id, &shape) in shapes {
+            if self.topics.node_spectra.contains_key(&id) {
+                continue;
+            }
+            let topic = self
+                .bus
+                .register_stream_block(
+                    &format!("node/{id:?}/spectrum"),
+                    BlockInit {
+                        header: SpectrumWindow {
+                            timeline_epoch: 0,
+                            frame_start: 0,
+                            frame_end: 0,
+                            sample_rate: 0.,
+                            fft_size: shape.fft_size,
+                            channels: shape.channels,
+                        },
+                        element: 0.,
+                        capacity: shape.capacity(),
+                    },
+                    SPECTRUM_STREAM_DEPTH,
+                )
+                .map_err(|error| error.to_string())?;
+            self.topics.node_spectra.insert(id, topic);
+            self.spectrum_shapes.insert(id, shape);
+        }
+        Ok(())
+    }
+
+    pub(super) fn clear_node_spectra(&mut self) {
+        self.spectrum_shapes.clear();
+        for topic in std::mem::take(&mut self.topics.node_spectra).into_values() {
             let _ = self.bus.unregister(&topic);
         }
     }
@@ -448,6 +544,7 @@ mod tests {
         let mut service = SignalService {
             bus,
             topics,
+            spectrum_shapes: Default::default(),
             next_poll: now,
             copy_budget: 256 * 1024,
             poll_timer: Default::default(),

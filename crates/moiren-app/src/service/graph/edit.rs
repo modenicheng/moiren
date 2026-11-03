@@ -82,6 +82,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 builtin: super::BuiltinState::for_kind(kind),
                 source: None,
                 output_endpoint_id: None,
+                tint: None,
             });
         }
         GraphEdit::SetMixer { node, state } => {
@@ -123,8 +124,52 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .connect(source, destination, SendParams::default())
                 .map_err(|e| e.to_string())?;
         }
+        GraphEdit::ConnectReplacing {
+            source,
+            destination,
+        } => {
+            // The candidate only swaps in on full success, so a failed
+            // connect half leaves the displaced edge exactly where it was.
+            if let Some(edge) = next
+                .graph
+                .edges()
+                .iter()
+                .find(|edge| edge.dst_port() == destination)
+                .map(|edge| edge.id())
+            {
+                next.graph.disconnect(edge).map_err(|e| e.to_string())?;
+            }
+            next.graph
+                .connect(source, destination, SendParams::default())
+                .map_err(|e| e.to_string())?;
+        }
         GraphEdit::Disconnect(edge) => {
             next.graph.disconnect(edge).map_err(|e| e.to_string())?;
+        }
+        GraphEdit::Reconnect { edge, destination } => {
+            // The candidate only swaps in on full success: a failed
+            // connect half leaves the moved edge feeding its old input and
+            // the displaced edge untouched.
+            let source = next
+                .graph
+                .get_edge(edge)
+                .map_err(|e| e.to_string())?
+                .src_port();
+            if let Some(displaced) = next
+                .graph
+                .edges()
+                .iter()
+                .find(|existing| existing.dst_port() == destination && existing.id() != edge)
+                .map(|existing| existing.id())
+            {
+                next.graph
+                    .disconnect(displaced)
+                    .map_err(|e| e.to_string())?;
+            }
+            next.graph.disconnect(edge).map_err(|e| e.to_string())?;
+            next.graph
+                .connect(source, destination, SendParams::default())
+                .map_err(|e| e.to_string())?;
         }
         GraphEdit::SetSend { edge, params } => {
             next.graph
@@ -152,6 +197,17 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .find(|s| s.id == node)
                 .ok_or("The node does not exist")?
                 .label = label;
+            validate_edited_node(next, node)?;
+        }
+        GraphEdit::SetNodeTint { node, tint } => {
+            if tint.is_some_and(|tint| tint >= super::NODE_TINT_COUNT) {
+                return Err("Unknown tint".into());
+            }
+            next.nodes
+                .iter_mut()
+                .find(|s| s.id == node)
+                .ok_or("The node does not exist")?
+                .tint = tint;
             validate_edited_node(next, node)?;
         }
         GraphEdit::SetGain { node, gain } => {

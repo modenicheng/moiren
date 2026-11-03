@@ -31,10 +31,13 @@ impl Radix2Fft {
         }
     }
 
-    pub(super) fn transform_ring(&mut self, samples: &[f64], ring_write: usize, window: &[f64]) {
+    /// Forward transform of one time-ordered window, `samples[i] * window[i]`
+    /// for `i` in `0..size`; the result stays in `re`/`im`.
+    pub(super) fn transform(&mut self, samples: &[f32], window: &[f64]) {
+        debug_assert_eq!(samples.len(), self.size);
+        debug_assert_eq!(window.len(), self.size);
         for (index, &reversed) in self.bit_reversal.iter().enumerate() {
-            let ring_index = (ring_write + reversed) % self.size;
-            self.re[index] = samples[ring_index] * window[reversed];
+            self.re[index] = f64::from(samples[reversed]) * window[reversed];
             self.im[index] = 0.0;
         }
 

@@ -129,5 +129,6 @@ fn test_shell_body(
 ) -> super::StudioShell {
     let mut shell = super::StudioShell::new(state, window, cx, None);
     shell.preferences_path = None;
+    shell.autosave_path = None;
     shell
 }

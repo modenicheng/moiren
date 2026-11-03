@@ -45,6 +45,9 @@ pub struct GraphNodeDocument {
     pub mono: bool,
     #[serde(default)]
     pub swap: bool,
+    /// Palette-indexed card tint; absence keeps the category tint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<u8>,
     pub source: Option<SourceDocument>,
     pub output_endpoint_id: Option<String>,
 }
@@ -172,6 +175,7 @@ impl GraphDocument {
                     pan: state.pan,
                     mono: state.mono,
                     swap: state.swap,
+                    tint: state.tint,
                     mixer: state.mixer,
                     compressor: state.compressor,
                     builtin: state.builtin.resolved(node.kind()),
@@ -303,6 +307,7 @@ impl GraphDocument {
                 pan: node.pan,
                 mono: node.mono,
                 swap: node.swap,
+                tint: node.tint,
                 mixer: node.mixer,
                 compressor: node.compressor,
                 builtin: node.builtin.clone(),
@@ -380,6 +385,7 @@ impl GraphDocument {
                 pan: node.pan,
                 mono: node.mono,
                 swap: node.swap,
+                tint: node.tint,
                 mixer: node.mixer,
                 compressor: node.compressor,
                 builtin: node.builtin.resolved(node.kind.into()),

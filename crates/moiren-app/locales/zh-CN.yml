@@ -293,6 +293,9 @@ _version: 2
 "Preferences save queued":
   en: Preferences save queued
   zh-CN: 偏好设置保存已排队
+"Could not auto-save: %{error}":
+  en: "Could not auto-save: %{error}"
+  zh-CN: "无法自动保存：%{error}"
 "Inputs":
   en: Inputs
   zh-CN: 输入
@@ -1124,9 +1127,9 @@ _version: 2
 "%{frames} frame window":
   en: "%{frames} frame window"
   zh-CN: "%{frames} 帧窗口"
-"FFT %{fft} · hop %{hop}":
-  en: "FFT %{fft} · hop %{hop}"
-  zh-CN: "FFT %{fft} · 跳点 %{hop}"
+"FFT %{fft}":
+  en: "FFT %{fft}"
+  zh-CN: "FFT %{fft}"
 "Empty rack":
   en: Empty rack
   zh-CN: 空机架

@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-#[derive(Default)]
 pub(in crate::ui::window) struct MixerPresentation {
     pub order: Vec<NodeId>,
     pub faders: BTreeMap<NodeId, SliderSlot>,
@@ -45,12 +44,54 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub editing_node_pan: Option<NodeId>,
     pub inputs_collapsed: bool,
     pub sends_collapsed: bool,
+    /// The dock pane's current width, dragged on the divider from
+    /// [`Self::DOCK_WIDTH`]. Session presentation state, like the collapse
+    /// flags above: it is not persisted.
+    pub dock_width: f32,
     synced_revision: Option<u64>,
 }
 
+impl Default for MixerPresentation {
+    fn default() -> Self {
+        Self {
+            dock_width: Self::DOCK_WIDTH,
+            ..Self::zeroed()
+        }
+    }
+}
+
+impl MixerPresentation {
+    /// The derived-zero baseline `Default` overrides only `dock_width` on:
+    /// every field spelled once so the manual default stays obviously in
+    /// sync with the struct.
+    fn zeroed() -> Self {
+        Self {
+            order: Vec::new(),
+            faders: BTreeMap::new(),
+            sends: BTreeMap::new(),
+            strips: BTreeMap::new(),
+            inspector_faders: BTreeMap::new(),
+            send_inputs: BTreeMap::new(),
+            editing_send: None,
+            value_inputs: BTreeMap::new(),
+            editing_value: None,
+            balance_inputs: BTreeMap::new(),
+            editing_balance: None,
+            node_gain_inputs: BTreeMap::new(),
+            editing_node_gain: None,
+            node_pan_inputs: BTreeMap::new(),
+            editing_node_pan: None,
+            inputs_collapsed: false,
+            sends_collapsed: false,
+            dock_width: 0.,
+            synced_revision: None,
+        }
+    }
+}
+
 /// Per-slider bookkeeping kept next to its entity: the dragging flag lets the
-/// snapshot write-back in [`sync_slider_range`] stand down while a drag owns
-/// the thumb, and the behavior carries the shared wheel/double-click actions.
+/// snapshot write-back in [`sync_slider_range`] stand down while a drag owns the
+/// thumb, and the behavior carries the shared wheel/double-click actions.
 pub(in crate::ui::window) struct SliderSlot {
     pub state: Entity<base::slider::SliderState>,
     pub dragging: Rc<Cell<bool>>,
@@ -112,9 +153,16 @@ impl DispatchGate {
 }
 
 impl MixerPresentation {
-    /// Fixed strip and dock widths; strips are not user-resizable.
+    /// Fixed strip width; strips are not user-resizable.
     pub(in crate::ui::window) const STRIP_WIDTH: f32 = 160.;
+    /// The dock pane's default width; the divider drag resizes it live down
+    /// to one strip and up to [`Self::DOCK_MAX_FRACTION`] of the strip row.
     pub(in crate::ui::window) const DOCK_WIDTH: f32 = 360.;
+    /// The dock pane may never exceed this fraction of the strip row. The
+    /// pane's `max_w` enforces it in layout; the divider drag clamps to the
+    /// same fraction so the drawn border tracks the cursor instead of
+    /// lagging behind the cap.
+    pub(in crate::ui::window) const DOCK_MAX_FRACTION: f32 = 0.55;
 
     /// Every click-to-type text editor family in one walk: the send-gain
     /// editors plus the four value families (fader readout, balance label,

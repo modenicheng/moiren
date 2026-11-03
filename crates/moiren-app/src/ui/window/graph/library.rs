@@ -370,6 +370,10 @@ impl StudioShell {
         };
         let id = entry.id;
         self.node_positions.insert(id, pending.position);
+        // The spawned node is the whole selection: anything selected before
+        // must not ride along with the drag that usually follows a spawn.
+        self.selected_nodes.clear();
+        self.selected_nodes.insert(id);
         self.selected_node = Some(id);
         self.selected_route = None;
         self.open_inspector();

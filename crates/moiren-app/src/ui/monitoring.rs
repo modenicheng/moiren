@@ -42,10 +42,12 @@ const REST_BELOW_TICK_DB: f32 = 24.;
 pub(super) const REST_DB: f32 = SCALE_TICK_DB - REST_BELOW_TICK_DB;
 
 mod ballistics;
+mod spectrum;
 use crate::project::MeterDisplayPreferences;
 use ballistics::ChannelBallistics;
 #[cfg(test)]
 use ballistics::{PEAK_HOLD, RMS_INTEGRATION};
+pub use spectrum::{NodeSpectra, OctaveGrid, SPECTRUM_NOMINAL_SPAN_HZ, SpectrumCurve};
 
 /// Ballistics-processed presentation reading for one channel: the moving
 /// peak-programme bar fill, the held recent-maximum marker, and the smoothed
