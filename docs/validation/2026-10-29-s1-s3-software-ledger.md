@@ -5,6 +5,23 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [physical-master target1536 continuous slice](2026-11-03-physical-target1536-continuous.md)
+adds exact whole-wake/storage-boundary preparation coverage and runs one distinct
+remote six-second changing-source acquisition, concurrently with host offline/
+headless integration. Actual Shared480 source and Shared336 output retain the
+published704/706/min1346/target1536 budget. Source, graph and isolated OBS join
+without forced cleanup; graph exit1 remains unqualified, not a quality PASS.
+Incomplete scalar callback history and the teardown discontinuity are retained.
+Strict Playback replay refuses that incomplete history; all830464OBS frames
+remain unassessed rather than being cropped, interpolated or called passed.
+The reviewed RMS/coverage PNG and45compact entries are individually verified;
+closed inputs remain unchanged and final remote audit finds no owners/tasks.
+Concurrent clean Windows feature-workspace passes2360/9ignored/0failed plus
+all-target check, strict Clippy and fmt. This is bounded evidence accounting,
+not a new audio defect or a reason to repeat the same native test.
+First-packet work remains deferred; no unchanged soak, physical claim, default
+promotion or invented software prerequisite blocks independent development.
+
 The [bounded-audit repair](2026-11-03-bounded-native-audit.md) addresses the
 observed43.7MB evidence-wrapper amplification without another audio run.
 Engine/graph histories become explicitly unvalidated path/bytes/hash/JSON

@@ -687,3 +687,57 @@ fn packet480_engine64_lower_target_keeps_capacity_burst_and_master_bounds_separa
         }
     }
 }
+
+#[test]
+fn physical_master_packet480_target1536_retains_whole_wake_and_storage_margin() {
+    use moiren_windows_audio::latency::LatencyBudgetError;
+
+    let options = VirtualBufferOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 4800,
+            target_frames: 1536,
+            jitter_frames: 96,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 480,
+            max_gap_frames: 512,
+            source: DeliveryTimingSource::Declared,
+        }),
+        recovery_cap_periods: Some(8),
+    };
+    let prepared = options.prepare_budget(48_000, 64, 704).unwrap();
+    let queue = prepared.queue.unwrap();
+    assert_eq!(prepared.engine_burst_frames, 704);
+    assert_eq!(prepared.native_transfer_frames, 706);
+    assert_eq!(prepared.native_packet_frames, None);
+    assert_eq!(queue.low_water_frames, 738);
+    assert_eq!(queue.modeled_minimum_frames, Some(1346));
+    assert_eq!(queue.prime_frames, 1536);
+    assert_eq!(queue.servo_reference_frames, 1536);
+    // 1536 target + 480 native publication + 706 transfer + 32 FIR.
+    for (capacity_frames, admitted) in [(2753, false), (2754, true), (8192, true)] {
+        let candidate = VirtualBufferOptions {
+            input: TransportInputPolicy::Target {
+                capacity_frames,
+                target_frames: 1536,
+                jitter_frames: 96,
+            },
+            ..options
+        };
+        let actual = candidate.prepare_budget(48_000, 64, 704);
+        if admitted {
+            let actual = actual.unwrap();
+            assert_eq!(actual.queue.unwrap().prime_frames, 1536);
+            assert_eq!(actual.queue.unwrap().modeled_minimum_frames, Some(1346));
+            assert_eq!(actual.native_transfer_frames, 706);
+        } else {
+            assert_eq!(actual, Err(LatencyBudgetError::InsufficientInputBudget));
+        }
+    }
+    assert!(prepared.admit_native_packet(480).is_ok());
+    assert_eq!(
+        prepared.admit_native_packet(481),
+        Err(LatencyBudgetError::InsufficientInputBudget)
+    );
+}
