@@ -375,6 +375,7 @@ impl CanvasWorld {
                 NodeKind::Limiter => ("wall", theme::NODE_DSP),
                 NodeKind::Rack => ("list-details", theme::NODE_UTILITY),
                 NodeKind::ChannelMapper => ("route", theme::NODE_UTILITY),
+                NodeKind::Plugin => ("sliders", theme::NODE_DSP),
             };
             let mut card = node(
                 &key,
