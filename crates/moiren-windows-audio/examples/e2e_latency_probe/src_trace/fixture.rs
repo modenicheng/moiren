@@ -201,6 +201,9 @@ impl Fixture {
             std::thread::yield_now();
         }
     }
+    pub fn callback_count(&self) -> u64 {
+        self.target / 32
+    }
     pub fn close(&mut self) {
         drop(self.commands.take());
         drop(self.host.take());

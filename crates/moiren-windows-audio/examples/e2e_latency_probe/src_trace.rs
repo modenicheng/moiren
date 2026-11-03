@@ -15,6 +15,10 @@ const MAX_ARCHIVE_BYTES: usize = 192 * 1024 * 1024;
 #[path = "src_trace/stream.rs"]
 mod stream;
 
+#[path = "src_trace/sampler.rs"]
+mod sampler;
+pub(super) use sampler::NativeSrcSampler;
+
 #[cfg(test)]
 #[path = "src_trace/fixture.rs"]
 mod fixture;
@@ -199,6 +203,73 @@ fn persist(path: &Path, artifact: &impl serde::Serialize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn src_stream_keeps_collecting_while_control_does_not_poll() {
+        let mut fixture = fixture::Fixture::new();
+        let directory = std::env::temp_dir().join(format!(
+            "moiren-src-control-pause-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let summary_path = directory.join("src-trace.json");
+        let chunk_path = directory.join("src-trace.chunks.jsonl");
+        let mut stream =
+            NativeSrcSampler::open(&fixture.observations.retain_session().unwrap(), &chunk_path)
+                .unwrap();
+        // Simulate a control operation that cannot service trace.poll(). The
+        // audio owner keeps progressing beyond the 256-callback history ring.
+        for _ in 0..12 {
+            fixture.callbacks(50);
+            stream.wait_until_collected(fixture.callback_count());
+        }
+        fixture.close();
+        let mut report = None;
+        stream.finish(&summary_path, &mut report).unwrap();
+        let summary: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&summary_path).unwrap()).unwrap();
+        std::fs::remove_file(summary_path).unwrap();
+        std::fs::remove_file(chunk_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+        assert_eq!(summary["history_complete"], true);
+        for boundary in summary["trace"]["boundaries"].as_array().unwrap() {
+            assert_eq!(boundary["total_callbacks"], 600);
+            assert_eq!(boundary["missing_callbacks"], 0);
+        }
+        assert_eq!(summary["qualified"], false);
+    }
+
+    #[test]
+    fn src_stream_still_refuses_an_overwritten_interior_history() {
+        let mut fixture = fixture::Fixture::new();
+        let mut collector = fixture
+            .observations
+            .retain_session()
+            .unwrap()
+            .src_trace_collector(2048)
+            .unwrap();
+        fixture.callbacks(200);
+        collector.poll();
+        fixture.callbacks(244);
+        collector.poll();
+        fixture.callbacks(300);
+        collector.poll();
+        fixture.close();
+        collector.finish();
+        let trace = collector.artifact();
+        assert!(!trace.history_complete);
+        for boundary in &trace.boundaries {
+            assert_eq!(boundary.total_callbacks, 744);
+            assert_eq!(boundary.missing_callbacks, 44);
+            assert_eq!(boundary.checkpoints.len(), 700);
+            assert_eq!(boundary.checkpoints[443].sequence, 444);
+            assert_eq!(boundary.checkpoints[444].sequence, 489);
+        }
+    }
 
     #[test]
     fn src_trace_export_is_bounded_create_new_and_preserves_first_evidence() {

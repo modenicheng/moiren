@@ -832,9 +832,6 @@ pub fn run_vad(
         soak_control::run_until(
             duration,
             |elapsed| {
-                if let Some(trace) = cleanup.src_trace.as_mut() {
-                    trace.poll();
-                }
                 if let Some(journal) = journal.as_ref() {
                     journal.check()?;
                 }
@@ -909,7 +906,7 @@ pub(super) struct VadCleanup<'a> {
     professional_observations:
         Option<moiren_windows_audio::engine_backend::ProfessionalObservations>,
     retained_native: Option<moiren_windows_audio::engine_backend::NativeObservationReadHandle>,
-    src_trace: Option<src_trace::NativeSrcStream>,
+    src_trace: Option<src_trace::NativeSrcSampler>,
     src_trace_path: Option<PathBuf>,
     src_chunks_path: Option<PathBuf>,
     retained_professional:
@@ -988,9 +985,6 @@ impl VadCleanup<'_> {
                 let native = self.observations.as_ref().and_then(|view| view.snapshot());
                 (exports, engine, native)
             });
-        if let Some(trace) = self.src_trace.as_mut() {
-            trace.poll();
-        }
         let runtime = exports
             .iter()
             .find(|view| view.endpoint_id == self.endpoint_id);
@@ -1258,13 +1252,12 @@ impl VadCleanup<'_> {
                 .and_then(|view| view.retain_session());
         }
         if let Some(retained) = &self.retained_native {
-            let mut trace = src_trace::NativeSrcStream::open(
+            let trace = src_trace::NativeSrcSampler::open(
                 retained,
                 self.src_chunks_path
                     .as_deref()
                     .context("SRC chunk path missing")?,
             )?;
-            trace.poll();
             self.src_trace = Some(trace);
         }
         if let Some(expected_node) = physical_output {
@@ -1565,9 +1558,6 @@ impl soak_cleanup::PhysicalVadCleanup for VadCleanup<'_> {
 
 impl soak_cleanup::Cleanup for VadCleanup<'_> {
     fn observe_final(&mut self) -> Result<()> {
-        if let Some(trace) = self.src_trace.as_mut() {
-            trace.poll();
-        }
         if let Some(observer) = &self.observer {
             let mut engine = engine_snapshot_value(&observer.snapshot());
             engine["observations"] = serde_json::json!(

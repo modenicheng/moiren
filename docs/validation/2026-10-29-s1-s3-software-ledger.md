@@ -2159,3 +2159,34 @@ The final independent read-only catalog/identity audit confirms unchanged defaul
 render controls, protected OBS/QQMusic, driver/boot, bare healthy bus and no owners.
 First-packet work remains deferred; defaults, original27dirty/cache files and
 overall S1-S3 qualification status are unchanged. No push or soak is left running.
+
+### Independent SRC History Collection
+
+The [independent control sampler](2026-11-03-independent-src-sampler.md) removes
+the probe's dependence on synchronous main-control polling, with actual RED then
+GREEN, explicit stop/join/Drop handling and unchanged strict history refusal.
+The previous444->489 gap is reproduced as44overwritten scalar checkpoints;
+its original control phase remains unidentified. No audio/driver/RT/default or
+history-cap change occurs. The full pure probe suite passes738/1ignored;
+strict probe Clippy and release build pass.
+
+One changed-tool remote target1536 acquisition retains all6041callbacks with
+missing0/unretained0, finalized writer and complete persisted stream. No forced
+cleanup is needed. Remote closed replay now runs through6036callbacks before
+the retained6037reset/epoch barrier; its event phase remains unproven. The OBS
+903168frame recording is fully categorized:281152fixed-map compatible,64residual,
+and explicit training/silence/outside/unknown/unsupported denominators. The actual
+PNG is viewed. Nominal master projection has no native submission witness;
+its -379881frame file-origin alignment is not latency. Quality and physical
+qualification remain false, physical latency null. No unchanged retry follows.
+
+All19closed input/tool hashes remain unchanged. Compact ZIP152668bytes and all49
+payloads are length/hash verified; raw/scalar data remain remote. Final remote
+audit confirms no owners/tasks and unchanged protected OBS/QQMusic, defaults,
+render controls, driver/boot and healthy bare bus. First-packet work stays
+deferred; native/physical qualification remains separate from software progress.
+
+The isolated Windows feature-workspace passes2360tests/9ignored/0failed across
+71harnesses, separately from738probe tests. Feature-on all-target check, strict
+Clippy and fmt exit0. All1400archive entries and four source overlays are
+accounted for; all27preserved dirty/cache hashes remain unchanged. No push.
