@@ -2395,3 +2395,32 @@ workspace/audio/RT Clippy, workspace/RT fmt and ordinary release all exit0.
 Independent P2 is closed;13code pins match both isolated sources/worktree,
 27preserved dirty/cache hashes and unrelated main audit stay unchanged.
 The release binary/hash is in the receipt; no native execution or push occurs.
+
+### Single Post-Fix Process Target1280 Acceptance
+
+The [target1280 receipt](2026-11-03-process-target1280.md) records one distinct
+native admission/replacement question after `2dd538e`, not another unchanged
+soak. Actual joined prepared/admitted demand528, empirical source generation1
+and target1280/16384/96 are confirmed for8001ms while the20s indexed changing
+source is still submitting. Both owner PCM/cursor/encoded-render archives close:
+289/1147releases,97120/385408encoded frames, with16retained FIR input frames
+each. Exact packet/cursor accounting and evidence-loss/rejection counts agree;
+no waveform association or physical delay is inferred.
+
+Reported steady fault counters are0, with startup2544priming/160discard kept
+separate. The timing gate is **not clear**:3gap-bound violations, maximum
+11.1103ms against522frames/10.875ms, and1master wait timeout of unknown phase.
+No gate is weakened, default promoted, candidate retried, buffer enlarged or
+first-packet investigation resumed. Queue tail is only256/6882events covering
+0.293919s; complete storage and clean counters do not establish waveform quality.
+
+App/source/isolatedOBS close0 without force. Compact375325byteZIP/sevenpayloads
+are length/hash-verified; the warning-bearing figure is inspected and raw audio
+stays remote. Two closed-analysis tool failures and corrected v3 are retained,
+without audio rerun. Final audit verifies231pins, no owners/running tasks and
+unchanged protected OBS/QQMusic, settings, driver/boot and bare bus. All27dirty/
+cache hashes and13production code pins stay unchanged; documentation-only local
+increment, no push. Independent scope review finds no additional actionable
+original S1-S3 product gap outside the already-separated native/desktop/waveform/
+sustained/physical acceptance. This does not declare overall S1-S3 completion
+or justify manufactured diagnostics and unchanged soaks.
