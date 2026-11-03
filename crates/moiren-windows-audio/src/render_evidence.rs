@@ -8,7 +8,7 @@
 //! Create the stream off the audio thread. Retain BOTH endpoints through native
 //! shutdown/join and reclaim them on the control side. In particular, the writer
 //! owns its staging allocation: keeping the reader alive does NOT make dropping
-//! the writer allocation-free. A future native hook must explicitly take the
+//! the writer allocation-free. A native hook must explicitly take the
 //! writer out of its stream before that stream is destroyed on an audio thread.
 //! `close` only publishes closure; it neither frees storage nor joins anything.
 //! Release acceptance is not proof of playback, audio quality, or physical latency.
@@ -89,6 +89,10 @@ pub struct RenderEvidenceSummary {
     pub overflow_packets: u64,
     pub reader_abandoned_packets: u64,
     pub invalid_attempts: u64,
+    /// Native reservations without a complete encoded/release witness. Includes
+    /// silent fallback and rejected staging; no accepted outcome is inferred.
+    pub unobserved_packets: u64,
+    pub unobserved_frames: u64,
     /// Staged packets closed without a known release result. Never accepted.
     pub pending_abandoned_packets: u64,
     pub pending_abandoned_frames: u64,
@@ -184,6 +188,8 @@ pub fn render_evidence_stream(
                 overflow_packets: 0,
                 reader_abandoned_packets: 0,
                 invalid_attempts: 0,
+                unobserved_packets: 0,
+                unobserved_frames: 0,
                 pending_abandoned_packets: 0,
                 pending_abandoned_frames: 0,
                 counters_saturated: false,
@@ -286,6 +292,35 @@ impl RenderEvidenceWriter {
 
     pub fn snapshot(&self) -> RenderEvidenceSummary {
         self.summary
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn is_fresh(&self) -> bool {
+        !self.is_closed()
+            && self.staged_frames.is_none()
+            && self.summary.attempts == 0
+            && self.summary.invalid_attempts == 0
+            && self.summary.unobserved_packets == 0
+    }
+
+    /// Record a native reservation whose encoded/release pair is unavailable.
+    /// Do not fabricate silent PCM or infer the fallback ReleaseBuffer result.
+    #[cfg(any(windows, test))]
+    pub(crate) fn record_unobserved(&mut self, frames: usize) {
+        add(
+            &mut self.summary.unobserved_packets,
+            1,
+            &mut self.summary.counters_saturated,
+        );
+        add(
+            &mut self.summary.unobserved_frames,
+            frames as u64,
+            &mut self.summary.counters_saturated,
+        );
     }
 
     /// Idempotent and allocation/deallocation-free. Unknown pending release

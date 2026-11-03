@@ -41,6 +41,9 @@ mod idle_tests;
 #[cfg(test)]
 #[path = "owner/lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "owner/render_evidence_tests.rs"]
+mod render_evidence_tests;
 
 pub(super) trait AuxiliaryOwner: Send {
     fn activate(&self) -> Result<(), BackendError>;
@@ -171,13 +174,15 @@ impl Timeline {
 }
 
 pub(super) struct Worker {
-    handle: Option<JoinHandle<()>>,
+    handle: Option<JoinHandle<Option<crate::render_evidence::RenderEvidenceWriter>>>,
     started: Arc<AtomicBool>,
+    retired_render_evidence: Option<crate::render_evidence::RenderEvidenceWriter>,
 }
 impl Worker {
     fn join(&mut self) -> Result<(), BackendError> {
         if let Some(handle) = self.handle.take() {
-            handle.join().map_err(|_| BackendError::WorkerPanicked)?;
+            self.retired_render_evidence =
+                handle.join().map_err(|_| BackendError::WorkerPanicked)?;
         }
         Ok(())
     }
@@ -220,18 +225,21 @@ pub(super) fn spawn<S: ProcessingSample>(
                 "native worker started: master={}",
                 request.master,
             );
+            let mut retired_render_evidence = None;
             let result = catch_unwind(AssertUnwindSafe(|| {
-                native_owner(request, &tx, &worker_started)
+                native_owner(request, &tx, &worker_started, &mut retired_render_evidence)
             }));
             if result.is_err() {
                 let _ = tx.send(Err(BackendError::WorkerPanicked));
                 panic_state.fail(BackendError::WorkerPanicked);
             }
+            retired_render_evidence
         })
         .map_err(|e| BackendError::Failed(e.to_string()))?;
     let mut worker = Worker {
         handle: Some(handle),
         started,
+        retired_render_evidence: None,
     };
     loop {
         if cancel.is_cancelled() {
@@ -260,19 +268,21 @@ fn native_owner<S: ProcessingSample>(
     mut request: WorkerRequest<S>,
     sender: &mpsc::SyncSender<Result<NativeStreamInfo, BackendError>>,
     started: &AtomicBool,
+    retired_render_evidence: &mut Option<crate::render_evidence::RenderEvidenceWriter>,
 ) {
     // Match the physical and virtual paths' scheduling class: this thread
     // paces exclusive native deadlines. Registration failure is non-fatal.
     #[cfg(windows)]
     let _mmcss = crate::owner::Mmcss::audio();
     let native = (request.factory)();
-    let mut stream = match native {
+    let stream = match native {
         Ok(stream) => stream,
         Err(error) => {
             let _ = sender.send(Err(error));
             return;
         }
     };
+    let mut stream = RenderEvidenceStreamGuard::new(stream, retired_render_evidence);
     let info = stream.info();
     request
         .counters
@@ -409,6 +419,40 @@ fn native_owner<S: ProcessingSample>(
         // This is only a candidate: another worker's Stop/Drop or auxiliary
         // Join can still make the entire transport terminal during retirement.
         request.state.record_failure(error, recovery);
+    }
+}
+
+/// Move variable-size diagnostic storage out before native destruction on every
+/// return/unwind path. The thread result retains it until the control joiner.
+struct RenderEvidenceStreamGuard<'a> {
+    stream: Box<dyn NativeStream>,
+    retired: &'a mut Option<crate::render_evidence::RenderEvidenceWriter>,
+}
+impl<'a> RenderEvidenceStreamGuard<'a> {
+    fn new(
+        stream: Box<dyn NativeStream>,
+        retired: &'a mut Option<crate::render_evidence::RenderEvidenceWriter>,
+    ) -> Self {
+        Self { stream, retired }
+    }
+}
+impl std::ops::Deref for RenderEvidenceStreamGuard<'_> {
+    type Target = dyn NativeStream;
+    fn deref(&self) -> &Self::Target {
+        &*self.stream
+    }
+}
+impl std::ops::DerefMut for RenderEvidenceStreamGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.stream
+    }
+}
+impl Drop for RenderEvidenceStreamGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(mut writer) = self.stream.take_render_evidence() {
+            writer.close();
+            *self.retired = Some(writer);
+        }
     }
 }
 

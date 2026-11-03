@@ -471,3 +471,19 @@ fn frames_are_copy_and_serialize_exact_bytes_and_signed_release_result() {
     assert_eq!(summary["format"]["sample_format"], "float32");
     assert_eq!(summary["config"]["max_packet_frames"], 1);
 }
+
+#[test]
+fn native_unobserved_reservations_do_not_fabricate_release_outcomes() {
+    let (mut writer, mut reader) = render_evidence_stream(config(1, 1), format()).unwrap();
+    assert_allocates_nothing(|| writer.record_unobserved(17));
+    assert_eq!(writer.snapshot().unobserved_packets, 1);
+    assert_eq!(writer.snapshot().unobserved_frames, 17);
+    assert_eq!(writer.snapshot().accepted_frames, 0);
+    assert_eq!(writer.snapshot().rejected_frames, 0);
+    assert_eq!(writer.snapshot().attempts, 0);
+    assert!(reader.pop().is_none());
+    writer.summary.unobserved_frames = u64::MAX;
+    assert_allocates_nothing(|| writer.record_unobserved(1));
+    assert!(writer.snapshot().counters_saturated);
+    assert_eq!(writer.snapshot().unobserved_frames, u64::MAX);
+}

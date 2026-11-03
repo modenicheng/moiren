@@ -44,6 +44,14 @@ use windows::{
     core::{HSTRING, Interface, PCWSTR, implement},
 };
 
+mod render_evidence;
+#[cfg(test)]
+#[path = "wasapi/render_evidence_tests.rs"]
+mod render_evidence_tests;
+use render_evidence::{
+    release_render_evidence, stage_render_evidence, validate_render_evidence_attachment,
+};
+
 #[derive(Debug, Clone)]
 pub struct WasapiOptions {
     pub endpoint_id: String,
@@ -170,6 +178,7 @@ pub struct WasapiStream {
     render: Option<IAudioRenderClient>,
     device_clock: Option<PreparedDeviceClock>,
     capture_evidence: Option<crate::capture::PcmEvidenceWriter>,
+    render_evidence: Option<crate::render_evidence::RenderEvidenceWriter>,
     client: IAudioClient,
     event: OwnedHandle,
     info: NativeStreamInfo,
@@ -582,6 +591,7 @@ impl WasapiStream {
             render,
             device_clock,
             capture_evidence: None,
+            render_evidence: None,
             client,
             event,
             info: NativeStreamInfo {
@@ -1170,6 +1180,35 @@ impl NativeStream for WasapiStream {
             writer
         })
     }
+    fn render_evidence_format(&self) -> Option<crate::render_evidence::RenderEvidenceFormat> {
+        self.render
+            .as_ref()
+            .map(|_| render_evidence::negotiated_format(self.codec, self.info.sample_rate))
+    }
+    fn attach_render_evidence(
+        &mut self,
+        writer: crate::render_evidence::RenderEvidenceWriter,
+    ) -> Result<(), Box<(BackendError, crate::render_evidence::RenderEvidenceWriter)>> {
+        if let Err(error) = validate_render_evidence_attachment(
+            &writer,
+            self.codec,
+            self.info.sample_rate,
+            self.info.buffer_frames as usize,
+            self.started,
+            self.render.is_some(),
+            self.render_evidence.is_some(),
+        ) {
+            return Err(Box::new((error, writer)));
+        }
+        self.render_evidence = Some(writer);
+        Ok(())
+    }
+    fn take_render_evidence(&mut self) -> Option<crate::render_evidence::RenderEvidenceWriter> {
+        self.render_evidence.take().map(|mut writer| {
+            writer.close();
+            writer
+        })
+    }
     fn configure_render_queue(&mut self, policy: RenderQueuePolicy) -> Result<(), BackendError> {
         if self.started {
             return Err(unsupported(
@@ -1352,15 +1391,23 @@ impl NativeStream for WasapiStream {
         })?;
         let lease = PacketLease::new(render, count as u32, LeaseFallback::RenderSilent);
         if data.is_null() {
+            if let Some(writer) = self.render_evidence.as_mut() {
+                writer.record_unobserved(count);
+            }
             return Err(unsupported("render packet has a null data pointer"));
         }
         // A successful GetBuffer reserves this complete writable frame region.
         let bytes =
             unsafe { std::slice::from_raw_parts_mut(data, count * self.codec.frame_bytes()) };
-        self.codec
-            .encode(&input[..count], bytes)
-            .map_err(unsupported)?;
-        api("ReleaseBuffer(render)", lease.release())?;
+        if let Err(error) = self.codec.encode(&input[..count], bytes) {
+            if let Some(writer) = self.render_evidence.as_mut() {
+                writer.record_unobserved(count);
+            }
+            return Err(unsupported(error));
+        }
+        let staged = stage_render_evidence(bytes, count, self.render_evidence.as_mut());
+        let hr = release_render_evidence(lease, staged, self.render_evidence.as_mut());
+        api("ReleaseBuffer(render)", hr.ok())?;
         self.render_ready = false;
         self.stats.write_calls += 1;
         self.stats.written_frames += count as u64;
@@ -1377,6 +1424,9 @@ impl NativeStream for WasapiStream {
             owner.invalidate();
         }
         if let Some(writer) = self.capture_evidence.as_mut() {
+            writer.close();
+        }
+        if let Some(writer) = self.render_evidence.as_mut() {
             writer.close();
         }
         self.notifications.unregister()

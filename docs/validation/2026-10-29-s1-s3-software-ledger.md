@@ -2256,3 +2256,30 @@ archived as test-tool provenance. No unchanged audio rerun follows. Remote
 cleanup verifies and stops only two old owned report readers, restoring free
 memory without touching protected OBS/QQMusic, audio settings or drivers.
 Native submission evidence and physical acceptance remain open; no push.
+
+### Actual Native Render Hook and Retirement
+
+The [WASAPI hook](2026-11-03-native-render-evidence-hook.md) stages the actual
+encoded buffer before its lease ends, then preserves the exact ReleaseBuffer
+HRESULT and records failures before propagation. Diagnostic refusal never gates
+or retries submission. Silent fallbacks remain explicitly unobserved. Prepared
+writers require the actual layout, a complete packet budget and fresh state.
+Owner guards return scratch through the thread result for control-side join on
+normal exit, preparation failure, cancellation and unwind/native Drop failure.
+An independent review's cross-release reference finding is repaired by ending
+the stage-only helper before release; no Miri pass is claimed.
+
+The first isolated integration passes 2389 workspace tests/9ignored across
+71harnesses plus 248 standalone RT tests. Its separate pinned remote software
+binary passes 29 focused and 831 library tests/4ignored without touching audio
+or protected applications. Final-source and native-smoke results are recorded
+in the linked receipt. Backend/CLI collection and matched physical acceptance
+remain separate follow-ups; this is not S1-S3 completion or a default change.
+Final-source audio833/5ignored, focused31/nativeignored and RT248 pass with
+all-target check, strict audio Clippy and fmt. One corrected two-second remote
+native smoke passes:285actual releases,96000accepted/stored/observed encoded
+frames agree byte-for-byte, no evidence loss/rejection or timeout. Its original
+PS5 stderr-wrapper failure and fast-child exit-status control failure remain;
+both are reproduced and corrected before the distinct final task. Compact logs
+are length/hash-verified; final audit has no owners/tasks and unchanged protected
+OBS/QQMusic. This verifies the tap only, not a full app waveform or physical delay.

@@ -14,6 +14,7 @@ use moiren_engine::{
 };
 use moiren_windows_audio::capture;
 use moiren_windows_audio::native;
+use moiren_windows_audio::render_evidence;
 use moiren_windows_audio::stats;
 use moiren_windows_audio::virtual_owner::ClockTick;
 use process_loopback::{ProcessBridgeOptions, ProcessIdentity};

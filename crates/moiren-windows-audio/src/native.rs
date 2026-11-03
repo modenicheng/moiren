@@ -404,6 +404,27 @@ pub trait NativeStream {
     fn take_capture_evidence(&mut self) -> Option<crate::capture::PcmEvidenceWriter> {
         None
     }
+    /// Actual negotiated encoded layout; not a sample-format preset projection.
+    fn render_evidence_format(&self) -> Option<crate::render_evidence::RenderEvidenceFormat> {
+        None
+    }
+    /// Install before Start. Rejected preparation returns ownership unchanged.
+    /// The caller MUST take/retain the writer through native join and reclaim it
+    /// on control: the writer owns scratch even while its reader remains alive.
+    fn attach_render_evidence(
+        &mut self,
+        writer: crate::render_evidence::RenderEvidenceWriter,
+    ) -> Result<(), Box<(BackendError, crate::render_evidence::RenderEvidenceWriter)>> {
+        Err(Box::new((
+            BackendError::Unsupported("native render evidence is not supported".into()),
+            writer,
+        )))
+    }
+    /// Owner-only, nonpanicking transfer before stream destruction, including
+    /// preparation failure and unwind. Returned storage must survive native join.
+    fn take_render_evidence(&mut self) -> Option<crate::render_evidence::RenderEvidenceWriter> {
+        None
+    }
     /// Called during owner preparation, before Pump allocation and Start.
     /// Adapters must opt in to native queue admission rather than silently
     /// accepting a target they cannot enforce.
@@ -542,5 +563,31 @@ mod tests {
         );
         assert!(canonical_asio_driver_id("asio:driver name").is_err());
         assert!(canonical_asio_driver_id("asio:{01234567-89AB-CDEF-0123-456789ABCDEF}\0").is_err());
+    }
+
+    #[test]
+    fn unsupported_render_evidence_returns_prepared_writer_unchanged() {
+        use crate::render_evidence::*;
+        let (writer, _reader) = render_evidence_stream(
+            RenderEvidenceConfig {
+                capacity_frames: 512,
+                max_packet_frames: 512,
+            },
+            RenderEvidenceFormat {
+                sample_rate: 48_000,
+                sample_format: SampleFormat::Float32,
+                channels: 2,
+                container_bits: 32,
+                valid_bits: 32,
+            },
+        )
+        .unwrap();
+        let mut stream = UnobservedAdapter;
+        assert!(stream.render_evidence_format().is_none());
+        let error = stream.attach_render_evidence(writer).unwrap_err();
+        assert!(matches!(error.0, BackendError::Unsupported(_)));
+        assert_eq!(error.1.snapshot().attempts, 0);
+        assert!(!error.1.is_closed());
+        assert!(stream.take_render_evidence().is_none());
     }
 }
