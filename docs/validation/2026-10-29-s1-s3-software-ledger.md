@@ -2486,3 +2486,25 @@ users/settings/driver. Original transport failure and the earlier closed-wrapper
 null exit field remain explicit. No new acquisition, unchanged soak, first-packet
 investigation, lower default or physical claim follows. All27preexisting dirty/
 cache pins remain unchanged.
+
+### Current Desktop Exact-Demand Refusal And Replacement
+
+The [current desktop receipt](2026-11-03-desktop-exact-demand.md) verifies one
+distinct ordinary production UI question after the demand repair, not another
+stability soak. The pinned002aa21app exposes actual528demand, refuses1024 with
+minimum1161 = 528 + gap535 + jitter96 + lookahead2, and explicitly applies1280/
+16384/96. Native diagnostics and exact requested/active source identity agree.
+Original owner joins/reaps before replacement; confirmed owner overlaps the
+40s changing-marker schedule, then Stop/join/source-stop/Quit all complete.
+
+Task, supervisor, worker, app and source exit0 with no force or cleanup error.
+The33payload804110-byte compact archive is independently length/hash-verified;
+four actual screenshots are inspected. No OBS or PCM acquisition occurs. These
+are desktop/configuration/submission results, not waveform or physical proof;
+scheduled silent intervals and the stopped EventLimit refusal remain explicit.
+Independent final audit/SSH exit0 verifies38pin references across37unique files,
+no owners/running tasks and unchanged protected users/settings/driver/boot.
+Original S2/S3 read-only audits find no additional production code blocker.
+Retained/live-window native acceptance and original qualification remain open,
+without blocking independent development or reopening the deferred first packet.
+No default, quality gate, production code, preserved dirty pin or push changes.
