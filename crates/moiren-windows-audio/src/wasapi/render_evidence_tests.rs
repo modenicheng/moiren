@@ -28,6 +28,57 @@ fn evidence() -> (
 }
 
 #[test]
+fn render_operation_evidence_preserves_native_results_and_optional_clocks() {
+    use crate::render_evidence::RenderEventKind;
+    for kind in [
+        RenderEventKind::Start,
+        RenderEventKind::Stop,
+        RenderEventKind::Wait,
+        RenderEventKind::Write,
+    ] {
+        for failed in [false, true] {
+            let (mut writer, mut reader) = evidence();
+            assert_allocates_nothing(|| {
+                let mut event =
+                    render_evidence::RenderOperationEvidence::begin(true, kind, || Some(200));
+                event.sample.padding_frames = Some(17);
+                event.sample.ready = (kind == RenderEventKind::Wait).then_some(false);
+                event.finish(Some(&mut writer), failed, || Some(199));
+            });
+            let event = reader.pop_event().unwrap();
+            assert_eq!(event.sample.kind, kind);
+            assert_eq!(event.sample.failed, failed);
+            assert_eq!(event.sample.qpc_before_100ns, Some(200));
+            assert_eq!(event.sample.qpc_after_100ns, Some(199));
+            assert_eq!(event.sample.padding_frames, Some(17));
+            assert_eq!(event.packet_sequence, None);
+            assert_eq!(writer.snapshot().timeline.regressed_clocks, 1);
+        }
+    }
+    let (mut writer, mut reader) = evidence();
+    let event =
+        render_evidence::RenderOperationEvidence::begin(true, RenderEventKind::Write, || None);
+    event.finish(Some(&mut writer), true, || None);
+    assert_eq!(reader.pop_event().unwrap().sample.qpc_after_100ns, None);
+    assert_eq!(writer.snapshot().timeline.unavailable_clocks, 1);
+}
+
+#[test]
+fn disabled_render_operation_evidence_never_reads_clock_or_emits() {
+    let (mut writer, mut reader) = evidence();
+    assert_allocates_nothing(|| {
+        let event = render_evidence::RenderOperationEvidence::begin(
+            false,
+            crate::render_evidence::RenderEventKind::Write,
+            || panic!("disabled clock"),
+        );
+        event.finish(Some(&mut writer), false, || panic!("disabled clock"));
+    });
+    assert!(reader.pop_event().is_none());
+    assert_eq!(writer.snapshot().timeline.events, 0);
+}
+
+#[test]
 fn render_evidence_native_release_records_outcome_after_one_release() {
     for hr in [0, 1, -2_147_024_891] {
         let (mut writer, reader) = evidence();
@@ -66,7 +117,8 @@ fn render_evidence_native_release_records_outcome_after_one_release() {
                 Some(&mut writer),
             )
         });
-        assert_eq!(result.0, hr);
+        assert_eq!(result.0.0, hr);
+        assert_eq!(result.1, Some(1));
         assert_eq!(client.calls.get(), 1);
         for offset in 0..2 {
             let frame = reader.borrow_mut().pop().unwrap();
@@ -98,6 +150,9 @@ fn render_evidence_stage_refusal_does_not_gate_native_submission() {
     }
     let (mut writer, mut reader) = evidence();
     let client = Client(Cell::new(0));
+    writer.stage_packet(&[1; 8], 1).unwrap();
+    writer.finish_packet(0).unwrap();
+    reader.pop().unwrap();
     let hr = assert_allocates_nothing(|| {
         let staged = stage_render_evidence(&[9; 24], 3, Some(&mut writer));
         release_render_evidence(
@@ -106,14 +161,56 @@ fn render_evidence_stage_refusal_does_not_gate_native_submission() {
             Some(&mut writer),
         )
     });
-    assert_eq!(hr.0, 0);
+    assert_eq!(hr.0.0, 0);
+    assert_eq!(hr.1, None);
     assert_eq!(client.0.get(), 1);
     assert!(reader.pop().is_none());
     let summary = writer.snapshot();
-    assert_eq!(summary.attempts, 0);
+    assert_eq!(summary.attempts, 1);
     assert_eq!(summary.invalid_attempts, 1);
     assert_eq!(summary.unobserved_packets, 1);
     assert_eq!(summary.unobserved_frames, 3);
+}
+
+#[test]
+fn render_release_timeline_retains_packet_hresult_and_frontier_without_native_bytes() {
+    struct Client(HRESULT);
+    impl LeaseClient for Client {
+        fn release_packet(&self, _: u32, _: u32) -> windows::core::Result<()> {
+            unreachable!()
+        }
+        fn release_packet_hresult(&self, _: u32, _: u32) -> HRESULT {
+            self.0
+        }
+    }
+    for hr in [0, -42] {
+        let (mut writer, mut reader) = evidence();
+        let client = Client(HRESULT(hr));
+        assert_allocates_nothing(|| {
+            let mut event = RenderOperationEvidence::begin(
+                true,
+                crate::render_evidence::RenderEventKind::Write,
+                || Some(100),
+            );
+            event.sample.requested_frames = 2;
+            event.sample.padding_frames = Some(0);
+            let staged = stage_render_evidence(&[7; 16], 2, Some(&mut writer));
+            let (actual_hr, sequence) = release_render_evidence(
+                PacketLease::new(&client, 2, LeaseFallback::RenderSilent),
+                staged,
+                Some(&mut writer),
+            );
+            event.packet_sequence = sequence;
+            event.sample.submitted_frames = 2;
+            event.sample.release_hresult = Some(actual_hr.0);
+            event.finish(Some(&mut writer), actual_hr.is_err(), || Some(101));
+        });
+        let event = reader.pop_event().unwrap();
+        assert_eq!(event.packet_sequence, Some(1));
+        assert_eq!(event.sample.release_hresult, Some(hr));
+        assert_eq!(event.accepted_frames, if hr >= 0 { 2 } else { 0 });
+        assert_eq!(event.sample.failed, hr < 0);
+    }
 }
 
 #[test]
@@ -149,7 +246,8 @@ fn render_evidence_native_buffer_can_be_invalidated_during_release() {
         staged,
         Some(&mut writer),
     );
-    assert_eq!(result.0, 0);
+    assert_eq!(result.0.0, 0);
+    assert_eq!(result.1, Some(1));
     assert_eq!(client.calls.get(), 1);
     assert!(client.native.borrow().is_none());
     for offset in 0..2 {
@@ -285,6 +383,8 @@ fn render_evidence_remote_native_smoke() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut written = 0;
     let mut observed = 0;
+    let mut observed_events = 0;
+    let mut last_kind = None;
     let run = (|| -> Result<(), BackendError> {
         stream.start()?;
         while written < total {
@@ -301,6 +401,13 @@ fn render_evidence_remote_native_smoke() {
                 }
                 observed += 1;
             }
+            while let Some(event) = reader.pop_event() {
+                observed_events += 1;
+                if event.sequence != observed_events {
+                    return Err(unsupported("native render timeline sequence mismatch"));
+                }
+                last_kind = Some(event.sample.kind);
+            }
             if written < total {
                 stream.wait(Duration::from_millis(10))?;
             }
@@ -312,6 +419,11 @@ fn render_evidence_remote_native_smoke() {
     let released = stream.release();
     let stats = stream.stats();
     drop(stream);
+    while let Some(event) = reader.pop_event() {
+        observed_events += 1;
+        assert_eq!(event.sequence, observed_events);
+        last_kind = Some(event.sample.kind);
+    }
     let summary = writer.snapshot();
     eprintln!(
         "render_evidence_native_receipt={}",
@@ -338,4 +450,12 @@ fn render_evidence_remote_native_smoke() {
     assert!(!summary.counters_saturated);
     assert!(reader.is_finished());
     assert!(writer.is_closed());
+    assert!(reader.events_finished());
+    assert_eq!(
+        last_kind,
+        Some(crate::render_evidence::RenderEventKind::Stop)
+    );
+    assert_eq!(observed_events, summary.timeline.events);
+    assert_eq!(summary.timeline.dropped_events, 0);
+    assert_eq!(summary.timeline.reader_abandoned_events, 0);
 }

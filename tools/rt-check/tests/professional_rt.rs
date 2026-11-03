@@ -156,6 +156,8 @@ use owner::{Pump, Timeline, Transport, WorkerRequest};
 #[cfg(windows)]
 #[path = "professional_rt/process_wake.rs"]
 mod process_wake;
+#[path = "professional_rt/render_timeline.rs"]
+mod render_timeline;
 
 // The counting allocator is the single shared copy under
 // `tests/common/alloc_guard.rs`; this separate-crate harness pulls it in with

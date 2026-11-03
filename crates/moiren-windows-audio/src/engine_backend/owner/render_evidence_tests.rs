@@ -57,6 +57,10 @@ fn stream(panic_drop: bool) -> (Box<dyn NativeStream>, RenderEvidenceReader, Arc
     )
     .unwrap();
     writer.stage_packet(&[7; 8], 1).unwrap();
+    writer.record_event(RenderEventSample {
+        kind: RenderEventKind::Start,
+        ..Default::default()
+    });
     let dropped = Arc::new(AtomicBool::new(false));
     (
         Box::new(Stream {
@@ -84,6 +88,12 @@ fn render_evidence_retirement_survives_native_destructor_panic() {
         assert_eq!(writer.snapshot().accepted_frames, 0);
         assert!(reader.is_finished());
         assert!(reader.pop().is_none());
+        assert!(!reader.events_finished());
+        assert_eq!(
+            reader.pop_event().unwrap().sample.kind,
+            RenderEventKind::Start
+        );
+        assert!(reader.events_finished());
     }
 }
 

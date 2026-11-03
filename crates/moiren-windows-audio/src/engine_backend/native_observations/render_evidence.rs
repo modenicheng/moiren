@@ -36,6 +36,12 @@ pub struct NativeRenderEvidenceReader {
     reader: RenderEvidenceReader,
 }
 impl NativeRenderEvidenceReader {
+    pub fn pop_event(&mut self) -> Option<crate::render_evidence::RenderEvent> {
+        self.reader.pop_event()
+    }
+    pub fn events_finished(&self) -> bool {
+        self.reader.events_finished()
+    }
     pub fn origin(&self) -> &NativeRenderEvidenceOrigin {
         &self.origin
     }

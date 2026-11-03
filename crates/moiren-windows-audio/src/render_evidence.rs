@@ -28,6 +28,15 @@ use thiserror::Error;
 const MAX_STORAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PACKET_FRAMES: usize = 65_536;
 
+mod timeline;
+pub use timeline::{
+    RENDER_EVENT_CAPACITY, RenderEvent, RenderEventKind, RenderEventSample, RenderTimelineSummary,
+};
+
+pub fn render_timeline_storage_bytes() -> usize {
+    RENDER_EVENT_CAPACITY * size_of::<RenderEvent>()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct RenderEvidenceConfig {
     pub capacity_frames: usize,
@@ -98,6 +107,7 @@ pub struct RenderEvidenceSummary {
     pub pending_abandoned_frames: u64,
     pub counters_saturated: bool,
     pub sequence_exhausted: bool,
+    pub timeline: RenderTimelineSummary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -106,7 +116,7 @@ pub enum RenderEvidenceError {
     InvalidConfig,
     #[error("unsupported mono/stereo encoded sample layout")]
     InvalidLayout,
-    #[error("render evidence ring and staging exceed the 8 MiB preparation budget")]
+    #[error("render evidence rings and staging exceed the 8 MiB preparation budget")]
     StorageBudget,
     #[error("render evidence requires a complete nonempty packet within the prepared cap")]
     InvalidPacket,
@@ -131,6 +141,8 @@ pub struct RenderEvidenceWriter {
     frame_bytes: usize,
     summary: RenderEvidenceSummary,
     joined: Arc<Mutex<Option<RenderEvidenceSummary>>>,
+    events: Producer<RenderEvent>,
+    last_event_qpc: Option<u64>,
 }
 
 /// Single consumer. Keep it alive through native join; reclaim off the audio thread.
@@ -139,10 +151,11 @@ pub struct RenderEvidenceReader {
     rx: Consumer<RenderEvidenceFrame>,
     closed: Arc<AtomicBool>,
     joined: Arc<Mutex<Option<RenderEvidenceSummary>>>,
+    events: Consumer<RenderEvent>,
 }
 
 /// Prepare all variable-size storage off the audio thread. The 8 MiB payload
-/// budget covers `capacity * size_of::<RenderEvidenceFrame>()` plus staging;
+/// budget covers the encoded frame ring, staging and fixed-capacity event ring;
 /// fixed endpoint/atomic metadata and allocator bookkeeping are not payload.
 pub fn render_evidence_stream(
     config: RenderEvidenceConfig,
@@ -165,12 +178,14 @@ pub fn render_evidence_stream(
         .capacity_frames
         .checked_mul(size_of::<RenderEvidenceFrame>())
         .and_then(|ring_bytes| ring_bytes.checked_add(staging_bytes))
+        .and_then(|bytes| bytes.checked_add(render_timeline_storage_bytes()))
         .ok_or(RenderEvidenceError::StorageBudget)?;
     if total_bytes > MAX_STORAGE_BYTES {
         return Err(RenderEvidenceError::StorageBudget);
     }
     let staging = vec![0; staging_bytes].into_boxed_slice();
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
+    let (event_tx, event_rx) = RingBuffer::new(RENDER_EVENT_CAPACITY);
     let joined = Arc::new(Mutex::new(None));
     let closed = Arc::new(AtomicBool::new(false));
     Ok((
@@ -180,6 +195,8 @@ pub fn render_evidence_stream(
             staging,
             staged_frames: None,
             joined: joined.clone(),
+            events: event_tx,
+            last_event_qpc: None,
             frame_bytes,
             summary: RenderEvidenceSummary {
                 format,
@@ -198,13 +215,79 @@ pub fn render_evidence_stream(
                 pending_abandoned_frames: 0,
                 counters_saturated: false,
                 sequence_exhausted: false,
+                timeline: RenderTimelineSummary {
+                    capacity_events: RENDER_EVENT_CAPACITY,
+                    ..Default::default()
+                },
             },
         },
-        RenderEvidenceReader { rx, closed, joined },
+        RenderEvidenceReader {
+            rx,
+            closed,
+            joined,
+            events: event_rx,
+        },
     ))
 }
 
 impl RenderEvidenceWriter {
+    /// One scalar event per native operation, never per sample. Event loss does
+    /// not gate PCM staging or submission; missing/regressed clocks stay visible.
+    pub fn record_event(&mut self, sample: RenderEventSample) {
+        self.record_packet_event(sample, None);
+    }
+
+    /// Caller supplies an observed completed evidence packet, never an inferred
+    /// last packet after staging refusal. The event remains separate from PCM.
+    pub fn record_packet_event(
+        &mut self,
+        mut sample: RenderEventSample,
+        packet_sequence: Option<u64>,
+    ) {
+        if self.is_closed() {
+            return;
+        }
+        let summary = &mut self.summary.timeline;
+        let Some(sequence) = summary.events.checked_add(1) else {
+            summary.saturated = true;
+            return;
+        };
+        summary.events = sequence;
+        sample.qpc_before_100ns = sample.qpc_before_100ns.filter(|&stamp| stamp != 0);
+        sample.qpc_after_100ns = sample.qpc_after_100ns.filter(|&stamp| stamp != 0);
+        if sample.qpc_before_100ns.is_none() || sample.qpc_after_100ns.is_none() {
+            add(&mut summary.unavailable_clocks, 1, &mut summary.saturated);
+        }
+        if sample
+            .qpc_before_100ns
+            .zip(sample.qpc_after_100ns)
+            .is_some_and(|(a, b)| b < a)
+            || self
+                .last_event_qpc
+                .zip(sample.qpc_before_100ns)
+                .is_some_and(|(a, b)| b < a)
+        {
+            add(&mut summary.regressed_clocks, 1, &mut summary.saturated);
+        }
+        self.last_event_qpc = sample.qpc_after_100ns;
+        let event = RenderEvent {
+            sequence,
+            packet_sequence,
+            accepted_frames: self.summary.accepted_frames,
+            sample,
+        };
+        if self.events.is_abandoned() {
+            add(
+                &mut summary.reader_abandoned_events,
+                1,
+                &mut summary.saturated,
+            );
+        } else if self.events.push(event).is_err() {
+            add(&mut summary.dropped_events, 1, &mut summary.saturated);
+        } else {
+            add(&mut summary.stored_events, 1, &mut summary.saturated);
+        }
+    }
     /// Copy exact encoded bytes while the caller's native lease is valid.
     /// No allocation, waiting, native ownership, or publication occurs here.
     pub fn stage_packet(&mut self, bytes: &[u8], frames: usize) -> Result<(), RenderEvidenceError> {
@@ -319,6 +402,7 @@ impl RenderEvidenceWriter {
             && self.summary.attempts == 0
             && self.summary.invalid_attempts == 0
             && self.summary.unobserved_packets == 0
+            && self.summary.timeline.events == 0
     }
 
     /// Record a native reservation whose encoded/release pair is unavailable.
@@ -390,6 +474,13 @@ impl Drop for RenderEvidenceWriter {
 }
 
 impl RenderEvidenceReader {
+    pub fn pop_event(&mut self) -> Option<RenderEvent> {
+        self.events.pop().ok()
+    }
+
+    pub fn events_finished(&self) -> bool {
+        self.closed.load(Ordering::Acquire) && self.events.slots() == 0
+    }
     /// Immutable terminal tally published by the control-side native joiner.
     /// This diagnostic tally does not certify successful audio or clean Stop.
     pub fn final_summary(&self) -> Option<RenderEvidenceSummary> {

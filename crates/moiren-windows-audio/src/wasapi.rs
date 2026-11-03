@@ -48,8 +48,10 @@ mod render_evidence;
 #[cfg(test)]
 #[path = "wasapi/render_evidence_tests.rs"]
 mod render_evidence_tests;
+use crate::render_evidence::RenderEventKind;
 use render_evidence::{
-    release_render_evidence, stage_render_evidence, validate_render_evidence_attachment,
+    RenderOperationEvidence, release_render_evidence, stage_render_evidence,
+    validate_render_evidence_attachment,
 };
 
 #[derive(Debug, Clone)]
@@ -179,6 +181,8 @@ pub struct WasapiStream {
     device_clock: Option<PreparedDeviceClock>,
     capture_evidence: Option<crate::capture::PcmEvidenceWriter>,
     render_evidence: Option<crate::render_evidence::RenderEvidenceWriter>,
+    render_evidence_clock: Option<crate::latency::QpcClock>,
+    last_render_padding: Option<u32>,
     client: IAudioClient,
     event: OwnedHandle,
     info: NativeStreamInfo,
@@ -592,6 +596,8 @@ impl WasapiStream {
             device_clock,
             capture_evidence: None,
             render_evidence: None,
+            render_evidence_clock: None,
+            last_render_padding: None,
             client,
             event,
             info: NativeStreamInfo {
@@ -1200,10 +1206,12 @@ impl NativeStream for WasapiStream {
         ) {
             return Err(Box::new((error, writer)));
         }
+        self.render_evidence_clock = crate::latency::QpcClock::new();
         self.render_evidence = Some(writer);
         Ok(())
     }
     fn take_render_evidence(&mut self) -> Option<crate::render_evidence::RenderEvidenceWriter> {
+        self.render_evidence_clock = None;
         self.render_evidence.take().map(|mut writer| {
             writer.close();
             writer
@@ -1220,6 +1228,7 @@ impl NativeStream for WasapiStream {
         Ok(())
     }
     fn render_demand(&mut self) -> Result<usize, BackendError> {
+        self.last_render_padding = None;
         self.notifications.check()?;
         if self.render.is_none() {
             return Ok(0);
@@ -1234,58 +1243,96 @@ impl NativeStream for WasapiStream {
         let padding = api("GetCurrentPadding", unsafe {
             self.client.GetCurrentPadding()
         })?;
+        self.last_render_padding = Some(padding);
         let queue = self.render_queue.expect("prepared render queue");
         shared_render_demand(self.timing, queue, self.padding_owner.as_mut(), padding)
     }
     fn start(&mut self) -> Result<(), BackendError> {
-        self.notifications.check()?;
-        if !self.started {
-            // Stop invalidates the old generation. Restart is preparation,
-            // before the native client can issue another audio callback.
-            if let Some(observer) = &self.padding_observer {
-                self.padding_owner = Some(observer.new_owner());
+        let clock = self.render_evidence_clock;
+        let event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Start,
+            || clock.and_then(|c| c.now()),
+        );
+        let result = (|| {
+            self.notifications.check()?;
+            if !self.started {
+                // Stop invalidates the old generation. Restart is preparation,
+                // before the native client can issue another audio callback.
+                if let Some(observer) = &self.padding_observer {
+                    self.padding_owner = Some(observer.new_owner());
+                }
+                api("Start", unsafe { self.client.Start() })?;
+                self.started = true;
             }
-            api("Start", unsafe { self.client.Start() })?;
-            self.started = true;
-        }
-        Ok(())
+            Ok(())
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn stop(&mut self) -> Result<(), BackendError> {
-        if let Some(owner) = self.padding_owner.as_mut() {
-            owner.invalidate();
-        }
-        if self.started {
-            api("Stop", unsafe { self.client.Stop() })?;
-            self.started = false;
-        }
-        Ok(())
+        let clock = self.render_evidence_clock;
+        let event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Stop,
+            || clock.and_then(|c| c.now()),
+        );
+        let result = (|| {
+            if let Some(owner) = self.padding_owner.as_mut() {
+                owner.invalidate();
+            }
+            if self.started {
+                api("Stop", unsafe { self.client.Stop() })?;
+                self.started = false;
+            }
+            Ok(())
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn wait(&mut self, timeout: Duration) -> Result<bool, BackendError> {
-        self.notifications.check()?;
-        let ready = match unsafe {
-            WaitForSingleObject(
-                self.event.0,
-                timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32,
-            )
-        } {
-            WAIT_OBJECT_0 => {
-                self.render_ready = true;
-                self.stats.wait_wakes += 1;
-                true
-            }
-            WAIT_TIMEOUT => {
-                self.stats.wait_timeouts += 1;
-                false
-            }
-            _ => {
-                return api(
-                    "WaitForSingleObject",
-                    Err(windows::core::Error::from_thread()),
-                );
-            }
-        };
-        self.notifications.check()?;
-        Ok(ready)
+        let clock = self.render_evidence_clock;
+        let mut event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Wait,
+            || clock.and_then(|c| c.now()),
+        );
+        let result = (|| {
+            self.notifications.check()?;
+            let ready = match unsafe {
+                WaitForSingleObject(
+                    self.event.0,
+                    timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32,
+                )
+            } {
+                WAIT_OBJECT_0 => {
+                    self.render_ready = true;
+                    self.stats.wait_wakes += 1;
+                    true
+                }
+                WAIT_TIMEOUT => {
+                    self.stats.wait_timeouts += 1;
+                    false
+                }
+                _ => {
+                    return api(
+                        "WaitForSingleObject",
+                        Err(windows::core::Error::from_thread()),
+                    );
+                }
+            };
+            event.sample.ready = Some(ready);
+            self.notifications.check()?;
+            Ok(ready)
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn read(&mut self, output: &mut [StereoFrame]) -> Result<usize, BackendError> {
         self.notifications.check()?;
@@ -1368,50 +1415,69 @@ impl NativeStream for WasapiStream {
         Ok(count)
     }
     fn write(&mut self, input: &[StereoFrame]) -> Result<usize, BackendError> {
-        // Re-query after graph processing so a split Pump submission never
-        // exceeds the target even if native consumption changes the padding.
-        let demand = self.render_demand()?;
-        let Some(render) = &self.render else {
-            return Ok(0);
-        };
-        let count = if self.mode == DeviceMode::Exclusive {
-            if demand == 0 || input.len() < self.info.buffer_frames as usize {
+        let clock = self.render_evidence_clock;
+        let mut event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Write,
+            || clock.and_then(|c| c.now()),
+        );
+        event.sample.requested_frames = input.len() as u64;
+        let result = (|| {
+            // Re-query after graph processing so a split Pump submission never
+            // exceeds the target even if native consumption changes the padding.
+            let demand = self.render_demand();
+            event.sample.padding_frames = self.last_render_padding;
+            let demand = demand?;
+            let Some(render) = &self.render else {
+                return Ok(0);
+            };
+            let count = if self.mode == DeviceMode::Exclusive {
+                if demand == 0 || input.len() < self.info.buffer_frames as usize {
+                    return Ok(0);
+                }
+                self.info.buffer_frames as usize
+            } else {
+                input.len().min(demand)
+            };
+            if count == 0 {
+                self.stats.zero_writes += 1;
                 return Ok(0);
             }
-            self.info.buffer_frames as usize
-        } else {
-            input.len().min(demand)
-        };
-        if count == 0 {
-            self.stats.zero_writes += 1;
-            return Ok(0);
-        }
-        let data = api("GetBuffer(render)", unsafe {
-            render.GetBuffer(count as u32)
-        })?;
-        let lease = PacketLease::new(render, count as u32, LeaseFallback::RenderSilent);
-        if data.is_null() {
-            if let Some(writer) = self.render_evidence.as_mut() {
-                writer.record_unobserved(count);
+            let data = api("GetBuffer(render)", unsafe {
+                render.GetBuffer(count as u32)
+            })?;
+            let lease = PacketLease::new(render, count as u32, LeaseFallback::RenderSilent);
+            if data.is_null() {
+                if let Some(writer) = self.render_evidence.as_mut() {
+                    writer.record_unobserved(count);
+                }
+                return Err(unsupported("render packet has a null data pointer"));
             }
-            return Err(unsupported("render packet has a null data pointer"));
-        }
-        // A successful GetBuffer reserves this complete writable frame region.
-        let bytes =
-            unsafe { std::slice::from_raw_parts_mut(data, count * self.codec.frame_bytes()) };
-        if let Err(error) = self.codec.encode(&input[..count], bytes) {
-            if let Some(writer) = self.render_evidence.as_mut() {
-                writer.record_unobserved(count);
+            // A successful GetBuffer reserves this complete writable frame region.
+            let bytes =
+                unsafe { std::slice::from_raw_parts_mut(data, count * self.codec.frame_bytes()) };
+            if let Err(error) = self.codec.encode(&input[..count], bytes) {
+                if let Some(writer) = self.render_evidence.as_mut() {
+                    writer.record_unobserved(count);
+                }
+                return Err(unsupported(error));
             }
-            return Err(unsupported(error));
-        }
-        let staged = stage_render_evidence(bytes, count, self.render_evidence.as_mut());
-        let hr = release_render_evidence(lease, staged, self.render_evidence.as_mut());
-        api("ReleaseBuffer(render)", hr.ok())?;
-        self.render_ready = false;
-        self.stats.write_calls += 1;
-        self.stats.written_frames += count as u64;
-        Ok(count)
+            let staged = stage_render_evidence(bytes, count, self.render_evidence.as_mut());
+            let (hr, packet_sequence) =
+                release_render_evidence(lease, staged, self.render_evidence.as_mut());
+            event.packet_sequence = packet_sequence;
+            event.sample.submitted_frames = count as u32;
+            event.sample.release_hresult = Some(hr.0);
+            api("ReleaseBuffer(render)", hr.ok())?;
+            self.render_ready = false;
+            self.stats.write_calls += 1;
+            self.stats.written_frames += count as u64;
+            Ok(count)
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn stats(&self) -> NativeStreamStats {
         NativeStreamStats {

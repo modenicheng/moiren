@@ -118,7 +118,8 @@ fn invalid_caps_rate_and_arithmetic_overflow_refuse_before_allocation() {
 fn eight_mib_budget_includes_ring_frames_and_encoded_staging() {
     let budget = 8 * 1024 * 1024;
     let staging_bytes = 65_536 * 16;
-    let capacity = (budget - staging_bytes) / size_of::<RenderEvidenceFrame>();
+    let capacity = (budget - staging_bytes - render_timeline_storage_bytes())
+        / size_of::<RenderEvidenceFrame>();
     let layout = RenderEvidenceFormat {
         sample_format: SampleFormat::Float64,
         container_bits: 64,
@@ -129,6 +130,118 @@ fn eight_mib_budget_includes_ring_frames_and_encoded_staging() {
     assert_allocates_nothing(|| {
         assert!(render_evidence_stream(config(capacity + 1, 65_536), layout).is_err());
     });
+}
+
+#[test]
+fn timeline_records_unknown_zero_failed_and_packet_identity_without_allocating() {
+    let (mut writer, mut reader) = render_evidence_stream(config(4, 2), format()).unwrap();
+    assert_allocates_nothing(|| {
+        writer.record_event(RenderEventSample {
+            kind: RenderEventKind::Start,
+            ..Default::default()
+        });
+        writer.stage_packet(&[7; 16], 2).unwrap();
+        writer.finish_packet(-42).unwrap();
+        writer.record_packet_event(
+            RenderEventSample {
+                kind: RenderEventKind::Write,
+                requested_frames: 2,
+                submitted_frames: 2,
+                failed: true,
+                qpc_before_100ns: Some(100),
+                qpc_after_100ns: Some(90),
+                padding_frames: Some(0),
+                ..Default::default()
+            },
+            Some(1),
+        );
+        writer.record_event(RenderEventSample {
+            kind: RenderEventKind::Write,
+            ..Default::default()
+        });
+    });
+    let start = reader.pop_event().unwrap();
+    assert_eq!(start.sequence, 1);
+    assert_eq!(start.sample.qpc_before_100ns, None);
+    let packet = reader.pop_event().unwrap();
+    assert_eq!(packet.packet_sequence, Some(1));
+    assert_eq!(packet.accepted_frames, 0);
+    assert!(packet.sample.failed);
+    assert_eq!(packet.sample.qpc_after_100ns, Some(90));
+    assert_eq!(reader.pop_event().unwrap().packet_sequence, None);
+    assert_eq!(writer.snapshot().timeline.regressed_clocks, 1);
+    assert_eq!(writer.snapshot().timeline.unavailable_clocks, 2);
+}
+
+#[test]
+fn timeline_overflow_does_not_drop_audio_evidence_or_hide_event_loss() {
+    let (mut writer, mut reader) = render_evidence_stream(config(2, 2), format()).unwrap();
+    let capacity = writer.snapshot().timeline.capacity_events;
+    assert!(capacity > 0);
+    assert_allocates_nothing(|| {
+        for _ in 0..capacity + 1 {
+            writer.record_event(RenderEventSample::default());
+        }
+        writer.stage_packet(&[1; 16], 2).unwrap();
+        writer.finish_packet(0).unwrap();
+        writer.close();
+    });
+    assert_eq!(writer.snapshot().stored_frames, 2);
+    assert_eq!(writer.snapshot().timeline.dropped_events, 1);
+    assert_eq!(writer.snapshot().timeline.stored_events, capacity as u64);
+    assert_eq!(reader.pop().unwrap().bytes[0], 1);
+    for sequence in 1..=capacity as u64 {
+        assert_eq!(reader.pop_event().unwrap().sequence, sequence);
+    }
+    assert!(reader.events_finished());
+}
+
+#[test]
+fn timeline_abandonment_saturation_and_closed_writes_remain_explicit() {
+    let (mut writer, reader) = render_evidence_stream(config(2, 2), format()).unwrap();
+    drop(reader);
+    assert_allocates_nothing(|| writer.record_event(RenderEventSample::default()));
+    assert_eq!(writer.snapshot().timeline.reader_abandoned_events, 1);
+    assert_eq!(writer.snapshot().timeline.events, 1);
+    writer.summary.timeline.events = u64::MAX;
+    assert_allocates_nothing(|| writer.record_event(RenderEventSample::default()));
+    assert!(writer.snapshot().timeline.saturated);
+    assert_eq!(writer.snapshot().timeline.events, u64::MAX);
+    writer.close();
+    let before = writer.snapshot().timeline;
+    assert_allocates_nothing(|| writer.record_event(RenderEventSample::default()));
+    assert_eq!(writer.snapshot().timeline.events, before.events);
+    assert_eq!(
+        writer.snapshot().timeline.reader_abandoned_events,
+        before.reader_abandoned_events
+    );
+}
+
+#[test]
+fn timeline_zero_clocks_and_interoperation_regression_are_not_repaired() {
+    let (mut writer, mut reader) = render_evidence_stream(config(2, 2), format()).unwrap();
+    for (before, after) in [
+        (Some(100), Some(101)),
+        (Some(90), Some(95)),
+        (Some(0), None),
+    ] {
+        writer.record_event(RenderEventSample {
+            qpc_before_100ns: before,
+            qpc_after_100ns: after,
+            ..Default::default()
+        });
+    }
+    assert_eq!(writer.snapshot().timeline.regressed_clocks, 1);
+    assert_eq!(writer.snapshot().timeline.unavailable_clocks, 1);
+    assert_eq!(
+        reader.pop_event().unwrap().sample.qpc_after_100ns,
+        Some(101)
+    );
+    assert_eq!(
+        reader.pop_event().unwrap().sample.qpc_before_100ns,
+        Some(90)
+    );
+    assert_eq!(reader.pop_event().unwrap().sample.qpc_before_100ns, None);
 }
 
 #[test]
