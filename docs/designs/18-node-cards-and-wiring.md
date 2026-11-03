@@ -248,9 +248,10 @@ The plot is drawn to the industry's logarithmic conventions, never a
 linear axis. Frequency runs on the ISO 266 base-2 fractional-octave grid
 — 1/12-octave points anchored on 1 kHz from 19.7 Hz to 20.2 kHz (121
 points), clamped to the running Nyquist — so the points are equally
-spaced on the axis and the decade-standard grid lines (20, 50, 100, 200,
-500, 1 k, 2 k, 5 k, 10 k, 20 k; 100/1 k/10 k labeled) fall where an
-analyzer's do. Level is dBFS over the meters' −96 dB floor with lines
+spaced on the axis, under logarithmic graph-paper grid lines: a strong
+line at every decade (100/1 k/10 k labeled) and faint ones at the integer
+steps inside it, bunching toward each decade's end, where an analyzer's
+do. Level is dBFS over the meters' −96 dB floor with lines
 every 24 dB.
 
 Band levels are the standard FFT-analyzer band-power spectrum —
