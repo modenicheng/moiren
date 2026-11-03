@@ -36,8 +36,14 @@ pub struct SpectrumShape {
 }
 
 impl SpectrumShape {
+    /// Magnitudes one application-topic publication carries.
     pub fn capacity(&self) -> usize {
         self.channels * (self.fft_size / 2 + 1)
+    }
+
+    /// Frames one engine window carries: the block the bridge transforms.
+    pub fn window_capacity(&self) -> usize {
+        self.channels * self.fft_size
     }
 }
 

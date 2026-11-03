@@ -304,7 +304,7 @@ fn spectrum_node_lowers_with_an_explicit_publisher_binding() {
                     channels: 0,
                 },
                 element: 0.0_f32,
-                capacity: settings.bins_per_channel(),
+                capacity: settings.fft_size,
             },
         )
         .unwrap();

@@ -232,14 +232,17 @@ topic (mirroring `node/{id}/level`), and the hot layer paints them next
 to the meters.
 
 The analyzer rides the unified signal bus end to end. The engine's
-`SignalSpectrumAnalyzer` publishes demand-gated FFT windows on its host
-directory; the managed bridge relays the latest window onto an
-application `node/{id}/spectrum` stream topic (depth 4) registered at the
-shape the active plan publishes — a changed FFT size re-registers the
-topic under a new identity, which is how subscribers learn to follow —
-and the UI's `NodeSpectra` subscribes per visible card, on the Graph page
-only. Demand flows back the same way: no visible card, no subscriber, no
-FFT on the audio thread.
+`SignalSpectrumAnalyzer` is only a window tap: on the audio thread it
+keeps the history ring and publishes demand-gated exact source windows on
+its host directory, nothing more. The managed bridge runs the transform
+(`SpectrumAnalysis`: periodic Hann, radix-2 FFT, coherent-gain scaling)
+on the service thread as it relays each window, publishing the
+magnitudes onto an application `node/{id}/spectrum` stream topic (depth
+4) registered at the shape the active plan publishes — a changed FFT size
+re-registers the topic under a new identity, which is how subscribers
+learn to follow — and the UI's `NodeSpectra` subscribes per visible card,
+on the Graph page only. Demand flows back the same way: no visible card,
+no subscriber, no window capture on the audio thread and no FFT anywhere.
 
 The plot is drawn to the industry's logarithmic conventions, never a
 linear axis. Frequency runs on the ISO 266 base-2 fractional-octave grid

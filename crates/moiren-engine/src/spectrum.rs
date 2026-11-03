@@ -1,4 +1,8 @@
-//! Demand-gated, per-channel FFT magnitude over exact source-frame windows.
+//! Demand-gated, per-channel exact source-frame windows with an off-thread
+//! transform. The realtime half ([`SignalSpectrumAnalyzer`]) only keeps a
+//! history ring and publishes each hop's exact window; [`SpectrumAnalysis`]
+//! runs the FFT wherever that window is read, so the transform never charges
+//! the audio callback.
 
 mod fft;
 
@@ -22,6 +26,10 @@ use thiserror::Error;
 const MIN_FFT_SIZE: usize = 16;
 const MAX_FFT_SIZE: usize = 8192;
 
+const fn valid_fft_size(fft_size: usize) -> bool {
+    fft_size >= MIN_FFT_SIZE && fft_size <= MAX_FFT_SIZE && fft_size.is_power_of_two()
+}
+
 /// Bounded FFT and overlap configuration for a realtime spectrum observer.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -33,14 +41,10 @@ pub struct SpectrumSettings {
 impl SpectrumSettings {
     /// Whether this FFT size and hop can be prepared within the supported bounds.
     pub const fn valid(self) -> bool {
-        self.fft_size >= MIN_FFT_SIZE
-            && self.fft_size <= MAX_FFT_SIZE
-            && self.fft_size.is_power_of_two()
-            && self.hop_frames != 0
-            && self.hop_frames <= self.fft_size
+        valid_fft_size(self.fft_size) && self.hop_frames != 0 && self.hop_frames <= self.fft_size
     }
 
-    /// Number of nonnegative-frequency bins in one channel's real spectrum.
+    /// Number of nonnegative-frequency bins in one channel's analyzed spectrum.
     pub const fn bins_per_channel(self) -> usize {
         self.fft_size / 2 + 1
     }
@@ -55,12 +59,15 @@ impl Default for SpectrumSettings {
     }
 }
 
-/// Exact source timeline represented by one channel-major spectrum block.
+/// Exact source timeline represented by one channel-major window block.
 ///
-/// `frame_end` is exclusive. Each channel occupies `fft_size / 2 + 1` consecutive
-/// `f32` bins at frequencies `bin * sample_rate / fft_size`. Amplitudes use a
-/// periodic Hann window, divided by its coherent sum; interior bins are doubled
-/// to report one-sided peak amplitude while DC and Nyquist are not.
+/// `frame_end` is exclusive. The realtime tap publishes `fft_size`
+/// consecutive `f32` source frames per channel, oldest first;
+/// [`SpectrumAnalysis`] turns such a block into the same header over
+/// `fft_size / 2 + 1` one-sided magnitudes per channel at frequencies
+/// `bin * sample_rate / fft_size`: a periodic Hann window divided by its
+/// coherent sum, interior bins doubled to report one-sided peak amplitude
+/// while DC and Nyquist are not.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpectrumWindow {
     pub timeline_epoch: u64,
@@ -98,31 +105,30 @@ pub enum SpectrumError {
     InvalidChannels,
     #[error("FFT size or hop is outside the supported bounds")]
     InvalidSettings,
-    #[error("topic capacity must equal channels times bins per channel")]
+    #[error("publisher capacity or block length does not match the channel-major shape")]
     CapacityMismatch,
 }
 
-/// Read-only per-channel spectrum; all histories and FFT workspaces are prepared off RT.
+/// Realtime half of the spectrum analyzer: keeps the last `fft_size` source
+/// frames per channel and publishes them as one exact-window block every
+/// `hop_frames` frames. All history is prepared off RT; observing only
+/// converts samples and copies memory.
 pub struct SignalSpectrumAnalyzer {
     channels: usize,
     settings: SpectrumSettings,
-    bins_per_channel: usize,
-    ring: Box<[f64]>,
+    ring: Box<[f32]>,
     ring_write: usize,
     frames_until_window: usize,
     continuity: WindowContinuity,
-    window: Box<[f64]>,
-    coherent_scale: f64,
-    fft: Radix2Fft,
     publisher: PublisherHandle<LatestBlock<SpectrumWindow, f32>>,
     bindings: Box<[ErasedBinding]>,
 }
 
 impl SignalSpectrumAnalyzer {
-    /// Prepare a publisher with capacity `channels * settings.bins_per_channel()`.
+    /// Prepare a publisher with capacity `channels * settings.fft_size`.
     ///
-    /// Channels are measured independently. Construction, binding retention and
-    /// eventual destruction belong on the control thread.
+    /// Channels are captured independently. Construction, binding retention
+    /// and eventual destruction belong on the control thread.
     pub fn new(
         channels: usize,
         settings: SpectrumSettings,
@@ -134,53 +140,36 @@ impl SignalSpectrumAnalyzer {
         if !settings.valid() {
             return Err(SpectrumError::InvalidSettings);
         }
-        let bins_per_channel = settings.bins_per_channel();
-        let Some(capacity) = channels.checked_mul(bins_per_channel) else {
-            return Err(SpectrumError::InvalidChannels);
-        };
         let history_len = channels
             .checked_mul(settings.fft_size)
-            .filter(|&len| len <= isize::MAX as usize / std::mem::size_of::<f64>())
+            .filter(|&len| len <= isize::MAX as usize / std::mem::size_of::<f32>())
             .ok_or(SpectrumError::InvalidChannels)?;
-        if publisher.capacity() != capacity {
+        if publisher.capacity() != history_len {
             return Err(SpectrumError::CapacityMismatch);
         }
-
-        let window: Box<[f64]> = (0..settings.fft_size)
-            .map(|frame| {
-                0.5 - 0.5 * (std::f64::consts::TAU * frame as f64 / settings.fft_size as f64).cos()
-            })
-            .collect();
-        let coherent_sum: f64 = window.iter().sum();
-        let coherent_scale = 2.0 / coherent_sum;
 
         Ok(Self {
             channels,
             settings,
-            bins_per_channel,
             ring: vec![0.0; history_len].into_boxed_slice(),
             ring_write: 0,
             frames_until_window: settings.fft_size,
             continuity: WindowContinuity::new(),
-            window,
-            coherent_scale,
-            fft: Radix2Fft::new(settings.fft_size),
             publisher: publisher.handle(),
             bindings: vec![publisher.erase()].into_boxed_slice(),
         })
     }
 
     fn reset_history(&mut self) {
-        // A full FFT window overwrites every old sample before any transform;
+        // A full window overwrites every old sample before any publication;
         // resetting cursors is sufficient even when overlapping history exists.
         self.ring_write = 0;
         self.frames_until_window = self.settings.fft_size;
     }
 
     fn publish_window(&mut self, signals: &mut ProcessSignals<'_>, frame_end: u64) {
-        let Ok(mut write) =
-            signals.try_write(&self.publisher, self.channels * self.bins_per_channel)
-        else {
+        let len = self.ring.len();
+        let Ok(mut write) = signals.try_write(&self.publisher, len) else {
             return;
         };
 
@@ -193,26 +182,19 @@ impl SignalSpectrumAnalyzer {
             channels: self.channels,
             ..header
         };
-        let elements = write.elements_mut();
-        for channel in 0..self.channels {
-            let ring_start = channel * self.settings.fft_size;
-            self.fft.transform_ring(
-                &self.ring[ring_start..ring_start + self.settings.fft_size],
-                self.ring_write,
-                &self.window,
-            );
-            let output_start = channel * self.bins_per_channel;
-            let output = &mut elements[output_start..output_start + self.bins_per_channel];
-            for (bin, amplitude) in output.iter_mut().enumerate() {
-                let scale = if bin == 0 || bin == self.settings.fft_size / 2 {
-                    self.coherent_scale * 0.5
-                } else {
-                    self.coherent_scale
-                };
-                *amplitude = (self.fft.re[bin].hypot(self.fft.im[bin]) * scale) as f32;
-            }
+        let fft_size = self.settings.fft_size;
+        let ring_write = self.ring_write;
+        for (history, window) in self
+            .ring
+            .chunks_exact(fft_size)
+            .zip(write.elements_mut().chunks_exact_mut(fft_size))
+        {
+            // Unroll the ring so the window reads oldest frame first.
+            let (newest, oldest) = history.split_at(ring_write);
+            window[..oldest.len()].copy_from_slice(oldest);
+            window[oldest.len()..].copy_from_slice(newest);
         }
-        let _ = write.commit(self.channels * self.bins_per_channel);
+        let _ = write.commit(len);
     }
 }
 
@@ -242,12 +224,13 @@ impl<S: ProcessingSample> RtObserver<S> for SignalSpectrumAnalyzer {
         }
 
         let input = inputs.get(0).expect("validated spectrum analyzer input");
+        let fft_size = self.settings.fft_size;
         for frame in 0..ctx.frames {
             for channel in 0..self.channels {
-                let index = channel * self.settings.fft_size + self.ring_write;
-                self.ring[index] = input.channel(channel)[frame].to_f64();
+                let index = channel * fft_size + self.ring_write;
+                self.ring[index] = input.channel(channel)[frame].to_f64() as f32;
             }
-            self.ring_write = (self.ring_write + 1) % self.settings.fft_size;
+            self.ring_write = (self.ring_write + 1) % fft_size;
             self.frames_until_window -= 1;
 
             if self.frames_until_window == 0 {
@@ -257,5 +240,81 @@ impl<S: ProcessingSample> RtObserver<S> for SignalSpectrumAnalyzer {
             }
         }
         self.continuity.finish_block(ctx);
+    }
+}
+
+/// Off-thread half of the spectrum analyzer: transforms one exact-window
+/// block into one-sided magnitudes with a periodic Hann window, a radix-2
+/// FFT and coherent-gain scaling. Owns its workspace, so construction
+/// allocates and `analyze` never does.
+pub struct SpectrumAnalysis {
+    channels: usize,
+    fft_size: usize,
+    window: Box<[f64]>,
+    coherent_scale: f64,
+    fft: Radix2Fft,
+}
+
+impl SpectrumAnalysis {
+    pub fn new(channels: usize, fft_size: usize) -> Result<Self, SpectrumError> {
+        if channels == 0 {
+            return Err(SpectrumError::InvalidChannels);
+        }
+        if !valid_fft_size(fft_size) {
+            return Err(SpectrumError::InvalidSettings);
+        }
+        channels
+            .checked_mul(fft_size)
+            .ok_or(SpectrumError::InvalidChannels)?;
+
+        let window: Box<[f64]> = (0..fft_size)
+            .map(|frame| 0.5 - 0.5 * (std::f64::consts::TAU * frame as f64 / fft_size as f64).cos())
+            .collect();
+        let coherent_sum: f64 = window.iter().sum();
+        let coherent_scale = 2.0 / coherent_sum;
+
+        Ok(Self {
+            channels,
+            fft_size,
+            window,
+            coherent_scale,
+            fft: Radix2Fft::new(fft_size),
+        })
+    }
+
+    /// Frames one analysis consumes: `channels * fft_size`, channel-major.
+    pub fn window_len(&self) -> usize {
+        self.channels * self.fft_size
+    }
+
+    /// Magnitudes one analysis produces: `channels * (fft_size / 2 + 1)`,
+    /// channel-major, as published with a [`SpectrumWindow`] header.
+    pub fn magnitudes_len(&self) -> usize {
+        self.channels * (self.fft_size / 2 + 1)
+    }
+
+    /// Transform the realtime tap's `frames` block into `magnitudes`; both
+    /// must be exactly [`Self::window_len`] and [`Self::magnitudes_len`]
+    /// long.
+    pub fn analyze(&mut self, frames: &[f32], magnitudes: &mut [f32]) -> Result<(), SpectrumError> {
+        if frames.len() != self.window_len() || magnitudes.len() != self.magnitudes_len() {
+            return Err(SpectrumError::CapacityMismatch);
+        }
+        let bins_per_channel = self.fft_size / 2 + 1;
+        for (history, output) in frames
+            .chunks_exact(self.fft_size)
+            .zip(magnitudes.chunks_exact_mut(bins_per_channel))
+        {
+            self.fft.transform(history, &self.window);
+            for (bin, magnitude) in output.iter_mut().enumerate() {
+                let scale = if bin == 0 || bin == self.fft_size / 2 {
+                    self.coherent_scale * 0.5
+                } else {
+                    self.coherent_scale
+                };
+                *magnitude = (self.fft.re[bin].hypot(self.fft.im[bin]) * scale) as f32;
+            }
+        }
+        Ok(())
     }
 }
