@@ -2216,3 +2216,24 @@ enlargement. Final audit confirms no owners/tasks and unchanged protected
 processes/settings/driver/barebus. All27preserved hashes match; local-only
 evidence slice, no new Cargo/pass claim, no push or soak. Missing physical
 equipment and deferred first-packet work do not block independent development.
+
+### Closed Predecessor and Replacement Overlay
+
+The [separate owner-ledger follow-up](2026-11-03-process-owner-overlay.md) uses
+the same closed1100recording; no new audio/OBS/app/device acquisition. Actual
+predecessor SRC spans plus unchanged nominal master project97328frames and
+freeze an independent map at shift-185080. Full1080320recorder frames retain
+83712predecessor-compatible,832residual and all outside/unknown/silence/training/
+unsupported categories. Original replacement375360compatible/64residual and
+10delivery-gap violations remain unchanged. No map shift is latency or phase.
+
+A bounded stdlib category-overlay tool preserves both owner labels in42runs/
+13category pairs, complete denominator and unknowns, without selecting a winner.
+PNG is viewed; all232original/derived input pins and five generated-file pins
+match before/after. Offline task Ready0, seven children exit0; compact184143byte
+ZIP/14payloads fully length/hash-verified. Final audit has no owners/tasks and
+unchanged protected/settings/driver/barebus. No product/RT/default/gate change,
+quality/physical PASS, new Cargo claim, push or background audio soak follows.
+The integrated bounded CLI passes19tests plus105existing offline VAD tests,
+reproduces the actual sealed joint ledger exactly and refuses overwrite. Its
+suite is wired into the always-run CI format job; remote CI is not claimed.

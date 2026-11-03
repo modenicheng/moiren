@@ -76,6 +76,8 @@ jobs:
         run: python3 scripts/tests/vad-src-phase.tests.py
       - name: Test bounded two-FIR SRC dependency envelopes
         run: python3 scripts/tests/vad-src-cascade.tests.py
+      - name: Test closed Process owner category ledgers
+        run: python3 scripts/tests/process-owner-ledger.tests.py
   test:
     needs: changes
     if: needs.changes.outputs.any == 'true'
