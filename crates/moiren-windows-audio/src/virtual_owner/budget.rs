@@ -129,7 +129,9 @@ impl VirtualBufferOptions {
         engine_block_frames: u32,
         max_demand_frames: u32,
     ) -> Result<PreparedVirtualBudget, LatencyBudgetError> {
-        if engine_block_frames == 0 || max_demand_frames < engine_block_frames {
+        // A physical wake may be shorter than the Engine's segment ceiling.
+        // Only pure-virtual scheduling guarantees complete block-sized wakes.
+        if engine_block_frames == 0 || max_demand_frames == 0 {
             return Err(LatencyBudgetError::InvalidDeliveryBound);
         }
         let mut queue = self.prepare(engine_rate, max_demand_frames)?;

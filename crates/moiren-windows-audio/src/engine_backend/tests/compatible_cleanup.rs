@@ -45,7 +45,7 @@ fn compatible_provider_failure_cleanup<S: ProcessingSample>() {
         assert_sessions_joined(&probe, 1);
         let requests = probe.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].max_demand_frames, 704);
+        assert_eq!(requests[0].max_demand_frames, 528);
         assert_eq!(requests[0].buffer, Default::default());
         assert_eq!(probe.activated.load(Ordering::Acquire), 0);
         assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 0);

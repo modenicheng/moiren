@@ -9,6 +9,31 @@ const TAPS: usize = 32;
 const HALF: usize = TAPS / 2;
 const PHASES: usize = 256;
 
+/// Whole-wake input envelope for the nominal physical master only. Pump uses
+/// exact SRC demand, so Engine segment ceilings add no rounding reserve.
+/// The last output needs D-1 ratio steps, leaving at least one step of numerical
+/// margin in ceil(D * ratio) + HALF. Under the professional rate/demand limits,
+/// accumulated binary64 error is < 3e-10 frames, versus a minimum step > 0.11.
+/// Initial lookahead needs HALF; normalized retained phase adds no block tail.
+/// A follower's corrected ratio must not use this nominal bound.
+#[cfg(any(windows, test))]
+pub(crate) fn nominal_master_input_bound(
+    input_rate: u32,
+    output_rate: u32,
+    output_frames: u32,
+) -> Option<u32> {
+    if !moiren_engine::audio_config::SAMPLE_RATES.contains(&input_rate)
+        || !(8_000..=384_000).contains(&output_rate)
+        || !(1..=65_536).contains(&output_frames)
+    {
+        return None;
+    }
+    let frames = (u64::from(output_frames) * u64::from(input_rate))
+        .div_ceil(u64::from(output_rate))
+        .checked_add(HALF as u64)?;
+    u32::try_from(frames).ok()
+}
+
 /// Accepted magnitude of a drift correction, in ppm. The follower servos clip
 /// their desired correction to the same bound enforced here.
 pub(super) const CORRECTION_PPM_LIMIT: f64 = 2000.0;
@@ -243,6 +268,78 @@ fn add_counter(counter: &mut u64, delta: u64, saturated: &mut bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nominal_master_bound_rejects_invalid_or_unrepresentable_demands() {
+        assert_eq!(nominal_master_input_bound(0, 48_000, 1), None);
+        assert_eq!(nominal_master_input_bound(48_000, 7_999, 1), None);
+        assert_eq!(nominal_master_input_bound(384_001, 48_000, 1), None);
+        assert_eq!(nominal_master_input_bound(48_000, 48_000, 0), None);
+        assert_eq!(nominal_master_input_bound(48_000, 48_000, u32::MAX), None);
+        assert_eq!(nominal_master_input_bound(384_000, 8_000, u32::MAX), None);
+        assert_eq!(nominal_master_input_bound(48_000, 48_000, 65_537), None);
+        assert_eq!(nominal_master_input_bound(8_000, 48_000, 1), None);
+        assert_eq!(nominal_master_input_bound(48_000, 48_000, 512), Some(528));
+        assert_eq!(nominal_master_input_bound(48_000, 96_000, 128), Some(80));
+    }
+
+    #[test]
+    fn nominal_master_bound_covers_reachable_fractional_phase_and_initial_lookahead() {
+        for input_rate in moiren_engine::audio_config::SAMPLE_RATES {
+            for output_rate in [8_000, 44_100, 48_000, 88_200, 96_000, 384_000] {
+                let mut src = StereoResampler::new(input_rate, output_rate, 64).unwrap();
+                for round in 0..24 {
+                    for demand in [1, 2, 7, 32, 64, 128, 336, 512, 738, 4096] {
+                        let bound =
+                            nominal_master_input_bound(input_rate, output_rate, demand).unwrap();
+                        let before = src.cursor();
+                        let mut produced = 0;
+                        while produced < demand {
+                            if src.next_frame().is_some() {
+                                produced += 1;
+                            } else {
+                                assert!(src.push_frame([0.125, -0.25]));
+                            }
+                        }
+                        let consumed = src.cursor().input_frames - before.input_frames;
+                        assert!(
+                            consumed <= u64::from(bound),
+                            "{input_rate}/{output_rate}, demand {demand}, round {round}: {consumed} > {bound}"
+                        );
+                        if input_rate == output_rate {
+                            let expected =
+                                u64::from(demand) + if before.output_frames == 0 { 16 } else { 0 };
+                            assert_eq!(consumed, expected);
+                        }
+                    }
+                }
+                src.reset();
+                let initial = src.input_frames_needed(4096).unwrap();
+                assert!(
+                    initial
+                        <= nominal_master_input_bound(input_rate, output_rate, 4096).unwrap()
+                            as usize
+                );
+                // Exercise the full admitted native-demand limit rather than
+                // extending the small-packet result by nominal arithmetic.
+                let before = src.cursor().input_frames;
+                let mut produced = 0;
+                while produced < 65_536 {
+                    if src.next_frame().is_some() {
+                        produced += 1;
+                    } else {
+                        assert!(src.push_frame([0.125, -0.25]));
+                    }
+                }
+                assert!(
+                    src.cursor().input_frames - before
+                        <= u64::from(
+                            nominal_master_input_bound(input_rate, output_rate, 65_536).unwrap()
+                        )
+                );
+            }
+        }
+    }
 
     #[test]
     fn src_cursor_tracks_fractional_consumption_and_reset_without_fitting_an_origin() {

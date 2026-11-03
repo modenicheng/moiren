@@ -71,7 +71,14 @@ fn real_preparation_accounts_measured_storage_and_refuses_negotiated_whole_deman
                 device: Default::default(),
             }),
         );
-        add_physical_output(&mut project, 2);
+        let output = add_physical_output(&mut project, 2);
+        let NodeConfig::Output(output) = project.nodes.get_mut(&output).unwrap() else {
+            unreachable!()
+        };
+        // Keep this fake-native test outside real Process activation: the
+        // 512-frame/96k native wake needs 272 Engine frames after exact SRC
+        // admission, which still exceeds this fixture's target256 reserve.
+        output.device.period_frames = Some(512);
         let identity = ProcessIdentity {
             pid: 42,
             creation_time_100ns: 123,

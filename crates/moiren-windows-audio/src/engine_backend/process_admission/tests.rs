@@ -50,6 +50,52 @@ fn target() -> TransportInputPolicy {
 }
 
 #[test]
+fn exact_master_bound_admits_only_the_complete_nominal_wake_reserve() {
+    // With source gap480/jitter96, native target512 needs the complete
+    // nominal FIR envelope528 plus the input bridge's independent pair2.
+    let required = 528 + 480 + 96 + 2;
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    for target_frames in [required - 1, required] {
+        let backend = ProfessionalBackend::<f32>::new()
+            .unwrap()
+            .with_process_bridge(ProcessBridgeOptions {
+                input: TransportInputPolicy::Target {
+                    capacity_frames: 16_384,
+                    target_frames,
+                    jitter_frames: 96,
+                },
+                delivery: Some(crate::latency::transport::InputDeliveryTiming {
+                    sample_rate: 48_000,
+                    max_packet_frames: 480,
+                    max_gap_frames: 480,
+                    source: DeliveryTimingSource::Declared,
+                }),
+                engine_sample_rate: 48_000,
+                max_demand_frames: 1,
+                age_limit_100ns: None,
+                max_ingress_elapsed_100ns: None,
+            })
+            .unwrap();
+        let demand = crate::resample::nominal_master_input_bound(48_000, 48_000, 512).unwrap();
+        let admitted = backend.process_bridge_for(node, (42, 123), 48_000, demand);
+        if target_frames == required {
+            let admitted = admitted.unwrap();
+            assert_eq!(admitted.max_demand_frames, 528);
+            assert_eq!(admitted.input, backend.process_bridge.input);
+            assert_eq!(
+                admitted.prepare().unwrap().modeled_minimum_frames,
+                Some(required)
+            );
+        } else {
+            assert!(admitted.is_err(), "a one-frame deficit must still refuse");
+        }
+    }
+}
+
+#[test]
 fn measured_backend_revalidates_actual_whole_demand_without_falling_back() {
     let mut graph = moiren_core::graph::LogicalGraph::new();
     let node = graph

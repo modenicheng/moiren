@@ -169,8 +169,8 @@ fn exercise<S: ProcessingSample>(rate: u32, block: usize) {
         previous_end = end;
     }
     assert_eq!(next_read, reads.events.len());
-    let prepared = (480 * u64::from(rate)).div_ceil(48_000) + 64 + 2 * block as u64;
-    assert!(wakes.events.iter().all(|e| e.frames <= prepared));
+    let prepared = resample::nominal_master_input_bound(rate, 48_000, 480).unwrap();
+    assert!(wakes.events.iter().all(|e| e.frames <= u64::from(prepared)));
     let final_bridge = observed.snapshot();
     assert_eq!(final_bridge.priming_frames, 0);
     assert_eq!(final_bridge.underrun_frames, 0);
@@ -199,7 +199,7 @@ fn exercise<S: ProcessingSample>(rate: u32, block: usize) {
         1,
         48_000,
         rate,
-        prepared as u32,
+        prepared,
         delivery.snapshot(),
         supply_snapshot.clone(),
         demand_snapshot.clone(),
@@ -246,7 +246,7 @@ fn exercise<S: ProcessingSample>(rate: u32, block: usize) {
     let admitted = evidence
         .admit_for_consumer(&identity, 1, large, rate, 256)
         .unwrap();
-    assert_eq!(admitted.max_demand_frames, prepared as u32);
+    assert_eq!(admitted.max_demand_frames, prepared);
 
     // Independently preserve observed full wakes even if the caller supplies
     // only a segment-sized prepared/new demand estimate.

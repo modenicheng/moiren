@@ -242,12 +242,31 @@ fn recovery_cap_rejects_unsupported_values_and_preserves_full_demand() {
     assert!(configured.prepare_recovery(44_100, 128).is_err());
     assert!(configured.prepare_recovery(0, 128).is_err());
     assert!(configured.prepare_recovery(48_000, 0).is_err());
-    assert!(configured.prepare_budget(48_000, 256, 128).is_err());
+    assert!(configured.prepare_budget(48_000, 256, 0).is_err());
     assert!(
         VirtualBufferOptions::default()
             .prepare_recovery(48_000, u32::MAX)
             .is_err()
     );
+}
+
+#[test]
+fn physical_wake_below_engine_ceiling_keeps_its_actual_burst_and_reprime_budget() {
+    // Native demand can be smaller than one Engine ceiling. The ceiling
+    // sizes scratch storage; it does not force a full graph block to run.
+    for block in [128, 512, 4096] {
+        let configured = VirtualBufferOptions::default();
+        let budget = configured.prepare_budget(48_000, block, 96).unwrap();
+        assert_eq!(budget.engine_block_frames, block);
+        assert_eq!(budget.engine_burst_frames, 96);
+        assert_eq!(budget.native_transfer_frames, 97);
+        let recovery = budget.microphone_reprime(48, 4800).unwrap();
+        assert_eq!(recovery.required_frames, 97 + 48 + 32);
+        assert!(!recovery.capacity_limited);
+        assert_eq!(budget.queue, None);
+        assert!(configured.prepare_budget(48_000, 0, 96).is_err());
+        assert!(configured.prepare_budget(48_000, block, 0).is_err());
+    }
 }
 
 #[test]

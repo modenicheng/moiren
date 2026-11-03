@@ -30,7 +30,7 @@ impl PreparedVirtualBudget {
         if capacity_frames < packet_frames
             || self.engine_sample_rate == 0
             || self.engine_block_frames == 0
-            || self.engine_burst_frames < self.engine_block_frames
+            || self.engine_burst_frames == 0
         {
             return Err(LatencyBudgetError::InvalidDeliveryBound);
         }

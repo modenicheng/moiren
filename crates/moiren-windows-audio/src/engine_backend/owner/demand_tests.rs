@@ -245,8 +245,20 @@ fn exact_master_demand<S: ProcessingSample>() {
                     let mut expected = vec![[0.0; 2]; demand];
                     assert_eq!(reference.produce(&mut expected), demand);
                     let before = native.samples.len();
+                    let timeline_before = engine.timeline();
                     pump.cycle(&mut native, Some(&mut engine), &timeline)
                         .unwrap();
+                    if demand > 0 {
+                        let bound = crate::resample::nominal_master_input_bound(
+                            rate,
+                            native_rate,
+                            demand as u32,
+                        )
+                        .unwrap();
+                        assert!(engine.timeline() - timeline_before <= u64::from(bound));
+                    } else {
+                        assert_eq!(engine.timeline(), timeline_before);
+                    }
                     assert_eq!(
                         engine.timeline(),
                         generated as u64,

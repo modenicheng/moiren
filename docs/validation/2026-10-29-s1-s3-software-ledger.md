@@ -2361,3 +2361,37 @@ Final clean feature-workspace integration passes2430/10ignored/0failed across
 19/8/24. Feature-on strict all-target workspace Clippy exits0. Independent final
 read-only review finds no concrete code/RT/accounting blocker;27preserved
 dirty/cache hashes and unrelated main audit files remain untouched. No push.
+
+### Exact Whole-Wake Admission After Demand Rendering
+
+The [master-admission increment](2026-11-03-exact-master-admission.md) removes
+the now-obsolete64-plus-two-Engine-block preparation allowance. A checked
+nominal-master bound `ceil(native_demand * engine_rate / native_rate) + 16`
+covers reachable FIR phase over the actual professional domain. Whole528
+replaces704 at48k/native512, without dropping the independent Process pair,
+VAD corrected transfer/FIR, packet gap, jitter or historical measured demand.
+Process1105still refuses/1106admits; VAD1137refuses/1138admits. These are modeled
+admission edges, not selected settings or measured delays.
+
+Positive physical wakes may be smaller than the Engine segment ceiling.
+Independent review catches a downstream Target-only binding refusal; both
+directions now cap their admitted segment at `min(block, whole_wake)` while
+retaining requested/published geometry. Engine4096/native64 yields wake80/
+transfer81, with688refusal/689acceptance, actual compiled two-wake transfers,
+nonzero MIC output and zero RT allocation/deallocation in both precisions.
+A separate RED catches unintended Compatible servo-target movement; final
+code retains the old full-ceiling boundary geometry, pinned at playback10260/
+MIC6124. Compatible's tighter whole-wake/reprime budget remains intentional.
+
+Original arithmetic/short-wake REDs, test-fixture failures and corrected results
+remain distinct in the receipt. No new native acquisition, repeated soak,
+first-packet work, driver/default/queue change, physical claim or push follows.
+This repairs S2/S3 admission; it does not complete all S1-S3 acceptance.
+
+Final pinned feature-workspace passes2436/10ignored/0failed across71harnesses,
+including zero-refill5, measuredUI20 and analyzer19/8/24. Final audio package
+1169/6ignored (library853/5ignored), RT255, feature-on strict all-target
+workspace/audio/RT Clippy, workspace/RT fmt and ordinary release all exit0.
+Independent P2 is closed;13code pins match both isolated sources/worktree,
+27preserved dirty/cache hashes and unrelated main audit stay unchanged.
+The release binary/hash is in the receipt; no native execution or push occurs.

@@ -692,17 +692,12 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 .expect("native preparation publishes metadata before its handshake");
             if group.master() {
                 master_timing = Some(timing);
-                // Pump's bound includes SRC lookahead and graph rounding on
-                // its last render. Budget the whole wake, never one segment.
+                // Exact-demand Pump renders short final segments. Admit the
+                // whole nominal SRC wake, not obsolete Engine-block rounding.
                 let demand = render_queue.map_or(info.buffer_frames, |queue| queue.target_frames);
-                process_demand = u32::try_from(
-                    (u64::from(demand) * u64::from(rate))
-                        .div_ceil(u64::from(info.sample_rate))
-                        .checked_add(64)
-                        .and_then(|frames| frames.checked_add(u64::from(block_demand) * 2))
-                        .ok_or_else(|| unsupported("process demand overflow"))?,
-                )
-                .map_err(|_| unsupported("process demand overflow"))?;
+                process_demand =
+                    crate::resample::nominal_master_input_bound(rate, info.sample_rate, demand)
+                        .ok_or_else(|| unsupported("process demand bound invalid or overflowed"))?;
             }
             log::info!(
                 target: "moiren::audio::professional",
@@ -749,7 +744,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                     )
                     .map_err(unsupported)?;
                     // The renamed backend uses a FIR at the graph boundary.
-                    // Admit its whole wake, including block rounding, instead
+                    // Admit its whole wake, including nominal FIR reserve, instead
                     // of reusing the old linear bridge's two-frame reserve.
                     let LatencyBudgetPolicy::Custom {
                         input_jitter_frames,

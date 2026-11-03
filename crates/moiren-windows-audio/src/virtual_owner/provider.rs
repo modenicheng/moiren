@@ -99,6 +99,15 @@ pub fn bind_playback_source(
 ) -> Result<(VirtualPlaybackSource, Arc<BoundaryProbe>), BackendError> {
     let budget = request.prepared_budget()?;
     let queue = budget.queue;
+    // Target segments cannot exceed their admitted whole wake. Compatible's
+    // carrier-derived servo reference intentionally retains its old ceiling.
+    let segment_frames = if queue.is_some() {
+        request
+            .max_block_frames
+            .min(budget.engine_burst_frames as usize)
+    } else {
+        request.max_block_frames
+    };
     log::debug!(target: "moiren::audio::vad", "event=virtual_budget direction=playback admitted={budget:?}");
     let prepared = provider.prepare_playback(request, cancel)?;
     sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
@@ -110,7 +119,7 @@ pub fn bind_playback_source(
     let source = VirtualPlaybackSource::new(
         prepared.carrier,
         request.channels,
-        request.max_block_frames,
+        segment_frames,
         request.engine_sample_rate,
         request.audio_byte_budget,
     )?
@@ -140,6 +149,13 @@ pub fn bind_microphone_sink(
 ) -> Result<(VirtualMicrophoneSink, Arc<BoundaryProbe>), BackendError> {
     let budget = request.prepared_budget()?;
     let queue = budget.queue;
+    let segment_frames = if queue.is_some() {
+        request
+            .max_block_frames
+            .min(budget.engine_burst_frames as usize)
+    } else {
+        request.max_block_frames
+    };
     log::debug!(target: "moiren::audio::vad", "event=virtual_budget direction=microphone admitted={budget:?}");
     let prepared = provider.prepare_microphone(request, cancel)?;
     sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
@@ -151,7 +167,7 @@ pub fn bind_microphone_sink(
     let sink = VirtualMicrophoneSink::new(
         prepared.carrier,
         request.channels,
-        request.max_block_frames,
+        segment_frames,
         request.engine_sample_rate,
         request.audio_byte_budget,
     )?

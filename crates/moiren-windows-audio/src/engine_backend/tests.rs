@@ -384,8 +384,8 @@ fn virtual_budget_observations_preserve_whole_physical_master_demand() {
         )
         .unwrap();
     // The 96 kHz master's 128-frame period needs 64 Engine frames, plus
-    // the existing 64-frame FIR allowance and two Graph256 rounding blocks.
-    let budget = buffer.prepare_budget(48_000, 256, 640).unwrap();
+    // the nominal 16-frame FIR reserve, independent of the Graph256 ceiling.
+    let budget = buffer.prepare_budget(48_000, 256, 80).unwrap();
     let requests = probe.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     for request in requests.iter() {
