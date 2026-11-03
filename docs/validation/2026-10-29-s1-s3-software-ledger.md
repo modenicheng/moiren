@@ -5,6 +5,20 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+The [continuous MIC witness](2026-11-03-continuous-microphone-witness.md)
+adds a reusable pinned closed-output adapter and one new-question six-second
+Shared recording with continuously changing indexed content. All329856recorder
+frames exactly match actual post-encode output under one frozen map;282432are
+informative-compatible,41280uninformative and6144training-category. Actual
+331200encoded frames also exactly match dual-FIR reconstruction from raw input
+and archived steps. Original3flags/1position gap1344, native refusal and35/41
+window outcomes remain; no physical or sustained pass follows. Final24adapter
+tests and existing29/25/16tool suites pass; remote23+29tests and analyses exit0.
+Selfcheck/native audit tasks finish0 with no owner,96compact payloads verified
+and protected state unchanged. The original and separately color-corrected
+visualizations remain distinct. No buffer/default/gate or first-packet work
+changes, and no unchanged rerun/soak is started.
+
 The [Shared MIC frozen dual-FIR replay](2026-11-03-shared-microphone-frozen-replay.md)
 uses the closed recording's actual two-boundary SRC trace and pinned PCM16
 admission. All327552retained stereo frames,327027outside training, exactly
