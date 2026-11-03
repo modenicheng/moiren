@@ -365,6 +365,20 @@ fn strip_probe_candidate(
         })
 }
 
+/// How far the dock divider's invisible grab handle reaches to either side
+/// of the 1px border it straddles.
+const DOCK_RESIZE_REACH: f32 = 3.;
+
+/// The dock divider's live resize gesture. Renders nothing: the drag exists
+/// only so its `on_drag_move` keeps receiving pointer moves after the press
+/// leaves the divider's hitbox.
+struct DockResize;
+impl Render for DockResize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 /// The Mixer page: a light container (rebuilt per shell render) splicing the
 /// per-strip cached panels, with the meter hot layer as a sibling above them.
 pub(in crate::ui::window) fn page(
@@ -390,10 +404,7 @@ pub(in crate::ui::window) fn page(
     let dock_container = div()
         .id("mixer-dock")
         .flex()
-        .flex_none()
-        .w(px(MixerPresentation::DOCK_WIDTH))
-        .max_w(relative(0.55))
-        .min_h_0()
+        .size_full()
         .border_l_1()
         .border_color(theme::BORDER_STRONG)
         .overflow_x_scroll()
@@ -429,6 +440,51 @@ pub(in crate::ui::window) fn page(
             channels = channels.child(strip);
         }
     }
+    // The dock pane owns the user-resizable width (and its 55% cap) so the
+    // divider border stays the pane's left edge and the grab handle can
+    // straddle it without the scroll container clipping the reach; the
+    // container fills the pane, keeping its bounds — and every strip layout
+    // inside — exactly where the fixed width put them.
+    let row_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
+    let measure_row = row_bounds.clone();
+    let resize_shell = cx.entity();
+    let dock_pane = div()
+        .relative()
+        .flex_none()
+        .min_h_0()
+        .w(px(shell.mixer.dock_width))
+        .max_w(relative(MixerPresentation::DOCK_MAX_FRACTION))
+        .child(dock_container.child(dock).gpui_test_observe())
+        .child(
+            div()
+                .id("mixer-dock-resize")
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(-DOCK_RESIZE_REACH))
+                .w(px(DOCK_RESIZE_REACH * 2. + 1.))
+                .cursor_ew_resize()
+                .on_drag(DockResize, |_, _, _, cx| cx.new(|_| DockResize))
+                .on_drag_move(move |event: &DragMoveEvent<DockResize>, _, cx| {
+                    let row = row_bounds.get();
+                    if row.size.width <= px(0.) {
+                        return;
+                    }
+                    // The pane hugs the strip row's right edge, so the new
+                    // width is that edge minus the pointer. The clamp mirrors
+                    // the pane's max_w (and a one-strip floor) so the drawn
+                    // border tracks the cursor instead of lagging the cap.
+                    let width = f32::from(row.right() - event.event.position.x).clamp(
+                        MixerPresentation::STRIP_WIDTH,
+                        f32::from(row.size.width) * MixerPresentation::DOCK_MAX_FRACTION,
+                    );
+                    resize_shell.update(cx, |shell, cx| {
+                        shell.mixer.dock_width = width;
+                        cx.notify();
+                    });
+                })
+                .gpui_test_observe(),
+        );
     div()
         .id("mixer-page")
         .relative()
@@ -440,12 +496,20 @@ pub(in crate::ui::window) fn page(
         .overflow_hidden()
         .child(
             div()
+                .relative()
                 .flex()
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
+                .child(
+                    canvas(move |bounds, _, _| measure_row.set(bounds), |_, _, _, _| {})
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                )
                 .child(channels.gpui_test_observe())
-                .child(dock_container.child(dock).gpui_test_observe()),
+                .child(dock_pane),
         )
         .child(shell.mixer_frame.clone())
         .gpui_test_observe()

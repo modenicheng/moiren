@@ -3,8 +3,8 @@ use crate::ui::widgets::fader::FaderScale;
 use crate::ui::window::test_harness::{finish_service, shell_with_state, test_shell, wait_until};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString,
-    TestAppContext, VisualTestContext, point, px, size,
+    AppContext, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
+    SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 
 fn poll(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
@@ -116,6 +116,116 @@ fn mixer_header_drag_reorders_channels(cx: &mut TestAppContext) {
     cx.update(|window, cx| window.render_frame(cx));
     cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| assert_eq!(shell.mixer.order[0], order[1]));
+    finish_service(runtime);
+}
+
+/// The Bus & output dock's divider is a live resize handle: dragging it moves
+/// the divider under the cursor (the pane hugs the strip row's right edge),
+/// the width clamps to one strip at the narrow end and the pane's 55% cap at
+/// the wide end with no dead zone, and the docked strips stay flush against
+/// the pane's right edge.
+#[gpui_kit::test]
+fn mixer_dock_divider_drag_resizes_the_dock(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(1000.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The inspector's closing spring keeps the strip row's right edge moving
+    // for a while; the divider's geometry must be measured against the
+    // settled row or the drag lands on stale coordinates.
+    crate::ui::window::test_harness::settle_panels(cx);
+    let dock_width = |cx: &mut VisualTestContext| {
+        cx.update(|window, _| window.find("mixer-dock").bounds().size.width)
+    };
+    assert!(
+        (f32::from(dock_width(cx)) - 360.).abs() < 0.5,
+        "the dock starts at the default width"
+    );
+    let drag_divider_to = |cx: &mut VisualTestContext, x: Pixels| {
+        let divider = cx.update(|window, _| window.find("mixer-dock-resize").bounds().center());
+        // The platform drag gesture arms only after a visible move, so step
+        // off the press point first and render the frame the drag owns.
+        cx.simulate_mouse_down(divider, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            divider + point(px(-12.), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| window.render_frame(cx));
+        let target = point(x, divider.y);
+        cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+        cx.update(|window, cx| window.render_frame(cx));
+        cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| window.render_frame(cx));
+    };
+    // 100px left of the default divider: the pane grows by exactly the drag.
+    // The target rides the border itself, not the grab handle's left edge
+    // (which reaches 3px past it), so the arithmetic stays in whole strips.
+    let divider_x = cx.update(|window, _| window.find("mixer-dock").bounds().left());
+    drag_divider_to(cx, divider_x - px(100.));
+    view.update(cx, |shell, _| {
+        assert!(
+            (shell.mixer.dock_width - 460.).abs() < 0.5,
+            "got {}",
+            shell.mixer.dock_width
+        );
+    });
+    let sink = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Sink)
+            .unwrap()
+            .id()
+    });
+    let (dock, output) = cx.update(|window, _| {
+        (
+            window.find("mixer-dock").bounds(),
+            window
+                .find(SharedString::from(format!("strip-{sink:?}")))
+                .bounds(),
+        )
+    });
+    assert!((f32::from(dock.size.width) - 460.).abs() < 0.5);
+    assert!(
+        (f32::from(output.right() - dock.right())).abs() <= 1.,
+        "the docked strip must stay flush with the resized pane"
+    );
+    // Hard against the right edge asks for a near-zero dock; the floor keeps
+    // one full strip.
+    drag_divider_to(cx, dock.right() - px(10.));
+    view.update(cx, |shell, _| {
+        assert!(
+            (shell.mixer.dock_width - 160.).abs() < 0.5,
+            "the one-strip floor must hold, got {}",
+            shell.mixer.dock_width
+        );
+    });
+    assert!(
+        (f32::from(dock_width(cx)) - 160.).abs() < 0.5,
+        "the laid-out dock must honor the floor"
+    );
+    // Hard against the left edge asks for the whole row; the 55% cap holds
+    // and the divider still tracks the pointer at the clamp.
+    drag_divider_to(cx, px(2.));
+    let dock = cx.update(|window, _| window.find("mixer-dock").bounds());
+    view.update(cx, |shell, _| {
+        let clamped = shell.mixer.dock_width;
+        assert!(
+            clamped > 460. && clamped < 1600.,
+            "the cap must engage inside the requested span, got {clamped}"
+        );
+        assert!(
+            (f32::from(dock.size.width) - clamped).abs() < 0.5,
+            "the pane renders the clamped width {clamped}, not {}",
+            f32::from(dock.size.width)
+        );
+    });
     finish_service(runtime);
 }
 
