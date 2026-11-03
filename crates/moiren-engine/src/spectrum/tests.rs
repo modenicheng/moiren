@@ -90,7 +90,7 @@ fn settings(fft_size: usize, hop_frames: usize) -> SpectrumSettings {
 
 impl<S: ProcessingSample> Fixture<S> {
     fn new(channels: usize, settings: SpectrumSettings) -> Self {
-        let (bus, topic, host, op, publisher) = prepare(channels * settings.bins_per_channel());
+        let (bus, topic, host, op, publisher) = prepare(channels * settings.fft_size);
         let analyzer = SignalSpectrumAnalyzer::new(channels, settings, publisher).unwrap();
         let arena = BufferArena::new(
             &[BufferSlotLayout {
@@ -166,6 +166,15 @@ fn assert_near(actual: f32, expected: f64) {
     );
 }
 
+/// Run the off-thread half over one published block, as the bridge does.
+fn analyze(channels: usize, fft_size: usize, frames: &[f32]) -> Vec<f32> {
+    let mut analysis = SpectrumAnalysis::new(channels, fft_size).unwrap();
+    assert_eq!(analysis.window_len(), channels * fft_size);
+    let mut magnitudes = vec![f32::NAN; analysis.magnitudes_len()];
+    analysis.analyze(frames, &mut magnitudes).unwrap();
+    magnitudes
+}
+
 // Deliberately direct O(N^2) DFT: no production FFT, window or scaling helpers.
 fn reference_amplitudes(samples: &[f64]) -> Vec<f64> {
     let n = samples.len();
@@ -190,7 +199,7 @@ fn reference_amplitudes(samples: &[f64]) -> Vec<f64> {
 
 #[test]
 fn settings_defaults_bounds_and_bin_count_are_explicit() {
-    assert_eq!(SpectrumSettings::default(), settings(2048, 1024));
+    assert_eq!(SpectrumSettings::default(), settings(8192, 1024));
     for fft_size in 0..=16_385 {
         let config = settings(fft_size, 1);
         assert_eq!(
@@ -223,7 +232,7 @@ fn settings_serde_defaults_and_unknown_fields_follow_the_public_contract() {
     assert_eq!(decode(vec![("fft_size", 64)]).unwrap(), settings(64, 1024));
     assert_eq!(
         decode(vec![("hop_frames", 16)]).unwrap(),
-        settings(2048, 16)
+        settings(8192, 16)
     );
     assert_eq!(
         decode(vec![("fft_size", 64), ("hop_frames", 32)]).unwrap(),
@@ -235,20 +244,22 @@ fn settings_serde_defaults_and_unknown_fields_follow_the_public_contract() {
 #[test]
 fn invalid_channels_settings_and_publisher_capacity_are_rejected() {
     for (channels, config, capacity, expected) in [
-        (0, settings(16, 8), 9, SpectrumError::InvalidChannels),
+        (0, settings(16, 8), 16, SpectrumError::InvalidChannels),
         (
             usize::MAX,
             settings(16, 8),
-            9,
+            16,
             SpectrumError::InvalidChannels,
         ),
-        (1, settings(8, 4), 5, SpectrumError::InvalidSettings),
-        (1, settings(17, 8), 9, SpectrumError::InvalidSettings),
-        (1, settings(16_384, 8), 9, SpectrumError::InvalidSettings),
-        (1, settings(16, 0), 9, SpectrumError::InvalidSettings),
-        (1, settings(16, 17), 9, SpectrumError::InvalidSettings),
-        (2, settings(16, 8), 17, SpectrumError::CapacityMismatch),
-        (2, settings(16, 8), 19, SpectrumError::CapacityMismatch),
+        (1, settings(8, 4), 8, SpectrumError::InvalidSettings),
+        (1, settings(17, 8), 17, SpectrumError::InvalidSettings),
+        (1, settings(16_384, 8), 16, SpectrumError::InvalidSettings),
+        (1, settings(16, 0), 16, SpectrumError::InvalidSettings),
+        (1, settings(16, 17), 16, SpectrumError::InvalidSettings),
+        // The host topic carries frames, so the magnitude count no longer fits.
+        (2, settings(16, 8), 18, SpectrumError::CapacityMismatch),
+        (2, settings(16, 8), 31, SpectrumError::CapacityMismatch),
+        (2, settings(16, 8), 33, SpectrumError::CapacityMismatch),
     ] {
         let (_bus, _topic, _host, _op, publisher) = prepare(capacity);
         assert_eq!(
@@ -258,17 +269,48 @@ fn invalid_channels_settings_and_publisher_capacity_are_rejected() {
     }
 }
 
-fn assert_channel_tones<S: ProcessingSample>() {
+#[test]
+fn analysis_rejects_invalid_shapes_and_mismatched_blocks() {
+    for (channels, fft_size, expected) in [
+        (0, 16, SpectrumError::InvalidChannels),
+        (usize::MAX, 16, SpectrumError::InvalidChannels),
+        (1, 8, SpectrumError::InvalidSettings),
+        (1, 17, SpectrumError::InvalidSettings),
+        (1, 16_384, SpectrumError::InvalidSettings),
+    ] {
+        assert_eq!(
+            SpectrumAnalysis::new(channels, fft_size).err(),
+            Some(expected)
+        );
+    }
+    let mut analysis = SpectrumAnalysis::new(2, 16).unwrap();
+    assert_eq!(analysis.window_len(), 32);
+    assert_eq!(analysis.magnitudes_len(), 18);
+    let mut magnitudes = vec![0.0; 18];
+    assert_eq!(
+        analysis.analyze(&[0.0; 31], &mut magnitudes),
+        Err(SpectrumError::CapacityMismatch)
+    );
+    assert_eq!(
+        analysis.analyze(&[0.0; 32], &mut magnitudes[..17]),
+        Err(SpectrumError::CapacityMismatch)
+    );
+    assert_eq!(analysis.analyze(&[0.0; 32], &mut magnitudes), Ok(()));
+    assert!(magnitudes.iter().all(|&value| value == 0.0));
+}
+
+fn assert_channel_windows_and_tones<S: ProcessingSample>() {
     let mut fixture = Fixture::<S>::new(3, settings(64, 32));
     let mut subscriber = fixture
         .bus
         .subscribe(&fixture.topic, Default::default())
         .unwrap();
-    fixture.fill(64, |channel, frame| match channel {
+    let sample = |channel: usize, frame: usize| match channel {
         0 => 0.8 * (TAU * 7.0 * frame as f64 / 64.0).sin(),
         1 => 0.25 * (TAU * 19.0 * frame as f64 / 64.0).cos(),
         _ => 0.0,
-    });
+    };
+    fixture.fill(64, sample);
     fixture.observe(context(100, 64));
     let read = subscriber.read_latest().unwrap();
     assert_eq!(
@@ -282,8 +324,17 @@ fn assert_channel_tones<S: ProcessingSample>() {
             channels: 3,
         }
     );
-    assert_eq!(read.elements().len(), 3 * 33);
-    for (channel, bins) in read.elements().as_chunks::<33>().0.iter().enumerate() {
+    // The realtime half publishes the exact source frames, channel-major.
+    assert_eq!(read.elements().len(), 3 * 64);
+    for (channel, frames) in read.elements().as_chunks::<64>().0.iter().enumerate() {
+        for (frame, &actual) in frames.iter().enumerate() {
+            assert_near(actual, sample(channel, frame));
+        }
+    }
+    // The off-thread half turns them into the tones that were played.
+    let magnitudes = analyze(3, 64, read.elements());
+    assert_eq!(magnitudes.len(), 3 * 33);
+    for (channel, bins) in magnitudes.as_chunks::<33>().0.iter().enumerate() {
         if channel == 2 {
             assert!(bins.iter().all(|&value| value == 0.0));
             continue;
@@ -301,57 +352,53 @@ fn assert_channel_tones<S: ProcessingSample>() {
 }
 
 #[test]
-fn channel_major_peak_bins_and_amplitudes_are_correct_in_both_precisions() {
-    assert_channel_tones::<f32>();
-    assert_channel_tones::<f64>();
+fn channel_major_windows_and_peak_bins_are_correct_in_both_precisions() {
+    assert_channel_windows_and_tones::<f32>();
+    assert_channel_windows_and_tones::<f64>();
 }
 
 #[test]
 fn dc_and_nyquist_are_not_doubled() {
-    let mut fixture = Fixture::<f64>::new(2, settings(32, 32));
-    let mut subscriber = fixture
-        .bus
-        .subscribe(&fixture.topic, Default::default())
-        .unwrap();
-    fixture.fill(32, |channel, frame| {
-        if channel == 0 || frame % 2 == 0 {
-            0.6
-        } else {
-            -0.6
-        }
-    });
-    fixture.observe(context(0, 32));
-    let read = subscriber.read_latest().unwrap();
-    assert_near(read.elements()[0], 0.6);
-    assert_near(read.elements()[16], 0.0);
-    assert_near(read.elements()[17], 0.0);
-    assert_near(read.elements()[17 + 16], 0.6);
+    let frames: Vec<f32> = (0..2 * 32)
+        .map(|index| {
+            let (channel, frame) = (index / 32, index % 32);
+            if channel == 0 || frame % 2 == 0 {
+                0.6
+            } else {
+                -0.6
+            }
+        })
+        .collect();
+    let magnitudes = analyze(2, 32, &frames);
+    assert_near(magnitudes[0], 0.6);
+    assert_near(magnitudes[16], 0.0);
+    assert_near(magnitudes[17], 0.0);
+    assert_near(magnitudes[17 + 16], 0.6);
 }
 
 #[test]
 fn every_fft_bin_matches_independent_dft() {
     for fft_size in [16, 32, 64, 128, 256] {
-        let mut fixture = Fixture::<f64>::new(2, settings(fft_size, fft_size));
-        let mut subscriber = fixture
-            .bus
-            .subscribe(&fixture.topic, Default::default())
-            .unwrap();
-        let sample = |channel, frame| {
-            let phase = frame as f64;
-            let sign = if channel == 0 { 1.0 } else { -1.0 };
-            sign * (0.13
-                + 0.7 * (phase * 0.937).sin()
-                + 0.2 * (phase * 0.123).cos()
-                + ((frame * 37 + channel * 11) % 19) as f64 / 57.0)
-        };
-        fixture.fill(fft_size, sample);
-        fixture.observe(context(0, fft_size));
-        let read = subscriber.read_latest().unwrap();
+        let frames: Vec<f32> = (0..2 * fft_size)
+            .map(|index| {
+                let (channel, frame) = (index / fft_size, index % fft_size);
+                let phase = frame as f64;
+                let sign = if channel == 0 { 1.0 } else { -1.0 };
+                (sign
+                    * (0.13
+                        + 0.7 * (phase * 0.937).sin()
+                        + 0.2 * (phase * 0.123).cos()
+                        + ((frame * 37 + channel * 11) % 19) as f64 / 57.0)) as f32
+            })
+            .collect();
+        let magnitudes = analyze(2, fft_size, &frames);
         for channel in 0..2 {
-            let samples: Vec<_> = (0..fft_size).map(|frame| sample(channel, frame)).collect();
+            let samples: Vec<f64> = frames[channel * fft_size..][..fft_size]
+                .iter()
+                .map(|&sample| f64::from(sample))
+                .collect();
             let expected = reference_amplitudes(&samples);
-            for (&actual, expected) in read.elements()
-                [channel * expected.len()..(channel + 1) * expected.len()]
+            for (&actual, expected) in magnitudes[channel * expected.len()..][..expected.len()]
                 .iter()
                 .zip(expected)
             {
@@ -389,11 +436,9 @@ fn overlapping_windows_keep_exact_source_intervals_and_ring_order() {
                 let read = subscriber.read_latest().unwrap();
                 assert_eq!(read.header().frame_start, 41 + window_start as u64);
                 assert_eq!(read.header().frame_end, 41 + window_start as u64 + 16);
-                let samples: Vec<_> = (window_start..window_start + 16).map(sample).collect();
-                for (&actual, expected) in
-                    read.elements().iter().zip(reference_amplitudes(&samples))
-                {
-                    assert_near(actual, expected);
+                // Oldest frame first, whatever the ring cursor was at the hop.
+                for (frame, &actual) in read.elements().iter().enumerate() {
+                    assert_near(actual, sample(window_start + frame));
                 }
             } else {
                 assert!(subscriber.read_latest().is_none());
@@ -442,7 +487,7 @@ fn epoch_gap_rewind_and_sample_rate_changes_discard_partial_history() {
             assert_eq!(read.header().frame_start, discontinuity.timeline_start);
             assert_eq!(read.header().frame_end, discontinuity.timeline_start + 16);
             assert_eq!(read.header().sample_rate, discontinuity.processing_sr);
-            assert_near(read.elements()[0], 0.25);
+            assert!(read.elements().iter().all(|&value| value == 0.25));
         }
     }
 }
@@ -494,7 +539,7 @@ fn demand_generation_change_discards_history_even_without_inactive_observe() {
         let read = subscriber.read_latest().unwrap();
         assert_eq!(read.header().frame_start, start);
         assert_eq!(read.header().frame_end, start + 16);
-        assert_near(read.elements()[0], 0.4);
+        assert!(read.elements().iter().all(|&value| value == 0.4));
     }
 }
 
@@ -542,12 +587,12 @@ fn prepared_observer_requires_exactly_one_input_with_configured_channels() {
         RtObserver::<f64>::signal_bindings(&fixture.analyzer)[0]
             .schema()
             .2,
-        18
+        32
     );
 }
 
 #[test]
-fn maximum_fft_size_is_prepared_and_observed() {
+fn maximum_fft_size_is_prepared_observed_and_analyzed() {
     let mut fixture = Fixture::<f32>::new(1, settings(8192, 8192));
     let mut subscriber = fixture
         .bus
@@ -556,6 +601,9 @@ fn maximum_fft_size_is_prepared_and_observed() {
     fixture.fill(8192, |_, _| 0.3);
     fixture.observe(context(0, 8192));
     let read = subscriber.read_latest().unwrap();
-    assert_eq!(read.elements().len(), 4097);
-    assert_near(read.elements()[0], 0.3);
+    assert_eq!(read.elements().len(), 8192);
+    assert!(read.elements().iter().all(|&value| value == 0.3));
+    let magnitudes = analyze(1, 8192, read.elements());
+    assert_eq!(magnitudes.len(), 4097);
+    assert_near(magnitudes[0], 0.3);
 }

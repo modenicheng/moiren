@@ -1,9 +1,11 @@
 //! Copy bounded latest windows between the lifecycle-owned host directory and
-//! the stable application topics. Demand still decides whether RT meters run.
+//! the stable application topics, running the spectrum transform on the way.
+//! Demand still decides whether RT meters run.
 use super::*;
 use crate::service::signals::{SpectrumShape, SpectrumTopic};
 use moiren_core::graph::NodeKind;
 use moiren_engine::host::{ManagedLevelSubscription, ManagedSpectrumSubscription};
+use moiren_engine::spectrum::SpectrumAnalysis;
 use moiren_signal::{BindingKey, HostControl, OpSignalBindings, PreparedPublisher, RtHost, Topic};
 struct Slot {
     node: Option<moiren_core::graph::NodeId>,
@@ -14,9 +16,10 @@ struct Slot {
     subscription: Option<(moiren_core::graph::NodeId, ManagedLevelSubscription)>,
     sequence: u64,
 }
-/// One spectrum analyzer's relay: the engine's latest FFT window copied onto
+/// One spectrum analyzer's relay: the engine's latest exact source window,
+/// transformed here on the service thread and published as magnitudes onto
 /// the application topic registered at the same shape. Demand-gated exactly
-/// like the level slots, so an analyzer nobody looks at computes nothing.
+/// like the level slots, so an analyzer nobody looks at captures nothing.
 struct SpectrumSlot {
     node: NodeId,
     shape: SpectrumShape,
@@ -26,6 +29,8 @@ struct SpectrumSlot {
     operation: OpSignalBindings,
     subscription: Option<ManagedSpectrumSubscription>,
     sequence: u64,
+    analysis: SpectrumAnalysis,
+    magnitudes: Vec<f32>,
 }
 pub(super) struct MeterBridge {
     control: HostControl,
@@ -35,7 +40,7 @@ pub(super) struct MeterBridge {
 }
 impl MeterBridge {
     /// How many analyzers the bridge currently holds an engine subscription
-    /// for — the demand the realtime FFT actually sees.
+    /// for — the demand the realtime window tap actually sees.
     #[cfg(test)]
     pub(super) fn demanded_spectra(&self) -> usize {
         self.spectra
@@ -166,16 +171,20 @@ impl MeterBridge {
             slot.sequence = window.meta().sequence;
             // A window of another shape belongs to a plan this slot has not
             // been re-synced for yet; the next poll re-registers the topic.
-            if window.elements().len() != slot.shape.capacity() {
+            if window.elements().len() != slot.shape.window_capacity()
+                || slot
+                    .analysis
+                    .analyze(window.elements(), &mut slot.magnitudes)
+                    .is_err()
+            {
                 continue;
             }
             let mut scope = self.host.scope(&slot.operation);
-            if let Ok(mut write) =
-                scope.try_write(&slot.publisher.handle(), window.elements().len())
+            if let Ok(mut write) = scope.try_write(&slot.publisher.handle(), slot.magnitudes.len())
             {
                 *write.header_mut() = *window.header();
-                write.elements_mut().copy_from_slice(window.elements());
-                let _ = write.commit(window.elements().len());
+                write.elements_mut().copy_from_slice(&slot.magnitudes);
+                let _ = write.commit(slot.magnitudes.len());
             }
         }
     }
@@ -249,6 +258,8 @@ impl MeterBridge {
             let Some(&shape) = shapes.get(&node) else {
                 continue;
             };
+            let analysis = SpectrumAnalysis::new(shape.channels, shape.fft_size)
+                .map_err(|error| error.to_string())?;
             let key = self
                 .control
                 .new_binding()
@@ -270,6 +281,8 @@ impl MeterBridge {
                 operation: update.op_bindings(key).map_err(|error| error.to_string())?,
                 subscription: None,
                 sequence: 0,
+                analysis,
+                magnitudes: vec![0.; shape.capacity()],
             });
         }
         self.activate_table()

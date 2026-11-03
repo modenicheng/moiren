@@ -343,8 +343,10 @@ impl SignalHub {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let directory = &mut *guard;
+        // The host topic carries the exact source window, not magnitudes:
+        // the transform runs on whichever control thread reads it.
         let capacity = channels
-            .checked_mul(settings.bins_per_channel())
+            .checked_mul(settings.fft_size)
             .ok_or_else(|| failed("spectrum topic capacity overflow"))?;
         let shape = (node, channels, settings.fft_size);
         let generation = directory.generation;

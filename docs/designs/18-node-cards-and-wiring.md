@@ -232,22 +232,26 @@ topic (mirroring `node/{id}/level`), and the hot layer paints them next
 to the meters.
 
 The analyzer rides the unified signal bus end to end. The engine's
-`SignalSpectrumAnalyzer` publishes demand-gated FFT windows on its host
-directory; the managed bridge relays the latest window onto an
-application `node/{id}/spectrum` stream topic (depth 4) registered at the
-shape the active plan publishes — a changed FFT size re-registers the
-topic under a new identity, which is how subscribers learn to follow —
-and the UI's `NodeSpectra` subscribes per visible card, on the Graph page
-only. Demand flows back the same way: no visible card, no subscriber, no
-FFT on the audio thread.
+`SignalSpectrumAnalyzer` is only a window tap: on the audio thread it
+keeps the history ring and publishes demand-gated exact source windows on
+its host directory, nothing more. The managed bridge runs the transform
+(`SpectrumAnalysis`: periodic Hann, radix-2 FFT, coherent-gain scaling)
+on the service thread as it relays each window, publishing the
+magnitudes onto an application `node/{id}/spectrum` stream topic (depth
+4) registered at the shape the active plan publishes — a changed FFT size
+re-registers the topic under a new identity, which is how subscribers
+learn to follow — and the UI's `NodeSpectra` subscribes per visible card,
+on the Graph page only. Demand flows back the same way: no visible card,
+no subscriber, no window capture on the audio thread and no FFT anywhere.
 
 The plot is drawn to the industry's logarithmic conventions, never a
 linear axis. Frequency runs on the ISO 266 base-2 fractional-octave grid
 — 1/12-octave points anchored on 1 kHz from 19.7 Hz to 20.2 kHz (121
 points), clamped to the running Nyquist — so the points are equally
-spaced on the axis and the decade-standard grid lines (20, 50, 100, 200,
-500, 1 k, 2 k, 5 k, 10 k, 20 k; 100/1 k/10 k labeled) fall where an
-analyzer's do. Level is dBFS over the meters' −96 dB floor with lines
+spaced on the axis, under logarithmic graph-paper grid lines: a strong
+line at every decade (100/1 k/10 k labeled) and faint ones at the integer
+steps inside it, bunching toward each decade's end, where an analyzer's
+do. Level is dBFS over the meters' −96 dB floor with lines
 every 24 dB.
 
 Band levels are the standard FFT-analyzer band-power spectrum —

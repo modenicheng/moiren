@@ -1073,6 +1073,11 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
 /// sink, ticked until the bridge registered the analyzer's topic.
 fn spectrum_rig() -> (Rig, moiren_core::graph::NodeId) {
     let mut rig = Rig::new();
+    // Pace the fake owner at the session's 256-frame block maximum (5.3 ms
+    // callbacks): the 8192-point default fills in 32 renders instead of a
+    // thousand millisecond-tick ones, which a coarse Windows timer could
+    // stretch past the publication deadline.
+    rig.state.timed_meter_frames.store(256, Ordering::Relaxed);
     rig.start();
     rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
         kind: NodeKind::SpectrumAnalyzer,
@@ -1146,14 +1151,14 @@ fn spectrum_bridge_relays_fft_windows_only_on_demand() {
     let mut subscriber = ticket.try_take().unwrap().unwrap();
     // The fake backend feeds DC 1.0: once the analysis window has filled,
     // the one-sided magnitudes read 1.0 at the DC bin of each channel and
-    // nothing mid-band, channel-major at the default 2048-point shape.
+    // nothing mid-band, channel-major at the default 8192-point shape.
     wait_spectrum(&mut rig, &mut subscriber, |header, bins| {
-        assert_eq!(header.fft_size, 2048);
+        assert_eq!(header.fft_size, 8192);
         assert_eq!(header.channels, 2);
         assert!(header.sample_rate > 0.);
         assert!(header.frame_end > header.frame_start);
-        assert_eq!(bins.len(), 2 * 1025);
-        (bins[0] - 1.).abs() < 0.02 && (bins[1025] - 1.).abs() < 0.02 && bins[512].abs() < 1e-3
+        assert_eq!(bins.len(), 2 * 4097);
+        (bins[0] - 1.).abs() < 0.02 && (bins[4097] - 1.).abs() < 0.02 && bins[2048].abs() < 1e-3
     });
     assert_eq!(rig.driver.meters.as_ref().unwrap().demanded_spectra(), 1);
     drop(subscriber);

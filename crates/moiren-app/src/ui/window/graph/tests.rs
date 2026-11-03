@@ -2128,6 +2128,20 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
         })
         .unwrap();
     let spectrum = analyzer.id();
+    // Pin the transform to 2048 points: the leakage shoulder asserted below
+    // needs the DC bins on the display grid, and at the 8192-point default
+    // they sit below its 19.7 Hz floor.
+    graph
+        .edit(GraphEdit::SetBuiltin {
+            node: spectrum,
+            state: crate::service::BuiltinState::SpectrumAnalyzer(
+                moiren_engine::spectrum::SpectrumSettings {
+                    fft_size: 2048,
+                    hop_frames: 1024,
+                },
+            ),
+        })
+        .unwrap();
     let snapshot = graph.snapshot();
     handle
         .try_request(AppRequest::ReplaceGraph {
@@ -2200,8 +2214,8 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
         let curve = state.node_spectra.curve(spectrum).expect("live curve");
         assert_eq!(curve.points.len(), 121, "the full ISO grid at 48 kHz");
         assert!(!state.node_spectra.at_rest(), "a fed analyzer is in motion");
-        // The fixture feeds DC: with the 2048-point default the first bin
-        // (23.4 Hz) carries the Hann leakage near full scale, and points
+        // The fixture feeds DC: at 2048 points the first bin (23.4 Hz)
+        // carries the Hann leakage near full scale, and points
         // below the transform's resolution integrate over the resolution
         // bandwidth (Hann ENBW, 35.2 Hz) around themselves: the points
         // whose window fully contains that bin read its level together,
