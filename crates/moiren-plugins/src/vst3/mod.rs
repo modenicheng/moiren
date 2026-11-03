@@ -17,6 +17,8 @@ use std::{
     },
 };
 
+use libloading::Library;
+
 pub mod abi;
 
 use crate::{
@@ -27,14 +29,38 @@ use crate::{
 use abi::*;
 
 const GET_PLUGIN_FACTORY_SYMBOL: &[u8] = b"GetPluginFactory";
+const INIT_DLL_SYMBOL: &[u8] = b"InitDll";
+const EXIT_DLL_SYMBOL: &[u8] = b"ExitDll";
 /// Changed-parameter events fitting one block; extra diffs are dropped
 /// (documented MVP behavior, in line with the engine's event budget).
 const MAX_PARAM_EVENTS: usize = 128;
 /// Sample-accurate headroom per queue; the host writes one point per block.
 const POINTS_PER_QUEUE: usize = 2;
 
+/// Optional module-level `InitDll`/`ExitDll` pair. The SDK's host guide
+/// requires `InitDll` before the first `GetPluginFactory` and `ExitDll`
+/// after the last module use; plugins that set up process-global state
+/// there can refuse to create components when it is skipped. The shared
+/// module loader runs this exactly once per actual load and the returned
+/// `ExitDll` when the last handle drops.
+fn vst3_module_init(library: &Library) -> Result<Option<unsafe extern "C" fn()>, PluginError> {
+    // SAFETY: module-level entry points are plain functions on the freshly
+    // loaded module; the SDK declares `bool InitDll()` and `void ExitDll()`.
+    unsafe {
+        if let Ok(init) = library.get::<unsafe extern "C" fn() -> bool>(INIT_DLL_SYMBOL)
+            && !init()
+        {
+            return Err(PluginError::Init("module InitDll failed".into()));
+        }
+        Ok(library
+            .get::<unsafe extern "C" fn()>(EXIT_DLL_SYMBOL)
+            .ok()
+            .map(|exit| *exit))
+    }
+}
+
 fn load_factory(path: &Path) -> Result<(Arc<SharedModule>, *mut IPluginFactory), PluginError> {
-    let module = acquire_module(path, |_| Ok(None))?;
+    let module = acquire_module(path, vst3_module_init)?;
     // SAFETY: the symbol value is copied out; the module handle keeps the
     // library mapped, so the factory stays valid for the module's lifetime.
     let entry = unsafe {
@@ -425,9 +451,12 @@ unsafe extern "system" fn queue_add_point(
 
 /// Control-side byte stream: a growable sink for `getState`, a shrinking
 /// source for `setState`. Stack-allocated for the duration of one transfer.
+/// Serves both `IBStream` (first field) and `ISizeableStream` (second
+/// field) from one object, like a C++ class inheriting both.
 #[repr(C)]
 struct BStreamObject<'a> {
     iface: IBStream,
+    sizeable: ISizeableStream,
     refs: AtomicU32,
     target: StreamTarget<'a>,
 }
@@ -437,6 +466,11 @@ enum StreamTarget<'a> {
     Read { consumed: usize, source: &'a [u8] },
 }
 
+/// Seek modes from `IBStream::IStreamSeekMode`.
+const IB_SEEK_SET: i32 = 0;
+const IB_SEEK_CUR: i32 = 1;
+const IB_SEEK_END: i32 = 2;
+
 static B_STREAM_VTABLE: IBStreamVtable = IBStreamVtable {
     query_interface: bstream_query_interface,
     add_ref: bstream_add_ref,
@@ -445,6 +479,14 @@ static B_STREAM_VTABLE: IBStreamVtable = IBStreamVtable {
     write: bstream_write,
     seek: bstream_seek,
     tell: bstream_tell,
+};
+
+static SIZEABLE_STREAM_VTABLE: ISizeableStreamVtable = ISizeableStreamVtable {
+    query_interface: sizeable_query_interface,
+    add_ref: bstream_add_ref,
+    release: bstream_release,
+    get_stream_size: sizeable_get_stream_size,
+    set_stream_size: sizeable_set_stream_size,
 };
 
 unsafe extern "system" fn bstream_query_interface(
@@ -461,10 +503,30 @@ unsafe extern "system" fn bstream_query_interface(
         bump(unsafe { &(*(this as *mut BStreamObject)).refs });
         unsafe { *obj = this };
         K_RESULT_OK
+    } else if unsafe { &*iid.cast::<TUID>() } == &I_SIZEABLE_STREAM_IID {
+        // SAFETY: the sizeable field is at a fixed offset; both interface
+        // pointers recover the same object.
+        let object = unsafe { &mut *(this as *mut BStreamObject) };
+        bump(&object.refs);
+        unsafe { *obj = &mut object.sizeable as *mut ISizeableStream as *mut c_void };
+        K_RESULT_OK
     } else {
         unsafe { *obj = std::ptr::null_mut() };
         K_NO_INTERFACE
     }
+}
+/// QI entry of the sizeable interface; same object, offset-adjusted `this`.
+unsafe extern "system" fn sizeable_query_interface(
+    this: *mut c_void,
+    iid: *const u8,
+    obj: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the sizeable pointer is at a fixed offset inside BStreamObject.
+    let base = (this as *mut u8)
+        .wrapping_sub(std::mem::offset_of!(BStreamObject, sizeable))
+        .cast::<BStreamObject>();
+    // SAFETY: base is the object's first interface, whose QI covers all IIDs.
+    unsafe { bstream_query_interface(base.cast(), iid, obj) }
 }
 unsafe extern "system" fn bstream_add_ref(this: *mut c_void) -> u32 {
     // SAFETY: live object.
@@ -527,15 +589,90 @@ unsafe extern "system" fn bstream_write(
     }
     K_RESULT_OK
 }
+/// Seek. `kResultTrue` equals `kResultOk` (0) in the official enum, so
+/// successful seeks answer `K_RESULT_OK`: JUCE's setState bails out through
+/// its seek-to-beginning guard unless the seek reports exactly that.
 unsafe extern "system" fn bstream_seek(
-    _this: *mut IBStream,
-    _pos: i64,
-    _mode: i32,
-    _result: *mut i64,
+    this: *mut IBStream,
+    pos: i64,
+    mode: i32,
+    result: *mut i64,
 ) -> i32 {
-    K_NOT_IMPLEMENTED
+    // SAFETY: live object.
+    let object = unsafe { &mut *(this as *mut BStreamObject) };
+    let outcome = match &mut object.target {
+        StreamTarget::Read { consumed, source } => {
+            let length = source.len() as i64;
+            let target = match mode {
+                IB_SEEK_SET => Some(pos),
+                IB_SEEK_CUR => i64::try_from(*consumed)
+                    .ok()
+                    .and_then(|c| c.checked_add(pos)),
+                IB_SEEK_END => length.checked_add(pos),
+                _ => None,
+            };
+            let Some(target) = target else {
+                return K_INVALID_ARGUMENT;
+            };
+            if target < 0 || target > length {
+                return K_INVALID_ARGUMENT;
+            }
+            *consumed = target as usize;
+            target
+        }
+        StreamTarget::Write(sink) => {
+            if mode != IB_SEEK_SET {
+                return K_NOT_IMPLEMENTED;
+            }
+            let target = pos.clamp(0, i64::try_from(sink.len()).unwrap_or(i64::MAX));
+            sink.truncate(target as usize);
+            target
+        }
+    };
+    if !result.is_null() {
+        // SAFETY: out-pointer writable per contract.
+        unsafe { *result = outcome };
+    }
+    K_RESULT_OK
 }
-unsafe extern "system" fn bstream_tell(_this: *mut IBStream, _pos: *mut i64) -> i32 {
+unsafe extern "system" fn bstream_tell(this: *mut IBStream, pos: *mut i64) -> i32 {
+    // SAFETY: live object.
+    let object = unsafe { &*(this as *mut BStreamObject) };
+    let position = match &object.target {
+        StreamTarget::Read { consumed, .. } => *consumed as i64,
+        StreamTarget::Write(sink) => sink.len() as i64,
+    };
+    if !pos.is_null() {
+        // SAFETY: out-pointer writable per contract.
+        unsafe { *pos = position };
+    }
+    K_RESULT_OK
+}
+/// JUCE's setState prefers a sized read (readFromMemoryStream) when the
+/// stream offers ISizeableStream; serving the size spares every client the
+/// probe-and-collect fallback.
+unsafe extern "system" fn sizeable_get_stream_size(
+    this: *mut ISizeableStream,
+    size: *mut i64,
+) -> i32 {
+    // SAFETY: the sizeable pointer is at a fixed offset inside BStreamObject.
+    let object = unsafe {
+        &*((this as *mut u8)
+            .wrapping_sub(std::mem::offset_of!(BStreamObject, sizeable))
+            .cast::<BStreamObject>())
+    };
+    let length = match &object.target {
+        StreamTarget::Read { source, .. } => source.len() as i64,
+        StreamTarget::Write(sink) => sink.len() as i64,
+    };
+    if size.is_null() {
+        return K_INVALID_ARGUMENT;
+    }
+    // SAFETY: out-pointer writable per contract.
+    unsafe { *size = length };
+    K_RESULT_OK
+}
+unsafe extern "system" fn sizeable_set_stream_size(_this: *mut ISizeableStream, _size: i64) -> i32 {
     K_NOT_IMPLEMENTED
 }
 
@@ -544,6 +681,9 @@ impl<'a> BStreamObject<'a> {
         Self {
             iface: IBStream {
                 vtable: &B_STREAM_VTABLE,
+            },
+            sizeable: ISizeableStream {
+                vtable: &SIZEABLE_STREAM_VTABLE,
             },
             refs: AtomicU32::new(1),
             target: StreamTarget::Write(sink),
@@ -554,6 +694,9 @@ impl<'a> BStreamObject<'a> {
         Self {
             iface: IBStream {
                 vtable: &B_STREAM_VTABLE,
+            },
+            sizeable: ISizeableStream {
+                vtable: &SIZEABLE_STREAM_VTABLE,
             },
             refs: AtomicU32::new(1),
             target: StreamTarget::Read {
@@ -586,10 +729,20 @@ pub(crate) struct Vst3Instance {
     controller_is_separate: bool,
     host: *mut HostAppObject,
     handler: *mut ComponentHandlerObject,
+    /// Connection-point pair linking the component to a separate
+    /// controller; null when either side lacks IConnectionPoint. Each
+    /// pointer holds one reference, released in Drop after disconnect.
+    component_connection: *mut IConnectionPoint,
+    controller_connection: *mut IConnectionPoint,
     changes: *mut ParamChangesObject,
+    /// The process call's mandatory outputParameterChanges sink; the plugin
+    /// fills it via addParameterData and the host only resets its length.
+    out_changes: *mut ParamChangesObject,
     /// Owns the queue array `changes.queues` points into; drops after the
     /// Drop body, so the queues outlive every plugin call. Never read.
     _queues_storage: Box<[QueueObject]>,
+    /// Owns the queue array `out_changes.queues` points into. Never read.
+    _out_queues_storage: Box<[QueueObject]>,
     input_ptrs: Box<[*mut f32]>,
     output_ptrs: Box<[*mut f32]>,
     input_buses: Box<[AudioBusBuffers]>,
@@ -628,6 +781,7 @@ unsafe fn free_host_objects(
     host: *mut HostAppObject,
     handler: *mut ComponentHandlerObject,
     changes: *mut ParamChangesObject,
+    out_changes: *mut ParamChangesObject,
 ) {
     unsafe {
         if !host.is_null() {
@@ -638,6 +792,9 @@ unsafe fn free_host_objects(
         }
         if !changes.is_null() {
             drop(Box::from_raw(changes));
+        }
+        if !out_changes.is_null() {
+            drop(Box::from_raw(out_changes));
         }
     }
 }
@@ -675,14 +832,14 @@ pub(crate) fn instantiate(
 
     let mut component_obj: *mut c_void = std::ptr::null_mut();
     // SAFETY: live factory; the CID comes from this factory's class table.
-    if unsafe {
+    let create_result = unsafe {
         IPluginFactory::create_instance(factory, &cid, &I_COMPONENT_IID, &mut component_obj)
-    } != K_RESULT_OK
-        || component_obj.is_null()
-    {
-        return Err(PluginError::Init(
-            "factory refused to create the component".into(),
-        ));
+    };
+    if create_result != K_RESULT_OK || component_obj.is_null() {
+        return Err(PluginError::Init(format!(
+            "factory refused to create the component (tresult 0x{create_result:08X}, object null: {})",
+            component_obj.is_null()
+        )));
     }
     let component = component_obj as *mut IComponent;
     // SAFETY: live component; the IID matches the requested interface.
@@ -712,16 +869,38 @@ pub(crate) fn instantiate(
     let unwind = |audio: *mut IAudioProcessor,
                   component: *mut IComponent,
                   controller: *mut IEditController,
+                  component_connection: *mut IConnectionPoint,
+                  controller_connection: *mut IConnectionPoint,
                   error: PluginError|
      -> PluginError {
         // SAFETY: all pointers were acquired above and are live; the RT
-        // plumbing (changes box) is allocated only after these checks.
+        // plumbing (changes boxes) is allocated only after these checks.
         unsafe {
             release_plugin_objects(controller, audio, component);
-            free_host_objects(host, handler, std::ptr::null_mut());
+            if !component_connection.is_null() {
+                IConnectionPoint::release(component_connection);
+            }
+            if !controller_connection.is_null() {
+                IConnectionPoint::release(controller_connection);
+            }
+            free_host_objects(host, handler, std::ptr::null_mut(), std::ptr::null_mut());
         }
         error
     };
+
+    // SAFETY: live component; the host context object is our application.
+    // The SDK lifecycle initializes the component before the controller is
+    // discovered.
+    if unsafe { IComponent::initialize(component, host as *mut c_void) } != K_RESULT_OK {
+        return Err(unwind(
+            audio,
+            component,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            PluginError::Init("IComponent::initialize failed".into()),
+        ));
+    }
 
     // Controller: a separate class when the component names one, otherwise
     // the component's own IEditController interface.
@@ -753,16 +932,6 @@ pub(crate) fn instantiate(
             IComponent::query_interface_as::<IEditController>(component, &I_EDIT_CONTROLLER_IID)
         };
     }
-
-    // SAFETY: live component; the host context object is our application.
-    if unsafe { IComponent::initialize(component, host as *mut c_void) } != K_RESULT_OK {
-        return Err(unwind(
-            audio,
-            component,
-            controller,
-            PluginError::Init("IComponent::initialize failed".into()),
-        ));
-    }
     if controller_is_separate {
         // SAFETY: live separate controller; same host context.
         if unsafe { IEditController::initialize(controller, host as *mut c_void) } != K_RESULT_OK {
@@ -770,10 +939,58 @@ pub(crate) fn instantiate(
                 audio,
                 component,
                 controller,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
                 PluginError::Init("IEditController::initialize failed".into()),
             ));
         }
     }
+
+    // Pair a separate controller with its component: JUCE's controller
+    // binds its processor through IConnectionPoint and reports zero
+    // parameters until both sides are connected. Each QI'd pointer keeps
+    // one reference, released in Drop after the disconnect.
+    let mut component_connection: *mut IConnectionPoint = std::ptr::null_mut();
+    let mut controller_connection: *mut IConnectionPoint = std::ptr::null_mut();
+    if controller_is_separate {
+        // SAFETY: live initialized objects; the IIDs match the requests.
+        component_connection = unsafe {
+            IComponent::query_interface_as::<IConnectionPoint>(component, &I_CONNECTION_POINT_IID)
+        };
+        let mut controller_conn_obj: *mut c_void = std::ptr::null_mut();
+        if unsafe {
+            IEditController::query_interface(
+                controller,
+                &I_CONNECTION_POINT_IID,
+                &mut controller_conn_obj,
+            )
+        } == K_RESULT_OK
+            && !controller_conn_obj.is_null()
+        {
+            controller_connection = controller_conn_obj as *mut IConnectionPoint;
+        }
+        if component_connection.is_null() || controller_connection.is_null() {
+            // One side has no connection point: there is nothing to pair.
+            // SAFETY: drop whichever reference was acquired.
+            unsafe {
+                if !component_connection.is_null() {
+                    IConnectionPoint::release(component_connection);
+                }
+                if !controller_connection.is_null() {
+                    IConnectionPoint::release(controller_connection);
+                }
+            }
+            component_connection = std::ptr::null_mut();
+            controller_connection = std::ptr::null_mut();
+        } else {
+            // SAFETY: both pointers are live connection points.
+            unsafe {
+                IConnectionPoint::connect(component_connection, controller_connection);
+                IConnectionPoint::connect(controller_connection, component_connection);
+            }
+        }
+    }
+
     if !controller.is_null() {
         // SAFETY: live controller; the handler object is host-owned.
         unsafe { IEditController::set_component_handler(controller, handler as *mut c_void) };
@@ -787,6 +1004,8 @@ pub(crate) fn instantiate(
             audio,
             component,
             controller,
+            component_connection,
+            controller_connection,
             PluginError::Init("plugin refuses 32-bit processing".into()),
         ));
     }
@@ -806,6 +1025,8 @@ pub(crate) fn instantiate(
             audio,
             component,
             controller,
+            component_connection,
+            controller_connection,
             PluginError::NoAudioPorts {
                 input: input_channels.max(0) as u32,
                 output: output_channels.max(0) as u32,
@@ -841,6 +1062,8 @@ pub(crate) fn instantiate(
             audio,
             component,
             controller,
+            component_connection,
+            controller_connection,
             PluginError::Init("setupProcessing failed".into()),
         ));
     }
@@ -851,6 +1074,8 @@ pub(crate) fn instantiate(
                 audio,
                 component,
                 controller,
+                component_connection,
+                controller_connection,
                 PluginError::Init("setActive(true) failed".into()),
             ));
         }
@@ -859,6 +1084,8 @@ pub(crate) fn instantiate(
                 audio,
                 component,
                 controller,
+                component_connection,
+                controller_connection,
                 PluginError::Init("setProcessing(true) failed".into()),
             ));
         }
@@ -925,6 +1152,19 @@ pub(crate) fn instantiate(
         queues,
         active: 0,
     }));
+    let mut out_queues_storage: Box<[QueueObject]> = (0..MAX_PARAM_EVENTS)
+        .map(|_| QueueObject::new())
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let out_queues = out_queues_storage.as_mut_ptr();
+    let out_changes = Box::into_raw(Box::new(ParamChangesObject {
+        iface: IParameterChanges {
+            vtable: &PARAM_CHANGES_VTABLE,
+        },
+        refs: AtomicU32::new(1),
+        queues: out_queues,
+        active: 0,
+    }));
 
     let descriptor = PluginDescriptor {
         format: PluginFormat::Vst3,
@@ -949,8 +1189,12 @@ pub(crate) fn instantiate(
         controller_is_separate,
         host,
         handler,
+        component_connection,
+        controller_connection,
         changes,
+        out_changes,
         _queues_storage: queues_storage,
+        _out_queues_storage: out_queues_storage,
         input_ptrs,
         output_ptrs,
         input_buses,
@@ -1011,6 +1255,12 @@ impl PluginInstance for Vst3Instance {
             queue.point_count = 1;
         }
         changes.active = active;
+        // The output container is plugin-written via addParameterData; reset
+        // it per block so queues never carry over between process calls.
+        // SAFETY: the box is owned by this instance and stays live for the
+        // whole process call.
+        let out_changes = unsafe { &mut *self.out_changes };
+        out_changes.active = 0;
 
         let mut data = ProcessData {
             process_mode: PROCESS_MODE_REALTIME,
@@ -1021,7 +1271,7 @@ impl PluginInstance for Vst3Instance {
             inputs: self.input_buses.as_mut_ptr(),
             outputs: self.output_buses.as_mut_ptr(),
             input_parameter_changes: &mut changes.iface as *mut IParameterChanges,
-            output_parameter_changes: std::ptr::null_mut(),
+            output_parameter_changes: &mut out_changes.iface as *mut IParameterChanges,
             input_events: std::ptr::null_mut(),
             output_events: std::ptr::null_mut(),
             process_context: std::ptr::null_mut(),
@@ -1051,10 +1301,18 @@ impl PluginInstance for Vst3Instance {
         if !self.controller.is_null() {
             let mut stream = BStreamObject::writer(&mut controller_bytes);
             // SAFETY: live controller; stream valid for this call.
-            if unsafe { IEditController::get_state(self.controller, stream.stream_mut()) }
-                != K_RESULT_OK
-            {
-                return Err(PluginError::State("controller getState failed".into()));
+            let result =
+                unsafe { IEditController::get_state(self.controller, stream.stream_mut()) };
+            if result != K_RESULT_OK {
+                // Single-component plugins keep all state in IComponent and
+                // answer kNotImplemented/kResultFalse here (e.g. every DPF
+                // build); that means "no controller segment", not an error.
+                if result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
+                    return Err(PluginError::State(format!(
+                        "controller getState returned 0x{result:08X}"
+                    )));
+                }
+                controller_bytes.clear();
             }
         }
         let mut blob = Vec::with_capacity(8 + component_bytes.len() + controller_bytes.len());
@@ -1079,12 +1337,15 @@ impl PluginInstance for Vst3Instance {
         if !self.controller.is_null() && !component_bytes.is_empty() {
             let mut stream = BStreamObject::reader(component_bytes);
             // SAFETY: live controller; stream valid for this call.
-            if unsafe { IEditController::set_component_state(self.controller, stream.stream_mut()) }
-                != K_RESULT_OK
-            {
-                return Err(PluginError::State(
-                    "controller setComponentState failed".into(),
-                ));
+            let result = unsafe {
+                IEditController::set_component_state(self.controller, stream.stream_mut())
+            };
+            // A separate controller may decline the component view of the
+            // state; the component state itself is already authoritative.
+            if result != K_RESULT_OK && result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
+                return Err(PluginError::State(format!(
+                    "controller setComponentState returned 0x{result:08X}"
+                )));
             }
         }
         if !self.controller.is_null() && !controller_bytes.is_empty() {
@@ -1108,11 +1369,28 @@ impl Drop for Vst3Instance {
             IAudioProcessor::set_processing(self.audio, 0);
             IComponent::set_active(self.component, 0);
             if self.controller_is_separate {
+                if !self.component_connection.is_null() && !self.controller_connection.is_null() {
+                    // SAFETY: both sides are still live connection points.
+                    IConnectionPoint::disconnect(
+                        self.controller_connection,
+                        self.component_connection,
+                    );
+                    IConnectionPoint::disconnect(
+                        self.component_connection,
+                        self.controller_connection,
+                    );
+                }
+                if !self.component_connection.is_null() {
+                    IConnectionPoint::release(self.component_connection);
+                }
+                if !self.controller_connection.is_null() {
+                    IConnectionPoint::release(self.controller_connection);
+                }
                 IEditController::terminate(self.controller);
             }
             IComponent::terminate(self.component);
             release_plugin_objects(self.controller, self.audio, self.component);
-            free_host_objects(self.host, self.handler, self.changes);
+            free_host_objects(self.host, self.handler, self.changes, self.out_changes);
         }
     }
 }

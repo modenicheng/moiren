@@ -469,7 +469,12 @@ impl PluginInstance for Vst2Instance {
         let outcome = self.with_suspended_renderer(|instance| {
             // SAFETY: the state buffer outlives the dispatcher call; the
             // plugin copies what it needs.
-            let accepted = unsafe {
+            //
+            // The return value carries no success signal: JUCE (and much of
+            // the ecosystem) returns 0 here, other plugins return 1, so the
+            // dispatcher result is deliberately ignored like mainstream
+            // hosts do.
+            unsafe {
                 ((*instance.effect).dispatcher)(
                     instance.effect,
                     EFF_SET_CHUNK,
@@ -479,11 +484,6 @@ impl PluginInstance for Vst2Instance {
                     0.0,
                 )
             };
-            if accepted == 0 {
-                return Err(PluginError::State(
-                    "effSetChunk rejected the program chunk".into(),
-                ));
-            }
             Ok(())
         });
         // Defaults may have moved; refresh the scanned table's starting

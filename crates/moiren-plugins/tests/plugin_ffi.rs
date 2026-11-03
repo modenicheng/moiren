@@ -9,6 +9,7 @@ use std::{
     sync::OnceLock,
 };
 
+use libloading::Library;
 use moiren_plugins::{
     PluginInstance, instantiate, scan,
     spec::{PluginDescriptor, PluginFormat, PluginParamEvent},
@@ -33,14 +34,33 @@ fn fixture_dir() -> &'static Path {
             .status()
             .expect("rustc must be available to build the fixture");
         assert!(status.success(), "fixture compilation failed");
+        // Always refresh the aliases: the tmpdir persists across runs, and a
+        // stale copy would pair a scanned id with a different binary.
         for alias in ["moiren_test_gain.clap", "moiren_test_gain.vst3"] {
             let alias = dir.join(alias);
-            if !alias.exists() {
-                std::fs::copy(&binary, &alias).expect("alias copy");
-            }
+            std::fs::copy(&binary, &alias).expect("alias copy");
+        }
+        // Nonstandard-but-real `.vst` bundle layout (Hit'n'Mix style): the
+        // scanner must resolve it to the inner platform binary.
+        if let Some(platform) = bundle_platform() {
+            let bundle = dir.join("moiren_test_gain.vst/Contents").join(platform);
+            std::fs::create_dir_all(&bundle).expect("bundle layout");
+            std::fs::copy(&binary, bundle.join("moiren_test_gain.vst3")).expect("bundle copy");
         }
         dir
     })
+}
+
+/// The platform directory name the scanner resolves VST3 bundles against.
+fn bundle_platform() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some("x86_64-win"),
+        ("windows", "x86") => Some("x86-win"),
+        ("linux", "x86_64") => Some("x86_64-linux"),
+        ("macos", "aarch64") => Some("arm64-mac"),
+        ("macos", "x86_64") => Some("macos"),
+        _ => None,
+    }
 }
 
 fn descriptor(format: PluginFormat, id: &str) -> PluginDescriptor {
@@ -92,6 +112,14 @@ fn scan_discovers_all_three_formats() {
     assert!(has(PluginFormat::Clap), "{formats:?}");
     assert!(has(PluginFormat::Vst3), "{formats:?}");
     assert!(has(PluginFormat::Vst2), "{formats:?}");
+    // The flat `.vst3` alias and the `.vst` bundle both yield the plugin.
+    if bundle_platform().is_some() {
+        let vst3_count = formats
+            .iter()
+            .filter(|(format, _, _)| *format == PluginFormat::Vst3)
+            .count();
+        assert_eq!(vst3_count, 2, "{formats:?}");
+    }
     for (_, _, name) in &formats {
         assert_eq!(name, "Moiren Test Gain");
     }
@@ -196,12 +224,14 @@ fn vst2_lifecycle_process_and_chunk() {
 #[test]
 fn vst3_lifecycle_process_and_state() {
     let scanned = scan::scan_directories(&[fixture_dir().to_path_buf()]);
-    let found = scanned
+    // Instantiate the scanned descriptor itself so path and id are the pair
+    // the scanner actually saw.
+    let source = scanned
         .descriptors
         .iter()
         .find(|d| d.format == PluginFormat::Vst3)
-        .expect("vst3 descriptor scanned");
-    let source = descriptor(PluginFormat::Vst3, &found.id);
+        .expect("vst3 descriptor scanned")
+        .clone();
     let mut instance = instantiate(&source, SAMPLE_RATE, BLOCK).expect("vst3 instantiate");
 
     let live = instance.descriptor();
@@ -252,4 +282,70 @@ fn instantiate_rejects_mismatched_plugin_id() {
         Ok(instance) => panic!("unknown id must fail, got {:?}", instance.descriptor()),
     };
     assert!(error.to_string().contains("not in factory"));
+}
+
+/// The fixture factory serves IPluginFactory2 from the same object, so this
+/// pins the full inheritance chain: with the IPluginFactory2 vtable missing
+/// the IPluginFactory prefix, the getClassInfo2 dispatch landed on the
+/// getFactoryInfo slot and real plugins segfaulted while the metadata stayed
+/// empty — exactly what this assertion rejects.
+#[test]
+fn vst3_scan_reads_factory2_metadata() {
+    let scanned = scan::scan_directories(&[fixture_dir().to_path_buf()]);
+    let source = scanned
+        .descriptors
+        .iter()
+        .find(|d| d.format == PluginFormat::Vst3)
+        .expect("vst3 descriptor scanned");
+    assert_eq!(source.vendor, "Moiren", "vendor comes from getClassInfo2");
+    assert_eq!(source.version, "1.0.0", "version comes from getClassInfo2");
+    assert!(!source.is_synth, "Fx subcategory is not an instrument");
+}
+
+/// Observes the fixture's module-init counters through a fresh handle to the
+/// already-mapped image: the OS refcounts the same file, so the statics are
+/// the live module's, and the raw handle bypasses the host's dedup registry.
+fn module_init_counts(path: &Path) -> (i32, i32) {
+    // SAFETY: the instance keeps the module mapped; this handle is read-only.
+    let library = unsafe { Library::new(path) }.expect("fixture module still mapped");
+    // SAFETY: exported plain functions on the mapped fixture module.
+    let (inits, exits) = unsafe {
+        let inits = library
+            .get::<unsafe extern "C" fn() -> i32>(b"moiren_module_init_count\0")
+            .expect("init counter export");
+        let exits = library
+            .get::<unsafe extern "C" fn() -> i32>(b"moiren_module_exit_count\0")
+            .expect("exit counter export");
+        (inits(), exits())
+    };
+    drop(library);
+    (inits, exits)
+}
+
+#[test]
+fn vst3_module_init_runs_once_per_load() {
+    let scanned = scan::scan_directories(&[fixture_dir().to_path_buf()]);
+    let source = scanned
+        .descriptors
+        .iter()
+        .find(|d| d.format == PluginFormat::Vst3)
+        .expect("vst3 descriptor scanned")
+        .clone();
+
+    // Two live instances share one module load: InitDll ran exactly once and
+    // ExitDll has not run while any instance lives.
+    let first = instantiate(&source, SAMPLE_RATE, BLOCK).expect("first instantiate");
+    let second = instantiate(&source, SAMPLE_RATE, BLOCK).expect("second instantiate");
+    assert_eq!(
+        module_init_counts(&source.path),
+        (1, 0),
+        "one load runs InitDll exactly once"
+    );
+    drop(first);
+    assert_eq!(
+        module_init_counts(&source.path),
+        (1, 0),
+        "ExitDll waits for the last release"
+    );
+    drop(second);
 }

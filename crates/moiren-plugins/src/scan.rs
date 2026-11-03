@@ -1,9 +1,10 @@
 //! Plugin discovery: standard directory conventions, recursive search, and
 //! format detection by file extension.
 //!
-//! VST3 bundles (`.vst3` directories on some layouts) are resolved to the
-//! architecture-specific binary inside `Contents/<platform>/`. Failures are
-//! collected per file: one broken plugin must not abort a library scan.
+//! VST3 bundle directories (`.vst3`, plus `.vst` as some installers emit,
+//! e.g. Hit'n'Mix RipX) are resolved to the architecture-specific binary
+//! inside `Contents/<platform>/`. Failures are collected per file: one
+//! broken plugin must not abort a library scan.
 
 use std::{
     env, fs,
@@ -89,11 +90,11 @@ fn scan_directory(directory: &Path, outcome: &mut ScanOutcome) {
         };
         if file_type.is_dir() {
             // VST3 bundle directories resolve to their inner binary; other
-            // directories recurse.
-            if path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("vst3"))
-            {
+            // directories recurse. `.vst` covers nonstandard-but-real
+            // installers such as Hit'n'Mix RipX.
+            if path.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("vst3") || ext.eq_ignore_ascii_case("vst")
+            }) {
                 let binary = vst3_bundle_binary(&path);
                 match binary {
                     Some(binary) => collect_file(&binary, outcome),
@@ -127,7 +128,7 @@ fn vst3_bundle_binary(bundle: &Path) -> Option<PathBuf> {
     let candidates = fs::read_dir(&platform_dir).ok()?;
     candidates.flatten().map(|entry| entry.path()).find(|path| {
         path.extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("vst3"))
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("vst3") || ext.eq_ignore_ascii_case("vst"))
     })
 }
 

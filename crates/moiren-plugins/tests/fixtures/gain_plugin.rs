@@ -658,16 +658,15 @@ unsafe extern "C" fn vst2_dispatcher_raw(
             8
         }
         24 => {
-            // effSetChunk (program)
+            // effSetChunk (program): returns 0 like JUCE and much of the
+            // real ecosystem — hosts must not read success from this value.
             if value == 8 && !ptr.is_null() {
                 let bytes = ptr as *const u8;
                 let gain = unsafe { std::ptr::read_unaligned(bytes.cast::<[u8; 8]>()) };
                 let gain = f64::from_le_bytes(gain);
                 unsafe { *(*effect).object.cast::<f64>() = gain };
-                1
-            } else {
-                0
             }
+            0
         }
         26 => 1, // effCanBeAutomated
         45 => {
@@ -727,8 +726,8 @@ const fn uid(l1: u32, l2: u32, l3: u32, l4: u32) -> TUID {
         ((l2 >> 8) & 0xff) as u8,
         ((l3 >> 24) & 0xff) as u8,
         ((l3 >> 16) & 0xff) as u8,
-        (l3 & 0xff) as u8,
         ((l3 >> 8) & 0xff) as u8,
+        (l3 & 0xff) as u8,
         ((l4 >> 24) & 0xff) as u8,
         ((l4 >> 16) & 0xff) as u8,
         ((l4 >> 8) & 0xff) as u8,
@@ -740,6 +739,7 @@ const I_COMPONENT_IID: TUID = uid(0xE831_FF31, 0xF2D5_4301, 0x928E_BBEE, 0x2569_
 const I_AUDIO_PROCESSOR_IID: TUID = uid(0x4204_3F99, 0xB7DA_453C, 0xA569_E79D, 0x9AAE_C33D);
 const I_EDIT_CONTROLLER_IID: TUID = uid(0xDCD7_BBE3, 0x7742_448D, 0xA874_AACC, 0x979C_759E);
 const I_PLUGIN_FACTORY_IID: TUID = uid(0x7A4D_811C, 0x5211_4A1F, 0xAED9_D2EE, 0x0B43_BF9F);
+const I_PLUGIN_FACTORY2_IID: TUID = uid(0x0007_B650, 0xF24B_4C0B, 0xA464_EDB9, 0xF00B_2ABB);
 const TEST_CID: TUID = uid(0x6B1C_A3D4, 0x51F0_4E2B, 0x8A45_C7D9, 0xE3B2_60F1);
 
 pub type QueryInterfaceFn = unsafe extern "system" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32;
@@ -752,6 +752,19 @@ pub struct PClassInfo {
     cardinality: i32,
     category: [c_char; 32],
     name: [c_char; 64],
+}
+
+#[repr(C)]
+pub struct PClassInfo2 {
+    cid: TUID,
+    cardinality: i32,
+    category: [c_char; 32],
+    name: [c_char; 64],
+    class_flags: u32,
+    sub_categories: [c_char; 128],
+    vendor: [c_char; 64],
+    version: [c_char; 64],
+    sdk_version: [c_char; 64],
 }
 
 #[repr(C)]
@@ -1353,7 +1366,9 @@ unsafe extern "system" fn factory_query_interface(
     obj: *mut *mut c_void,
 ) -> i32 {
     let iid = unsafe { &*(iid as *const TUID) };
-    if iid == &I_PLUGIN_FACTORY_IID {
+    // IPluginFactory2 is served by the same single object, like the SDK's
+    // CPluginFactory.
+    if iid == &I_PLUGIN_FACTORY_IID || iid == &I_PLUGIN_FACTORY2_IID {
         unsafe { *obj = this };
         0
     } else {
@@ -1396,6 +1411,46 @@ unsafe extern "system" fn factory_get_class_info(
     }
     for (slot, byte) in b"Moiren Test Gain\0".iter().enumerate() {
         info.name[slot] = *byte as c_char;
+    }
+    0
+}
+unsafe extern "system" fn factory_get_class_info2(
+    _this: *mut IPluginFactory,
+    index: i32,
+    info: *mut PClassInfo2,
+) -> i32 {
+    if index != 0 {
+        return 1;
+    }
+    let info = unsafe { &mut *info };
+    *info = PClassInfo2 {
+        cid: TEST_CID,
+        cardinality: 1,
+        category: [0; 32],
+        name: [0; 64],
+        class_flags: 0,
+        sub_categories: [0; 128],
+        vendor: [0; 64],
+        version: [0; 64],
+        sdk_version: [0; 64],
+    };
+    for (slot, byte) in b"Audio Module Class\0".iter().enumerate() {
+        info.category[slot] = *byte as c_char;
+    }
+    for (slot, byte) in b"Moiren Test Gain\0".iter().enumerate() {
+        info.name[slot] = *byte as c_char;
+    }
+    for (slot, byte) in b"Fx\0".iter().enumerate() {
+        info.sub_categories[slot] = *byte as c_char;
+    }
+    for (slot, byte) in b"Moiren\0".iter().enumerate() {
+        info.vendor[slot] = *byte as c_char;
+    }
+    for (slot, byte) in b"1.0.0\0".iter().enumerate() {
+        info.version[slot] = *byte as c_char;
+    }
+    for (slot, byte) in b"VST 3.8.1\0".iter().enumerate() {
+        info.sdk_version[slot] = *byte as c_char;
     }
     0
 }
@@ -1452,6 +1507,9 @@ pub struct FactoryVtable {
         iid: *const c_char,
         obj: *mut *mut c_void,
     ) -> i32,
+    // IPluginFactory2's own slot sits after the full IPluginFactory prefix,
+    // exactly as in a C++ object inheriting IPluginFactory2.
+    get_class_info2: unsafe extern "system" fn(*mut IPluginFactory, i32, *mut PClassInfo2) -> i32,
 }
 
 // The factory and its vtable are immutable static state.
@@ -1465,6 +1523,7 @@ static FACTORY_VTABLE: FactoryVtable = FactoryVtable {
     count_classes: factory_count_classes,
     get_class_info: factory_get_class_info,
     create_instance: factory_create_instance,
+    get_class_info2: factory_get_class_info2,
 };
 
 static FACTORY: IPluginFactory = IPluginFactory {
@@ -1474,4 +1533,32 @@ static FACTORY: IPluginFactory = IPluginFactory {
 #[unsafe(no_mangle)]
 pub extern "system" fn GetPluginFactory() -> *mut IPluginFactory {
     &FACTORY as *const IPluginFactory as *mut IPluginFactory
+}
+
+// VST3 module-level init pair plus exported counters, so a test can verify
+// the host runs `InitDll` once per actual load and defers `ExitDll` to the
+// last release. Copies loaded under other names (CLAP/VST2) simply never
+// call these exports.
+static MODULE_INITS: AtomicI32 = AtomicI32::new(0);
+static MODULE_EXITS: AtomicI32 = AtomicI32::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn InitDll() -> bool {
+    MODULE_INITS.fetch_add(1, Ordering::SeqCst);
+    true
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ExitDll() {
+    MODULE_EXITS.fetch_add(1, Ordering::SeqCst);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn moiren_module_init_count() -> i32 {
+    MODULE_INITS.load(Ordering::SeqCst)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn moiren_module_exit_count() -> i32 {
+    MODULE_EXITS.load(Ordering::SeqCst)
 }

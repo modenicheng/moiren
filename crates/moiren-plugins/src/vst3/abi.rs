@@ -45,8 +45,8 @@ pub const fn inline_uid(l1: u32, l2: u32, l3: u32, l4: u32) -> TUID {
         ((l2 >> 8) & 0xff) as u8,
         ((l3 >> 24) & 0xff) as u8,
         ((l3 >> 16) & 0xff) as u8,
-        (l3 & 0xff) as u8,
         ((l3 >> 8) & 0xff) as u8,
+        (l3 & 0xff) as u8,
         ((l4 >> 24) & 0xff) as u8,
         ((l4 >> 16) & 0xff) as u8,
         ((l4 >> 8) & 0xff) as u8,
@@ -73,6 +73,10 @@ pub const I_PARAM_CHANGES_IID: TUID =
 pub const I_PARAM_VALUE_QUEUE_IID: TUID =
     inline_uid(0x0126_3A18, 0xED07_4F6F, 0x98C9_D356, 0x4686_F9BA);
 pub const I_B_STREAM_IID: TUID = inline_uid(0xC3BF_6EA2, 0x3099_4752, 0x9B6B_F990, 0x1EE3_3E9B);
+pub const I_SIZEABLE_STREAM_IID: TUID =
+    inline_uid(0x04F9_549E, 0xE02F_4E6E, 0x87E8_6A87, 0x47F4_E17F);
+pub const I_CONNECTION_POINT_IID: TUID =
+    inline_uid(0x70A4_156F, 0x6E6E_4026, 0x9891_48BF, 0xAA60_D8D1);
 
 /// VST3 effect class category (kVstAudioEffectClass).
 pub const VST_AUDIO_EFFECT_CLASS: &str = "Audio Module Class";
@@ -156,7 +160,7 @@ pub struct ProcessData {
     pub inputs: *mut AudioBusBuffers,
     pub outputs: *mut AudioBusBuffers,
     pub input_parameter_changes: *mut IParameterChanges,
-    pub output_parameter_changes: *mut c_void,
+    pub output_parameter_changes: *mut IParameterChanges,
     pub input_events: *mut c_void,
     pub output_events: *mut c_void,
     pub process_context: *mut c_void,
@@ -302,7 +306,20 @@ impl IPluginFactory {
     }
 }
 
+// `IPluginFactory2 : public IPluginFactory`, so the real vtable is the full
+// IPluginFactory vtable (FUnknown's 3 slots + its 4 methods) with
+// getClassInfo2 appended — 8 slots in declaration order. A mirror with only
+// getClassInfo2 calls getFactoryInfo when asked for getClassInfo2.
 interface!(IPluginFactory2, IPluginFactory2Vtable, {
+    get_factory_info: unsafe extern "system" fn(*mut IPluginFactory2, *mut c_void) -> i32,
+    count_classes: unsafe extern "system" fn(*mut IPluginFactory2) -> i32,
+    get_class_info: unsafe extern "system" fn(*mut IPluginFactory2, i32, *mut PClassInfo) -> i32,
+    create_instance: unsafe extern "system" fn(
+        *mut IPluginFactory2,
+        cid: *const c_char,
+        iid: *const c_char,
+        obj: *mut *mut c_void,
+    ) -> i32,
     get_class_info2: unsafe extern "system" fn(*mut IPluginFactory2, i32, *mut PClassInfo2) -> i32,
 });
 
@@ -646,3 +663,86 @@ interface!(IBStream, IBStreamVtable, {
     seek: unsafe extern "system" fn(*mut IBStream, i64, i32, *mut i64) -> i32,
     tell: unsafe extern "system" fn(*mut IBStream, *mut i64) -> i32,
 });
+
+// `ISizeableStream`: served by the host's state stream so plugins' sized
+// reads (JUCE's readFromMemoryStream) can query the exact byte count
+// instead of probing.
+interface!(ISizeableStream, ISizeableStreamVtable, {
+    get_stream_size: unsafe extern "system" fn(*mut ISizeableStream, *mut i64) -> i32,
+    set_stream_size: unsafe extern "system" fn(*mut ISizeableStream, i64) -> i32,
+});
+
+// `IConnectionPoint` (pluginterfaces/vst/ivstmessage.h): pairs a component
+// with its separate edit controller. The host connects both sides; `notify`
+// stays plugin-side and is never dispatched by this host.
+interface!(IConnectionPoint, IConnectionPointVtable, {
+    connect: unsafe extern "system" fn(*mut IConnectionPoint, *mut IConnectionPoint) -> i32,
+    disconnect: unsafe extern "system" fn(*mut IConnectionPoint, *mut IConnectionPoint) -> i32,
+    notify: unsafe extern "system" fn(*mut IConnectionPoint, *mut c_void) -> i32,
+});
+
+impl IConnectionPoint {
+    /// # Safety
+    ///
+    /// `this` and `other` must be live connection points.
+    pub unsafe fn connect(this: *mut Self, other: *mut Self) -> i32 {
+        // SAFETY: live object; slot order matches the C++ declaration.
+        let vtable = unsafe { *(this.cast::<*const IConnectionPointVtable>()) };
+        unsafe { ((*vtable).connect)(this, other) }
+    }
+    /// # Safety
+    ///
+    /// `this` and `other` must be live connection points.
+    pub unsafe fn disconnect(this: *mut Self, other: *mut Self) -> i32 {
+        // SAFETY: as above.
+        let vtable = unsafe { *(this.cast::<*const IConnectionPointVtable>()) };
+        unsafe { ((*vtable).disconnect)(this, other) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hand expansion of the official COM-compatible `INLINE_UID` macro for
+    /// `DECLARE_CLASS_IID (IComponent, 0xE831FF31, 0xF2D54301, 0x928EBBEE,
+    /// 0x25697802)`: l1 little-endian, l2 split (high half big-endian, low
+    /// half little-endian), l3/l4 big-endian. A byte-order drift here keeps a
+    /// self-built fixture green while every real plugin's queryInterface
+    /// answers `E_NOINTERFACE`.
+    #[test]
+    fn inline_uid_matches_official_macro_expansion() {
+        assert_eq!(
+            I_COMPONENT_IID,
+            [
+                0x31, 0xFF, 0x31, 0xE8, // l1 little-endian
+                0xD5, 0xF2, 0x01, 0x43, // l2: high half BE, low half LE
+                0x92, 0x8E, 0xBB, 0xEE, // l3 big-endian
+                0x25, 0x69, 0x78, 0x02, // l4 big-endian
+            ]
+        );
+    }
+
+    /// Pin every vtable to the slot count of its official C++ declaration:
+    /// 3 FUnknown slots, then each inherited interface's methods, then the
+    /// interface's own. A dropped inherited prefix (the IPluginFactory2 bug:
+    /// its getClassInfo2 landed on the getFactoryInfo slot and segfaulted
+    /// real plugins while fixtures without factory2 stayed green) shifts
+    /// every dispatch and changes this size.
+    #[test]
+    fn vtable_slot_counts_match_official_inheritance() {
+        let slot = std::mem::size_of::<usize>();
+        assert_eq!(std::mem::size_of::<IPluginFactoryVtable>(), slot * 7); // FUnknown + 4
+        assert_eq!(std::mem::size_of::<IPluginFactory2Vtable>(), slot * 8); // IPluginFactory + 1
+        assert_eq!(std::mem::size_of::<IComponentVtable>(), slot * 14); // IPluginBase + 9
+        assert_eq!(std::mem::size_of::<IAudioProcessorVtable>(), slot * 11); // FUnknown + 8
+        assert_eq!(std::mem::size_of::<IEditControllerVtable>(), slot * 18); // IPluginBase + 13
+        assert_eq!(std::mem::size_of::<IComponentHandlerVtable>(), slot * 7); // FUnknown + 4
+        assert_eq!(std::mem::size_of::<IHostApplicationVtable>(), slot * 5); // FUnknown + 2
+        assert_eq!(std::mem::size_of::<IParameterChangesVtable>(), slot * 6); // FUnknown + 3
+        assert_eq!(std::mem::size_of::<IParamValueQueueVtable>(), slot * 7); // FUnknown + 4
+        assert_eq!(std::mem::size_of::<IBStreamVtable>(), slot * 7); // FUnknown + 4
+        assert_eq!(std::mem::size_of::<ISizeableStreamVtable>(), slot * 5); // FUnknown + 2
+        assert_eq!(std::mem::size_of::<IConnectionPointVtable>(), slot * 6); // FUnknown + 3
+    }
+}
