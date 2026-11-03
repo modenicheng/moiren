@@ -2424,3 +2424,29 @@ increment, no push. Independent scope review finds no additional actionable
 original S1-S3 product gap outside the already-separated native/desktop/waveform/
 sustained/physical acceptance. This does not declare overall S1-S3 completion
 or justify manufactured diagnostics and unchanged soaks.
+
+### Frozen Waveform Association Of The Closed Target1280 Run
+
+The [frozen waveform receipt](2026-11-03-target1280-frozen-waveform.md) analyzes
+that same closed recording once, without any new audio/OBS/app acquisition.
+Lifecycle-only windows and unchanged independent-owner analyzer are pinned
+before viewing waveform values;28synthetic tests pass. The sole48k stereo
+PCM24 stream is copied whole,1071104frames, without trim or resampling. Both
+training associations freeze successfully; recorder offsets173740/277772 are
+not physical delay. Full native/source ledgers retain48000unknown frames each,
+with baseline1179residual/47941compatible and replacement98282residual/
+239126compatible. Full OBS denominators remain visible, with both searches
+excluded from both evaluations and no owner splice or refit. This changes the
+evidence from untested waveform to explicit frozen-model disagreement, not an
+identified production defect or a continuity pass.
+
+A separate container-only diagnostic finds1046packets matching the complete
+copied byte count,1ms timebase, absolute PTS-minus-raw displacement at most16
+frames and no jump beyond two timebase ticks. It does not repair the waveform,
+explain the residual, dismiss timing warnings or establish capture continuity.
+Both actual PNGs are inspected. Compact waveform498888byteZIP/16payloads and
+timing213794byteZIP/7payloads are length/hash-verified; raw audio stays remote.
+Final audit verifies261pin entries, no owners/running tasks and unchanged app,
+protected users/settings/driver/boot/barebus. Original228acquisition inputs and
+analyzer software are unchanged. No audio rerun, lower default, first-packet
+investigation, product-code change or physical claim follows.
