@@ -120,6 +120,29 @@ Focused retained-Apply tests pass10; the final app library passes556/2ignored.
 Strict app library/tests Clippy with gpui-test and isolated workspace formatting
 pass. No new full-workspace test pass is claimed for this test-only slice.
 
+### Publication Frontier Does Not Resolve The Refused Order
+
+A bounded read-only review at `ab803d0` checks whether the existing consumer
+frontiers can safely remove the original overlap refusal. Packet7's recorded
+publication before this packet is2880frames and it accepts480frames. Read73
+observes2880at both boundaries; read74observes3360. These acquired-tail samples
+show that read73has not observed packet7's publication, not a total order for
+the whole packet operation.
+
+The producer checks free capacity before its later write/publication; that
+check may precede the overlapping read even when publication follows it.
+Moving the whole packet after that read during an alternate-capacity replay
+would grant unproved free space. `QueueBoundary::published_frames` explicitly
+describes consumer-observed publication, not a cross-writer operation ordering
+receipt. Both live and retained paths use the same conservative validator.
+
+The existing packet/read envelopes therefore remain insufficient for the
+requested counterfactual replay. No ignored authoritative ordering fact,
+reproducible product contradiction or safe local relaxation is established.
+No product patch, new ordering machinery, changed timing contract or repeated
+native capture follows. This closes one feasibility question; successful native
+Evaluate/Apply remains unverified, not silently declared complete.
+
 ## Stop rule
 
 Close the UIA timing dependency for this service-level experiment and retain
