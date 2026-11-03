@@ -2190,3 +2190,29 @@ The isolated Windows feature-workspace passes2360tests/9ignored/0failed across
 71harnesses, separately from738probe tests. Feature-on all-target check, strict
 Clippy and fmt exit0. All1400archive entries and four source overlays are
 accounted for; all27preserved dirty/cache hashes remain unchanged. No push.
+
+### Measured Process PCM and OBS Evidence
+
+The [actual-app waveform acquisition](2026-11-03-measured-process-waveform.md)
+confirms Target1536/16384/96 service generation2 for8000ms under changing
+excitation, source/app/OBS normal exits and two structurally complete PCM/cursor
+archives. Original30s source plan exceeds the unchanged4MiB codebook cap and
+refuses before app launch; its failure remains. New20s source fits admission,
+with explicit pure preflight, and submits960000frames. No production fix follows.
+
+Replacement retains800packets/384000accepted frames,11938actual SRC events,
+382016known output frames and3584UNKNOWN/priming. Its10gap-bound violations
+and11.1666ms maximum remain quality refusal despite zero reported drops,
+underruns/resets. Nominal master has no native submission witness. Full OBS
+1080320frames classify375360compatible,64residual and explicit outside/unknown/
+silence/training/unsupported denominators. Frozen file shift-291960 is not
+latency; all qualification/isolation flags false, physical latency null.
+
+The PNG is viewed; all217closed input/tool pins remain unchanged. Corrected
+compact ZIP454361bytes/66payloads plus original31875bytes/20payloads are fully
+length/hash-verified. Python platform test-only repair and compact duplicate
+receipt removal preserve original failures without a native rerun or cap
+enlargement. Final audit confirms no owners/tasks and unchanged protected
+processes/settings/driver/barebus. All27preserved hashes match; local-only
+evidence slice, no new Cargo/pass claim, no push or soak. Missing physical
+equipment and deferred first-packet work do not block independent development.
