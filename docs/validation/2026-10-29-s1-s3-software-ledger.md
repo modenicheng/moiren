@@ -2450,3 +2450,39 @@ Final audit verifies261pin entries, no owners/running tasks and unchanged app,
 protected users/settings/driver/boot/barebus. Original228acquisition inputs and
 analyzer software are unchanged. No audio rerun, lower default, first-packet
 investigation, product-code change or physical claim follows.
+
+### Native Render Operation Timeline And Exact Packet Reconciliation
+
+The [timeline implementation](2026-11-03-render-timeline.md) adds opt-in bounded
+Start/Stop/Wait/Write envelopes without extra padding queries, retries or
+disabled-path clock reads. A separate preallocated4096-event ring remains within
+the existing8MiB preparation cap. The application persists timeline and encoded
+PCM independently, then reconciles every completed packet, frame count, release
+HRESULT and accepted frontier after join. Independent review finds and closes
+an initial missing-correspondence check; the original RED evidence is retained.
+
+Final pinned clean-source feature-workspace integration passes2461/10ignored
+across71harnesses. Audio library860/5ignored, focused evidence49/1ignored and
+independent RT256pass; strict feature workspace/RT Clippy, workspace/RT fmt and
+ordinary release exit0. These are software results, not native quality evidence.
+
+One [distinct remote timeline acquisition](2026-11-03-render-timeline-native.md)
+keeps the target1280/16384/96 configuration and confirms actual demand528.
+Baseline582events/290packets/97616encoded frames and replacement2296events/
+1147packets/385568frames reconcile exactly. All release HRESULTs are0; timeline
+loss, operation failure, zero write, Wait timeout and unavailable/regressed-clock
+counts are0. Two Process gap-bound violations remain, maximum11.1165ms against
+10.9792ms. Archive completeness is not a waveform continuity or timing PASS.
+
+The inspected six-panel figure retains each owner's own clock origin. Separate
+closed accounting and visualization rehash229and234input pins unchanged; raw
+audio stays remote and compact319705-byte visualization transfer is verified.
+App/source/isolatedOBS exit0 without force. The initial comprehensive final-audit
+SSH transport stalls before writing its script. A bounded recovery identifies
+and closes only that exact held transfer process, then SCP-transfers and executes
+the original read-only audit once. At17:29:52audit/SSH exit0 verifies498pin
+references across257unique files, no owners/running tasks and unchanged protected
+users/settings/driver. Original transport failure and the earlier closed-wrapper
+null exit field remain explicit. No new acquisition, unchanged soak, first-packet
+investigation, lower default or physical claim follows. All27preexisting dirty/
+cache pins remain unchanged.

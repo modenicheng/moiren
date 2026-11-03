@@ -136,7 +136,7 @@ transfer. Offline process26232 is
 confirmed closed; native task remains Ready/result0 and protected user-process
 identities are unchanged. Raw recordings are not transferred.
 
-## Final Audit Limitation
+## Initial Final Audit Limitation
 
 The final independent comprehensive environment/pin audit cannot be claimed
 complete. Its SSH transport times out; a17:15:25read-only check sees neither
@@ -154,7 +154,33 @@ do not replace the missing final comprehensive audit. On next remote access,
 inspect26688and create-once receipt/script state before taking further action;
 never blindly relaunch or terminate an unrelated process.
 
+### Bounded Recovery Without Another Acquisition
+
+A17:26:45read-only query confirms26688still has its original creation time
+1793697230303ms and exact audit-transfer command. The decoded command is blocked
+on `Console.In.ReadToEnd`; neither intended script nor receipt exists. No audio
+or analysis owner or running Moiren task exists, and protected user identities
+match. The original timeout is retained as a failed transport, not a native
+audio failure or successful audit.
+
+At17:28:41the process is closed through its held handle only after rechecking
+that creation identity and exact command. No other process is modified. The
+original script is transferred through SCP, rehashed and executed once without
+another audio/OBS/UI run. The17:29:35..17:29:52audit exits0, as does its SSH
+transport; the create-once4154-byte receipt SHA256 is
+`EEB9F64D090E63D0C37635B5DBE822D0323E14AA0010E42A9C58F450BB7B94C4`.
+
+The audit verifies498pin references across257unique files, including229closed
+accounting input pins,234visualization input pins, package/software/output pins
+and the deployed app. Original default roles, render settings, driver/boot and
+protected OBS/QQMusic identities remain unchanged. Native task is Ready/result0;
+no native/analysis owner or running Moiren task remains. The earlier closed-audit
+wrapper's null Process.ExitCode stays null; this new observed audit exit does
+not retroactively turn that field into0. No raw recording is transferred.
+
+Local receipts include `timeline-final-audit-recovery-shortstate-20261103-172636.json`,
+`timeline-final-audit-aborted-transport-local.json`, `timeline-final-audit.json`
+and `timeline-final-audit-completion-summary.json` under the evidence root.
 The27preexisting dirty/cache pins and unrelated main-worktree audit files remain
-preserved. Only this receipt is committed after the implementation commit; no
-push. No old packet855 coordinate or prior lag/gain model is applied to this new
-recording. Physical latency remains unknown and S1-S3 remain open.
+preserved. No push. No old packet855 coordinate or prior lag/gain model is
+applied to this recording. Physical latency remains unknown and S1-S3 remain open.
