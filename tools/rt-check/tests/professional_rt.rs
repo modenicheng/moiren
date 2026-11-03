@@ -527,7 +527,12 @@ fn measure_renderer<S: ProcessingSample>() {
         }
     });
     assert_eq!(probe.written.load(Ordering::Relaxed), 32 * 128);
-    assert!(compiled.engine.timeline() > 4096);
+    let reference = resample::StereoResampler::new(96000, 44100, 4096).unwrap();
+    assert_eq!(
+        compiled.engine.timeline(),
+        reference.input_frames_needed(32 * 128).unwrap() as u64,
+        "partial native writes must not hide rounded Engine tails"
+    );
     let events = counters.consumer_events.get().unwrap().snapshot().unwrap();
     // Each demand spans several 64-frame graph segments; partial native writes
     // do not publish extra consumption or prefetch another capacity of audio.

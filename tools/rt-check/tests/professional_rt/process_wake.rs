@@ -151,7 +151,12 @@ fn exercise<S: ProcessingSample>(rate: u32, block: usize) {
     let mut next_read = 0;
     for (wake, end) in wakes.events.iter().zip(wake_ends) {
         assert_eq!(wake.frames, end - previous_end);
-        let count = (wake.frames as usize / block) * block.div_ceil(256);
+        // Pump may use a short final Engine segment instead of pre-rendering
+        // a rounded block. ProcessSource still splits each segment at 256.
+        let frames = wake.frames as usize;
+        let full = frames / block;
+        let tail = frames % block;
+        let count = full * block.div_ceil(256) + tail.div_ceil(256);
         let associated = &reads.events[next_read..next_read + count];
         assert_eq!(
             associated

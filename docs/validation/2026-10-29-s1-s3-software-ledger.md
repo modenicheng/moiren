@@ -2324,3 +2324,40 @@ with raw audio staying remote. Final audit has no owned processes, unchanged
 protected OBS/QQMusic/settings/driver/barebus and all evidence pins unchanged.
 This delivers the collector, not a waveform/physical verdict or lower default;
 the inconclusive recorder association does not block independent development.
+
+### Exact Native-Demand Engine Rendering
+
+The [master-demand increment](2026-11-03-exact-master-demand.md) removes the
+actual Pump's speculative Engine-block tail: render only missing FIR input,
+bounded by the Engine ceiling, and publish the actual timeline/consumption.
+Native targets/defaults, conservative whole-wake admission, follower behavior
+and partial-write payloads are unchanged. Both precisions cover16rate pairs,
+eight ceilings and mixed demands against exact timeline/output, including
+backpressure and refusal. Old-code RED64-versus48 is retained; final audio848/
+5ignored and standalone RT253pass, with all-target check, strict audio Clippy,
+workspace/RT fmt and release exit0. The first RT run's stale full-block test
+expectation remains documented separately.
+
+One changed-code remote acquisition runs concurrently with clean-source
+feature-workspace tests. Engine64/Shared336/render512 and measured1536/16384/96
+stay fixed. Both owner final Engine-request minus encoded-output totals are16,
+the retained FIR lookahead, versus descriptive historical32/64; separate runs
+are not matched delay A/B. Actual289/1148releases and97280/385904encoded frames
+have complete PCM/cursor/render storage and no evidence loss or rejected
+submission. The replacement8001ms run reports zero delivery-bound violations,
+underruns/resets/steady-silence/drop counters and native master timeouts;
+startup3216priming/384discard remains explicit. App/source/isolatedOBS close0
+without force. No waveform association, physical claim, lower default,
+first-packet investigation, unchanged soak or push follows.
+
+Remote accounting retains and rehashes224input/software/output pins. The
+inspected figure and compact271303byteZIP/sixpayloads are length/hash-verified;
+raw audio stays remote. Final audit has no owners/running tasks, allpins/newapp
+unchanged, and protectedOBS/QQMusic/settings/driver/barebus unchanged. This
+delivers a concrete prefetch reduction without claiming S1-S3 completion.
+
+Final clean feature-workspace integration passes2430/10ignored/0failed across
+71harnesses, including zero-refill5, measuredUI20 and marker/rate/qualification
+19/8/24. Feature-on strict all-target workspace Clippy exits0. Independent final
+read-only review finds no concrete code/RT/accounting blocker;27preserved
+dirty/cache hashes and unrelated main audit files remain untouched. No push.

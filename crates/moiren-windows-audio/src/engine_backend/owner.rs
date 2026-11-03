@@ -606,10 +606,18 @@ impl Pump {
                                 "Engine did not produce its prepared master sink",
                             ));
                         }
+                        // Engine's block is a ceiling, not a minimum. Only
+                        // advance the input needed for this native demand;
+                        // rounding the tail up hides source residency in SRC.
+                        let missing = src
+                            .input_frames_needed(demand - self.pending)
+                            .filter(|&frames| frames > 0)
+                            .ok_or_else(|| unsupported("native render SRC demand invalid"))?;
+                        let frames = missing.min(engine.config().max_block_frames);
                         engine
-                            .render(engine.config().max_block_frames)
+                            .render(frames)
                             .map_err(|e| BackendError::Failed(e.to_string()))?;
-                        rendered += engine.config().max_block_frames;
+                        rendered += frames;
                         timeline.publish(engine);
                     } else {
                         // Followers run only from queued master output and never
