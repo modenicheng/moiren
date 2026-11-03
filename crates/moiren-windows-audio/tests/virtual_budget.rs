@@ -613,3 +613,77 @@ fn microphone_reprime_preparation_allocates_and_frees_nothing() {
     let recovery = alloc_guard::assert_allocates_nothing(|| budget.microphone_reprime(48, 1024));
     assert_eq!(recovery.unwrap().required_frames, 369);
 }
+
+#[test]
+fn packet480_engine64_lower_target_keeps_capacity_burst_and_master_bounds_separate() {
+    use moiren_windows_audio::latency::LatencyBudgetError;
+
+    let options = VirtualBufferOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 4800,
+            target_frames: 1280,
+            jitter_frames: 96,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 480,
+            max_gap_frames: 512,
+            source: DeliveryTimingSource::Declared,
+        }),
+        recovery_cap_periods: Some(8),
+    };
+    let budget = options.prepare_recovery(48_000, 64).unwrap();
+    let queue = budget.queue.unwrap();
+    assert_eq!(budget.engine_burst_frames, 512);
+    assert_eq!(budget.native_transfer_frames, 514);
+    assert_eq!(budget.fir_lookahead_frames, 32);
+    assert_eq!(budget.recovery_cap_periods, 8);
+    assert_eq!(budget.native_packet_frames, None);
+    assert_eq!(queue.low_water_frames, 546);
+    assert_eq!(queue.modeled_minimum_frames, Some(1154));
+    assert_eq!(queue.prime_frames, 1280);
+    assert_eq!(queue.servo_reference_frames, 1280);
+    let admitted = budget.admit_native_packet(480).unwrap();
+    let recovery = admitted.microphone_reprime(480, 4800).unwrap();
+    assert_eq!(recovery.required_frames, 1280);
+    assert!(!recovery.capacity_limited);
+
+    for (target_frames, accepted) in [(1024, false), (1153, false), (1154, true)] {
+        let candidate = VirtualBufferOptions {
+            input: TransportInputPolicy::Target {
+                capacity_frames: 4800,
+                target_frames,
+                jitter_frames: 96,
+            },
+            ..options
+        };
+        assert_eq!(candidate.prepare_recovery(48_000, 64).is_ok(), accepted);
+    }
+    // A physical master's complete 704-frame wake is not the virtual cap8 burst.
+    assert_eq!(
+        options.prepare_budget(48_000, 64, 704),
+        Err(LatencyBudgetError::InsufficientInputBudget)
+    );
+    for capacity_frames in [2305, 2306, 4800, 8192] {
+        let candidate = VirtualBufferOptions {
+            input: TransportInputPolicy::Target {
+                capacity_frames,
+                target_frames: 1280,
+                jitter_frames: 96,
+            },
+            ..options
+        };
+        let prepared = candidate.prepare_recovery(48_000, 64);
+        if capacity_frames < 2306 {
+            assert_eq!(prepared, Err(LatencyBudgetError::InsufficientInputBudget));
+        } else {
+            let prepared = prepared.unwrap();
+            assert_eq!(prepared.queue.unwrap().prime_frames, 1280);
+            assert_eq!(prepared.queue.unwrap().modeled_minimum_frames, Some(1154));
+            assert_eq!(
+                prepared.microphone_reprime(480, capacity_frames).unwrap(),
+                recovery
+            );
+        }
+    }
+}

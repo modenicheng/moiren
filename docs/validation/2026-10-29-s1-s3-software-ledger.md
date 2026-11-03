@@ -2099,3 +2099,32 @@ owners are gone and protected processes/settings/driver stay unchanged. The
 hit-test guard is not relaxed and no retry follows. Original native closed-prefix
 success and waveform/physical qualification remain open; independent work is
 not gated on another unchanged UI experiment or soak.
+
+### Pure-Virtual Target1280 Slice
+
+The [lower-target follow-up](2026-11-03-lower-target1280.md) adds only admission
+and compiled f32/f64 recovery regressions: Engine64/cap8/native480 admits1280
+with modeled floor1154 and separate capacity4800; the physical704whole-wake
+route still refuses1280. Existing1536coverage remains. Final isolated Windows
+workspace passes2359tests/9ignored/0failed across71harnesses; feature-on
+all-target check, strict Clippy and fmt pass. A deliberate1024mutation fails
+admission and restored1280tests pass. No production policy/driver/RT changes.
+
+One remote Shared source480 -> unity Bus -> MIC acquisition retains the actual
+1280published budgets in both directions. Source completes288000changing frames
+and normal Stop/join;327360recorder frames exactly equal their completed actual
+encoded output map. Informative/training/silent denominators and the reviewed
+PNG remain separate. Recorder packet1discontinuity preserves the original
+quality refusal; an unconfirmed480-frame terminal output packet stays unsupported.
+The independent dual-FIR helper correctly refuses its null sequence; no full
+cascade agreement, quality PASS or latency result is substituted.
+
+The evidence wrapper independently exceeds its downstream32MiB JSON cap after
+copying full diagnostics; native task remains Ready1 and original skipped
+post-catalog stays explicit. No native retry/cap enlargement follows. A separate
+forensic export verifies92original pins, downloads85compact payloads with every
+entry length/hash-verified, and preserves the oversized/raw originals remotely.
+The final independent read-only catalog/identity audit confirms unchanged defaults,
+render controls, protected OBS/QQMusic, driver/boot, bare healthy bus and no owners.
+First-packet work remains deferred; defaults, original27dirty/cache files and
+overall S1-S3 qualification status are unchanged. No push or soak is left running.

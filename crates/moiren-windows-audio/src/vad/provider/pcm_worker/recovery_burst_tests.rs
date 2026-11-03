@@ -15,10 +15,14 @@ const TARGET: usize = 1536;
 const PERIOD_NS: u64 = 10_000_000;
 
 fn policy() -> PreparedMicrophoneReprime {
+    policy_at(TARGET)
+}
+
+fn policy_at(target: usize) -> PreparedMicrophoneReprime {
     VirtualBufferOptions {
         input: TransportInputPolicy::Target {
             capacity_frames: CAPACITY as u32,
-            target_frames: TARGET as u32,
+            target_frames: target as u32,
             jitter_frames: 96,
         },
         delivery: Some(InputDeliveryTiming {
@@ -127,7 +131,7 @@ fn cap8_reprime_holds_below_target_and_keeps_initial_and_epoch_fences() {
     }
 }
 
-fn compiled_burst_matrix<S: moiren_engine::sample::ProcessingSample>() {
+fn compiled_burst_matrix<S: moiren_engine::sample::ProcessingSample>(target: usize) {
     for first_wake_ns in [10_666_667, 11_250_000, 11_900_000] {
         for completion_phase_ns in [0, 2_500_000, 9_950_000] {
             for graph_first in [false, true] {
@@ -142,7 +146,7 @@ fn compiled_burst_matrix<S: moiren_engine::sample::ProcessingSample>() {
                         state.producer_quiesced_epoch.clone(),
                         state.consumer_quiesced_epoch.clone(),
                     )
-                    .with_clock_drift_target(TARGET)
+                    .with_clock_drift_target(target)
                     .unwrap();
                 let mut engine = super::reprime_tests::compiled_microphone::<S>(sink, BLOCK);
                 engine.render(BLOCK).unwrap();
@@ -161,7 +165,7 @@ fn compiled_burst_matrix<S: moiren_engine::sample::ProcessingSample>() {
                     reader,
                 )
                 .unwrap();
-                let mut pump = MicrophonePump::prepared(policy());
+                let mut pump = MicrophonePump::prepared(policy_at(target));
                 let mut io = FakeIo::default();
                 let mut tickets = vec![];
                 let clock = FakeClock::default();
@@ -196,7 +200,7 @@ fn compiled_burst_matrix<S: moiren_engine::sample::ProcessingSample>() {
                         false
                     };
                     if graph_first && publish() {
-                        assert!(bridge.available_frames() < TARGET);
+                        assert!(bridge.available_frames() < target);
                     }
                     if completion_at.is_some_and(|due| t >= due) {
                         for ticket in &tickets {
@@ -221,11 +225,11 @@ fn compiled_burst_matrix<S: moiren_engine::sample::ProcessingSample>() {
                         PumpState::Current
                     );
                     if !graph_first && publish() {
-                        assert!(bridge.available_frames() < TARGET);
+                        assert!(bridge.available_frames() < target);
                     }
                     if io.written.len() > written {
                         if written == 0 {
-                            assert!(available >= TARGET, "fresh compiled SRC must reach target");
+                            assert!(available >= target, "fresh compiled SRC must reach target");
                             assert!(clock.now() < deadline);
                         }
                         completion_at = Some(if t < completion_phase_ns {
@@ -260,10 +264,20 @@ fn compiled_burst_matrix<S: moiren_engine::sample::ProcessingSample>() {
 
 #[test]
 fn cap8_reprime_compiled_f32_io_bus_src_packet480_phase_matrix() {
-    compiled_burst_matrix::<f32>();
+    compiled_burst_matrix::<f32>(TARGET);
 }
 
 #[test]
 fn cap8_reprime_compiled_f64_io_bus_src_packet480_phase_matrix() {
-    compiled_burst_matrix::<f64>();
+    compiled_burst_matrix::<f64>(TARGET);
+}
+
+#[test]
+fn cap8_lower_target1280_compiled_f32_packet480_reprime_phase_matrix() {
+    compiled_burst_matrix::<f32>(1280);
+}
+
+#[test]
+fn cap8_lower_target1280_compiled_f64_packet480_reprime_phase_matrix() {
+    compiled_burst_matrix::<f64>(1280);
 }
