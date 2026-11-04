@@ -120,6 +120,14 @@ serialization. Failure-first tests pass 35 on both Windows and Debian;
 all 17 Python suites pass 321. This later source is kept local rather than
 superseding live CI. No original PCM, frozen residual or native verdict changes.
 
+The [current release probe receipt](../../docs/validation/2026-11-05-release-probe-readiness.md)
+pins both optimized examples built from clean `73e1fc2`; the release E2E
+executable passes the real offline wrapper regression. No VAD integration
+execution or deployment occurs. Fresh read-only SSH still returns an admin
+token/session 0, so the non-admin metadata-reader guard remains unsatisfied;
+VMware inventory remains zero running. These builds and account checks do not
+close any naming, waveform, sustained or physical gate.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,

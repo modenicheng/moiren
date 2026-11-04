@@ -437,6 +437,24 @@ over the existing live CI. Original 29 draft/cache hashes still match.
 No real PCM/OBS acquisition, refit, remote raw transfer, native operation or
 waveform/physical qualification follows; all full-pipeline gates remain.
 
+### Current Release Probe Preparation
+
+Both ordinary optimized examples build from clean `73e1fc2`: VAD integration
+7806976 bytes and E2E latency probe 7729152 bytes. Exact source/tree and binary
+SHA-256 pins are retained in the
+[release readiness receipt](2026-11-05-release-probe-readiness.md). The actual
+release E2E executable passes the existing PowerShell 7 synthetic offline
+qualification regressions; the VAD integration binary is not executed. Neither
+artifact is deployed or presented as native acceptance.
+
+Fresh strict-known-host SSH at host 03:36:14 confirms the expected target/SID,
+session 0 and an administrator token. A corrected literal-path check confirms
+the planned audit package remains absent; an earlier Python path-escape error
+and its limited receipt are retained. The non-admin foreground metadata-reader
+guard remains unsatisfied and unchanged. No remote deployment/ffprobe/task or
+audio/device/UI/driver operation follows. VMware inventory remains zero running.
+The published `919d10f` CI is still live and is not superseded by local work.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
