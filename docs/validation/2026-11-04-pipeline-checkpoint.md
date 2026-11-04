@@ -354,6 +354,21 @@ At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the origin
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.
 
+### Explicit Runtime-Error Acceptance Repair
+
+An independent source audit identifies two false-success paths in the probe:
+streaming transition/retirement runtime errors can be overwritten by clean
+snapshots, and Exited/Removing plus a successful join can ignore an explicit
+shutdown error. Three regression tests fail before the fix. Actual observation
+paths now retain deduplicated stage/source/text failures, and clean exit rejects
+explicit service/graph errors while still allowing error-free Removing.
+Windows example tests pass 130; exact Linux stable 1.99.1 tests pass 109. Strict
+Windows all-target and Linux example Clippy, workspace check, non-test build,
+fmt and the existing application shutdown-timeout regression pass. The
+[failure-first receipt](2026-11-05-s4-sticky-runtime-errors.md) preserves the
+original RED, corrected lint invocation and unchanged qualification limits.
+No native or broader S4 acceptance is claimed.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at

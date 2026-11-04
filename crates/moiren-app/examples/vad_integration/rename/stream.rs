@@ -69,7 +69,25 @@ impl Case {
         self.failures.push(error);
     }
 
+    fn retain_runtime_errors(&mut self, stage: &str, runtime: &RuntimeEvidence) {
+        // A later Apply/poll may clear these fields. Keep observed failures
+        // sticky without growing the report on identical snapshot polls.
+        for (source, error) in [
+            ("service", &runtime.service_error),
+            ("graph", &runtime.graph_error),
+            ("provider", &runtime.provider_error),
+        ] {
+            if let Some(error) = error {
+                let failure = format!("{stage} {source} error: {error}");
+                if !self.failures.contains(&failure) {
+                    self.fail(failure);
+                }
+            }
+        }
+    }
+
     pub(super) fn observe_retirement(&mut self, runtime: RuntimeEvidence) -> anyhow::Result<()> {
+        self.retain_runtime_errors("retirement", &runtime);
         self.retirement_first.get_or_insert_with(|| runtime.clone());
         self.retirement_last = Some(runtime.clone());
         let baseline = self
@@ -83,6 +101,7 @@ impl Case {
     }
 
     pub(super) fn observe_transition(&mut self, runtime: RuntimeEvidence, edit: u64) -> bool {
+        self.retain_runtime_errors("transition", &runtime);
         self.interruption_first
             .get_or_insert_with(|| runtime.clone());
         let identity_changed = self

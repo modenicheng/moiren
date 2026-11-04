@@ -77,6 +77,14 @@ unchanged pinned root-logo assets omitted from the isolated archive, that
 local example check passes all 106 portable tests. Earlier preparation failures
 remain retained. The streaming harness commit is `15ba9d0`, not native evidence.
 
+The [explicit-error acceptance repair](../../docs/validation/2026-11-05-s4-sticky-runtime-errors.md)
+prevents later clean snapshots or a successful service join from hiding
+observed transition/retirement or shutdown errors. Three actual assertion REDs
+become 130 passing Windows and 109 passing Linux stable example tests; strict
+Clippy/check/build and the application shutdown-timeout regression pass.
+Error-free Removing remains distinct from final PDO absence. This is a
+fail-closed harness correction, not native validation or a driver audio fix.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,

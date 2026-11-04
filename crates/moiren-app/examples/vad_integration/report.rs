@@ -259,6 +259,8 @@ impl Evidence {
         self.phase == "exited"
             && self.active_revision.is_none()
             && self.pending_revision.is_none()
+            && self.error.is_none()
+            && self.graph_error.is_none()
             && self.exports.iter().all(|export| {
                 !export.gate_open
                     && export.active_revision.is_none()
@@ -405,6 +407,28 @@ mod tests {
         assert_eq!(json["active_revision"], serde_json::Value::Null);
         exited.exports[0].gate_open = true;
         assert!(!exited.exited());
+    }
+
+    #[test]
+    fn exit_rejects_explicit_service_or_graph_cleanup_errors() {
+        for graph_error in [false, true] {
+            let mut exited = running();
+            exited.phase = "exited".into();
+            exited.active_revision = None;
+            for export in &mut exited.exports {
+                export.present = false;
+                export.resource = "removing".into();
+                export.gate_open = false;
+                export.active_revision = None;
+            }
+            assert!(exited.exited());
+            if graph_error {
+                exited.graph_error = Some("shutdown REMOVE timeout".into());
+            } else {
+                exited.error = Some("shutdown service failure".into());
+            }
+            assert!(!exited.exited(), "cleanup error was reported as clean exit");
+        }
     }
 
     #[test]

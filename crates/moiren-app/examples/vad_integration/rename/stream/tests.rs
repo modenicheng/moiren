@@ -312,3 +312,47 @@ fn streaming_rename_keeps_old_pair_until_actual_transition_not_candidate_name_on
     assert!(!other.observe_transition(stale, 4));
     assert!(other.observe_transition(runtime(true), 4));
 }
+
+#[test]
+fn streaming_transition_errors_remain_failed_after_a_clean_replacement() {
+    for error_kind in 0..3 {
+        let mut case = complete();
+        let mut observed = runtime(false);
+        observed.consumed_request_id = 4;
+        match error_kind {
+            0 => observed.service_error = Some("service failed during rename".into()),
+            1 => observed.graph_error = Some("rename REMOVE failed".into()),
+            _ => observed.provider_error = Some("provider QUERY failed".into()),
+        }
+        // An error can be published before the gate closes, then disappear
+        // from the later successful Apply snapshot. It is still run evidence.
+        assert!(!case.observe_transition(observed.clone(), 4));
+        assert!(!case.observe_transition(observed, 4));
+        assert!(case.observe_transition(runtime(true), 4));
+        case.finish();
+        assert!(!case.completed, "forgot transition error {error_kind}");
+        assert_eq!(case.failures.len(), 1, "duplicate poll failure");
+    }
+}
+
+#[test]
+fn streaming_retirement_errors_remain_failed_after_direct_removed_recovers() {
+    for error_kind in 0..3 {
+        let mut case = complete();
+        let mut observed = runtime(true);
+        observed.native_retirement = case.old_removed.clone();
+        match error_kind {
+            0 => observed.service_error = Some("service failed during retirement".into()),
+            1 => observed.graph_error = Some("retirement failed".into()),
+            _ => observed.provider_error = Some("provider retirement QUERY failed".into()),
+        }
+        case.observe_retirement(observed.clone()).unwrap();
+        case.observe_retirement(observed).unwrap();
+        let mut recovered = runtime(true);
+        recovered.native_retirement = case.old_removed.clone();
+        case.observe_retirement(recovered).unwrap();
+        case.finish();
+        assert!(!case.completed, "forgot retirement error {error_kind}");
+        assert_eq!(case.failures.len(), 1, "duplicate poll failure");
+    }
+}
