@@ -32,6 +32,21 @@ does not turn that fixture into hardware evidence. Neither binary is deployed.
 These are current-source release examples, not a rebuild or deployment of the
 ordinary desktop application, a signed driver package or a native test pass.
 
+### Later S4 Repair Artifact
+
+The table above records the earlier `73e1fc2` build, not a permanent pin for
+the mutable Cargo target directory. After the
+[pre-client admission repair](2026-11-05-s4-pre-client-admission.md), the VAD
+example is rebuilt from clean `ee25064` at 03:52:11. Its 7,806,976 bytes hash to
+`0D715ECBC4A086D8A022F2819EEC8B7ED712BD7FF5FCE6463F2B4AE349CAC52C`.
+The build output is copied and independently length/hash-checked at the
+immutable path
+`D:\coding\moiren-evidence\20261105-s4-idle-admission\vad_integration-ee25064.exe`.
+Use that artifact's receipt for a future corrected-source target run. The
+earlier VAD hash remains historical; it is not the current shared target output.
+No executable is run or deployed by this rebuild. The E2E probe's earlier
+source/build receipt is unchanged.
+
 ## Fresh Read-Only Target Check
 
 At host 03:36:14, the existing strict-known-host `moiren-lan` SSH connection

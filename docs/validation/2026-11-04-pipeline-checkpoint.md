@@ -472,6 +472,9 @@ opt-in features finishes at 03:48:36: 2625 passed, 10 ignored, zero failed acros
 pins match and the original 29 draft/cache pins remain unchanged. The existing
 published CI is still live; this local repair has no matching-head CI yet.
 The earlier release VAD example predates it and is not deployed or relabelled.
+The corrected example is then rebuilt from clean `ee25064`, with source/tree,
+length and SHA-256 pinned to an independently verified immutable evidence copy.
+It is not executed or deployed; the earlier shared-target pin stays historical.
 
 ## Target Readiness
 
