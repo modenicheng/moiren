@@ -118,6 +118,80 @@ identical except these two probe-only fixture files and the two RT harness
 lock/lint files; those exact changes have their separate successful checks.
 Ordinary release and current remote CI remain pending at this checkpoint.
 
+### 2026-11-05 Release And Cross-Platform Follow-Up
+
+The ordinary release subsequently completes at 00:31:55, exit 0. The pinned
+`moiren-app.exe` is 35177984 bytes, SHA-256
+`261D0C4990DC518DF189240BB8DD16C190CE00CE8078C3B5D130928C0B52B928`,
+built from integration commit `b471975b144c372163e1f814b99e61b69a8160fc`,
+tree `e759c9c58b843c61535b6e5aa111411040e0168f`. It is not deployed or run
+natively. `release-pins-20261105.json` retains the corrected quoted tree query;
+the earlier PowerShell argument failure has its own receipt, not a new build.
+
+That integration commit incorporates pinned remote main `95972f2`, resolves
+the twelve merge conflicts, and is pushed normally to
+`origin/feat/minimal-io-latency`. PR26 remains Draft and mergeable. This is a
+development/evidence integration checkpoint, not authorization to merge the
+entire branch into main; the existing split-before-merge policy remains.
+
+Exact-head CI run `41868136039` exposes two distinct portability/test-boundary
+failures. Linux test/Clippy and both VAD Miri jobs reject unused Windows-only
+callback helpers. The repair narrows their cfg to their actual Windows callers;
+portable callback tests and the lint policy are unchanged. Both engine compiler
+Miri jobs reach the native plugin fixture's `Command::status` and fail on an
+unsupported process-spawn foreign function. Only that native cdylib fixture
+module is excluded under Miri; its native test and the remaining portable
+compiler suite remain enabled. Original CI failures are retained separately.
+
+The callback repair has fresh Windows callback coverage (26 passed, 1 ignored),
+Linux VAD coverage (51 passed), and both Miri borrow models (51 passed each).
+The Tree Borrows run completes at 00:41:07. The compiler repair's Windows native
+suite passes all 54 tests, including the plugin fixture; strict Windows engine/
+audio all-target Clippy and root fmt also exit 0. Linux native compiler passes
+54 tests, while both compiler Miri modes pass all 53 portable tests (the one
+native fixture remains exercised outside Miri). The Tree run completes at
+00:55:52. Exact overlay hashes match the integration worktree.
+
+The first Linux strict-Clippy command cannot run because nightly lacks its
+Clippy component; the component is then installed. The next command reaches an
+unrelated existing EQ `needless_range_loop` diagnostic on nightly 1.101.0.
+No production loop or lint gate is changed to make this portability patch pass.
+CI uses stable 1.99.1, so that exact toolchain is being prepared for the relevant
+strict-Clippy check. Both original failures are retained rather than reported
+as passes. The portability repairs are committed as `fa47ffc`; fresh Windows
+audio-library regression passes 873 tests with 5 ignored, and the unchanged
+VAD integration example passes all 117 tests. These edits still require new
+exact-head remote CI; neither this follow-up nor the previous local workspace
+success proves remote CI is green.
+
+The original temporary WSL source directory is absent on the fresh inventory,
+with no Cargo/Miri process running. The next verification uses a new isolated
+persistent cache directory, the pinned archive, the required ABI header and
+exact overlay hashes. It does not restart an observed live process or treat an
+observation timeout as terminal.
+
+The independently reviewed S4 software-output category candidate is committed
+as `c321409`. All 18 host groups, 13 MSYS2 portable groups and 13 Linux portable
+groups pass against the imported source; the analyzed WDK build and explicit
+INF validation pass. Its unsigned package has separate integration pins in the
+[candidate receipt](2026-11-05-s4-virtual-playback-category.md). Actual Windows
+names, native streaming/default-role/migration behavior and the broader S4
+matrix are still unverified. The strict historical gates remain unchanged.
+
+At 00:50:48 all 29 original non-callback dirty/cache hashes still match; no
+draft is absorbed. The 00:48:44 remote read-only physical-target preflight
+confirms available memory and no owned audio app/probe or running Moiren task.
+It also finds the older stalled transfer shell, recorded without broad cleanup.
+No new native test, unchanged soak or host driver/UI operation follows.
+
+At the next source checkpoint the prior CI run has successful Windows tests,
+Windows Clippy, driver host checks and the other completed portable/Miri jobs,
+but retains its six known failures and a still-running engine host Tree job.
+A normal batch push of the actual repaired source can supersede that run under
+the repository's concurrency policy. Any cancelled old job is unverified, not
+a pass; this is a new source checkpoint, not a retry because polling expired.
+The matching new head must be inspected independently and the PR stays Draft.
+
 At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the original
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.

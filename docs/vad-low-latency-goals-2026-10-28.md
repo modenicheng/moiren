@@ -85,7 +85,7 @@ sub-10-ms limitation is evidenced; no such impossibility is established yet.
   be labelled a sub-10-ms pass. Do not silently enlarge a buffer or move the
   measurement boundary to produce a better claim.
 
-## Current pipeline status - 2026-11-04
+## Current pipeline status - 2026-11-05
 
 The original S0-S5 requirements below remain the completion criteria. Subsequent
 implementation is recorded in the
@@ -96,11 +96,11 @@ configuration or acceptance evidence.
 
 | Slice | Current evidence | Remaining acceptance |
 | --- | --- | --- |
-| S0 | Requirements, scoped commits, binary/configuration pins and bounded archival workflows exist. | Complete a current integration checkpoint and its remote CI; preserve unrelated work. |
+| S0 | Requirements, scoped commits, binary/configuration pins and bounded archival workflows exist; current-main integration/release at `b471975` and scoped portability repairs at `fa47ffc` have local evidence. | Complete CI-matching Linux Clippy and verify new exact-head remote CI; preserve unrelated work. |
 | S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. | Matched route acquisition, explained full waveform correspondence and calibrated measurement remain open. |
 | S2 | Independent VAD target/capacity, actual-demand admission, priming, servo and bounded recovery are implemented. | Native period/block combinations and sustained quality do not yet qualify a lower default. |
 | S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. | Successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open. |
-| S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist. | Windows-visible name acceptance and the required native streaming/held-client/race/repetition cases remain open. |
+| S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist; the software-output category candidate passes host/portable/WDK checks. | Windows-visible name acceptance, migration/default roles and the required native streaming/held-client/race/repetition cases remain open; the VM needs unlock/start. |
 | S5 | Deterministic/RT software checks and finite native receipts exist. | Repeated/load/non-silent sustained runs and calibrated p95/p99 below10ms, or the evidenced device-limited fallback, remain open. |
 
 No aggregate percentage, software test total or successful lifecycle substitutes

@@ -8,14 +8,35 @@ verdict. Status updated 2026-11-05.
 
 The [current integration checkpoint](../../docs/validation/2026-11-04-pipeline-checkpoint.md)
 preserves the full S0-S5 requirements. Callback observation is committed as
-`1b33b68`; current main is being merged in a separate worktree so original PCM,
-probe and validation drafts remain untouched. All textual conflicts are
-resolved, but the merge, final-source verification and fresh remote CI remain
-pending. The first merged workspace test attempt fails one app meter-wake
-regression; its queued-tail timing assumption is repaired without changing
-production freshness rules. The focused monitoring group passes all 30 tests.
-Settings cache regressions are repaired and all 70 settings tests pass; the
-complete final-source suite remains in progress.
+`1b33b68`; integration commit `b471975` incorporates pinned remote main
+`95972f2` in a separate worktree, preserving the original PCM/probe/validation
+drafts. Final-source local workspace verification records 2607 passed,
+10 ignored and 0 failed; all-target check, strict Clippy, RT and probe checks
+also pass. The release completes at 00:31:55 and is pinned but not deployed.
+The initial meter-wake failure and original cache regressions remain archived
+alongside their focused and full-suite successful reruns.
+
+Fresh exact-head CI `41868136039` is not green: Linux callback-helper cfg and
+the native plugin fixture under compiler Miri expose portability/test-boundary
+failures. Scoped repairs are committed as `fa47ffc`; local callback Windows/
+Linux and both VAD Miri modes pass, native compiler passes 54 tests on each OS,
+and compiler Miri passes 53 portable tests in each model. Windows audio-library
+regression passes 873 tests (5 ignored); strict engine/audio Clippy and the
+117-test VAD example pass. CI-matching Linux Clippy and new exact-head CI are
+still pending. No lint gate or native audio acceptance is weakened. PR26
+remains Draft and must retain its split-before-merge policy rather than merge
+wholesale.
+
+The [S4 playback-category candidate](../../docs/validation/2026-11-05-s4-virtual-playback-category.md)
+is independently reviewed and imported, with fresh 18-group host/13-group
+portable checks, analyzed WDK build and valid INF. Playback now declares the
+standard software output terminal rather than a physical speaker, with a
+matching Association and explicit enablement; capture and default-role
+exclusion remain unchanged. This is a candidate repair, not actual Windows
+FriendlyName, migration, audio or default-role acceptance. Exact native name
+and historical held-client gates are not relaxed; the adapter suffix may still
+cause a naming failure. The unsigned integration package has separate pins
+from the agent-worktree build and is not installed.
 
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
@@ -25,10 +46,15 @@ No lower default, VAD/Process winner, physical sub-10-ms pass or device-limited
 impossibility follows from the software integration. The first-packet
 investigation remains deferred.
 
-The latest read-only physical-target preflight is 2026-11-04 23:15:31. The driver
-VM's first strict SSH attempt times out. At 2026-11-05 00:11 VMware reports no
+The latest read-only physical-target preflight is 2026-11-05 00:48:44: no owned
+audio app/probe or running Moiren task is present, and protected OBS/QQMusic
+creation identities match. An older stalled transfer shell is still visible;
+its presence is not an audio run and does not justify broad process cleanup.
+The driver VM's first strict SSH attempt times out. At 2026-11-05 00:11 VMware reports no
 running VMs; the verified dedicated VM's single headless start attempt refuses
 because a password is required. User unlock/start is needed for that target.
+The 00:45 read-only VMware inventory still reports zero running VMs; the failed
+start is not repeated.
 No new native audio, UI or driver operation is run by this checkpoint.
 Historical native receipts below retain their original source and target
 identities.
