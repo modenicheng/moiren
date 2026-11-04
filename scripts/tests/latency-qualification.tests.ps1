@@ -94,13 +94,18 @@ try {
             quality = @{dropped_frames = 0; silent_frames = 0; underrun_frames = 0; discontinuities = 0
                 epoch_resets = 0; marker_missing = 0; sample_gap_frames = 0; delivery_bound_violations = 0}
         }
-        foreach ($case in @('mismatched', 'uncalibrated', 'short', 'failed', 'passing-fixture')) {
+        foreach ($case in @('mismatched', 'uncalibrated', 'short', 'failed', 'p99-miss', 'p99-bound', 'passing-fixture')) {
             $candidate = $run | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
             switch ($case) {
                 'mismatched' { $candidate.configuration.output_endpoint_id = 'other' }
                 'uncalibrated' { $candidate.calibration = $null }
                 'short' { $candidate.observed_duration_seconds = 30 }
                 'failed' { $candidate.quality.delivery_bound_violations = 1 }
+                'p99-miss' { $candidate.distribution.p99_ms = 15; $candidate.distribution.max_ms = 20 }
+                'p99-bound' {
+                    $candidate.distribution.p99_ms = 9.5; $candidate.distribution.max_ms = 20
+                    $candidate.calibration.uncertainty_ms = 0.5
+                }
             }
             ConvertTo-Json -InputObject @($candidate) -Depth 20 | Set-Content -LiteralPath $reports -Encoding utf8NoBOM
             $output = Join-Path $testRoot $case
@@ -113,6 +118,11 @@ try {
             Require (($receipt.status -eq 'accepted_evidence') -eq ($case -eq 'passing-fixture')) "$case receipt wrong"
             Require (Test-Path -LiteralPath (Join-Path $output 'reports.json')) "$case reports not retained"
             Require (Test-Path -LiteralPath (Join-Path $output 'evaluation.json')) "$case evaluation not retained"
+            if ($case -in @('p99-miss', 'p99-bound')) {
+                $result = Get-Content -LiteralPath (Join-Path $output 'evaluation.json') -Raw | ConvertFrom-Json
+                Require ($receipt.cli_exit_code -eq 1 -and $result.error -eq 'latency_target_missed') "$case target miss lost"
+                Require ($result.reports[0].distribution.p99_ms -eq $candidate.distribution.p99_ms) "$case distribution changed"
+            }
         }
     }
     Write-Output 'PASS: hash preflight, immutable output, retained failures; optional real CLI cases completed'

@@ -99,7 +99,7 @@ pub struct CalibrationProvenance {
     pub measurement_format: EvidenceFormat,
     /// QPC-only timing or unrelated sample clocks cannot satisfy this contract.
     pub common_sample_clock: bool,
-    /// Nonnegative bound added to measured p95 for the 10 ms acceptance gate.
+    /// Nonnegative bound added to both percentile targets before acceptance.
     pub uncertainty_ms: f64,
     /// Calibration is expired at this Unix-second deadline.
     pub valid_until_unix_seconds: u64,
@@ -225,7 +225,7 @@ pub enum QualificationError {
     InvalidDistribution,
     #[error("quality counters contain a failure")]
     QualityFailure,
-    #[error("measured p95 plus calibration uncertainty exceeds 10 ms")]
+    #[error("measured p95 or p99 plus calibration uncertainty is not below 10 ms")]
     LatencyTargetMissed,
     #[error("not enough independent runs for this qualification level")]
     InsufficientRepetitions,
@@ -292,8 +292,8 @@ pub fn marker_distribution(
 /// a 4096-byte limit each. Evaluation uses O(run count) auxiliary storage and
 /// O(run count * log(run count)) time. Bound serialized input bytes separately
 /// before deserializing untrusted reports; serde allocation precedes this evaluator.
-/// p95 plus calibration uncertainty <= 10 ms is the gate; p50 <= 8 ms remains
-/// an exploration target.
+/// Both p95 and p99 plus calibration uncertainty must be below 10 ms;
+/// p50 <= 8 ms remains an exploration target, and max is reported separately.
 pub fn evaluate_qualification(
     reports: &[QualificationReport],
     expected: &QualificationExpectation,
@@ -445,7 +445,11 @@ fn evaluate_run(
     {
         return Err(QualificationError::InvalidDistribution);
     }
-    if distribution.p95_ms + calibration.uncertainty_ms > 10.0 {
+    // The current S5 contract includes the tail percentile, not just p95.
+    if [distribution.p95_ms, distribution.p99_ms]
+        .into_iter()
+        .any(|percentile| percentile + calibration.uncertainty_ms >= 10.0)
+    {
         return Err(QualificationError::LatencyTargetMissed);
     }
     Ok(())

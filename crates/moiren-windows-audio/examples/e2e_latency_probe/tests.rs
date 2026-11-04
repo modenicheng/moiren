@@ -1079,6 +1079,40 @@ fn evaluate_retains_mismatched_uncalibrated_short_and_failed_reports_and_exit_st
 }
 
 #[test]
+fn evaluator_retains_p99_and_uncertainty_target_misses_as_unqualified() {
+    let fixture = Fixture::new();
+    let expectation = fixture.json("expectation.json", &expected_json());
+    for (case, p99, uncertainty) in [("p99-miss", 15.0, 0.1), ("p99-bound", 9.5, 0.5)] {
+        let mut run = report_json();
+        run["distribution"]["p99_ms"] = json!(p99);
+        run["distribution"]["max_ms"] = json!(20.0);
+        run["calibration"]["uncertainty_ms"] = json!(uncertainty);
+        let reports_value = json!([run]);
+        let reports = fixture.json(&format!("{case}.json"), &reports_value);
+        let output = fixture.path(&format!("{case}-result.json"));
+        let mut args = run_arguments(
+            "evaluate",
+            &[("--reports", &reports), ("--expectation", &expectation)],
+            &output,
+        );
+        args.extend([
+            "--level".into(),
+            "experimental".into(),
+            "--max-runs".into(),
+            "1".into(),
+        ]);
+        assert_eq!(cli::run(args).unwrap(), 1, "{case}");
+        let result: Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+        assert_eq!(result["qualified"], false);
+        assert_eq!(result["error"], "latency_target_missed");
+        let retained: Vec<QualificationReport> =
+            serde_json::from_value(result["reports"].clone()).unwrap();
+        let original: Vec<QualificationReport> = serde_json::from_value(reports_value).unwrap();
+        assert_eq!(retained, original);
+    }
+}
+
+#[test]
 fn evaluator_enforces_repetition_current_expectation_and_run_caps() {
     let fixture = Fixture::new();
     let expectation = fixture.json("expectation.json", &expected_json());

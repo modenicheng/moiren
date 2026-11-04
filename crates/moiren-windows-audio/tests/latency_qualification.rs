@@ -484,16 +484,52 @@ fn nonfinite_negative_or_nonmonotonic_percentiles_are_refused() {
 }
 
 #[test]
-fn p95_target_is_inclusive_and_p50_eight_ms_is_only_an_exploration_target() {
+fn a_p99_target_miss_cannot_qualify_either_level_despite_a_passing_p95() {
+    for level in [
+        QualificationLevel::Experimental30Minutes,
+        QualificationLevel::DefaultTwoHourRepeated,
+    ] {
+        let mut runs = [report("one", 7200.0), report("two", 7200.0)];
+        for run in &mut runs {
+            let distribution = run.distribution.as_mut().unwrap();
+            distribution.p99_ms = 15.0;
+            distribution.max_ms = 20.0;
+        }
+        assert_eq!(
+            evaluate_qualification(&runs, &expected(), level, 2),
+            Err(QualificationError::LatencyTargetMissed)
+        );
+    }
+}
+
+#[test]
+fn percentile_target_requires_strict_headroom_after_calibration_uncertainty() {
+    for (p95, p99, uncertainty) in [(9.0, 10.0, 0.0), (10.0, 10.0, 0.0), (9.0, 9.5, 0.5)] {
+        let mut run = report("one", 1800.0);
+        run.calibration.as_mut().unwrap().uncertainty_ms = uncertainty;
+        let distribution = run.distribution.as_mut().unwrap();
+        distribution.p95_ms = p95;
+        distribution.p99_ms = p99;
+        distribution.max_ms = 20.0;
+        assert_eq!(
+            evaluate(run),
+            Err(QualificationError::LatencyTargetMissed),
+            "p95={p95}, p99={p99}, uncertainty={uncertainty}"
+        );
+    }
+}
+
+#[test]
+fn p50_exploration_and_maximum_do_not_replace_the_percentile_targets() {
     let mut run = report("one", 1800.0);
     run.calibration.as_mut().unwrap().uncertainty_ms = 0.0;
     let distribution = run.distribution.as_mut().unwrap();
     distribution.p50_ms = 9.0;
-    distribution.p95_ms = 10.0;
-    distribution.p99_ms = 15.0;
+    distribution.p95_ms = 9.5;
+    distribution.p99_ms = 9.999;
     distribution.max_ms = 20.0;
     assert_eq!(evaluate(run.clone()), Ok(()));
-    run.distribution.as_mut().unwrap().p95_ms = 10.0001;
+    run.distribution.as_mut().unwrap().p99_ms = 10.0;
     assert_eq!(evaluate(run), Err(QualificationError::LatencyTargetMissed));
 }
 
