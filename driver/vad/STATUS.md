@@ -100,6 +100,17 @@ tests pass 135 on Windows and 114 on Linux stable, with strict Clippy/check/buil
 and 2623 workspace/headless tests (10 ignored) passing. No native trajectory or
 broader S4 gate is qualified by these software regressions.
 
+Exact earlier head `fb87ec8` completes CI `41888724160` at 03:13:37 with all
+20 jobs successful; the existing watcher exits 0. Subsequent PCM-readiness and
+S5 corrections still require their own published-head CI. The
+[S5 percentile-contract repair](../../docs/validation/2026-11-05-s5-percentile-target.md)
+rejects a p99 target miss that the older p95-only offline evaluator accepted.
+Both p95 and p99 plus existing calibration uncertainty must now be strictly
+below 10 ms, as the current goal requires. Actual library/CLI/wrapper REDs are
+retained. Windows/Linux qualification tests pass 26 each, full probe tests
+pass 741/583 respectively (1 Windows ignore), and workspace/headless passes
+2625 with 10 ignored and zero failed. No native or physical gate is closed.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,

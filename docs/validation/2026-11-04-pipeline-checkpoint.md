@@ -397,6 +397,25 @@ ignored, zero failed across 73 harnesses. The committed correction is `52d0c39`;
 CI `41888724160` remains independently live for earlier head `fb87ec8` at this
 observation. No native or new repetition acceptance is inferred.
 
+### S5 Percentile Contract And Exact Prior CI
+
+Exact earlier head `fb87ec8` completes CI `41888724160` at 03:13:37 with all
+20 jobs successful. The existing watcher exits 0 without a restart or duplicate
+dispatch. That green does not certify subsequent PCM-readiness or S5 source.
+
+The [S5 offline percentile correction](2026-11-05-s5-percentile-target.md)
+reproduces an acceptance gap: the old evaluator accepts p99 = 15 ms when p95
+passes, despite the current goal requiring both percentiles below 10 ms. Actual
+library and CLI assertion REDs become green after enforcing both percentile
+targets plus the existing calibration uncertainty, with strict headroom.
+Historical p95-only receipts are not relabelled. Fresh Windows/Linux stable
+qualification tests pass 26 each; full probe tests pass 741 with 1 ignored on
+Windows and 583 on Linux. Both strict audio Clippy checks, workspace all-target
+check, non-test build, real PowerShell wrapper and fmt pass. Full workspace/
+headless regression completes at 03:19:53 with 2625 passed, 10 ignored, zero
+failed across 73 harnesses. Original 29 draft/cache hashes remain unchanged.
+No native waveform, sustained, physical or device-limited verdict follows.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
