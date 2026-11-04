@@ -544,6 +544,30 @@ guard remains unchanged. No terminal padding/PTS or waveform explanation is
 claimed before the actual guarded audit. The staged files give the permitted
 token a concrete existing command rather than another missing tool.
 
+### Readiness Waits Preserve Both Route Exports' Errors
+
+Existing exact-head CI `41907994546` on `ae60e9b` finishes all20 jobs
+successfully, including the aggregate. The original watcher exits0; terminal
+API and watcher receipts are archived without restart or duplicate dispatch.
+Its host completion and GitHub completion timestamps stay separate. This
+green result does not certify the subsequent wait correction.
+
+A bounded source audit finds another existing sticky-error omission: the
+streaming coordinator's three readiness-only waits could discard a current
+error before a later successful snapshot. A first correction observing only
+the renamed export still missed a peer QUERY error after global graph error
+clearing. Both paths have genuine portable assertion REDs. The actual wait
+now projects both configured IDs from the same snapshot, rejects pre-request
+evidence, retains explicit errors before readiness, and publishes the Case
+before returning. Existing PCM/name/Removed/cleanup/deadline gates stay intact.
+
+The [wait-error receipt](2026-11-05-s4-wait-error-retention.md) keeps the two
+RED stages, superseded selected-only verification, final-source pins and
+remaining acceptance separate. Final Windows/Linux example suites pass145
+and124 respectively; current full verification is recorded in that receipt.
+The A -> B -> A mode is still only a proposal awaiting direct design approval,
+not an implemented feature or a native acceptance result.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at

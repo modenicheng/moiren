@@ -43,6 +43,12 @@ pub(crate) struct Case {
     pub failures: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct WaitPhase {
+    pub stage: &'static str,
+    pub request: u64,
+}
+
 impl Case {
     pub fn new(direction: String, requested_name: String) -> Self {
         Self {
@@ -67,6 +73,43 @@ impl Case {
 
     pub fn fail(&mut self, error: String) {
         self.failures.push(error);
+    }
+
+    pub(super) fn observe_wait(
+        &mut self,
+        phase: WaitPhase,
+        runtime: &RuntimeEvidence,
+        ready: impl FnOnce() -> bool,
+    ) -> bool {
+        if runtime.consumed_request_id < phase.request {
+            return false;
+        }
+        // A ready snapshot can still carry an error, and a later Apply/QUERY
+        // can clear it. Retain what this request actually observed first.
+        self.retain_runtime_errors(phase.stage, runtime);
+        ready()
+    }
+
+    pub(super) fn wait_ready(
+        &mut self,
+        phase: WaitPhase,
+        ids: &[String; 2],
+        mut project: impl FnMut(&str) -> anyhow::Result<RuntimeEvidence>,
+        ready: impl FnOnce() -> bool,
+    ) -> anyhow::Result<bool> {
+        let route = [project(&ids[0])?, project(&ids[1])?];
+        if route
+            .iter()
+            .any(|runtime| runtime.consumed_request_id < phase.request)
+        {
+            return Ok(false);
+        }
+        // Readiness covers the whole Pair. Keep peer QUERY failures even when
+        // Engine confirmation has already cleared the shared graph error.
+        for runtime in &route {
+            self.observe_wait(phase, runtime, || false);
+        }
+        Ok(ready())
     }
 
     fn retain_runtime_errors(&mut self, stage: &str, runtime: &RuntimeEvidence) {

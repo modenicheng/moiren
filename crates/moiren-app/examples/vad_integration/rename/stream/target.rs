@@ -1,5 +1,5 @@
 //! Bounded coordinator on one COM-owning worker. Only App owns driver control.
-use super::{Case, PcmPhase, release_owner, replacement, running, same_owner};
+use super::{Case, PcmPhase, WaitPhase, release_owner, replacement, running, same_owner};
 use crate::{
     native::{Pair, rename_stream},
     rename::{RuntimeEvidence, shared_deadline, windows_name},
@@ -92,9 +92,18 @@ fn exercise_case(
     let mut new_owner = None;
     let outcome = (|| -> anyhow::Result<()> {
         let applied = request(handle, AppRequest::ApplyGraph)?;
-        let snapshot = wait(handle, deadline, |s| {
-            Evidence::from(s).running(ids, applied)
-        })?;
+        let snapshot = wait(
+            handle,
+            ids,
+            deadline,
+            WaitPhase {
+                stage: "old_apply",
+                request: applied,
+            },
+            case,
+            emit,
+            |s| Evidence::from(s).running(ids, applied),
+        )?;
         case.before.admission = Some(observe(&snapshot, &ids[index])?);
         seed_gates(&snapshot, &mut case.before)?;
         // Read-only MMDevice/store owners return and drop before any exclusive
@@ -201,14 +210,26 @@ fn exercise_case(
             case.fail(format!("direct old Removed: {error:#}"));
         }
         emit(case);
-        wait(handle, deadline, |s| {
-            observe(s, &ids[index]).is_ok_and(|e| {
-                e.consumed_request_id >= edit
-                    && e.resource == "present"
-                    && !e.rename_pending
-                    && e.provider_name.as_deref() == Some(case.requested_name.as_str())
-            })
-        })?;
+        let requested_name = case.requested_name.clone();
+        wait(
+            handle,
+            ids,
+            deadline,
+            WaitPhase {
+                stage: "replacement_present",
+                request: edit,
+            },
+            case,
+            emit,
+            |s| {
+                observe(s, &ids[index]).is_ok_and(|e| {
+                    e.consumed_request_id >= edit
+                        && e.resource == "present"
+                        && !e.rename_pending
+                        && e.provider_name.as_deref() == Some(requested_name.as_str())
+                })
+            },
+        )?;
         // No initialized exclusive Pair exists during this readback/Apply.
         match rename_stream::observe_name(stable[index], intent, phase_deadline(deadline)) {
             Ok(name) => {
@@ -226,9 +247,18 @@ fn exercise_case(
         }
         emit(case);
         let reapplied = request(handle, AppRequest::ApplyGraph)?;
-        let snapshot = wait(handle, deadline, |s| {
-            Evidence::from(s).running(ids, reapplied)
-        })?;
+        let snapshot = wait(
+            handle,
+            ids,
+            deadline,
+            WaitPhase {
+                stage: "replacement_apply",
+                request: reapplied,
+            },
+            case,
+            emit,
+            |s| Evidence::from(s).running(ids, reapplied),
+        )?;
         let admission = observe(&snapshot, &ids[index])?;
         case.after.admission = Some(admission.clone());
         seed_gates(&snapshot, &mut case.after)?;
@@ -505,7 +535,11 @@ fn wait_removed(
 
 fn wait(
     handle: &AppHandle,
+    ids: &[String; 2],
     deadline: Instant,
+    phase: WaitPhase,
+    case: &mut Case,
+    emit: &mut impl FnMut(&Case),
     ready: impl Fn(&AppSnapshot) -> bool,
 ) -> anyhow::Result<Arc<AppSnapshot>> {
     let deadline = phase_deadline(deadline);
@@ -514,14 +548,17 @@ fn wait(
             Instant::now() < deadline,
             "streaming service phase deadline"
         );
-        if let Some(snapshot) = handle.try_snapshot()
-            && ready(&snapshot)
-        {
-            ensure!(
-                Instant::now() < deadline,
-                "streaming snapshot exceeded deadline"
-            );
-            return Ok(snapshot);
+        if let Some(snapshot) = handle.try_snapshot() {
+            let ready =
+                case.wait_ready(phase, ids, |id| observe(&snapshot, id), || ready(&snapshot))?;
+            emit(case);
+            if ready {
+                ensure!(
+                    Instant::now() < deadline,
+                    "streaming snapshot exceeded deadline"
+                );
+                return Ok(snapshot);
+            }
         }
         thread::sleep(Duration::from_millis(10));
     }

@@ -361,3 +361,5 @@ fn streaming_retirement_errors_remain_failed_after_direct_removed_recovers() {
 mod admission;
 #[path = "tests/readmission.rs"]
 mod readmission;
+#[path = "tests/wait.rs"]
+mod wait;
