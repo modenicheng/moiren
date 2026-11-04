@@ -95,3 +95,49 @@ unlock/start remains necessary for S4. The metadata reader's non-admin
 foreground requirement remains unsatisfied and is not bypassed through this
 observation task. Full S0-S5 acceptance, original waveform/gap failures and
 physical qualification remain open.
+
+## Post-CI Readiness Revalidation At 06:08
+
+After exact `8761d07` CI closes successfully, one new bounded read-only
+observation determines whether S3 now has an available interactive entry.
+Only fresh directory/task literals differ from the existing scripts and
+transport wrapper; reverse substitution recovers their source bytes.
+Both deployable scripts parse under explicit PS5.1 and PS7.6.6. This is a
+current readiness observation, not an unchanged waveform capture or UI retry.
+
+Local evidence:
+`D:\coding\moiren-evidence\20261105-s4-wait-errors\route-peers\desktop-readiness-0608`.
+Remote package: `D:\MoirenTest\20261105-desktop-readiness-0608`.
+Task: `Moiren-DesktopReadiness-20261105-0608`.
+
+The same45-second Interactive/Limited task finishes Ready/result0 with no
+remaining exact observer process. All transport result codes are zero and
+stderr logs are empty. Both deployed script pins match before and after.
+Protected OBS12648 and QQMusic15096 creation identities remain unchanged.
+That checks process identity, not uninterrupted foreign audio.
+
+The330-byte original receipt is remote/local length/hash-verified:
+
+```text
+C3F7B645F004B51E1033FC3CC6F8BFD6597C190B8230D5A1C2960F5C3127FDB9
+```
+
+It again records session1, input desktop `Default`, foreground HWND66882,
+class `Windows.UI.Core.CoreWindow` and title Windows default lock-screen
+interface. Its target timestamp is `2026-11-04T22:08:36.1808449Z`; host
+collection finishes at06:08:23. These are separate machines' wall clocks,
+not latency measurements. The result is current foreground obstruction,
+not an authoritative WTS lock flag or proof of input consumption.
+
+The compact archive contains48 payloads plus a manifest,18,617bytes, SHA-256
+`1D15AFDDA7D03214963EC41B70B244F0B186DC553E8A67B68F39B5AAB6CB6597`.
+Every archive entry is independently byte-verified. The earlier observer's
+check-then-WriteAllText limit still applies; fresh isolated paths and terminal
+task/process/hash evidence describe this actual execution, not an atomic
+create-new guarantee.
+
+No audio, app, input, foreground change, ffprobe, original-container read,
+driver or device exercise occurs. `qualified=false`. Ordinary desktop
+retained acceptance remains unavailable; metadata non-admin access and the
+stopped driver VM remain separate prerequisites. No further unchanged
+observation or capture is justified without an external readiness change.

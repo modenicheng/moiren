@@ -600,6 +600,17 @@ Later artifact and closure documents stay local; no new CI is triggered
 solely to record the previous run's success. There is no test/native retry,
 default promotion, VAD/Process winner or full S0-S5 completion claim.
 
+One post-CI [bounded desktop observation](2026-11-05-desktop-readiness.md#post-ci-readiness-revalidation-at-0608)
+then checks whether the S3 entry condition changed. A path/task-only adaptation
+of the existing observer parses on explicit PS5/PS7, runs once, and closes
+Ready/result0 without a remaining observer. Script pins and protected foreign
+process identities match. The330-byte remote/local receipt again records
+the Windows default lock-screen interface in the foreground, not a WTS flag
+or input result. The48payload-plus-manifest archive is independently verified.
+No app/audio/input/driver activity follows; the ordinary retained desktop
+acceptance remains open. No unchanged re-observation is planned absent an
+external readiness change.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
