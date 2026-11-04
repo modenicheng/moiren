@@ -50,7 +50,7 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::LoadProject(document) => match c.load_project(document) {
                 Ok(()) => {
                     self.exports_runtime.revoke();
-                    self.automatic_startup = false;
+                    self.cancel_startup_automation();
                     self.document = self
                         .document
                         .checked_add(1)
@@ -73,7 +73,7 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::ApplyMeasuredProcessBridge(request) => {
                 match self.select_measured_process(c, request) {
                     Ok(()) => {
-                        self.automatic_startup = false;
+                        self.cancel_startup_automation();
                         self.auto_apply_deadline = None;
                         self.apply_settings = Some(ApplySettings::capture(c));
                         self.apply = true;
@@ -85,7 +85,7 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::ApplyEvaluatedProcessBridge(candidate) => {
                 match self.select_evaluated_process(c, &candidate) {
                     Ok(()) => {
-                        self.automatic_startup = false;
+                        self.cancel_startup_automation();
                         self.auto_apply_deadline = None;
                         self.apply_settings = Some(ApplySettings::capture(c));
                         self.apply = true;
@@ -95,7 +95,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
-                self.automatic_startup = false;
+                self.cancel_startup_automation();
                 self.auto_apply_deadline = None;
                 let mut settings = c.audio_settings.clone();
                 let Ok(block_frames) = u32::try_from(spec.max_block_frames) else {
@@ -117,14 +117,14 @@ impl ServiceDriver for ManagedDriver {
                 }
             }
             AppRequest::ApplyGraph => {
-                self.automatic_startup = false;
+                self.cancel_startup_automation();
                 self.auto_apply_deadline = None;
                 self.apply_settings = Some(ApplySettings::capture(c));
                 self.apply = true;
             }
             AppRequest::Stop => {
                 c.measured_process = None;
-                self.automatic_startup = false;
+                self.cancel_startup_automation();
                 self.apply = false;
                 self.apply_settings = None;
                 self.auto_apply_deadline = None;
@@ -227,6 +227,7 @@ impl ServiceDriver for ManagedDriver {
             self.poll_meters(c);
             self.poll_run_limit(c);
         }
+        self.publish_resume_notice(c);
         self.poll_exports(c, pool);
         update_vad_catalog(c);
     }
@@ -394,6 +395,10 @@ impl ManagedDriver {
                                 // does not retry after an unusable catalog;
                                 // the legacy driver retries every second.
                             }
+                            if self.automatic_resume {
+                                self.automatic_resume = false;
+                                self.resume_restored(c);
+                            }
                         }
                         Err(error) => {
                             log::error!(
@@ -405,6 +410,83 @@ impl ManagedDriver {
                     }
                 }
             }
+        }
+    }
+    /// An explicit transport or project request outranks whatever startup
+    /// automation is still pending.
+    pub(super) fn cancel_startup_automation(&mut self) {
+        self.automatic_startup = false;
+        self.automatic_resume = false;
+        self.resume_notice = None;
+    }
+    /// Startup resume of a restored project. The restored graph already
+    /// carries its device bindings, so unlike automatic startup nothing is
+    /// rebound to the catalog defaults. IO nodes whose devices are offline
+    /// leave through the ordinary journaled edit, so undo restores them,
+    /// and the rest of the graph starts.
+    fn resume_restored(&mut self, c: &mut ServiceContext) {
+        let snapshot = c.graph.snapshot();
+        let mut stripped = Vec::new();
+        for io in startup::strippable_offline_io(&snapshot, &c.catalog) {
+            match c.graph.edit(GraphEdit::RemoveNode(io.node)) {
+                Ok(_) => stripped.push(io),
+                Err(error) => log::warn!(
+                    target: "moiren::audio::service",
+                    "resume kept offline node {:?} ({}): {error}",
+                    io.node,
+                    io.label
+                ),
+            }
+        }
+        if !stripped.is_empty() {
+            let names = stripped
+                .iter()
+                .map(|io| {
+                    let role = match io.kind {
+                        moiren_core::graph::NodeKind::Source => "input",
+                        _ => "output",
+                    };
+                    format!("'{}' ({role})", io.label)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            log::warn!(
+                target: "moiren::audio::service",
+                "resuming without {} offline device node(s): {names}",
+                stripped.len()
+            );
+            let (nodes, devices) = if stripped.len() == 1 {
+                ("node", "its device is")
+            } else {
+                ("nodes", "their devices are")
+            };
+            self.resume_notice = Some(super::GraphFault {
+                subject: super::GraphSubject::Graph,
+                cause: format!(
+                    "Resumed without {} {nodes} because {devices} offline: {names}",
+                    stripped.len()
+                ),
+                hint: Some(
+                    "Reconnect the device, then undo (Ctrl+Z) to restore the removed node.".into(),
+                ),
+            });
+        }
+        self.apply_settings = Some(ApplySettings::capture(c));
+        self.apply = true;
+    }
+    /// The stripped-device notice waits until the resumed session has fully
+    /// activated: activation clears the fault group, so a notice recorded
+    /// earlier would vanish before anyone saw it.
+    fn publish_resume_notice(&mut self, c: &mut ServiceContext) {
+        if self.resume_notice.is_none() || self.owner.is_none() {
+            return;
+        }
+        let graph = c.graph.snapshot();
+        if graph.pending_revision.is_none()
+            && graph.active_revision == Some(graph.candidate_revision)
+            && let Some(notice) = self.resume_notice.take()
+        {
+            c.graph.record_fault(notice);
         }
     }
     fn poll_exports(&mut self, c: &mut ServiceContext, pool: &mut JobPool) {

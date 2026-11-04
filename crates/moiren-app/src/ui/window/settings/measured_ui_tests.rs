@@ -24,6 +24,87 @@ use std::{
 
 const REFUSAL: &str = "fixture measured Process apply refused: actual consumer demand changed";
 
+use super::cache_tests::{assert_frozen, cached_click, cached_frame, feedback, rebuilds};
+
+#[gpui_kit::test]
+fn cache_measured_deadline_repaints_expiry_with_the_snapshot_frozen(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    let (view, cx) = fixture.shell(cx);
+    select_target(cx);
+    let snapshot = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.clone());
+    cached_click(cx, "measured-process-apply");
+    view.read_with(cx, |shell, _| assert!(shell.settings.measured.busy()));
+    cx.background_executor
+        .advance_clock(Duration::from_secs(31));
+    cx.run_until_parked();
+    cached_frame(cx);
+    assert!(feedback(cx, "measured-process-feedback").contains("30 seconds"));
+    assert_frozen(&view, cx, &snapshot);
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn cache_measured_exact_invalid_text_repaints_apply_feedback_without_a_publish(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    let (view, cx) = fixture.shell(cx);
+    cx.update(|window, cx| window.click("measured-exact-open", cx));
+    let snapshot = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.clone());
+    cached_click(cx, "measured-exact-target");
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input("invalid");
+    cached_frame(cx);
+    assert!(
+        feedback(cx, "measured-process-feedback").contains("integers"),
+        "invalid text must invalidate the cached eligibility and feedback"
+    );
+    assert_frozen(&view, cx, &snapshot);
+    assert!(fixture.requests().is_empty());
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn cache_retained_window_completion_and_admission_repaint_without_a_publish(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    fixture.control.lock().unwrap().retain_prefix = true;
+    let (view, cx) = fixture.shell(cx);
+    wait_snapshot(&view, cx, |snapshot| snapshot.last_cleanup.is_some());
+    select_target(cx);
+    cx.update(|window, cx| {
+        window.click("process-window-open", cx);
+        window.render_frame(cx);
+    });
+    reveal(cx, "process-window-evaluate");
+    let snapshot = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.clone());
+    cached_click(cx, "process-window-evaluate");
+    wait_until(Duration::from_secs(3), || {
+        cx.run_until_parked();
+        cached_frame(cx);
+        feedback(cx, "process-window-feedback").contains("No violation in this window")
+    });
+    cached_frame(cx);
+    assert!(feedback(cx, "process-window-feedback").contains("No violation in this window"));
+    assert!(
+        !feedback(cx, "process-window-admission").contains("No evaluated native candidate"),
+        "completed admission must replace the pre-evaluation feedback"
+    );
+    let before = rebuilds(&view, cx);
+    for _ in 0..3 {
+        view.update(cx, |shell, cx| {
+            shell.finish_measured_process(cx);
+            cx.notify();
+        });
+        cached_frame(cx);
+    }
+    assert_eq!(rebuilds(&view, cx), before);
+    assert_frozen(&view, cx, &snapshot);
+    assert!(fixture.requests().is_empty());
+    fixture.finish();
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Evidence {
     Current,

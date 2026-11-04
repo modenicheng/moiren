@@ -8,7 +8,7 @@ use std::{
 };
 
 use moiren_core::{
-    graph::{EdgeId, LogicalGraph, NodeId},
+    graph::{EdgeId, LogicalGraph, NodeId, NodeKind},
     protocol::{ParamValue, ProcessorId},
 };
 
@@ -19,7 +19,9 @@ use super::{
 };
 use crate::{
     compiler::{self, CompileConfig, CompiledBindings, CompiledUpdate, NodeBindings},
-    processor::{Compressor, Delay, Eq, Gain, Gate, Limiter, Pan, builtin::ChannelStrip},
+    processor::{
+        Compressor, Delay, Eq, Gain, Gate, Limiter, Pan, PluginProcessor, builtin::ChannelStrip,
+    },
     runtime::{PlanControlPort, PlanSnapshot},
     sample::ProcessingSample,
     spectrum::SignalSpectrumAnalyzer,
@@ -313,9 +315,9 @@ fn bind_host_processors<S: ProcessingSample>(
                 .map(|reader| {
                     readers.recorders.insert(node, Some(reader));
                 }),
-            NodeConfig::Meter(settings) => bindings.bind_meter(node, *settings).map(|reader| {
-                readers.meters.insert(node, Some(reader));
-            }),
+            // Meter nodes pass audio through unmodified; their level signal is
+            // published by `prepare_levels` at the configured window cadence.
+            NodeConfig::Meter(_) => bindings.bind_unmanaged(node, NodeKind::Meter),
             NodeConfig::SpectrumAnalyzer(settings) => {
                 let channels = job
                     .project
@@ -332,6 +334,23 @@ fn bind_host_processors<S: ProcessingSample>(
                     .and_then(|analyzer| bindings.bind_spectrum(node, analyzer))
             }
             NodeConfig::Rack(settings) => bindings.bind_rack(node, settings.clone()),
+            NodeConfig::Plugin(settings) => {
+                // Instantiation runs control-side here; the activated
+                // instance is adapted straight onto the plugin binding.
+                let engine = &job.project.processing.engine;
+                match PluginProcessor::<S>::new(
+                    settings,
+                    engine.processing_sr,
+                    engine.max_block_frames,
+                ) {
+                    Ok(processor) => bindings.bind_plugin(node, processor),
+                    Err(error) => {
+                        return Err(Diagnostic::Compile(format!(
+                            "plugin instantiation failed: {error}"
+                        )));
+                    }
+                }
+            }
             _ => unreachable!(),
         };
         result.map_err(|error| Diagnostic::Compile(error.to_string()))?;
@@ -435,9 +454,6 @@ fn compile_update_ready<S: ProcessingSample>(
     // Only a successfully validated observer transfer may keep its original
     // reader. Placeholder endpoints are reclaimed here, never on RT.
     for &(node, _) in &job.observer_reuse {
-        if let Some(reader) = readers.meters.get_mut(&node) {
-            *reader = None;
-        }
         if let Some(reader) = readers.recorders.get_mut(&node) {
             *reader = None;
         }

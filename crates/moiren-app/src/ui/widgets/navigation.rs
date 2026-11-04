@@ -59,6 +59,8 @@ impl WindowControlButton {
         self.on_click = Some(Box::new(handler));
         self
     }
+    // Preview-only state injection; the component gallery is the only user.
+    #[cfg(feature = "component-gallery")]
     pub(crate) fn sample(mut self, state: SampleState) -> Self {
         self.sample = Some(state);
         self
@@ -143,6 +145,7 @@ impl WorkspaceTab {
         self.on_click = Some(Box::new(handler));
         self
     }
+    #[cfg(feature = "component-gallery")]
     pub(crate) fn sample(mut self, state: SampleState) -> Self {
         self.enabled &= !matches!(state, SampleState::Disabled);
         self.sample = Some(state);

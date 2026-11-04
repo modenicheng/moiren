@@ -116,6 +116,46 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn project_load_completion_cancels_canvas_gestures(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx, runtime) = test_shell(cx);
+        let handle = runtime.handle();
+        let snapshot = initial_projection(&handle);
+        let document = ProjectDocument::from_graph("Loaded", &snapshot.graph).unwrap();
+        view.update(cx, |shell, cx| {
+            // A pan grab in flight when the load lands: the rubber-band
+            // trigger is a drag running while the async load completes and
+            // `apply_project_presentation` switches pages.
+            shell.pan_grab = Some((100., 100.));
+            shell.sync_drag_demand();
+            assert!(shell.drag_active());
+            assert!(
+                shell
+                    .stage_project(document, "Loaded.moiren.json".into(), cx)
+                    .is_ok()
+            );
+        });
+        wait_until(Duration::from_secs(2), || {
+            view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                shell.finish_project_load(cx);
+                shell.pending_project.is_none()
+            })
+        });
+        view.update(cx, |shell, cx| {
+            assert_eq!(shell.project_name, "Loaded", "the load must have applied");
+            assert!(
+                shell.pan_grab.is_none() && !shell.drag_active(),
+                "the project apply path must cancel the in-flight gesture"
+            );
+            assert!(
+                !shell.frames_wanted(cx),
+                "the DRAG demand must not outlive the load"
+            );
+        });
+        finish_service(runtime);
+    }
+
+    #[gpui_kit::test]
     fn rejected_project_enqueue_preserves_current_name_and_layout(
         cx: &mut gpui_kit::TestAppContext,
     ) {
@@ -185,9 +225,117 @@ mod tests {
         });
         finish_service(runtime);
     }
+
+    #[gpui_kit::test]
+    fn graph_edits_settle_into_the_autosave_file(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx, runtime) = test_shell(cx);
+        let autosave_file = std::env::temp_dir().join(format!(
+            "moiren-autosave-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        view.update(cx, |shell, _| {
+            shell.autosave_path = Some(autosave_file.clone());
+        });
+        let renamed = view.update(cx, |shell, cx| {
+            let id = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    crate::service::GraphEdit::SetLabel {
+                        node: id,
+                        label: "Renamed by edit".into(),
+                    },
+                ));
+            });
+            id
+        });
+        wait_until(Duration::from_secs(2), || {
+            view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                shell
+                    .state
+                    .read(cx)
+                    .snapshot
+                    .graph
+                    .node(renamed)
+                    .is_some_and(|node| node.label == "Renamed by edit")
+            })
+        });
+        view.update(cx, |shell, cx| {
+            shell.poll_autosave(cx);
+            assert!(
+                shell.autosave_timer.is_some(),
+                "a settled graph change must arm the debounce"
+            );
+            // The test executor does not run the debounce timer, so run its
+            // settle step directly; the poll loops drive the timer in
+            // production.
+            shell.autosave_timer = None;
+            shell.autosave_deadline = None;
+            shell.autosave_write_now(cx);
+        });
+        // The test executor runs spawned work only when driven.
+        cx.run_until_parked();
+        let document = crate::project::load_autosave_at(&autosave_file)
+            .expect("the debounce settle step wrote the autosave");
+        let graph = document.graph.expect("the autosave carries the graph");
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.label == "Renamed by edit")
+        );
+        let _ = std::fs::remove_file(&autosave_file);
+        finish_service(runtime);
+    }
+
+    #[gpui_kit::test]
+    fn quitting_flushes_a_dirty_document_into_the_autosave_file(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx, runtime) = test_shell(cx);
+        let autosave_file = std::env::temp_dir().join(format!(
+            "moiren-autosave-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        view.update(cx, |shell, _| {
+            shell.autosave_path = Some(autosave_file.clone());
+        });
+        let mut flush = None;
+        view.update(cx, |shell, cx| {
+            // A presentation-only change (camera pan) still dirties the
+            // document, so the quit path must flush it.
+            shell.camera.pan_x = 128.0;
+            flush = shell.autosave_flush(cx);
+            assert!(flush.is_some(), "a dirty document must flush on quit");
+        });
+        cx.run_until_parked();
+        let document = crate::project::load_autosave_at(&autosave_file)
+            .expect("the quit flush wrote the autosave");
+        assert_eq!(document.layout.camera_x, 128.0);
+        drop(flush);
+        let _ = std::fs::remove_file(&autosave_file);
+        finish_service(runtime);
+    }
 }
 
 impl StudioShell {
+    /// Presentation page as its persisted form, shared by the document
+    /// builder and the autosave fingerprint.
+    pub(super) fn workspace_document(page: Page) -> WorkspaceDocument {
+        match page {
+            Page::Graph => WorkspaceDocument::Graph,
+            Page::Mixer => WorkspaceDocument::Mixer,
+            Page::Matrix => WorkspaceDocument::Matrix,
+            Page::Devices => WorkspaceDocument::Devices,
+        }
+    }
+
     pub(super) fn project_document(
         &self,
         cx: &App,
@@ -215,12 +363,7 @@ impl StudioShell {
                     .map(|index| index as u64)
             })
             .collect();
-        document.layout.workspace = match self.presentation.page {
-            Page::Graph => WorkspaceDocument::Graph,
-            Page::Mixer => WorkspaceDocument::Mixer,
-            Page::Matrix => WorkspaceDocument::Matrix,
-            Page::Devices => WorkspaceDocument::Devices,
-        };
+        document.layout.workspace = Self::workspace_document(self.presentation.page);
         for (index, node) in state.snapshot.graph.graph.nodes().iter().enumerate() {
             if let Some(&(x, y)) = self.node_positions.get(&node.id()) {
                 document.layout.nodes.push(crate::project::NodeLayout {
@@ -290,6 +433,7 @@ impl StudioShell {
                     Ok(()) => {
                         s.project_path = Some(path);
                         s.project_message = Some(t!("Project saved").into());
+                        s.remember_project_file(cx);
                     }
                     Err(error) => s.project_message = Some(error.to_string()),
                 }
@@ -394,11 +538,25 @@ impl StudioShell {
                 Ok(()) => {
                     self.project_path = Some(path);
                     self.project_message = Some(t!("Project opened").into());
+                    self.remember_project_file(cx);
                 }
                 Err(error) => self.project_message = Some(error.to_string()),
             }
         }
         cx.notify();
+    }
+
+    /// The project file the working state came from becomes the restore
+    /// target: preferences remember it (for `restore_last_project`), and the
+    /// autosave fingerprint restarts because the state is already on disk.
+    fn remember_project_file(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.project_path.clone()
+            && self.preferences.last_project_path.as_ref() != Some(&path)
+        {
+            self.preferences.last_project_path = Some(path);
+            self.save_preferences_quiet(cx);
+        }
+        self.autosave_stamp = autosave::AutosaveStamp::capture(self, cx);
     }
 
     pub(super) fn apply_project_presentation(

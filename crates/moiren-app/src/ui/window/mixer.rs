@@ -1,14 +1,12 @@
 use super::*;
-use crate::service::{GraphNodeState, MixerState};
+use crate::service::GraphNodeState;
 use crate::ui::presentation::db_text;
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 use rust_i18n::t;
 
-pub(super) mod meter_frame;
 mod model;
-#[cfg(feature = "gpui-test")]
-pub(super) mod performance;
+pub(super) mod page;
 mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
@@ -18,21 +16,24 @@ use component::menu::ContextMenuExt;
 // coalesced sync/commit entry points are visible across the window.
 pub(super) use model::{
     EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text,
-    commit_active_editor, commit_closure, fader_rows, gain_db_text, start_value_edit, sync_faders,
-    sync_slider_range,
+    commit_active_editor, commit_closure, fader_rows, gain_db_text, mixer_edit,
+    reset_clip_on_click, start_value_edit, sync_faders, sync_slider_range,
 };
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
 
 impl StudioShell {
-    pub(super) fn update_node_meters(&mut self, visible: bool, cx: &App) -> bool {
-        let mut nodes = if visible {
-            self.node_meter_points.borrow().clone()
-        } else {
-            Default::default()
-        };
-        if visible
+    pub(super) fn update_node_meters(&mut self, visible: bool, cx: &mut Context<Self>) -> bool {
+        // The node inspector is the only inspector that renders meter
+        // tracks, and it shows the selected node's own meters (sidebar's
+        // `page_inspector`). The Matrix route view and the Devices page
+        // mount no meter surface at all, so a selection carried across a
+        // page switch must not keep the node's level topic demanded.
+        // `visible` alone proves a Graph/Mixer frame gate or a graph
+        // gesture, not that the current page's inspector paints the node.
+        let inspector_selected = if visible
             && self.inspector_open
+            && matches!(self.presentation.page, Page::Graph | Page::Mixer)
             && let Some(selected) = self.selected_node
             && self
                 .state
@@ -43,80 +44,48 @@ impl StudioShell {
                 .iter()
                 .any(|node| node.id == selected)
         {
-            nodes.insert(selected);
-        }
-        self.node_meters
-            .update(&self.state.read(cx).snapshot, &nodes)
+            Some(selected)
+        } else {
+            None
+        };
+        let preferences = self.preferences.meters;
+        // Only the graph card paints a spectrum body: a Mixer strip or an
+        // inspector selection must not keep an analyzer's FFT demanded.
+        let spectra_visible = visible && self.presentation.page == Page::Graph;
+        self.state.update(cx, |state, _| {
+            state.node_meters.set_preferences(preferences);
+            // Borrow the registered set straight through: the pump runs at
+            // display and poll cadence, and cloning it here would allocate
+            // on every one of those ticks (HC-14). The selected node rides
+            // the same iterator instead of being inserted into the
+            // registration set, which belongs to the canvases alone.
+            if visible {
+                let points = self.node_meter_points.borrow();
+                let meters = state.node_meters.update(
+                    &state.snapshot,
+                    points.iter().copied().chain(inspector_selected),
+                );
+                let spectra = if spectra_visible {
+                    state
+                        .node_spectra
+                        .update(&state.snapshot, points.iter().copied())
+                } else {
+                    state.node_spectra.update(&state.snapshot, [])
+                };
+                meters || spectra
+            } else {
+                // Nothing is registered and the inspector demand (above)
+                // cannot exist without visibility: release everything.
+                let meters = state.node_meters.update(&state.snapshot, []);
+                let spectra = state.node_spectra.update(&state.snapshot, []);
+                meters || spectra
+            }
+        })
     }
 }
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
-
-pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    let state = shell.state.read(cx);
-    let graph = &state.snapshot.graph;
-    let mut channels = div()
-        .id("mixer-strips")
-        .flex()
-        .flex_1()
-        .min_w_0()
-        .min_h_0()
-        .track_scroll(&shell.mixer_scroll)
-        .overflow_x_scroll()
-        .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
-    let mut dock = div().flex().flex_none().min_w_full().h_full().justify_end();
-    let dock_container = div()
-        .id("mixer-dock")
-        .flex()
-        .flex_none()
-        .w(px(MixerPresentation::DOCK_WIDTH))
-        .max_w(relative(0.55))
-        .min_h_0()
-        .border_l_1()
-        .border_color(theme::BORDER_STRONG)
-        .overflow_x_scroll()
-        .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
-    for id in &shell.mixer.order {
-        let Ok(node) = graph.graph.get_node(*id) else {
-            continue;
-        };
-        let entry = graph.node(*id).expect("service metadata");
-        let strip = strip(shell, entry, node.kind(), node.channels(), cx);
-        if matches!(node.kind(), NodeKind::Bus | NodeKind::Sink) {
-            dock = dock.child(strip);
-        } else {
-            channels = channels.child(strip);
-        }
-    }
-    div()
-        .id("mixer-page")
-        .size_full()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h_0()
-        .overflow_hidden()
-        .child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .child(channels.gpui_test_observe())
-                .child(dock_container.child(dock).gpui_test_observe()),
-        )
-        .gpui_test_observe()
-        .into_any_element()
-}
 
 pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
     match kind {
@@ -136,7 +105,7 @@ fn strip(
 ) -> impl IntoElement {
     #[cfg(feature = "gpui-test")]
     {
-        shell.mixer.trace.borrow_mut().strip_renders += 1;
+        shell.trace.borrow_mut().strip_renders += 1;
     }
     let id = entry.id;
     let selected = shell.selected_node == Some(id);
@@ -159,7 +128,7 @@ fn strip(
                 .font_weight(FontWeight::SEMIBOLD)
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(crate::ui::state::display_label(
+                .child(crate::ui::presentation::display_label(
                     &shell.state.read(cx).snapshot,
                     entry,
                     kind,
@@ -246,7 +215,7 @@ fn strip(
                 .child(inputs(shell, entry, cx))
                 .child(sends(shell, id, cx))
                 .child(strip_controls::balance(shell, entry, channels, cx))
-                .child(node_controls(entry, channels, cx))
+                .child(node_controls(shell, entry, channels, cx))
                 .child({
                     let editing = shell.mixer.editing_value == Some(id);
                     editable_value(
@@ -321,21 +290,6 @@ fn strip(
 
 pub(super) use strip_controls::node_controls;
 
-fn mixer_edit(
-    this: Entity<StudioShell>,
-    id: NodeId,
-    change: impl Fn(&mut MixerState) + 'static,
-) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
-    move |_, _, cx| {
-        this.update(cx, |shell, cx| {
-            shell
-                .state
-                .update(cx, |state, _| state.edit_mixer(id, &change));
-            cx.notify();
-        })
-    }
-}
-
 fn meter(
     shell: &StudioShell,
     entry: &GraphNodeState,
@@ -345,20 +299,9 @@ fn meter(
 ) -> impl IntoElement {
     let state = shell.state.read(cx);
     let input = kind == NodeKind::Source;
-    let eligible = matches!(kind, NodeKind::Source | NodeKind::Sink)
-        && shell
-            .observation_nodes
-            .is_some_and(|(generation, source, sink)| {
-                generation == state.snapshot.generation
-                    && entry.id == if input { source } else { sink }
-            })
-        && state.snapshot.desired.as_ref().is_some_and(|active| {
-            if input {
-                entry.source.as_ref() == Some(&active.source)
-            } else {
-                entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
-            }
-        });
+    // The key projects this same predicate (`page::meter_probe_eligible`);
+    // compute it through the shared helper so the two cannot drift.
+    let eligible = page::meter_probe_eligible(shell, &state.snapshot, entry, kind);
     let managed = state
         .snapshot
         .signal_topics
@@ -369,43 +312,48 @@ fn meter(
         .flex_none()
         .id(SharedString::from(format!("meter-reset-{:?}", entry.id)))
         .on_mouse_down(MouseButton::Left, {
-            let this = cx.entity();
+            let state = shell.state.clone();
             let id = entry.id;
-            move |_, _, cx| {
-                this.update(cx, |shell, cx| {
-                    shell.node_meters.reset_clip(id);
-                    cx.notify();
-                })
-            }
+            reset_clip_on_click(state, cx.entity(), id)
         })
         .relative()
-        .when(managed, |view| {
+        // The managed-visibility canvas is mounted unconditionally and
+        // registers only when its condition and the content mask hold: a
+        // rebuild of the strip must refresh (or clear) exactly its own
+        // registration, because per-strip panels no longer run a
+        // whole-table reset over their siblings.
+        .child({
             let points = shell.node_meter_points.clone();
             let id = entry.id;
-            view.child(
-                canvas(
-                    move |bounds, window, _| {
-                        let intersection = bounds.intersect(&window.content_mask().bounds);
-                        if intersection.size.width > px(0.) && intersection.size.height > px(0.) {
-                            points.borrow_mut().insert(id);
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
+            canvas(
+                move |bounds, window, _| {
+                    let intersection = bounds.intersect(&window.content_mask().bounds);
+                    if managed
+                        && intersection.size.width > px(0.)
+                        && intersection.size.height > px(0.)
+                    {
+                        points.borrow_mut().insert(id);
+                    }
+                },
+                |_, _, _, _| {},
             )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
         })
         .when(eligible, |view| {
+            // The eligible strip owns the shared probe flag while mounted;
+            // an eligibility or identity transition resets the flags in
+            // `refresh_observation_nodes` and the new owners re-register on
+            // their rebuild in the same layout pass.
             view.child(meter_probe(shell.meter_points.clone(), input))
         })
-        .child(meter_frame::track(shell, entry.id, channels, eligible.then_some(input)))
+        .child(page::track(shell, entry.id, channels, eligible.then_some(input)))
         .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
             .absolute().bottom(px(-28.)).left(px(-10.)).w(px(48.)).h(px(12.)).line_height(px(12.))
             .text_center().font_family(theme::FONT_MONO).text_size(px(8.)).text_color(theme::TEXT_MUTED)
-            .child(meter_frame::readout(shell, entry.id))
+            .child(page::readout(shell, entry.id))
             .gpui_test_observe())
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
             t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.").into_owned()

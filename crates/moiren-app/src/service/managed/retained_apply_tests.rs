@@ -68,7 +68,9 @@ fn retained_apply_reopens_stopped_host_in_both_precisions_and_preserves_original
             stopped_generation.0,
             original.session_generation.0.checked_add(1).unwrap()
         );
+        r.driver.automatic_resume = true;
         r.request(AppRequest::ApplyEvaluatedProcessBridge(candidate));
+        assert!(!r.driver.automatic_resume);
         let selected = r.c.measured_process.as_ref().unwrap().summary().clone();
         assert_eq!(selected.request, original);
         // Retained closed evidence keeps its predecessor identity. Only the

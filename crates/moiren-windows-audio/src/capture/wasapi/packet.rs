@@ -10,6 +10,10 @@ use crate::{
 };
 use windows::Win32::Media::Audio::IAudioCaptureClient;
 
+#[cfg(test)]
+#[path = "packet_tests.rs"]
+mod tests;
+
 pub(super) const PROCESS_PACKET_SAFETY_BOUND_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy)]

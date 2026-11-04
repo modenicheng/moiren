@@ -21,6 +21,9 @@ pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{CapturePreparationAbortFailure, CaptureSession, PreparedCapture};
 
+#[cfg(all(windows, test))]
+mod report_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CaptureError {
     #[cfg(windows)]
@@ -30,10 +33,6 @@ pub enum CaptureError {
     InvalidEndpoint,
     #[error("capture duration must be between 1 and 600 seconds")]
     InvalidDuration,
-    #[error(
-        "invalid or unsupported capture mix descriptor; Shared compatibility requires a valid PCM/float format"
-    )]
-    UnsupportedFormat,
     #[error("invalid native capture packet pointer or frame count")]
     InvalidPacket,
     #[error("native capture buffer exceeds the 8 MiB preparation budget")]
@@ -70,8 +69,6 @@ pub enum CaptureError {
     #[error("PCM evidence preparation or copy failed: {0}")]
     PcmEvidence(#[from] PcmEvidenceError),
     #[error(transparent)]
-    SharedPeriod(#[from] crate::format::SharedPeriodError),
-    #[error(transparent)]
     LatencyBudget(#[from] crate::latency::LatencyBudgetError),
     #[error("capture startup channel closed before preparation completed")]
     StartupLost,
@@ -92,33 +89,13 @@ pub enum CaptureError {
     #[error("process audio activation exceeded the 10 second deadline")]
     ActivationTimeout,
 }
-#[derive(Debug, Clone)]
-pub struct CaptureOptions {
-    /// Optional bounded PCM evidence retained by the capture owner. The
-    /// backing storage is allocated before Start and only receives packet
-    /// copies while the WASAPI lease is valid.
-    pub artifact: Option<PcmArtifactConfig>,
-    pub latency_telemetry: crate::latency::TelemetryMode,
-    pub shared_period: crate::format::SharedPeriodPolicy,
-    pub endpoint_id: String,
-    pub duration: SessionDuration,
-}
-impl CaptureOptions {
-    pub fn validate(&self) -> Result<(), CaptureError> {
-        if self.endpoint_id.trim().is_empty() || self.endpoint_id.contains('\0') {
-            return Err(CaptureError::InvalidEndpoint);
-        }
-        validate_duration(self.duration)?;
-        self.shared_period.validate()?;
-        Ok(())
-    }
-}
 pub(crate) fn validate_duration(duration: SessionDuration) -> Result<(), CaptureError> {
     if duration.validate().is_err() {
         return Err(CaptureError::InvalidDuration);
     }
     Ok(())
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSource {

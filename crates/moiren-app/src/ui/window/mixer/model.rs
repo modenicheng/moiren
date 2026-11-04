@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::{GraphEdit, GraphSnapshot};
+use crate::service::{GraphEdit, GraphSnapshot, MixerState};
 use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior};
 use rust_i18n::t;
 use std::cell::Cell;
@@ -7,11 +7,23 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-#[derive(Default)]
 pub(in crate::ui::window) struct MixerPresentation {
     pub order: Vec<NodeId>,
     pub faders: BTreeMap<NodeId, SliderSlot>,
     pub sends: BTreeMap<EdgeId, SliderSlot>,
+    /// One cached panel host per strip (design 17's per-item split): a
+    /// publish during a fader drag rebuilds only the strip whose content
+    /// changed. Created and retained by [`StudioShell::sync_mixer_controls`].
+    pub strips: BTreeMap<NodeId, Entity<super::page::StripPanelHost>>,
+    /// The inspector's channel-strip fader row gets its own slider slot per
+    /// node: the kit's `SliderState` stores the pointer-mapping bounds of
+    /// whichever view registered last, so the strip's vertical fader and the
+    /// inspector's horizontal row cannot share one state — the row's
+    /// horizontal bounds would own the strip's vertical drag and slam it to
+    /// a rail (the selected-strip -inf lock). Two slots, one snapshot: both
+    /// dispatch the same edits and the published graph reconciles them,
+    /// exactly like the tray flyout's own slot set.
+    pub inspector_faders: BTreeMap<NodeId, SliderSlot>,
     pub send_inputs: BTreeMap<EdgeId, Entity<component::input::InputState>>,
     pub editing_send: Option<EdgeId>,
     /// Click-to-type editors for the fader dB readouts; the strip readout
@@ -32,18 +44,72 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub editing_node_pan: Option<NodeId>,
     pub inputs_collapsed: bool,
     pub sends_collapsed: bool,
+    /// The dock pane's current width, dragged on the divider from
+    /// [`Self::DOCK_WIDTH`]. Session presentation state, like the collapse
+    /// flags above: it is not persisted.
+    pub dock_width: f32,
     synced_revision: Option<u64>,
-    #[cfg(feature = "gpui-test")]
-    pub trace: std::cell::RefCell<super::performance::MeterTrace>,
+}
+
+impl Default for MixerPresentation {
+    fn default() -> Self {
+        Self {
+            dock_width: Self::DOCK_WIDTH,
+            ..Self::zeroed()
+        }
+    }
+}
+
+impl MixerPresentation {
+    /// The derived-zero baseline `Default` overrides only `dock_width` on:
+    /// every field spelled once so the manual default stays obviously in
+    /// sync with the struct.
+    fn zeroed() -> Self {
+        Self {
+            order: Vec::new(),
+            faders: BTreeMap::new(),
+            sends: BTreeMap::new(),
+            strips: BTreeMap::new(),
+            inspector_faders: BTreeMap::new(),
+            send_inputs: BTreeMap::new(),
+            editing_send: None,
+            value_inputs: BTreeMap::new(),
+            editing_value: None,
+            balance_inputs: BTreeMap::new(),
+            editing_balance: None,
+            node_gain_inputs: BTreeMap::new(),
+            editing_node_gain: None,
+            node_pan_inputs: BTreeMap::new(),
+            editing_node_pan: None,
+            inputs_collapsed: false,
+            sends_collapsed: false,
+            dock_width: 0.,
+            synced_revision: None,
+        }
+    }
 }
 
 /// Per-slider bookkeeping kept next to its entity: the dragging flag lets the
-/// snapshot write-back in [`sync_slider_range`] stand down while a drag owns
-/// the thumb, and the behavior carries the shared wheel/double-click actions.
+/// snapshot write-back in [`sync_slider_range`] stand down while a drag owns the
+/// thumb, and the behavior carries the shared wheel/double-click actions.
 pub(in crate::ui::window) struct SliderSlot {
     pub state: Entity<base::slider::SliderState>,
     pub dragging: Rc<Cell<bool>>,
+    cancelled: Rc<Cell<bool>>,
     pub behavior: SliderBehavior,
+}
+
+impl SliderSlot {
+    /// Cancels an in-flight pointer drag: the write-back stand-down lifts
+    /// immediately and the gesture's tail — the coalesced pending value and
+    /// the release's stale pointer value — is dropped instead of landing as
+    /// fresh edits. Used when a journal step (undo) lands under a live drag:
+    /// without this, the suppressed write-back hides the undone value and
+    /// the release then overwrites it (audit SD-7).
+    pub(in crate::ui::window) fn cancel_drag(&self) {
+        self.dragging.set(false);
+        self.cancelled.set(true);
+    }
 }
 
 /// Drag Changes reach the service at most once per interval; the release
@@ -87,9 +153,33 @@ impl DispatchGate {
 }
 
 impl MixerPresentation {
-    /// Fixed strip and dock widths; strips are not user-resizable.
+    /// Fixed strip width; strips are not user-resizable.
     pub(in crate::ui::window) const STRIP_WIDTH: f32 = 160.;
+    /// The dock pane's default width; the divider drag resizes it live down
+    /// to one strip and up to [`Self::DOCK_MAX_FRACTION`] of the strip row.
     pub(in crate::ui::window) const DOCK_WIDTH: f32 = 360.;
+    /// The dock pane may never exceed this fraction of the strip row. The
+    /// pane's `max_w` enforces it in layout; the divider drag clamps to the
+    /// same fraction so the drawn border tracks the cursor instead of
+    /// lagging behind the cap.
+    pub(in crate::ui::window) const DOCK_MAX_FRACTION: f32 = 0.55;
+
+    /// Every click-to-type text editor family in one walk: the send-gain
+    /// editors plus the four value families (fader readout, balance label,
+    /// Gain "Requested", Pan position). [`StudioShell::typing_focus`] and
+    /// the inspector panel's nested observers both consume this single list,
+    /// so a newly added family cannot be wired into one enumeration site and
+    /// forgotten in the other.
+    pub(in crate::ui::window) fn text_input_entities(
+        &self,
+    ) -> impl Iterator<Item = &Entity<component::input::InputState>> + '_ {
+        self.send_inputs
+            .values()
+            .chain(self.value_inputs.values())
+            .chain(self.balance_inputs.values())
+            .chain(self.node_gain_inputs.values())
+            .chain(self.node_pan_inputs.values())
+    }
 }
 
 /// dB readout for send gains: −∞ collapses to −60 dB at the slider's quiet
@@ -333,6 +423,17 @@ impl EditableValueFamily {
             ),
         }
     }
+
+    /// The family's Enter/blur commit, so one match drives both the family's
+    /// input subscription and [`commit_active_editor`].
+    fn commit(self) -> fn(&mut StudioShell, &NodeId, &str, &mut App) {
+        match self {
+            Self::Fader => commit_mixer_gain,
+            Self::Balance => commit_mixer_balance,
+            Self::NodeGain => commit_node_gain,
+            Self::NodePan => commit_node_pan,
+        }
+    }
 }
 
 /// Click handler that opens one editable numeric readout: enters the family's
@@ -361,6 +462,38 @@ pub(in crate::ui::window) fn start_value_edit(
             let handle = input.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
+    }
+}
+
+/// One strip edit (mute/solo/mode/dim) shared by the main mixer and the tray
+/// flyout: the edit applies through the live parameter path, then the hosting
+/// view is notified so its page repaints. `owner` is whichever view hosts the
+/// strip — each one notifies itself, so no surface changes whose render
+/// invalidation wakes.
+pub(in crate::ui::window) fn mixer_edit<O: 'static>(
+    state: Entity<UiState>,
+    owner: Entity<O>,
+    id: NodeId,
+    change: impl Fn(&mut MixerState) + 'static,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
+    move |_, _, cx| {
+        state.update(cx, |state, _| state.edit_mixer(id, &change));
+        owner.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// Clip-latch reset on a meter-surface press, shared by every meter surface
+/// (main strip, tray flyout, inspector track): one handler so the click
+/// semantics cannot drift between surfaces. The hosting view — not `state` —
+/// is notified, because the hot layer painting the meters belongs to it.
+pub(in crate::ui::window) fn reset_clip_on_click<O: 'static>(
+    state: Entity<UiState>,
+    owner: Entity<O>,
+    id: NodeId,
+) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) {
+    move |_, _, cx| {
+        state.update(cx, |state, _| state.node_meters.reset_clip(id));
+        owner.update(cx, |_, cx| cx.notify());
     }
 }
 
@@ -399,7 +532,11 @@ fn sync_value_inputs<K: Ord + Clone + 'static>(
             .detach();
             input
         });
-        if editing != Some(&id) {
+        // InputState::set_value notifies unconditionally, even for
+        // identical text — writing every publish would wake every panel
+        // that observes its editors. Skip the write when the text is
+        // already current.
+        if editing != Some(&id) && input.read(cx).value() != text {
             input.update(cx, |input, cx| input.set_value(text, window, cx));
         }
     }
@@ -467,25 +604,19 @@ fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut Ap
 }
 
 /// Enter/blur commit for the send gain editor; the input subscription and
-/// [`commit_active_editor`] share it.
-fn commit_send_gain(shell: &mut StudioShell, id: EdgeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_send != Some(id) {
+/// [`commit_active_editor`] share it. Parsing goes through [`parse_gain_db`]
+/// like every fader readout, so the send and fader entries accept the same
+/// silence spellings and domain.
+fn commit_send_gain(shell: &mut StudioShell, id: &EdgeId, text: &str, cx: &mut App) {
+    if shell.mixer.editing_send != Some(*id) {
         return;
     }
     shell.mixer.editing_send = None;
-    let gain = if matches!(text.trim(), "-inf" | "−∞" | "-∞") {
-        Some(0.)
-    } else {
-        text.parse::<f64>()
-            .ok()
-            .filter(|db| db.is_finite() && (-120. ..=24.).contains(db))
-            .map(|db| 10f64.powf(db / 20.))
-    };
-    if let Some(gain) = gain {
+    if let Some(gain) = parse_gain_db(text) {
         shell.state.update(cx, |state, _| {
-            if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
+            if let Ok(edge) = state.snapshot.graph.graph.get_edge(*id) {
                 state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
-                    edge: id,
+                    edge: *id,
                     params: SendParams {
                         gain,
                         ..*edge.params()
@@ -504,47 +635,33 @@ fn commit_send_gain(shell: &mut StudioShell, id: EdgeId, text: &str, cx: &mut Ap
 /// notifies only then).
 pub(in crate::ui::window) fn commit_active_editor(shell: &mut StudioShell, cx: &mut App) -> bool {
     let mut active = false;
-    if let Some(id) = shell.mixer.editing_value {
+    for family in [
+        EditableValueFamily::Fader,
+        EditableValueFamily::Balance,
+        EditableValueFamily::NodeGain,
+        EditableValueFamily::NodePan,
+    ] {
+        let (editing, inputs) = family.parts(shell);
+        let Some(id) = *editing else {
+            continue;
+        };
         active = true;
-        if let Some(input) = shell.mixer.value_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_mixer_gain(shell, &id, &text, cx);
+        if let Some(text) = inputs
+            .get(&id)
+            .map(|input| input.read(cx).value().to_string())
+        {
+            (family.commit())(shell, &id, &text, cx);
         } else {
-            shell.mixer.editing_value = None;
+            *editing = None;
         }
     }
-    if let Some(id) = shell.mixer.editing_balance {
-        active = true;
-        if let Some(input) = shell.mixer.balance_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_mixer_balance(shell, &id, &text, cx);
-        } else {
-            shell.mixer.editing_balance = None;
-        }
-    }
-    if let Some(id) = shell.mixer.editing_node_gain {
-        active = true;
-        if let Some(input) = shell.mixer.node_gain_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_node_gain(shell, &id, &text, cx);
-        } else {
-            shell.mixer.editing_node_gain = None;
-        }
-    }
-    if let Some(id) = shell.mixer.editing_node_pan {
-        active = true;
-        if let Some(input) = shell.mixer.node_pan_inputs.get(&id) {
-            let text = input.read(cx).value().to_string();
-            commit_node_pan(shell, &id, &text, cx);
-        } else {
-            shell.mixer.editing_node_pan = None;
-        }
-    }
+    // The send family is EdgeId-keyed, so it stays explicit rather than
+    // joining the NodeId-keyed loop above.
     if let Some(id) = shell.mixer.editing_send {
         active = true;
         if let Some(input) = shell.mixer.send_inputs.get(&id) {
             let text = input.read(cx).value().to_string();
-            commit_send_gain(shell, id, &text, cx);
+            commit_send_gain(shell, &id, &text, cx);
         } else {
             shell.mixer.editing_send = None;
         }
@@ -650,6 +767,7 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
         let slot = sliders.entry(id.clone()).or_insert_with(|| {
             let edit = Rc::new(edit);
             let dragging = Rc::new(Cell::new(false));
+            let cancelled = Rc::new(Cell::new(false));
             let slider = cx.new(|_| {
                 base::slider::SliderState::new()
                     .min(range[0])
@@ -659,6 +777,7 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
             });
             let ui = state.clone();
             let drag_flag = dragging.clone();
+            let cancel_flag = cancelled.clone();
             let drag_edit = edit.clone();
             let mut gate = DispatchGate::default();
             cx.subscribe(
@@ -667,7 +786,19 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                     match event {
                         base::slider::SliderEvent::Change(value) => {
                             drag_flag.set(true);
-                            if let Some(send) = gate.change(value.end(), Instant::now()) {
+                            // Pointer movement after a cancel reopens the
+                            // drag: these edits are the user's own again,
+                            // stacked on whatever the journal step landed.
+                            cancel_flag.set(false);
+                            let value = value.end();
+                            // A degenerate pointer mapping (zero state bounds
+                            // before the first layout) yields NaN; dispatching
+                            // it would produce an invalid gain and strand the
+                            // thumb until the next write-back.
+                            if !value.is_finite() {
+                                return;
+                            }
+                            if let Some(send) = gate.change(value, Instant::now()) {
                                 dispatch_edit(&ui, &drag_edit, send, cx);
                             }
                         }
@@ -675,6 +806,13 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             drag_flag.set(false);
                             gate.release();
                             let value = value.end();
+                            // A cancelled drag's release carries only the
+                            // stale pointer tail: the journal already moved
+                            // on, and landing it would overwrite the undone
+                            // value (audit SD-7).
+                            if !value.is_finite() || cancel_flag.take() {
+                                return;
+                            }
                             // The release always lands — unless a wheel or
                             // double-click commit already moved the slider
                             // past it: those handlers paint before the
@@ -693,6 +831,7 @@ pub(in crate::ui::window) fn sync_slider_range<K: Ord + Clone, T: 'static>(
             SliderSlot {
                 state: slider.clone(),
                 dragging,
+                cancelled,
                 behavior: behavior(&id, state.clone(), edit, slider),
             }
         });
@@ -785,6 +924,18 @@ impl StudioShell {
                 self.mixer.order.push(node.id);
             }
         }
+        // One cached strip panel per node; the page splices them as siblings.
+        // Created after the slider maps are synced so the panel's nested
+        // observers find their entities on the first rebuild.
+        self.mixer.strips.retain(|id, _| graph.node(*id).is_some());
+        for node in &graph.nodes {
+            let id = node.id;
+            self.mixer.strips.entry(id).or_insert_with(|| {
+                let panel = super::page::StripPanel { id };
+                let shell = cx.entity();
+                cx.new(|child_cx| super::page::StripPanelHost::new(panel, shell, child_cx))
+            });
+        }
         sync_faders(
             window,
             cx,
@@ -792,32 +943,33 @@ impl StudioShell {
             &mut self.mixer.faders,
             fader_rows(&graph),
         );
-        for edge in graph.graph.edges() {
-            let id = edge.id();
-            let input = self.mixer.send_inputs.entry(id).or_insert_with(|| {
-                let input = cx.new(|cx| component::input::InputState::new(window, cx));
-                cx.subscribe(
-                    &input,
-                    move |shell, input, event: &component::input::InputEvent, cx| {
-                        if matches!(
-                            event,
-                            component::input::InputEvent::PressEnter { .. }
-                                | component::input::InputEvent::Blur
-                        ) {
-                            let text = input.read(cx).value().to_string();
-                            commit_send_gain(shell, id, &text, cx);
-                            cx.notify();
-                        }
-                    },
-                )
-                .detach();
-                input
-            });
-            if self.mixer.editing_send != Some(id) {
-                let text = gain_db_text(edge.params().gain);
-                input.update(cx, |input, cx| input.set_value(text, window, cx));
-            }
-        }
+        // The inspector's fader row mirrors the snapshot through its own
+        // slots; the strip's slots stay untouched by the inspector's drags.
+        self.mixer
+            .inspector_faders
+            .retain(|id, _| graph.node(*id).is_some());
+        sync_faders(
+            window,
+            cx,
+            &self.state,
+            &mut self.mixer.inspector_faders,
+            fader_rows(&graph),
+        );
+        // The send family rides the same editor sync as the NodeId-keyed
+        // families below; only its commit is EdgeId-addressed.
+        sync_value_inputs(
+            window,
+            cx,
+            &mut self.mixer.send_inputs,
+            self.mixer.editing_send.as_ref(),
+            graph
+                .graph
+                .edges()
+                .iter()
+                .map(|edge| (edge.id(), gain_db_text(edge.params().gain)))
+                .collect(),
+            commit_send_gain,
+        );
         let sends = graph
             .graph
             .edges()

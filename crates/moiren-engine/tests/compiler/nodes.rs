@@ -105,10 +105,7 @@ fn compile_transform(kind: NodeKind) -> CompiledGraph<f64> {
         NodeKind::ChannelMapper => bindings
             .bind_channel_mapper(transform, ChannelMapperSettings::default())
             .unwrap(),
-        NodeKind::Meter => bindings
-            .bind_meter(transform, moiren_engine::meter::MeterSettings::default())
-            .map(|_| ())
-            .unwrap(),
+        NodeKind::Meter => bindings.bind_unmanaged(transform, NodeKind::Meter).unwrap(),
         NodeKind::Recorder => bindings
             .bind_recorder(
                 transform,
@@ -307,7 +304,7 @@ fn spectrum_node_lowers_with_an_explicit_publisher_binding() {
                     channels: 0,
                 },
                 element: 0.0_f32,
-                capacity: settings.bins_per_channel(),
+                capacity: settings.fft_size,
             },
         )
         .unwrap();

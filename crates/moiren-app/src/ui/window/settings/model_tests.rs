@@ -30,6 +30,19 @@ fn draft(audio: AudioSettings) -> Draft {
 }
 
 #[test]
+fn transport_only_edits_change_the_draft_cache_key() {
+    let original = draft(AudioSettings::default());
+    let mut edited = original.clone();
+    edited.transport.render = Some(Default::default());
+    edited.changed();
+    assert!(
+        edited != original,
+        "transport edits must invalidate cached settings"
+    );
+    assert!(edited.dirty());
+}
+
+#[test]
 fn render_queue_draft_rebases_independently_and_conflicts_without_losing_intent() {
     use crate::service::{ExpertInputBuffer, ExpertRenderQueue, TransportLatencySettings};
     let mut edited = draft(AudioSettings::default());

@@ -335,6 +335,9 @@ class EnvelopeTests(unittest.TestCase):
         matplotlib.use("Agg")
         import matplotlib.axes
         import matplotlib.figure
+        # pyplot copies Figure.savefig metadata during import. Initialize it
+        # before replacing that method with a mock lacking function metadata.
+        import matplotlib.pyplot
         meta, raw, recorded, rows = fixture()
         recorded[:512] = 0
         result = MODULE.analyze(meta, raw, recorded, rows, ENDPOINT)

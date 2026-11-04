@@ -1,5 +1,6 @@
 use rust_i18n::t;
 
+use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
@@ -9,6 +10,8 @@ use moiren_engine::audio_config::{
 };
 use moiren_engine::node::DeviceMode;
 
+#[cfg(all(test, feature = "gpui-test"))]
+mod cache_tests;
 mod fields;
 mod measured;
 #[cfg(all(test, windows, feature = "gpui-test"))]
@@ -23,6 +26,92 @@ mod transport;
 use fields::choices;
 pub(super) use fields::{field, footer, rate_title, stream_editor};
 pub(super) use model::{Direction, Draft, Editor, Section, SettingsEditor, device_stream_mut};
+
+/// The settings overlay behind a [`PanelHost`]: rebuilt only when the
+/// published snapshot, active section, or rendered local editor state changed.
+pub(in crate::ui::window) struct SettingsPanel;
+
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct SettingsKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    section: Section,
+    global: Draft,
+    device: Draft,
+    pending_request: bool,
+    measured: model::MeasuredKey,
+    expert_modes: [bool; 2],
+    inputs: Vec<(Entity<component::input::InputState>, SharedString)>,
+}
+
+pub(in crate::ui::window) type SettingsPanelHost = PanelHost<SettingsPanel>;
+
+impl CachedPanel for SettingsPanel {
+    type Owner = StudioShell;
+    type Key = SettingsKey;
+
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
+        let settings = &shell.settings;
+        let state = shell.state.read(cx);
+        Self::Key {
+            snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
+            section: settings.section,
+            global: settings.global.clone(),
+            device: settings.device.clone(),
+            pending_request: state.pending_request,
+            measured: settings.measured.cache_key(),
+            expert_modes: settings.expert_inputs.modes(),
+            // Invalid text is intent too, even when the last valid draft did
+            // not move. Identity also replaces subscriptions after Discard.
+            inputs: settings
+                .period_inputs
+                .values()
+                .map(|entry| &entry.input)
+                .chain(settings.expert_inputs.inputs())
+                .chain(settings.measured.inputs())
+                .map(|input| (input.clone(), input.read(cx).value()))
+                .collect(),
+        }
+    }
+
+    fn observe_nested(
+        &self,
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
+        let inputs = owner.read_with(cx, |shell, cx| self.key(shell, cx).inputs);
+        inputs
+            .into_iter()
+            .map(|(input, _)| cx.observe(&input, |host, _, cx| host.notify_nested(cx)))
+            .collect()
+    }
+
+    fn render(
+        &self,
+        shell: &mut Self::Owner,
+        window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement {
+        overlay(shell, window, cx)
+    }
+}
+
+/// The settings overlay's cached splice; mounted only while settings are
+/// open (the shell's own `.when`).
+pub(in crate::ui::window) fn overlay_for(shell: &StudioShell, _window: &Window) -> AnyElement {
+    // The cached wrapper is laid out as a root; the overlay must keep
+    // covering the window without taking flex-column layout space.
+    shell
+        .settings_panel
+        .clone()
+        .cached(
+            StyleRefinement::default()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+        )
+        .into_any_element()
+}
 
 pub(super) fn overlay(
     shell: &StudioShell,
@@ -337,7 +426,7 @@ fn language_choices(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
 fn latency_policy(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     use crate::service::AudioLatencyProfile;
     field(
-        &t!("Queue / recovery policy"),
+        &t!("Device buffer policy"),
         choices(
             shell,
             Editor::Global,
@@ -435,7 +524,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             stream_summary(requested.backend, requested.output),
         ))
         .child(detail(
-            &t!("Legacy recovery policy"),
+            &t!("Device buffer policy"),
             t!(snapshot.latency_profile.title()),
         ))
         .child(label(t!(
@@ -651,3 +740,6 @@ pub(super) fn stream_summary(backend: AudioBackend, stream: StreamSettings) -> S
             .unwrap_or_else(|| t!("Driver default").into())
     )
 }
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;

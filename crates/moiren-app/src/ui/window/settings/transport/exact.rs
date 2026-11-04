@@ -25,6 +25,16 @@ fn parse(text: &str, frames: Frames) -> Result<u32, String> {
 }
 
 impl ExpertInputs {
+    pub(in crate::ui::window::settings) fn modes(&self) -> [bool; 2] {
+        [self.enabled(Input::Process), self.enabled(Input::Vad)]
+    }
+
+    pub(in crate::ui::window::settings) fn inputs(
+        &self,
+    ) -> impl Iterator<Item = &Entity<component::input::InputState>> {
+        self.fields.values().map(|entry| &entry.input)
+    }
+
     pub(super) fn enabled(&self, input: Input) -> bool {
         self.enabled.contains(&input)
     }
@@ -222,7 +232,7 @@ pub(super) fn toggle(
         },
     )
     .disabled(shell.settings.busy())
-    .on_click(move |_, _, cx| {
+    .on_click(move |_, window, cx| {
         this.update(cx, |shell, cx| {
             if shell.settings.busy() || input.get(&shell.settings.global).is_none() {
                 return;
@@ -232,6 +242,7 @@ pub(super) fn toggle(
                 shell.settings.expert_inputs.enabled.insert(input);
             }
             shell.settings.global.changed();
+            shell.sync_expert_inputs(window, cx);
             cx.notify();
         })
     })

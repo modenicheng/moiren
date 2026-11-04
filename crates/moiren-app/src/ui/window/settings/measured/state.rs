@@ -202,6 +202,35 @@ pub(in crate::ui::window::settings) struct MeasuredEditor {
 }
 
 impl MeasuredEditor {
+    pub(in crate::ui::window::settings) fn cache_key(&self) -> super::super::model::MeasuredKey {
+        super::super::model::MeasuredKey {
+            node: self.draft.node,
+            bounds: [
+                self.draft.capacity_frames,
+                self.draft.target_frames,
+                self.draft.jitter_frames,
+            ],
+            exact: self.exact.enabled,
+            busy: self.busy(),
+            error: self.error.clone(),
+            message: self.message.clone(),
+            #[cfg(windows)]
+            retained_open: self.window_open,
+            #[cfg(windows)]
+            retained: self.window.cache_key(),
+            #[cfg(windows)]
+            live_open: self.live_open,
+            #[cfg(windows)]
+            live_policy: self.live_policy.values,
+        }
+    }
+
+    pub(in crate::ui::window::settings) fn inputs(
+        &self,
+    ) -> impl Iterator<Item = &super::Entity<super::component::input::InputState>> {
+        self.exact.inputs()
+    }
+
     pub(super) fn expire(&mut self, id: RequestId) -> bool {
         if self.pending.as_ref().is_none_or(|pending| pending.id != id) {
             return false;

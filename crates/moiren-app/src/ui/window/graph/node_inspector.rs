@@ -4,8 +4,9 @@ use super::*;
 use crate::service::{GraphEdit, InputSelection};
 use crate::ui::presentation::{db_text, dbfs_text, step_db};
 use crate::ui::widgets::fader::hslider;
-use crate::ui::widgets::meters::compact_horizontal_meter;
-use crate::ui::window::mixer::{EditableValueFamily, gain_db_text, start_value_edit};
+use crate::ui::window::mixer::{
+    EditableValueFamily, gain_db_text, reset_clip_on_click, start_value_edit,
+};
 use controls::*;
 use moiren_core::graph::NodeKind;
 use moiren_engine::{
@@ -94,7 +95,7 @@ pub(in crate::ui::window) fn inspector(
     };
     let id = node.id();
     let entry = snapshot.graph.node(id).expect("service node metadata");
-    let display = crate::ui::state::display_label(snapshot, entry, node.kind());
+    let display = crate::ui::presentation::display_label(snapshot, entry, node.kind());
     let editing = shell.node_name_editing == Some(id);
     // One inline name control: a plain heading until clicked, then the editor
     // in the same place. There is no separate rename row.
@@ -184,14 +185,17 @@ pub(in crate::ui::window) fn inspector(
             }),
         ))
         .child(hslider(
-            &shell.mixer.faders[&id].state,
-            &shell.mixer.faders[&id].behavior,
+            &shell.mixer.inspector_faders[&id].state,
+            &shell.mixer.inspector_faders[&id].behavior,
             cx,
         ))
-        .child(compact_horizontal_meter(
-            shell.node_meters.channel_levels(id),
+        // Live bars are the sidebar hot surface's job; this painting-free
+        // canvas only registers where this node's meter tracks sit.
+        .child(inspector_meter_track(
+            shell,
+            cx.entity(),
+            id,
             node.channels(),
-            shell.node_meters.channel_clips(id),
         ))
         .when(node.channels() == 2, |view| {
             view.child(super::super::mixer::strip_controls::balance(
@@ -202,6 +206,7 @@ pub(in crate::ui::window) fn inspector(
             ))
         })
         .child(super::super::mixer::node_controls(
+            shell,
             entry,
             node.channels(),
             cx,
@@ -212,32 +217,31 @@ pub(in crate::ui::window) fn inspector(
             .exports
             .iter()
             .find(|export| export.enabled && export.binding == Some(id));
-        view = view
-            .child(heading(t!("Source")))
-            .child(label(
-                bound_export
-                    .map(|export| export.name.clone())
-                    .or_else(|| {
-                        entry
-                            .source
-                            .as_ref()
-                            .map(|source| crate::ui::state::source_name(snapshot, source))
-                    })
-                    .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
-            ))
-            .child(
-                button("unbind-node-source", t!("Clear binding"))
-                    .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
-            )
-            .child(
-                button("bind-node-tone", t!("Tone generator · 440 Hz")).on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindSource {
-                        node: id,
-                        source: InputSelection::Tone { frequency_hz: 440. },
-                    },
-                )),
-            );
+        view =
+            view.child(heading(t!("Source")))
+                .child(label(
+                    bound_export
+                        .map(|export| export.name.clone())
+                        .or_else(|| {
+                            entry.source.as_ref().map(|source| {
+                                crate::ui::presentation::source_name(snapshot, source)
+                            })
+                        })
+                        .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
+                ))
+                .child(
+                    button("unbind-node-source", t!("Clear binding"))
+                        .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
+                )
+                .child(
+                    button("bind-node-tone", t!("Tone generator · 440 Hz")).on_click(edit(
+                        cx.entity(),
+                        GraphEdit::BindSource {
+                            node: id,
+                            source: InputSelection::Tone { frequency_hz: 440. },
+                        },
+                    )),
+                );
         if let Some(InputSelection::Tone { frequency_hz }) = entry.source {
             view = view
                 .child(detail(&t!("Frequency"), format!("{frequency_hz:.1} Hz")))
@@ -350,7 +354,7 @@ pub(in crate::ui::window) fn inspector(
                     entry
                         .output_endpoint_id
                         .as_ref()
-                        .map(|endpoint| crate::ui::state::output_name(snapshot, endpoint))
+                        .map(|endpoint| crate::ui::presentation::output_name(snapshot, endpoint))
                 })
                 .unwrap_or_else(|| t!("Not bound · choose an output").into()),
         ));
@@ -582,7 +586,7 @@ fn node_observation(
         .contains_key(&node.id());
     let eligible = running && managed;
     let status = if eligible {
-        let meter_status = shell.node_meters.status(node.id());
+        let meter_status = shell.state.read(cx).node_meters.status(node.id());
         t!(meter_status.label()).to_string()
     } else if managed {
         t!("Not running").to_string()
@@ -609,7 +613,7 @@ fn node_observation(
         )));
     }
     if let Some(levels) = eligible
-        .then(|| shell.node_meters.channel_levels(node.id()))
+        .then(|| shell.state.read(cx).node_meters.channel_levels(node.id()))
         .flatten()
     {
         let mut readings = div().id("node-observation-levels").flex().flex_col();
@@ -1299,4 +1303,36 @@ impl StudioShell {
             cx.notify();
         }
     }
+}
+
+/// The inspector's meter footprint: a painting-free canvas that registers
+/// where this node's meter tracks sit, for the sidebar hot surface to paint
+/// live bars at. Sized like the DOM meter it replaced.
+fn inspector_meter_track(
+    shell: &StudioShell,
+    this: Entity<StudioShell>,
+    id: moiren_core::graph::NodeId,
+    channels: usize,
+) -> impl IntoElement {
+    let geometry = shell.inspector_meters.clone();
+    // Clicking the meter resets the clip latch, like every meter surface.
+    div()
+        .id(SharedString::from(format!("inspector-meter-{id:?}")))
+        .w_full()
+        .h(px(if channels >= 2 { 15. } else { 9. }))
+        .flex_none()
+        .on_mouse_down(
+            MouseButton::Left,
+            reset_clip_on_click(shell.state.clone(), this, id),
+        )
+        .child(
+            canvas(
+                move |bounds, window, _| {
+                    geometry
+                        .update(|geometry| geometry.register(id, bounds, window.content_mask()));
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
 }

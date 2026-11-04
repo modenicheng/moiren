@@ -4,6 +4,8 @@
 
 日期：2026-10-14。对应[三视图评估](11-unified-topology-views-evaluation.md)第 5.4、7、8、9.4 节；本轮只实现 core/engine 基础接口，桌面应用与 Slint 尚未迁移。
 
+> **历史状态说明（2026-10-28）**：下文涉及 `GraphIndex` 与「邻接查询和连接预检」的章节、以及其他 Slint 相关表述，描述的是 2026-10-28 之前的状态，仅作历史参考。现行契约以仍然准确的部分为准：`edit_with_result` / `edit_if_current` / `parameter_values`。
+
 ## 一次读取项目和运行状态
 
 `EngineObserver::read()` 返回 `ProjectSnapshot`，在一个锁下取得期望项目、活动项目和匹配的 HostSnapshot。`desired`、`active` 是只读 `Arc<EngineProject>`；未改变的项目复用 Arc，实时参数改变也会更新期望项目副本，不推进 GraphRevision。

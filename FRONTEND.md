@@ -307,7 +307,8 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 - 原生动画帧驱动读取和衰减，跟随显示刷新率。隐式 UI 测量窗为 `max(1, floor(sample_rate / 240))`，显式 Meter 节点窗长保持原设置。存在订阅需求时，引擎泵和兼容桥分别使用 1 ms 轮询预算；无需求时恢复空闲节奏。峰值保持仅由实际收到的新窗续期，Latest 覆盖的未收到峰值无法恢复；较大音频回调会成批产出测量窗。
 - 主 Mixer 与托盘的 Strip 参数实时生效。PRE 位于节点 DSP、声道模式、静音/独奏门控和 Balance 之后、增益与 Dim 之前；POST 位于增益与 Dim 之后。
 
-实现细节、参考来源与验证要求见 [Mixer 推子改造计划](docs/superpowers/plans/2026-10-25-mixer-strip-redesign.md)。原 Figma v2 组件仅作为历史参考，不再定义当前通道顺序。
+实现细节、参考来源与验证要求原记录于 Mixer 推子改造计划（2026-10-25；计划文档已于
+2026-10-31 从仓库移除，见 git 历史：`git log -- docs/superpowers/plans`）。原 Figma v2 组件仅作为历史参考，不再定义当前通道顺序。
 
 ### 7.3 Matrix：范围必须准确
 
@@ -355,7 +356,7 @@ Settings 负责 Audio Engine、Appearance、Shortcuts、Diagnostics 等应用偏
 - 页面局部错误在对应区域说明；不能因此清空其他仍有效的图、资源或读数。刷新失败保留最后成功结果，并标明其状态。
 - UI 通过应用服务提交请求并消费快照、model 或信号。禁止在音频线程分配、回收或阻塞；图、缓冲区、信号绑定与旧执行计划的回收在控制侧完成。
 - UI 展示状态与逻辑拓扑、执行计划、平台音频传输分离。绘制不拥有另一份业务状态。
-- Slint model 通知、setter 和回调要遵守 Rust 借用与 UI 线程约束。实际资源身份、请求确认和订阅生命周期不能因重写被简化成不真实的占位逻辑。
+- 实际资源身份、请求确认和订阅生命周期不能因重写被简化成不真实的占位逻辑。
 - 设计中的示例数值可以用于明确标识的样例或 Preview，不能流入生产 UI 成为假观测。
 
 ## 9. 跨会话修改流程与验收
@@ -427,7 +428,7 @@ Slint 文件检查与原生 UI 验证可参考下面的历史接入文档，执�
 | 文档 | 使用方式 |
 | --- | --- |
 | [2026-10-12 UI 重设计规格](docs/superpowers/specs/2026-10-12-moiren-figma-ui-redesign-design.md) | 公共框架、工作区、状态、交互与密度设计；后续专项更正优先 |
-| [2026-10-12 Figma 构建计划](docs/superpowers/plans/2026-10-12-moiren-figma-ui-redesign.md) | 历史实施顺序与验收目标，不当作当前完成状态 |
+| 2026-10-12 Figma 构建计划（已移除，见 git 历史） | 历史实施顺序与验收目标，不当作当前完成状态 |
 | [统一拓扑视图评估](docs/designs/11-unified-topology-views-evaluation.md) | Graph / Mixer / Matrix 共用图身份、节点 Slot、端口与多重边的架构建议；属于评估，不能描述为已实现功能 |
 | [早期 UI 设计系统](docs/designs/07-app-ui-design-system.md) | 历史背景与参数来源，配色、字体与导航可能已被新要求取代 |
 | [早期 Graph 规格](docs/designs/08-figma-graph-ui-spec.md) | 历史 Graph 组件和交互记录，按本文件与当前授权设计核对 |

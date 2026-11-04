@@ -7,6 +7,7 @@ use super::{
 };
 use crate::bridge::{CaptureWriteClock, refill, unsupported};
 use crate::native::{NativeStream, NativeStreamInfo, StereoFrame};
+use crate::negotiation::{MAX_BUFFER_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, MIN_SAMPLE_RATE_HZ};
 use crate::resample::StereoResampler;
 use crate::servo::FollowerServo;
 use crate::virtual_owner::VirtualResourceSession;
@@ -299,11 +300,11 @@ fn native_owner<S: ProcessingSample>(
         info.channels,
         info.buffer_frames,
     );
-    if !(8_000..=384_000).contains(&info.sample_rate)
+    if !(MIN_SAMPLE_RATE_HZ..=MAX_SAMPLE_RATE_HZ).contains(&info.sample_rate)
         || info.buffer_frames == 0
-        || info.buffer_frames > 65536
+        || info.buffer_frames > MAX_BUFFER_FRAMES
         || info.channels == 0
-        || info.channels > 32
+        || info.channels > MAX_CHANNELS
     {
         let _ = sender.send(Err(unsupported("native stream returned invalid metadata")));
         return;

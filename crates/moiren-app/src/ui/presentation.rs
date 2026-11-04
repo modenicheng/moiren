@@ -1,9 +1,10 @@
 //! Pure text projections from [`AppSnapshot`]. These functions format
 //! snapshot state for display; they hold no UI state and dispatch no intent.
 
-use crate::service::{AppSnapshot, SessionPhase};
+use crate::service::{AppSnapshot, InputSelection, SessionPhase};
 #[cfg(windows)]
 use crate::service::{AudioBackend, SessionGeneration};
+use crate::ui::state::{input_rows, output_rows};
 #[cfg(windows)]
 use moiren_windows_audio::engine_backend::NativeStreamKind;
 use rust_i18n::t;
@@ -85,6 +86,10 @@ pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     }
 }
 
+/// Settings page used to render this directly; the live control-feedback path
+/// (`control_feedback`) owns the production wording now, so this stays only as
+/// the observation helper for the latency-projection state tests.
+#[cfg(test)]
 pub fn latency_apply_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     match snapshot.active_latency_profile {
         Some(active) if active == snapshot.latency_profile => {
@@ -414,6 +419,17 @@ pub fn db_text(gain: f64) -> String {
     }
 }
 
+/// The unit-less form of [`db_text`] for tight inline slots that carry their
+/// unit elsewhere (the mixer's send rows): −∞ or a signed one-decimal dB
+/// value with no trailing unit.
+pub fn db_text_bare(gain: f64) -> String {
+    if gain == 0. {
+        "−∞".into()
+    } else {
+        format!("{:+.1}", 20. * gain.log10())
+    }
+}
+
 /// A level amplitude as a signed dBFS readout; exact digital silence is
 /// −∞ dBFS, spelled with the same U+2212 minus as [`db_text`].
 pub fn dbfs_text(amplitude: f32) -> String {
@@ -466,9 +482,79 @@ pub fn control_feedback(snapshot: &AppSnapshot, pending_request: bool) -> String
     }
 }
 
+pub fn output_name(snapshot: &AppSnapshot, id: &str) -> String {
+    output_rows(&snapshot.catalog, snapshot.audio_settings.backend)
+        .into_iter()
+        .find(|row| row.endpoint_id == id)
+        .map(|row| row.name.clone())
+        .unwrap_or_else(|| t!("Unavailable output").into())
+}
+
+/// Presentation label for a node. While a Source/Sink still carries its
+/// default label (never renamed), it follows the bound input/output device
+/// name; renaming it once pins the custom name.
+pub fn display_label(
+    snapshot: &AppSnapshot,
+    entry: &crate::service::GraphNodeState,
+    kind: moiren_core::graph::NodeKind,
+) -> String {
+    use moiren_core::graph::NodeKind;
+    if entry.label != crate::service::default_label(kind) {
+        return entry.label.clone();
+    }
+    if let Some(export) = snapshot
+        .graph
+        .exports
+        .iter()
+        .find(|export| export.enabled && export.binding == Some(entry.id))
+    {
+        return export.name.clone();
+    }
+    match kind {
+        NodeKind::Source => entry
+            .source
+            .as_ref()
+            .map(|source| source_name(snapshot, source))
+            .unwrap_or_else(|| entry.label.clone()),
+        NodeKind::Sink => entry
+            .output_endpoint_id
+            .as_ref()
+            .map(|endpoint| output_name(snapshot, endpoint))
+            .unwrap_or_else(|| entry.label.clone()),
+        _ => entry.label.clone(),
+    }
+}
+
+pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
+    match source {
+        InputSelection::Tone { frequency_hz } => t!(
+            "Test tone · %{frequency} Hz",
+            frequency = format!("{frequency_hz:.0}")
+        )
+        .to_string(),
+        InputSelection::Physical { endpoint_id } => {
+            input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
+                .into_iter()
+                .find(|row| row.endpoint_id == *endpoint_id)
+                .map(|row| row.name.clone())
+                .unwrap_or_else(|| t!("Unavailable input").into())
+        }
+        InputSelection::Process {
+            pid,
+            creation_time_100ns,
+        } => snapshot
+            .catalog
+            .processes
+            .iter()
+            .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
+            .map(|row| t!("%{name} (PID %{pid})", name = row.name, pid = pid).to_string())
+            .unwrap_or_else(|| t!("Unavailable application (PID %{pid})", pid = pid).to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{db_text, dbfs_text, step_db};
+    use super::{db_text, db_text_bare, dbfs_text, step_db};
 
     #[test]
     fn db_text_reads_signed_db_and_one_infinity_for_silence() {
@@ -486,6 +572,15 @@ mod tests {
         // Negative amplitudes are as absent as silence: ballistics never
         // produce them, and silence is the honest rendering if they appear.
         assert_eq!(dbfs_text(-0.5), "−∞ dBFS");
+    }
+
+    #[test]
+    fn bare_readouts_keep_their_slot_formats() {
+        // The send rows' unit-less label: signed one-decimal dB, −∞ spelled
+        // with the same U+2212 minus as db_text.
+        assert_eq!(db_text_bare(0.), "−∞");
+        assert_eq!(db_text_bare(1.), "+0.0");
+        assert_eq!(db_text_bare(10f64.powf(-6. / 20.)), "-6.0");
     }
 
     #[test]

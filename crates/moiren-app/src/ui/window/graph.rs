@@ -2,11 +2,17 @@ use rust_i18n::t;
 
 use super::*;
 
+mod binding_menu;
 mod compressor;
+mod detail;
 mod library;
+pub(in crate::ui::window) use binding_menu::{
+    BindingMenu, overlay as binding_menu_overlay, sync as sync_binding_menu,
+};
 pub(super) use compressor::CompressorControls;
-pub(super) mod meter_frame;
 mod node_inspector;
+pub(in crate::ui::window) use detail::overlay as detail_overlay;
+pub(super) mod page;
 pub(super) use library::PendingNodeSpawn;
 pub(in crate::ui::window) use library::{library, library_rail};
 pub(in crate::ui::window) use node_inspector::inspector;
@@ -14,10 +20,21 @@ pub(in crate::ui::window) use node_inspector::inspector;
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 
+/// An existing edge picked up off its input by a connection drag: the edge
+/// stays in the service until release commits, while the canvas shows the
+/// head as free and the drag pulls from the edge's source output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct DetachedEdge {
+    edge: moiren_core::graph::EdgeId,
+    destination: moiren_core::graph::PortId,
+}
+
+/// One port's wire end in flight during a connection drag.
 #[derive(Clone, Copy)]
 pub(super) struct ConnectionDrag {
     port: pages::graph_canvas::PortTarget,
     cursor: (f32, f32),
+    detached: Option<DetachedEdge>,
 }
 
 /// A rubber-band selection drag on the canvas background. Starts as a plain
@@ -33,6 +50,56 @@ pub(super) struct SelectionDrag {
 }
 
 impl StudioShell {
+    /// The rubber band's live application, driven by the meter hot layer
+    /// once per frame while a box select is in flight. Returns whether the
+    /// selection changed (the caller notifies once per change, not per
+    /// frame).
+    pub(in crate::ui::window) fn apply_box_select(
+        &mut self,
+        rect: Bounds<f32>,
+        nodes: &[pages::graph_canvas::CanvasNode],
+        additive: bool,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        let hits: std::collections::BTreeSet<moiren_core::graph::NodeId> = nodes
+            .iter()
+            .filter(|node| {
+                pages::graph_canvas::NodeLayout::new(node)
+                    .card
+                    .intersects(&rect)
+            })
+            .filter_map(|node| node.node_id)
+            .collect();
+        let Some(drag) = self.selection_drag.as_mut() else {
+            return false;
+        };
+        if !drag.moved {
+            return false;
+        }
+        drag.hits = hits;
+        let selection = if additive {
+            drag.base.union(&drag.hits).copied().collect()
+        } else {
+            drag.hits.clone()
+        };
+        if self.selected_nodes == selection {
+            return false;
+        }
+        self.selected_nodes = selection;
+        if self.selected_nodes.len() == 1 {
+            self.selected_node = self.selected_nodes.iter().next().copied();
+        } else if self
+            .selected_node
+            .is_none_or(|id| !self.selected_nodes.contains(&id))
+        {
+            self.selected_node = None;
+        }
+        if !self.selected_nodes.is_empty() {
+            self.selected_route = None;
+        }
+        true
+    }
+
     /// Shared pointer-session preamble for canvas hit targets: cancel any
     /// in-flight drag or click first; under the hand tool the pointer instead
     /// becomes a pan grab. Returns true when the hand tool consumed the event.
@@ -41,16 +108,44 @@ impl StudioShell {
         self.pan_grab = None;
         self.background_click = None;
         self.selection_drag = None;
+        self.knob_drag = None;
+        self.sync_drag_demand();
         if self.hand_tool {
             let position = window.mouse_position();
             self.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
+            self.sync_drag_demand();
             true
         } else {
             false
         }
     }
 
-    fn clear_canvas_selection(&mut self) {
+    /// Cancels every in-flight canvas gesture without a pointer event to
+    /// consume it. Lifecycle paths that unmount the canvas or steal the
+    /// pointer (page switch, project load, window deactivation) drop the
+    /// closing mouse-up on the floor; a grab left armed there would paint a
+    /// stale rubber band and pin the DRAG frame demand after the user has
+    /// moved on. Same effect as the canvas's Escape handler.
+    pub(in crate::ui::window) fn cancel_active_gesture(&mut self, cx: &mut Context<Self>) {
+        let cancelled = self.drag_active() || self.background_click.is_some();
+        self.connection_drag = None;
+        self.node_drag = None;
+        self.pan_grab = None;
+        self.background_click = None;
+        self.selection_drag = None;
+        self.knob_drag = None;
+        // Keyboard focus stays on the canvas while the page's popovers are
+        // open, so Escape lands here: it dismisses them too.
+        let dismissed = self.binding_menu.take().is_some() | self.detail_node.take().is_some();
+        if cancelled {
+            self.sync_drag_demand();
+        }
+        if cancelled || dismissed {
+            cx.notify();
+        }
+    }
+
+    pub(in crate::ui::window) fn clear_canvas_selection(&mut self) {
         self.selected_nodes.clear();
         self.selected_node = None;
         self.selected_route = None;
@@ -107,18 +202,29 @@ impl StudioShell {
 }
 
 /// The graph page's cached content: canvas, library, editing toolbar. The
-/// shell renders this through [`super::meter_frame::page`], which caches it
-/// behind [`meter_frame::ControlsKey`] and adds the animation-owner meter
-/// frame as a sibling.
-pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
+/// shell renders this through [`page::page`], which caches it behind
+/// [`page::ControlsKey`] and adds the animation-owner meter frame as a
+/// sibling.
+pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     // Meter bar readings are not baked in: the canvas paint consults the
     // live ballistics per draw, so meter motion repaints without the page
     // cache being invalidated or the world being re-projected.
-    let world = std::sync::Arc::new(pages::graph_canvas::CanvasWorld::positioned(
-        &state.snapshot,
-        &shell.node_positions,
-    ));
+    let mut world =
+        pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &shell.node_positions);
+    // A wire end picked up off an input is already in flight: drop it from
+    // the projection so the canvas paints the drag as a free head (no stale
+    // line, an empty origin port, and no phantom Displacing/Cycles verdicts
+    // against the edge being moved).
+    if let Some(destination) = shell
+        .connection_drag
+        .as_ref()
+        .and_then(|drag| drag.detached)
+        .map(|picked| picked.destination)
+    {
+        world.wires.retain(|wire| wire.dst_port != destination);
+    }
+    let world = std::sync::Arc::new(world);
     let camera = shell.camera;
     // The canvas view identifies nodes by their Debug id string; this is the
     // single NodeId -> canvas-id conversion on the render path.
@@ -138,7 +244,8 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             .map(|edge| format!("{:?}", edge.id()))
     });
     let this = cx.entity();
-    let node_levels = meter_frame::node_levels(&this);
+    let node_levels = page::node_levels(&this);
+    let node_spectrum = page::node_spectrum(&this);
 
     // Canvas view with interaction plumbed to the shell entity.
     let on_zoom = {
@@ -201,6 +308,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 let pos = window.mouse_position();
                 shell.camera.adjusted = true;
                 shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
+                shell.sync_drag_demand();
                 // Single click selects; a double click on the same node also
                 // opens the inspector.
                 if shell.element_double_clicked(StudioShell::element_key("node", node_id)) {
@@ -227,6 +335,32 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 if !held {
                     shell.pan_grab = None;
                     shell.node_drag = None;
+                    shell.knob_drag = None;
+                    // Hover for the fault tooltip: tracked here, painted by
+                    // the meter frame, so a change costs one frame and never
+                    // a page rebuild. Anything on a card counts, port dots
+                    // included.
+                    let hovered = shell.graph_canvas_frame.read().and_then(|frame| {
+                        use pages::graph_canvas::HitTarget;
+                        let id = match frame.hit_test((x, y))? {
+                            HitTarget::Node(id)
+                            | HitTarget::Knob { node: id, .. }
+                            | HitTarget::Expand { node: id }
+                            | HitTarget::Chip { node: id } => id.to_owned(),
+                            HitTarget::Port(port) => return frame.world.node_of_port(port),
+                            HitTarget::Wire(_) => return None,
+                        };
+                        frame
+                            .world
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                    });
+                    if shell.hovered_node != hovered {
+                        shell.hovered_node = hovered;
+                        cx.notify();
+                    }
                     let clicked = shell
                         .background_click
                         .take()
@@ -245,13 +379,53 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     if shell.connection_drag.take().is_some() {
                         cx.notify();
                     }
+                    shell.sync_drag_demand();
                     return;
+                }
+                if let Some((id, control, start_y, start_value)) = shell.knob_drag {
+                    // Vertical drag on the dial; up increases. The value
+                    // math is anchored to the press so mid-drag camera or
+                    // concurrent edits cannot feedback-loop the knob.
+                    let value = control.drag(start_value, (y - start_y) as f64);
+                    let edit = {
+                        let state = shell.state.read(cx);
+                        state
+                            .snapshot
+                            .graph
+                            .node(id)
+                            .and_then(|entry| control.edit(id, entry, value))
+                    };
+                    if let Some(edit) = edit {
+                        shell
+                            .state
+                            .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
+                        cx.notify();
+                    }
                 }
                 if let Some(drag) = shell.selection_drag.as_mut() {
                     drag.current = (x, y);
                     if !drag.moved && (x - drag.anchor.0).hypot(y - drag.anchor.1) > 3. {
                         drag.moved = true;
                         shell.background_click = None;
+                    }
+                    // Apply the live selection here, in the event phase: the
+                    // cached page rebuilds on this notify, and a notify raised
+                    // from the hot layer's paint would never reach it.
+                    let (moved, anchor, current, additive) =
+                        (drag.moved, drag.anchor, drag.current, drag.additive);
+                    let frame = shell.graph_canvas_frame.read();
+                    if moved && let Some(frame) = frame {
+                        let a = frame.local_position(anchor);
+                        let b = frame.local_position(current);
+                        let min = frame.camera.canvas_to_world((a.0.min(b.0), a.1.min(b.1)));
+                        let max = frame.camera.canvas_to_world((a.0.max(b.0), a.1.max(b.1)));
+                        let world_rect = Bounds {
+                            origin: point(min.0, min.1),
+                            size: size(max.0 - min.0, max.1 - min.1),
+                        };
+                        if shell.apply_box_select(world_rect, &frame.world.nodes, additive, cx) {
+                            cx.notify();
+                        }
                     }
                 }
                 if let Some((id, gx, gy)) = shell.node_drag {
@@ -271,6 +445,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     shell.camera.pan_by(x - gx, y - gy);
                     shell.node_drag = None;
                     shell.pan_grab = Some((x, y));
+                    shell.sync_drag_demand();
                     cx.notify();
                 }
             });
@@ -308,59 +483,11 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         shell.selection_drag = None;
                     }
                 }
+                shell.sync_drag_demand();
                 cx.notify();
             });
         }
     };
-    let on_box_select = {
-        let this = this.clone();
-        let nodes = world.clone();
-        move |rect: Option<Bounds<f32>>, _window: &mut Window, cx: &mut App| {
-            // The canvas prepaint reports the active band's world rectangle
-            // once per frame; None means no band and needs no work here.
-            let Some(rect) = rect else {
-                return;
-            };
-            let hits: std::collections::BTreeSet<moiren_core::graph::NodeId> = nodes
-                .nodes
-                .iter()
-                .filter(|node| {
-                    pages::graph_canvas::NodeLayout::new(node)
-                        .card
-                        .intersects(&rect)
-                })
-                .filter_map(|node| node.node_id)
-                .collect();
-            this.update(cx, |shell, cx| {
-                let Some(drag) = shell.selection_drag.as_mut() else {
-                    return;
-                };
-                if !drag.moved {
-                    return;
-                }
-                drag.hits = hits;
-                let selection = if drag.additive {
-                    drag.base.union(&drag.hits).copied().collect()
-                } else {
-                    drag.hits.clone()
-                };
-                shell.selected_nodes = selection;
-                if shell.selected_nodes.len() == 1 {
-                    shell.selected_node = shell.selected_nodes.iter().next().copied();
-                } else if shell
-                    .selected_node
-                    .is_none_or(|id| !shell.selected_nodes.contains(&id))
-                {
-                    shell.selected_node = None;
-                }
-                if !shell.selected_nodes.is_empty() {
-                    shell.selected_route = None;
-                }
-                cx.notify();
-            });
-        }
-    };
-
     let on_scroll_pan = {
         let this = this.clone();
         move |(dx, dy): (f32, f32), _window: &mut Window, cx: &mut App| {
@@ -379,7 +506,18 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     origin: point(0., 0.),
                     size: size(f32::from(canvas.width), f32::from(canvas.height)),
                 };
-                shell.node_meter_points.borrow_mut().extend(
+                // Cull against the camera this frame actually rendered, not
+                // the shell's fit bookkeeping: `fitted` is the shell camera
+                // verbatim once the user has zoomed or panned, and only
+                // differs from it in fit mode — where the fitted view is
+                // what is on screen. The set is replaced, never extended:
+                // demand must shrink when the camera leaves nodes off
+                // screen, or their level windows keep being drained and
+                // their ballistics advancing for a view nobody sees
+                // (audit HC-9).
+                let mut points = shell.node_meter_points.borrow_mut();
+                points.clear();
+                points.extend(
                     nodes
                         .nodes
                         .iter()
@@ -390,6 +528,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         })
                         .filter_map(|node| node.node_id),
                 );
+                drop(points);
                 let canvas_size = Some((f32::from(canvas.width), f32::from(canvas.height)));
                 let changed = shell.canvas_size != canvas_size
                     || (!shell.camera.adjusted && shell.camera != *fitted);
@@ -410,18 +549,22 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         selected_wire.as_deref(),
         pages::graph_canvas_view::CanvasCallbacks {
             focus: shell.graph_focus.clone(),
-            connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
-            selection_box: shell
-                .selection_drag
-                .as_ref()
-                .map(|drag| (drag.anchor, drag.current)),
+            connection: shell.connection_drag.map(|drag| {
+                (
+                    drag.port,
+                    drag.cursor,
+                    drag.detached.map(|picked| picked.destination),
+                )
+            }),
             node_levels,
+            node_spectrum,
             on_port_down: std::rc::Rc::new({
                 let this = this.clone();
                 let nodes = world.clone();
                 move |(port, cursor), window, cx| {
                     this.update(cx, |shell, cx| {
                         if !shell.begin_pointer_session(window) {
+                            use pages::graph_canvas::PortDirection;
                             shell.camera.adjusted = true;
                             for node in &nodes.nodes {
                                 if let Some(node_id) = node.node_id {
@@ -431,7 +574,49 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         .or_insert((node.x, node.y));
                                 }
                             }
-                            shell.connection_drag = Some(ConnectionDrag { port, cursor });
+                            // Dragging an occupied input picks its wire end
+                            // up instead of starting a fresh reverse
+                            // connection: the drag moves that edge's source
+                            // output (design 18 A4). An empty input keeps
+                            // the reverse drag.
+                            let picked = (port.direction == PortDirection::Input)
+                                .then(|| {
+                                    shell
+                                        .state
+                                        .read(cx)
+                                        .snapshot
+                                        .graph
+                                        .graph
+                                        .edges()
+                                        .iter()
+                                        .find(|edge| edge.dst_port() == port.id)
+                                        .map(|edge| DetachedEdge {
+                                            edge: edge.id(),
+                                            destination: port.id,
+                                        })
+                                })
+                                .flatten();
+                            let port = picked
+                                .map(|picked| {
+                                    let source = shell
+                                        .state
+                                        .read(cx)
+                                        .snapshot
+                                        .graph
+                                        .graph
+                                        .get_edge(picked.edge)
+                                        .map(|edge| edge.src_port());
+                                    pages::graph_canvas::PortTarget {
+                                        id: source.unwrap_or(port.id),
+                                        direction: PortDirection::Output,
+                                    }
+                                })
+                                .unwrap_or(port);
+                            shell.connection_drag = Some(ConnectionDrag {
+                                port,
+                                cursor,
+                                detached: picked,
+                            });
                             cx.notify();
                         }
                     })
@@ -450,22 +635,63 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             }),
             on_port_up: std::rc::Rc::new({
                 let this = this.clone();
-                move |target, _, cx| {
+                move |candidate, _, cx| {
                     this.update(cx, |shell, cx| {
-                        use pages::graph_canvas::PortDirection;
+                        use pages::graph_canvas::{CandidateStatus, PortDirection};
                         let Some(drag) = shell.connection_drag.take() else {
                             return;
                         };
-                        if let Some(target) = target
-                            && target.direction != drag.port.direction
+                        if let Some(picked) = drag.detached {
+                            match candidate {
+                                // Back on a connectable input: its own port
+                                // restores the edge untouched, any other
+                                // reroutes it in one atomic edit.
+                                Some(candidate)
+                                    if matches!(
+                                        candidate.status,
+                                        CandidateStatus::Valid | CandidateStatus::Displacing
+                                    ) =>
+                                {
+                                    if candidate.port.id != picked.destination {
+                                        shell.state.update(cx, |state, _| {
+                                            state.dispatch(AppRequest::EditGraph(
+                                                crate::service::GraphEdit::Reconnect {
+                                                    edge: picked.edge,
+                                                    destination: candidate.port.id,
+                                                },
+                                            ))
+                                        });
+                                    }
+                                }
+                                // A picked head released in the void — or on
+                                // an incompatible target — disconnects the
+                                // edge: that is the drag-to-disconnect
+                                // gesture. Escape restores instead.
+                                _ => shell.state.update(cx, |state, _| {
+                                    state.dispatch(AppRequest::EditGraph(
+                                        crate::service::GraphEdit::Disconnect(picked.edge),
+                                    ))
+                                }),
+                            }
+                            cx.notify();
+                            return;
+                        }
+                        if let Some(candidate) = candidate
+                            && matches!(
+                                candidate.status,
+                                CandidateStatus::Valid | CandidateStatus::Displacing
+                            )
                         {
                             let (source, destination) = match drag.port.direction {
-                                PortDirection::Output => (drag.port.id, target.id),
-                                PortDirection::Input => (target.id, drag.port.id),
+                                PortDirection::Output => (drag.port.id, candidate.port.id),
+                                PortDirection::Input => (candidate.port.id, drag.port.id),
                             };
+                            // Both port drops and node-body drops go through
+                            // the displacing connect so an occupied input
+                            // reroutes instead of faulting (design 18 A1/A2).
                             shell.state.update(cx, |state, _| {
                                 state.dispatch(AppRequest::EditGraph(
-                                    crate::service::GraphEdit::Connect {
+                                    crate::service::GraphEdit::ConnectReplacing {
                                         source,
                                         destination,
                                     },
@@ -476,22 +702,151 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     })
                 }
             }),
+            on_knob_down: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(id, control, y), window, cx| {
+                    this.update(cx, |shell, cx| {
+                        if shell.begin_pointer_session(window) {
+                            return;
+                        }
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        let current = shell
+                            .state
+                            .read(cx)
+                            .snapshot
+                            .graph
+                            .node(node_id)
+                            .map(|entry| control.current(entry));
+                        let Some(current) = current else {
+                            return;
+                        };
+                        // Double-click resets to the control's default,
+                        // mirroring the element sliders' behavior.
+                        if shell.element_double_clicked(StudioShell::element_key(
+                            "knob",
+                            (node_id, control),
+                        )) {
+                            let edit = {
+                                let state = shell.state.read(cx);
+                                state.snapshot.graph.node(node_id).and_then(|entry| {
+                                    control.edit(node_id, entry, control.spec().default)
+                                })
+                            };
+                            if let Some(edit) = edit {
+                                shell.state.update(cx, |state, _| {
+                                    state.dispatch(AppRequest::EditGraph(edit))
+                                });
+                            }
+                        } else {
+                            shell.knob_drag = Some((node_id, control, y, current));
+                            shell.sync_drag_demand();
+                        }
+                        cx.notify();
+                    })
+                }
+            }),
+            on_chip: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(id, anchor), window, cx| {
+                    this.update(cx, |shell, cx| {
+                        if shell.begin_pointer_session(window) {
+                            return;
+                        }
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        // The chip selects its card like a press anywhere
+                        // on it, then hangs the endpoint menu off the chip.
+                        shell.selected_nodes.clear();
+                        shell.selected_nodes.insert(node_id);
+                        shell.selected_node = Some(node_id);
+                        shell.selected_route = None;
+                        shell.binding_menu = Some(BindingMenu {
+                            node: node_id,
+                            anchor,
+                        });
+                        cx.notify();
+                    })
+                }
+            }),
+            on_knob_wheel: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(id, control, notches), _, cx| {
+                    this.update(cx, |shell, cx| {
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        let edit = {
+                            let state = shell.state.read(cx);
+                            state.snapshot.graph.node(node_id).and_then(|entry| {
+                                control.edit(
+                                    node_id,
+                                    entry,
+                                    control.wheel(control.current(entry), notches as f64),
+                                )
+                            })
+                        };
+                        if let Some(edit) = edit {
+                            shell
+                                .state
+                                .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
+                            cx.notify();
+                        }
+                    })
+                }
+            }),
+            on_expand: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |id, window, cx| {
+                    this.update(cx, |shell, cx| {
+                        if shell.begin_pointer_session(window) {
+                            return;
+                        }
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        shell.selected_nodes.clear();
+                        shell.selected_nodes.insert(node_id);
+                        shell.selected_node = Some(node_id);
+                        shell.selected_route = None;
+                        shell.detail_node = Some(node_id);
+                        cx.notify();
+                    })
+                }
+            }),
             on_delete: std::rc::Rc::new({
                 let this = this.clone();
                 move |(), _, cx| this.update(cx, |shell, cx| shell.delete_graph_selection(cx))
             }),
             on_cancel: std::rc::Rc::new({
                 let this = this.clone();
-                move |(), _, cx| {
-                    this.update(cx, |shell, cx| {
-                        shell.connection_drag = None;
-                        shell.node_drag = None;
-                        shell.pan_grab = None;
-                        shell.background_click = None;
-                        shell.selection_drag = None;
-                        cx.notify();
-                    })
-                }
+                move |(), _, cx| this.update(cx, |shell, cx| shell.cancel_active_gesture(cx))
             }),
             on_drop_node: std::rc::Rc::new({
                 let this = this.clone();
@@ -501,7 +856,6 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             }),
             on_background_down: std::rc::Rc::new(on_bg_down),
             on_canvas_mouse_move: Box::new(on_bg_move),
-            on_box_select: std::rc::Rc::new(on_box_select),
             on_zoom: std::rc::Rc::new(on_zoom),
             on_pan: Box::new(on_scroll_pan),
             on_select_node: std::rc::Rc::new(on_select_node),
@@ -539,6 +893,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         // Shared with the meter frame: its overlay repaints bars at this
         // frame's geometry between cache rebuilds.
         shell.graph_canvas_frame.clone(),
+        &shell.graph_overlays,
     );
 
     div()
@@ -568,7 +923,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .child(canvas_view)
                         .child(editing_toolbar(shell, &this)),
                 )
-                .child(sidebar::library_host(shell, cx)),
+                .child(sidebar::library_host(shell, window, cx)),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -587,7 +942,10 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         .rounded(px(theme::RADIUS_MD))
         .bg(theme::SURFACE)
         .border_1()
-        .border_color(theme::BORDER);
+        .border_color(theme::BORDER)
+        // The meter frame paints around this rect (it is a later sibling of
+        // the cached panel, so live bars would otherwise cover the HUD).
+        .child(shell.graph_overlays.probe("toolbar"));
     for (id, name, icon, hand) in [
         ("tool-select", t!("Select"), ActionIcon::Cursor, false),
         ("tool-hand", t!("Hand"), ActionIcon::HandMove, true),

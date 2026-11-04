@@ -31,8 +31,7 @@ Output defaults	-	分区标题，也是 merge_value 错误的 label 实参
 Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.	-	WASAPI 模式说明
 ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.	-	ASIO 模式说明
 %{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.	input_count=config.input_overrides.len()|output_count=config.output_overrides.len()	format! 原文 "{} input / {} output overrides. ..."
-Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.	-	说明文本
-Queue / recovery policy	-	字段名
+Device buffer policy	-	字段名
 Theme	-	字段名
 Dark workstation	-	detail 值文本
 Density	-	字段名，也是 merge_value 错误的 label 实参
@@ -47,7 +46,6 @@ Saved request	-	诊断/设备覆盖 detail 标签
 Processing	-	detail 标签，也是 merge_value 错误的 label 实参
 Input	-	detail 标签，也是 merge_value 错误的 label 实参
 Output	-	detail 标签，也是 merge_value 错误的 label 实参
-Legacy recovery policy	-	detail 标签
 Unsaved edits stay in the Audio draft until Save or Restart Audio.	-	说明文本
 Active session	-	标题与徽章
 State	-	detail 标签
@@ -95,8 +93,7 @@ Discard changes	-	按钮
 Save	-	按钮
 Restart Audio	-	按钮
 Saved. Audio settings apply on the next start.	-	Draft::committed 消息
-Recovery policy	-	merge_value 错误的 label 实参
-%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.	label=merge_value 实参（"Backend"/"Processing"/"Input defaults"/"Output defaults"/"Input"/"Output"/"Density"/"Recovery policy"，各 label 自身也是键）	format! 原文 "{label} changed elsewhere. ..."
+%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.	label=merge_value 实参（"Backend"/"Processing"/"Input defaults"/"Output defaults"/"Input"/"Output"/"Density"/"Device buffer policy"，各 label 自身也是键）	format! 原文 "{label} changed elsewhere. ..."
 %{label} override for %{id}	label="Input" 或 "Output"|id=设备 endpoint_id	format! 原文 "{label} override for {id}"
 User configuration directory is unavailable. Your draft is retained.	-	错误消息
 Saving requested settings...	-	Draft 消息
@@ -112,6 +109,7 @@ User configuration directory is unavailable	-	project_message
 Could not save preferences: %{error}	error=save_preferences_at 的错误字符串	format! 原文 "Could not save preferences: {error}"，两处共用
 Preferences saved	-	project_message
 Preferences save queued	-	project_message
+Could not auto-save: %{error}	error=save_autosave_at 的错误字符串	自动保存失败提示（project_message）
 Inputs	-	设备页标签
 Outputs	-	设备页标签
 Applications	-	设备页标签
@@ -161,7 +159,8 @@ This device follows the current global defaults. Choose Override to customize al
 Active request	-	detail 标签
 Observed session timing	-	说明文本
 This device is not bound to the active source/output pair.	-	说明文本
-Configure never changes routing. Use next start on a device row updates the candidate graph.	-	说明文本
+No active native timing. Start audio to inspect the actual stream clocks.	-	说明文本
+Configure never changes routing; choosing Use next start on a device row updates the candidate graph.	-	说明文本
 Export is no longer in this project's candidate graph	-	edit_export 错误，显示在错误条
 Virtual exports	-	标题
 Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.	-	说明文本
@@ -182,7 +181,6 @@ Gate admission	-	detail 标签
 Open (not a flow signal)	-	闸门状态值
 Closed	-	闸门状态值
 Engine-confirmed binding	-	detail 标签
-Active revision %{revision}	revision=status.active_revision	format! 原文 "Active revision {revision}"
 Inactive	-	绑定状态值
 Candidate graph binding	-	detail 标签
 Unbound	-	绑定状态值
@@ -388,7 +386,7 @@ Choose an output	-	画布节点 detail
 %{frames} frames	frames=settings.window_frames	电表观测窗口行数值
 %{frames} frame buffer	frames=settings.capacity_frames	format! 原文 "{} frame buffer"
 %{frames} frame window	frames=settings.window_frames	format! 原文 "{} frame window"
-FFT %{fft} · hop %{hop}	fft=settings.fft_size|hop=settings.hop_frames	format! 原文 "FFT {} · hop {}"
+FFT %{fft}	fft=settings.fft_size	画布节点 detail
 Empty rack	-	画布节点 detail
 %{count} stage	count=settings.slots.len()	机架单级（英文单数分支，中文与复数同形）
 %{count} stages	count=settings.slots.len()	format! 原文 "{} stage{}"（单复数拼接："{} stage" / "{} stages"，中文无需复数）
@@ -471,9 +469,9 @@ Close window	-	标题栏按钮无障碍标签
 Compatible	-	AudioLatencyProfile::title 动态键
 Balanced	-	AudioLatencyProfile::title 动态键
 Low	-	AudioLatencyProfile::title 动态键
-Default device period and full render capacity; generous input queue.	-	AudioLatencyProfile::description 动态键
-Request 10 ms periods; queues validated against actual device timing.	-	AudioLatencyProfile::description 动态键
-Request 5 ms periods; smaller queue margins require device support.	-	AudioLatencyProfile::description 动态键
+Use each device's default period.	-	AudioLatencyProfile::description 动态键
+Request ~10 ms device buffers (512 frames at 48 kHz).	-	AudioLatencyProfile::description 动态键
+Request ~5 ms device buffers (256 frames at 48 kHz).	-	AudioLatencyProfile::description 动态键
 WASAPI	-	AudioBackend::title 动态键；保留原文
 ASIO	-	AudioBackend::title 动态键；保留原文
 32-bit float	-	ProcessingPrecision/SampleFormat::title 动态键
@@ -544,8 +542,6 @@ The graph needs a Source node	-	服务层消息；中文即迁移前原文
 The graph needs a Sink node	-	服务层消息；中文即迁移前原文
 Node state count does not match the graph, or the graph exceeds 4096 nodes	-	服务层消息；中文即迁移前原文
 Project node states do not match the topology identity	-	服务层消息；中文即迁移前原文
-The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet	-	服务层消息；中文即迁移前原文
-The current device bridge only supports stereo nodes	-	服务层消息；中文即迁移前原文
 No native audio backend is configured	-	服务层消息；中文即迁移前原文
 The live parameter queue is busy; the candidate value is kept — retry or apply the graph later	-	服务层消息；中文即迁移前原文
 The live parameter queue is busy; the candidate value is kept	-	服务层消息；中文即迁移前原文

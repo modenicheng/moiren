@@ -52,6 +52,9 @@ pub(super) struct WindowEditor {
     completed: Option<(Arc<WindowJob>, AssessedProcessReplay)>,
     failed: Option<(Arc<WindowJob>, String)>,
     admission: Option<(Arc<WindowJob>, Result<EvaluatedProcessCandidate, String>)>,
+    // Result objects are immutable after acceptance; no replay-report cloning
+    // or elapsed-time comparison is needed on the shell's polling path.
+    result_revision: u64,
 }
 
 impl Default for WindowEditor {
@@ -70,11 +73,21 @@ impl Default for WindowEditor {
             completed: None,
             failed: None,
             admission: None,
+            result_revision: 0,
         }
     }
 }
 
 impl WindowEditor {
+    pub(super) fn cache_key(&self) -> super::super::model::RetainedKey {
+        super::super::model::RetainedKey {
+            policy: self.policy,
+            error: self.error.clone(),
+            busy: self.busy(),
+            result_revision: self.result_revision,
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.pending.is_some()
     }
@@ -84,6 +97,9 @@ impl WindowEditor {
             *invalidated = true;
         }
         self.error = None;
+        if self.completed.is_some() || self.failed.is_some() || self.admission.is_some() {
+            self.result_revision = self.result_revision.wrapping_add(1);
+        }
         self.completed = None;
         self.failed = None;
         self.admission = None;
@@ -141,6 +157,7 @@ impl WindowEditor {
         }
         let stale = *invalidated || !job.matches(snapshot, draft, self.policy);
         self.pending = None;
+        self.result_revision = self.result_revision.wrapping_add(1);
         if stale {
             self.error =
                 Some(t!("Evaluation discarded: predecessor, candidate or policy changed.").into());
@@ -177,6 +194,7 @@ impl WindowEditor {
             return;
         }
         self.admission = Some((job.clone(), result));
+        self.result_revision = self.result_revision.wrapping_add(1);
     }
 
     pub fn candidate(

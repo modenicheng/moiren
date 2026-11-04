@@ -13,6 +13,7 @@ mod nodes;
 mod observers;
 mod optimization;
 mod optimized_mix;
+mod plugin;
 mod rack;
 mod rack_initial;
 mod reference;

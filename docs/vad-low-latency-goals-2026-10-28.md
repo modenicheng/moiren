@@ -85,7 +85,30 @@ sub-10-ms limitation is evidenced; no such impossibility is established yet.
   be labelled a sub-10-ms pass. Do not silently enlarge a buffer or move the
   measurement boundary to produce a better claim.
 
-## Inspected state
+## Current pipeline status - 2026-11-04
+
+The original S0-S5 requirements below remain the completion criteria. Subsequent
+implementation is recorded in the
+[software ledger](validation/2026-10-29-s1-s3-software-ledger.md) and the
+[2026-11-04 pipeline checkpoint](validation/2026-11-04-pipeline-checkpoint.md).
+The original source audit in the next section is historical, not current
+configuration or acceptance evidence.
+
+| Slice | Current evidence | Remaining acceptance |
+| --- | --- | --- |
+| S0 | Requirements, scoped commits, binary/configuration pins and bounded archival workflows exist. | Complete a current integration checkpoint and its remote CI; preserve unrelated work. |
+| S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. | Matched route acquisition, explained full waveform correspondence and calibrated measurement remain open. |
+| S2 | Independent VAD target/capacity, actual-demand admission, priming, servo and bounded recovery are implemented. | Native period/block combinations and sustained quality do not yet qualify a lower default. |
+| S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. | Successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open. |
+| S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist. | Windows-visible name acceptance and the required native streaming/held-client/race/repetition cases remain open. |
+| S5 | Deterministic/RT software checks and finite native receipts exist. | Repeated/load/non-silent sustained runs and calibrated p95/p99 below10ms, or the evidenced device-limited fallback, remain open. |
+
+No aggregate percentage, software test total or successful lifecycle substitutes
+for these acceptance requirements. Existing delivery-gap violations, waveform
+residuals and genuine PCM/epoch faults remain visible. Initial-packet work stays
+deferred; missing physical capture equipment does not block independent work.
+
+## Inspected state - original source audit
 
 ### Driver and naming
 
@@ -319,5 +342,6 @@ test driver on the development host to bypass this constraint.
   strict Clippy and Windows/Ubuntu/Miri CI before integration. Kernel changes
   additionally require WDK analyzed build, INF checks and a new target package.
 
-Only S0 is performed by this document. S1-S5 are proposed future work; no new
-PCM measurement, buffer tuning, rename target run or stability pass is claimed.
+The initial2026-10-28audit performed S0 only. Later S1-S5 work is tracked in the
+current pipeline status and linked receipts; none of those software increments
+alone establishes a native waveform, rename, sustained or physical-latency pass.

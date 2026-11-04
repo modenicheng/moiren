@@ -18,7 +18,9 @@ remote target. No Rust/Engine/application route uses this driver by default.
 ## Host integration checkpoint - 2026-10-20
 
 The [current client checkpoint](../docs/vad-lifecycle-validation.md#current-host-integration-checkpoint---2026-10-20)
-and [implementation ledger](../docs/superpowers/plans/2026-10-19-vad-implementation.md#current-host-integration-checkpoint---2026-10-20)
+and the VAD implementation ledger (the 2026-10-19 plan document; the superpowers
+plans directory was removed from the repository on 2026-10-31, see
+`git log -- docs/superpowers/plans`)
 record the committed user-space integration and completed host checks,
 including the full workspace result of 1,290 passed, zero failed and six
 ignored. Driver fix `709e870` passed fresh host tests and the analyzed build;

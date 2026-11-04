@@ -1,7 +1,5 @@
 //! Only kernel handles, prepared ring endpoints and scalars cross owner threads.
 use super::{CaptureError, CaptureReport, CaptureStatus};
-#[cfg(test)]
-use crate::ActivationGate;
 use crate::StopSignal;
 use crate::clock_bridge::{BridgeObserver, ClockSource};
 use crate::owner::{WaitOutcome, wait_for_handles};
@@ -16,11 +14,11 @@ use std::{
 };
 use windows::Win32::{Foundation::HANDLE, System::Threading::SetEvent};
 
+#[cfg(test)]
+mod owner_tests;
 mod packet;
 pub(crate) mod preparation;
 pub(crate) mod stream;
-#[cfg(test)]
-mod tests;
 
 pub(crate) fn api<T>(
     stage: &'static str,

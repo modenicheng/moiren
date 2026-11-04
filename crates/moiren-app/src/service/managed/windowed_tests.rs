@@ -286,7 +286,9 @@ fn complete_selection(r: &mut Rig) {
         assert!(Instant::now() < deadline, "window worker did not finish");
         std::thread::park_timeout(Duration::from_millis(1));
     }
+    r.driver.automatic_resume = true;
     r.driver.poll_completions(&mut r.c, RoundBudget::default());
+    assert!(!r.driver.automatic_resume);
     assert!(r.driver.apply);
     assert!(
         r.c.measured_process

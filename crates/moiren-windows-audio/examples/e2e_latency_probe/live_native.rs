@@ -1860,6 +1860,7 @@ mod final_evidence_tests {
     fn native() -> NativeObservationSnapshot {
         NativeObservationSnapshot {
             virtual_clock: None,
+            virtual_callback: None,
             process_delivery: Vec::new(),
             owner_generation: 7,
             running: false,
@@ -2256,6 +2257,7 @@ mod tests {
         };
         let native = NativeObservationSnapshot {
             virtual_clock: None,
+            virtual_callback: None,
             owner_generation: 7,
             running: true,
             process_delivery: Vec::new(),

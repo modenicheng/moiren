@@ -1069,3 +1069,68 @@ fn monitor_controls_on_non_balance_nodes_are_rejected_during_project_load() {
             .contains("Mono and Swap only apply to Balance nodes")
     );
 }
+
+#[test]
+fn startup_restores_the_autosave_over_the_last_saved_project() {
+    let directory = TestDirectory::new();
+    let preferences_path = directory.file("preferences.json");
+    let last_project = directory.file("session.moiren.json");
+    let preferences = AppPreferences {
+        restore_last_project: true,
+        last_project_path: Some(last_project.clone()),
+        ..AppPreferences::default()
+    };
+    save_preferences_at(&preferences_path, &preferences).unwrap();
+    let spec = session(InputSelection::Tone {
+        frequency_hz: 440.0,
+    });
+    save_project(&last_project, &ProjectDocument::new("Saved project", &spec)).unwrap();
+    let mut autosaved = ProjectDocument::new("Recovered edits", &spec);
+    autosaved.layout.workspace = WorkspaceDocument::Mixer;
+    save_autosave_at(directory.file("autosave.moiren.json"), &autosaved).unwrap();
+
+    let startup = StartupDocuments::load_at(&preferences_path).unwrap();
+
+    let project = startup.project.expect("the autosave must be restored");
+    assert_eq!(project.name, "Recovered edits");
+    assert_eq!(project.layout.workspace, WorkspaceDocument::Mixer);
+}
+
+#[test]
+fn startup_falls_back_to_the_last_project_without_a_usable_autosave() {
+    let directory = TestDirectory::new();
+    let preferences_path = directory.file("preferences.json");
+    let last_project = directory.file("session.moiren.json");
+    let preferences = AppPreferences {
+        restore_last_project: true,
+        last_project_path: Some(last_project.clone()),
+        ..AppPreferences::default()
+    };
+    save_preferences_at(&preferences_path, &preferences).unwrap();
+    let spec = session(InputSelection::Tone {
+        frequency_hz: 440.0,
+    });
+    save_project(&last_project, &ProjectDocument::new("Saved project", &spec)).unwrap();
+
+    let without_autosave = StartupDocuments::load_at(&preferences_path).unwrap();
+    assert_eq!(
+        without_autosave.project.unwrap().name,
+        "Saved project",
+        "no autosave on disk means the last project restores"
+    );
+
+    // A damaged recovery file must not block startup or shadow the fallback.
+    fs::write(directory.file("autosave.moiren.json"), "{ not json").unwrap();
+    let with_damaged_autosave = StartupDocuments::load_at(&preferences_path).unwrap();
+    assert_eq!(with_damaged_autosave.project.unwrap().name, "Saved project");
+}
+
+#[test]
+fn a_missing_autosave_leaves_startup_fresh_when_restore_is_disabled() {
+    let directory = TestDirectory::new();
+    let preferences_path = directory.file("preferences.json");
+    save_preferences_at(&preferences_path, &AppPreferences::default()).unwrap();
+    let startup = StartupDocuments::load_at(&preferences_path).unwrap();
+    assert!(startup.project.is_none());
+    assert!(load_autosave_at(directory.file("autosave.moiren.json")).is_none());
+}

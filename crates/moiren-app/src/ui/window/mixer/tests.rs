@@ -3,8 +3,8 @@ use crate::ui::widgets::fader::FaderScale;
 use crate::ui::window::test_harness::{finish_service, shell_with_state, test_shell, wait_until};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString,
-    TestAppContext, VisualTestContext, point, px, size,
+    AppContext, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
+    SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 
 fn poll(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
@@ -116,6 +116,116 @@ fn mixer_header_drag_reorders_channels(cx: &mut TestAppContext) {
     cx.update(|window, cx| window.render_frame(cx));
     cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| assert_eq!(shell.mixer.order[0], order[1]));
+    finish_service(runtime);
+}
+
+/// The Bus & output dock's divider is a live resize handle: dragging it moves
+/// the divider under the cursor (the pane hugs the strip row's right edge),
+/// the width clamps to one strip at the narrow end and the pane's 55% cap at
+/// the wide end with no dead zone, and the docked strips stay flush against
+/// the pane's right edge.
+#[gpui_kit::test]
+fn mixer_dock_divider_drag_resizes_the_dock(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(1000.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The inspector's closing spring keeps the strip row's right edge moving
+    // for a while; the divider's geometry must be measured against the
+    // settled row or the drag lands on stale coordinates.
+    crate::ui::window::test_harness::settle_panels(cx);
+    let dock_width = |cx: &mut VisualTestContext| {
+        cx.update(|window, _| window.find("mixer-dock").bounds().size.width)
+    };
+    assert!(
+        (f32::from(dock_width(cx)) - 360.).abs() < 0.5,
+        "the dock starts at the default width"
+    );
+    let drag_divider_to = |cx: &mut VisualTestContext, x: Pixels| {
+        let divider = cx.update(|window, _| window.find("mixer-dock-resize").bounds().center());
+        // The platform drag gesture arms only after a visible move, so step
+        // off the press point first and render the frame the drag owns.
+        cx.simulate_mouse_down(divider, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            divider + point(px(-12.), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| window.render_frame(cx));
+        let target = point(x, divider.y);
+        cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+        cx.update(|window, cx| window.render_frame(cx));
+        cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| window.render_frame(cx));
+    };
+    // 100px left of the default divider: the pane grows by exactly the drag.
+    // The target rides the border itself, not the grab handle's left edge
+    // (which reaches 3px past it), so the arithmetic stays in whole strips.
+    let divider_x = cx.update(|window, _| window.find("mixer-dock").bounds().left());
+    drag_divider_to(cx, divider_x - px(100.));
+    view.update(cx, |shell, _| {
+        assert!(
+            (shell.mixer.dock_width - 460.).abs() < 0.5,
+            "got {}",
+            shell.mixer.dock_width
+        );
+    });
+    let sink = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Sink)
+            .unwrap()
+            .id()
+    });
+    let (dock, output) = cx.update(|window, _| {
+        (
+            window.find("mixer-dock").bounds(),
+            window
+                .find(SharedString::from(format!("strip-{sink:?}")))
+                .bounds(),
+        )
+    });
+    assert!((f32::from(dock.size.width) - 460.).abs() < 0.5);
+    assert!(
+        (f32::from(output.right() - dock.right())).abs() <= 1.,
+        "the docked strip must stay flush with the resized pane"
+    );
+    // Hard against the right edge asks for a near-zero dock; the floor keeps
+    // one full strip.
+    drag_divider_to(cx, dock.right() - px(10.));
+    view.update(cx, |shell, _| {
+        assert!(
+            (shell.mixer.dock_width - 160.).abs() < 0.5,
+            "the one-strip floor must hold, got {}",
+            shell.mixer.dock_width
+        );
+    });
+    assert!(
+        (f32::from(dock_width(cx)) - 160.).abs() < 0.5,
+        "the laid-out dock must honor the floor"
+    );
+    // Hard against the left edge asks for the whole row; the 55% cap holds
+    // and the divider still tracks the pointer at the clamp.
+    drag_divider_to(cx, px(2.));
+    let dock = cx.update(|window, _| window.find("mixer-dock").bounds());
+    view.update(cx, |shell, _| {
+        let clamped = shell.mixer.dock_width;
+        assert!(
+            clamped > 460. && clamped < 1600.,
+            "the cap must engage inside the requested span, got {clamped}"
+        );
+        assert!(
+            (f32::from(dock.size.width) - clamped).abs() < 0.5,
+            "the pane renders the clamped width {clamped}, not {}",
+            f32::from(dock.size.width)
+        );
+    });
     finish_service(runtime);
 }
 
@@ -294,7 +404,9 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
     });
     // The inspector's closing spring is a real layout change, not a meter
     // invalidation. Let it finish before measuring steady-state frames.
@@ -306,12 +418,8 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         });
     }
     let before = view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         (trace.strip_renders, trace.meter_paints)
-    });
-    let chrome_before = view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
-        (trace.toolbar_renders, trace.status_renders)
     });
     cx.update(|window, _| {
         let toolbar = window.find("app-toolbar").bounds();
@@ -326,7 +434,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         });
     }
     let after = view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
+        let trace = shell.trace.borrow();
         assert!(
             shell.node_meter_points.borrow().contains(&node),
             "cached meter demand must survive"
@@ -341,14 +449,10 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         after.1 >= before.1 + 10,
         "the meter canvas must actually paint"
     );
-    assert_eq!(
-        view.read_with(cx, |shell, _| {
-            let trace = shell.mixer.trace.borrow();
-            (trace.toolbar_renders, trace.status_renders)
-        }),
-        chrome_before,
-        "meter animation must not rebuild toolbar or status bar"
-    );
+    // The toolbar and status bar rebuild every frame by necessity: their
+    // window drag regions must re-register their hitboxes per frame (the
+    // splice does not replay window-control registrations). The cached
+    // invariants that matter are the strips and their meters.
 
     // Service elapsed-time publications notify the shell, not Mixer controls.
     view.update(cx, |shell, cx| {
@@ -359,7 +463,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders),
+        view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders),
         after.0,
         "control polling must not invalidate unchanged strips"
     );
@@ -370,14 +474,14 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders) > after.0);
+    assert!(view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders) > after.0);
 
-    let controls_before = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    let controls_before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
     let fader = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
     cx.update(|window, cx| fader.update(cx, |slider, cx| slider.set_value(0.25, window, cx)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders) > controls_before,
+        view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders) > controls_before,
         "slider state notifications must invalidate cached thumb geometry"
     );
 
@@ -451,9 +555,10 @@ fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut Te
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| {
-            shell.node_meters.raw_levels(node).is_some()
-                && shell.node_meters.channel_levels(node).is_some()
+        view.read_with(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state.node_meters.raw_levels(node).is_some()
+                && state.node_meters.channel_levels(node).is_some()
         })
     });
     // Digital silence (no publications) parks every layer at the scale
@@ -539,6 +644,665 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
     finish_service(runtime);
 }
 
+/// The per-strip split (design 17): a publish that changes one strip's
+/// content rebuilds exactly that strip's panel — its siblings compare their
+/// keys equal and replay their cached paint. Under the whole-page panel this
+/// same edit paid one full strip-tree render per publish.
+#[gpui_kit::test]
+fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The inspector's closing spring notifies its way through the first
+    // second; let it finish or every frame rebuilds every panel.
+    crate::ui::window::test_harness::settle_panels(cx);
+    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let muted = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(target)
+                .is_some_and(|node| node.mixer.muted)
+        })
+    };
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_mixer(target, |state| state.muted = !state.muted)
+        });
+    });
+    // Land the publish without rendering: `render_frame` refreshes the whole
+    // window and would rebuild every panel regardless of the caches.
+    wait_until(Duration::from_secs(2), || muted(&view, cx));
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    cx.update(|window, cx| {
+        assert!(!window.is_a11y_active(), "measuring the cached path");
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    assert_eq!(
+        after - before,
+        1,
+        "only the edited strip's panel may rebuild; siblings must replay"
+    );
+    finish_service(runtime);
+}
+
+/// A small press-drag on the fader must track the pointer: the thumb moves a
+/// couple of pixels, the confirmed publishes land mid-drag, the release
+/// commits — and the value never snaps to the rail (−inf). Regression for a
+/// probabilistic mapping fault where a tiny drag ended at digital silence.
+#[gpui_kit::test]
+fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    // Start from unity (0 dB): thumb at FaderScale position 0.24.
+    let start_value = 1. - FaderScale::position(1.);
+    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    // Four small downward moves with frames in between: publishes land
+    // mid-drag exactly as they do on a real machine.
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    // Mid-drag sanity: the value tracks downward, never the rail.
+    let mid_value = view.update(cx, |shell, cx| {
+        shell.mixer.faders[&node].state.read(cx).value().end()
+    });
+    assert!(
+        mid_value > 0.5 && mid_value < start_value,
+        "mid-drag value {mid_value} must track between unity and the rail"
+    );
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    // The dispatch rides the mailbox: until a poll consumes the published
+    // confirmation, the UI snapshot still holds the PRE-DRAG gain, and every
+    // rendered frame runs the snapshot write-back. The thumb must hold the
+    // user's value through that window instead of snapping back to the rail.
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let held = view.read_with(cx, |shell, cx| {
+            shell.mixer.faders[&node].state.read(cx).value().end()
+        });
+        assert!(
+            held > 0.5,
+            "the thumb snapped back to the pre-drag snapshot value {held} before confirmation"
+        );
+    }
+    // A stale publication (the driver's strip sync races the edit path on a
+    // real machine): a revision the UI has not seen, carrying the PRE-DRAG
+    // gain. The fresh user commit must shield the thumb from it.
+    view.update(cx, |shell, cx| {
+        let stale_gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        shell.state.update(cx, |state, _| {
+            let snapshot = std::sync::Arc::make_mut(&mut state.snapshot);
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            graph.candidate_revision += 1;
+            if let Some(entry) = graph.nodes.iter_mut().find(|entry| entry.id == node) {
+                entry.mixer.gain = stale_gain;
+            }
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let shielded = view.read_with(cx, |shell, cx| {
+        shell.mixer.faders[&node].state.read(cx).value().end()
+    });
+    assert!(
+        shielded > 0.5,
+        "a stale publication yanked the thumb back to {shielded}"
+    );
+    poll(&view, cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (final_value, final_db) = view.update(cx, |shell, cx| {
+        let value = shell.mixer.faders[&node].state.read(cx).value().end();
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        (value, 20. * gain.log10())
+    });
+    assert!(
+        final_value > 0.5,
+        "a small drag must not land on the rail (value {final_value}, {final_db} dB)"
+    );
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag from unity landed at {final_db} dB"
+    );
+    finish_service(runtime);
+}
+
+/// The user's repro: select the strip by clicking its bottom header, then
+/// drag the fader a tiny bit — the thumb must not lock onto -inf. The
+/// selection rebuilds the strip and (when the inspector is open) rewires
+/// the node's meter visibility and the inspector panel; none of that may
+/// corrupt the shared slider state.
+#[gpui_kit::test]
+fn mixer_fader_small_drag_survives_strip_selection(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    // Select the strip the way the header click does.
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(node);
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let start_value = 1. - FaderScale::position(1.);
+    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        let held = view.read_with(cx, |shell, cx| {
+            shell.mixer.faders[&node].state.read(cx).value().end()
+        });
+        assert!(
+            held > 0.5,
+            "with the strip selected the thumb snapped to {held}"
+        );
+    }
+    poll(&view, cx);
+    let final_db = view.update(cx, |shell, cx| {
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        20. * gain.log10()
+    });
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag from unity landed at {final_db} dB with the strip selected"
+    );
+    // And the same drag with the inspector open: the inspector shares the
+    // slider state and rebuilds per publish.
+    view.update(cx, |shell, cx| {
+        shell.open_inspector();
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let held = view.read_with(cx, |shell, cx| {
+            shell.mixer.faders[&node].state.read(cx).value().end()
+        });
+        assert!(
+            held > 0.5,
+            "with the inspector open the thumb snapped to {held}"
+        );
+    }
+    poll(&view, cx);
+    let final_db = view.update(cx, |shell, cx| {
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        20. * gain.log10()
+    });
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag from unity landed at {final_db} dB with the inspector open"
+    );
+    finish_service(runtime);
+}
+
+/// Same small drag, but the window was resized after the strips laid out:
+/// the strips must re-derive their pointer mapping from the new geometry
+/// instead of mapping against the pre-resize track and clamping to the rail.
+#[gpui_kit::test]
+fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let start_value = 1. - FaderScale::position(1.);
+    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // A real layout change the strip key does not mention: the window is
+    // shortened, so every strip's height (and its fader track) changes.
+    cx.simulate_resize(size(px(1440.), px(640.)));
+    view.update(cx, |_, cx| cx.notify());
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let (thumb_x, thumb_y, _track_height) = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        (
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(1.),
+            f32::from(bounds.size.height),
+        )
+    });
+    let press = point(thumb_x, thumb_y);
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for step in 0..4 {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(2. * (step as f32) + 2.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    poll(&view, cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (final_value, final_db) = view.update(cx, |shell, cx| {
+        let value = shell.mixer.faders[&node].state.read(cx).value().end();
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .unwrap()
+            .mixer
+            .gain;
+        (value, 20. * gain.log10())
+    });
+    assert!(
+        final_value > 0.5,
+        "a small drag after a resize must not land on the rail (value {final_value}, {final_db} dB)"
+    );
+    assert!(
+        (-6. ..=0.01).contains(&final_db),
+        "a ~10px drag after a resize landed at {final_db} dB"
+    );
+    finish_service(runtime);
+}
+
+/// Undo must outrank an in-flight fader drag (audit SD-7): the drag holds the
+/// snapshot write-back down, so an undo landing mid-drag used to stay
+/// invisible (thumb pinned to the pointer) and the release then dispatched
+/// the stale pointer value over the undone gain — undo seemed to work only
+/// sometimes. The journal step now cancels the active drag: the write-back
+/// reopens so the thumb follows the undone value, and the release drops the
+/// gesture's stale tail instead of landing it as a fresh edit.
+#[gpui_kit::test]
+fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let gain_of = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> f64 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain
+        })
+    };
+    // A journaled baseline edit gives the undo something to restore: 0.5
+    // (-6 dB). The drag below will push the journal past it.
+    view.update(cx, |shell, cx| {
+        let mixer = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .expect("strip node")
+            .mixer;
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::SetMixer {
+                    node,
+                    state: crate::service::MixerState { gain: 0.5, ..mixer },
+                },
+            ));
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        (gain_of(&view, cx) - 0.5).abs() < 1e-9
+    });
+    // Same-node mixer edits merge into one undo step inside the journal's
+    // 500 ms coalesce window; the baseline must fall outside it so the undo
+    // steps back to 0.5 rather than past it to unity.
+    std::thread::sleep(Duration::from_millis(600));
+    let undo_position = 1. - FaderScale::position(0.5);
+    // Press below the -6 dB thumb and hold: the press revalues the slider and
+    // its Change dispatches immediately, so the journal head is the press's
+    // own value and the pointer owns the thumb (write-back suppressed).
+    let press = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * FaderScale::position(0.5) + px(8.),
+        )
+    });
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    wait_until(Duration::from_secs(2), || gain_of(&view, cx) < 0.5);
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.state.read(cx).snapshot.graph.can_undo,
+            "the drag's dispatch must be journaled before the undo"
+        );
+        assert_ne!(
+            shell.mixer.faders[&node].state.read(cx).value().end(),
+            undo_position,
+            "the dragging thumb must sit at the pointer, not at the snapshot"
+        );
+    });
+    // Undo mid-drag. The undo publishes the restored gain while the pointer
+    // is still down; deliberately no frame renders in between, so the slider
+    // state still carries the stale pointer value when the release lands.
+    // The journal step is invoked directly: the mixer page keeps no element
+    // under the shell's focus handle for ctrl-z to bubble through (the
+    // keystroke routing itself is covered by the window-level undo tests).
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| shell.undo_redo_graph(false, window, cx));
+    });
+    wait_until(Duration::from_secs(2), || {
+        (gain_of(&view, cx) - 0.5).abs() < 1e-9
+    });
+    cx.simulate_mouse_up(press, MouseButton::Left, Modifiers::default());
+    // The cancelled gesture's release must not re-land its stale value: drain
+    // the mailbox and give any (wrongly) dispatched edit time to publish.
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+    }
+    let (gain, thumb) = view.update(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.faders[&node].state.read(cx).value().end(),
+        )
+    });
+    assert!(
+        (gain - 0.5).abs() < 1e-9,
+        "the release must not overwrite the undone gain, got {gain}"
+    );
+    assert!(
+        (thumb - undo_position).abs() < 1e-6,
+        "the thumb must follow the undone value after the drag was cancelled, got {thumb}"
+    );
+    finish_service(runtime);
+}
+
+/// The capture-tap monitor meters must not keep the frame loop armed for a
+/// display the node level topics already cover. The Graph page mounts no
+/// legacy probes and stands down at silence; the Mixer page's pre-fader tap
+/// keeps producing signal even when the fader is muted, so a live tap
+/// subscription pinned the whole page to display-rate frames and burned a
+/// core.
+#[gpui_kit::test]
+fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let backend_state = backend.0.clone();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::window::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = crate::ui::window::test_harness::shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1024.), px(720.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.meter_points.get().0,
+            "the source strip's capture probe must be mounted on the page"
+        );
+        assert!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .signal_topics
+                .node_levels
+                .contains_key(&node),
+            "the source node's level topic must cover its meter"
+        );
+    });
+    // Park the session at digital silence (the fake engine ignores mixer
+    // mutes, so the silence fixture pauses its render loop instead). The
+    // probe stays mounted and the node stays managed: the legacy capture
+    // tap must not be subscribed, and its motion must not hold the frame
+    // arbiter open for a display the node topic already covers.
+    backend_state.pause_audio.store(true, Ordering::SeqCst);
+    // The ballistics need a few seconds to fall from full scale to rest.
+    crate::ui::window::test_harness::wait_until(Duration::from_secs(8), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.at_rest() && !shell.frames_wanted(cx)
+        })
+    });
+    view.read_with(cx, |shell, cx| {
+        assert!(
+            shell.meter_points.get().0,
+            "the probe must stay mounted while the page is at rest"
+        );
+        assert!(
+            !shell.meters.input_subscribed(),
+            "the capture tap stayed subscribed for a display the node topic covers"
+        );
+        assert!(
+            !shell.frames_wanted(cx),
+            "the frame loop must stand down once every displayed meter is at rest"
+        );
+    });
+    finish_service(runtime);
+}
+
 /// Exercise a real managed publisher: painting cannot pass just by reusing
 /// frozen levels or silently dropping visibility/subscription demand.
 #[gpui_kit::test]
@@ -589,16 +1353,26 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).node_meters.raw_levels(node).is_some()
+        })
     });
-    let levels = view.read_with(cx, |shell, _| {
-        shell.node_meters.raw_levels(node).unwrap().to_vec()
+    let levels = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .node_meters
+            .raw_levels(node)
+            .unwrap()
+            .to_vec()
     });
     assert!(
         levels[0].peak >= 1.,
         "the fake physical source is full scale"
     );
-    assert!(view.read_with(cx, |shell, _| shell.node_meters.channel_clips(node)[0]));
+    assert!(view.read_with(cx, |shell, cx| {
+        shell.state.read(cx).node_meters.channel_clips(node)[0]
+    }));
     crate::ui::window::test_harness::settle_panels(cx);
     backend_state.pause_audio.store(true, Ordering::SeqCst);
     // Drain any already-published windows before resetting the clip latch.
@@ -607,10 +1381,11 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    let (bar_before, strips_before, paints_before) = view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
+    let (bar_before, strips_before, paints_before) = view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
+        let trace = shell.trace.borrow();
         (
-            shell.node_meters.channel_levels(node).unwrap()[0].bar,
+            state.node_meters.channel_levels(node).unwrap()[0].bar,
             trace.strip_renders,
             trace.meter_paints,
         )
@@ -620,18 +1395,28 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    view.read_with(cx, |shell, _| {
-        let trace = shell.mixer.trace.borrow();
-        assert!(
-            shell.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
-            "cached controls must not freeze display ballistics between publications"
+    view.read_with(cx, |shell, cx| {
+        let state = shell.state.read(cx);
+        let trace = shell.trace.borrow();
+        assert_eq!(
+            state.node_meters.channel_levels(node).unwrap()[0].bar,
+            bar_before,
+            "a publisher stall must hold the bar instead of reading as a dip"
         );
         assert_eq!(trace.strip_renders, strips_before);
-        assert!(trace.meter_paints > paints_before);
+        assert!(
+            trace.meter_paints > paints_before,
+            "cached controls must not freeze the meter pump"
+        );
     });
     cx.update(|window, cx| window.click(SharedString::from(format!("meter-reset-{node:?}")), cx));
-    assert!(view.read_with(cx, |shell, _| {
-        shell.node_meters.channel_clips(node).is_empty()
+    assert!(view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .node_meters
+            .channel_clips(node)
+            .is_empty()
     }));
 
     // Add enough strips to overflow. Both the cache and overlay geometry must
@@ -676,7 +1461,185 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
-    assert!(view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_none()));
+    assert!(view.read_with(cx, |shell, cx| {
+        shell.state.read(cx).node_meters.raw_levels(node).is_none()
+    }));
+    finish_service(runtime);
+}
+
+/// The strip readout must speak the inspector's marker semantics (audit
+/// SD-6): a full-scale transient followed by silence walks the number back
+/// down with the decaying marker instead of staying pinned at the retained
+/// raw peak's all-time maximum, and the text is spelled by the same
+/// `dbfs_text` the inspector's "Peak" row uses. The readout's shaping is
+/// shared across strips and keyed by text: held frames re-shape nothing,
+/// every distinct dB string shapes exactly once, and no per-node cache
+/// entry exists to outlive a deleted node (audit HC-7).
+#[gpui_kit::test]
+fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use crate::ui::presentation::dbfs_text;
+    use std::sync::atomic::Ordering;
+    let full_scale = dbfs_text(1.);
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::window::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The fake physical source runs full scale, so every visible strip's
+    // readout holds the same "+0.0 dBFS" text. Warm up until every demanded
+    // node is observed and painted at that held value.
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            let surface = shell.mixer_frame.read(cx).surface();
+            let surface = surface.borrow();
+            shell.node_meter_points.borrow().iter().all(|&id| {
+                shell
+                    .state
+                    .read(cx)
+                    .node_meters
+                    .channel_levels(id)
+                    .is_some()
+                    && surface
+                        .last_readout(id)
+                        .is_some_and(|text| text == full_scale)
+            }) && surface
+                .last_readout(node)
+                .is_some_and(|text| text == full_scale)
+        })
+    });
+    let (shapes_held, entries_held, paints_held) = view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer_frame.read(cx).surface();
+        let (shapes, entries) = surface.borrow().readout_shape_stats();
+        (shapes, entries, shell.trace.borrow().meter_paints)
+    });
+    assert_eq!(entries_held, shapes_held, "one entry per distinct text");
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer_frame.read(cx).surface();
+        let (shapes, entries) = surface.borrow().readout_shape_stats();
+        assert_eq!(
+            shapes, shapes_held,
+            "every strip holds the same text: held frames must replay the shaped line"
+        );
+        assert_eq!(
+            entries, shapes,
+            "each shaper run inserted exactly one distinct text"
+        );
+        assert!(
+            shell.trace.borrow().meter_paints > paints_held,
+            "held frames actually painted readouts"
+        );
+    });
+
+    // Silence the fader: publications continue (silent windows), the bar
+    // falls immediately, the marker holds its half second and then falls at
+    // the default Fast rate (40 dB/s). The readout must follow it down
+    // instead of staying latched at the transient's maximum.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_mixer(node, |state| state.muted = true)
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .is_some_and(|node| node.mixer.muted)
+        })
+    });
+    // Keep pumping across the hold and into the fall: a single frame after a
+    // long sleep would drain a backlog of stale pre-mute windows from the
+    // bounded queue and re-anchor the marker, instead of observing the decay
+    // the display sees at real frame rates.
+    let decay = std::time::Instant::now() + Duration::from_millis(1000);
+    while std::time::Instant::now() < decay {
+        std::thread::sleep(Duration::from_millis(30));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    let (shapes_fallen, readout, inspector) = view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer_frame.read(cx).surface();
+        let surface = surface.borrow();
+        let (shapes, entries) = surface.readout_shape_stats();
+        assert_eq!(
+            entries, shapes,
+            "the shared cache still holds one entry per text"
+        );
+        let marker = shell
+            .state
+            .read(cx)
+            .node_meters
+            .channel_levels(node)
+            .unwrap()[0]
+            .marker;
+        (
+            shapes,
+            surface.last_readout(node).unwrap(),
+            dbfs_text(marker),
+        )
+    });
+    assert!(
+        shapes_fallen > shapes_held,
+        "the falling marker must re-shape: the old raw-peak readout never changed again"
+    );
+    assert_eq!(
+        readout, inspector,
+        "the strip readout equals the inspector's Peak spelling at the same instant"
+    );
+    assert_ne!(
+        readout, full_scale,
+        "the transient's maximum is no longer pinned"
+    );
     finish_service(runtime);
 }
 
@@ -1079,6 +2042,72 @@ fn send_numeric_edit_commits_on_blur_and_rejects_invalid(cx: &mut TestAppContext
         "an invalid blur changes nothing"
     );
     assert_eq!(editing, None);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn send_editor_accepts_the_shared_silence_spellings(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    activate_window(cx);
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let edge = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.edges()[0].id()
+    });
+    let editor = view.update(cx, |shell, _| shell.mixer.send_inputs[&edge].clone());
+    let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.update(cx, |shell, cx| {
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .graph
+                .get_edge(edge)
+                .unwrap()
+                .params()
+                .gain
+        })
+    };
+    let open = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        let position = cx.update(|window, _| {
+            window
+                .find(SharedString::from(format!("send-value-{edge:?}")))
+                .bounds()
+                .center()
+        });
+        cx.simulate_event(gpui_kit::MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+        });
+        view.update(cx, |shell, _| {
+            assert_eq!(shell.mixer.editing_send, Some(edge), "editor must open");
+        });
+    };
+
+    // The readout's U+2212 −∞ spelling must round-trip: the editor shows
+    // "-inf", but the styled strip label renders the Unicode minus.
+    open(&view, cx);
+    type_and_blur(&view, cx, &editor, "−inf");
+    assert_eq!(gain(&view, cx), 0., "−inf (U+2212) must parse as silence");
+    // The case-insensitive long form the fader editor already accepts.
+    open(&view, cx);
+    type_and_blur(&view, cx, &editor, "-INFINITY");
+    assert_eq!(gain(&view, cx), 0., "-INFINITY must parse as silence");
     finish_service(runtime);
 }
 

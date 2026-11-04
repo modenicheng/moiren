@@ -1,11 +1,11 @@
 use moiren_core::protocol::{ApplyAt, ParamValue, ParameterKey, ParameterRequest, ProcessorId};
 use moiren_engine::{
     boundary::{BoundaryReport, ConstantSource, RtAudioSink, SinkAdapter, SourceAdapter},
-    buffer::{AudioBlock, BufferArena, BufferSlotLayout, PortAccess},
+    buffer::{AudioBlock, BufferArena, BufferSlotLayout, PortAccess, PreparedIo, ReadPorts},
     control::{ControlPort, parameter_channel},
-    meter::{MeterReader, level_meter},
-    processor::{Gain, Observer, ProcessContext},
+    processor::{Gain, Observer, ProcessContext, ProcessorError, RtObserver},
     runtime::{Engine, EngineConfig, ExecutionPlan, OpSpec, ProcessorInstance, RtResources},
+    signal::ProcessSignals,
 };
 use std::sync::{
     Arc,
@@ -18,6 +18,72 @@ pub(super) const SOURCE: ProcessorId = ProcessorId(10);
 pub(super) const GAIN: ProcessorId = ProcessorId(20);
 pub(super) const METER: ProcessorId = ProcessorId(30);
 pub(super) const SINK: ProcessorId = ProcessorId(40);
+
+/// Shared readout of [`PeakProbe`]: the peak magnitude and frame count the
+/// observer saw, readable without touching the render thread.
+pub(super) struct ProbeState {
+    peak_bits: AtomicU64,
+    frames: AtomicU64,
+}
+impl ProbeState {
+    pub(super) fn peak(&self) -> f64 {
+        f64::from_bits(self.peak_bits.load(Ordering::Relaxed))
+    }
+    pub(super) fn frames(&self) -> u64 {
+        self.frames.load(Ordering::Relaxed)
+    }
+}
+
+/// Allocation-free single-input test observer: records the observed peak
+/// magnitude and frame count through atomics, with no queue or signal bus.
+pub(super) struct PeakProbe {
+    state: Arc<ProbeState>,
+}
+impl PeakProbe {
+    pub(super) fn new() -> (Self, Arc<ProbeState>) {
+        let state = Arc::new(ProbeState {
+            peak_bits: AtomicU64::new(0.0_f64.to_bits()),
+            frames: AtomicU64::new(0),
+        });
+        (
+            Self {
+                state: Arc::clone(&state),
+            },
+            state,
+        )
+    }
+}
+impl RtObserver<f64> for PeakProbe {
+    fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
+        if io.input_count() == 1 && io.input_channels(0).is_some() {
+            Ok(())
+        } else {
+            Err(ProcessorError::InvalidIo)
+        }
+    }
+    fn observe(
+        &mut self,
+        ctx: &ProcessContext,
+        inputs: ReadPorts<'_, f64>,
+        _signals: ProcessSignals<'_>,
+    ) {
+        let input = inputs.get(0).expect("validated observer input");
+        let mut peak = 0.0_f64;
+        for frame in 0..ctx.frames {
+            for channel in 0..input.channel_count() {
+                peak = peak.max(input.channel(channel)[frame].abs());
+            }
+        }
+        // Bit patterns of non-negative finite f64 are monotonic, so fetch_max
+        // over to_bits keeps the running peak without locks on the render path.
+        self.state
+            .peak_bits
+            .fetch_max(peak.to_bits(), Ordering::Relaxed);
+        self.state
+            .frames
+            .fetch_add(ctx.frames as u64, Ordering::Relaxed);
+    }
+}
 
 struct Capture {
     samples: Arc<[AtomicU64]>,
@@ -62,10 +128,10 @@ pub(super) fn pipeline(
     in_place: bool,
     events: usize,
     queue: usize,
-) -> (Engine<f64>, ControlPort, MeterReader, Arc<[AtomicU64]>) {
+) -> (Engine<f64>, ControlPort, Arc<ProbeState>, Arc<[AtomicU64]>) {
     let (control, params) =
         parameter_channel(vec![Gain::parameter(GAIN, 1.0)], REV, EPOCH, queue, 1024).unwrap();
-    let (meter, reader) = level_meter(1, 1).unwrap();
+    let (probe, state) = PeakProbe::new();
     let samples: Arc<[AtomicU64]> = (0..256)
         .map(|_| AtomicU64::new(f64::NAN.to_bits()))
         .collect::<Vec<_>>()
@@ -79,7 +145,7 @@ pub(super) fn pipeline(
             }),
         ),
         ProcessorInstance::new(GAIN, Gain),
-        ProcessorInstance::new(METER, Observer(meter)),
+        ProcessorInstance::new(METER, Observer(probe)),
         ProcessorInstance::new(
             SINK,
             SinkAdapter(Capture {
@@ -154,7 +220,7 @@ pub(super) fn pipeline(
     (
         Engine::new(plan, resources, params).unwrap(),
         control,
-        reader,
+        state,
         samples,
     )
 }

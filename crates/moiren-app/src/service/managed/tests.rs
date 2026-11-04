@@ -1143,6 +1143,184 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
     assert_eq!(topic.business_subscribers(), 0);
 }
 
+/// A running rig with a spectrum analyzer spliced between the pan and the
+/// sink, ticked until the bridge registered the analyzer's topic.
+fn spectrum_rig() -> (Rig, moiren_core::graph::NodeId) {
+    let mut rig = Rig::new();
+    // Pace the fake owner at the session's 256-frame block maximum (5.3 ms
+    // callbacks): the 8192-point default fills in 32 renders instead of a
+    // thousand millisecond-tick ones, which a coarse Windows timer could
+    // stretch past the publication deadline.
+    rig.state.timed_meter_frames.store(256, Ordering::Relaxed);
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::SpectrumAnalyzer,
+        channels: 2,
+    }));
+    let spectrum = rig.node(NodeKind::SpectrumAnalyzer);
+    let snapshot = rig.c.graph.snapshot();
+    let pan = rig.node(NodeKind::Pan);
+    let sink = rig.node(NodeKind::Sink);
+    let final_edge = snapshot
+        .graph
+        .edges()
+        .iter()
+        .find(|edge| edge.dst() == sink)
+        .unwrap()
+        .id();
+    rig.request(AppRequest::EditGraph(GraphEdit::Disconnect(final_edge)));
+    for (source, destination) in [(pan, spectrum), (spectrum, sink)] {
+        rig.request(AppRequest::EditGraph(GraphEdit::Connect {
+            source: snapshot.graph.get_node(source).unwrap().outputs()[0].id(),
+            destination: snapshot.graph.get_node(destination).unwrap().inputs()[0].id(),
+        }));
+    }
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| rig.c.signals.topics.node_spectra.contains_key(&spectrum));
+    (rig, spectrum)
+}
+
+/// Pump the rig until a delivered window satisfies `accept`, which also
+/// asserts whatever must hold for every window on the way.
+fn wait_spectrum(
+    rig: &mut Rig,
+    subscriber: &mut moiren_signal::Subscriber<signals::SpectrumTopic>,
+    mut accept: impl FnMut(&moiren_engine::spectrum::SpectrumWindow, &[f32]) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        rig.tick();
+        rig.c.signals.pump_if_due(Instant::now());
+        let mut matched = false;
+        while let Some(window) = subscriber.next() {
+            matched |= accept(window.header(), window.elements());
+        }
+        if matched {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "spectrum analyzer did not publish: {:?}",
+            rig.c.graph.snapshot().last_error
+        );
+    }
+}
+
+#[test]
+fn spectrum_bridge_relays_fft_windows_only_on_demand() {
+    let (mut rig, spectrum) = spectrum_rig();
+    let topic = rig.c.signals.topics.node_spectra[&spectrum].clone();
+    assert_eq!(topic.business_subscribers(), 0);
+    for _ in 0..5 {
+        rig.tick();
+    }
+    assert_eq!(
+        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        0,
+        "no subscriber, no engine-side FFT demand"
+    );
+    let (mut ticket, request) =
+        crate::service::signals::subscription_request(topic.clone(), Default::default());
+    rig.c.signals.execute(request);
+    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    // The fake backend feeds DC 1.0: once the analysis window has filled,
+    // the one-sided magnitudes read 1.0 at the DC bin of each channel and
+    // nothing mid-band, channel-major at the default 8192-point shape.
+    wait_spectrum(&mut rig, &mut subscriber, |header, bins| {
+        assert_eq!(header.fft_size, 8192);
+        assert_eq!(header.channels, 2);
+        assert!(header.sample_rate > 0.);
+        assert!(header.frame_end > header.frame_start);
+        assert_eq!(bins.len(), 2 * 4097);
+        (bins[0] - 1.).abs() < 0.02 && (bins[4097] - 1.).abs() < 0.02 && bins[2048].abs() < 1e-3
+    });
+    assert_eq!(rig.driver.meters.as_ref().unwrap().demanded_spectra(), 1);
+    drop(subscriber);
+    assert_eq!(topic.business_subscribers(), 0);
+    for _ in 0..5 {
+        rig.tick();
+    }
+    assert_eq!(
+        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        0,
+        "dropping the last subscriber releases the engine subscription"
+    );
+}
+
+#[test]
+fn fft_resize_reregisters_the_spectrum_topic() {
+    let (mut rig, spectrum) = spectrum_rig();
+    let before = rig.c.signals.topics.node_spectra[&spectrum].clone();
+    rig.request(AppRequest::EditGraph(GraphEdit::SetBuiltin {
+        node: spectrum,
+        state: crate::service::BuiltinState::SpectrumAnalyzer(
+            moiren_engine::spectrum::SpectrumSettings {
+                fft_size: 4096,
+                hop_frames: 2048,
+            },
+        ),
+    }));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| {
+        rig.c
+            .signals
+            .topics
+            .node_spectra
+            .get(&spectrum)
+            .is_some_and(|topic| *topic != before)
+    });
+    let after = rig.c.signals.topics.node_spectra[&spectrum].clone();
+    let (mut ticket, request) =
+        crate::service::signals::subscription_request(after, Default::default());
+    rig.c.signals.execute(request);
+    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    wait_spectrum(&mut rig, &mut subscriber, |header, bins| {
+        assert_eq!(header.fft_size, 4096);
+        assert_eq!(bins.len(), 2 * 2049);
+        true
+    });
+    assert_eq!(rig.c.signals.topics.node_spectra.len(), 1);
+}
+
+/// A topic only closes once no publisher leases it. The bridge must let go
+/// of a departed node's slot — and activate a table without it — before
+/// asking the bus to unregister, or every later poll fails the same way.
+#[test]
+fn removing_a_node_closes_its_level_topic_without_stalling_the_bridge() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    let bus = rig.node(NodeKind::Bus);
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| rig.c.signals.topics.node_levels.contains_key(&bus));
+    rig.request(AppRequest::EditGraph(GraphEdit::RemoveNode(bus)));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| {
+        !rig.c.signals.topics.node_levels.contains_key(&bus)
+            && rig.c.graph.snapshot().active_revision
+                == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    for _ in 0..5 {
+        rig.tick();
+    }
+    let snapshot = rig.c.graph.snapshot();
+    assert!(
+        !snapshot
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Node meters")),
+        "{:?}",
+        snapshot.last_error
+    );
+    assert_eq!(
+        rig.c.signals.topics.node_levels.len(),
+        snapshot.graph.nodes().len()
+    );
+}
+
 #[test]
 fn compressor_updates_are_acknowledged_live_without_rebuilding_or_touching_other_nodes() {
     use crate::service::CompressorParameter;
@@ -2573,6 +2751,233 @@ fn automatic_startup_uses_catalog_defaults_once_and_stop_stays_authoritative() {
     assert_eq!(rig.c.core.generation(), generation);
     assert!(rig.c.core.desired().is_none());
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+}
+
+/// A service whose context already holds a restored project, the way
+/// `start_service` seeds it before the driver polls.
+fn resume_rig(catalog: Arc<FakeCatalog>, document: crate::project::ProjectDocument) -> Rig {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let driver = ManagedDriver::new(move |_| Ok(Box::new(backend.clone())))
+        .with_catalog(catalog)
+        .with_automatic_resume();
+    let mut c = ServiceContext::default();
+    c.load_project(document).expect("restored project loads");
+    Rig {
+        driver,
+        c,
+        pool: JobPool::new().unwrap(),
+        state,
+    }
+}
+
+/// The default chain bound to the fake catalog's devices at a non-default
+/// gain, plus whatever `extend` adds, saved as a project document.
+fn restored_document(
+    extend: impl FnOnce(&mut crate::service::ServiceGraph),
+) -> crate::project::ProjectDocument {
+    let mut graph = crate::service::ServiceGraph::default();
+    let snapshot = graph.snapshot();
+    let source = snapshot.node_of_kind(NodeKind::Source).unwrap().0.id();
+    let sink = snapshot.node_of_kind(NodeKind::Sink).unwrap().0.id();
+    let gain = snapshot.node_of_kind(NodeKind::Gain).unwrap().0.id();
+    graph
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+        })
+        .unwrap();
+    graph
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "output".into(),
+        })
+        .unwrap();
+    graph
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.7,
+        })
+        .unwrap();
+    extend(&mut graph);
+    crate::project::ProjectDocument::from_graph("Restored", &graph.snapshot()).unwrap()
+}
+
+fn add_physical_source(graph: &mut crate::service::ServiceGraph, label: &str, endpoint_id: &str) {
+    graph
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Source,
+            channels: 2,
+        })
+        .unwrap();
+    let node = graph
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .rfind(|node| node.kind() == NodeKind::Source)
+        .unwrap()
+        .id();
+    graph
+        .edit(GraphEdit::SetLabel {
+            node,
+            label: label.into(),
+        })
+        .unwrap();
+    graph
+        .edit(GraphEdit::BindSource {
+            node,
+            source: InputSelection::Physical {
+                endpoint_id: endpoint_id.into(),
+            },
+        })
+        .unwrap();
+}
+
+fn settled(rig: &Rig) -> bool {
+    let graph = rig.c.graph.snapshot();
+    graph.pending_revision.is_none() && graph.active_revision == Some(graph.candidate_revision)
+}
+
+#[test]
+fn restored_project_resumes_with_its_own_bindings_once_the_catalog_arrives() {
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), restored_document(|_| {}));
+    let before = rig.c.graph.snapshot();
+    rig.tick();
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running && settled(r));
+    let snapshot = rig.c.graph.snapshot();
+    assert_eq!(
+        snapshot.candidate_revision, before.candidate_revision,
+        "every device is present: resume edits nothing"
+    );
+    assert_eq!(snapshot.graph.nodes().len(), before.graph.nodes().len());
+    // Automatic startup would have rebound the catalog defaults and muted
+    // the chain; resume keeps the restored bindings and gain.
+    assert_eq!(
+        snapshot.node_of_kind(NodeKind::Source).unwrap().1.source,
+        Some(InputSelection::Physical {
+            endpoint_id: "input".into()
+        })
+    );
+    assert_eq!(snapshot.node_of_kind(NodeKind::Gain).unwrap().1.gain, 0.7);
+    assert!(snapshot.faults.is_empty());
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn resume_strips_offline_secondary_sources_and_reports_once_running() {
+    let document = restored_document(|graph| {
+        add_physical_source(graph, "Unplugged mic", "missing-input");
+    });
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
+    let before = rig.c.graph.snapshot().candidate_revision;
+    rig.tick();
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running && settled(r));
+    let snapshot = rig.c.graph.snapshot();
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .all(|node| node.label != "Unplugged mic"),
+        "the offline source leaves so the rest of the graph can run"
+    );
+    assert_eq!(
+        snapshot
+            .graph
+            .nodes()
+            .iter()
+            .filter(|node| node.kind() == NodeKind::Source)
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot.candidate_revision,
+        before + 1,
+        "one strip, one edit"
+    );
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    // The notice lands only after activation, which clears the fault group.
+    rig.wait(|r| !r.c.graph.snapshot().faults.is_empty());
+    let faults = rig.c.graph.snapshot().faults;
+    assert_eq!(faults.len(), 1);
+    assert_eq!(faults[0].subject, GraphSubject::Graph);
+    assert!(
+        faults[0].cause.contains("'Unplugged mic' (input)"),
+        "{}",
+        faults[0].cause
+    );
+    assert!(
+        faults[0]
+            .hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("undo"))
+    );
+    rig.tick();
+    rig.tick();
+    assert_eq!(
+        rig.c.graph.snapshot().faults.len(),
+        1,
+        "periodic confirmation must not clear the published notice"
+    );
+    // The strip is an ordinary journaled edit: undo brings the node back.
+    rig.request(AppRequest::UndoGraph);
+    assert!(
+        rig.c
+            .graph
+            .snapshot()
+            .nodes
+            .iter()
+            .any(|node| node.label == "Unplugged mic")
+    );
+}
+
+#[test]
+fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
+    let document = restored_document(|graph| {
+        let source = graph
+            .snapshot()
+            .node_of_kind(NodeKind::Source)
+            .unwrap()
+            .0
+            .id();
+        graph
+            .edit(GraphEdit::BindSource {
+                node: source,
+                source: InputSelection::Physical {
+                    endpoint_id: "missing-input".into(),
+                },
+            })
+            .unwrap();
+    });
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
+    let before = rig.c.graph.snapshot();
+    rig.tick();
+    // The apply still goes out: a real host parks in WaitingForResources
+    // and recovers when the device returns, which stripping would forfeit.
+    rig.wait(|r| r.state.starts.load(Ordering::SeqCst) == 1);
+    let snapshot = rig.c.graph.snapshot();
+    assert_eq!(snapshot.candidate_revision, before.candidate_revision);
+    assert_eq!(snapshot.graph.nodes().len(), before.graph.nodes().len());
+    assert_eq!(
+        snapshot.node_of_kind(NodeKind::Source).unwrap().1.source,
+        Some(InputSelection::Physical {
+            endpoint_id: "missing-input".into()
+        })
+    );
+    assert!(rig.driver.resume_notice.is_none());
+}
+
+#[test]
+fn explicit_requests_before_the_catalog_cancel_automatic_resume() {
+    let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), restored_document(|_| {}));
+    rig.request(AppRequest::Stop);
+    rig.tick();
+    rig.wait(|r| r.c.catalog.outputs.len() == 1 && !r.driver.catalog.is_running());
+    assert!(!rig.driver.automatic_resume);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 0);
 }
 
 #[test]

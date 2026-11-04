@@ -24,19 +24,16 @@ struct NameDraft {
 }
 
 impl ExportControls {
-    /// Whether one of the export editor's text inputs owns focus, so global
-    /// shortcuts (undo/redo) leave typing alone.
-    pub(in crate::ui::window) fn owns_focus(
+    /// Every text input of the export editor: the export-name draft and one
+    /// input per nested endpoint name draft. [`StudioShell::typing_focus`]
+    /// and the panel hosts' nested observers consume the list, so focus
+    /// checks and cache invalidation see exactly the same families.
+    pub(in crate::ui::window) fn input_entities(
         &self,
-        focus: &gpui_kit::FocusHandle,
-        cx: &gpui_kit::App,
-    ) -> bool {
-        if self.name.read(cx).focus_handle(cx) == *focus {
-            return true;
-        }
-        self.names
-            .values()
-            .any(|draft| draft.input.read(cx).focus_handle(cx) == *focus)
+    ) -> Vec<Entity<component::input::InputState>> {
+        let mut inputs = vec![self.name.clone()];
+        inputs.extend(self.names.values().map(|draft| draft.input.clone()));
+        inputs
     }
 
     pub(in crate::ui::window) fn new(window: &mut Window, cx: &mut Context<StudioShell>) -> Self {
@@ -221,6 +218,11 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .min_w_0()
         .gap(px(12.))
         .overflow_y_scroll()
+        .track_scroll(&shell.exports_scroll)
+        .on_scroll_wheel({
+            let this = cx.entity();
+            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+        })
         .child(heading(t!("Virtual exports")))
         .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
         .child(creation_controls(shell, cx))
@@ -428,10 +430,11 @@ fn export_row(
         ))
         .child(detail(
             &t!("Engine-confirmed binding"),
-            status
-                .active_revision
-                .map(|revision| t!("Active revision %{revision}", revision = revision).to_string())
-                .unwrap_or_else(|| t!("Inactive").into()),
+            if status.active_revision.is_some() {
+                t!("Active").to_string()
+            } else {
+                t!("Inactive").into()
+            },
         ))
         .child(detail(
             &t!("Candidate graph binding"),

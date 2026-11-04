@@ -287,6 +287,7 @@ fn context(
             builtin: BuiltinState::for_kind(node.kind()),
             source: (node.id() == input).then(|| source.clone()),
             output_endpoint_id: (node.id() == output).then(|| output_id.clone()),
+            tint: None,
         })
         .collect();
     let mut context = ServiceContext::default();

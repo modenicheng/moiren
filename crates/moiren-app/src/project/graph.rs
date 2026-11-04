@@ -45,6 +45,9 @@ pub struct GraphNodeDocument {
     pub mono: bool,
     #[serde(default)]
     pub swap: bool,
+    /// Palette-indexed card tint; absence keeps the category tint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<u8>,
     pub source: Option<SourceDocument>,
     pub output_endpoint_id: Option<String>,
 }
@@ -67,6 +70,7 @@ pub enum GraphNodeKind {
     Meter,
     SpectrumAnalyzer,
     Rack,
+    Plugin,
 }
 
 impl From<NodeKind> for GraphNodeKind {
@@ -87,6 +91,7 @@ impl From<NodeKind> for GraphNodeKind {
             NodeKind::Meter => Self::Meter,
             NodeKind::SpectrumAnalyzer => Self::SpectrumAnalyzer,
             NodeKind::Rack => Self::Rack,
+            NodeKind::Plugin => Self::Plugin,
         }
     }
 }
@@ -109,6 +114,7 @@ impl From<GraphNodeKind> for NodeKind {
             GraphNodeKind::Meter => Self::Meter,
             GraphNodeKind::SpectrumAnalyzer => Self::SpectrumAnalyzer,
             GraphNodeKind::Rack => Self::Rack,
+            GraphNodeKind::Plugin => Self::Plugin,
         }
     }
 }
@@ -169,6 +175,7 @@ impl GraphDocument {
                     pan: state.pan,
                     mono: state.mono,
                     swap: state.swap,
+                    tint: state.tint,
                     mixer: state.mixer,
                     compressor: state.compressor,
                     builtin: state.builtin.resolved(node.kind()),
@@ -300,6 +307,7 @@ impl GraphDocument {
                 pan: node.pan,
                 mono: node.mono,
                 swap: node.swap,
+                tint: node.tint,
                 mixer: node.mixer,
                 compressor: node.compressor,
                 builtin: node.builtin.clone(),
@@ -377,6 +385,7 @@ impl GraphDocument {
                 pan: node.pan,
                 mono: node.mono,
                 swap: node.swap,
+                tint: node.tint,
                 mixer: node.mixer,
                 compressor: node.compressor,
                 builtin: node.builtin.resolved(node.kind.into()),

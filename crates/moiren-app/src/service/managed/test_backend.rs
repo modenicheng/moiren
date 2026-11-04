@@ -22,12 +22,6 @@ use moiren_engine::{
     sample::ProcessingSample,
 };
 
-pub const TIMEOUT: Duration = if cfg!(miri) {
-    Duration::from_secs(120)
-} else {
-    Duration::from_secs(3)
-};
-
 #[derive(Default)]
 pub struct State {
     pub prepares: AtomicUsize,

@@ -6,6 +6,8 @@ mod core;
 mod exports;
 mod graph;
 mod jobs;
+#[cfg(test)]
+mod jobs_tests;
 mod latency;
 mod mailbox;
 mod managed;
@@ -30,8 +32,8 @@ pub use exports::*;
 pub(crate) use graph::primary_node_of;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
-    GraphPreparation, GraphSnapshot, GraphSubject, MixerState, ServiceGraph, default_label,
-    validate_node_state,
+    GraphPreparation, GraphSnapshot, GraphSubject, MixerState, NODE_TINT_COUNT, ServiceGraph,
+    default_label, validate_node_state,
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
@@ -39,7 +41,9 @@ pub use measured_process::{
     MeasuredProcessRequest, MeasuredProcessSummary, MeasuredProcessWindow, ProcessWindowPolicy,
 };
 pub use moiren_engine::audio_config::*;
-pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
+pub use signals::{
+    LevelTopic, SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket,
+};
 pub use transport_latency::{
     DeliveryProvenance, ExpertInputBuffer, ExpertRenderQueue, TransportLatencySettings,
 };
@@ -68,8 +72,11 @@ pub fn start_service() -> Result<ServiceRuntime, ServiceStartError> {
             .into_context()
             .map_err(ServiceStartError::InvalidStartup)?;
         let driver = ManagedDriver::windows();
+        // A restored project carries its own device bindings; automatic
+        // startup would rebind the catalog defaults over them, so it resumes
+        // instead and the engine still comes up on launch.
         let driver = if restored {
-            driver
+            driver.with_automatic_resume()
         } else {
             driver.with_automatic_startup()
         };
@@ -261,7 +268,11 @@ impl ServiceContext {
             && self.core.generation() == generation
     }
 
-    /// Refusal preserves ownership; callers must retain an owned session job.
+    /// Test intake for the deferred-job budget: production paths reserve
+    /// cleanup storage first (`try_reserve_cleanup`) and submit through the
+    /// pool directly. Refusal preserves ownership; callers must retain an
+    /// owned session job.
+    #[cfg(test)]
     pub fn try_defer(
         &mut self,
         priority: JobPriority,
@@ -296,6 +307,9 @@ impl ServiceContext {
         self.pending.push_back((JobPriority::Cleanup, job, permit));
         Ok(())
     }
+    /// Drain probe for the tests above; production observes idleness through
+    /// `JobPool::is_idle` and the driver's `is_drained` instead.
+    #[cfg(test)]
     pub fn pending_jobs(&self) -> usize {
         self.pending.len()
     }

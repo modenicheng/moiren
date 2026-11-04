@@ -1,20 +1,42 @@
 //! Elapsed-time peak/RMS presentation in the decibel domain.
 //!
-//! Every layer is driven by the user's meter preferences: the peak bar rises
-//! instantly and falls at the selected dB/s, the marker holds the recent
-//! maximum for the selected duration before falling at the same rate, and the
-//! RMS body integrates mean square across every ingested window (so the
-//! reading is a true running average instead of a point sample) and then
-//! obeys the same fall-off preference. Peaks accumulate between display
-//! reads, so a transient that has already decayed before the next frame is
-//! still shown at full height.
+//! The peak layers are driven by the user's meter preferences: the peak bar
+//! rises instantly and falls at the selected dB/s, and the marker holds the
+//! recent maximum for the selected duration before falling at the same rate.
+//! The RMS body instead has fixed, VU-style ballistics: it integrates mean
+//! square across every ingested window (so the reading is a true running
+//! average instead of a point sample) and its visible fall is the
+//! integrator's own decay rate, not the peak fall-off preference. Peaks
+//! accumulate between display reads, so a transient that has already decayed
+//! before the next frame is still shown at full height.
+//!
+//! A frame that ingested no window holds every layer: true silence keeps
+//! publishing windows, so a windowless frame is a delivery gap, and its
+//! elapsed time joins the next data frame's interval instead of reading as
+//! a level dip. A genuine stoppage is reported by the subscription going
+//! stale, never by invented decay.
 use super::{ChannelLevel, DisplayLevel, Duration, Instant, REST_DB};
 use crate::project::MeterDisplayPreferences;
 
-/// One-pole mean-square integration across ingested windows. The natural
-/// decay in silence is ~58 dB/s, above every fall-off preference, so the
-/// visible body fall always follows the preference instead of the integrator.
+/// One-pole mean-square integration across ingested windows (150 ms).
+///
+/// The window is the RMS body's whole ballistics, the way a VU needle's is:
+/// ANSI C16.5 / IEC 60268-17 define one ~300 ms constant for the needle's
+/// rise *and* fall, AES17 RMS measurements average over a fixed window, and
+/// mainstream tools keep the RMS response tied to its window too (Pro Tools
+/// exposes separate peak/RMS hold settings, REAPER's RMS meter speed follows
+/// its RMS window size) — none tie the RMS fall to a peak-falloff
+/// preference. In silence the mean square decays as exp(−t/τ), i.e. exactly
+/// `10·log10(e)/τ` dB per second — ≈ 28.95 dB/s at this τ, which
+/// [`RMS_NATURAL_DECAY_DB_PER_S`] carries so the body's visible fall matches
+/// the window that produced the reading.
 pub(super) const RMS_INTEGRATION: Duration = Duration::from_millis(150);
+
+/// The integrator's exact natural decay rate in dB/s (≈ 28.95 at 150 ms):
+/// mean square falls as exp(−t/τ), so its dB level drops linearly at
+/// `10·log10(e)/τ` per second regardless of how the silence was windowed.
+const RMS_NATURAL_DECAY_DB_PER_S: f32 =
+    10. * std::f32::consts::LOG10_E / RMS_INTEGRATION.as_secs_f32();
 #[cfg(test)]
 pub(super) const PEAK_HOLD: Duration = Duration::from_millis(500);
 
@@ -25,6 +47,7 @@ pub(super) struct ChannelBallistics {
     body_db: f32,
     mean_square: f64,
     peak_since_read: f32,
+    window_since_advance: bool,
     held_at: Option<Instant>,
     ticked_at: Option<Instant>,
     pub settings: MeterDisplayPreferences,
@@ -38,6 +61,7 @@ impl ChannelBallistics {
             body_db: f32::NEG_INFINITY,
             mean_square: 0.,
             peak_since_read: 0.,
+            window_since_advance: false,
             held_at: None,
             ticked_at: None,
             settings: MeterDisplayPreferences::default(),
@@ -46,6 +70,7 @@ impl ChannelBallistics {
 
     /// Consume one measurement window, weighted by its true duration.
     pub fn ingest(&mut self, raw: ChannelLevel, window: Duration, now: Instant) {
+        self.window_since_advance = true;
         self.peak_since_read = self.peak_since_read.max(raw.peak);
         let fraction = 1. - (-window.as_secs_f64() / RMS_INTEGRATION.as_secs_f64()).exp();
         let square = f64::from(raw.rms) * f64::from(raw.rms);
@@ -58,6 +83,13 @@ impl ChannelBallistics {
     }
 
     pub fn advance(&mut self, now: Instant) {
+        if !self.window_since_advance {
+            // A frame with no window is a delivery gap, not silence —
+            // silence keeps publishing — so every layer holds and the gap
+            // joins the next data frame's interval.
+            return;
+        }
+        self.window_since_advance = false;
         let Some(previous) = self.ticked_at else {
             // First data after (re)subscription: snap every layer to it.
             self.bar_db = amplitude_db(self.peak_since_read);
@@ -82,7 +114,16 @@ impl ChannelBallistics {
         let held = now.saturating_duration_since(anchor).as_secs_f32();
         self.marker_db = (self.marker_db - rate * held).max(self.bar_db);
         let integrated = mean_square_db(self.mean_square);
-        self.body_db = integrated.max(self.body_db - release);
+        // The body's fall speed is the integrator's own (see
+        // RMS_INTEGRATION), not the peak falloff preference: ingested
+        // silence windows already decay the mean square at the natural
+        // rate, and on a data frame this wall-clock floor carries that
+        // same decay across the frame's whole interval — including any
+        // delivery gap that joined it — instead of pinning the body at
+        // its last reading. A windowless frame holds instead (see the
+        // early return above); a genuine stoppage is reported by the
+        // subscription going stale.
+        self.body_db = integrated.max(self.body_db - RMS_NATURAL_DECAY_DB_PER_S * dt);
         self.peak_since_read = 0.;
         self.ticked_at = Some(now);
     }
@@ -137,14 +178,19 @@ mod tests {
     const WINDOW: Duration = Duration::from_millis(4);
 
     #[test]
-    fn cached_frames_do_not_renew_hold_and_deadlines_use_partial_intervals() {
+    fn silence_windows_do_not_renew_hold_and_deadlines_use_partial_intervals() {
         let now = Instant::now();
         let rate = MeterFalloff::Fast.db_per_second();
         let mut meter = ChannelBallistics::new();
         meter.ingest(ChannelLevel { peak: 1., rms: 0. }, WINDOW, now);
         meter.advance(now);
-        meter.ingest(ChannelLevel { peak: 0., rms: 0. }, WINDOW, now + WINDOW);
         for ms in [100, 250, 490, 600] {
+            // Silence keeps publishing, so every frame is a data frame.
+            meter.ingest(
+                ChannelLevel { peak: 0., rms: 0. },
+                WINDOW,
+                now + Duration::from_millis(ms),
+            );
             meter.advance(now + Duration::from_millis(ms));
         }
         // The marker holds until PEAK_HOLD, then falls 100 ms at the rate.
@@ -162,6 +208,11 @@ mod tests {
         meter.ingest(ChannelLevel { peak: 1., rms: 0. }, WINDOW, now);
         meter.advance(now);
         meter.settings.peak_hold = PeakHold::Off;
+        meter.ingest(
+            ChannelLevel { peak: 0., rms: 0. },
+            WINDOW,
+            now + Duration::from_millis(100),
+        );
         meter.advance(now + Duration::from_millis(100));
         let level = meter.level();
         assert!(
@@ -173,13 +224,21 @@ mod tests {
     #[test]
     fn decay_is_independent_of_refresh_rate_and_irregular_frames() {
         let now = Instant::now();
+        // Silence keeps publishing, so every frame ingests one window
+        // spanning that frame's interval.
         let run = |times: Vec<u64>| {
             let mut meter = ChannelBallistics::new();
             meter.ingest(ChannelLevel { peak: 1., rms: 0.5 }, WINDOW, now);
             meter.advance(now);
-            meter.ingest(ChannelLevel { peak: 0., rms: 0. }, WINDOW, now);
+            let mut previous = 0;
             for ns in times {
+                meter.ingest(
+                    ChannelLevel { peak: 0., rms: 0. },
+                    Duration::from_nanos(ns - previous),
+                    now + Duration::from_nanos(ns),
+                );
                 meter.advance(now + Duration::from_nanos(ns));
+                previous = ns;
             }
             meter.level()
         };
@@ -198,6 +257,65 @@ mod tests {
             1_000_000_000,
         ]);
         assert!((irregular.marker - reference.marker).abs() < 0.00001);
+        assert!((irregular.bar - reference.bar).abs() < 0.00001);
+    }
+
+    #[test]
+    fn a_frame_without_a_window_holds_every_layer() {
+        let now = Instant::now();
+        let mut meter = ChannelBallistics::new();
+        meter.ingest(
+            ChannelLevel {
+                peak: 0.5,
+                rms: 0.3,
+            },
+            WINDOW,
+            now,
+        );
+        meter.advance(now);
+        let steady = meter.level();
+        meter.advance(now + Duration::from_millis(20));
+        meter.advance(now + Duration::from_millis(41));
+        assert_eq!(
+            meter.level(),
+            steady,
+            "a delivery gap must not read as a level dip"
+        );
+        // The gap joins the next data frame's interval, and the steady
+        // target floors the catch-up fall: the bar returns at full height.
+        meter.ingest(
+            ChannelLevel {
+                peak: 0.5,
+                rms: 0.3,
+            },
+            WINDOW,
+            now + Duration::from_millis(41),
+        );
+        meter.advance(now + Duration::from_millis(41));
+        assert!((meter.level().bar - 0.5).abs() < 0.00001);
+        assert!((meter.level().marker - 0.5).abs() < 0.00001);
+    }
+
+    #[test]
+    fn a_delivery_gap_defers_the_fall_without_skipping_it() {
+        let now = Instant::now();
+        let rate = MeterFalloff::Fast.db_per_second();
+        let mut meter = ChannelBallistics::new();
+        meter.ingest(ChannelLevel { peak: 1., rms: 0. }, WINDOW, now);
+        meter.advance(now);
+        meter.advance(now + Duration::from_millis(80));
+        meter.ingest(
+            ChannelLevel { peak: 0., rms: 0. },
+            WINDOW,
+            now + Duration::from_millis(80),
+        );
+        meter.advance(now + Duration::from_millis(80));
+        let db = 20. * meter.level().bar.max(f32::MIN_POSITIVE).log10();
+        let expected = -rate * 0.08;
+        assert!(
+            (db - expected).abs() < 0.01,
+            "fell to {db} dB instead of the deferred {expected} dB"
+        );
     }
 
     #[test]
@@ -232,29 +350,76 @@ mod tests {
     }
 
     #[test]
-    fn rms_body_falls_at_the_selected_rate_in_silence() {
+    fn rms_body_falls_at_the_integrator_rate_under_every_falloff_preference() {
         let now = Instant::now();
-        let mut meter = ChannelBallistics::new();
-        // Below the integrator's natural ~58 dB/s silence decay, so the
-        // preference decides the visible fall.
-        meter.settings.falloff = MeterFalloff::Moderate;
-        for _ in 0..100 {
-            meter.ingest(ChannelLevel { peak: 0., rms: 1. }, WINDOW, now);
-        }
-        meter.advance(now);
-        let settled_db = 20. * meter.level().rms.log10();
-        for _ in 0..100 {
-            meter.ingest(
-                ChannelLevel { peak: 0., rms: 0. },
-                WINDOW,
-                now + Duration::from_millis(250),
+        for falloff in MeterFalloff::ALL {
+            let mut meter = ChannelBallistics::new();
+            meter.settings.falloff = falloff;
+            for _ in 0..100 {
+                meter.ingest(ChannelLevel { peak: 0., rms: 1. }, WINDOW, now);
+            }
+            meter.advance(now);
+            let settled_db = 20. * meter.level().rms.log10();
+            for _ in 0..100 {
+                meter.ingest(ChannelLevel { peak: 0., rms: 0. }, WINDOW, now + WINDOW);
+            }
+            // 400 ms of ingested silence: the body drops by the integrator's
+            // own ~28.95 dB/s for every preference — including Moderate,
+            // whose 20 dB/s is slower and would once have clamped it. The
+            // preference shapes the peak layers only.
+            let elapsed = Duration::from_millis(400);
+            meter.advance(now + elapsed);
+            let db = 20. * meter.level().rms.log10();
+            let natural = super::RMS_NATURAL_DECAY_DB_PER_S * elapsed.as_secs_f32();
+            assert!(
+                (db - (settled_db - natural)).abs() < 0.1,
+                "{falloff:?}: fell to {db} dB from {settled_db} dB instead of the integrator's {natural:.1} dB"
             );
         }
-        meter.advance(now + Duration::from_millis(250));
-        let db = 20. * meter.level().rms.log10();
+    }
+
+    #[test]
+    fn fast_preference_splits_bar_and_body_fall_speeds() {
+        let now = Instant::now();
+        let rate = MeterFalloff::Fast.db_per_second();
+        let mut meter = ChannelBallistics::new();
+        for _ in 0..100 {
+            meter.ingest(
+                ChannelLevel {
+                    peak: 0.5,
+                    rms: 0.5,
+                },
+                WINDOW,
+                now,
+            );
+        }
+        meter.advance(now);
+        let settled_body_db = 20. * meter.level().rms.log10();
+        for _ in 0..62 {
+            meter.ingest(ChannelLevel { peak: 0., rms: 0. }, WINDOW, now + WINDOW);
+        }
+        let elapsed = Duration::from_millis(250);
+        meter.advance(now + elapsed);
+        let level = meter.level();
+        // Both layers started at ≈ −6.02 dB; in silence the bar clears at
+        // the preference's 40 dB/s while the body keeps the integrator's
+        // ~28.95 dB/s, so the two deliberately separate.
+        let bar_db = 20. * level.bar.log10();
         assert!(
-            (db - (settled_db - 20. * 0.25)).abs() < 0.05,
-            "fell to {db} dB from {settled_db} dB instead of 5 dB at 20 dB/s"
+            (bar_db - (-6.0206 - rate * elapsed.as_secs_f32())).abs() < 0.1,
+            "bar {bar_db} dB instead of the 40 dB/s fall"
+        );
+        let body_db = 20. * level.rms.log10();
+        assert!(
+            (body_db
+                - (settled_body_db - super::RMS_NATURAL_DECAY_DB_PER_S * elapsed.as_secs_f32()))
+            .abs()
+                < 0.1,
+            "body {body_db} dB instead of the integrator's fall"
+        );
+        assert!(
+            body_db > bar_db,
+            "the preference's faster peak fall must outrun the body: {bar_db} vs {body_db}"
         );
     }
 

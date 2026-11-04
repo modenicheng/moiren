@@ -2,7 +2,36 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-11-01.
+verdict. Status updated 2026-11-05.
+
+## Pipeline integration checkpoint - 2026-11-05
+
+The [current integration checkpoint](../../docs/validation/2026-11-04-pipeline-checkpoint.md)
+preserves the full S0-S5 requirements. Callback observation is committed as
+`1b33b68`; current main is being merged in a separate worktree so original PCM,
+probe and validation drafts remain untouched. All textual conflicts are
+resolved, but the merge, final-source verification and fresh remote CI remain
+pending. The first merged workspace test attempt fails one app meter-wake
+regression; its queued-tail timing assumption is repaired without changing
+production freshness rules. The focused monitoring group passes all 30 tests.
+Settings cache regressions are repaired and all 70 settings tests pass; the
+complete final-source suite remains in progress.
+
+Portable checks do not alter native qualification: genuine `0x8007051A`,
+epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
+retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,
+sustained load and calibrated physical p95/p99 acceptance remain incomplete.
+No lower default, VAD/Process winner, physical sub-10-ms pass or device-limited
+impossibility follows from the software integration. The first-packet
+investigation remains deferred.
+
+The latest read-only physical-target preflight is 2026-11-04 23:15:31. The driver
+VM's first strict SSH attempt times out. At 2026-11-05 00:11 VMware reports no
+running VMs; the verified dedicated VM's single headless start attempt refuses
+because a password is required. User unlock/start is needed for that target.
+No new native audio, UI or driver operation is run by this checkpoint.
+Historical native receipts below retain their original source and target
+identities.
 
 ## Application test scope - 2026-11-01
 

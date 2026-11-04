@@ -1,12 +1,7 @@
-use moiren_windows_audio::{
-    SessionDuration,
-    capture::{CaptureError, CaptureOptions},
-    latency::TelemetryMode,
-    latency::shared_period::{
-        SharedFallbackReason, SharedInitializationApi, SharedInitializationFailure,
-        SharedInitializationStage, SharedPeriodCaps, SharedPeriodError, SharedPeriodPolicy,
-        SharedPeriodReport, SharedPeriodSelectionFailure, choose_shared_period,
-    },
+use moiren_windows_audio::latency::shared_period::{
+    SharedFallbackReason, SharedInitializationApi, SharedInitializationFailure,
+    SharedInitializationStage, SharedPeriodCaps, SharedPeriodError, SharedPeriodPolicy,
+    SharedPeriodReport, SharedPeriodSelectionFailure, choose_shared_period,
 };
 
 fn caps() -> SharedPeriodCaps {
@@ -150,23 +145,18 @@ fn rejects_bad_capabilities_and_conversion_overflow() {
 }
 
 #[test]
-fn invalid_policy_is_rejected_before_capture_preparation() {
+fn invalid_policy_is_rejected_before_period_selection() {
     for milliseconds in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let shared_period = SharedPeriodPolicy {
             desired_period_ms: Some(milliseconds),
         };
-        let capture = CaptureOptions {
-            artifact: None,
-            endpoint_id: "fake".into(),
-            duration: SessionDuration::UntilStopped,
-            latency_telemetry: TelemetryMode::Disabled,
-            shared_period,
-        };
         assert_eq!(
-            capture.validate(),
-            Err(CaptureError::SharedPeriod(
-                SharedPeriodError::InvalidDesiredPeriod
-            ))
+            shared_period.validate(),
+            Err(SharedPeriodError::InvalidDesiredPeriod)
+        );
+        assert_eq!(
+            choose_shared_period(caps(), 48_000, shared_period),
+            Err(SharedPeriodError::InvalidDesiredPeriod)
         );
     }
 }

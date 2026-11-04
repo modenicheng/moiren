@@ -1,7 +1,7 @@
 use super::{ServiceRuntime, StudioShell, UiState, pages, theme};
 use crate::ui::window::test_harness::{
-    finish_service, initial_projection, shell_with_state, spawn_service, test_shell, wait_for,
-    wait_until,
+    finish_service, initial_projection, settle_panels, shell_with_state, spawn_service, test_shell,
+    wait_for, wait_until,
 };
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, point, px};
@@ -1331,6 +1331,355 @@ fn ctrl_z_in_a_mixer_send_editor_leaves_the_graph_journal_alone(cx: &mut gpui_ki
     finish_service(runtime);
 }
 
+/// The inspector's click-to-type editors open focused; every root render on
+/// the graph page then runs `keep_graph_focus`, which must treat them as
+/// typing focus. A family missing from `typing_focus` loses focus on the
+/// very next frame, the blur commits the prefilled text, and the editor
+/// flashes open and closed (audit SD-2, failure mode B). The balance label
+/// editor rides one of the families this fix added.
+#[gpui_kit::test]
+fn graph_inspector_value_editor_keeps_focus_across_root_renders(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    // Headless windows start inactive; without activation the focus loss
+    // would never dispatch the real Blur that commits and closes the editor.
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    let gain = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
+            .expect("fixed session graph holds a gain node")
+            .id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Graph;
+        shell.inspector_open = true;
+        shell.selected_node = Some(gain);
+        cx.notify();
+    });
+    settle_panels(cx);
+    cx.update(|window, cx| {
+        window.click(
+            gpui_kit::SharedString::from(format!("balance-label-{gain:?}")),
+            cx,
+        );
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    let input = view.update(cx, |shell, _| shell.mixer.balance_inputs[&gain].clone());
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.mixer.editing_balance,
+            Some(gain),
+            "the editor must stay open instead of blur-committing the prefill"
+        );
+    });
+    cx.update(|window, cx| {
+        use gpui_kit::Focusable;
+        let handle = input.read(cx).focus_handle(cx);
+        assert!(
+            window.focused(cx).is_some_and(|focused| focused == handle),
+            "keep_graph_focus must leave a typing-focused inspector editor alone"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// The undo gate must cover the inspector's click-to-type families, not just
+/// the older send/compressor editors: Ctrl+Z while one of them is focused
+/// belongs to the text being typed, not to the graph journal (audit SD-2,
+/// failure mode A).
+#[gpui_kit::test]
+fn ctrl_z_in_an_inspector_value_editor_leaves_the_graph_journal_alone(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{AppRequest, GraphEdit};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([gpui_kit::KeyBinding::new(
+            "ctrl-z",
+            super::app_view::Undo,
+            None,
+        )]);
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    // Journal history so a (wrongly) dispatched undo has something to step.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: moiren_core::graph::NodeKind::Eq,
+                channels: 2,
+            }));
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.can_undo
+        })
+    });
+    let gain = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
+            .expect("fixed session graph holds a gain node")
+            .id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Graph;
+        shell.inspector_open = true;
+        shell.selected_node = Some(gain);
+        cx.notify();
+    });
+    settle_panels(cx);
+    cx.update(|window, cx| {
+        window.click(
+            gpui_kit::SharedString::from(format!("balance-label-{gain:?}")),
+            cx,
+        );
+        window.render_frame(cx);
+    });
+    let handle = view.update(cx, |shell, cx| {
+        use gpui_kit::Focusable;
+        let handle = shell.mixer.balance_inputs[&gain].read(cx).focus_handle(cx);
+        assert_eq!(shell.mixer.editing_balance, Some(gain));
+        handle
+    });
+    // The inspector value editor is a text field: typing_focus must claim it
+    // so the shell's undo action declines to step the journal mid-edit.
+    view.update(cx, |shell, cx| {
+        assert!(shell.typing_focus(&handle, cx));
+    });
+    let nodes = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.nodes.len()
+    });
+    cx.simulate_keystrokes("ctrl-z");
+    // Give a (wrongly) dispatched undo time to reach the service; the
+    // journal must still be where it was.
+    std::thread::sleep(Duration::from_millis(400));
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+        let graph = &shell.state.read(cx).snapshot.graph;
+        assert_eq!(
+            graph.nodes.len(),
+            nodes,
+            "ctrl-z in the editor must not undo the graph"
+        );
+        assert!(graph.can_undo, "the journal step must still be pending");
+    });
+    finish_service(runtime);
+}
+
+/// Inside the cached inspector panel, a keystroke into a nested editor only
+/// updates the editor's `InputState` — nothing notifies the shell or changes
+/// the panel key. The nested observer pool is the only path that can carry
+/// the keystroke to the screen; a family missing from it blind-types (audit
+/// SD-1).
+#[gpui_kit::test]
+fn inspector_panel_rebuilds_when_a_nested_editor_moves(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    let gain = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
+            .expect("fixed session graph holds a gain node")
+            .id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Graph;
+        shell.inspector_open = true;
+        shell.selected_node = Some(gain);
+        cx.notify();
+    });
+    settle_panels(cx);
+    // Opening the editor changes the panel key; the second frame flushes that
+    // key-change rebuild so the baseline counts only nested-driven rebuilds.
+    cx.update(|window, cx| {
+        window.click(
+            gpui_kit::SharedString::from(format!("balance-label-{gain:?}")),
+            cx,
+        );
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    let input = view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.mixer.editing_balance,
+            Some(gain),
+            "the editor must be open for the keystroke to be nested"
+        );
+        shell.mixer.balance_inputs[&gain].clone()
+    });
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().inspector_renders);
+    // One keystroke's worth of editor movement: notifies the InputState and
+    // nothing else. With the nested pool wired the panel rebuilds on the
+    // gate's leading edge; without it the character never reaches the screen.
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| input.set_value("L 10", window, cx));
+        window.render_frame(cx);
+    });
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().inspector_renders);
+    // `set_value` moves value and cursor in separate model notifications, so
+    // the exact pass count rides the gate; the regression is the flat counter
+    // of an unobserved family, so "at least one rebuild" is the invariant.
+    assert!(
+        after > before,
+        "the nested editor notification must rebuild the cached inspector"
+    );
+    finish_service(runtime);
+}
+
+/// The inspector's meter pipeline must stay wired together (audit HY-10,
+/// design 17 hazard 9): the inspector's canvases register their tracks into
+/// the frame the sidebar hot surface reads, and that layer paints every one.
+/// A second `SharedFrame` of the same type at the assembly point compiles,
+/// runs, and paints nothing forever with no runtime way to notice — the
+/// failure that muted the flyout — so the surface itself must census what it
+/// sees and what it paints.
+#[gpui_kit::test]
+fn inspector_hot_layer_paints_the_registered_meter_tracks(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    let gain = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
+            .expect("fixed session graph holds a gain node")
+            .id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Graph;
+        shell.inspector_open = true;
+        shell.selected_node = Some(gain);
+        cx.notify();
+    });
+    settle_panels(cx);
+    // The selection's key change rebuilt the cached panel: `on_rebuild` reset
+    // the frame and the fresh subtree's canvases re-registered their tracks;
+    // the live hot layer paints them on every rendered frame after that.
+    let (registered, painted) = view.update(cx, |shell, cx| {
+        let meters = shell.inspector_meter_layer.read(cx).surface();
+        let meters = meters.borrow();
+        (meters.registered_tracks(), meters.painted_tracks())
+    });
+    assert!(
+        registered > 0,
+        "the hot surface must see the inspector's registered meter tracks"
+    );
+    assert!(
+        painted >= registered,
+        "the hot layer must paint every registered track"
+    );
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn graph_page_readout_editors_keep_focus_and_their_undo(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{AppRequest, GraphEdit};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([gpui_kit::KeyBinding::new(
+            "ctrl-z",
+            super::app_view::Undo,
+            None,
+        )]);
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    // Give the journal one undoable edit so a leaked ctrl-z would show up
+    // as a node count change.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: moiren_core::graph::NodeKind::Eq,
+                channels: 2,
+            }));
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 5
+        })
+    });
+    // The shell boots on the graph page, where keep_graph_focus hands
+    // keystrokes back to the canvas whenever no known text field owns
+    // focus. EVERY mixer editor family (send gains and the strip/inspector
+    // readouts: fader, balance, node gain, node pan) must count as a text
+    // field: otherwise the canvas steals focus on the next render and
+    // ctrl-z steps the journal mid-edit.
+    let handles = view.update(cx, |shell, cx| {
+        use gpui_kit::Focusable;
+        shell
+            .mixer
+            .text_input_entities()
+            .map(|input| input.read(cx).focus_handle(cx))
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        handles.len() >= 5,
+        "expected send editors plus the four readout families, got {}",
+        handles.len()
+    );
+    for handle in &handles {
+        cx.update(|window, cx| window.focus(handle, cx));
+        cx.update(|window, cx| window.render_frame(cx));
+        view.update(cx, |shell, cx| {
+            assert!(shell.typing_focus(handle, cx));
+        });
+    }
+    cx.simulate_keystrokes("ctrl-z");
+    // Give a (wrongly) dispatched undo time to reach the service; the
+    // journal must still be where it was.
+    std::thread::sleep(Duration::from_millis(400));
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+        assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), 5);
+    });
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
@@ -1415,6 +1764,7 @@ fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
                     let mut shell = super::StudioShell::new(state, window, cx, None);
                     shell.test_page = Some(page);
                     shell.preferences_path = None;
+                    shell.autosave_path = None;
                     shell
                 })
             },

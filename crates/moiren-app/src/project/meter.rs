@@ -14,7 +14,9 @@ pub enum MeterFalloff {
 impl MeterFalloff {
     pub const ALL: [Self; 3] = [Self::Moderate, Self::Fast, Self::VeryFast];
     /// Broadcast-PPM-grade at the slow end; the default clears a full
-    /// 60 dB fall in 1.5 s so bars read at modern DAW speed.
+    /// 60 dB fall in 1.5 s so bars read at modern DAW speed. Shapes the peak
+    /// bar and marker only: the RMS body's fall is the integrator's own
+    /// window ballistics (see `ui/monitoring/ballistics.rs`).
     pub fn db_per_second(self) -> f32 {
         match self {
             Self::Moderate => 20.,

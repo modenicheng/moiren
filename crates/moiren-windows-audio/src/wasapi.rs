@@ -16,7 +16,8 @@ use crate::native::{
     NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame, observe_exclusive_initialize,
 };
 use crate::negotiation::{
-    EnginePeriods, SUBFORMAT_FLOAT, SUBFORMAT_PCM, StageError, aligned_shared_buffer_duration,
+    EnginePeriods, MAX_BUFFER_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, MIN_SAMPLE_RATE_HZ,
+    SUBFORMAT_FLOAT, SUBFORMAT_PCM, StageError, aligned_shared_buffer_duration,
     exclusive_format_supported, exclusive_frames_duration, friendly_name, initialize_exclusive,
     initialize_legacy_shared, initialize_legacy_shared_with_duration, parse_descriptor,
     shared_engine_periods, shared_initialize_retryable,
@@ -370,7 +371,7 @@ impl WasapiStream {
         }
         if options.endpoint_id.trim().is_empty()
             || options.endpoint_id.contains('\0')
-            || !(8_000..=384_000).contains(&options.sample_rate)
+            || !(MIN_SAMPLE_RATE_HZ..=MAX_SAMPLE_RATE_HZ).contains(&options.sample_rate)
             || !native_period_request_supported(options.device, options.input)
         {
             return Err(unsupported(
@@ -517,7 +518,7 @@ impl WasapiStream {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .record_actual(capacity);
         }
-        if capacity == 0 || capacity > 65536 {
+        if capacity == 0 || capacity > MAX_BUFFER_FRAMES {
             return Err(unsupported(
                 "native WASAPI buffer exceeds the prepared frame limit",
             ));
@@ -1625,7 +1626,7 @@ fn wave_format(
         SampleFormat::Float64 => 64,
         SampleFormat::Native => return Err(unsupported("Native format needs a device descriptor")),
     };
-    if !(1..=32).contains(&channels) {
+    if !(1..=MAX_CHANNELS).contains(&channels) {
         return Err(unsupported("unsupported native channel layout"));
     }
     let float = matches!(format, SampleFormat::Float32 | SampleFormat::Float64);

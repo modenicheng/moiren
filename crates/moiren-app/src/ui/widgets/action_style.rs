@@ -5,6 +5,10 @@ use gpui_kit::{Hsla, StatefulInteractiveElement, Styled, px};
 
 use crate::ui::theme::controls as t;
 
+// The non-default variants let the component gallery paint one skin in every
+// state side by side; production interaction never constructs them, so they
+// legitimately sit idle whenever the gallery is compiled out.
+#[cfg_attr(not(feature = "component-gallery"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) enum SampleState {
     #[default]

@@ -98,12 +98,9 @@ _version: 2
 "%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.":
   en: "%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change."
   zh-CN: "%{input_count} 个输入 / %{output_count} 个输出覆盖配置。可在设备页中配置单个设备；默认设置变化时，覆盖配置会完整保留自身设置。"
-"Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.":
-  en: Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.
-  zh-CN: 显式音频设置使用所请求的设备缓冲。旧式队列/恢复策略仅适用于默认的 WASAPI 共享配置。
-"Queue / recovery policy":
-  en: Queue / recovery policy
-  zh-CN: 队列 / 恢复策略
+"Device buffer policy":
+  en: Device buffer policy
+  zh-CN: 设备缓冲策略
 "Theme":
   en: Theme
   zh-CN: 主题
@@ -146,9 +143,6 @@ _version: 2
 "Output":
   en: Output
   zh-CN: 输出
-"Legacy recovery policy":
-  en: Legacy recovery policy
-  zh-CN: 旧式恢复策略
 "Unsaved edits stay in the Audio draft until Save or Restart Audio.":
   en: Unsaved edits stay in the Audio draft until Save or Restart Audio.
   zh-CN: 未保存的编辑会保留在音频草稿中，直到保存或重启音频。
@@ -290,9 +284,6 @@ _version: 2
 "Saved. Audio settings apply on the next start.":
   en: Saved. Audio settings apply on the next start.
   zh-CN: 已保存。音频设置将在下次启动时生效。
-"Recovery policy":
-  en: Recovery policy
-  zh-CN: 恢复策略
 "%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.":
   en: "%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings."
   zh-CN: "%{label}已在其他位置更改。草稿已保留。放弃更改即可重新加载已保存的设置。"
@@ -341,6 +332,9 @@ _version: 2
 "Preferences save queued":
   en: Preferences save queued
   zh-CN: 偏好设置保存已排队
+"Could not auto-save: %{error}":
+  en: "Could not auto-save: %{error}"
+  zh-CN: "无法自动保存：%{error}"
 "Inputs":
   en: Inputs
   zh-CN: 输入
@@ -488,9 +482,12 @@ _version: 2
 "This device is not bound to the active source/output pair.":
   en: This device is not bound to the active source/output pair.
   zh-CN: 此设备未绑定到活动的音源/输出对。
-"Configure never changes routing. Use next start on a device row updates the candidate graph.":
-  en: Configure never changes routing. Use next start on a device row updates the candidate graph.
-  zh-CN: 配置不会改变路由。设备行中的下次启动时使用会更新候选图。
+"No active native timing. Start audio to inspect the actual stream clocks.":
+  en: No active native timing. Start audio to inspect the actual stream clocks.
+  zh-CN: 暂无活动的原生时序。启动音频后即可查看实际流时钟。
+"Configure never changes routing; choosing Use next start on a device row updates the candidate graph.":
+  en: Configure never changes routing; choosing Use next start on a device row updates the candidate graph.
+  zh-CN: 配置不会改变路由；在设备行选择“下次启动时使用”才会更新候选图。
 "Export is no longer in this project's candidate graph":
   en: Export is no longer in this project's candidate graph
   zh-CN: 该导出已不在此项目的候选图中
@@ -551,9 +548,6 @@ _version: 2
 "Engine-confirmed binding":
   en: Engine-confirmed binding
   zh-CN: 引擎确认的绑定
-"Active revision %{revision}":
-  en: "Active revision %{revision}"
-  zh-CN: "活动修订 %{revision}"
 "Inactive":
   en: Inactive
   zh-CN: 未激活
@@ -1175,9 +1169,9 @@ _version: 2
 "%{frames} frame window":
   en: "%{frames} frame window"
   zh-CN: "%{frames} 帧窗口"
-"FFT %{fft} · hop %{hop}":
-  en: "FFT %{fft} · hop %{hop}"
-  zh-CN: "FFT %{fft} · 跳点 %{hop}"
+"FFT %{fft}":
+  en: "FFT %{fft}"
+  zh-CN: "FFT %{fft}"
 "Empty rack":
   en: Empty rack
   zh-CN: 空机架
@@ -1448,15 +1442,15 @@ _version: 2
 "Low":
   en: Low
   zh-CN: 低延迟
-"Default device period and full render capacity; generous input queue.":
-  en: Default device period and full render capacity; generous input queue.
-  zh-CN: 使用设备默认周期与完整渲染容量；输入队列宽裕。
-"Request 10 ms periods; queues validated against actual device timing.":
-  en: Request 10 ms periods; queues validated against actual device timing.
-  zh-CN: 请求 10 ms 周期；队列会对照设备实际时序进行校验。
-"Request 5 ms periods; smaller queue margins require device support.":
-  en: Request 5 ms periods; smaller queue margins require device support.
-  zh-CN: 请求 5 ms 周期；更小的队列余量需要设备支持。
+"Use each device's default period.":
+  en: Use each device's default period.
+  zh-CN: 使用各设备的默认周期。
+"Request ~10 ms device buffers (512 frames at 48 kHz).":
+  en: Request ~10 ms device buffers (512 frames at 48 kHz).
+  zh-CN: 请求约 10 ms 的设备缓冲（48 kHz 下 512 帧）。
+"Request ~5 ms device buffers (256 frames at 48 kHz).":
+  en: Request ~5 ms device buffers (256 frames at 48 kHz).
+  zh-CN: 请求约 5 ms 的设备缓冲（48 kHz 下 256 帧）。
 "WASAPI":
   en: WASAPI
   zh-CN: WASAPI
@@ -1935,12 +1929,6 @@ _version: 2
 "Project node states do not match the topology identity":
   en: "Project node states do not match the topology identity"
   zh-CN: "项目节点状态与拓扑身份不一致"
-"The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet":
-  en: "The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet"
-  zh-CN: "当前音频驱动需要 1 个输入节点和 1 个输出节点；多设备图尚未实现"
-"The current device bridge only supports stereo nodes":
-  en: "The current device bridge only supports stereo nodes"
-  zh-CN: "当前设备桥仅支持双声道节点"
 "No native audio backend is configured":
   en: "No native audio backend is configured"
   zh-CN: "未配置原生音频驱动"

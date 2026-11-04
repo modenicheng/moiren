@@ -43,8 +43,53 @@ pub(in super::super) struct Draft {
     pub pending: Option<Pending>,
 }
 
+impl PartialEq for Draft {
+    fn eq(&self, other: &Self) -> bool {
+        self.audio == other.audio
+            && self.profile == other.profile
+            && self.density == other.density
+            && self.transport == other.transport
+            && self.original == other.original
+            && self.error == other.error
+            && self.message == other.message
+            && self.pending.is_some() == other.pending.is_some()
+    }
+}
+
+/// Local presentation only: deadlines and receipt bookkeeping do not repaint.
+#[derive(PartialEq)]
+pub(super) struct MeasuredKey {
+    pub node: Option<moiren_core::graph::NodeId>,
+    pub bounds: [u32; 3],
+    pub exact: bool,
+    pub busy: bool,
+    pub error: Option<String>,
+    pub message: Option<String>,
+    #[cfg(windows)]
+    pub retained_open: bool,
+    #[cfg(windows)]
+    pub retained: RetainedKey,
+    #[cfg(windows)]
+    pub live_open: bool,
+    #[cfg(windows)]
+    pub live_policy: [Option<u64>; 5],
+}
+
+#[cfg(windows)]
+#[derive(PartialEq)]
+pub(super) struct RetainedKey {
+    pub policy: moiren_windows_audio::process_loopback::ReplayWindowPolicy,
+    pub error: Option<String>,
+    pub busy: bool,
+    pub result_revision: u64,
+}
+
 #[derive(Clone)]
 pub(in super::super) struct Pending {
+    // NOTE: deliberately not `PartialEq`; the draft comparison below treats
+    // any pending save as equal to any other so the panel key only rebuilds
+    // on value changes (the pending stage renders through the shell's save
+    // notifications via the `message`/`error` fields instead).
     pub request: RequestId,
     pub stage: Stage,
     pub restart: bool,
@@ -158,7 +203,7 @@ impl Draft {
                 self.original.1,
                 self.profile,
                 profile,
-                &t!("Recovery policy"),
+                &t!("Device buffer policy"),
             )?,
             density: merge_value(self.original.2, self.density, density, &t!("Density"))?,
             transport: merged_transport,

@@ -31,6 +31,37 @@ fn poll_until(
     }
 }
 
+/// The two halves of the flyout's meter pipeline must stay wired together:
+/// the strips' canvases register into the frame the hot surface reads, and
+/// the hot layer paints them. The surfaces drifting apart left the flyout
+/// with no meter bars at all.
+#[gpui_kit::test]
+fn tray_mixer_hot_layer_paints_the_strips_registered_meter_tracks(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| TrayMixer::new(state, None, window, cx));
+    cx.update(|window, _| window.resize(size(px(360.), px(372.))));
+    cx.update(|window, cx| window.render_frame(cx));
+    let (registered, painted) = view.update(cx, |flyout, cx| {
+        let meters = flyout.meter_layer.read(cx).surface();
+        let meters = meters.borrow();
+        (meters.registered_tracks(), meters.painted_tracks())
+    });
+    assert!(
+        registered > 0,
+        "the hot surface must see the strips' registered meter tracks"
+    );
+    assert!(
+        painted >= registered,
+        "the hot layer must paint every registered track"
+    );
+    handle.request_exit();
+    runtime.join().unwrap();
+}
+
 #[gpui_kit::test]
 fn tray_mixer_lists_audio_strips_and_applies_mute_immediately(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);

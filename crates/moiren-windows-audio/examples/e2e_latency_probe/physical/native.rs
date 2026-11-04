@@ -459,6 +459,7 @@ mod tests {
         let node = graph.create_node(NodeKind::Sink, 2).unwrap();
         let snapshot = NativeObservationSnapshot {
             virtual_clock: None,
+            virtual_callback: None,
             owner_generation: 7,
             running: true,
             streams: vec![NativeStreamObservation {

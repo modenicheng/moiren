@@ -188,7 +188,11 @@ fn measured_apply_replaces_owner_and_reaches_both_precision_factories() {
             Ok(Box::new(f64_backend.clone()))
         }));
         let request = start_process(&mut r);
+        // An explicit measured replacement also supersedes restored-project
+        // startup, which may still be waiting for a catalog completion.
+        r.driver.automatic_resume = true;
         r.request(AppRequest::ApplyMeasuredProcessBridge(request));
+        assert!(!r.driver.automatic_resume);
         let requested = r.c.measured_process.as_ref().unwrap().summary().clone();
         assert_eq!(requested.request, request);
         assert!(requested.observed_window.is_none());

@@ -9,10 +9,7 @@ use std::{
 };
 
 use crate::{
-    meter::{
-        LevelSnapshot, MeterReader,
-        signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
-    },
+    meter::signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
     recorder::{
         RecorderReader, RecorderStats, RecordingSession, RecordingSource, WavRecording,
         spawn_recording,
@@ -44,30 +41,6 @@ pub type ManagedSpectrumSubscription = ManagedSubscription<ManagedSpectrumTopic>
 use super::{BackendError, EngineProject, NodeConfig};
 
 type ReaderSlot<T> = Arc<Mutex<Option<(u64, T)>>>;
-
-/// Control-side handle to a meter reader. It becomes stale when its owner is
-/// replaced, and never exposes the reader to the realtime thread.
-pub struct ManagedMeterReader {
-    owner_generation: u64,
-    slot: ReaderSlot<MeterReader>,
-}
-
-impl ManagedMeterReader {
-    pub fn owner_generation(&self) -> u64 {
-        self.owner_generation
-    }
-
-    pub fn latest(&mut self) -> Option<LevelSnapshot> {
-        let mut slot = self
-            .slot
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let (generation, reader) = slot.as_mut()?;
-        (*generation == self.owner_generation)
-            .then(|| reader.latest())
-            .flatten()
-    }
-}
 
 /// Control-side handle to a recorder endpoint, tied to the owner generation
 /// that prepared its SPSC queue.
@@ -242,7 +215,6 @@ impl ManagedRecorderReader {
 pub(crate) struct PreparedReaders {
     // None explicitly retains an existing endpoint after validated observer
     // reuse; absence removes it. Never replace a retained recording queue.
-    pub meters: BTreeMap<NodeId, Option<MeterReader>>,
     pub recorders: BTreeMap<NodeId, Option<RecorderReader>>,
 }
 
@@ -256,7 +228,6 @@ struct Directory {
     active_levels: BTreeMap<NodeId, Topic<ManagedLevelTopic>>,
     spectra: BTreeMap<(NodeId, usize, usize), Topic<ManagedSpectrumTopic>>,
     active_spectra: BTreeMap<NodeId, Topic<ManagedSpectrumTopic>>,
-    meters: BTreeMap<NodeId, ReaderSlot<MeterReader>>,
     recorders: BTreeMap<NodeId, ReaderSlot<RecorderEndpoint>>,
 }
 pub(crate) struct SignalHub {
@@ -278,7 +249,6 @@ impl SignalHub {
                 active_levels: BTreeMap::new(),
                 spectra: BTreeMap::new(),
                 active_spectra: BTreeMap::new(),
-                meters: BTreeMap::new(),
                 recorders: BTreeMap::new(),
             }),
         })
@@ -299,7 +269,6 @@ impl SignalHub {
         directory.generation = generation;
         unregister_topics(&mut directory.bus, std::mem::take(&mut directory.levels))?;
         unregister_topics(&mut directory.bus, std::mem::take(&mut directory.spectra))?;
-        clear_slots(&mut directory.meters);
         clear_slots(&mut directory.recorders);
         directory.bus.create_host(capacity).map_err(failed)
     }
@@ -374,8 +343,10 @@ impl SignalHub {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let directory = &mut *guard;
+        // The host topic carries the exact source window, not magnitudes:
+        // the transform runs on whichever control thread reads it.
         let capacity = channels
-            .checked_mul(settings.bins_per_channel())
+            .checked_mul(settings.fft_size)
             .ok_or_else(|| failed("spectrum topic capacity overflow"))?;
         let shape = (node, channels, settings.fft_size);
         let generation = directory.generation;
@@ -423,12 +394,11 @@ impl SignalHub {
             subscriber,
         })
     }
-    pub(crate) fn install_readers(&self, generation: u64, mut readers: PreparedReaders) {
+    pub(crate) fn install_readers(&self, generation: u64, readers: PreparedReaders) {
         let mut directory = self
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        install_slots(&mut directory.meters, generation, &mut readers.meters);
         let mut recorders = readers
             .recorders
             .into_iter()
@@ -466,29 +436,11 @@ impl SignalHub {
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        clear_generation(&mut directory.meters, generation);
         clear_generation(&mut directory.recorders, generation);
         if directory.generation == generation {
             directory.active_levels.clear();
             directory.active_spectra.clear();
         }
-    }
-
-    pub(crate) fn meter_reader(&self, node: NodeId) -> Result<ManagedMeterReader, String> {
-        let directory = self
-            .directory
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let (owner_generation, slot) = reader_handle(
-            &directory.meters,
-            node,
-            "meter reader is not prepared",
-            "meter reader is not active",
-        )?;
-        Ok(ManagedMeterReader {
-            owner_generation,
-            slot,
-        })
     }
 
     pub(crate) fn recorder_reader(&self, node: NodeId) -> Result<ManagedRecorderReader, String> {
@@ -601,7 +553,6 @@ impl SignalHub {
             active_levels,
             spectra,
             active_spectra,
-            meters,
             recorders,
             ..
         } = &mut *directory;
@@ -618,9 +569,6 @@ impl SignalHub {
             active_levels.get(node) != Some(topic)
         });
         if let Some(project) = project {
-            prune_slots(meters, &project.nodes, |config| {
-                matches!(config, NodeConfig::Meter(_))
-            });
             prune_slots(recorders, &project.nodes, |config| {
                 matches!(config, NodeConfig::Recorder(_))
             });

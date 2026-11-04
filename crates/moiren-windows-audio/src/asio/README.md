@@ -1,6 +1,6 @@
 # Direct Windows ASIO backend
 
-`AsioStream` implements `professional::native::NativeStream`. Create, configure,
+`AsioStream` implements `crate::native::NativeStream`. Create, configure,
 start, stop and drop it on the same dedicated native owner thread. It is not
 `Send`. `open` prepares the driver and its buffers; only `start` starts audio.
 ASIO/WASAPI selection and requested-format validation belong to the parent

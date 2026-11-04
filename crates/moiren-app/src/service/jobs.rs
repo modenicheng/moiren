@@ -211,12 +211,6 @@ impl<T> Drop for CompletionPermit<T> {
         }
     }
 }
-/// Every backend completion carries the generation that produced its owned value.
-#[derive(Debug)]
-pub struct JobResult<T> {
-    pub generation: super::SessionGeneration,
-    pub value: T,
-}
 /// Shared catalog-refresh job shape for both audio drivers: reserve a
 /// completion credit, query the backend off-thread, and track exactly one
 /// in-flight refresh. A refused submission releases its credit immediately;

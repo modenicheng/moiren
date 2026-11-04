@@ -13,17 +13,67 @@ use crate::service::{
     InputSelection, MixerState, RequestId, RunLimit, SessionPhase, SessionSpec,
 };
 
+/// Whether an endpoint id names an input row the backend currently offers:
+/// present among its rows and (on WASAPI) not owned by one of our VAD
+/// exports, which are hidden from every selector. The row lists, the
+/// candidate spec, and the transport fingerprint share this one judgment so
+/// "available" cannot mean different things at different call sites.
+pub(crate) fn backend_offers_input(
+    catalog: &DeviceCatalog,
+    backend: AudioBackend,
+    endpoint_id: &str,
+) -> bool {
+    match backend {
+        AudioBackend::Wasapi => {
+            !catalog.vad_endpoints.values().any(|id| id == endpoint_id)
+                && catalog
+                    .inputs
+                    .iter()
+                    .any(|row| row.endpoint_id == endpoint_id)
+        }
+        AudioBackend::Asio => catalog
+            .asio_drivers
+            .iter()
+            .any(|row| row.endpoint_id == endpoint_id),
+    }
+}
+
+/// The output-row half of [`backend_offers_input`].
+pub(crate) fn backend_offers_output(
+    catalog: &DeviceCatalog,
+    backend: AudioBackend,
+    endpoint_id: &str,
+) -> bool {
+    match backend {
+        AudioBackend::Wasapi => {
+            !catalog.vad_endpoints.values().any(|id| id == endpoint_id)
+                && catalog
+                    .outputs
+                    .iter()
+                    .any(|row| row.endpoint_id == endpoint_id)
+        }
+        AudioBackend::Asio => catalog
+            .asio_drivers
+            .iter()
+            .any(|row| row.endpoint_id == endpoint_id),
+    }
+}
+
+/// Whether the (pid, creation time) key still names a process row; the
+/// creation time disambiguates pid reuse.
+fn process_available(catalog: &DeviceCatalog, pid: u32, creation_time_100ns: u64) -> bool {
+    catalog
+        .processes
+        .iter()
+        .any(|row| (row.pid, row.creation_time_100ns) == (pid, creation_time_100ns))
+}
+
 pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<DeviceRow> {
     match backend {
         AudioBackend::Wasapi => catalog
             .inputs
             .iter()
-            .filter(|row| {
-                !catalog
-                    .vad_endpoints
-                    .values()
-                    .any(|id| id == &row.endpoint_id)
-            })
+            .filter(|row| backend_offers_input(catalog, backend, &row.endpoint_id))
             .cloned()
             .collect(),
         AudioBackend::Asio => catalog.asio_drivers.clone(),
@@ -35,12 +85,7 @@ pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec
         AudioBackend::Wasapi => catalog
             .outputs
             .iter()
-            .filter(|row| {
-                !catalog
-                    .vad_endpoints
-                    .values()
-                    .any(|id| id == &row.endpoint_id)
-            })
+            .filter(|row| backend_offers_output(catalog, backend, &row.endpoint_id))
             .cloned()
             .collect(),
         AudioBackend::Asio => catalog.asio_drivers.clone(),
@@ -157,27 +202,35 @@ impl SelectionState {
             self.output_initialized = true;
         }
     }
+    // Row-index probes over the display catalogs. Production renders rows
+    // from the catalog itself; these exist so the state tests can observe
+    // which row a stored identity resolves to after a refresh.
+    #[cfg(test)]
     pub fn input_index(&self, catalog: &DeviceCatalog) -> Option<usize> {
         input_rows(catalog, self.backend)
             .iter()
             .position(|row| Some(&row.endpoint_id) == self.input_id.as_ref())
     }
+    #[cfg(test)]
     pub fn output_index(&self, catalog: &DeviceCatalog) -> Option<usize> {
         output_rows(catalog, self.backend)
             .iter()
             .position(|row| Some(&row.endpoint_id) == self.output_id.as_ref())
     }
+    #[cfg(test)]
     pub fn process_index(&self, catalog: &DeviceCatalog) -> Option<usize> {
         catalog
             .processes
             .iter()
             .position(|p| Some((p.pid, p.creation_time_100ns)) == self.process_key)
     }
+    #[cfg(test)]
     pub fn select_process(&mut self, catalog: &DeviceCatalog, row: Option<usize>) {
         self.process_key = row
             .and_then(|i| catalog.processes.get(i))
             .map(|p| (p.pid, p.creation_time_100ns));
     }
+    #[cfg(test)]
     pub fn input_selection(&self, catalog: &DeviceCatalog) -> Option<InputSelection> {
         match self.process_key {
             Some(key) => catalog
@@ -203,6 +256,30 @@ impl SelectionState {
     }
 }
 
+/// Memo key for [`UiState::can_start_transport`]: every input the
+/// validation consumes, cheap to copy and compare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TransportCheckFingerprint {
+    candidate_revision: u64,
+    sample_rate: u32,
+    snapshot_block_frames: u32,
+    f64_precision: bool,
+    /// The three latency profiles validate differently (they request
+    /// different device periods), so the value itself is keyed — folding
+    /// them into one "non-default" bit lets Compatible→Balanced→Low
+    /// switches replay a stale verdict.
+    latency_profile: crate::service::AudioLatencyProfile,
+    /// The UI's own block ceiling: the physical spec carries it (not the
+    /// snapshot's setting), and it is the block half of the validation on
+    /// that path.
+    max_block_frames: usize,
+    /// Whether the selected output and mode-matched source rows still exist
+    /// in the catalog. `RefreshCatalog` and device hot-plug change this
+    /// without bumping the candidate revision, so this is the memo's only
+    /// window on resource availability.
+    resources_available: bool,
+}
+
 /// Root gpui entity: owns the service handle and the latest projected state.
 /// The text projections and the display-level stale guard live in
 /// [`crate::ui::presentation`].
@@ -211,23 +288,38 @@ pub struct UiState {
     pub handle: AppHandle,
     pub selection: SelectionState,
     pub snapshot: Arc<AppSnapshot>,
+    /// The one meter subscription table for the whole application: the main
+    /// window and the tray flyout both pump it with their own visibility, and
+    /// the seen-table grace unions the two demands (design 17, data plane).
+    pub node_meters: crate::ui::monitoring::NodeMeters,
+    /// The spectrum analyzers' subscription table, pumped with the same
+    /// visible set as the meters and feeding the graph card's live body.
+    pub node_spectra: crate::ui::monitoring::NodeSpectra,
     pub pending_request: bool,
     pub dispatch_error: Option<String>,
     pub source_mode: SourceMode,
     pub gain: f64,
     pub pan: f64,
-    pub muted: bool,
-    pub dimmed: bool,
     pub tone_frequency: f64,
     pub max_block_frames: usize,
     pub run_limit: RunLimit,
     request_id: Option<RequestId>,
+    /// Memo for [`Self::can_start_transport`]: the toolbar asks per rebuild,
+    /// and the answer clones the whole candidate graph to validate. The key
+    /// ([`TransportCheckFingerprint`]) carries every input of the validation
+    /// — candidate revision, the processing settings and latency profile,
+    /// the UI block ceiling, and the selected resources' catalog
+    /// availability — so a settings or catalog change without a graph edit
+    /// still invalidates it.
+    transport_check: std::cell::Cell<Option<(TransportCheckFingerprint, bool)>>,
 }
 
 impl UiState {
     pub fn new(handle: AppHandle, initial: Arc<AppSnapshot>) -> Self {
         let mut selection = SelectionState::default();
         selection.refresh_for_backend(&initial.catalog, initial.audio_settings.backend);
+        let node_meters = crate::ui::monitoring::NodeMeters::new(handle.clone());
+        let node_spectra = crate::ui::monitoring::NodeSpectra::new(handle.clone());
         let (gain, pan) = primary_parameters(&initial);
         let max_block_frames = initial.audio_settings.processing.block_frames as usize;
         let mut state = Self {
@@ -235,17 +327,18 @@ impl UiState {
             handle,
             selection,
             snapshot: initial,
+            node_meters,
+            node_spectra,
             pending_request: false,
             dispatch_error: None,
             source_mode: SourceMode::Tone,
             gain,
             pan,
-            muted: false,
-            dimmed: false,
             tone_frequency: 440.,
             max_block_frames,
             run_limit: RunLimit::UntilStopped,
             request_id: None,
+            transport_check: std::cell::Cell::new(None),
         };
         let resources = graph_resources(&state.snapshot);
         state.sync_graph_resources(resources.0, resources.1);
@@ -266,7 +359,7 @@ impl UiState {
             }
             let before = primary_parameters(&self.snapshot);
             let after = primary_parameters(&snapshot);
-            if before.0 != after.0 && !self.muted && !self.dimmed {
+            if before.0 != after.0 {
                 self.gain = after.0;
             }
             if before.1 != after.1 {
@@ -356,16 +449,6 @@ impl UiState {
         let _ = self.try_dispatch(AppRequest::SetLatencyProfile(preferences.latency_profile));
     }
 
-    pub fn effective_gain(&self) -> f64 {
-        if self.muted {
-            0.0
-        } else if self.dimmed {
-            self.gain * 0.25
-        } else {
-            self.gain
-        }
-    }
-
     /// Explicit node targets let the service distinguish a loaded candidate
     /// from a still-running project whose NodeId numbers happen to coincide.
     pub fn request_parameters(&mut self) {
@@ -383,7 +466,7 @@ impl UiState {
         if let Some(node) = gain {
             self.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::SetGain {
                 node,
-                gain: self.effective_gain(),
+                gain: self.gain,
             }));
         }
         if let Some(node) = pan {
@@ -447,7 +530,7 @@ impl UiState {
             source,
             output_endpoint_id: self.selection.output_id.clone()?,
             limit: self.run_limit,
-            gain: self.effective_gain(),
+            gain: self.gain,
             pan: self.pan,
             max_block_frames: self.max_block_frames,
         };
@@ -459,24 +542,18 @@ impl UiState {
         let spec = self.candidate_config()?;
         let catalog = &self.snapshot.catalog;
         let backend = self.snapshot.audio_settings.backend;
-        if !output_rows(catalog, backend)
-            .iter()
-            .any(|row| row.endpoint_id == spec.output_endpoint_id)
-        {
+        if !backend_offers_output(catalog, backend, &spec.output_endpoint_id) {
             return None;
         }
         let available = match &spec.source {
             InputSelection::Tone { .. } => true,
-            InputSelection::Physical { endpoint_id } => input_rows(catalog, backend)
-                .iter()
-                .any(|row| &row.endpoint_id == endpoint_id),
+            InputSelection::Physical { endpoint_id } => {
+                backend_offers_input(catalog, backend, endpoint_id)
+            }
             InputSelection::Process {
                 pid,
                 creation_time_100ns,
-            } => catalog
-                .processes
-                .iter()
-                .any(|row| (row.pid, row.creation_time_100ns) == (*pid, *creation_time_100ns)),
+            } => process_available(catalog, *pid, *creation_time_100ns),
         };
         available.then_some(spec)
     }
@@ -534,7 +611,68 @@ impl UiState {
     }
 
     pub fn can_start_transport(&self) -> bool {
-        self.transport_request().is_ok()
+        let fingerprint = self.transport_fingerprint();
+        if let Some((seen, ok)) = self.transport_check.get()
+            && seen == fingerprint
+        {
+            return ok;
+        }
+        let ok = self.transport_request().is_ok();
+        self.transport_check.set(Some((fingerprint, ok)));
+        ok
+    }
+
+    /// The memo key of [`Self::can_start_transport`], covering every input
+    /// its validation reads: the candidate graph (by revision), the
+    /// processing settings `configured_engine_project` validates, the
+    /// requested latency profile, the UI block ceiling the physical spec
+    /// carries, and the selected resources' catalog availability.
+    fn transport_fingerprint(&self) -> TransportCheckFingerprint {
+        TransportCheckFingerprint {
+            candidate_revision: self.snapshot.graph.candidate_revision,
+            sample_rate: self.snapshot.audio_settings.processing.sample_rate,
+            snapshot_block_frames: self.snapshot.audio_settings.processing.block_frames,
+            f64_precision: matches!(
+                self.snapshot.audio_settings.processing.precision,
+                moiren_engine::audio_config::ProcessingPrecision::F64
+            ),
+            latency_profile: self.snapshot.latency_profile,
+            max_block_frames: self.max_block_frames,
+            resources_available: self.selected_resources_available(),
+        }
+    }
+
+    /// Whether the selected output and the mode-matched source row are
+    /// present in the catalog, judged by the same
+    /// [`backend_offers_output`]/[`backend_offers_input`]/[`process_available`]
+    /// helpers [`Self::candidate_spec`] uses — the identifiers read here are
+    /// exactly the ones [`Self::candidate_config`] embeds in a spec.
+    /// Allocation-free so [`Self::can_start_transport`] can afford the probe
+    /// on every toolbar rebuild.
+    fn selected_resources_available(&self) -> bool {
+        let catalog = &self.snapshot.catalog;
+        let backend = self.snapshot.audio_settings.backend;
+        let output = self
+            .selection
+            .output_id
+            .as_deref()
+            .is_some_and(|id| backend_offers_output(catalog, backend, id));
+        let source = match self.source_mode {
+            SourceMode::Tone => true,
+            SourceMode::Input => self
+                .selection
+                .input_id
+                .as_deref()
+                .is_some_and(|id| backend_offers_input(catalog, backend, id)),
+            SourceMode::Application => {
+                self.selection
+                    .process_key
+                    .is_some_and(|(pid, creation_time_100ns)| {
+                        process_available(catalog, pid, creation_time_100ns)
+                    })
+            }
+        };
+        output && source
     }
 
     fn sync_graph_resources(&mut self, source: Option<InputSelection>, output: Option<String>) {
@@ -571,8 +709,6 @@ impl UiState {
         let (gain, pan) = primary_parameters(&self.snapshot);
         self.gain = gain;
         self.pan = pan;
-        self.muted = false;
-        self.dimmed = false;
         self.max_block_frames = self.snapshot.audio_settings.processing.block_frames as usize;
         self.run_limit = RunLimit::UntilStopped;
     }
@@ -594,8 +730,6 @@ impl UiState {
         self.selection.output_initialized = true;
         self.gain = spec.gain;
         self.pan = spec.pan;
-        self.muted = false;
-        self.dimmed = false;
         self.max_block_frames = spec.max_block_frames;
         self.run_limit = spec.limit;
     }
@@ -651,106 +785,6 @@ fn primary_parameters(snapshot: &AppSnapshot) -> (f64, f64) {
         .node_of_kind(NodeKind::Pan)
         .map_or(0., |(_, state)| state.pan);
     (gain, pan)
-}
-
-pub fn output_name(snapshot: &AppSnapshot, id: &str) -> String {
-    output_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-        .into_iter()
-        .find(|row| row.endpoint_id == id)
-        .map(|row| row.name.clone())
-        .unwrap_or_else(|| t!("Unavailable output").into())
-}
-
-/// Presentation label for a node. While a Source/Sink still carries its
-/// default label (never renamed), it follows the bound input/output device
-/// name; renaming it once pins the custom name.
-pub fn display_label(
-    snapshot: &AppSnapshot,
-    entry: &crate::service::GraphNodeState,
-    kind: moiren_core::graph::NodeKind,
-) -> String {
-    use moiren_core::graph::NodeKind;
-    if entry.label != crate::service::default_label(kind) {
-        return entry.label.clone();
-    }
-    if let Some(export) = snapshot
-        .graph
-        .exports
-        .iter()
-        .find(|export| export.enabled && export.binding == Some(entry.id))
-    {
-        return export.name.clone();
-    }
-    match kind {
-        NodeKind::Source => entry
-            .source
-            .as_ref()
-            .and_then(|source| {
-                (!snapshot
-                    .graph
-                    .exports
-                    .iter()
-                    .any(|export| export.enabled && export.binding == Some(entry.id)))
-                .then(|| source_name(snapshot, source))
-            })
-            .or_else(|| {
-                snapshot
-                    .graph
-                    .exports
-                    .iter()
-                    .find(|export| export.enabled && export.binding == Some(entry.id))
-                    .map(|export| export.name.clone())
-            })
-            .unwrap_or_else(|| entry.label.clone()),
-        NodeKind::Sink => entry
-            .output_endpoint_id
-            .as_ref()
-            .and_then(|endpoint| {
-                (!snapshot
-                    .graph
-                    .exports
-                    .iter()
-                    .any(|export| export.enabled && export.binding == Some(entry.id)))
-                .then(|| output_name(snapshot, endpoint))
-            })
-            .or_else(|| {
-                snapshot
-                    .graph
-                    .exports
-                    .iter()
-                    .find(|export| export.enabled && export.binding == Some(entry.id))
-                    .map(|export| export.name.clone())
-            })
-            .unwrap_or_else(|| entry.label.clone()),
-        _ => entry.label.clone(),
-    }
-}
-
-pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
-    match source {
-        InputSelection::Tone { frequency_hz } => t!(
-            "Test tone · %{frequency} Hz",
-            frequency = format!("{frequency_hz:.0}")
-        )
-        .to_string(),
-        InputSelection::Physical { endpoint_id } => {
-            input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-                .into_iter()
-                .find(|row| row.endpoint_id == *endpoint_id)
-                .map(|row| row.name.clone())
-                .unwrap_or_else(|| t!("Unavailable input").into())
-        }
-        InputSelection::Process {
-            pid,
-            creation_time_100ns,
-        } => snapshot
-            .catalog
-            .processes
-            .iter()
-            .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
-            .map(|row| t!("%{name} (PID %{pid})", name = row.name, pid = pid).to_string())
-            .unwrap_or_else(|| t!("Unavailable application (PID %{pid})", pid = pid).to_string()),
-    }
 }
 
 #[cfg(test)]

@@ -150,11 +150,13 @@ fn rack_delay_history_survives_processor_id_migration_without_rt_heap_work() {
 }
 
 #[test]
-fn observer_reuse_preserves_meter_window_and_recorder_queue_without_rt_heap_work() {
-    use moiren_engine::{meter::MeterSettings, recorder::RecorderSettings};
+fn observer_reuse_preserves_recorder_state_through_meter_passthrough_without_rt_heap_work() {
+    use moiren_engine::recorder::RecorderSettings;
 
     let mut graph = LogicalGraph::new();
     let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    // The Meter node keeps its PassThrough slot in the chain; its level signal
+    // is published by the host's signal preparation, not by this raw compile.
     let meter = graph.create_node(NodeKind::Meter, 1).unwrap();
     let recorder = graph.create_node(NodeKind::Recorder, 1).unwrap();
     let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
@@ -167,8 +169,7 @@ fn observer_reuse_preserves_meter_window_and_recorder_queue_without_rt_heap_work
         .bind_source(source, common::CountingSource { next: 1.0 })
         .unwrap();
     bindings.bind_sink(sink, writer).unwrap();
-    let settings = MeterSettings { window_frames: 4 };
-    let mut meter_reader = bindings.bind_meter(meter, settings).unwrap();
+    bindings.bind_unmanaged(meter, NodeKind::Meter).unwrap();
     let recording = RecorderSettings {
         capacity_frames: 32,
     };
@@ -177,19 +178,16 @@ fn observer_reuse_preserves_meter_window_and_recorder_queue_without_rt_heap_work
     let (result, counts) = super::allocation::track_heap(|| active.engine.render(3));
     result.unwrap();
     assert_eq!(counts, (0, 0, 0));
-    assert!(meter_reader.latest().is_none());
     recorder_reader.stop();
     let before = recorder_reader.stats();
     let basis = active.engine.plan_snapshot();
     let mut plans = active.engine.enable_plan_switching(4).unwrap();
     let mut bindings = NodeBindings::new();
-    let _placeholder_meter = bindings.bind_meter(meter, settings).unwrap();
+    bindings.bind_unmanaged(meter, NodeKind::Meter).unwrap();
     let _placeholder_recorder = bindings.bind_recorder(recorder, 1, recording).unwrap();
-    for node in [meter, recorder] {
-        bindings
-            .bind_observer_reuse(node, active.bindings.observer(node).unwrap())
-            .unwrap();
-    }
+    bindings
+        .bind_observer_reuse(recorder, active.bindings.observer(recorder).unwrap())
+        .unwrap();
     let reuse: Vec<_> = [source, meter, recorder, sink]
         .into_iter()
         .map(|node| (node, active.bindings.node(node).unwrap()))
@@ -199,11 +197,6 @@ fn observer_reuse_preserves_meter_window_and_recorder_queue_without_rt_heap_work
     let (result, counts) = super::allocation::track_heap(|| active.engine.render(5));
     result.unwrap();
     assert_eq!(counts, (0, 0, 0));
-    let snapshot = meter_reader.latest().unwrap();
-    assert_eq!(
-        (snapshot.samples, snapshot.end_frame, snapshot.peak),
-        (4, 8, 8.0)
-    );
     assert_eq!(recorder_reader.stats(), before);
     let mut tail = [0.0; 3];
     assert_eq!(recorder_reader.read_interleaved(&mut tail), 3);
@@ -1018,7 +1011,7 @@ fn sparse_bus_and_send_reuse_survive_observer_fallback() {
     );
     active.engine.render(2).unwrap();
     assert_samples_exact(&mut output, &[0.875, 1.5]);
-    let (observer, mut observed) = moiren_engine::meter::level_meter(1, 8).unwrap();
+    let (observer, probe) = super::support::PeakProbe::new();
     let mut bindings = NodeBindings::new();
     bindings.observe_input(disconnected, observer).unwrap();
     let reuse: Vec<_> = [source, bus, sink]
@@ -1044,7 +1037,10 @@ fn sparse_bus_and_send_reuse_survive_observer_fallback() {
     report.unwrap();
     assert_eq!(counts, (0, 0));
     assert_samples_exact(&mut output, &[1.875, 2.0]);
-    assert_eq!(observed.latest().unwrap().peak, 0.0);
+    // The observer fallback renders initialized silence for the disconnected
+    // bus input: every frame observed, all zeros.
+    assert_eq!(probe.frames(), 2);
+    assert_eq!(probe.peak(), 0.0);
     assert!(matches!(
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Replaced { .. }

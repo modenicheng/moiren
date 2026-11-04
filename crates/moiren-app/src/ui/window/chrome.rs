@@ -1,28 +1,23 @@
 use rust_i18n::t;
 
 use super::*;
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
+use std::sync::Arc;
 
 pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     #[cfg(feature = "gpui-test")]
     {
-        shell.mixer.trace.borrow_mut().toolbar_renders += 1;
+        shell.trace.borrow_mut().toolbar_renders += 1;
     }
     let this = cx.entity();
     let state = shell.state.read(cx);
-    let limit = if shell.compact { 16 } else { 24 };
-    let project_label = if shell.project_name.chars().count() > limit {
-        format!(
-            "{}…",
-            shell
-                .project_name
-                .chars()
-                .take(limit - 1)
-                .collect::<String>()
-        )
-    } else {
-        shell.project_name.clone()
-    };
+    // The toolbar's project label shares the status bar's truncation, at a
+    // tighter limit when the window goes compact.
+    let project_label = truncate_name(
+        &shell.project_name,
+        if shell.compact { 16 } else { STATUS_NAME_LIMIT },
+    );
     let running = matches!(
         state.snapshot.phase,
         SessionPhase::Running | SessionPhase::Starting
@@ -167,87 +162,121 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .gpui_test_observe()
 }
 
-/// Chrome is a sibling of the animated meter view, never a cached parent of
-/// the controls. Rebuilding a cached parent forces its nested caches fresh.
-pub(super) struct CachedChrome {
-    shell: WeakEntity<StudioShell>,
-    toolbar: bool,
-    _subscription: Subscription,
+/// The chrome panels are siblings of the animated meter views, never cached
+/// parents of the page panels: rebuilding a cached parent forces its nested
+/// caches fresh.
+pub(super) type ToolbarChrome = PanelHost<ToolbarPanel>;
+pub(super) type StatusbarChrome = PanelHost<StatusbarPanel>;
+
+/// Everything the toolbar tree consumes. Shell notifications arrive far more
+/// often than these inputs change (meter pumps are excluded by design — the
+/// meter frames own the animation loops), so the key exists to keep those
+/// notifications from rebuilding the chrome.
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct ToolbarKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    page: Page,
+    compact: bool,
+    project_name: String,
+    pending_request: bool,
 }
 
-impl CachedChrome {
-    pub fn new(shell: Entity<StudioShell>, toolbar: bool, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&shell, |_, _, cx| cx.notify());
-        Self {
-            shell: shell.downgrade(),
-            toolbar,
-            _subscription: subscription,
+pub(super) struct ToolbarPanel;
+
+impl CachedPanel for ToolbarPanel {
+    type Owner = StudioShell;
+    type Key = ToolbarKey;
+
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
+        let state = shell.state.read(cx);
+        Self::Key {
+            snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
+            page: shell.presentation.page,
+            compact: shell.compact,
+            project_name: shell.project_name.clone(),
+            pending_request: state.pending_request,
         }
     }
-}
 
-impl Render for CachedChrome {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(shell) = self.shell.upgrade() else {
-            return div().into_any_element();
-        };
-        shell.update(cx, |shell, cx| {
-            let content = if self.toolbar {
-                toolbar(shell, cx).into_any_element()
-            } else {
-                #[cfg(feature = "gpui-test")]
-                {
-                    shell.mixer.trace.borrow_mut().status_renders += 1;
-                }
-                statusbar(shell.state.read(cx))
-                    .gpui_test_observe()
-                    .into_any_element()
-            };
-            // A cached view is laid out as a root. Give the original flex row
-            // its allocated width explicitly, not its intrinsic content width.
-            div().size_full().child(content).into_any_element()
-        })
+    fn render(
+        &self,
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        // A cached view is laid out as a root. Give the original flex row its
+        // allocated width explicitly, not its intrinsic content width.
+        div()
+            .size_full()
+            .child(toolbar(shell, cx))
+            .into_any_element()
     }
 }
 
-pub(super) fn toolbar_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
-    // GPUI's cache replays paint/layout, not the per-frame accessibility tree.
-    if window.is_a11y_active() {
-        return div()
-            .w_full()
-            .h(px(theme::TOOLBAR_HEIGHT))
-            .flex_none()
-            .child(shell.toolbar_chrome.clone())
-            .into_any_element();
+/// The status bar projects the published snapshot and nothing else; the
+/// service dedups publishes, so publish identity is the whole truth.
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct StatusbarKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+}
+
+pub(super) struct StatusbarPanel;
+
+impl CachedPanel for StatusbarPanel {
+    type Owner = StudioShell;
+    type Key = StatusbarKey;
+
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
+        Self::Key {
+            snapshot: PublishRef::new(Arc::clone(&shell.state.read(cx).snapshot)),
+        }
     }
-    // Chrome is cached on every page: both meter frames — not the shell —
-    // own the animation loops, so shell notifications here are real state
-    // changes and the cached tree rebuilds through its shell observer.
-    shell
-        .toolbar_chrome
-        .clone()
-        .cached(
-            StyleRefinement::default()
-                .w_full()
-                .h(px(theme::TOOLBAR_HEIGHT))
-                .flex_none(),
-        )
+
+    fn render(
+        &self,
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        #[cfg(feature = "gpui-test")]
+        {
+            shell.trace.borrow_mut().status_renders += 1;
+        }
+        // A cached view is laid out as a root. Give the original flex row its
+        // allocated width explicitly, not its intrinsic content width.
+        div()
+            .size_full()
+            .child(statusbar(shell.state.read(cx)).gpui_test_observe())
+            .into_any_element()
+    }
+}
+
+pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
+    // The chrome keeps its keyed `PanelHost` render dedup (`ToolbarChrome`
+    // / `StatusbarChrome` above) but is deliberately NOT `.cached()`-spliced:
+    // the toolbar and status bar carry the window drag regions
+    // (`window_control_area(Drag)`), whose hitboxes are registered during
+    // prepaint and cleared every frame. gpui-fast's splice replays
+    // layout/paint/a11y but not those registrations, so a spliced chrome
+    // would drop its drag regions from the platform's hit test after the
+    // first cache hit — the title bar simply stopped dragging. Both bars
+    // are cheap to rebuild; the pages stay cached.
+    div()
+        .w_full()
+        .h(px(theme::TOOLBAR_HEIGHT))
+        .flex_none()
+        .child(shell.toolbar_chrome.clone())
         .into_any_element()
 }
 
-pub(super) fn status_for_page(shell: &StudioShell, window: &Window) -> AnyElement {
-    if window.is_a11y_active() {
-        return div()
-            .w_full()
-            .h(px(28.))
-            .flex_none()
-            .child(shell.status_chrome.clone())
-            .into_any_element();
-    }
-    shell
-        .status_chrome
-        .clone()
-        .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
+pub(super) fn status_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
+    // See `toolbar_for_page`: the status bar's drag region needs a fresh
+    // registration every frame.
+    div()
+        .w_full()
+        .h(px(28.))
+        .flex_none()
+        .child(shell.status_chrome.clone())
         .into_any_element()
 }
 
@@ -271,10 +300,14 @@ fn endpoint_name<'a>(rows: &'a [crate::service::DeviceRow], endpoint_id: &'a str
 }
 
 /// Status-bar names must survive long Windows device names.
-fn truncate_name(name: &str) -> String {
-    const LIMIT: usize = 24;
-    if name.chars().count() > LIMIT {
-        format!("{}…", name.chars().take(LIMIT - 1).collect::<String>())
+const STATUS_NAME_LIMIT: usize = 24;
+
+/// Truncates `name` to `limit` characters, reserving one slot for the
+/// ellipsis so the result never exceeds the limit. Long Windows device names
+/// and the toolbar's project label share it at their own limits.
+fn truncate_name(name: &str, limit: usize) -> String {
+    if name.chars().count() > limit {
+        format!("{}…", name.chars().take(limit - 1).collect::<String>())
     } else {
         name.to_string()
     }
@@ -288,9 +321,10 @@ fn route_label(
     catalog: &crate::service::DeviceCatalog,
 ) -> String {
     let source = match source {
-        crate::service::InputSelection::Physical { endpoint_id } => {
-            truncate_name(endpoint_name(&catalog.inputs, endpoint_id))
-        }
+        crate::service::InputSelection::Physical { endpoint_id } => truncate_name(
+            endpoint_name(&catalog.inputs, endpoint_id),
+            STATUS_NAME_LIMIT,
+        ),
         crate::service::InputSelection::Process {
             pid,
             creation_time_100ns,
@@ -298,13 +332,16 @@ fn route_label(
             .processes
             .iter()
             .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
-            .map(|row| truncate_name(&row.name))
+            .map(|row| truncate_name(&row.name, STATUS_NAME_LIMIT))
             .unwrap_or_else(|| format!("#{pid}")),
         crate::service::InputSelection::Tone { frequency_hz } => {
             t!("Tone generator · %{hz} Hz", hz = frequency_hz).to_string()
         }
     };
-    let sink = truncate_name(endpoint_name(&catalog.outputs, output_endpoint_id));
+    let sink = truncate_name(
+        endpoint_name(&catalog.outputs, output_endpoint_id),
+        STATUS_NAME_LIMIT,
+    );
     t!("%{source} → %{sink}", source = source, sink = sink).to_string()
 }
 

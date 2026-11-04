@@ -37,6 +37,14 @@ pub(crate) const EXTENSIBLE_TAG: u16 = 0xfffe;
 pub(crate) const EXTENSION_BYTES: usize =
     size_of::<WAVEFORMATEXTENSIBLE>() - size_of::<WAVEFORMATEX>();
 
+/// Request bounds for wasapi.rs's open path; out-of-range requests are
+/// rejected before any COM call. The bridge's demand ring capacity is
+/// bounded; larger buffer requests are a bug.
+pub(crate) const MIN_SAMPLE_RATE_HZ: u32 = 8_000;
+pub(crate) const MAX_SAMPLE_RATE_HZ: u32 = 384_000;
+pub(crate) const MAX_BUFFER_FRAMES: u32 = 65_536;
+pub(crate) const MAX_CHANNELS: usize = 32;
+
 /// One failed WASAPI COM stage: the call-site label and its raw HRESULT.
 ///
 /// The stage text is observable in per-stack reports; every stack converts

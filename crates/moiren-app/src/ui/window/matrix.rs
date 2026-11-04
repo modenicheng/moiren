@@ -4,8 +4,69 @@ use rust_i18n::t;
 use super::*;
 use crate::service::GraphEdit;
 use crate::ui::presentation::{db_text, step_db};
+use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
 use moiren_core::graph::{PortId, SendParams};
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
+
+/// The matrix page behind a [`PanelHost`]: rebuilt only when the published
+/// snapshot, the selected route, the scroll offset, or the preferences change
+/// (the row height follows the density, which settings may switch
+/// mid-session).
+pub(in crate::ui::window) struct MatrixPanel;
+
+#[derive(PartialEq)]
+pub(in crate::ui::window) struct MatrixKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    selected_route: Option<(PortId, PortId)>,
+    scroll: Point<Pixels>,
+    compact: bool,
+    /// Carried whole like on the other pages: the render's density input is
+    /// `shell.density`, which the settings transaction and the desktop
+    /// presentation apply together with `preferences.density`.
+    preferences: crate::project::AppPreferences,
+}
+
+pub(in crate::ui::window) type MatrixPanelHost = PanelHost<MatrixPanel>;
+
+impl CachedPanel for MatrixPanel {
+    type Owner = StudioShell;
+    type Key = MatrixKey;
+
+    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
+        Self::Key {
+            snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
+            selected_route: shell.selected_route,
+            scroll: shell.matrix_scroll.offset(),
+            compact: shell.compact,
+            preferences: shell.preferences.clone(),
+        }
+    }
+
+    fn render(
+        &self,
+        shell: &mut Self::Owner,
+        _window: &mut Window,
+        cx: &mut Context<Self::Owner>,
+    ) -> AnyElement {
+        page(shell, cx)
+    }
+}
+
+/// The matrix page's cached splice.
+pub(in crate::ui::window) fn page_for(
+    shell: &StudioShell,
+    _window: &Window,
+    _cx: &Context<StudioShell>,
+) -> AnyElement {
+    shell
+        .matrix_panel
+        .clone()
+        .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
+        .into_any_element()
+}
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
@@ -78,15 +139,22 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         );
     }
     let mut grid = div().flex().flex_col().w(px(width)).h(px(height));
+    // One port-pair lookup for the whole grid instead of an edge scan per
+    // cell; `edges()` order is stable for the lifetime of this render.
+    let route_index: std::collections::HashMap<(PortId, PortId), usize> = graph
+        .edges()
+        .iter()
+        .enumerate()
+        .map(|(index, edge)| ((edge.src_port(), edge.dst_port()), index))
+        .collect();
     for (ri, (source, _, out)) in outputs.iter().enumerate() {
         let mut row = div().flex().flex_none().h(px(row_height));
         for (ci, (destination, _, input)) in inputs.iter().enumerate() {
             let src = out.id();
             let dst = input.id();
-            let edge = graph
-                .edges()
-                .iter()
-                .find(|e| e.src_port() == src && e.dst_port() == dst);
+            let edge = route_index
+                .get(&(src, dst))
+                .and_then(|index| graph.edges().get(*index));
             let selected = shell.selected_route == Some((src, dst));
             let forbidden = source.id() == destination.id();
             let value = edge

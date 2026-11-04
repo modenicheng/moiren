@@ -124,16 +124,20 @@ pub struct StudioShell {
     preference_save: Option<Task<()>>,
     preference_save_revision: u64,
     preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Recovery autosave: where the working document is written, the state it
+    /// was last saved from, and the in-flight debounce/write machinery.
+    autosave_path: Option<std::path::PathBuf>,
+    autosave_stamp: autosave::AutosaveStamp,
+    autosave_deadline: Option<Instant>,
+    autosave_timer: Option<Task<()>>,
+    autosave_write: Option<std::sync::Arc<std::sync::Mutex<autosave::AutosaveWriteCompletion>>>,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
     export_controls: devices::ExportControls,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     meters: MeterSubscriptions,
-    node_meters: super::monitoring::NodeMeters,
     node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
-    gain_slider: Entity<base::slider::SliderState>,
-    pan_slider: Entity<base::slider::SliderState>,
     project_path: Option<std::path::PathBuf>,
     project_name: String,
     project_message: Option<String>,
@@ -156,6 +160,15 @@ pub struct StudioShell {
     selection_drag: Option<graph::SelectionDrag>,
     graph_focus: FocusHandle,
     connection_drag: Option<graph::ConnectionDrag>,
+    /// Node whose detail window is open (design 18 B4).
+    detail_node: Option<moiren_core::graph::NodeId>,
+    /// Active card-knob value drag: node, control, press y, press value.
+    knob_drag: Option<(
+        moiren_core::graph::NodeId,
+        pages::graph_canvas::KnobControl,
+        f32,
+        f64,
+    )>,
     pending_node_spawn: Option<graph::PendingNodeSpawn>,
     node_search: Entity<component::input::InputState>,
     node_name: Entity<component::input::InputState>,
@@ -164,20 +177,54 @@ pub struct StudioShell {
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
+    exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
-    mixer_geometry: mixer::meter_frame::Geometry,
-    mixer_controls: Entity<mixer::meter_frame::MixerControls>,
-    toolbar_chrome: Entity<chrome::CachedChrome>,
-    status_chrome: Entity<chrome::CachedChrome>,
-    mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
-    graph_meter_frame: Entity<graph::meter_frame::GraphMeterFrame>,
-    graph_controls: Entity<graph::meter_frame::GraphControls>,
+    /// Render/frame instrumentation for the whole window (shell, chrome,
+    /// every page), written by ui_capture and the gpui-test assertions.
+    /// Lives on the shell because its scope is the window, not the mixer.
+    #[cfg(feature = "gpui-test")]
+    trace: std::cell::RefCell<performance::MeterTrace>,
+    mixer_geometry: mixer::page::Geometry,
+    toolbar_chrome: Entity<chrome::ToolbarChrome>,
+    status_chrome: Entity<chrome::StatusbarChrome>,
+    mixer_frame: Entity<mixer::page::MixerMeterLayer>,
+    graph_meter_frame: Entity<graph::page::GraphMeterLayer>,
+    graph_controls: Entity<graph::page::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
     graph_canvas_frame: pages::graph_canvas_view::PreparedFrame,
+    /// Window rects of the graph page's HUD overlays (editing toolbar,
+    /// overview, library handle), registered by the cached panel's probes
+    /// and carved out of the meter frame's paint so live bars stay under
+    /// them.
+    graph_overlays: pages::graph_canvas::OverlayRects,
+    /// The meter frame's copy of the spectrum curve it is painting: the
+    /// subscription table cannot stay borrowed across the paint, and a
+    /// per-frame allocation would be a wakeup cost of its own.
+    spectrum_scratch: Vec<f32>,
+    /// The canvas card under the pointer, tracked on idle moves for the
+    /// fault tooltip the meter frame paints; never part of a panel key.
+    hovered_node: Option<moiren_core::graph::NodeId>,
+    /// The endpoint menu hanging off a source/sink card's binding chip.
+    binding_menu: Option<graph::BindingMenu>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
+    /// Why this window currently needs display-rate frames (design 17 Tier
+    /// H): sources register while active, and the control-side poll is the
+    /// complement.
+    frame_demand: hot::FrameDemand,
+    /// Where the inspector's meter tracks sit; registered by the inspector's
+    /// canvases each frame and read by the sidebar hot layer.
+    inspector_meters: sidebar::InspectorMeterFrame,
+    inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
+    error_strip: Entity<error_strip::ErrorStripHost>,
+    matrix_panel: Entity<matrix::MatrixPanelHost>,
+    devices_panel: Entity<devices::DevicesPanelHost>,
+    settings_panel: Entity<settings::SettingsPanelHost>,
+    inspector_panel: Entity<sidebar::InspectorPanelHost>,
+    library_panel: Entity<sidebar::LibraryPanelHost>,
+    library_rail_panel: Entity<sidebar::LibraryRailPanelHost>,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
@@ -221,52 +268,6 @@ impl StudioShell {
             }
             registration
         };
-        let gain = state.read(cx).gain as f32;
-        let pan = state.read(cx).pan as f32;
-        let gain_slider = cx.new(|_| {
-            base::slider::SliderState::new()
-                .min(-60.)
-                .max(0.)
-                .step(0.1)
-                .default_value(if gain <= 0. { -60. } else { 20. * gain.log10() })
-        });
-        let pan_slider = cx.new(|_| {
-            base::slider::SliderState::new()
-                .min(-1.)
-                .max(1.)
-                .step(0.01)
-                .default_value(pan)
-        });
-        cx.subscribe(
-            &gain_slider,
-            |shell, _, event: &base::slider::SliderEvent, cx| {
-                if let base::slider::SliderEvent::Change(value) = event {
-                    shell.state.update(cx, |state, _| {
-                        state.gain = if value.end() <= -60. {
-                            0.
-                        } else {
-                            10f64.powf(f64::from(value.end()) / 20.)
-                        };
-                        state.request_parameters();
-                    });
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &pan_slider,
-            |shell, _, event: &base::slider::SliderEvent, cx| {
-                if let base::slider::SliderEvent::Change(value) = event {
-                    shell.state.update(cx, |state, _| {
-                        state.pan = f64::from(value.end());
-                        state.request_parameters();
-                    });
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
         let node_search = cx.new(|cx| {
             component::input::InputState::new(window, cx).placeholder(t!("Search nodes"))
         });
@@ -292,7 +293,6 @@ impl StudioShell {
         )
         .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
-        let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
         let density = match preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
@@ -300,32 +300,55 @@ impl StudioShell {
         };
         let settings = settings::SettingsEditor::new(&preferences, cx);
         let export_controls = devices::ExportControls::new(window, cx);
-        let mixer_geometry = mixer::meter_frame::Geometry::default();
+        let mixer_geometry = mixer::page::Geometry::default();
+        let graph_canvas_frame = pages::graph_canvas_view::PreparedFrame::default();
         let shell_entity = cx.entity();
-        let mixer_controls = cx.new(|child_cx| {
-            mixer::meter_frame::MixerControls::new(
-                shell_entity.clone(),
-                mixer_geometry.clone(),
-                child_cx,
-            )
+        let mixer_meters = std::rc::Rc::new(std::cell::RefCell::new(
+            mixer::page::MixerMeters::new(shell_entity.downgrade(), mixer_geometry.clone()),
+        ));
+        let mixer_frame = cx.new(|_| mixer::page::MixerMeterLayer::new(mixer_meters));
+        let graph_meters = std::rc::Rc::new(std::cell::RefCell::new(
+            graph::page::GraphMeters::new(shell_entity.downgrade(), graph_canvas_frame.clone()),
+        ));
+        let graph_meter_frame = cx.new(|_| graph::page::GraphMeterLayer::new(graph_meters));
+        let inspector_meters = sidebar::InspectorMeterFrame::default();
+        let inspector_meter_layer = cx.new(|_| {
+            sidebar::InspectorMeterLayer::new(std::rc::Rc::new(std::cell::RefCell::new(
+                sidebar::InspectorMeters::new(shell_entity.downgrade(), inspector_meters.clone()),
+            )))
         });
-        let mixer_frame = cx.new(|_| {
-            mixer::meter_frame::MixerMeterFrame::new(
-                shell_entity.downgrade(),
-                mixer_geometry.clone(),
-            )
+        let error_strip = cx.new(|cx| {
+            error_strip::ErrorStripHost::new(error_strip::ErrorStripPanel, shell_entity.clone(), cx)
         });
-        let graph_meter_frame =
-            cx.new(|_| graph::meter_frame::GraphMeterFrame::new(shell_entity.downgrade()));
+        let matrix_panel = cx
+            .new(|cx| matrix::MatrixPanelHost::new(matrix::MatrixPanel, shell_entity.clone(), cx));
+        let devices_panel = cx.new(|cx| {
+            devices::DevicesPanelHost::new(devices::DevicesPanel, shell_entity.clone(), cx)
+        });
+        let settings_panel = cx.new(|cx| {
+            settings::SettingsPanelHost::new(settings::SettingsPanel, shell_entity.clone(), cx)
+        });
+        let inspector_panel = cx.new(|cx| {
+            sidebar::InspectorPanelHost::new(sidebar::InspectorPanel, shell_entity.clone(), cx)
+        });
+        let library_panel = cx.new(|cx| {
+            sidebar::LibraryPanelHost::new(sidebar::LibraryPanel, shell_entity.clone(), cx)
+        });
+        let library_rail_panel = cx.new(|cx| {
+            sidebar::LibraryRailPanelHost::new(sidebar::LibraryRailPanel, shell_entity.clone(), cx)
+        });
         let graph_controls = cx.new(|child_cx| {
-            graph::meter_frame::GraphControls::new(
+            graph::page::GraphPanelHost::new(
+                graph::page::GraphPanel,
                 shell_entity.clone(),
-                node_search.clone(),
                 child_cx,
             )
         });
-        let toolbar_chrome = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), true, cx));
-        let status_chrome = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), false, cx));
+        let toolbar_chrome =
+            cx.new(|cx| chrome::ToolbarChrome::new(chrome::ToolbarPanel, shell_entity.clone(), cx));
+        let status_chrome = cx.new(|cx| {
+            chrome::StatusbarChrome::new(chrome::StatusbarPanel, shell_entity.clone(), cx)
+        });
         let mut shell = Self {
             state,
             settings_open: false,
@@ -340,15 +363,17 @@ impl StudioShell {
             preference_save: None,
             preference_save_revision: 0,
             preferences_quitting: Default::default(),
+            autosave_path: crate::project::autosave_path().ok(),
+            autosave_stamp: autosave::AutosaveStamp::default(),
+            autosave_deadline: None,
+            autosave_timer: None,
+            autosave_write: None,
             device_tab: devices::DeviceTab::Outputs,
             selected_device: None,
             export_controls,
             selected_route: None,
             meters,
-            node_meters,
             node_meter_points: Default::default(),
-            gain_slider,
-            pan_slider,
             project_path: None,
             project_name: t!("Untitled session").into(),
             project_message: None,
@@ -364,6 +389,8 @@ impl StudioShell {
             selection_drag: None,
             graph_focus: cx.focus_handle(),
             connection_drag: None,
+            detail_node: None,
+            knob_drag: None,
             pending_node_spawn: None,
             node_search,
             node_name,
@@ -371,17 +398,33 @@ impl StudioShell {
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
+            exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
+            #[cfg(feature = "gpui-test")]
+            trace: Default::default(),
             mixer_geometry,
-            mixer_controls,
             toolbar_chrome,
             status_chrome,
             mixer_frame,
             graph_meter_frame,
             graph_controls,
-            graph_canvas_frame: Default::default(),
+            graph_canvas_frame,
+            graph_overlays: Default::default(),
+            spectrum_scratch: Vec::new(),
+            hovered_node: None,
+            binding_menu: None,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
+            frame_demand: Default::default(),
+            inspector_meters,
+            inspector_meter_layer,
+            error_strip,
+            matrix_panel,
+            devices_panel,
+            settings_panel,
+            inspector_panel,
+            library_panel,
+            library_rail_panel,
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
@@ -403,6 +446,9 @@ impl StudioShell {
             }
             shell.project_path = shell.preferences.last_project_path.clone();
         }
+        // The restored startup state is already on disk (autosave or project);
+        // the first edit, not the launch, owns the first autosave write.
+        shell.autosave_stamp = autosave::AutosaveStamp::capture(&shell, cx);
         cx.observe_window_bounds(window, |shell, window, _| {
             if shell.presentation.visible {
                 shell.window_state = desktop::capture_window_state(window, shell.presentation.page);
@@ -424,17 +470,32 @@ impl StudioShell {
             cx.notify();
         })
         .detach();
+        // Alt+Tab (or any focus steal) mid-gesture loses the mouse-up, and a
+        // grab armed on an inactive window stays armed: cancel on
+        // deactivation, since the platform will never complete the stroke.
+        // Registration fires this once immediately; with no gesture in
+        // flight the cancel is a no-op.
+        cx.observe_window_activation(window, |shell, window, cx| {
+            if !window.is_window_active() {
+                shell.cancel_active_gesture(cx);
+            }
+        })
+        .detach();
         // Quit observers run before GPUI drops the windows. Move the latest
         // write into shutdown ownership: it also owns every earlier queued
         // write, and must finish after the shell entity is gone.
-        cx.on_app_quit(|shell, _| {
+        cx.on_app_quit(|shell, cx| {
             shell
                 .preferences_quitting
                 .store(true, std::sync::atomic::Ordering::Release);
             let pending = shell.preference_save.take();
+            let autosave = shell.autosave_flush(cx);
             async move {
                 if let Some(pending) = pending {
                     pending.await;
+                }
+                if let Some(autosave) = autosave {
+                    autosave.await;
                 }
             }
         })
@@ -460,8 +521,8 @@ impl StudioShell {
                             changed
                         });
                         shell.finish_project_load(cx);
-                        let meters_changed =
-                            !shell.meter_animation_active(cx) && shell.pump_meters(cx);
+                        shell.poll_autosave(cx);
+                        let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
                         if changed || meters_changed {
                             cx.notify();
                         }
@@ -475,10 +536,12 @@ impl StudioShell {
         .detach();
     }
 
-    /// Whether any meter observation is on screen right now. While true the
-    /// render loop requests animation frames so meter motion runs at the
-    /// display refresh rate.
-    fn meters_frame_active(&self, cx: &App) -> bool {
+    /// Whether the window may animate right now: visible, presented, settings
+    /// closed, session running, and on a page that mounts meter hot layers.
+    /// Page membership stands in for mounting — the Graph and Mixer pages are
+    /// where meter layers exist — because leftover meter demand on a page
+    /// with no hot layer must not starve the control-side poll.
+    fn frames_eligible(&self, cx: &App) -> bool {
         let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
@@ -487,44 +550,111 @@ impl StudioShell {
             && snapshot.phase == SessionPhase::Running
     }
 
-    /// Whether any observed meter still moves: decaying ballistics, a held
-    /// peak marker, or fresh readings above the scale bottom all keep the
-    /// display short of rest. While false the vsync loop stands down and the
-    /// control-side poll alone keeps the observations current, so a fully
-    /// silent session costs no animation frames at all.
-    fn meters_in_motion(&self) -> bool {
-        !self.meters.at_rest() || !self.node_meters.at_rest()
+    /// Whether the window should keep taking display-rate frames: something
+    /// registered demand with the arbiter and the window may animate. While
+    /// false the vsync loop stands down and the control-side poll alone keeps
+    /// the observations current, so a fully silent session costs no animation
+    /// frames at all.
+    fn frames_wanted(&self, cx: &App) -> bool {
+        // A graph gesture bypasses the meter eligibility gate: the canvas is
+        // interactive whether or not a session runs and every meter rests.
+        // Only the page that mounts the canvas may speak for a gesture,
+        // though: a grab that outlived the page (some lifecycle path missed
+        // the mouse-up) must not starve the control-side poll, which is the
+        // only meter pump the pages without hot layers have.
+        (self.drag_active() && self.presentation.page == Page::Graph)
+            || (self.frames_eligible(cx) && self.frame_demand.any())
     }
 
-    /// Whether the animation-frame loop is currently driving meter pumps;
-    /// the control-side poll may skip pumping only while this holds.
-    fn meter_animation_active(&self, cx: &App) -> bool {
-        self.meters_frame_active(cx) && self.meters_in_motion()
+    /// Whether a graph canvas gesture is in flight (rubber band, pan, node
+    /// or connection drag).
+    fn drag_active(&self) -> bool {
+        self.selection_drag.is_some()
+            || self.pan_grab.is_some()
+            || self.node_drag.is_some()
+            || self.connection_drag.is_some()
+            || self.knob_drag.is_some()
+    }
+
+    /// Whether any observed meter still moves: decaying ballistics, a held
+    /// peak marker, fresh readings above the scale bottom, or a spectrum
+    /// curve still falling toward its floor all keep the display short of
+    /// rest.
+    fn meters_in_motion(&self, cx: &App) -> bool {
+        let state = self.state.read(cx);
+        !self.meters.at_rest() || !state.node_meters.at_rest() || !state.node_spectra.at_rest()
     }
 
     /// Refresh every meter observation once: reads the latest windows,
     /// advances display ballistics, and reconciles subscriptions with the
     /// current visibility. Called per display frame while
-    /// [`Self::meter_animation_active`] holds, and from the slower
+    /// [`Self::frames_wanted`] holds, and from the slower
     /// control-side loops otherwise. Returns whether a display-bearing
     /// reading changed — raw levels, status, or a freshly latched clip;
     /// ballistics motion alone does not, because animation frames (not
     /// notify) carry it.
-    pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
-        self.meters.set_preferences(self.preferences.meters);
-        self.node_meters.set_preferences(self.preferences.meters);
-        let visible = self.meters_frame_active(cx);
+    pub(super) fn pump_meters(&mut self, cx: &mut Context<Self>) -> bool {
+        // A gesture in flight proves the window is interactive even when the
+        // platform's visibility flag is stale (a full occlusion followed by
+        // a fast alt-tab can leave it false): the meter updates must not
+        // blank out mid-drag, or the readings freeze at the publication
+        // cadence.
+        let visible = self.frames_eligible(cx) || self.drag_active();
         let points = self.meter_points.get();
+        // The legacy monitor meters only display where the strip has no node
+        // level topic: a managed strip's meter comes from NodeMeters, and
+        // the pre-fader capture tap carries signal even when the fader is
+        // muted. Subscribing it for a display nobody sees kept the whole
+        // page's frame loop armed forever — the Graph page mounts no such
+        // probes and stands down, the Mixer page burned a core.
+        let (input_shown, output_shown) = self.legacy_meters_shown(cx, points);
         let meter_changed = self.meters.update_points(
             &self.state.read(cx).snapshot,
-            visible && points.0,
-            visible && points.1,
+            visible && input_shown,
+            visible && output_shown,
         );
         let node_meter_changed = self.update_node_meters(visible, cx);
+        // Re-derive the arbiter's meter demand from the fresh ballistics: the
+        // loop continues while anything moves, and the control-side poll
+        // takes over the moment everything rests.
+        self.frame_demand
+            .set(hot::METER_MOTION, self.meters_in_motion(cx));
+        self.sync_drag_demand();
         meter_changed || node_meter_changed
     }
 
+    /// Re-derive the gesture demand source from the in-flight graph
+    /// gestures. Called from the pump and at gesture boundaries: the
+    /// mouse-down handlers must arm the loop immediately, not at the next
+    /// control poll.
+    pub(in crate::ui::window) fn sync_drag_demand(&mut self) {
+        self.frame_demand.set(hot::DRAG, self.drag_active());
+    }
+
+    /// Whether the legacy input/output monitor meters actually display: their
+    /// probe is mounted on screen AND the strip's node level topic is
+    /// missing, so the meter paint falls back to the legacy reading. A
+    /// managed strip renders from NodeMeters alone.
+    fn legacy_meters_shown(&self, cx: &App, points: (bool, bool)) -> (bool, bool) {
+        let managed = |id: moiren_core::graph::NodeId| {
+            self.state
+                .read(cx)
+                .snapshot
+                .signal_topics
+                .node_levels
+                .contains_key(&id)
+        };
+        match self.observation_nodes {
+            Some((_, source, sink)) => (points.0 && !managed(source), points.1 && !managed(sink)),
+            None => (false, false),
+        }
+    }
+
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        // Switching unmounts the canvas, so an in-flight gesture never sees
+        // its closing mouse-up (the new page's background has no canvas
+        // handlers); cancel it here or it stays armed across pages.
+        self.cancel_active_gesture(cx);
         self.presentation.page = page;
         self.window_state.workspace = desktop::workspace(page);
         self.settings_open = false;
@@ -578,32 +708,14 @@ pub fn shell_for_tests(
     shell.test_page = Some(page);
     // Headless tests must never write the developer's real configuration.
     shell.preferences_path = None;
+    shell.autosave_path = None;
     shell
 }
 
-#[cfg(feature = "gpui-test")]
-pub(crate) trait TestObserve {
-    type Out;
-    fn gpui_test_observe(self) -> Self::Out;
-}
-#[cfg(feature = "gpui-test")]
-impl<E: gpui_kit::base::TestSupportExt> TestObserve for E {
-    type Out = gpui_kit::base::ObservedElement<E>;
-    fn gpui_test_observe(self) -> Self::Out {
-        gpui_kit::base::TestSupportExt::test_support(self)
-    }
-}
-#[cfg(not(feature = "gpui-test"))]
-pub(crate) trait TestObserve {
-    fn gpui_test_observe(self) -> Self;
-}
-#[cfg(not(feature = "gpui-test"))]
-impl<E> TestObserve for E {
-    fn gpui_test_observe(self) -> Self {
-        self
-    }
-}
+// Re-exported so the window submodules keep picking it up through `use super::*`.
+pub(crate) use crate::ui::observe::TestObserve;
 
+mod autosave;
 #[cfg(feature = "gpui-test")]
 mod capture;
 mod chrome;
@@ -612,10 +724,15 @@ mod desktop;
 pub use capture::run_ui_capture;
 mod controls;
 mod devices;
+mod error_strip;
 mod graph;
+mod hot;
 mod matrix;
 mod mixer;
 mod native;
+mod panel;
+#[cfg(feature = "gpui-test")]
+mod performance;
 mod project;
 mod settings;
 mod sidebar;
@@ -633,7 +750,7 @@ impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "gpui-test")]
         {
-            self.mixer.trace.borrow_mut().shell_renders += 1;
+            self.trace.borrow_mut().shell_renders += 1;
         }
         self.finish_settings_save(cx);
         self.finish_measured_process(cx);
@@ -642,6 +759,7 @@ impl Render for StudioShell {
         self.sync_measured_exact_inputs(window, cx);
         self.sync_expert_inputs(window, cx);
         self.finish_node_spawn(cx);
+        graph::sync_binding_menu(self, cx);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
@@ -684,161 +802,8 @@ impl Render for StudioShell {
             self.meters.update(&self.state.read(cx).snapshot, false);
             self.update_node_meters(false, cx);
         }
-        let (gain, pan) = {
-            let state = self.state.read(cx);
-            (
-                if state.gain <= 0. {
-                    -60.
-                } else {
-                    (20. * state.gain.log10()).clamp(-60., 0.) as f32
-                },
-                state.pan as f32,
-            )
-        };
-        if self.gain_slider.read(cx).value().end() != gain {
-            self.gain_slider
-                .update(cx, |s, cx| s.set_value(gain, window, cx));
-        }
-        if self.pan_slider.read(cx).value().end() != pan {
-            self.pan_slider
-                .update(cx, |s, cx| s.set_value(pan, window, cx));
-        }
-        let error_strip = {
-            let state = self.state.read(cx);
-            let faults = state.snapshot.graph.faults.clone();
-            let other = state
-                .dispatch_error
-                .as_ref()
-                .or(state.snapshot.error.as_ref())
-                .or(state.snapshot.catalog_error.as_ref())
-                .cloned();
-            (!faults.is_empty() || other.is_some()).then(|| {
-                let log_path = crate::logging::log_path()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| t!("Application file logging is unavailable").into());
-                let this = cx.entity();
-                let graph = state.snapshot.graph.clone();
-                let mut list = div()
-                    .id("error-strip")
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .px(px(theme::SPACE_4))
-                    .py(px(theme::SPACE_2))
-                    .bg(theme::soft(theme::DANGER))
-                    .text_size(px(theme::TEXT_SM));
-                for (index, fault) in faults.iter().enumerate() {
-                    let subject = fault.subject;
-                    let location = match subject {
-                        crate::service::GraphSubject::Node(node) => {
-                            graph.node(node).map(|node| node.label.clone())
-                        }
-                        crate::service::GraphSubject::Route(source, destination) => {
-                            let port_label = |port: &moiren_core::graph::PortId| {
-                                graph
-                                    .graph
-                                    .nodes()
-                                    .iter()
-                                    .find(|node| {
-                                        node.inputs()
-                                            .iter()
-                                            .chain(node.outputs())
-                                            .any(|candidate| candidate.id() == *port)
-                                    })
-                                    .map(|node| node.id())
-                                    .and_then(|owner| {
-                                        graph.node(owner).map(|node| node.label.clone())
-                                    })
-                            };
-                            let source = port_label(&source);
-                            let destination = port_label(&destination);
-                            match (source, destination) {
-                                (Some(source), Some(destination)) => {
-                                    Some(format!("{source} → {destination}"))
-                                }
-                                _ => None,
-                            }
-                        }
-                        crate::service::GraphSubject::Graph => None,
-                    };
-                    let mut row = div()
-                        .id(SharedString::from(format!("fault-{index}")))
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .when(subject != crate::service::GraphSubject::Graph, |row| {
-                            row.cursor_pointer().on_click({
-                                let this = this.clone();
-                                move |_, _, cx| {
-                                    this.update(cx, |shell, cx| {
-                                        shell.inspector_open = true;
-                                        match subject {
-                                            crate::service::GraphSubject::Node(node) => {
-                                                shell.selected_route = None;
-                                                shell.selected_node = Some(node);
-                                            }
-                                            crate::service::GraphSubject::Route(
-                                                source,
-                                                destination,
-                                            ) => {
-                                                shell.selected_node = None;
-                                                shell.selected_route = Some((source, destination));
-                                            }
-                                            crate::service::GraphSubject::Graph => {}
-                                        }
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                        });
-                    row = row
-                        .child(
-                            div()
-                                .text_color(theme::DANGER)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                // Causes and hints are English catalog keys
-                                // produced by the service; translation happens
-                                // here so a locale switch re-renders stored
-                                // faults, and unknown prose passes through.
-                                .child(t!("Error: %{cause}", cause = t!(fault.cause.as_str()))),
-                        )
-                        .when_some(location, |row, location| {
-                            row.child(
-                                div().text_color(theme::TEXT).child(t!(
-                                    "Channel: %{location}",
-                                    location = location.as_str()
-                                )),
-                            )
-                        })
-                        .when_some(fault.hint.as_deref(), |row, hint: &str| {
-                            row.child(
-                                div()
-                                    .text_color(theme::TEXT)
-                                    .child(t!("Hint: %{hint}", hint = t!(hint))),
-                            )
-                        });
-                    list = list.child(row.gpui_test_observe());
-                }
-                if let Some(error) = other {
-                    // Dispatch/persistence diagnostics may be plain prose; a
-                    // catalog miss renders the source text unchanged.
-                    let message = t!(error.as_str()).into_owned();
-                    list = list.child(
-                        div()
-                            .id("error-strip-message")
-                            .text_color(theme::DANGER)
-                            .child(message),
-                    );
-                }
-                list.child(
-                    div()
-                        .pt(px(2.))
-                        .text_color(theme::TEXT)
-                        .child(t!("Diagnostics: %{log_path}", log_path = log_path)),
-                )
-                .gpui_test_observe()
-            })
-        };
+        let error_strip =
+            error_strip::has_faults(self, cx).then(|| error_strip::for_shell(self, window));
         div()
             .id("studio-shell")
             .relative()
@@ -860,12 +825,12 @@ impl Render for StudioShell {
                     .min_h_0()
                     .min_w_0()
                     .child(match self.presentation.page {
-                        Page::Graph => graph::meter_frame::page(self, window),
-                        Page::Mixer => mixer::meter_frame::page(self, window),
-                        Page::Matrix => matrix::page(self, cx),
-                        Page::Devices => devices::page(self, cx),
+                        Page::Graph => graph::page::page(self, window),
+                        Page::Mixer => mixer::page::page(self, window, cx),
+                        Page::Matrix => matrix::page_for(self, window, cx),
+                        Page::Devices => devices::page_for(self, window, cx),
                     })
-                    .child(sidebar::inspector_host(self, cx)),
+                    .child(sidebar::inspector_host(self, window, cx)),
             )
             .child(chrome::status_for_page(self, window))
             // Clicking anywhere outside an open inline editor commits it, so
@@ -886,7 +851,13 @@ impl Render for StudioShell {
             })
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
-                v.child(settings::overlay(self, window, cx))
+                v.child(settings::overlay_for(self, window))
+            })
+            .when(self.detail_node.is_some(), |v| {
+                v.child(graph::detail_overlay(self, window, cx))
+            })
+            .when(self.binding_menu.is_some(), |v| {
+                v.child(graph::binding_menu_overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);
@@ -929,26 +900,60 @@ impl StudioShell {
         }
     }
 
-    /// True when a text field anywhere in the shell owns focus: graph
-    /// search, node rename, inspector editors, mixer send gains, and export
-    /// fields all keep typing shortcuts (and their undo) for themselves.
+    /// True when a text field anywhere in the shell owns focus: the graph
+    /// search plus every family of [`Self::text_input_entities`] keep typing
+    /// shortcuts (and their undo) for themselves.
     fn typing_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
         self.node_search.read(cx).focus_handle(cx) == *focused
-            || self.node_name.read(cx).focus_handle(cx) == *focused
             || self
-                .compressor
-                .inputs
-                .values()
+                .text_input_entities()
+                .iter()
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
-            || self
-                .mixer
-                .send_inputs
-                .values()
-                .any(|input| input.read(cx).focus_handle(cx) == *focused)
-            || self.export_controls.owns_focus(focused, cx)
             || self.settings.period_owns_focus(focused, cx)
             || self.settings.exact_owns_focus(focused, cx)
             || self.settings.expert_owns_focus(focused, cx)
+    }
+
+    /// Every text-input entity the shell renders nested in a cached panel:
+    /// the inline node rename, the mixer's click-to-type families, the
+    /// compressor parameter fields, and the export drafts. [`Self::typing_focus`]
+    /// and the inspector panel's nested observers consume this single walk,
+    /// so a new editor family cannot land in one enumeration site and miss
+    /// the other (the shared root cause of audit SD-1/SD-2).
+    pub(in crate::ui::window) fn text_input_entities(
+        &self,
+    ) -> Vec<Entity<component::input::InputState>> {
+        let mut inputs = vec![self.node_name.clone()];
+        inputs.extend(self.mixer.text_input_entities().cloned());
+        inputs.extend(self.compressor.inputs.values().cloned());
+        inputs.extend(self.export_controls.input_entities());
+        inputs
+    }
+
+    /// Every mixer-style slider slot the shell owns in one walk: the strip
+    /// faders, the sends, the inspector's fader rows, and the compressor
+    /// parameters (the tray flyout keeps its own slots in its own window,
+    /// whose shortcuts never reach this shell). [`Self::cancel_active_drags`]
+    /// consumes this single walk so a new slot family cannot land in one
+    /// enumeration site and keep its drags un-cancellable — the same
+    /// single-walk rule as [`Self::text_input_entities`].
+    fn slider_slots(&self) -> impl Iterator<Item = &mixer::SliderSlot> {
+        self.mixer
+            .faders
+            .values()
+            .chain(self.mixer.sends.values())
+            .chain(self.mixer.inspector_faders.values())
+            .chain(self.compressor.sliders.values())
+    }
+
+    /// Cancels every in-flight slider drag so a journal step cannot be
+    /// overwritten by its gesture (audit SD-7).
+    fn cancel_active_drags(&self) {
+        for slot in self.slider_slots() {
+            if slot.dragging.get() {
+                slot.cancel_drag();
+            }
+        }
     }
 
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
@@ -972,6 +977,12 @@ impl StudioShell {
         {
             return;
         }
+        // Undo outranks an in-flight fader drag (audit SD-7): the drag holds
+        // the write-back down, so the undone value would stay invisible until
+        // release and the release would then land the stale pointer value
+        // over it. Cancelling first reopens the write-back and drops the
+        // gesture's tail; moving the pointer again starts a fresh drag.
+        self.cancel_active_drags();
         self.state.update(cx, |state, _| {
             state.dispatch(if redo {
                 AppRequest::RedoGraph
@@ -1002,6 +1013,7 @@ impl StudioShell {
 
     fn refresh_observation_nodes(&mut self, cx: &App) {
         use moiren_core::graph::NodeKind;
+        let before = self.observation_nodes;
         let snapshot = &self.state.read(cx).snapshot;
         if snapshot.phase != SessionPhase::Running
             || self
@@ -1021,6 +1033,13 @@ impl StudioShell {
             self.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));
+        }
+        if before != self.observation_nodes {
+            // The probe flags belonged to the previous owners' canvases,
+            // which mount only while eligible. The new owners re-register on
+            // their rebuild in this same layout pass — eligibility rides in
+            // their strip keys — so clearing here leaves no stale window.
+            self.meter_points.set((false, false));
         }
     }
 }

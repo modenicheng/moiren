@@ -139,36 +139,47 @@ pub(in crate::ui::window) fn library(
         let id = entry.id;
         let selected = shell.selected_node == Some(id);
         let this = cx.entity();
+        // The row wrapper carries the selected fact (`aria_selected`) for
+        // tests and assistive tech; the button inside keeps the `locate-` id
+        // it is addressed by. The selected variant below is pure paint, which
+        // no element snapshot can see without this marker.
         session = session.child(
-            button(
-                SharedString::from(format!("locate-{id:?}")),
-                crate::ui::state::display_label(
-                    &state.snapshot,
-                    entry,
-                    state
-                        .snapshot
-                        .graph
-                        .kind_of(id)
-                        .unwrap_or(moiren_core::graph::NodeKind::Bus),
+            div()
+                .id(SharedString::from(format!("locate-row-{id:?}")))
+                .w_full()
+                .aria_selected(selected)
+                .gpui_test_observe()
+                .child(
+                    button(
+                        SharedString::from(format!("locate-{id:?}")),
+                        crate::ui::presentation::display_label(
+                            &state.snapshot,
+                            entry,
+                            state
+                                .snapshot
+                                .graph
+                                .kind_of(id)
+                                .unwrap_or(moiren_core::graph::NodeKind::Bus),
+                        ),
+                    )
+                    .variant(if selected {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
+                            shell.selected_node = Some(id);
+                            shell.selected_route = None;
+                            // Locating selects; a double click also opens the
+                            // inspector, matching canvas node behavior.
+                            if shell.element_double_clicked(StudioShell::element_key("node", id)) {
+                                shell.open_inspector();
+                            }
+                            cx.notify();
+                        });
+                    }),
                 ),
-            )
-            .variant(if selected {
-                ButtonVariant::Secondary
-            } else {
-                ButtonVariant::Ghost
-            })
-            .on_click(move |_, _, cx| {
-                this.update(cx, |shell, cx| {
-                    shell.selected_node = Some(id);
-                    shell.selected_route = None;
-                    // Locating selects; a double click also opens the
-                    // inspector, matching canvas node behavior.
-                    if shell.element_double_clicked(StudioShell::element_key("node", id)) {
-                        shell.open_inspector();
-                    }
-                    cx.notify();
-                });
-            }),
         );
     }
     div()
@@ -359,6 +370,10 @@ impl StudioShell {
         };
         let id = entry.id;
         self.node_positions.insert(id, pending.position);
+        // The spawned node is the whole selection: anything selected before
+        // must not ride along with the drag that usually follows a spawn.
+        self.selected_nodes.clear();
+        self.selected_nodes.insert(id);
         self.selected_node = Some(id);
         self.selected_route = None;
         self.open_inspector();

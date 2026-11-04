@@ -21,6 +21,10 @@ fn parse(text: &str, index: usize) -> Result<u32, String> {
 }
 
 impl ExactInputs {
+    pub(super) fn inputs(&self) -> impl Iterator<Item = &Entity<component::input::InputState>> {
+        self.fields.iter().map(|(input, _)| input)
+    }
+
     pub(super) fn validate(&self, cx: &App) -> Result<(), String> {
         if self.enabled {
             if self.fields.len() != 3 {
@@ -128,7 +132,7 @@ pub(super) fn toggle(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         },
     )
     .disabled(shell.settings.busy())
-    .on_click(move |_, _, cx| {
+    .on_click(move |_, window, cx| {
         this.update(cx, |shell, cx| {
             if !shell.settings.busy() {
                 shell.settings.measured.exact = ExactInputs {
@@ -136,6 +140,8 @@ pub(super) fn toggle(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                     ..Default::default()
                 };
                 shell.settings.measured.changed();
+                // Create nested models before the owner's cache-key notification.
+                shell.sync_measured_exact_inputs(window, cx);
                 cx.notify();
             }
         });

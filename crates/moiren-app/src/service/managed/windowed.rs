@@ -139,7 +139,7 @@ impl ManagedDriver {
                 (*result?).profile(selection, pending.request, pending.policy, pending.origin)?;
             self.measured_selection_id = selection;
             c.measured_process = Some(profile);
-            self.automatic_startup = false;
+            self.cancel_startup_automation();
             self.auto_apply_deadline = None;
             self.apply_settings = Some(ApplySettings::capture(c));
             self.apply = true;

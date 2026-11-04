@@ -34,6 +34,7 @@ pub enum NodeConfig {
     Meter(crate::meter::MeterSettings),
     SpectrumAnalyzer(crate::spectrum::SpectrumSettings),
     Rack(crate::rack::RackSettings),
+    Plugin(crate::processor::PluginSettings),
     Bus,
 }
 
@@ -173,6 +174,7 @@ fn node_specs(config: &NodeConfig) -> Vec<ParamSpec> {
         NodeConfig::Gate(settings) => Gate::parameters(ID, *settings).to_vec(),
         NodeConfig::Limiter(settings) => Limiter::parameters(ID, *settings).to_vec(),
         NodeConfig::Delay(settings) => Delay::parameters(ID, *settings).to_vec(),
+        NodeConfig::Plugin(settings) => settings.specs(ID),
         _ => Vec::new(),
     }
 }
@@ -227,6 +229,7 @@ impl EngineProject {
                 NodeConfig::Meter(_) => NodeKind::Meter,
                 NodeConfig::SpectrumAnalyzer(_) => NodeKind::SpectrumAnalyzer,
                 NodeConfig::Rack(_) => NodeKind::Rack,
+                NodeConfig::Plugin(_) => NodeKind::Plugin,
                 NodeConfig::Bus => NodeKind::Bus,
             };
             if kind != node.kind() {
@@ -278,6 +281,9 @@ impl EngineProject {
                         .map(|port| port.channels())
                         .collect::<Vec<_>>(),
                 ),
+                // The plugin table is finite and self-consistent, and the
+                // main-bus width matches the node's single port width.
+                NodeConfig::Plugin(settings) => settings.valid_for_channels(node.channels()),
                 _ => true,
             };
             if !valid {
@@ -409,7 +415,8 @@ impl EngineProject {
                     | NodeConfig::Eq(_)
                     | NodeConfig::Gate(_)
                     | NodeConfig::Limiter(_)
-                    | NodeConfig::Delay(_)),
+                    | NodeConfig::Delay(_)
+                    | NodeConfig::Plugin(_)),
                 ) => accepts_parameter(&node_specs(config), parameter, value),
                 _ => false,
             },
@@ -526,7 +533,8 @@ impl EngineProject {
                 | NodeConfig::Eq(_)
                 | NodeConfig::Gate(_)
                 | NodeConfig::Limiter(_)
-                | NodeConfig::Delay(_) => node_specs(config),
+                | NodeConfig::Delay(_)
+                | NodeConfig::Plugin(_) => node_specs(config),
                 _ => Vec::new(),
             };
             for spec in specs {
