@@ -220,6 +220,32 @@ cfg patch remain visible, not rewritten as success. CI-matching Linux stable
 installation is still live and making download progress; no unchanged process
 is restarted because a tool observation expired.
 
+### Windows-Only Trace Exporter Boundary
+
+After the portable callback fix, the complete Linux audio all-target test
+reaches a second independent platform error: `live::src_trace` and its native
+fixtures import the Windows-only engine backend, clock factory and stop
+signal. The original failure is retained in
+`linux-portable-callback-all-targets.log`. Every production caller of this
+trace exporter already lives in the Windows-only native runner. Restricting
+that module to `cfg(windows)` preserves its Windows tests without hiding the
+portable CLI, PCM analyzers or allocation-observation tests.
+
+An independent read-only review finds no actionable issue. With that boundary
+fixed, the isolated Linux audio all-target run completes at 01:20:44: 1259
+passed, 2 ignored, 0 failed across 39 test harnesses. The Windows E2E probe
+completes at 01:19:06: 740 passed, 1 ignored, 0 failed. The tested trace-exporter
+source hash matches the integration worktree. Fresh Windows strict audio
+all-target Clippy and root fmt also pass. These checks do not start native
+audio or replace the pending exact-CI-stable Linux Clippy check.
+
+At 01:24, remote head `796e5ce` still has fourteen successful jobs, two known
+Linux failures and three live jobs in run `41874555383`. Both compiler Miri
+models now pass. The callback follow-up is committed as `e59d7d9`, but neither
+it nor this exporter-boundary fix has matching remote CI yet. The exact stable
+toolchain installation remains a live process; it is not restarted to avoid
+the download wait. Native S1-S5 acceptance remains unchanged.
+
 At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the original
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.

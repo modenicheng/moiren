@@ -40,7 +40,9 @@ mod source_controls;
 #[path = "source_write_witness.rs"]
 mod source_write_witness;
 
-#[cfg(any(windows, test))]
+// The trace exporter and its backend fixtures require Windows-only owner APIs.
+// Portable analyzer/CLI tests below remain available on every host.
+#[cfg(windows)]
 #[path = "src_trace.rs"]
 mod src_trace;
 

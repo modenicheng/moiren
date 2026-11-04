@@ -36,6 +36,13 @@ callback/shadow/Clippy and both VAD Miri checks pass; its new exact-head CI is
 still required. The original cfg-only repair was incomplete, not a qualification
 pass.
 
+The next local Linux all-target run exposes a separate Windows-only trace
+exporter fixture import. Gating just that module to Windows preserves portable
+analyzers and callback allocation coverage. With that correction, Linux audio
+all-target tests pass 1259 tests (2 ignored) at 01:20:44; Windows probe tests
+pass 740 (1 ignored), and strict Windows audio Clippy/fmt pass. This is a local
+platform-boundary repair, not exact-head remote CI or native qualification.
+
 The [S4 playback-category candidate](../../docs/validation/2026-11-05-s4-virtual-playback-category.md)
 is independently reviewed and imported, with fresh 18-group host/13-group
 portable checks, analyzed WDK build and valid INF. Playback now declares the
