@@ -122,7 +122,7 @@ impl VirtualCallbackProbe {
         self.sequence.store(next, SeqCst);
     }
 
-    #[cfg(test)]
+    #[cfg(all(windows, test))]
     pub(crate) fn publish_for_test(&self, value: VirtualCallbackSnapshot) {
         self.publish(value);
     }

@@ -52,7 +52,7 @@ impl VirtualClockProbe {
         }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     pub(crate) fn with_callback_timing(mut self, enabled: bool) -> Self {
         self.callback = enabled.then(super::callback_timing::VirtualCallbackProbe::new);
         self
@@ -63,7 +63,7 @@ impl VirtualClockProbe {
         self.callback.as_ref().and_then(|probe| probe.snapshot())
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     pub(crate) fn callback_probe(&self) -> Option<&super::callback_timing::VirtualCallbackProbe> {
         self.callback.as_ref()
     }
