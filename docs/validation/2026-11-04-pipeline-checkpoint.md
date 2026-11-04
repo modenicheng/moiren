@@ -333,6 +333,23 @@ is retained as `ci-41878002933-final.json`. This closes the portability-repair
 CI checkpoint only, not the subsequent streaming-harness source or any native
 S1-S5 requirement. The next batch retains PR26's Draft/split-before-merge rule.
 
+### Published Streaming/FIFO Checkpoint
+
+The four-commit source/evidence batch is pushed normally at 02:01:01. Remote
+head is `303e481d2eda41b721506b32e98e4e2dd9c785c8`, tree
+`4b65852e10c952d5408425ef2a64353f4c4866d7`; the PR stays Draft/open with its
+original split-before-merge prefix preserved. New exact-head CI `41883280004`
+appears after the initial event delay and has actual live jobs. At 02:05 four
+jobs succeed and fifteen remain live, with no observed failure; it is not yet
+an all-green result. No duplicate workflow dispatch or unchanged rerun is used.
+
+The original exact-CI-stable 1.99.1 download also completes without restarting
+its live session. Local strict audio all-target Clippy passes at 02:04:09 and
+the thirteen portable driver groups finish at 02:04:11. The preexisting nightly
+EQ lint remains retained; no production loop or lint gate is changed. Windows
+example `--help` alone is checked inert, reporting the new mode without opening
+the driver, audio or UI. Original draft/cache hashes still match 29/29.
+
 At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the original
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.
