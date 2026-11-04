@@ -54,6 +54,14 @@ and historical held-client gates are not relaxed; the adapter suffix may still
 cause a naming failure. The unsigned integration package has separate pins
 from the agent-worktree build and is not installed.
 
+The [streaming rename harness](../../docs/validation/2026-11-05-s4-streaming-rename-harness.md)
+is imported with separate old/new actual Start/PCM, exact raw-name, direct
+Removed and fresh Engine/native identity gates. All 127 host example tests,
+non-test build and strict Clippy pass; imported workspace/gpui regression
+passes 2609 tests (10 ignored). The local Linux app check lacks desktop
+development libraries. Native execution and the broader S4 matrix remain
+unverified; software integration does not close naming acceptance.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,

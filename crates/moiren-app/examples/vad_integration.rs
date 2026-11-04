@@ -36,7 +36,7 @@ mod native;
 #[path = "vad_integration/target.rs"]
 mod target;
 
-const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
+const HELP: &str = "vad_integration --exercise [--pcm | --rename | --rename-streaming] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
     [--rename-fixture-seed=POSITIVE_U64 (only --exercise --rename)]\n\
     [--soak-idle-seconds=1..28800] [--soak-pcm-seconds=1..28800]\n\
     [--soak-pcm-file=material.wav (48kHz stereo PCM16/Float32, >=1s)]\n\
@@ -72,6 +72,18 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-sec
     Missing direct Removed, Absent or DTO/name success can never pass acceptance.\n\
     --rename is exclusive with --pcm and all soak options; defaults to 90s and\n\
     requires at least 60s if set. Failed readbacks and cleanup errors are retained.\n\
+    --rename-streaming: distinct one-rename-per-direction native Pair mode.\n\
+    Actually Start and verify strict known PCM before and after recreation;\n\
+    exact raw Windows FriendlyName, direct old Removed, stable project binding\n\
+    and fresh Engine/native confirmation are required. Old interruption and\n\
+    invalidation are separate evidence, never a continuous-stream/physical claim.\n\
+    Read-only MMDevice name owners drop before Apply; no exclusive client is\n\
+    initialized for name readback. All old/fresh Pair owners release explicitly.\n\
+    Failures stay failed even when diagnostic_completed is true. Legacy --rename\n\
+    and its strict Case gates are unchanged and not run by this distinct mode.\n\
+    Excludes --rename, --pcm, soak, seed and input capture; defaults to 90s,\n\
+    explicit timeout 60..120s. Races/repetition/siblings/default-role matrix and\n\
+    first-packet/physical/sustained qualification remain unexercised.\n\
     --rename-fixture-seed creates an explicit diagnostic baseline fixture only:\n\
     each 16B ID is an 8B direction prefix (MrnVPlay/MrnVMic0) + 8B seed LE;\n\
     baseline CREATE names include seed. Report records seed and project.moiren\n\

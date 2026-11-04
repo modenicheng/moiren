@@ -45,6 +45,9 @@ use windows::{
 #[path = "native/topology.rs"]
 mod topology;
 
+#[path = "native/rename_stream.rs"]
+pub(super) mod rename_stream;
+
 struct Apartment(PhantomData<Rc<()>>);
 impl Apartment {
     fn new() -> anyhow::Result<Self> {

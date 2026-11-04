@@ -386,7 +386,7 @@ fn wait(
     }
 }
 
-fn observe(snapshot: &AppSnapshot, id: &str) -> anyhow::Result<RuntimeEvidence> {
+pub(super) fn observe(snapshot: &AppSnapshot, id: &str) -> anyhow::Result<RuntimeEvidence> {
     let mut matching = snapshot
         .exports
         .iter()

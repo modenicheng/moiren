@@ -19,6 +19,8 @@ pub(super) struct Report {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rename: Option<Vec<super::rename::Case>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_streaming: Option<Vec<super::rename::stream::Case>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rename_fixture_seed: Option<u64>,
     pub idle_hold: Option<IdleHoldEvidence>,
     pub pcm: Option<PcmEvidence>,
@@ -64,6 +66,7 @@ impl Default for Report {
             native_clients_started_by_probe: 0,
             pcm_verified: false,
             rename: None,
+            rename_streaming: None,
             rename_fixture_seed: None,
             idle_hold: None,
             pcm: None,

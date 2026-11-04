@@ -3,6 +3,9 @@ use anyhow::{Context, ensure};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
+#[path = "rename/stream.rs"]
+pub(super) mod stream;
+
 #[cfg(windows)]
 #[path = "rename/target.rs"]
 pub(super) mod target;

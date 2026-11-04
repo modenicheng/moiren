@@ -6,6 +6,7 @@ pub(super) struct Options {
     pub exercise: bool,
     pub pcm: bool,
     pub rename: bool,
+    pub rename_streaming: bool,
     pub rename_fixture_seed: Option<u64>,
     pub help: bool,
     pub timeout_seconds: u64,
@@ -24,6 +25,7 @@ impl Options {
             exercise: false,
             pcm: false,
             rename: false,
+            rename_streaming: false,
             rename_fixture_seed: None,
             help: false,
             timeout_seconds: 30,
@@ -39,6 +41,9 @@ impl Options {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--pcm" if !options.pcm => options.pcm = true,
                 "--rename" if !options.rename => options.rename = true,
+                "--rename-streaming" if !options.rename_streaming => {
+                    options.rename_streaming = true
+                }
                 value
                     if value.starts_with("--rename-fixture-seed=")
                         && options.rename_fixture_seed.is_none() =>
@@ -121,6 +126,16 @@ impl Options {
             "--rename requires --exercise"
         );
         ensure!(
+            !options.rename_streaming
+                || (options.exercise
+                    && !options.rename
+                    && !options.pcm
+                    && !options.soaking()
+                    && options.soak_pcm_file.is_none()
+                    && options.input_capture_frames.is_none()),
+            "--rename-streaming requires --exercise and excludes --rename, --pcm, soak and input capture"
+        );
+        ensure!(
             options.rename_fixture_seed.is_none() || (options.exercise && options.rename),
             "--rename-fixture-seed requires --exercise --rename"
         );
@@ -169,14 +184,20 @@ impl Options {
                 "--timeout-seconds must be in 10..=120 without soak"
             );
         }
-        if (options.pcm || options.rename) && !options.soaking() {
+        if (options.pcm || options.rename || options.rename_streaming) && !options.soaking() {
             if !timeout_seen {
                 options.timeout_seconds = 90;
             }
             ensure!(
                 options.timeout_seconds >= 60,
                 "{} needs an overall timeout of at least 60 seconds",
-                if options.rename { "--rename" } else { "--pcm" }
+                if options.rename_streaming {
+                    "--rename-streaming"
+                } else if options.rename {
+                    "--rename"
+                } else {
+                    "--pcm"
+                }
             );
         }
         Ok(options)
@@ -218,6 +239,30 @@ mod tests {
         assert!(!parse(&[]).unwrap().exercise);
         assert!(parse(&["--help"]).unwrap().help);
         assert!(parse(&["-h"]).unwrap().help);
+    }
+
+    #[test]
+    fn streaming_rename_is_a_distinct_explicit_bounded_mode() {
+        assert!(parse(&["--exercise", "--rename-streaming"]).is_ok());
+        for arguments in [
+            vec!["--rename-streaming"],
+            vec!["--exercise", "--rename-streaming", "--rename"],
+            vec!["--exercise", "--rename-streaming", "--pcm"],
+            vec!["--exercise", "--rename-streaming", "--soak-pcm-seconds=1"],
+            vec![
+                "--exercise",
+                "--rename-streaming",
+                "--input-capture-frames=1",
+            ],
+            vec!["--exercise", "--rename-streaming", "--timeout-seconds=59"],
+            vec![
+                "--exercise",
+                "--rename-streaming",
+                "--rename-fixture-seed=1",
+            ],
+        ] {
+            assert!(parse(&arguments).is_err(), "accepted {arguments:?}");
+        }
     }
 
     #[test]

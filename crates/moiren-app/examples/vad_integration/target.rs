@@ -163,6 +163,19 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
         ..Default::default()
     };
     let pcm = options.pcm;
+    if options.rename_streaming {
+        report.stage = "real_service_native_streaming_rename";
+        report.limitations = vec![
+            "One streaming rename per direction; exact-owned exclusive 48kHz stereo Float32 Pair Start and strict known PCM before/after.",
+            "Separate result from historical --rename; no legacy strict held Case is run or relaxed by this mode.",
+            "Old transport interruption/invalidation is retained separately, not continuous waveform or zero-interruption qualification.",
+            "Exact raw Windows FriendlyName, direct old Removed, fresh native generation, stable project binding and Engine confirmation are mandatory; diagnostic_completed alone is not a pass.",
+            "Read-only name owners activate no IAudioClient and drop before Apply; fresh exclusive Pair is initialized only after Engine confirmation.",
+            "Apply/Stop/removal races, repeated renames, independent siblings/leakage and observed Windows default roles are unexercised.",
+            "No first-packet qualification, physical latency, sustained qualification, driver installation, host UI or user application coverage.",
+            "Overall watchdog bounds native/control waits; timeout does not prove graceful owner cleanup or final PDO disappearance.",
+        ];
+    }
     if options.rename {
         report.stage = "real_service_native_rename";
         report.limitations = vec![
@@ -309,6 +322,16 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
         );
         if options.rename {
             return super::rename::target::exercise(
+                &handle,
+                &ids,
+                stable_ids,
+                work_deadline,
+                &mut report,
+                |report| publish(shared, report),
+            );
+        }
+        if options.rename_streaming {
+            return super::rename::stream::target::exercise(
                 &handle,
                 &ids,
                 stable_ids,
