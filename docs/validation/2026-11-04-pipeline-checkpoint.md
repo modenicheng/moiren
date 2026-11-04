@@ -192,6 +192,34 @@ the repository's concurrency policy. Any cancelled old job is unverified, not
 a pass; this is a new source checkpoint, not a retry because polling expired.
 The matching new head must be inspected independently and the PR stays Draft.
 
+### Portable Shadow Caller Follow-Up
+
+The normal three-commit batch push completes at 01:07:46 with remote head
+`796e5ce759e2f63d6b39b22c790b88ab824e6f9b` and tree
+`7926992ffa32084d436a9b8648c06761f2bfab71`. New exact-head CI is
+`41874555383`. The previous run finishes independently with thirteen successful
+jobs and seven failures (six underlying failures plus its aggregate Miri gate);
+no old in-progress job needs restarting or cancellation to obtain this result.
+
+The new Linux test/Clippy jobs expose a missed portable caller in
+`tests/virtual_clock_observation.rs`: it compiles the production clock module
+under a counting allocator and must retain callback publication coverage. The
+earlier cfg-only repair was therefore incomplete. The follow-up restores the
+original portable test cfgs and adds a library regression exercising the same
+callback helpers, owner isolation and unchanged clock counters. This removes
+the Linux dead-code cause without deleting the shadow test or weakening lints.
+
+The isolated RED compiles that new regression with the incorrect Windows-only
+cfg and fails with the same missing-method error. With the correct cfg, Linux
+virtual-owner library coverage passes 72 tests (2 ignored), Linux and Windows
+shadow targets each pass 9 tests, and Linux VAD coverage passes 51. Strict
+Windows audio all-target Clippy and fmt pass; Windows callback library coverage
+passes 27 tests with 1 ignored. Both VAD Miri models pass 51 tests on the exact
+follow-up bytes, Tree finishing at 01:15:52. The first-head CI failure and prior
+cfg patch remain visible, not rewritten as success. CI-matching Linux stable
+installation is still live and making download progress; no unchanged process
+is restarted because a tool observation expired.
+
 At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the original
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.

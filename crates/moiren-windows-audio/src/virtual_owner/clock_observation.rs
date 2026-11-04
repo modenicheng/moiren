@@ -52,7 +52,7 @@ impl VirtualClockProbe {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn with_callback_timing(mut self, enabled: bool) -> Self {
         self.callback = enabled.then(super::callback_timing::VirtualCallbackProbe::new);
         self
@@ -63,7 +63,7 @@ impl VirtualClockProbe {
         self.callback.as_ref().and_then(|probe| probe.snapshot())
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn callback_probe(&self) -> Option<&super::callback_timing::VirtualCallbackProbe> {
         self.callback.as_ref()
     }
@@ -177,6 +177,32 @@ impl VirtualClockCounters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_observation_is_owner_local_and_preserves_clock_accounting() {
+        let probe = VirtualClockProbe::new(48_000, 32, 1).with_callback_timing(true);
+        let other = VirtualClockProbe::new(48_000, 32, 1).with_callback_timing(true);
+        let sample = super::super::callback_timing::VirtualCallbackSnapshot {
+            attempts: 1,
+            completed: 1,
+            missing_clocks: 1,
+            ..Default::default()
+        };
+        assert!(probe.callback_snapshot().is_none());
+        probe.callback_probe().unwrap().publish_for_test(sample);
+        assert_eq!(probe.callback_snapshot(), Some(sample));
+        assert!(probe.snapshot().is_none());
+        assert!(other.callback_snapshot().is_none());
+        let counters = VirtualClockCounters {
+            rendered_periods: 2,
+            rendered_frames: 64,
+            ..Default::default()
+        };
+        probe.publish(counters);
+        assert_eq!(probe.snapshot().unwrap().counters, counters);
+        assert_eq!(probe.callback_snapshot(), Some(sample));
+        assert!(other.snapshot().is_none());
+    }
 
     #[test]
     fn loss_totals_survive_more_events_than_the_debug_tail() {

@@ -27,6 +27,15 @@ still pending. No lint gate or native audio acceptance is weakened. PR26
 remains Draft and must retain its split-before-merge policy rather than merge
 wholesale.
 
+The next head `796e5ce` starts CI `41874555383`: both VAD Miri jobs and compiler
+Stacked Miri pass, but Linux all-target test/Clippy expose a missed portable
+shadow callback caller. The follow-up preserves that allocation test, restores
+portable test cfgs and exercises the helpers in a new owner-isolation library
+regression instead of hiding dead code. Local Linux library/shadow, Windows
+callback/shadow/Clippy and both VAD Miri checks pass; its new exact-head CI is
+still required. The original cfg-only repair was incomplete, not a qualification
+pass.
+
 The [S4 playback-category candidate](../../docs/validation/2026-11-05-s4-virtual-playback-category.md)
 is independently reviewed and imported, with fresh 18-group host/13-group
 portable checks, analyzed WDK build and valid INF. Playback now declares the
