@@ -2,8 +2,10 @@ use rust_i18n::t;
 
 use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
+use gpui_kit::base::ScrollbarAxis;
 use moiren_engine::audio_config::{
     AudioBackend, AudioSettings, BUFFER_SIZES, ProcessingPrecision, SAMPLE_RATES, SampleFormat,
     StreamSettings,
@@ -30,6 +32,9 @@ pub(in crate::ui::window) struct SettingsKey {
     section: Section,
     global: Draft,
     device: Draft,
+    /// The dialog body scrolls inside the cached splice, whose paint bakes
+    /// coordinates: the offset rides the key or a scroll freezes.
+    scroll: Pixels,
 }
 
 pub(in crate::ui::window) type SettingsPanelHost = PanelHost<SettingsPanel>;
@@ -45,6 +50,7 @@ impl CachedPanel for SettingsPanel {
             section: settings.section,
             global: settings.global.clone(),
             device: settings.device.clone(),
+            scroll: shell.settings_scroll.offset().y,
         }
     }
 
@@ -84,6 +90,7 @@ pub(super) fn overlay(
     let this = cx.entity();
     let close = this.clone();
     let dismiss = this.clone();
+    let scroll_shell = this.clone();
     let mut tabs = div().flex().gap(px(6.));
     for (id, title, section) in [
         ("settings-audio", t!("Audio"), Section::Audio),
@@ -220,17 +227,35 @@ pub(super) fn overlay(
                         )
                         .child(
                             div()
-                                .id("settings-scroll")
+                                .relative()
                                 .flex_1()
                                 .min_h_0()
-                                .overflow_y_scroll()
-                                .p(px(if shell.settings.global.density == Density::Compact {
-                                    16.
-                                } else {
-                                    20.
-                                }))
-                                .child(content)
-                                .gpui_test_observe(),
+                                .child(
+                                    div()
+                                        .id("settings-scroll")
+                                        .w_full()
+                                        .h_full()
+                                        .track_scroll(&shell.settings_scroll)
+                                        .overflow_y_scroll()
+                                        .on_scroll_wheel({
+                                            let this = scroll_shell.clone();
+                                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+                                        })
+                                        .p(px(
+                                            if shell.settings.global.density == Density::Compact {
+                                                16.
+                                            } else {
+                                                20.
+                                            },
+                                        ))
+                                        .child(content)
+                                        .gpui_test_observe(),
+                                )
+                                .child(overlay_scrollbar(
+                                    &shell.settings_scroll,
+                                    "scrollbar-settings-scroll",
+                                    ScrollbarAxis::Vertical,
+                                )),
                         )
                         .child(footer(shell, Editor::Global, cx))
                         .focus_trap("settings-focus-trap", &shell.settings.focus),

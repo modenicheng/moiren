@@ -31,6 +31,8 @@ use crate::ui::presentation::db_text;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::widgets::fader::fader;
 use crate::ui::widgets::meters::paint_meter_fill;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{NodeId, NodeKind};
 
 const STRIP_WIDTH: f32 = 104.;
@@ -80,6 +82,9 @@ pub(super) struct TrayMixer {
     geometry: SharedFrame<MeterTracks>,
     panel: Entity<TrayPanelHost>,
     meter_layer: Entity<FlyoutMeterLayer>,
+    /// The strip row's scroll: the cached panel's paint bakes coordinates,
+    /// so the offset rides `TrayKey`.
+    strips_scroll: ScrollHandle,
 }
 
 impl TrayMixer {
@@ -112,6 +117,7 @@ impl TrayMixer {
             geometry,
             panel,
             meter_layer,
+            strips_scroll: ScrollHandle::new(),
         }
     }
 
@@ -177,6 +183,9 @@ impl Render for TrayMixer {
 #[derive(PartialEq)]
 pub(in crate::ui::window) struct TrayKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
+    /// The strip row scrolls inside the cached panel (same
+    /// scroll-under-cache rationale as the main window's pages).
+    strips_scroll: Point<Pixels>,
 }
 
 /// The flyout's strip panel: faders, mute/solo, and readouts, rebuilt only
@@ -192,6 +201,7 @@ impl CachedPanel for TrayPanel {
     fn key(&self, owner: &Self::Owner, cx: &App) -> Self::Key {
         Self::Key {
             snapshot: PublishRef::new(Arc::clone(&owner.state.read(cx).snapshot)),
+            strips_scroll: owner.strips_scroll.offset(),
         }
     }
 
@@ -209,11 +219,15 @@ impl CachedPanel for TrayPanel {
 
         let mut strips = div()
             .id("tray-mixer-strips")
+            .w_full()
+            .h_full()
             .flex()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .overflow_x_scroll();
+            .track_scroll(&owner.strips_scroll)
+            .overflow_x_scroll()
+            .on_scroll_wheel({
+                let this = cx.entity();
+                move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+            });
         for id in ids {
             let (Ok(node), Some(entry)) = (graph.graph.get_node(id), graph.node(id)) else {
                 continue;
@@ -254,7 +268,22 @@ impl CachedPanel for TrayPanel {
                     .child(label(t!("No strips · open Moiren to build a graph")))
                     .into_any_element()
             } else {
-                strips.into_any_element()
+                // The bar overlay is a sibling of the scroll container,
+                // never a child: the container translates its children by
+                // the offset at prepaint, so an overlay inside it would
+                // drift away with the strips.
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(strips)
+                    .child(overlay_scrollbar(
+                        &owner.strips_scroll,
+                        "scrollbar-tray-mixer-strips",
+                        ScrollbarAxis::Horizontal,
+                    ))
+                    .into_any_element()
             })
             .into_any_element()
     }
