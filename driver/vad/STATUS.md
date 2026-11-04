@@ -48,6 +48,11 @@ test and strict Clippy (Rust 1.99.1) now pass, as does Windows Clippy. Other job
 remain live at the observation; no all-green or native verdict follows. The
 older run becomes terminal cancelled, not retroactively successful.
 
+That `3c2c094` run subsequently completes at 02:00 with all 20 jobs successful,
+including both test/Clippy platforms and every Miri suite/aggregate. This is a
+verified software portability checkpoint only; the later streaming-harness
+source still needs its own CI and native qualification remains unchanged.
+
 The [S4 playback-category candidate](../../docs/validation/2026-11-05-s4-virtual-playback-category.md)
 is independently reviewed and imported, with fresh 18-group host/13-group
 portable checks, analyzed WDK build and valid INF. Playback now declares the

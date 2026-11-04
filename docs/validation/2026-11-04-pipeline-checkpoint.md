@@ -326,6 +326,13 @@ Tree Miri job. It is not timed out or restarted, and the aggregate gate still
 needs its terminal outcome. This does not certify the later `15ba9d0` harness
 source; that next verified source checkpoint needs its own remote run.
 
+At 02:00 the matching `3c2c094` run `41878002933` completes successfully: all
+20 jobs pass, including Windows/Ubuntu tests and Clippy, driver-host checks,
+both borrow models and the aggregate Miri gate. The final exact-head receipt
+is retained as `ci-41878002933-final.json`. This closes the portability-repair
+CI checkpoint only, not the subsequent streaming-harness source or any native
+S1-S5 requirement. The next batch retains PR26's Draft/split-before-merge rule.
+
 At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the original
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.
