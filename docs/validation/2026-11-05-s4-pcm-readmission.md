@@ -68,6 +68,7 @@ Evidence directory:
 | Linux stable strict example Clippy | Exit 0 |
 | Windows workspace all-target check with probe feature | Exit 0 |
 | Windows non-test example build | Exit 0 |
+| Full workspace/headless with both `gpui-test,vad-integration-probe` | 2623 passed, 10 ignored, zero failed, 73 harnesses; completed 02:54:18 |
 | Workspace fmt and whitespace checks | Exit 0 |
 
 The first Linux extraction build reports a native-only `same_admission`
@@ -75,6 +76,12 @@ wrapper unused. Keeping that wrapper in the Windows module resolves the cfg
 boundary without suppression; original failure and subsequent checks remain
 archived. The final four-file overlay is pinned in `fix-split-manifest.json`.
 Independent review finds no remaining actionable issue in that source.
+
+The full workspace run compiles the frozen four-file source, then finishes on
+commit `52d0c39` with that same source unchanged. Its receipt's `source_base`
+is recorded at completion; `fix-split-manifest.json` supplies the exact original
+base and overlay. The example's own 135 tests are run explicitly and reported
+separately, not added to the workspace total.
 
 ## Qualification Limits
 

@@ -391,8 +391,11 @@ neither success nor failure, and final completion still needs strict 48000-frame
 PCM, both Starts, both open gates and all original deadlines. A separate
 failure-first regression prevents post-pump snapshot age above the existing
 two-second limit from passing. Windows example tests pass 135 and Linux stable
-tests pass 114; strict Clippy/check/build/fmt pass. No native or new repetition
-acceptance is inferred.
+tests pass 114; strict Clippy/check/build/fmt pass. Full workspace/headless
+regression with both opt-in features finishes at 02:54:18: 2623 passed, 10
+ignored, zero failed across 73 harnesses. The committed correction is `52d0c39`;
+CI `41888724160` remains independently live for earlier head `fb87ec8` at this
+observation. No native or new repetition acceptance is inferred.
 
 ## Target Readiness
 

@@ -91,6 +91,15 @@ strict Clippy, driver host and all Miri suites/aggregate. The later
 explicit-error repair still requires its own published-head CI. Neither
 software result changes the native qualification verdict.
 
+The [PCM readiness correction](../../docs/validation/2026-11-05-s4-pcm-readmission.md)
+`52d0c39` makes the streaming completion snapshot use the same bounded native
+gate state machine as its main loop. Legal temporary Start re-admission remains
+pending until both gates reopen; existing strict PCM/identity/deadline gates
+are preserved. Actual snapshot age is rechecked after pumping. Failure-first
+tests pass 135 on Windows and 114 on Linux stable, with strict Clippy/check/build
+and 2623 workspace/headless tests (10 ignored) passing. No native trajectory or
+broader S4 gate is qualified by these software regressions.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,
