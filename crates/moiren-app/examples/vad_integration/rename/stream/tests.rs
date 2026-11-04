@@ -357,5 +357,7 @@ fn streaming_retirement_errors_remain_failed_after_direct_removed_recovers() {
     }
 }
 
+#[path = "tests/admission.rs"]
+mod admission;
 #[path = "tests/readmission.rs"]
 mod readmission;

@@ -204,7 +204,10 @@ impl PcmPhase {
         }
         // A legal Start re-admission is pending, not failed and not complete.
         // Both final gates must still reopen within their original deadlines.
-        Ok(self.started == 2 && self.pcm.require_signal().is_ok() && route.gates_open())
+        Ok(self.started == 2
+            && current.native_stamp.is_some_and(|stamp| stamp[3] > 0)
+            && self.pcm.require_signal().is_ok()
+            && route.gates_open())
     }
 
     pub(super) fn observe_pcm(
@@ -260,6 +263,7 @@ impl PcmPhase {
             .context("missing PCM confirmation identity")?;
         ensure!(
             old[..3] == new[..3]
+                && new[3] > 0
                 && new[3] >= old[3]
                 && new[4] >= old[4]
                 && admission.intent == confirmed.intent
@@ -304,7 +308,9 @@ pub(super) fn owner_running(current: &RuntimeEvidence) -> anyhow::Result<()> {
             && current.observation_generation.is_some()
             && current
                 .native_stamp
-                .is_some_and(|s| s.iter().all(|v| *v > 0)),
+                // Prepared endpoints can open admission before any native
+                // client exists. Stream generation zero is not PCM evidence.
+                .is_some_and(|s| s[..3].iter().all(|v| *v > 0) && s[4] > 0),
         "missing clean Engine-confirmed streaming admission"
     );
     Ok(())
@@ -348,6 +354,7 @@ pub(super) fn replacement(
     let current = new
         .native_stamp
         .context("missing replacement native stamp")?;
+    ensure!(previous[3] > 0, "missing old PCM stream generation");
     ensure!(
         current[0] != previous[0] && current[1] == previous[1] && current[2] > previous[2],
         "replacement requires new PDO/newer endpoint in the same control session"

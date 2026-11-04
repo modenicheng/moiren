@@ -455,6 +455,24 @@ guard remains unsatisfied and unchanged. No remote deployment/ffprobe/task or
 audio/device/UI/driver operation follows. VMware inventory remains zero running.
 The published `919d10f` CI is still live and is not superseded by local work.
 
+### Streaming Pre-Client Admission Repair
+
+The [pre-client admission receipt](2026-11-05-s4-pre-client-admission.md)
+reproduces a real coordinator/provider mismatch: replacement is checked before
+the new Pair is prepared, but admission rejects the legal zero stream generation
+of an endpoint without a native client. Three assertion REDs become 138 Windows
+and 117 Linux stable example passes. Admission now accepts that prepared state;
+final PCM and the old completed owner still require nonzero stream generations.
+Identity, gate epochs, strict 48,000-frame PCM, freshness and deadlines remain.
+
+Windows app all-target and Linux example strict Clippy, workspace all-target
+check, non-test example build and fmt pass. Full workspace/headless with both
+opt-in features finishes at 03:48:36: 2625 passed, 10 ignored, zero failed across
+73 harnesses. Independent review finds no actionable blocker. All four code
+pins match and the original 29 draft/cache pins remain unchanged. The existing
+published CI is still live; this local repair has no matching-head CI yet.
+The earlier release VAD example predates it and is not deployed or relabelled.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at

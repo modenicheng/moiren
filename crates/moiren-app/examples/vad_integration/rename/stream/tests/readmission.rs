@@ -70,6 +70,36 @@ fn pcm_end_phase() -> PcmPhase {
 }
 
 #[test]
+fn pcm_end_waits_for_a_nonzero_stream_after_pre_client_admission() {
+    let ids = ["stable".into(), "sibling".into()];
+    let mut phase = pcm_end_phase();
+    let mut idle = runtime(false);
+    idle.native_stamp.as_mut().unwrap()[3] = 0;
+    phase.admission = Some(idle.clone());
+    phase.gate_transitions[0] =
+        validation::GateProgress::new("stable".into(), idle.native_stamp, 0).unwrap();
+    let readiness = phase.end_ready(
+        &pcm_route(&idle),
+        idle.clone(),
+        &ids,
+        1_100,
+        12_000,
+        Duration::ZERO,
+    );
+    assert!(
+        matches!(readiness, Ok(false)),
+        "pre-client state must wait: {readiness:?}"
+    );
+    idle.native_stamp.as_mut().unwrap()[3] = 1;
+    assert!(
+        phase
+            .end_ready(&pcm_route(&idle), idle, &ids, 1_200, 12_000, Duration::ZERO)
+            .unwrap()
+    );
+    assert!(phase.require_complete().is_ok());
+}
+
+#[test]
 fn pcm_end_waits_for_legal_readmission_then_requires_both_open_gates() {
     let ids = ["stable".into(), "sibling".into()];
     for sibling in [false, true] {
