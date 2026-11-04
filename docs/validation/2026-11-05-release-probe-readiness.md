@@ -74,9 +74,18 @@ The mutable Cargo output now contains this artifact; the earlier immutable
 
 The binary is not executed or deployed. This prepares the corrected acceptance
 harness, not native acceptance or a new driver package. Exact-head CI
-`41915822264` on `8761d07` is still running at this artifact checkpoint; no
-green result from an earlier head is applied to it. The full-pipeline and
-target-token/desktop/VM requirements remain unchanged.
+`41915822264` on `8761d07` was still running at this artifact checkpoint and
+subsequently finishes all20 jobs successfully at06:01:19+08:00 GitHub time.
+Its original watcher exits0 at06:01:24 host time; no earlier head's green is
+borrowed. The full-pipeline and target-token/desktop/VM requirements remain
+unchanged.
+
+At06:02:37..38 host time, a bounded strict-known-host token/package check
+again confirms the exact target host/SID, session0, `admin=true`, and the
+existing staged package. It reads no original input and invokes no reader
+or ffprobe. The reader's non-admin requirement remains unsatisfied.
+The current VMware inventory still returns zero running VMs; no unlock or
+start retry is attempted.
 
 ## Fresh Read-Only Target Check
 

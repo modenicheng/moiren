@@ -579,6 +579,27 @@ source/tree, command, terminal exit0 and independent copy verification.
 It is not executed or deployed. The later artifact documentation stays local
 while that existing CI is live; no superseding push or duplicate run follows.
 
+### Both-Route CI Closure And Remaining Entry Conditions
+
+Exact `8761d07` completes run `41915822264` with all20 jobs successful.
+The aggregate's GitHub completion is06:01:19+08:00; the original watcher
+finishes at06:01:24 host time with exit0. Final API/watcher/closure receipts
+are retained without dispatch, restart or superseding push. This certifies
+the both-route wait correction, not native or physical qualification.
+
+The existing token/package preflight is adapted only to create fresh local
+logs. At06:02:37..38 it verifies the exact host/SID, session0, admin=true
+and the already-staged package; no original inputs, reader or ffprobe are
+opened. The exact permitted non-admin reader token is still unavailable.
+Current read-only VMware inventory remains zero running. Ordinary desktop
+retained acceptance, S4 native/migration/name/default-role/held/race/repetition/
+sibling acceptance, sustained quality and calibrated physical p95/p99 stay open.
+The unimplemented round-trip proposal still needs direct design approval.
+
+Later artifact and closure documents stay local; no new CI is triggered
+solely to record the previous run's success. There is no test/native retry,
+default promotion, VAD/Process winner or full S0-S5 completion claim.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at

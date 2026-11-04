@@ -102,7 +102,8 @@ The scoped correction is committed and normally pushed as
 PR26 stays Draft/open; its prior body is preserved verbatim with a new
 checkpoint appended. The automatically triggered exact-head run
 `41915822264` is observed by one retained watcher, not manually dispatched
-or restarted. It remains live at this checkpoint.
+or restarted. Its initial live state is historical; the closure below records
+the terminal result.
 
 A subsequent optimized example build starts from that clean source and
 finishes with exit0. The [release record](2026-11-05-release-probe-readiness.md#readiness-wait-error-repair-artifact)
@@ -110,7 +111,21 @@ pins its source/tree, 7,819,264-byte immutable copy and SHA-256. It includes
 the both-route observation correction. It is not executed or deployed; the
 earlier pre-client-only binary remains historical, not the current shared
 Cargo output. These later documentation changes do not alter tested source
-and are not pushed over the live exact-head run.
+and were held locally throughout the live exact-head run.
+
+### Exact-Head CI Closure
+
+Run `41915822264` completes all20 jobs successfully on exact `8761d07`,
+including Windows/Ubuntu tests and strict Clippy, driver host, every Miri
+suite and aggregate. GitHub's last completion is
+`2026-11-04T22:01:19Z` (`2026-11-05T06:01:19+08:00`); the original watcher
+finishes at06:01:24 host time with exit0. These timestamps remain separate.
+The full final API result, watcher result and closure receipt are archived
+in the same evidence directory. Nonfatal cache warnings do not change the
+actual successful job conclusions.
+
+This closes software CI for the both-route correction, not native or physical
+acceptance. No CI is dispatched merely to record its own completion.
 
 ## Prior Published CI And Remaining Acceptance
 
