@@ -111,6 +111,15 @@ retained. Windows/Linux qualification tests pass 26 each, full probe tests
 pass 741/583 respectively (1 Windows ignore), and workspace/headless passes
 2625 with 10 ignored and zero failed. No native or physical gate is closed.
 
+Published readiness/percentile head `919d10f` has matching CI `41896388334`
+still running. A later scoped
+[offline PCM receipt repair](../../docs/validation/2026-11-05-s1-pcm-refusal-persistence.md)
+`0523359` prevents failed output persistence from leaving a successful
+structural summary and rejects overflowing JSON numbers before refusal
+serialization. Failure-first tests pass 35 on both Windows and Debian;
+all 17 Python suites pass 321. This later source is kept local rather than
+superseding live CI. No original PCM, frozen residual or native verdict changes.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,

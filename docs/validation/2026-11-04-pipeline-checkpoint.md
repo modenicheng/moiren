@@ -416,6 +416,27 @@ headless regression completes at 03:19:53 with 2625 passed, 10 ignored, zero
 failed across 73 harnesses. Original 29 draft/cache hashes remain unchanged.
 No native waveform, sustained, physical or device-limited verdict follows.
 
+### Published Percentile Checkpoint And PCM Receipt Repair
+
+The normal batch push publishes `919d10f`, including the prior PCM readiness
+and S5 percentile corrections, after the earlier CI is terminal green. Remote
+hash and PR26 Draft/open are verified. Its original split-before-merge prefix
+is preserved verbatim; new matching-head CI `41896388334` is discovered rather
+than manually dispatched. That run remains live, not a pass at this point.
+
+Independent review then reproduces two actual
+[native-PCM audit receipt defects](2026-11-05-s1-pcm-refusal-persistence.md).
+An output flush failure leaves a successful structural summary despite CLI
+exit 2, and an overflowing JSON number can truncate the refusal receipt.
+Clean assertion REDs (32 pass, 2 fail) become 35 passing tests on both Windows
+and Debian after finite decoding and prepublication all-map finalization.
+All 17 Python suites pass 321 tests. The first owner's persistence refusal
+now stays visible while the next owner is still audited. Independent final
+two-file review finds no blocker; code is committed as `0523359`, not pushed
+over the existing live CI. Original 29 draft/cache hashes still match.
+No real PCM/OBS acquisition, refit, remote raw transfer, native operation or
+waveform/physical qualification follows; all full-pipeline gates remain.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
