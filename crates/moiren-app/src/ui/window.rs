@@ -177,6 +177,21 @@ pub struct StudioShell {
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
+    /// The shared inspector panel's scroll (graph/matrix/device inspectors
+    /// are mutually exclusive), plus the other cached panels' scroll
+    /// containers: their offsets ride the panel keys, since a cached panel
+    /// replays baked paint coordinates until its key changes.
+    inspector_scroll: ScrollHandle,
+    library_scroll: ScrollHandle,
+    library_rail_scroll: ScrollHandle,
+    settings_scroll: ScrollHandle,
+    device_list_scroll: ScrollHandle,
+    device_override_scroll: ScrollHandle,
+    binding_menu_scroll: ScrollHandle,
+    /// The dock pane's own scroll: docked strips key their cached paint on
+    /// this offset, so a dock scroll rebuilds them instead of leaving the
+    /// main row's stale coordinates on screen.
+    dock_scroll: ScrollHandle,
     exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
     /// Render/frame instrumentation for the whole window (shell, chrome,
@@ -219,7 +234,6 @@ pub struct StudioShell {
     inspector_meters: sidebar::InspectorMeterFrame,
     inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
     error_strip: Entity<error_strip::ErrorStripHost>,
-    matrix_panel: Entity<matrix::MatrixPanelHost>,
     devices_panel: Entity<devices::DevicesPanelHost>,
     settings_panel: Entity<settings::SettingsPanelHost>,
     inspector_panel: Entity<sidebar::InspectorPanelHost>,
@@ -320,8 +334,6 @@ impl StudioShell {
         let error_strip = cx.new(|cx| {
             error_strip::ErrorStripHost::new(error_strip::ErrorStripPanel, shell_entity.clone(), cx)
         });
-        let matrix_panel = cx
-            .new(|cx| matrix::MatrixPanelHost::new(matrix::MatrixPanel, shell_entity.clone(), cx));
         let devices_panel = cx.new(|cx| {
             devices::DevicesPanelHost::new(devices::DevicesPanel, shell_entity.clone(), cx)
         });
@@ -398,6 +410,14 @@ impl StudioShell {
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
+            inspector_scroll: ScrollHandle::new(),
+            library_scroll: ScrollHandle::new(),
+            library_rail_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
+            device_list_scroll: ScrollHandle::new(),
+            device_override_scroll: ScrollHandle::new(),
+            binding_menu_scroll: ScrollHandle::new(),
+            dock_scroll: ScrollHandle::new(),
             exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
             #[cfg(feature = "gpui-test")]
@@ -419,7 +439,6 @@ impl StudioShell {
             inspector_meters,
             inspector_meter_layer,
             error_strip,
-            matrix_panel,
             devices_panel,
             settings_panel,
             inspector_panel,
@@ -823,7 +842,7 @@ impl Render for StudioShell {
                     .child(match self.presentation.page {
                         Page::Graph => graph::page::page(self, window),
                         Page::Mixer => mixer::page::page(self, window, cx),
-                        Page::Matrix => matrix::page_for(self, window, cx),
+                        Page::Matrix => matrix::page(self, cx),
                         Page::Devices => devices::page_for(self, window, cx),
                     })
                     .child(sidebar::inspector_host(self, window, cx)),
