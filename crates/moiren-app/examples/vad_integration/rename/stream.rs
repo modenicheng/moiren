@@ -162,6 +162,51 @@ impl Case {
 }
 
 impl PcmPhase {
+    pub(super) fn end_ready(
+        &mut self,
+        route: &crate::report::Evidence,
+        current: RuntimeEvidence,
+        ids: &[String; 2],
+        elapsed_ms: u128,
+        deadline_ms: u128,
+        snapshot_age: std::time::Duration,
+    ) -> anyhow::Result<bool> {
+        self.confirmed = Some(current.clone());
+        ensure!(
+            snapshot_age <= std::time::Duration::from_secs(2),
+            "PCM snapshot publication stale"
+        );
+        ensure!(
+            elapsed_ms < deadline_ms,
+            "PCM confirmation exceeded deadline"
+        );
+        for gate in &self.gate_transitions {
+            gate.require_deadline(elapsed_ms)?;
+        }
+        let admission = self.admission.as_ref().context("missing PCM admission")?;
+        same_owner(admission, &current)?;
+        ensure!(
+            route.owner_running(ids, admission.consumed_request_id),
+            "PCM end confirmation missing"
+        );
+        for export in &route.exports {
+            let gate = self
+                .gate_transitions
+                .iter_mut()
+                .find(|gate| gate.endpoint_id == export.endpoint_id)
+                .context("missing phase-local gate baseline")?;
+            gate.observe(
+                export.native_stamp,
+                export.gate_open,
+                elapsed_ms,
+                deadline_ms,
+            )?;
+        }
+        // A legal Start re-admission is pending, not failed and not complete.
+        // Both final gates must still reopen within their original deadlines.
+        Ok(self.started == 2 && self.pcm.require_signal().is_ok() && route.gates_open())
+    }
+
     pub(super) fn observe_pcm(
         &mut self,
         samples: &[f32],
@@ -261,6 +306,23 @@ pub(super) fn owner_running(current: &RuntimeEvidence) -> anyhow::Result<()> {
                 .native_stamp
                 .is_some_and(|s| s.iter().all(|v| *v > 0)),
         "missing clean Engine-confirmed streaming admission"
+    );
+    Ok(())
+}
+
+pub(super) fn same_owner(old: &RuntimeEvidence, current: &RuntimeEvidence) -> anyhow::Result<()> {
+    owner_running(current)?;
+    let previous = old.native_stamp.context("missing PCM admission stamp")?;
+    let stamp = current.native_stamp.context("missing current PCM stamp")?;
+    ensure!(
+        old.intent == current.intent
+            && old.requested_name == current.requested_name
+            && old.active_revision == current.active_revision
+            && stamp[..3] == previous[..3]
+            && stamp[3] >= previous[3]
+            && stamp[4] >= previous[4]
+            && current.observation_generation >= old.observation_generation,
+        "PCM phase crossed replacement identity/revision/binding"
     );
     Ok(())
 }

@@ -1,5 +1,5 @@
 //! Bounded coordinator on one COM-owning worker. Only App owns driver control.
-use super::{Case, PcmPhase, owner_running, release_owner, replacement, running};
+use super::{Case, PcmPhase, release_owner, replacement, running, same_owner};
 use crate::{
     native::{Pair, rename_stream},
     rename::{RuntimeEvidence, shared_deadline, windows_name},
@@ -363,10 +363,6 @@ fn signal_phase(
 ) -> anyhow::Result<()> {
     let started = Instant::now();
     let deadline = deadline.min(started + PCM_LIMIT);
-    let admission = phase
-        .admission
-        .clone()
-        .context("missing signal admission")?;
     let mut last_snapshot: Option<(Arc<AppSnapshot>, Instant)> = None;
     loop {
         ensure!(
@@ -390,30 +386,20 @@ fn signal_phase(
                 last_snapshot = Some((snapshot.clone(), Instant::now()));
             }
             let observed = observe(&snapshot, id)?;
-            // Save the actual final/failed observation, not a copied admission.
-            phase.confirmed = Some(observed.clone());
-            emit(phase);
-            ensure!(
-                Evidence::from(snapshot.as_ref()).owner_running(ids, admission.consumed_request_id),
-                "PCM route lacks current Engine confirmation"
+            let readiness = phase.end_ready(
+                &Evidence::from(snapshot.as_ref()),
+                observed,
+                ids,
+                started.elapsed().as_millis(),
+                deadline.saturating_duration_since(started).as_millis(),
+                last_snapshot
+                    .as_ref()
+                    .context("missing PCM snapshot")?
+                    .1
+                    .elapsed(),
             );
-            // Native Start may advance the stream generation and temporarily
-            // close admission. Reuse the existing bounded 5s transition gate;
-            // it never grants permission for a new PDO or changed revision.
-            same_owner(&admission, &observed)?;
-            for export in &Evidence::from(snapshot.as_ref()).exports {
-                let gate = phase
-                    .gate_transitions
-                    .iter_mut()
-                    .find(|g| g.endpoint_id == export.endpoint_id)
-                    .context("missing phase-local gate baseline")?;
-                gate.observe(
-                    export.native_stamp,
-                    export.gate_open,
-                    started.elapsed().as_millis(),
-                    deadline.saturating_duration_since(started).as_millis(),
-                )?;
-            }
+            emit(phase);
+            readiness?;
         }
         let sampled = pair.pump(|samples, discontinuity| {
             phase.observe_pcm(
@@ -430,19 +416,33 @@ fn signal_phase(
             && phase.pcm.require_signal().is_ok()
             && let Some(snapshot) = handle.try_snapshot()
         {
+            if last_snapshot
+                .as_ref()
+                .is_none_or(|(old, _)| !Arc::ptr_eq(old, &snapshot))
+            {
+                last_snapshot = Some((snapshot.clone(), Instant::now()));
+            }
             let observed = observe(&snapshot, id)?;
-            phase.confirmed = Some(observed.clone());
-            emit(phase);
-            same_admission(&admission, &observed)?;
-            ensure!(
-                Evidence::from(snapshot.as_ref()).running(ids, admission.consumed_request_id),
-                "PCM end confirmation missing"
+            let ready = phase.end_ready(
+                &Evidence::from(snapshot.as_ref()),
+                observed,
+                ids,
+                started.elapsed().as_millis(),
+                deadline.saturating_duration_since(started).as_millis(),
+                last_snapshot
+                    .as_ref()
+                    .context("missing PCM snapshot")?
+                    .1
+                    .elapsed(),
             );
+            emit(phase);
             ensure!(
                 Instant::now() < deadline,
                 "PCM confirmation exceeded deadline"
             );
-            return Ok(());
+            if ready? {
+                return Ok(());
+            }
         }
         thread::sleep(Duration::from_millis(1));
     }
@@ -460,23 +460,6 @@ fn seed_gates(snapshot: &AppSnapshot, phase: &mut PcmPhase) -> anyhow::Result<()
 fn same_admission(old: &RuntimeEvidence, current: &RuntimeEvidence) -> anyhow::Result<()> {
     running(current)?;
     same_owner(old, current)
-}
-
-fn same_owner(old: &RuntimeEvidence, current: &RuntimeEvidence) -> anyhow::Result<()> {
-    owner_running(current)?;
-    let previous = old.native_stamp.context("missing PCM admission stamp")?;
-    let stamp = current.native_stamp.context("missing current PCM stamp")?;
-    ensure!(
-        old.intent == current.intent
-            && old.requested_name == current.requested_name
-            && old.active_revision == current.active_revision
-            && stamp[..3] == previous[..3]
-            && stamp[3] >= previous[3]
-            && stamp[4] >= previous[4]
-            && current.observation_generation >= old.observation_generation,
-        "PCM phase crossed replacement identity/revision/binding"
-    );
-    Ok(())
 }
 
 fn request(handle: &AppHandle, request: AppRequest) -> anyhow::Result<u64> {

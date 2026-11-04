@@ -381,6 +381,19 @@ Fresh full workspace/headless verification with both `gpui-test` and
 recorded; this total is not presented as a delta from earlier gpui-only totals.
 No native or broader S4 acceptance is claimed.
 
+### PCM Completion Readmission Consistency
+
+The [PCM completion repair](2026-11-05-s4-pcm-readmission.md) fixes an existing
+harness inconsistency: a legal bounded Start re-admission can be pending in the
+main loop but becomes an immediate failure in its second completion snapshot.
+Both observations now use the same tested owner/gate predicate; pending is
+neither success nor failure, and final completion still needs strict 48000-frame
+PCM, both Starts, both open gates and all original deadlines. A separate
+failure-first regression prevents post-pump snapshot age above the existing
+two-second limit from passing. Windows example tests pass 135 and Linux stable
+tests pass 114; strict Clippy/check/build/fmt pass. No native or new repetition
+acceptance is inferred.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at

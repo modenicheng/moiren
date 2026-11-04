@@ -356,3 +356,6 @@ fn streaming_retirement_errors_remain_failed_after_direct_removed_recovers() {
         assert_eq!(case.failures.len(), 1, "duplicate poll failure");
     }
 }
+
+#[path = "tests/readmission.rs"]
+mod readmission;
