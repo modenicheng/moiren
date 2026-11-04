@@ -476,6 +476,30 @@ The corrected example is then rebuilt from clean `ee25064`, with source/tree,
 length and SHA-256 pinned to an independently verified immutable evidence copy.
 It is not executed or deployed; the earlier shared-target pin stays historical.
 
+### Readiness/Percentile CI Closure And Next Batch
+
+The existing exact-head `919d10f` run `41896388334` completes at 03:59 with
+all 20 jobs successful, including Windows/Ubuntu tests and strict Clippy,
+driver host, all Miri suites and the aggregate. The retained watcher exits
+zero; there is no rerun, duplicate dispatch or premature superseding push.
+Final API and watcher receipts are archived. This closes CI for the earlier
+PCM-readiness/strict-percentile source, not for later `0523359` PCM-audit
+persistence or `ee25064` pre-client admission corrections. Those verified local
+slices are ready for the next normal batch push and matching-head CI.
+
+A bounded S3 source/artifact audit finds no new product-code defect or unused
+complete native acceptance package. The original stopped-input combined
+child/obstruction exception cannot identify its hit. A later frozen
+`s3-input-boundary-20261103-0040` observation explicitly records a different-PID
+`LockScreenBackstopFrame`, with `SameOwner=false` and `HitIsChild=false`.
+That identifies external obstruction for that historical run, not current
+desktop readiness. The strict input guard remains appropriate; no identical
+retry, child-hit relaxation or manufactured new diagnostic follows. The
+metadata reader's own non-admin requirement is not a blanket desktop blocker.
+Retained Evaluate's actual overlapping event envelopes remain a separate
+refusal, not fixed by desktop accessibility. Fresh 03:58 VM inventory still
+returns zero running VMs.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at

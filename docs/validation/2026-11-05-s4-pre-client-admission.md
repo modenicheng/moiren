@@ -92,6 +92,12 @@ Its length/hash match the build output. `release-vad-build-result.json` and
 `release-vad-pins.json` retain the exact command, source and copy verification.
 The executable is not run or deployed.
 
+The existing CI subsequently completes at 03:59: all 20 jobs succeed on exact
+`919d10f`, including Windows/Ubuntu, strict Clippy, driver host, all Miri suites
+and the aggregate. The existing watcher exits zero without restart. This green
+certifies the earlier readiness/percentile source; the PCM audit and this
+pre-client repair still need their own published-head CI.
+
 S1 matched-route/full-waveform correspondence, S2 sustained native budgets,
 S3 ordinary desktop retained Evaluate/Apply, S4 actual Windows naming and
 lifecycle matrix, and S5 sustained calibrated physical qualification remain
