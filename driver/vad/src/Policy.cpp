@@ -2,6 +2,7 @@
 #include "Driver.h"
 #include "EndpointReference.h"
 #include "InterfaceName.h"
+#include "TerminalPolicy.h"
 // Instantiate the SDK property key in this translation unit, not a private GUID.
 #include <initguid.h>
 #include <devpkey.h>
@@ -99,6 +100,7 @@ static NTSTATUS StageInterfaceName(const GUID& category, UNICODE_STRING* link,
 // returned allocation is owned by this driver.
 static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     PCWSTR association, ULONG associationBytes, ULONG neverDefault,
+    ULONG enableByDefault,
     const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS],
     const WCHAR (&reference)[vad::EndpointReferenceUnits], UNICODE_STRING* link)
 {
@@ -148,6 +150,15 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
         status = SetValue(endpointKey,
             L"{F3E80BEF-1723-4FF2-BCC4-7F83DC5E46D4},3", REG_DWORD,
             &neverDefault, sizeof(neverDefault));
+    }
+    if (NT_SUCCESS(status)) {
+        if (enableByDefault != 0) {
+            // UnknownFormFactor render endpoints are otherwise disabled/hidden.
+            // This makes them usable; NeverSetAsDefaultEndpoint remains independent.
+            status = SetValue(endpointKey,
+                L"{F3E80BEF-1723-4FF2-BCC4-7F83DC5E46D4},4", REG_DWORD,
+                &enableByDefault, sizeof(enableByDefault));
+        }
     }
     if (NT_SUCCESS(status)) {
         const ULONG eventDriven = 1;
@@ -215,11 +226,8 @@ static void PreparePolicy(WDFWORKITEM work)
     ULONG neverDefault = 0;
     WCHAR name[MOIREN_VAD_MAX_NAME_UNITS];
     SnapshotPolicy(context, &intent, &neverDefault, name);
-    static const WCHAR speaker[] = L"{DFF21CE1-F70F-11D0-B917-00A0C9223196}";
-    static const WCHAR microphone[] = L"{DFF21BE1-F70F-11D0-B917-00A0C9223196}";
+    const auto& terminal = vad::EndpointTerminalPolicy(intent);
     const bool capture = intent == MOIREN_VAD_INTENT_MICROPHONE;
-    const PCWSTR association = capture ? microphone : speaker;
-    const ULONG associationBytes = capture ? sizeof(microphone) : sizeof(speaker);
     const GUID* categories[] = {
         &AudioCategory, capture ? &CaptureCategory : &RenderCategory,
         &RealtimeCategory};
@@ -234,8 +242,8 @@ static void PreparePolicy(WDFWORKITEM work)
     WCHAR reference[vad::EndpointReferenceUnits] = {};
     vad::EndpointReference(name, reference);
     for (const GUID* category : categories) {
-        NTSTATUS status = StageInterface(child, *category, association,
-            associationBytes, neverDefault, name, reference,
+        NTSTATUS status = StageInterface(child, *category, terminal.Association,
+            sizeof(terminal.Association), neverDefault, terminal.EnableByDefault, name, reference,
             &context->PolicyInterfaces[context->PolicyInterfaceCount]);
         if (!NT_SUCCESS(status)) {
             VadTrace(TRACE_LEVEL_ERROR, VAD_PDO,

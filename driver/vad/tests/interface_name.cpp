@@ -126,7 +126,7 @@ static NTSTATUS StageForName(const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS],
     WCHAR reference[vad::EndpointReferenceUnits] = {};
     vad::EndpointReference(name, reference);
     F.ExpectedReference = reference;
-    return StageInterface(nullptr, TypedCategory, L"association", 24, 0, name, reference, link);
+    return StageInterface(nullptr, TypedCategory, L"association", 24, 0, 0, name, reference, link);
 #else
     return StageInterface(nullptr, TypedCategory, L"association", 24, 0, name, link);
 #endif

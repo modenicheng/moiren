@@ -56,7 +56,8 @@ struct UNICODE_STRING {
     unsigned short MaximumLength = 0;
     WCHAR* Buffer = nullptr;
 };
-struct OBJECT_ATTRIBUTES {};
+struct OBJECT_ATTRIBUTES { PCWSTR Name = nullptr; HANDLE Parent = nullptr; };
+struct RegistryKey { unsigned Interface = 0, Depth = 0; };
 struct Slot {
     std::uint32_t Intent = MOIREN_VAD_INTENT_PLAYBACK;
     bool AllowDefault = false;
@@ -120,6 +121,13 @@ struct Fixture {
     ULONG Bytes[3] = {};
     ULONG PlainNames = 0;
     ULONG EndpointNames = 0;
+    WCHAR Associations[3][39] = {};
+    ULONG AssociationCount = 0;
+    ULONG NeverDefault[3] = {};
+    ULONG NeverDefaultCount = 0;
+    ULONG EnableByDefault[3] = {};
+    ULONG EnableCount = 0;
+    RegistryKey Keys[3][3] = {};
 } F;
 static bool SystemThread = false;
 static bool SharedLocked = false;
@@ -158,7 +166,12 @@ void RtlInitUnicodeString(UNICODE_STRING* value, PCWSTR text)
     value->Length = static_cast<unsigned short>(std::wcslen(text) * sizeof(WCHAR));
     value->MaximumLength = value->Length + static_cast<unsigned short>(sizeof(WCHAR));
 }
-void InitializeObjectAttributes(OBJECT_ATTRIBUTES*, UNICODE_STRING*, ULONG, HANDLE, void*) {}
+void InitializeObjectAttributes(OBJECT_ATTRIBUTES* attributes, UNICODE_STRING* name,
+    ULONG, HANDLE parent, void*)
+{
+    attributes->Name = name->Buffer;
+    attributes->Parent = parent;
+}
 static void CheckDdi()
 {
     Check(SystemThread && !SharedLocked, "DDI in system worker outside Shared lock");
@@ -250,32 +263,60 @@ NTSTATUS IoGetDeviceInterfacePropertyData(UNICODE_STRING* link, const DEVPROPKEY
     if (F.MissingTerminator) { static_cast<WCHAR*>(data)[F.Bytes[index] / 2 - 1] = L'X'; }
     return STATUS_SUCCESS;
 }
-static NTSTATUS OpenKey(PHANDLE result)
+static NTSTATUS OpenKey(PHANDLE result, RegistryKey* key)
 {
     CheckDdi();
     ++F.RegistryCalls;
     if (F.RegistryCalls == F.FailRegistryAt) { return RegistryFailure; }
     ++F.Handles;
-    *result = &F;
+    *result = key;
     return STATUS_SUCCESS;
 }
 NTSTATUS IoOpenDeviceInterfaceRegistryKey(UNICODE_STRING* link, ULONG, PHANDLE result)
 {
-    (void)LinkIndex(link);
-    return OpenKey(result);
+    const auto index = LinkIndex(link);
+    F.Keys[index][0] = {index, 0};
+    return OpenKey(result, &F.Keys[index][0]);
 }
-NTSTATUS ZwCreateKey(PHANDLE result, ULONG, OBJECT_ATTRIBUTES*, ULONG, void*, ULONG, void*)
+NTSTATUS ZwCreateKey(PHANDLE result, ULONG, OBJECT_ATTRIBUTES* attributes,
+    ULONG, void*, ULONG, void*)
 {
-    return OpenKey(result);
+    const auto parent = static_cast<const RegistryKey*>(attributes->Parent);
+    Check(parent != nullptr && parent->Depth < 2 &&
+        std::wcscmp(attributes->Name, parent->Depth == 0 ? L"EP" : L"0") == 0,
+        "policy keys descend from the owned interface into the same EP\\0");
+    auto& key = F.Keys[parent->Interface][parent->Depth + 1];
+    key = {parent->Interface, parent->Depth + 1};
+    return OpenKey(result, &key);
 }
-NTSTATUS ZwSetValueKey(HANDLE, UNICODE_STRING* name, ULONG, ULONG, void*, ULONG)
+NTSTATUS ZwSetValueKey(HANDLE handle, UNICODE_STRING* name, ULONG, ULONG type,
+    void* data, ULONG bytes)
 {
     CheckDdi();
     ++F.RegistryCalls;
     if (F.RegistryCalls == F.FailRegistryAt) { return RegistryFailure; }
+    if (name->Buffer[0] == L'{') {
+        Check(static_cast<const RegistryKey*>(handle)->Depth == 2,
+            "Association, enablement and exclusion stay together in the owned EP\\0");
+    }
     if (std::wcscmp(name->Buffer, L"FriendlyName") == 0) { ++F.PlainNames; }
     if (std::wcscmp(name->Buffer, L"{A45C254E-DF1C-4EFD-8020-67D146A850E0},14") == 0) {
         ++F.EndpointNames;
+    }
+    if (std::wcscmp(name->Buffer, L"{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2") == 0) {
+        Check(type == REG_SZ && bytes == sizeof(F.Associations[0]) && F.AssociationCount < 3,
+            "Association is a bounded GUID string including NUL");
+        std::memcpy(F.Associations[F.AssociationCount++], data, bytes);
+    }
+    if (std::wcscmp(name->Buffer, L"{F3E80BEF-1723-4FF2-BCC4-7F83DC5E46D4},3") == 0) {
+        Check(type == REG_DWORD && bytes == sizeof(ULONG) && F.NeverDefaultCount < 3,
+            "default exclusion is a DWORD on each interface");
+        F.NeverDefault[F.NeverDefaultCount++] = *static_cast<const ULONG*>(data);
+    }
+    if (std::wcscmp(name->Buffer, L"{F3E80BEF-1723-4FF2-BCC4-7F83DC5E46D4},4") == 0) {
+        Check(type == REG_DWORD && bytes == sizeof(ULONG) && F.EnableCount < 3,
+            "endpoint enablement is a DWORD on each interface");
+        F.EnableByDefault[F.EnableCount++] = *static_cast<const ULONG*>(data);
     }
     return STATUS_SUCCESS;
 }
@@ -317,6 +358,37 @@ static void SuccessfulTypedPublication()
             F.NameTraceCalls == 3,
             "already staged policy must not repeat publication or diagnostic");
         Release(child);
+    }
+}
+
+static void TerminalPolicyMatchesVirtualFunctionAndDefaultPreference()
+{
+    for (auto intent : {MOIREN_VAD_INTENT_PLAYBACK, MOIREN_VAD_INTENT_MICROPHONE}) {
+        for (bool allowDefault : {false, true}) {
+            F = {};
+            Child child;
+            child.Shared.Slots[0].Intent = intent;
+            child.Shared.Slots[0].AllowDefault = allowDefault;
+            Check(VadPreparePolicy(&child, intent) == STATUS_SUCCESS, "terminal policy stages");
+            const bool capture = intent == MOIREN_VAD_INTENT_MICROPHONE;
+            Check(F.AssociationCount == 3 && F.NeverDefaultCount == 3,
+                "every owned interface receives Association and default exclusion");
+            for (unsigned index = 0; index < 3; ++index) {
+                Check(std::wcscmp(F.Associations[index], capture ?
+                    L"{DFF21BE1-F70F-11D0-B917-00A0C9223196}" :
+                    L"{DFF21CE0-F70F-11D0-B917-00A0C9223196}") == 0,
+                    "virtual playback Association is OUTPUT_UNDEFINED; microphone is unchanged");
+                Check(F.NeverDefault[index] == (allowDefault ? 0u : 0x307u),
+                    "enablement never overrides local all-role default exclusion/opt-in");
+            }
+            Check(F.EnableCount == (capture ? 0u : 3u),
+                "only virtual render receives explicit endpoint enablement");
+            for (unsigned index = 0; index < F.EnableCount; ++index) {
+                Check(F.EnableByDefault[index] == 0x101u,
+                    "enable mask is FLAG_ENABLE plus FLOW_MASK_RENDER, not default selection");
+            }
+            Release(child);
+        }
     }
 }
 
@@ -386,12 +458,17 @@ static void FixedNameBounds()
 
 static void ExistingFailureRollback()
 {
-    for (unsigned index = 1; index <= 27; ++index) {
-        F = {};
-        Child child;
-        F.FailRegistryAt = index;
-        Check(VadPreparePolicy(&child, 0) == RegistryFailure, "registry failures still fail closed");
-        Release(child);
+    for (auto intent : {MOIREN_VAD_INTENT_PLAYBACK, MOIREN_VAD_INTENT_MICROPHONE}) {
+        const unsigned registryCalls = intent == MOIREN_VAD_INTENT_PLAYBACK ? 30 : 27;
+        for (unsigned index = 1; index <= registryCalls; ++index) {
+            F = {};
+            Child child;
+            child.Shared.Slots[0].Intent = intent;
+            F.FailRegistryAt = index;
+            Check(VadPreparePolicy(&child, intent) == RegistryFailure,
+                "every registry write, including render enablement, fails closed");
+            Release(child);
+        }
     }
     for (unsigned index = 1; index <= 3; ++index) {
         F = {};
@@ -442,6 +519,7 @@ static void EndpointReferenceDerivation()
 
 int main()
 {
+    TerminalPolicyMatchesVirtualFunctionAndDefaultPreference();
     EndpointReferenceDerivation();
     SuccessfulTypedPublication();
     TypedFailureClosesPolicy();
