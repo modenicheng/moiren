@@ -246,6 +246,74 @@ it nor this exporter-boundary fix has matching remote CI yet. The exact stable
 toolchain installation remains a live process; it is not restarted to avoid
 the download wait. Native S1-S5 acceptance remains unchanged.
 
+The two-commit follow-up batch is pushed normally at 01:29:20. Remote head is
+`3c2c094cb174fb4eeba63fb5903591e7c85704dc`, tree
+`20207f1d69e08e5081ca8cf4ce6e164d45c28c4e`; new exact-head CI is
+`41878002933`. At 01:44 it has actual jobs and a successful driver-host check,
+not an all-green verdict. Intermittent GitHub TLS observation failures do not
+mean its jobs stopped, and neither run is manually restarted. PR26 remains
+Draft; the original 29 draft/cache hashes still match before this push.
+
+At 01:53 the exact `3c2c094` CI Ubuntu test and Clippy jobs both report success;
+the latter's archived log identifies Rust 1.99.1 and strict all-target commands,
+including probe-tools and app ui-profiler. Windows Clippy also passes. The
+previous two Linux failures are therefore repaired on the matching remote
+source, not merely masked locally. The complete run still has live jobs, so
+there is no overall green claim. Old run `41874555383` subsequently becomes
+terminal cancelled under the existing superseding-run policy; unfinished old
+jobs are not counted as passes. Local exact-stable installation remains live.
+
+### Offline Terminal/Recorder Audit Refusal
+
+A separately reviewed metadata-only audit is prepared under
+`terminal-recorder-audit` in the host evidence root. It preserves the frozen
+2827/689 residual ledgers and both delivery-gap violations. Nineteen pure
+accounting/timestamp tests and a PS5/PS7 UTF-8 output regression pass; source
+hashes match production commit `002aa21`. No audio decoding, refit, alignment,
+waveform threshold or production code changes are part of this audit.
+
+At 01:38:12 the one create-once deployment attempt refuses before creating its
+directory: the existing SSH account has an administrator token. The subsequent
+read-only identity inspection at 01:38:59 confirms the exact expected SID,
+session0, `admin=true` and `package_exists=false`. There is no SCP, remote script
+execution, ffprobe, native audio, task creation or settings change. The limited
+token requirement is not relaxed and no unchanged execution is retried. Thus
+no terminal-padding or MKV-PTS conclusion follows; the reviewed package and
+original failures remain available for an actually non-admin foreground run.
+
+The independent SFTP-only metadata archive subsequently succeeds at
+01:47:59-01:48:00: eight existing JSON/JSONL files, 914870 bytes, all frozen
+lengths/hashes matching. No remote shell, audit, ffprobe or PCM transfer is used.
+Local full-interval accounting and independent recomputation establish
+guaranteed client-FIFO-departed prefixes [0,97104) and [0,385056); each final
+Write observes176padding and submits336, leaving at most512possibly queued.
+Original residual counts in those prefixes are respectively2315exact and
+177..689. The replacement's689residuals therefore cannot all be assigned to
+remaining client Stop-tail inventory. This is not DAC presentation, dropped
+audio, a residual explanation or a quality pass. The
+[FIFO-bound receipt](2026-11-05-terminal-client-fifo-bound.md) retains the exact
+scope and original2827/689residual and two-gap failures; recorder PTS stays unknown.
+
+### Streaming Rename Harness Integration
+
+The separately developed S4 streaming harness is imported as twelve frozen
+files on `3c2c094`, with an independent review finding no actionable issue.
+It adds explicit `--exercise --rename-streaming`, actual old/new Pair Starts,
+strict phase-specific PCM, edit while the old Pair pumps, direct old Removed,
+exact raw Windows name and fresh Engine/native identity confirmation. Partial
+Starts, Stop failures and interruption evidence are retained; diagnostic
+completion cannot erase a failed acceptance gate. Legacy `--rename` is not
+replaced or weakened. This is one rename per direction, not the complete
+race/repetition/sibling/default-role matrix.
+
+Fresh imported example tests pass 127, its non-test build and strict Clippy
+pass, and workspace/gpui regression completes at 01:44:35 with 2609 passed,
+10 ignored, 0 failed across 73 harnesses. All-target workspace check/strict
+Clippy with the explicit probe feature and fmt pass. The optional local Linux
+app example check is blocked by missing desktop development libraries, not
+reported as a pass. See the [harness receipt](2026-11-05-s4-streaming-rename-harness.md).
+Neither a native execution nor Windows name/PCM acceptance has occurred.
+
 At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the original
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.

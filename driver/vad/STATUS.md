@@ -43,6 +43,11 @@ all-target tests pass 1259 tests (2 ignored) at 01:20:44; Windows probe tests
 pass 740 (1 ignored), and strict Windows audio Clippy/fmt pass. This is a local
 platform-boundary repair, not exact-head remote CI or native qualification.
 
+The normal follow-up push is `3c2c094`, CI `41878002933`. Its exact-head Ubuntu
+test and strict Clippy (Rust 1.99.1) now pass, as does Windows Clippy. Other jobs
+remain live at the observation; no all-green or native verdict follows. The
+older run becomes terminal cancelled, not retroactively successful.
+
 The [S4 playback-category candidate](../../docs/validation/2026-11-05-s4-virtual-playback-category.md)
 is independently reviewed and imported, with fresh 18-group host/13-group
 portable checks, analyzed WDK build and valid INF. Playback now declares the
@@ -69,6 +74,16 @@ sustained load and calibrated physical p95/p99 acceptance remain incomplete.
 No lower default, VAD/Process winner, physical sub-10-ms pass or device-limited
 impossibility follows from the software integration. The first-packet
 investigation remains deferred.
+
+The [frozen terminal FIFO audit](../../docs/validation/2026-11-05-terminal-client-fifo-bound.md)
+uses only eight hash-matching JSON metadata archives. Actual full-interval
+padding/submission accounting limits each owner's remaining client queue to
+512 frames; at least 177 of the replacement's original 689 residual frames
+already lie in a guaranteed-departed client-FIFO prefix. Thus the entire
+residual cannot be dismissed as client Stop tail. Client departure is not DAC
+presentation, residual totals and both delivery-gap failures remain, and no
+waveform/physical acceptance follows. The planned remote PTS audit refuses an
+administrator SSH token before deployment; its non-admin gate stays intact.
 
 The latest read-only physical-target preflight is 2026-11-05 00:48:44: no owned
 audio app/probe or running Moiren task is present, and protected OBS/QQMusic
