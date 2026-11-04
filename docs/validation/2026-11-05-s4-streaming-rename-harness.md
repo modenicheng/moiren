@@ -116,6 +116,16 @@ does not have the Linux desktop dependencies installed by CI; no source
 workaround, suppression or Linux pass is claimed. Exact-head remote CI remains
 required after publication. No host desktop or native audio is launched.
 
+The parent then installs the same Linux desktop development-package set used
+by CI in the local Debian WSL development environment. The next compile reaches
+an omitted root-logo directory in the isolated source archive; those unchanged
+assets are restored directly from pinned commit `3c2c094`, not synthesized or
+patched. With source/dependency preparation corrected, the Linux example test
+completes successfully: 106 passed, 0 failed. Windows-only tests are not counted
+as portable. Prior dependency/asset failures remain in separate logs, and no
+product source or lint allowance is changed to bypass them. The check uses
+nightly; CI-stable strict Clippy remains separately tracked.
+
 The final transition RED showed that candidate `rename_pending` alone must not
 release a still-running old Pair. The coordinator now calls the same tested
 `Case::observe_transition(runtime, edit)` helper, not a duplicate predicate.

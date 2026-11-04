@@ -67,6 +67,11 @@ passes 2609 tests (10 ignored). The local Linux app check lacks desktop
 development libraries. Native execution and the broader S4 matrix remain
 unverified; software integration does not close naming acceptance.
 
+After installing CI-equivalent Linux development dependencies and restoring
+unchanged pinned root-logo assets omitted from the isolated archive, that
+local example check passes all 106 portable tests. Earlier preparation failures
+remain retained. The streaming harness commit is `15ba9d0`, not native evidence.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,

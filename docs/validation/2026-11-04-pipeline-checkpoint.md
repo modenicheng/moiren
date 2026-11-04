@@ -314,6 +314,18 @@ app example check is blocked by missing desktop development libraries, not
 reported as a pass. See the [harness receipt](2026-11-05-s4-streaming-rename-harness.md).
 Neither a native execution nor Windows name/PCM acceptance has occurred.
 
+The optional local Linux app check subsequently passes 106 tests after the
+CI desktop development packages are installed and the unchanged root-logo
+assets missing from the isolated source archive are restored from `3c2c094`.
+Original environment-preparation failures remain archived. This is a portable
+nightly test result, not a CI-stable lint or native-name pass. The harness is
+committed as `15ba9d0`; its code is unchanged from the reviewed frozen import.
+
+At 01:55 exact `3c2c094` CI has eighteen successful jobs and one live engine-host
+Tree Miri job. It is not timed out or restarted, and the aggregate gate still
+needs its terminal outcome. This does not certify the later `15ba9d0` harness
+source; that next verified source checkpoint needs its own remote run.
+
 At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the original
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.
