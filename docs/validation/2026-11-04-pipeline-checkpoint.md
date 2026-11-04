@@ -476,7 +476,7 @@ The corrected example is then rebuilt from clean `ee25064`, with source/tree,
 length and SHA-256 pinned to an independently verified immutable evidence copy.
 It is not executed or deployed; the earlier shared-target pin stays historical.
 
-### Readiness/Percentile CI Closure And Next Batch
+### Readiness/Percentile CI Closure And Published Batch
 
 The existing exact-head `919d10f` run `41896388334` completes at 03:59 with
 all 20 jobs successful, including Windows/Ubuntu tests and strict Clippy,
@@ -485,7 +485,10 @@ zero; there is no rerun, duplicate dispatch or premature superseding push.
 Final API and watcher receipts are archived. This closes CI for the earlier
 PCM-readiness/strict-percentile source, not for later `0523359` PCM-audit
 persistence or `ee25064` pre-client admission corrections. Those verified local
-slices are ready for the next normal batch push and matching-head CI.
+slices are normally batch-pushed in `fc05652` at 04:00:50. Remote hash and
+PR26 Draft/open are verified, preserving the entire prior body verbatim before
+appending the new checkpoint. Matching-head CI `41902537510` is automatically
+discovered and watched without dispatch/restart; it remains live.
 
 A bounded S3 source/artifact audit finds no new product-code defect or unused
 complete native acceptance package. The original stopped-input combined
@@ -499,6 +502,22 @@ metadata reader's own non-admin requirement is not a blanket desktop blocker.
 Retained Evaluate's actual overlapping event envelopes remain a separate
 refusal, not fixed by desktop accessibility. Fresh 03:58 VM inventory still
 returns zero running VMs.
+
+### Current Desktop Readiness Observation
+
+The [fresh observer receipt](2026-11-05-desktop-readiness.md) uses only path/task
+adaptations of the existing read-only session1 observer, with explicit PS5/PS7
+parse results and transferred script pins. Its one new Limited/Interactive
+45-second task finishes Ready/result0, with no remaining observer process.
+The 330-byte receipt is independently remote/local length/hash-verified.
+Protected OBS/QQMusic creation identities and both script pins remain unchanged.
+No app, audio, input, foreground/window change or driver/device exercise occurs.
+
+The current foreground is the Windows default lock-screen interface on the
+Default input desktop. This is current obstruction evidence, not a WTS lock
+flag or input-consumption result. No unchanged UI trial or capture follows.
+Native desktop acceptance needs an unobstructed interactive target; the
+metadata reader and stopped driver VM remain separate prerequisites.
 
 ## Target Readiness
 
