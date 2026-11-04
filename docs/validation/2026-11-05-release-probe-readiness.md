@@ -77,10 +77,25 @@ driver installation is attempted.
 
 ## CI And Remaining Qualification
 
-The existing `919d10f` CI `41896388334` remains live at this preparation
-checkpoint. Its same retained watcher is reused; no rerun, manual dispatch or
-superseding push is issued. Later local PCM receipt repair `0523359` and this
-release preparation do not borrow an earlier CI result.
+### Later Handoff And CI Closure
+
+The earlier observations above stay historical. Exact `fc05652` subsequently
+passes all20 CI jobs in run `41902537510`. At 04:30:28..04:30:33, the
+[reviewed terminal script/manifest handoff](2026-11-05-terminal-audit-handoff.md)
+creates the exact package and verifies both inert payloads. Placement uses
+the observed admin SSH token but never invokes the guarded reader, ffprobe,
+an original-input read or an alternate-token helper. The unchanged reader
+still needs a legitimate non-admin token for the exact SID. Its foreground
+contract means synchronous observation and permits session0; it does not
+require an unlocked session1 desktop. No token, ACL or execution-policy change
+is made to satisfy that condition. The previously absent package is now staged;
+the metadata audit itself remains unexecuted.
+
+At the original preparation checkpoint, `919d10f` CI `41896388334` is still
+live. Its same retained watcher is reused without rerun, manual dispatch or
+superseding push. Local PCM receipt repair `0523359` and that release
+preparation do not borrow an earlier CI result; the subsequent matching-head
+closure is recorded above.
 
 Full S0-S5 completion remains unproven: matched-route and full-waveform
 correspondence, native period/block sustained quality, ordinary desktop

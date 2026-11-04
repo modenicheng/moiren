@@ -519,6 +519,31 @@ flag or input-consumption result. No unchanged UI trial or capture follows.
 Native desktop acceptance needs an unobstructed interactive target; the
 metadata reader and stopped driver VM remain separate prerequisites.
 
+### PCM/Pre-Client CI Closure And Terminal Reader Handoff
+
+Exact published `fc05652` finishes run `41902537510` with all20 jobs successful;
+the last Miri aggregate completes at 04:22:49 GitHub time converted to +08:00.
+The existing watcher exits0. This certifies the published PCM-audit and
+pre-client repairs, not native or physical acceptance. The later local
+readiness/handoff documents do not change the tested product/probe source.
+
+The [terminal handoff receipt](2026-11-05-terminal-audit-handoff.md) separates
+the already-authorized two-file placement from guarded reader execution. A
+reviewed stage-only wrapper creates the exact fresh remote package once and
+SCP-transfers only the unchanged script and manifest at 04:30:28..04:30:33.
+Both remote lengths/hashes match, exactly two regular files are present, and
+all32 original local package pins still match. Placement records admin=true,
+session0 and the exact SID. It stops without reader/ffprobe invocation, original
+input reads, executable/raw transfer or token/ACL/task/native changes.
+
+The reader still requires an actual exact-SID non-admin token. Its existing
+foreground contract is synchronous execution and explicitly permits session0;
+the desktop lock-screen observation does not independently block metadata
+reading. The old combined deployer is not rerun; its frozen non-admin placement
+guard remains unchanged. No terminal padding/PTS or waveform explanation is
+claimed before the actual guarded audit. The staged files give the permitted
+token a concrete existing command rather than another missing tool.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
