@@ -568,6 +568,17 @@ and124 respectively; current full verification is recorded in that receipt.
 The A -> B -> A mode is still only a proposal awaiting direct design approval,
 not an implemented feature or a native acceptance result.
 
+The scoped repair is normally pushed as `8761d07`; the remote hash and
+PR26 Draft/open state are verified without replacing its previous body.
+Matching-head CI `41915822264` is automatically discovered and observed by
+one watcher. A clean-source optimized example then completes at05:27:39;
+its 7,819,264-byte immutable copy hashes to
+`1BFE06492DB7665EEA54E30EA5E9F9DA34265C6FC09514A7FF0883188B991DD9`.
+The [release record](2026-11-05-release-probe-readiness.md) retains the exact
+source/tree, command, terminal exit0 and independent copy verification.
+It is not executed or deployed. The later artifact documentation stays local
+while that existing CI is live; no superseding push or duplicate run follows.
+
 ## Target Readiness
 
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at

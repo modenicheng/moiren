@@ -95,6 +95,23 @@ final source length/SHA pins match after verification, and the original
 worktree's29 preserved draft/cache pins remain unchanged. Independent final
 read-only review finds no actionable blocker after the peer correction.
 
+### Published Source And Optimized Artifact
+
+The scoped correction is committed and normally pushed as
+`8761d07f33488aed5950b45fd39b1d01a7dda6ed`. Local/remote hashes match and
+PR26 stays Draft/open; its prior body is preserved verbatim with a new
+checkpoint appended. The automatically triggered exact-head run
+`41915822264` is observed by one retained watcher, not manually dispatched
+or restarted. It remains live at this checkpoint.
+
+A subsequent optimized example build starts from that clean source and
+finishes with exit0. The [release record](2026-11-05-release-probe-readiness.md#readiness-wait-error-repair-artifact)
+pins its source/tree, 7,819,264-byte immutable copy and SHA-256. It includes
+the both-route observation correction. It is not executed or deployed; the
+earlier pre-client-only binary remains historical, not the current shared
+Cargo output. These later documentation changes do not alter tested source
+and are not pushed over the live exact-head run.
+
 ## Prior Published CI And Remaining Acceptance
 
 The existing `ae60e9b` run `41907994546` completes all20 jobs successfully.

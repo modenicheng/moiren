@@ -42,10 +42,41 @@ example is rebuilt from clean `ee25064` at 03:52:11. Its 7,806,976 bytes hash to
 The build output is copied and independently length/hash-checked at the
 immutable path
 `D:\coding\moiren-evidence\20261105-s4-idle-admission\vad_integration-ee25064.exe`.
-Use that artifact's receipt for a future corrected-source target run. The
-earlier VAD hash remains historical; it is not the current shared target output.
+That receipt identifies the pre-client repair artifact; the later wait-error
+repair artifact below supersedes it for future current-source target runs. The
+earlier VAD hashes remain historical, not permanent shared-target output pins.
 No executable is run or deployed by this rebuild. The E2E probe's earlier
 source/build receipt is unchanged.
+
+### Readiness-Wait Error Repair Artifact
+
+After the [both-route wait-error correction](2026-11-05-s4-wait-error-retention.md),
+one optimized example build starts from clean source commit
+`8761d07f33488aed5950b45fd39b1d01a7dda6ed`, tree
+`0773842f1ce40d319f363e53b7ce10f2a29121c4`, and finishes at05:27:39
+on2026-11-05 with exit0. Its command is:
+
+```text
+cargo build --locked --release -j 1 --target-dir D:\coding\moiren-evidence\cargo-target-minimal-latency -p moiren-app --features vad-integration-probe --example vad_integration
+```
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `vad_integration-8761d07.exe` | 7819264 | `1BFE06492DB7665EEA54E30EA5E9F9DA34265C6FC09514A7FF0883188B991DD9` |
+
+The create-new evidence copy is
+`D:\coding\moiren-evidence\20261105-s4-wait-errors\route-peers\vad_integration-8761d07.exe`.
+Its length and SHA-256 independently match the built example. The build log,
+terminal result and source/tree/artifact pins are retained alongside it as
+`release-build.log`, `release-build-result.json` and `release-pins.json`.
+The mutable Cargo output now contains this artifact; the earlier immutable
+`ee25064` copy is preserved rather than overwritten or relabelled.
+
+The binary is not executed or deployed. This prepares the corrected acceptance
+harness, not native acceptance or a new driver package. Exact-head CI
+`41915822264` on `8761d07` is still running at this artifact checkpoint; no
+green result from an earlier head is applied to it. The full-pipeline and
+target-token/desktop/VM requirements remain unchanged.
 
 ## Fresh Read-Only Target Check
 
