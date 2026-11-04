@@ -717,6 +717,10 @@ mod snapshot_publish_tests {
     #[cfg(windows)]
     #[test]
     fn native_telemetry_and_trace_refusals_remain_visible_with_idle_dedup() {
+        use moiren_windows_audio::virtual_owner::{
+            VirtualCallbackOutcome, VirtualCallbackSample, VirtualCallbackSnapshot,
+        };
+
         let initial = snapshot(&ServiceContext::default());
         let mut previous = initial.clone();
         previous.native_observations = Some(NativeSessionObservations {
@@ -730,9 +734,84 @@ mod snapshot_publish_tests {
                 render_padding: Vec::new(),
                 process_delivery: Vec::new(),
                 virtual_clock: None,
+                virtual_callback: None,
             },
         });
         assert_published_change(initial.clone(), previous.clone());
+
+        let mut context = running_context();
+        context.native_observations = previous.native_observations.clone();
+        let before_callback = snapshot(&context);
+        context
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .virtual_callback = Some(VirtualCallbackSnapshot::default());
+        let mut enabled = snapshot(&context);
+        // A quantized clock tick must not mask callback-only dedup regressions.
+        enabled.elapsed = before_callback.elapsed;
+        assert_published_change(before_callback, enabled.clone());
+
+        // Only callback evidence changes: an in-flight attempt must remain
+        // visible without inventing completion clocks or physical timing.
+        context
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .virtual_callback = Some(VirtualCallbackSnapshot {
+            attempts: 1,
+            latest: Some(VirtualCallbackSample {
+                attempt_sequence: 1,
+                epoch_before: 1,
+                frame_before: 256,
+                epoch_after: None,
+                frame_after: None,
+                requested_frames: 1280,
+                outcome: VirtualCallbackOutcome::Unfinished,
+                qpc_before_100ns: None,
+                qpc_after_100ns: None,
+                duration_100ns: None,
+            }),
+            ..VirtualCallbackSnapshot::default()
+        });
+        let mut unfinished = snapshot(&context);
+        unfinished.elapsed = enabled.elapsed;
+        assert_published_change(enabled, unfinished.clone());
+
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        mailbox.publish(unfinished);
+        let published = handle.try_snapshot().unwrap();
+        let json =
+            serde_json::to_value(&published.native_observations.as_ref().unwrap().observation)
+                .unwrap();
+        assert_eq!(
+            json["virtual_callback"],
+            serde_json::json!({
+                "attempts": 1,
+                "completed": 0,
+                "errors": 0,
+                "valid_timings": 0,
+                "missing_clocks": 0,
+                "regressed_clocks": 0,
+                "max_duration_100ns": null,
+                "saturated": false,
+                "latest": {
+                    "attempt_sequence": 1,
+                    "epoch_before": 1,
+                    "frame_before": 256,
+                    "epoch_after": null,
+                    "frame_after": null,
+                    "requested_frames": 1280,
+                    "outcome": "unfinished",
+                    "qpc_before_100ns": null,
+                    "qpc_after_100ns": null,
+                    "duration_100ns": null,
+                },
+            })
+        );
+
         let mut changed = previous.clone();
         changed
             .native_observations

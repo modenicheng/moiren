@@ -29,6 +29,7 @@ fn boundary_snapshot(target_frames: Option<u32>) -> AppSnapshot {
         generation: SessionGeneration(8),
         observation: NativeObservationSnapshot {
             virtual_clock: None,
+            virtual_callback: None,
             process_delivery: Vec::new(),
             render_padding: Vec::new(),
             owner_generation: 3,

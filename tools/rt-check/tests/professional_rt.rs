@@ -44,6 +44,9 @@ pub(crate) mod bounded_history;
 #[path = "../../../crates/moiren-windows-audio/src/bridge.rs"]
 #[allow(dead_code)]
 mod bridge;
+#[path = "../../../crates/moiren-windows-audio/src/virtual_owner/callback_timing.rs"]
+#[allow(dead_code)]
+mod callback_timing;
 #[path = "../../../crates/moiren-windows-audio/src/clock_bridge.rs"]
 #[allow(dead_code)]
 mod clock_bridge;
@@ -57,7 +60,10 @@ pub(crate) mod interpolation_history;
 #[allow(dead_code)]
 mod virtual_clock_observation;
 mod virtual_owner {
-    // Keep private publication inside this harness, just like its owner shadow.
+    // Keep callback types paired with the clock-observation shadow.
+    pub use super::callback_timing::{
+        VirtualCallbackOutcome, VirtualCallbackSample, VirtualCallbackSnapshot,
+    };
     pub use super::virtual_clock_observation::{
         VirtualClockCounters, VirtualClockProbe, VirtualClockSnapshot,
     };

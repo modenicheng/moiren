@@ -588,6 +588,7 @@ fn native_timing_projection_hides_stopped_and_stale_owner_observations() {
         generation: SessionGeneration(8),
         observation: NativeObservationSnapshot {
             virtual_clock: None,
+            virtual_callback: None,
             process_delivery: Vec::new(),
             render_padding: Vec::new(),
             owner_generation: 3,

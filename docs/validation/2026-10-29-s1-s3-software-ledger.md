@@ -2508,3 +2508,52 @@ Original S2/S3 read-only audits find no additional production code blocker.
 Retained/live-window native acceptance and original qualification remain open,
 without blocking independent development or reopening the deferred first packet.
 No default, quality gate, production code, preserved dirty pin or push changes.
+
+### Frozen Waveform And Exact Native Timeline Coordinates
+
+One [closed-run association](2026-11-03-timeline-frozen-waveform.md) evaluates the
+new002aa21timeline acquisition without another audio run. Independent frozen
+owner fits retain the full1071104-frame OBS denominator and48000unknown native
+frames per owner. Baseline2827residual/46789compatible and replacement689residual/
+336879compatible remain explicit. Neither fit nor a successful PCM release
+establishes continuous playback, a causal defect or physical latency. Original
+2Process gap violations remain unchanged; the warning-bearing figure is inspected.
+
+The evidence-only locator preserves those fits/ledgers and maps first residuals
+to same-owner packet14/event28/offset130 and packet1145/event2290/offset319.
+Both releases succeed; these coordinates do not explain the disagreement. A
+PS5 OrderedDictionary byte-sum packaging failure leaves the original task result1
+despite analysis exit0. A distinct packaging-only closure exits0 without rerunning
+the locator, preserving257input and3software pins. Its104683-byte ZIP/ninepayloads
+are verified; raw audio remains remote. The final read-only audit exits0, verifying
+1446pin references across302unique files with no native/analysis owners or running
+tasks. User OBS/QQMusic identities, settings, driver and boot remain unchanged.
+The original task1, analysis0 and separate packaging0 are preserved, not collapsed
+into a false all-green task result.
+
+### Pure-Virtual Callback Timing Integration
+
+The [callback increment](2026-11-03-virtual-callback-timing.md) addresses original
+S1's missing pure-virtual Engine service-time observation, not another stability
+retry. Default-off prepared timing uses a separate QPC clock, fixed latest/cumulative
+atomics and the existing owner-local probe; pacing clocks, queues and defaults
+stay unchanged. Unfinished panics, errors, unavailable/regressed clocks and
+saturation remain explicit, and retained observations cannot adopt a replacement.
+Both app precision factories opt in through existing explicit native evidence.
+
+Corrected behavioral RED is preserved. Main callback selection passes25/1ignored,
+including both-precision owner/error/disabled/invalid-clock cases, no-heap guards,
+portable publication/saturation and retained projection. App snapshot checks pass5.
+Actual backend acceptance passes both precisions with enabled and real default-off
+timing, fake devices and retained final Engine coordinates after join. The
+shadow-clock integration dependency is repaired after its explicit failed build.
+Clean24-overlay integration is now closed:2476workspace tests with10ignored,
+260independent RT tests with0ignored, strict workspace/RT Clippy, both fmt checks
+and ordinary release all exit0. The release finishes2026-11-03at19:23:33.
+The2026-11-04readback verifies all24current code pins and the original receipts;
+the callback receipt records the separate root/RT overlay identities and
+verified aggregate. Read-only final review reports no blocking finding.
+All27preexisting dirty/cache hashes match before integration. Native
+tests remain remote-only; the deferred first packet and unavailable physical
+hardware do not block this independent product work. No original S1-S3 completion,
+lower default, physical qualification or push is implied.

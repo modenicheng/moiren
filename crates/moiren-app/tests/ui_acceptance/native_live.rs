@@ -109,6 +109,7 @@ fn live_snapshot(mut snapshot: AppSnapshot) -> AppSnapshot {
         generation: SessionGeneration(8),
         observation: NativeObservationSnapshot {
             virtual_clock: None,
+            virtual_callback: None,
             process_delivery: Vec::new(),
             owner_generation: 3,
             running: true,

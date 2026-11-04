@@ -196,6 +196,7 @@ fn joined_fixture() -> (MonitorReport, crate::service::SessionCleanupObservation
         render_padding: Vec::new(),
         process_delivery: Vec::new(),
         virtual_clock: None,
+        virtual_callback: None,
     };
     let mut graph = LogicalGraph::default();
     let node = graph.create_node(NodeKind::Sink, 2).unwrap();
@@ -491,6 +492,7 @@ impl ServiceDriver for MeasuredDriver {
                 generation: c.core.generation(),
                 observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot {
                     virtual_clock: None,
+                    virtual_callback: None,
                     owner_generation: 1,
                     running: true,
                     streams: Vec::new(),

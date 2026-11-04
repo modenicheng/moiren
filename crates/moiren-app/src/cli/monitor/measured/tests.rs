@@ -60,6 +60,7 @@ fn fixture() -> (AppSnapshot, MonitorReport, MeasuredProcessRequest) {
         generation: snapshot.generation,
         observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot {
             virtual_clock: None,
+            virtual_callback: None,
             owner_generation: 1,
             running: true,
             streams: Vec::new(),

@@ -343,6 +343,8 @@ impl ManagedDriver {
     }
 
     /// Opt-in evidence for the monitor's exact owners, including replacements.
+    /// Render evidence also times pure-virtual Engine callbacks, which have no
+    /// physical render stream to supply native operation envelopes.
     #[cfg(windows)]
     pub fn windows_with_native_evidence(
         process_pcm: Option<moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig>,
@@ -406,6 +408,7 @@ impl ManagedDriver {
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f32>::new()?
                 .with_render_queue(transport.render_options())?
                 .with_render_evidence(render_evidence)?
+                .with_virtual_callback_timing(render_evidence.is_some())
                 .with_process_bridge(transport.process_options())?
                 .with_process_pcm_capture(process_pcm_frames.map(|capacity_frames| {
                     moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {
@@ -437,6 +440,7 @@ impl ManagedDriver {
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f64>::new()?
                 .with_render_queue(transport.render_options())?
                 .with_render_evidence(render_evidence)?
+                .with_virtual_callback_timing(render_evidence.is_some())
                 .with_process_bridge(transport.process_options())?
                 .with_process_pcm_capture(process_pcm_frames.map(|capacity_frames| {
                     moiren_windows_audio::clock_bridge::native_pcm::NativePcmConfig {

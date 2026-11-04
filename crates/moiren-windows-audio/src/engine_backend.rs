@@ -72,6 +72,7 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     render_queue: RenderQueuePolicy,
     latency_budget: LatencyBudgetPolicy,
     telemetry: TelemetryMode,
+    virtual_callback_timing: bool,
     marker: PhantomData<S>,
 }
 impl<S: ProcessingSample> ProfessionalBackend<S> {
@@ -90,6 +91,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             render_queue: RenderQueuePolicy::default(),
             latency_budget: LatencyBudgetPolicy::default(),
             telemetry: TelemetryMode::Summary,
+            virtual_callback_timing: false,
             marker: PhantomData,
         })
     }
@@ -111,6 +113,11 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
     }
     pub fn native_observations(&self) -> NativeObservations {
         self.native_observations.clone()
+    }
+    /// Pure-virtual Engine callback service time, not a saved latency setting.
+    pub fn with_virtual_callback_timing(mut self, enabled: bool) -> Self {
+        self.virtual_callback_timing = enabled;
+        self
     }
     /// Enable virtual resource preparation without changing physical settings.
     pub fn with_virtual_provider(mut self, provider: Arc<dyn VirtualBoundaryProvider>) -> Self {
@@ -930,11 +937,14 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             // The retired transport keeps publishing and fencing the stream
             // observations even when it owns no worker or auxiliary, so
             // virtual-only projects stay visible in the diagnostics snapshot.
-            let clock_probe = Arc::new(crate::virtual_owner::VirtualClockProbe::new(
-                rate,
-                block_demand,
-                recovery_cap_periods,
-            ));
+            let clock_probe = Arc::new(
+                crate::virtual_owner::VirtualClockProbe::new(
+                    rate,
+                    block_demand,
+                    recovery_cap_periods,
+                )
+                .with_callback_timing(self.virtual_callback_timing),
+            );
             transport.virtual_clock = Some(clock_probe.clone());
             virtual_sessions.push(transport.into_follower(cancel.clone())?);
             let stop = crate::StopSignal::new().map_err(unsupported)?;
@@ -954,6 +964,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                         clock,
                     )
                     .with_recovery_cap(recovery_cap_periods)?
+                    .with_callback_timing(self.virtual_callback_timing)
                     .with_clock_probe(clock_probe),
                 )),
             });

@@ -8,6 +8,7 @@ use moiren_engine::{
 };
 
 mod burst;
+mod callback_timing;
 
 struct FakeClock {
     now: u64,

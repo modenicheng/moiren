@@ -31,6 +31,7 @@ pub struct VirtualClockSnapshot {
 /// One owner writes fixed atomic scalars; control readers never retry or spin.
 /// A retained Arc belongs to that owner even after the registry is replaced.
 pub struct VirtualClockProbe {
+    callback: Option<super::callback_timing::VirtualCallbackProbe>,
     engine_sample_rate: u32,
     engine_block_frames: u32,
     recovery_cap_periods: u64,
@@ -42,12 +43,29 @@ impl VirtualClockProbe {
     #[cfg(any(windows, test))]
     pub(crate) fn new(rate: u32, block: u32, cap: u64) -> Self {
         Self {
+            callback: None,
             engine_sample_rate: rate,
             engine_block_frames: block,
             recovery_cap_periods: cap,
             sequence: AtomicU64::new(0),
             fields: std::array::from_fn(|_| AtomicU64::new(0)),
         }
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn with_callback_timing(mut self, enabled: bool) -> Self {
+        self.callback = enabled.then(super::callback_timing::VirtualCallbackProbe::new);
+        self
+    }
+
+    /// Same immutable owner as this clock probe; no retry on concurrent publication.
+    pub fn callback_snapshot(&self) -> Option<super::callback_timing::VirtualCallbackSnapshot> {
+        self.callback.as_ref().and_then(|probe| probe.snapshot())
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn callback_probe(&self) -> Option<&super::callback_timing::VirtualCallbackProbe> {
+        self.callback.as_ref()
     }
 
     #[cfg(windows)]

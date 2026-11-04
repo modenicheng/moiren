@@ -58,6 +58,7 @@ fn observation_batching_never_retains_a_previous_native_owner() {
             render_padding: Vec::new(),
             process_delivery: Vec::new(),
             virtual_clock: None,
+            virtual_callback: None,
         },
     };
     rig.driver.poll_observations(&mut rig.c, &state, generation);

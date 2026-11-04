@@ -598,6 +598,91 @@ fn virtual_owner_runs_f64_mono_and_stereo_at_all_professional_rates() {
     virtual_matrix::<f64>();
 }
 
+fn virtual_callback_backend_projection<S: ProcessingSample>() {
+    for enabled in [false, true] {
+        let project = virtual_project(2, 48_000);
+        let probe = Arc::new(Probe::default());
+        let native = native_devices(Default::default());
+        let backend = backend::<S>(&probe);
+        // Leave the disabled case at its real constructor default.
+        let backend = if enabled {
+            backend.with_virtual_callback_timing(true)
+        } else {
+            backend
+        };
+        let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+        let (host, _rt) = bus.create_host(8).unwrap();
+        let cancel = CancellationToken::default();
+        let prepared = backend
+            .prepare_with_native(request(&project, &host), &cancel, &native)
+            .unwrap();
+        let observations = backend.native_observations();
+        // Preparation does not publish a live owner. Retain only after the
+        // existing activation path publishes this exact prepared probe.
+        assert!(observations.retain_session().is_none());
+        assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
+        assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+
+        let owner = attach(&project, prepared, cancel);
+        owner.activate().unwrap();
+        let retained = observations.retain_session().unwrap();
+        assert_eq!(retained.snapshot().owner_generation, 7);
+        wait_until(|| {
+            owner
+                .timeline()
+                .is_some_and(|timeline| timeline.frame >= 512)
+        });
+        owner.cancel();
+        let returned = owner.stop_and_join();
+        assert_eq!(returned.error, None);
+        assert!(returned.engine.timeline() >= 512);
+        assert!(observations.snapshot().is_none());
+        assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+        assert_sessions_joined(&probe, 2);
+
+        // Join makes the final publication stable; no retry or timing guess is
+        // needed to compare the prepared probe with the returned real Engine.
+        let final_snapshot = retained.snapshot();
+        assert_eq!(final_snapshot.owner_generation, 7);
+        assert!(!final_snapshot.running);
+        let clock = final_snapshot.virtual_clock.unwrap();
+        assert!(clock.counters.rendered_frames >= 512);
+        assert_eq!(clock.counters.rendered_frames, returned.engine.timeline());
+        if enabled {
+            let callback = final_snapshot.virtual_callback.unwrap();
+            assert_eq!(callback.attempts, clock.counters.rendered_periods);
+            assert_eq!(callback.completed, callback.attempts);
+            assert_eq!(callback.errors, 0);
+            assert!(!callback.saturated);
+            let latest = callback.latest.unwrap();
+            assert_eq!(latest.attempt_sequence, callback.attempts);
+            assert_eq!(
+                latest.outcome,
+                crate::virtual_owner::VirtualCallbackOutcome::Success
+            );
+            assert_eq!(latest.epoch_before, returned.engine.epoch());
+            assert_eq!(latest.epoch_after, Some(returned.engine.epoch()));
+            assert_eq!(latest.frame_after, Some(returned.engine.timeline()));
+            assert_eq!(
+                latest.requested_frames,
+                project.processing.engine.max_block_frames as u64
+            );
+            assert_eq!(
+                latest.frame_before + latest.requested_frames,
+                latest.frame_after.unwrap()
+            );
+        } else {
+            assert!(final_snapshot.virtual_callback.is_none());
+        }
+    }
+}
+
+#[test]
+fn virtual_callback_backend_opt_in_reaches_the_prepared_retained_owner_in_both_precisions() {
+    virtual_callback_backend_projection::<f32>();
+    virtual_callback_backend_projection::<f64>();
+}
+
 #[test]
 fn virtual_intent_without_provider_never_opens_native_devices_or_clock() {
     let mut project = virtual_project(2, 48_000);

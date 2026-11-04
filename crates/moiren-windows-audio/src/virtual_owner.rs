@@ -12,6 +12,7 @@ pub enum ProjectClock {
 
 mod boundary;
 mod budget;
+mod callback_timing;
 mod clock;
 mod clock_observation;
 mod provider;
@@ -23,6 +24,7 @@ pub use boundary::{
     PlaybackBoundaryEvents, SRC_HISTORY_CAPACITY, VirtualMicrophoneSink, VirtualPlaybackSource,
 };
 pub use budget::{PreparedVirtualBudget, VirtualBufferOptions};
+pub use callback_timing::{VirtualCallbackOutcome, VirtualCallbackSample, VirtualCallbackSnapshot};
 #[allow(unused_imports)]
 pub use clock::{ClockError, ClockSchedule, ClockTick, DEBT_CAP_PERIODS};
 pub use clock_observation::{VirtualClockCounters, VirtualClockProbe, VirtualClockSnapshot};

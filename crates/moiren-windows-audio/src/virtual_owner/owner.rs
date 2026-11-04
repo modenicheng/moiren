@@ -41,6 +41,7 @@ pub struct VirtualPreparedTransport {
     clock: Option<Box<dyn VirtualRealtimeClock>>,
     recovery_cap_periods: u64,
     clock_probe: Option<Arc<VirtualClockProbe>>,
+    callback_timing: bool,
 }
 
 impl VirtualPreparedTransport {
@@ -60,6 +61,7 @@ impl VirtualPreparedTransport {
             clock: Some(clock),
             recovery_cap_periods: super::DEBT_CAP_PERIODS,
             clock_probe: None,
+            callback_timing: false,
         }
     }
 
@@ -81,6 +83,12 @@ impl VirtualPreparedTransport {
 
     pub(crate) fn with_clock_probe(mut self, probe: Arc<VirtualClockProbe>) -> Self {
         self.clock_probe = Some(probe);
+        self
+    }
+
+    /// Diagnostic opt-in only; independent QPC preparation stays on control.
+    pub fn with_callback_timing(mut self, enabled: bool) -> Self {
+        self.callback_timing = enabled;
         self
     }
 }
@@ -221,11 +229,14 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
             return Err(Box::new(AttachFailure { engine, error }));
         }
         let clock_probe = self.clock_probe.take().unwrap_or_else(|| {
-            Arc::new(VirtualClockProbe::new(
-                engine.config().processing_sr as u32,
-                engine.config().max_block_frames as u32,
-                self.recovery_cap_periods,
-            ))
+            Arc::new(
+                VirtualClockProbe::new(
+                    engine.config().processing_sr as u32,
+                    engine.config().max_block_frames as u32,
+                    self.recovery_cap_periods,
+                )
+                .with_callback_timing(self.callback_timing),
+            )
         });
         let published = Arc::new(Published::new(&engine));
         // This slot is used only for the one startup handoff. It keeps the
@@ -364,6 +375,31 @@ fn run_with_recovery_cap<S: ProcessingSample>(
     recovery_cap_periods: u64,
     clock_probe: &VirtualClockProbe,
 ) -> Result<(), BackendError> {
+    run_with_callback_clock(
+        engine,
+        clock,
+        published,
+        timeline_resets,
+        stop,
+        clock_trace,
+        recovery_cap_periods,
+        clock_probe,
+        &mut || clock_probe.callback_probe().and_then(|probe| probe.now()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_with_callback_clock<S: ProcessingSample>(
+    engine: &mut Engine<S>,
+    clock: &mut dyn VirtualRealtimeClock,
+    published: &Published,
+    timeline_resets: &[Arc<AtomicU64>],
+    stop: &StopSignal,
+    clock_trace: &mut ClockTrace,
+    recovery_cap_periods: u64,
+    clock_probe: &VirtualClockProbe,
+    callback_now: &mut impl FnMut() -> Option<u64>,
+) -> Result<(), BackendError> {
     let origin = clock.now_ticks()?;
     let frequency = clock.frequency();
     clock_trace.start(origin, frequency);
@@ -378,6 +414,7 @@ fn run_with_recovery_cap<S: ProcessingSample>(
     .map_err(|error| BackendError::Failed(error.to_string()))?;
     published.state.store(1, Ordering::Release);
     let mut clock_counters = VirtualClockCounters::default();
+    let mut callback_timing = super::callback_timing::CallbackTiming::default();
     clock_probe.publish(clock_counters);
     let mut clamped_streak = 0_u32;
     let mut burst_open = false;
@@ -444,7 +481,8 @@ fn run_with_recovery_cap<S: ProcessingSample>(
         // Exactly one Engine executes one bounded block per due wake, repaying
         // at most the capped backlog. External microphone client counts are
         // deliberately absent from this decision.
-        let rendered = engine.render(tick.frames);
+        let callback = clock_probe.callback_probe();
+        let rendered = callback_timing.render(engine, tick.frames, callback, callback_now);
         if rendered.is_ok() {
             clock_counters.rendered(tick.frames);
         }

@@ -102,6 +102,9 @@ pub struct NativeObservationSnapshot {
     /// Only the pure-virtual owner publishes a clock. None is unknown/unstarted
     /// for that route and inapplicable for a physical render master.
     pub virtual_clock: Option<crate::virtual_owner::VirtualClockSnapshot>,
+    /// Optional service-time evidence from this exact pure-virtual owner probe.
+    /// None means disabled, unstarted, contention or exhausted publication.
+    pub virtual_callback: Option<crate::virtual_owner::VirtualCallbackSnapshot>,
 }
 
 /// Service boundary events belonging to this exact source and transport owner.
@@ -394,6 +397,10 @@ impl NativeObservationReadHandle {
                 })
                 .collect(),
             boundary_probes,
+            virtual_callback: session
+                .virtual_clock
+                .as_ref()
+                .and_then(|probe| probe.callback_snapshot()),
             virtual_clock: session
                 .virtual_clock
                 .as_ref()
@@ -713,6 +720,131 @@ mod tests {
         let current = observations.snapshot().unwrap();
         assert_eq!(current.owner_generation, 2);
         assert_eq!(current.virtual_clock.unwrap().counters.clamped_frames, 0);
+    }
+
+    #[test]
+    fn retained_virtual_callback_projection_stays_with_its_retired_owner() {
+        use crate::virtual_owner::{
+            VirtualCallbackOutcome, VirtualCallbackSample, VirtualCallbackSnapshot,
+            VirtualClockProbe,
+        };
+
+        fn publish_owner(
+            observations: &NativeObservations,
+            generation: u64,
+            clock: &Arc<VirtualClockProbe>,
+        ) {
+            observations.publish_with_clock(
+                generation,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                Some(clock.clone()),
+            );
+            observations.running(generation);
+        }
+
+        // Inject only scalar publication: actual Engine/owner behavior is tested
+        // separately. This regression covers the retained projection's identity.
+        let observations = NativeObservations::default();
+        let old_clock = Arc::new(VirtualClockProbe::new(48_000, 8, 1).with_callback_timing(true));
+        publish_owner(&observations, 1, &old_clock);
+        let old = observations.retain_session().unwrap();
+        assert!(old.snapshot().virtual_callback.is_none());
+        let initial = VirtualCallbackSnapshot {
+            attempts: 1,
+            completed: 1,
+            valid_timings: 1,
+            max_duration_100ns: Some(10),
+            latest: Some(VirtualCallbackSample {
+                attempt_sequence: 1,
+                epoch_before: 3,
+                frame_before: 0,
+                epoch_after: Some(3),
+                frame_after: Some(8),
+                requested_frames: 8,
+                outcome: VirtualCallbackOutcome::Success,
+                qpc_before_100ns: Some(100),
+                qpc_after_100ns: Some(110),
+                duration_100ns: Some(10),
+            }),
+            ..Default::default()
+        };
+        old_clock
+            .callback_probe()
+            .unwrap()
+            .publish_for_test(initial);
+        assert_eq!(old.snapshot().virtual_callback, Some(initial));
+
+        observations.clear(1);
+        assert!(observations.snapshot().is_none());
+        assert!(!old.snapshot().running);
+        assert_eq!(old.snapshot().virtual_callback, Some(initial));
+        let replacement =
+            Arc::new(VirtualClockProbe::new(48_000, 128, 8).with_callback_timing(true));
+        publish_owner(&observations, 2, &replacement);
+        let current = observations.retain_session().unwrap();
+        assert!(current.snapshot().virtual_callback.is_none());
+        let replacement_value = VirtualCallbackSnapshot {
+            attempts: 1,
+            completed: 1,
+            missing_clocks: 1,
+            latest: Some(VirtualCallbackSample {
+                epoch_before: 9,
+                epoch_after: Some(9),
+                frame_after: Some(128),
+                requested_frames: 128,
+                qpc_before_100ns: None,
+                qpc_after_100ns: None,
+                duration_100ns: None,
+                ..initial.latest.unwrap()
+            }),
+            ..Default::default()
+        };
+        replacement
+            .callback_probe()
+            .unwrap()
+            .publish_for_test(replacement_value);
+        let trailing = VirtualCallbackSnapshot {
+            attempts: 2,
+            completed: 2,
+            valid_timings: 2,
+            max_duration_100ns: Some(30),
+            latest: Some(VirtualCallbackSample {
+                attempt_sequence: 2,
+                frame_before: 8,
+                frame_after: Some(16),
+                qpc_before_100ns: Some(120),
+                qpc_after_100ns: Some(150),
+                duration_100ns: Some(30),
+                ..initial.latest.unwrap()
+            }),
+            ..Default::default()
+        };
+        old_clock
+            .callback_probe()
+            .unwrap()
+            .publish_for_test(trailing);
+        observations.clear(1);
+        observations.running(1);
+        let old_snapshot = old.snapshot();
+        assert_eq!(old_snapshot.owner_generation, 1);
+        assert!(!old_snapshot.running);
+        assert_eq!(old_snapshot.virtual_callback, Some(trailing));
+        let current_snapshot = observations.snapshot().unwrap();
+        assert_eq!(current_snapshot.owner_generation, 2);
+        assert!(current_snapshot.running);
+        assert_eq!(current_snapshot.virtual_callback, Some(replacement_value));
+
+        observations.clear(2);
+        drop(old_clock);
+        drop(replacement);
+        drop(observations);
+        assert!(!current.snapshot().running);
+        assert_eq!(current.snapshot().virtual_callback, Some(replacement_value));
+        assert_eq!(old.snapshot().virtual_callback, Some(trailing));
     }
 
     #[test]

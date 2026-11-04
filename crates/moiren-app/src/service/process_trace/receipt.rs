@@ -448,6 +448,7 @@ mod tests {
                     render_padding: vec![],
                     process_delivery: vec![observation],
                     virtual_clock: None,
+                    virtual_callback: None,
                 }),
                 backend: None,
             })),
