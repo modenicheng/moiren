@@ -354,6 +354,14 @@ At 2026-11-05 00:01:56 all 29 non-callback dirty/cache file hashes in the origin
 latency worktree still match the initial snapshot. The independent integration
 worktree does not absorb or discard those drafts.
 
+At 02:32:42 the published streaming/FIFO head `303e481` completes its own CI
+`41883280004` with all twenty jobs successful. Windows/Ubuntu tests and strict
+Clippy, driver host suites and all Stacked/Tree Miri suites and aggregate pass.
+The exact-head final receipt is retained in
+`20261105-s4-error-latching/ci-41883280004-final.json`. This closes that source's
+software CI requirement, not the subsequent error-latching correction or any
+native/name/physical gate. PR26 remains Draft/open and split-before-merge.
+
 ### Explicit Runtime-Error Acceptance Repair
 
 An independent source audit identifies two false-success paths in the probe:
@@ -367,6 +375,10 @@ Windows all-target and Linux example Clippy, workspace check, non-test build,
 fmt and the existing application shutdown-timeout regression pass. The
 [failure-first receipt](2026-11-05-s4-sticky-runtime-errors.md) preserves the
 original RED, corrected lint invocation and unchanged qualification limits.
+Fresh full workspace/headless verification with both `gpui-test` and
+`vad-integration-probe` on committed `8995d84` completes at 02:34:21: 2623 passed,
+10 ignored, zero failed across 73 harnesses. The differing feature set is
+recorded; this total is not presented as a delta from earlier gpui-only totals.
 No native or broader S4 acceptance is claimed.
 
 ## Target Readiness

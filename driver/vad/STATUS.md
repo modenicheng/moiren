@@ -85,6 +85,12 @@ Clippy/check/build and the application shutdown-timeout regression pass.
 Error-free Removing remains distinct from final PDO absence. This is a
 fail-closed harness correction, not native validation or a driver audio fix.
 
+At 02:32:42 exact published streaming/FIFO head `303e481` completes CI
+`41883280004` with all 20 jobs successful, including Windows/Ubuntu tests,
+strict Clippy, driver host and all Miri suites/aggregate. The later
+explicit-error repair still requires its own published-head CI. Neither
+software result changes the native qualification verdict.
+
 Portable checks do not alter native qualification: genuine `0x8007051A`,
 epoch/rebase and waveform-continuity evidence remains open. Ordinary desktop
 retained Stop/Evaluate/Apply, Windows-observed naming and lifecycle cases,

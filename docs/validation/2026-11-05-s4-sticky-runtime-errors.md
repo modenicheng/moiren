@@ -53,6 +53,7 @@ failures. After the correction it executes 130 passing tests, zero failures.
 | Windows workspace all-target check with probe feature | Exit 0 |
 | Non-test Windows example build | Exit 0; binary pin in build receipt |
 | Existing application shutdown-timeout regression | One passed, zero failed |
+| Workspace with `gpui-test,vad-integration-probe` on `8995d84` | 2623 passed, 10 ignored, zero failed, 73 harnesses; completed 02:34:21 |
 | Workspace fmt and diff whitespace checks | Exit 0 |
 
 The Linux run uses a complete `git archive 361d177` plus the three exact files
