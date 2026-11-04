@@ -96,10 +96,19 @@ def reject_constant(value):
     raise Refusal("nonfinite JSON token: " + value)
 
 
+def finite_float(value):
+    parsed = float(value)
+    require(math.isfinite(parsed), "nonfinite JSON number: " + value[:128])
+    return parsed
+
+
 def decode_json(data):
     return check_object(
         json.loads(
-            data, object_pairs_hook=no_duplicates, parse_constant=reject_constant
+            data,
+            object_pairs_hook=no_duplicates,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
         )
     )
 
@@ -239,11 +248,23 @@ class Arrays:
         return value
 
     def finish(self):
-        for value in self.maps.values():
+        # Release every mapping even if one derived output cannot be flushed.
+        # Detach first so a refusal path cannot retry failed persistence later.
+        maps, self.maps = self.maps, {}
+        errors = []
+        for name, value in maps.items():
             if isinstance(value, np.memmap):
-                value.flush()
-                value._mmap.close()
-        self.maps.clear()
+                try:
+                    value.flush()
+                except (OSError, ValueError) as error:
+                    errors.append(name + " flush: " + str(error))
+                finally:
+                    try:
+                        value._mmap.close()
+                    except (OSError, ValueError) as error:
+                        errors.append(name + " close: " + str(error))
+        if errors:
+            raise OSError("array persistence failed: " + "; ".join(errors)[:1024])
 
 
 def validate_receipts(owner, input_bytes, chunk_count):
@@ -833,6 +854,12 @@ def audit_owner(
             except (OSError, ValueError, ImportError) as error:
                 report["status"] = "refused"
                 report["refusals"].append("visualization failed: " + str(error)[:1024])
+        try:
+            arrays.finish()
+        except (OSError, ValueError) as error:
+            report["status"] = "refused"
+            report["refusals"].append(str(error)[:1024])
+            report["replay"]["partial_outputs_untrusted"] = True
         write_report(output / "summary.json", report)
         return report
     finally:

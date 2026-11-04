@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -861,6 +862,124 @@ class NativePcmTests(unittest.TestCase):
             self.root / "audit",
             make_plot=False,
         )
+
+    def test_array_flush_failure_closes_all_maps_before_publishing_a_refusal(self):
+        owner = fixture(self.root / "owner")
+        output = self.root / "audit"
+        original_flush = MODULE.np.memmap.flush
+        original_create = MODULE.Arrays.create
+        original_read = MODULE.Arrays.read
+        maps = []
+
+        def close_test_maps():
+            for value in maps:
+                if not value._mmap.closed:
+                    value._mmap.close()
+
+        self.addCleanup(close_test_maps)
+
+        def track(original):
+            def call(arrays, *args, **kwargs):
+                value = original(arrays, *args, **kwargs)
+                if isinstance(value, MODULE.np.memmap):
+                    maps.append(value)
+                return value
+
+            return call
+
+        def flush(value):
+            if Path(value.filename).name == "reconstructed-valid.u8":
+                raise OSError("synthetic output flush failure")
+            return original_flush(value)
+
+        with (
+            patch.object(MODULE.Arrays, "create", track(original_create)),
+            patch.object(MODULE.Arrays, "read", track(original_read)),
+            patch.object(MODULE.np.memmap, "flush", flush),
+        ):
+            code = MODULE.main(
+                [
+                    "--archive-directory",
+                    str(owner),
+                    "--output-directory",
+                    str(output),
+                    "--no-plot",
+                ]
+            )
+        self.assertEqual(code, 2)
+        result = json.loads((output / "summary.json").read_text())
+        self.assertEqual(result["status"], "refused")
+        self.assertTrue(result["replay"]["partial_outputs_untrusted"])
+        self.assertTrue(
+            any("synthetic output flush failure" in reason for reason in result["refusals"])
+        )
+        self.assertFalse(result["qualified"])
+        self.assertIsNone(result["physical_latency_ms"])
+        self.assertTrue(maps)
+        self.assertTrue(all(value._mmap.closed for value in maps))
+
+    def test_overflowed_json_number_preserves_a_valid_refusal_receipt(self):
+        owner = fixture(self.root / "owner")
+        for name in ("origin.json", "final.json"):
+            path = owner / name
+            path.write_text(
+                path.read_text().replace(
+                    '"admitted_bridge": {}',
+                    '"admitted_bridge": {"age_limit_100ns": 1e400}',
+                ),
+                encoding="utf-8",
+            )
+        try:
+            self.audit(owner)
+        except ValueError:
+            pass
+        try:
+            result = json.loads((self.root / "audit" / "summary.json").read_text())
+        except json.JSONDecodeError as error:
+            self.fail("refusal receipt must remain valid JSON: " + str(error))
+        self.assertEqual(result["status"], "refused")
+        self.assertTrue(result["refusals"])
+        self.assertFalse(result["qualified"])
+        self.assertIsNone(result["physical_latency_ms"])
+
+    def test_root_retains_failed_persistence_and_continues_other_owner_audits(self):
+        archive = self.root / "archive"
+        archive.mkdir()
+        names = ["owner-0001-generation-1", "owner-0002-generation-1"]
+        for name in names:
+            fixture(archive / name)
+        store_json(
+            archive / "summary.json",
+            dict(
+                schema_version=1,
+                sessions=2,
+                expected_owners=2,
+                native_pcm_enabled=True,
+                error=None,
+                qualified=False,
+            ),
+        )
+        original_flush = MODULE.np.memmap.flush
+
+        def flush(value):
+            path = Path(value.filename)
+            if path.name == "accepted.f32le" and path.parent.name == names[0]:
+                raise OSError("synthetic first owner flush failure")
+            return original_flush(value)
+
+        with patch.object(MODULE.np.memmap, "flush", flush):
+            result = MODULE.audit_archive(archive, self.root / "audit", make_plot=False)
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(
+            [item["status"] for item in result["owners"]],
+            ["refused", "structurally_complete"],
+        )
+        persisted = json.loads((self.root / "audit" / "summary.json").read_text())
+        self.assertEqual(persisted, result)
+        for name, status in zip(names, ["refused", "structurally_complete"]):
+            owner = json.loads((self.root / "audit" / name / "summary.json").read_text())
+            self.assertEqual(owner["status"], status)
+            self.assertFalse(owner["qualified"])
 
     def test_cli_creates_compact_json_and_png_without_physical_claim(self):
         self.assertIsNotNone(MODULE, "missing native PCM auditor")
