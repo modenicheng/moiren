@@ -69,6 +69,9 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename | --rename-stre
     property diagnostics in before/held/after; typed read errors are retained.\n\
     They never replace or normalize the exact FriendlyName gate, and cannot\n\
     alone identify Windows composition/cache causes; no parent/registry scan.\n\
+    Failed ACTIVE enumeration retains one bounded ALL-state metadata snapshot;\n\
+    state/root/stable-ID/flow/name/topology and typed errors are diagnostic only.\n\
+    No inactive device fallback, extra client or relaxed acceptance is added.\n\
     Missing direct Removed, Absent or DTO/name success can never pass acceptance.\n\
     --rename is exclusive with --pcm and all soak options; defaults to 90s and\n\
     requires at least 60s if set. Failed readbacks and cleanup errors are retained.\n\

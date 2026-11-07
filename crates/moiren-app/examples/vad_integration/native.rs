@@ -45,6 +45,9 @@ use windows::{
 #[path = "native/topology.rs"]
 mod topology;
 
+#[path = "native/enumeration.rs"]
+mod enumeration;
+
 #[path = "native/rename_stream.rs"]
 pub(super) mod rename_stream;
 
@@ -107,6 +110,8 @@ impl HeldClient {
         stable: StableEndpointId,
         intent: Intent,
         deadline: Instant,
+        diagnostic_deadline: Instant,
+        failure: impl FnMut(super::rename::enumeration::Failure),
     ) -> anyhow::Result<Self> {
         let apartment = Apartment::new()?;
         let interfaces = discover_present_interfaces()?;
@@ -117,21 +122,35 @@ impl HeldClient {
         let root = identity::root_instance(&interfaces[0])?;
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-        let candidate = loop {
-            ensure!(
-                Instant::now() < deadline,
-                "rename MMDevice enumeration timed out"
-            );
-            let (candidates, errors) = identity::candidates(&enumerator)?;
-            if let Some(candidate) = validation::select(&candidates, stable, intent, &root)? {
-                break candidate.clone();
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "rename MMDevice not present; topology errors: {errors:?}"
-            );
-            thread::sleep(Duration::from_millis(20));
-        };
+        let candidate = super::rename::enumeration::retain_failure(
+            || loop {
+                ensure!(
+                    Instant::now() < deadline,
+                    "rename MMDevice enumeration timed out"
+                );
+                let (candidates, errors) = identity::candidates(&enumerator)?;
+                if let Some(candidate) = validation::select(&candidates, stable, intent, &root)? {
+                    break Ok(candidate.clone());
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "rename MMDevice not present; topology errors: {errors:?}"
+                );
+                thread::sleep(Duration::from_millis(20));
+            },
+            |error| enumeration::pending(stable, intent, &root, error),
+            failure,
+            |error| {
+                enumeration::collect(
+                    &enumerator,
+                    stable,
+                    intent,
+                    &root,
+                    diagnostic_deadline,
+                    error,
+                )
+            },
+        )?;
         let device = exact_device(&enumerator, &candidate, stable, &root)?;
         let stream = Stream::prepare(&device, intent)?;
         let windows_friendly_name = windows_friendly_name(&device)?;

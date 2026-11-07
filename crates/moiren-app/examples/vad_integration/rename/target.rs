@@ -100,6 +100,12 @@ fn exercise_case(
             stable,
             intent,
             phase_deadline(deadline),
+            deadline,
+            |failure| {
+                case.fail(Phase::Baseline, failure.original_error.clone());
+                case.native_enumeration_failure = Some(failure);
+                emit(case);
+            },
         )?);
         case.held_client_initialized = true;
         emit(case);
@@ -232,11 +238,17 @@ fn exercise_case(
                 .context("replacement not present; native initialization/readback unavailable")?;
                 // This is a new COM owner/enumeration, not a reopened held
                 // MMDevice. It still does not substitute for native generations.
-                step(case, Phase::ReplacementNativeInit, emit, |case, _| {
+                step(case, Phase::ReplacementNativeInit, emit, |case, emit| {
                     fresh_client = Some(HeldClient::prepare(
                         stable,
                         intent,
                         phase_deadline(shared_deadline(Instant::now(), deadline, 2)),
+                        deadline,
+                        |failure| {
+                            case.fail(Phase::ReplacementNativeInit, failure.original_error.clone());
+                            case.native_enumeration_failure = Some(failure);
+                            emit(case);
+                        },
                     )?);
                     case.replacement_client_initialized = true;
                     Ok(())

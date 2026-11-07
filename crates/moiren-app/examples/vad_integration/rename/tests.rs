@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn native_enumeration_failure_is_explicit_without_qualifying_a_failed_case() {
+    let mut case = Case::new("Playback".into(), "requested".into());
+    case.fail(Phase::ReplacementNativeInit, "enumeration timed out".into());
+    case.finish();
+    let json = serde_json::to_value(&case).unwrap();
+    assert_eq!(
+        json.get("native_enumeration_failure"),
+        Some(&serde_json::Value::Null),
+        "unavailable failure-time metadata must be explicit, not absent or fabricated"
+    );
+    assert_eq!(case.error.as_deref(), Some("enumeration timed out"));
+    assert!(!case.qualified);
+}
+
 fn baseline(direction: &str) -> RuntimeEvidence {
     RuntimeEvidence {
         intent: IntentEvidence {

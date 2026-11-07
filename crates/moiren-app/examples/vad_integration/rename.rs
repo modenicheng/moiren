@@ -3,6 +3,9 @@ use anyhow::{Context, ensure};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
+#[path = "rename/enumeration.rs"]
+pub(super) mod enumeration;
+
 #[path = "rename/stream.rs"]
 pub(super) mod stream;
 
@@ -258,6 +261,8 @@ pub(super) struct Case {
     pub completed: bool,
     pub error: Option<String>,
     pub cleanup_errors: Vec<String>,
+    /// Failure-time ALL-state metadata only; never native admission authority.
+    pub native_enumeration_failure: Option<enumeration::Failure>,
 }
 
 impl Case {
@@ -288,6 +293,7 @@ impl Case {
             completed: false,
             error: None,
             cleanup_errors: Vec::new(),
+            native_enumeration_failure: None,
         }
     }
 
