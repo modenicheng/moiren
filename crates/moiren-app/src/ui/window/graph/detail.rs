@@ -33,7 +33,7 @@ pub(in crate::ui::window) fn overlay(
         return div().into_any_element();
     };
     let kind = logical.kind();
-    let name = crate::ui::presentation::display_label(snapshot, entry, kind);
+    let name = crate::ui::presentation::display_label(entry);
     let channels = if logical.channels() == 2 {
         "L/R".to_string()
     } else {

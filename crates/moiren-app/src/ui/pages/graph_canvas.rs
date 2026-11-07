@@ -365,15 +365,11 @@ impl CanvasWorld {
                 NodeKind::ChannelMapper => ("route", theme::NODE_UTILITY),
                 NodeKind::Plugin => ("sliders", theme::NODE_DSP),
             };
-            let mut card = node(
-                &key,
-                &crate::ui::presentation::display_label(snapshot, state, logical.kind()),
-                detail,
-            )
-            .at(position.0, position.1)
-            .icon(icon)
-            .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty())
-            .with_tint(state.tint.and_then(theme::node_tint).unwrap_or(tint));
+            let mut card = node(&key, &crate::ui::presentation::display_label(state), detail)
+                .at(position.0, position.1)
+                .icon(icon)
+                .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty())
+                .with_tint(state.tint.and_then(theme::node_tint).unwrap_or(tint));
             card.input_count = logical.inputs().len();
             card.node_id = Some(id);
             card.faults = faulted.remove(&id).unwrap_or_default();

@@ -96,7 +96,7 @@ pub(in crate::ui::window) fn inspector(
     };
     let id = node.id();
     let entry = snapshot.graph.node(id).expect("service node metadata");
-    let display = crate::ui::presentation::display_label(snapshot, entry, node.kind());
+    let display = crate::ui::presentation::display_label(entry);
     let editing = shell.node_name_editing == Some(id);
     // One inline name control: a plain heading until clicked, then the editor
     // in the same place. There is no separate rename row.

@@ -107,11 +107,7 @@ pub(super) fn inputs(
             count += 1;
             let name = graph
                 .node(edge.src())
-                .and_then(|node| {
-                    graph.graph.get_node(node.id).ok().map(|logical| {
-                        crate::ui::presentation::display_label(snapshot, node, logical.kind())
-                    })
-                })
+                .map(crate::ui::presentation::display_label)
                 .unwrap_or_else(|| t!("Unknown").into_owned());
             let port = graph
                 .graph
@@ -280,15 +276,7 @@ pub(super) fn sends(
                         .child(
                             graph
                                 .node(edge.dst())
-                                .and_then(|node| {
-                                    graph.graph.get_node(node.id).ok().map(|logical| {
-                                        crate::ui::presentation::display_label(
-                                            snapshot,
-                                            node,
-                                            logical.kind(),
-                                        )
-                                    })
-                                })
+                                .map(crate::ui::presentation::display_label)
                                 .unwrap_or_default(),
                         )
                         .on_click(select_route(

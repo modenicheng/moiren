@@ -154,15 +154,7 @@ pub(in crate::ui::window) fn library(
                 .child(
                     button(
                         SharedString::from(format!("locate-{id:?}")),
-                        crate::ui::presentation::display_label(
-                            &state.snapshot,
-                            entry,
-                            state
-                                .snapshot
-                                .graph
-                                .kind_of(id)
-                                .unwrap_or(moiren_core::graph::NodeKind::Bus),
-                        ),
+                        crate::ui::presentation::display_label(entry),
                     )
                     .variant(if selected {
                         ButtonVariant::Secondary
