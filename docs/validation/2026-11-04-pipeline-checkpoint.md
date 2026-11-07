@@ -634,6 +634,16 @@ contracts are unchanged. No deployment/native execution or desktop acceptance
 is inferred. The17:31:38 remote observation leaves the same guarded blockers
 and no running owned test task or app; the encrypted VM remains stopped.
 
+A distinct one-shot observation later captures the actual Settings-point
+receiver without diagnostic input: at17:42:07+08:00, foreign
+PID13100/HWND855132, class`LockScreenBackstopFrame`, covers the owned Moiren
+point. This is not a WTS verdict or a retrospective cause for1717. Owned Close
+then held forced cleanup remains a failed lifecycle, not desktop acceptance.
+The13raw artifacts match remote pins;17:44:02 final state has no owned process
+or running Moiren task, with unchanged protected identities, defaults/render
+controls and Running SYS hash. The VM remains stopped; no unchanged retry or
+guard bypass follows. The same November7 receipt retains the complete scope.
+
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
 23:15:31. It reports machine `LAPTOP-NP49RG6H`, build22631, boot2026-10-30,
 24266188KiB available memory and144438063104bytes free onD:. The DAWN PRO2

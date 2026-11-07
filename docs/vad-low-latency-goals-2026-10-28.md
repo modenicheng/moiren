@@ -85,7 +85,7 @@ sub-10-ms limitation is evidenced; no such impossibility is established yet.
   be labelled a sub-10-ms pass. Do not silently enlarge a buffer or move the
   measurement boundary to produce a better claim.
 
-## Current pipeline status - 2026-11-05
+## Current pipeline status - 2026-11-07
 
 The original S0-S5 requirements below remain the completion criteria. Subsequent
 implementation is recorded in the
@@ -97,9 +97,9 @@ configuration or acceptance evidence.
 | Slice | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | S0 | Requirements, scoped commits, binary/configuration pins and bounded archival workflows exist; current-main integration/release and scoped portability repairs have local evidence. Published both-route wait repair `8761d07` completes exact-head CI `41915822264` with all 20 jobs successful. Its final-source workspace/headless run passes 2625 tests with both opt-in features, and the optimized example has a verified immutable copy. | Preserve provenance and unrelated work across subsequent native/qualification changes. |
-| S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. Frozen metadata rules out assigning all replacement residuals to client Stop-tail inventory, without implying DAC presentation. PCM persistence/decode refusals pass 35 regressions per platform. The exact reviewed terminal-reader script/manifest are now staged and hash-verified remotely, without execution. | The reader still needs the exact permitted non-admin token; foreground means synchronous invocation, not unlocked session1. Matched routes, explained full waveform correspondence and calibrated measurement remain open; original residuals/gaps remain failures. |
+| S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. Frozen metadata rules out assigning all replacement residuals to client Stop-tail inventory, without implying DAC presentation. PCM persistence/decode refusals pass 35 regressions per platform. The exact reviewed terminal-reader script/manifest are staged and hash-verified remotely, without execution. | The reader still lacks its exact permitted non-admin token and historical OBS12648 process guard; the manifest is not rewritten. Matched routes, explained full waveform correspondence and calibrated measurement remain open; original residuals/gaps remain failures. |
 | S2 | Independent VAD target/capacity, actual-demand admission, priming, servo and bounded recovery are implemented. | Native period/block combinations and sustained quality do not yet qualify a lower default. |
-| S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. The post-CI06:08 bounded read-only session1 observation closes normally and again records the Windows default lock-screen interface in the foreground. | An unobstructed interactive target, successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open; the retained archive's event-order refusal is separate. |
+| S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. The November7 stopped-only read-only point snapshot identifies a foreign LockScreenBackstopFrame over Settings, without diagnostic input or audio. The separate local runner generation correction passes software checks only. | An unobstructed interactive target, successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open; the retained archive's event-order refusal is separate. Forced diagnostic-app cleanup remains a failed lifecycle, not desktop acceptance. |
 | S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist; the software-output category candidate passes host/portable/WDK checks. The streaming harness requires old/new Start/PCM, direct Removed, exact name and fresh confirmation. Readiness waits now retain current-request errors from both route exports before checking readiness; final PCM retains the bounded gate/freshness contract. Pre-client admission permits legal generation zero while final PCM still requires a nonzero generation. Tests pass 145 on Windows and 124 on Linux stable. | Windows-visible name acceptance, migration/default roles and the required native streaming/held-client/race/repetition cases remain open; the VM needs unlock/start. |
 | S5 | Deterministic/RT software checks and finite native receipts exist. Offline qualification now checks both p95 and p99 plus calibration uncertainty strictly below10ms, matching the current S5 requirement rather than the older p95-only rule. | Repeated/load/non-silent sustained runs and calibrated p95/p99 below10ms, or the evidenced device-limited fallback, remain open. |
 
@@ -132,6 +132,16 @@ pure checks each, and the software-backed Rust service regression passes1test
 with its F32/F64 loop. No corrected worker is deployed or run natively; the
 17:31:38 read-only remote check still finds no test owners and the driver VM
 inventory remains empty. These checks do not close S3 or any physical gate.
+
+The receipt's later one-shot observation answers the missing hit identity:
+at17:42:07+08:00, Settings center1482/171 hits foreign PID13100,
+HWND855132, class`LockScreenBackstopFrame`, not the owned Moiren root.
+No diagnostic click/Invoke/audio occurs. Owned Close then forced cleanup
+remains a failed lifecycle;13 raw artifacts are verified, protected identities
+and driver/defaults/render controls are unchanged, and no owner/running test
+task remains. This snapshot neither explains the earlier run retrospectively
+nor establishes WTS lock state or a product/DPI defect. No unchanged retry or
+bypass follows; the remote desktop and encrypted-VM prerequisites stay open.
 
 The later [wait-error repair](validation/2026-11-05-s4-wait-error-retention.md)
 closes two source-supported false-acceptance paths, not native qualification.

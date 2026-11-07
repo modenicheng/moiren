@@ -214,3 +214,96 @@ host inventory still reports zero running VMs. No app launch, click, audio,
 reader invocation, driver installation or unchanged native retry follows.
 This closes the generation-expectation runner defect only; all outstanding
 native waveform, desktop, lifecycle, sustained and physical gates remain open.
+
+## One stopped-only hit-identity discriminator
+
+The earlier control only records why exact-root input was refused, not the
+actual hit identity. A separately reviewed, fresh observation-only package
+answers that missing question once; it does not rerun Settings/Close until a
+favorable result appears. Inspected integration source is`40f3efb`.
+
+Reuse the unchanged frozen34150912-byte diagnostic app and restored empty
+graph/null-session fixture. The worker removes every Click/Invoke/scroll
+path and calls the existing read-only`InputObservation.Observe` exactly once
+at the unique visible/enabled owned Settings button's physical rectangle.
+The inherited owned-window resize/show remains; neither requests foreground
+activation. No new WTS or token API, focus change, source, audio, screenshot,
+foreign-window mutation or metadata-reader invocation is added. Owned Close
+and possible held-process termination are cleanup, not diagnostic input.
+
+The observer DLL is unchanged from the November3 input-boundary evidence,
+SHA256`3EC9252E55AFA4BF91CD0A2E8D2FEEAB176DB9EE0A042DE75130A0A20F87957C`.
+Twelve historical source pins and nine payload pins match. A missing-worker
+RED is retained before seven worker source/AST checks pass under each shell;
+six existing observer compile/pure/source checks also pass under each shell.
+PS5/PS7 parse all four deployed scripts and the held supervisor compiles.
+The first PS7 observer-test compile uses Framework-only references and fails;
+the isolated test harness is corrected to use PS7's default references.
+Neither the deployed observer nor its DLL changes. Independent read-only
+review finds no launch blocker; these checks are not native acceptance.
+
+The initial inline encoded launch exceeds the Windows command-line length
+limit; the first poll reports the task absent. A bounded authoritative audit
+at17:41:45+08:00 finds no task, launch stamp, run directory or app/supervisor.
+Invoke the already hash-pinned
+script by its short absolute path instead; this creates one actual native
+launch at09:42:04.702UTC. No executed attempt is overwritten or relaunched.
+The fresh task is`Moiren-HitObservation-20261107-1740`, Limited/session1,
+with the unchanged150s held-worker and240s outer bounds.
+
+At target09:42:07.2505933..07.2707509UTC, the non-atomic PMv2/MTA snapshot
+records the following:
+
+| Field | Actual observation |
+| --- | --- |
+| Owned Settings rectangle | x1454, y143, width56, height56; physical center1482/171 |
+| Owned app/root | PID12872, HWND10684846, class`Zed::Window`, title`Moiren`, visible/enabled/non-minimized, DPI168 |
+| Hit and hit root | PID13100, HWND855132, class`LockScreenBackstopFrame`, title`Backstop Window`, visible, disabled, bounds0/0..3456/2160, DPI168 |
+| Relationship | `HitExactReceiver=false`, `HitIsChild=false`; no hit/root/class/title error |
+| Desktop names | Caller, owned window and opened input desktop all`Default`; opened handle closes successfully |
+
+This identifies a foreign cover at this point in this new snapshot and
+supports exact-root refusal there. It does not retrospectively identify the
+1717 run's cover, establish WTS lock/security state, prove a coordinate or
+product defect, or demonstrate actual input delivery. The earlier PowerShell
+foreground and these desktop names are not proofs that the point is usable.
+HitParent has no HWND; its explicit`no_hwnd` is retained rather than converted
+into a success or fabricated identity.
+
+Both runtime checks see Start present/disabled and no Stop/audio host. The
+worker persists the observation before cleanup. It posts only the inherited
+Close to the owned app during cleanup; the app does not close within10s and
+is terminated through the held process. App exit-1, worker/supervisor/task1,
+`completed=false` and`qualified=false` remain failures, not normal-Quit or
+desktop acceptance. `actions=[]` means no diagnostic input, not no cleanup
+message. Final drained logs contain no audio-host/native-stream opening or
+owner start. Defaults, render controls, protected QQMusic/PowerShell creation
+pins and the loaded Running driver hash are unchanged; no owned process or
+running Moiren task remains at the17:44:02+08:00 read-only final check.
+
+Evidence is retained at
+`D:\coding\moiren-evidence\20261107-hit-observation-1740`.
+All13 remote artifacts are independently length/SHA256 verified from the
+11079-byte archive, SHA256:
+
+```text
+50EDB8C675EB571DDC365CD067F491DD2B4BB005771A998DAB801EDE29842351
+```
+
+The22388-byte original result is byte-preserved in that ZIP and extracted as
+`worker-result-original.json`, SHA256:
+
+```text
+0CBF430CA3913DF73FAE76E001B90F0D17A05FD0BF02765EC5E346D050CCC0CA
+```
+
+The misleadingly named`raw-worker-result.json` is explicitly labelled a
+parsed/reserialized derived view in`worker-view-provenance.json`; it is not
+the raw evidence. The final host metadata ZIP retains113 length/SHA-verified
+files in127957bytes, SHA256
+`661EF8997638C6E0CD838391E0BDDC6CFF34D86D30213BC7CA5651E1AB252086`.
+All29 original draft/cache pins remain unchanged. VMware
+still reports zero running VMs. No unchanged acquisition, input bypass, cover
+manipulation, driver installation, gate relaxation or full-pipeline verdict
+follows. Remote desktop readiness and the encrypted VM still require external
+changes; the unapproved A/B/A modifier and all S1-S5 acceptance gaps remain.

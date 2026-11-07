@@ -30,6 +30,16 @@ processes or running owned tasks, unchanged protected identities and a Running
 driver; the host VMware inventory is zero. S3 and all other native/physical
 gates remain open.
 
+The same receipt's later one-shot stopped-only discriminator records the
+actual Settings-point cover at17:42:07+08:00: foreign PID13100/HWND855132,
+`LockScreenBackstopFrame`, not the owned Moiren root. It sends no diagnostic
+input or audio. Owned Close fails to end the app within10s, so held forced
+cleanup and task1 remain lifecycle failures. All13 raw artifacts are verified;
+defaults, render controls, protected identities and Running driver hash are
+unchanged. The17:44:02 final check has no owned process/running Moiren task.
+The snapshot is not a WTS lock-state verdict, a retrospective1717 explanation,
+input-delivery proof or a product/DPI defect. No retry or bypass follows.
+
 ## Pipeline integration checkpoint - 2026-11-05
 
 The [current integration checkpoint](../../docs/validation/2026-11-04-pipeline-checkpoint.md)
