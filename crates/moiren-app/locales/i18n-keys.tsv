@@ -3,6 +3,8 @@ Search nodes	-	节点搜索输入框占位文本
 Untitled session	-	项目名默认值
 Application file logging is unavailable	-	错误条内日志路径缺失时的回退文本
 Diagnostics: %{log_path}	log_path=log_path（crate::logging::log_path().display()）	format! 原文 "Diagnostics: {log_path}"
+Error details	-	错误详情浮层标题（fault_popover.rs）
+Show error details	-	状态栏错误摘要的悬停提示（chrome.rs fault_summary）
 Start	-	传输按钮（未运行时）
 Stop	-	传输按钮（运行中）
 %{khz} kHz · %{frames} smp · %{ms} ms · %{precision}	khz=rate/1000 保留一位|frames=运行中取专业后端 master 输出流实测 buffer_frames 否则 processing.block_frames|ms=frames*1000/rate 一位小数|precision=f32/f64	状态栏音频格式行（chrome.rs format_text）

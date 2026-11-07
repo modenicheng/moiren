@@ -206,8 +206,15 @@ pub struct StudioShell {
     /// The canvas card under the pointer, tracked on idle moves for the
     /// fault tooltip the meter frame paints; never part of a panel key.
     hovered_node: Option<moiren_core::graph::NodeId>,
+    /// The mixer strip under the pointer, tracked by the strip's hover
+    /// listener for the fault banner the meter frame paints; the graph
+    /// field's twin, likewise never part of a panel key.
+    hovered_strip: Option<moiren_core::graph::NodeId>,
     /// The endpoint menu hanging off a source/sink card's binding chip.
     binding_menu: Option<graph::BindingMenu>,
+    /// The fault detail popover hanging off a faulted object's "!" marker
+    /// (graph badge, mixer strip badge, status bar summary).
+    fault_popover: Option<fault_popover::FaultPopover>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
@@ -218,7 +225,6 @@ pub struct StudioShell {
     /// canvases each frame and read by the sidebar hot layer.
     inspector_meters: sidebar::InspectorMeterFrame,
     inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
-    error_strip: Entity<error_strip::ErrorStripHost>,
     matrix_panel: Entity<matrix::MatrixPanelHost>,
     devices_panel: Entity<devices::DevicesPanelHost>,
     settings_panel: Entity<settings::SettingsPanelHost>,
@@ -317,9 +323,6 @@ impl StudioShell {
                 sidebar::InspectorMeters::new(shell_entity.downgrade(), inspector_meters.clone()),
             )))
         });
-        let error_strip = cx.new(|cx| {
-            error_strip::ErrorStripHost::new(error_strip::ErrorStripPanel, shell_entity.clone(), cx)
-        });
         let matrix_panel = cx
             .new(|cx| matrix::MatrixPanelHost::new(matrix::MatrixPanel, shell_entity.clone(), cx));
         let devices_panel = cx.new(|cx| {
@@ -412,13 +415,14 @@ impl StudioShell {
             graph_overlays: Default::default(),
             spectrum_scratch: Vec::new(),
             hovered_node: None,
+            hovered_strip: None,
             binding_menu: None,
+            fault_popover: None,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),
             inspector_meters,
             inspector_meter_layer,
-            error_strip,
             matrix_panel,
             devices_panel,
             settings_panel,
@@ -724,7 +728,7 @@ mod desktop;
 pub use capture::run_ui_capture;
 mod controls;
 mod devices;
-mod error_strip;
+mod fault_popover;
 mod graph;
 mod hot;
 mod matrix;
@@ -756,6 +760,7 @@ impl Render for StudioShell {
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         graph::sync_binding_menu(self, cx);
+        fault_popover::sync(self, cx);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
@@ -798,8 +803,6 @@ impl Render for StudioShell {
             self.meters.update(&self.state.read(cx).snapshot, false);
             self.update_node_meters(false, cx);
         }
-        let error_strip =
-            error_strip::has_faults(self, cx).then(|| error_strip::for_shell(self, window));
         div()
             .id("studio-shell")
             .relative()
@@ -812,7 +815,6 @@ impl Render for StudioShell {
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT_MD))
             .child(chrome::toolbar_for_page(self, window))
-            .when_some(error_strip, |view, error_strip| view.child(error_strip))
             .child(
                 div()
                     .id("workspace-row")
@@ -854,6 +856,9 @@ impl Render for StudioShell {
             })
             .when(self.binding_menu.is_some(), |v| {
                 v.child(graph::binding_menu_overlay(self, window, cx))
+            })
+            .when(self.fault_popover.is_some(), |v| {
+                v.child(fault_popover::overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);

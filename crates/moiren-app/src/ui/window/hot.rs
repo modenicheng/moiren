@@ -71,8 +71,10 @@ pub(in crate::ui::window) trait HotSurface: 'static + Sized {
     fn frame(&self) -> &SharedFrame<Self::Frame>;
 
     /// Paint the live layer above the cached panel. Reads observations at
-    /// paint time; aside from test traces, must not mutate state.
-    fn paint(&self, frame: &Self::Frame, window: &mut Window, cx: &mut App);
+    /// paint time; aside from test traces, must not mutate state. `layer`
+    /// is the canvas's own bounds — the clip anchored overlays such as the
+    /// fault banner clamp and flip against.
+    fn paint(&self, frame: &Self::Frame, layer: Bounds<Pixels>, window: &mut Window, cx: &mut App);
 }
 
 /// The host view around a [`HotSurface`]: a painting-only, hitbox-free
@@ -108,7 +110,7 @@ impl<S: HotSurface> Render for HotLayerView<S> {
                     window.request_animation_frame();
                 }
             },
-            move |_, _, window, cx| {
+            move |layer, _, window, cx| {
                 let surface = paint_surface.borrow();
                 // A cached view replays last frame's paint operations instead
                 // of re-running its paint closures, so anything dynamic the
@@ -117,7 +119,7 @@ impl<S: HotSurface> Render for HotLayerView<S> {
                 let Some(frame) = surface.frame().read() else {
                     return;
                 };
-                surface.paint(&frame, window, cx);
+                surface.paint(&frame, layer, window, cx);
             },
         )
         .absolute()
