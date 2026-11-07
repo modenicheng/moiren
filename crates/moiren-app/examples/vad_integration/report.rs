@@ -135,6 +135,7 @@ pub(super) struct IdleHoldEvidence {
 pub(super) struct PcmEvidence {
     #[cfg(windows)]
     pub identity: Option<super::native::IdentityEvidence>,
+    pub native_enumeration_failure: Option<Vec<super::rename::enumeration::Failure>>,
     pub source: [f32; 2],
     pub expected_after_gain: [f32; 2],
     pub second_source: [f32; 2],
@@ -607,4 +608,19 @@ mod tests {
         }
         assert_eq!(report.checkpoints.len(), 2);
     }
+}
+#[test]
+fn pcm_enumeration_metadata_does_not_imply_native_start_or_pcm_success() {
+    let report = Report {
+        pcm: Some(PcmEvidence::default()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(report).unwrap();
+    assert_eq!(
+        json["pcm"].get("native_enumeration_failure"),
+        Some(&serde_json::Value::Null)
+    );
+    assert_eq!(json["native_clients_started_by_probe"], 0);
+    assert_eq!(json["pcm_verified"], false);
+    assert_eq!(json["status"], "failed");
 }

@@ -271,6 +271,40 @@ fn windows_friendly_name(device: &IMMDevice) -> anyhow::Result<String> {
 
 impl Pair {
     pub fn prepare(ids: [StableEndpointId; 2], deadline: Instant) -> anyhow::Result<Self> {
+        Self::prepare_inner(ids, deadline, |_, _, _| {})
+    }
+
+    pub fn prepare_observed(
+        ids: [StableEndpointId; 2],
+        deadline: Instant,
+        diagnostic_deadline: Instant,
+        mut publish: impl FnMut(Vec<super::rename::enumeration::Failure>),
+    ) -> anyhow::Result<Self> {
+        Self::prepare_inner(ids, deadline, |enumerator, root, error| {
+            let routes = [(ids[0], Intent::Playback), (ids[1], Intent::Microphone)];
+            let pending = routes
+                .iter()
+                .map(|&(stable, intent)| enumeration::pending(stable, intent, root, error))
+                .collect();
+            // Both flows share one additional scheduling budget, never two
+            // independent extensions of the original case work deadline.
+            let deadline = diagnostic_deadline.min(Instant::now() + Duration::from_secs(1));
+            super::rename::enumeration::collect_routes(
+                pending,
+                |index| {
+                    let (stable, intent) = routes[index];
+                    enumeration::collect(enumerator, stable, intent, root, deadline, error)
+                },
+                &mut publish,
+            );
+        })
+    }
+
+    fn prepare_inner(
+        ids: [StableEndpointId; 2],
+        deadline: Instant,
+        mut failure: impl FnMut(&IMMDeviceEnumerator, &str, &anyhow::Error),
+    ) -> anyhow::Result<Self> {
         let apartment = Apartment::new()?;
         // Read-only SetupAPI identity resolution. No ControlClient/PcmOwner here.
         let interfaces = discover_present_interfaces()?;
@@ -282,19 +316,23 @@ impl Pair {
         let root = identity::root_instance(&interfaces[0])?;
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-        let [playback, microphone] = loop {
+        let selected = (|| loop {
             let (candidates, errors) = identity::candidates(&enumerator)?;
             let playback = validation::select(&candidates, ids[0], Intent::Playback, &root)?;
             let microphone = validation::select(&candidates, ids[1], Intent::Microphone, &root)?;
             if let (Some(playback), Some(microphone)) = (playback, microphone) {
-                break [playback.clone(), microphone.clone()];
+                break Ok([playback.clone(), microphone.clone()]);
             }
             ensure!(
                 Instant::now() < deadline,
                 "owned MMDevices did not arrive; topology errors: {errors:?}"
             );
             thread::sleep(Duration::from_millis(20));
-        };
+        })();
+        if let Err(error) = &selected {
+            failure(&enumerator, &root, error);
+        }
+        let [playback, microphone] = selected?;
         let render_device = exact_device(&enumerator, &playback, ids[0], &root)?;
         let capture_device = exact_device(&enumerator, &microphone, ids[1], &root)?;
         let render = Stream::prepare(&render_device, Intent::Playback)?;

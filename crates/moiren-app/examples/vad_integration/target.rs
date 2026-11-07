@@ -806,9 +806,23 @@ impl LiveSession<'_> {
         });
         publish(shared, report);
         eprintln!("stage2: read-only exact root/stable ID -> MMDevice mapping");
-        let mut clients = native::Pair::prepare(
+        let mut clients = native::Pair::prepare_observed(
             stable_ids,
             (Instant::now() + Duration::from_secs(10)).min(self.deadline),
+            self.deadline,
+            |failure| {
+                if report.error.is_none() {
+                    report.error = failure
+                        .first()
+                        .map(|evidence| evidence.original_error.clone());
+                }
+                report
+                    .pcm
+                    .as_mut()
+                    .expect("PCM evidence")
+                    .native_enumeration_failure = Some(failure);
+                publish(shared, report);
+            },
         )?;
         report.pcm.as_mut().expect("PCM evidence").identity = Some(clients.identity.clone());
         publish(shared, report);

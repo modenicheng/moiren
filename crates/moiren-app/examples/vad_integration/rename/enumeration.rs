@@ -105,6 +105,19 @@ pub(crate) fn collect_endpoints<T>(
     (rows, truncated, error)
 }
 
+pub(crate) fn collect_routes(
+    mut values: Vec<Failure>,
+    mut collect: impl FnMut(usize) -> Failure,
+    mut publish: impl FnMut(Vec<Failure>),
+) {
+    publish(values.clone());
+    for index in 0..values.len() {
+        values[index] = collect(index);
+        // A later flow stall cannot erase an already collected earlier flow.
+        publish(values.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +251,35 @@ mod tests {
         assert_eq!(rows, [0, 1]);
         assert!(!truncated);
         assert!(error.is_none());
+    }
+
+    #[test]
+    fn second_flow_stall_retains_published_first_flow_metadata() {
+        let first = failure(&anyhow::anyhow!("first"));
+        let second = failure(&anyhow::anyhow!("second"));
+        let snapshots = std::cell::RefCell::new(Vec::new());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            collect_routes(
+                vec![first, second],
+                |index| {
+                    if index == 1 {
+                        panic!("second collector stalled");
+                    }
+                    let mut completed = failure(&anyhow::anyhow!("first"));
+                    completed.collection_completed = true;
+                    completed.total_endpoints = Some(7);
+                    completed
+                },
+                |snapshot| snapshots.borrow_mut().push(snapshot),
+            );
+        }));
+        assert!(result.is_err());
+        let snapshots = snapshots.into_inner();
+        assert_eq!(snapshots.len(), 2);
+        assert!(!snapshots[0][0].collection_completed);
+        assert!(snapshots[1][0].collection_completed);
+        assert_eq!(snapshots[1][0].total_endpoints, Some(7));
+        assert!(!snapshots[1][1].collection_completed);
+        assert_eq!(snapshots[1][1].original_error, "second");
     }
 }
