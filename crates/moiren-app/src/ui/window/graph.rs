@@ -136,8 +136,12 @@ impl StudioShell {
         self.selection_drag = None;
         self.knob_drag = None;
         // Keyboard focus stays on the canvas while the page's popovers are
-        // open, so Escape lands here: it dismisses them too.
-        let dismissed = self.binding_menu.take().is_some() | self.detail_node.take().is_some();
+        // open, so Escape lands here: it dismisses them too. The session
+        // popover rides along — it can be open on any page, and on the
+        // graph page this is the Escape path that reaches it.
+        let dismissed = self.binding_menu.take().is_some()
+            | self.detail_node.take().is_some()
+            | std::mem::take(&mut self.project_menu);
         if cancelled {
             self.sync_drag_demand();
         }
