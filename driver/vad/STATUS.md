@@ -2,7 +2,22 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-11-05.
+verdict. Status updated 2026-11-07.
+
+## Remote-priority revalidation - 2026-11-07
+
+The [remote-priority receipt](../../docs/validation/2026-11-07-remote-priority.md)
+records current target evidence, not new audio or driver qualification. The
+physical target remains reachable with the unchanged Running SYS hash. A
+fresh desktop observer sees PowerShell rather than the historical lock-screen
+foreground, but a subsequent stopped-only control refuses strict owned input
+before posting any click. Its bounded cleanup leaves no test owner or native
+audio start; task result1 and forced test-app exit remain failures. Defaults,
+render controls and protected process identities are unchanged. Historical
+OBS12648 is now absent, adding a frozen metadata-reader guard failure; SSH
+still has an admin token. The existing encrypted driver VM remains stopped,
+and no new package installation, host native operation, unchanged retry,
+Windows-name acceptance or physical-latency verdict occurs.
 
 ## Pipeline integration checkpoint - 2026-11-05
 

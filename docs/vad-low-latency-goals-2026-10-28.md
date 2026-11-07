@@ -108,6 +108,22 @@ for these acceptance requirements. Existing delivery-gap violations, waveform
 residuals and genuine PCM/epoch faults remain visible. Initial-packet work stays
 deferred; missing physical capture equipment does not block independent work.
 
+### Remote-priority update - 2026-11-07
+
+The [fresh remote receipt](validation/2026-11-07-remote-priority.md) supersedes
+November5's readiness assumptions, not the S0-S5 acceptance criteria. The
+expected target and unchanged loaded driver are reachable. A bounded session1
+observer now sees a PowerShell foreground rather than the lock screen, but the
+subsequent stopped-only owned-input control still refuses an obscured or
+different/child HWND before posting any click. After correcting an evidenced
+cross-token process-metadata runner defect, that actual control terminates
+Ready/result1 with no audio start, no remaining owned process and unchanged
+defaults/render controls/protected identities. It is not desktop acceptance.
+Historical OBS12648 is now absent, so the frozen metadata reader lacks that
+guard as well as its exact non-admin token. The driver VM remains stopped.
+No unchanged native retry, new driver installation, threshold change or
+physical/full-pipeline verdict follows.
+
 The later [wait-error repair](validation/2026-11-05-s4-wait-error-retention.md)
 closes two source-supported false-acceptance paths, not native qualification.
 

@@ -613,6 +613,18 @@ external readiness change.
 
 ## Target Readiness
 
+The [2026-11-07 remote-priority receipt](2026-11-07-remote-priority.md)
+supersedes the following historical readiness observations. The target is
+reachable with its original loaded driver, and a Limited/session1 observer
+now sees a PowerShell foreground instead of the lock screen. A fresh stopped
+owned-input control nevertheless refuses an obscured/different-child HWND
+before posting a click. It closes Ready/result1 after bounded test-app cleanup,
+with no audio start or remaining owner and unchanged defaults/volumes/driver.
+The acquired cross-token metadata runner defect is separately corrected and
+regression-tested, not counted as native acceptance. Historical OBS12648 is
+now absent; the frozen reader's process guard and non-admin-token guard remain
+unsatisfied. VMware still reports zero running. No unchanged retry follows.
+
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
 23:15:31. It reports machine `LAPTOP-NP49RG6H`, build22631, boot2026-10-30,
 24266188KiB available memory and144438063104bytes free onD:. The DAWN PRO2
