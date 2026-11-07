@@ -14,6 +14,12 @@ _version: 2
 "Diagnostics: %{log_path}":
   en: "Diagnostics: %{log_path}"
   zh-CN: "诊断：%{log_path}"
+"Error details":
+  en: Error details
+  zh-CN: 错误详情
+"Show error details":
+  en: Show error details
+  zh-CN: 查看错误详情
 "Start":
   en: Start
   zh-CN: 启动

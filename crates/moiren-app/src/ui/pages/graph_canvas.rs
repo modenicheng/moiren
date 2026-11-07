@@ -288,36 +288,24 @@ impl CanvasWorld {
         let graph = &snapshot.graph;
         // Card states (design 18 B1): a fault marks the node it names, or
         // both endpoint cards of a route, and rides along for the hover
-        // tooltip; the preparing set comes straight from the service's
-        // structural-edit tracking.
-        let node_of_port =
-            |port: moiren_core::graph::PortId| -> Option<moiren_core::graph::NodeId> {
-                graph
-                    .graph
-                    .nodes()
-                    .iter()
-                    .find(|node| {
-                        node.inputs().iter().any(|p| p.id() == port)
-                            || node.outputs().iter().any(|p| p.id() == port)
-                    })
-                    .map(|node| node.id())
-            };
+        // tooltip; the subject→node resolution is the shared projection on
+        // `GraphSnapshot`, and the preparing set comes straight from the
+        // service's structural-edit tracking.
         let mut faulted: std::collections::BTreeMap<moiren_core::graph::NodeId, Vec<CardFault>> =
             std::collections::BTreeMap::new();
-        for fault in &graph.faults {
-            let subjects: Vec<moiren_core::graph::NodeId> = match fault.subject {
-                crate::service::GraphSubject::Node(id) => vec![id],
-                crate::service::GraphSubject::Route(source, destination) => node_of_port(source)
-                    .into_iter()
-                    .chain(node_of_port(destination))
-                    .collect(),
-                crate::service::GraphSubject::Graph => Vec::new(),
-            };
-            for id in subjects {
-                faulted.entry(id).or_default().push(CardFault {
-                    cause: fault.cause.clone(),
-                    hint: fault.hint.clone(),
-                });
+        for state in &graph.nodes {
+            let faults = graph.faults_for_node(state.id);
+            if !faults.is_empty() {
+                faulted.insert(
+                    state.id,
+                    faults
+                        .into_iter()
+                        .map(|fault| CardFault {
+                            cause: fault.cause,
+                            hint: fault.hint,
+                        })
+                        .collect(),
+                );
             }
         }
         let preparing: std::collections::BTreeSet<moiren_core::graph::NodeId> =
@@ -375,6 +363,7 @@ impl CanvasWorld {
                 NodeKind::Limiter => ("wall", theme::NODE_DSP),
                 NodeKind::Rack => ("list-details", theme::NODE_UTILITY),
                 NodeKind::ChannelMapper => ("route", theme::NODE_UTILITY),
+                NodeKind::Plugin => ("sliders", theme::NODE_DSP),
             };
             let mut card = node(
                 &key,

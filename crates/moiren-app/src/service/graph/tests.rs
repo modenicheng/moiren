@@ -1424,3 +1424,139 @@ fn undo_clears_faults_like_a_successful_edit() {
     );
     assert!(service.snapshot().last_error.is_none());
 }
+
+#[test]
+fn fault_projection_points_at_nodes_and_route_endpoints() {
+    let mut service = ServiceGraph::default();
+    let snapshot = service.snapshot();
+    let source = snapshot
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Source)
+        .unwrap();
+    let gain = snapshot
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Gain)
+        .unwrap();
+    let sink = snapshot
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Sink)
+        .unwrap();
+    let out_port = source.outputs()[0].id();
+    let in_port = sink.inputs()[0].id();
+
+    // A node subject lands on exactly that node.
+    service.record_fault(GraphFault {
+        subject: GraphSubject::Node(gain.id()),
+        cause: "The channel's channel count disagrees with its wiring".into(),
+        hint: None,
+    });
+    let snapshot = service.snapshot();
+    assert!(snapshot.node_faulted(gain.id()));
+    assert!(!snapshot.node_faulted(source.id()));
+    assert!(!snapshot.node_faulted(sink.id()));
+    assert_eq!(snapshot.faults_for_node(gain.id()).len(), 1);
+
+    // A route subject lands on both endpoint nodes.
+    service.record_fault(GraphFault {
+        subject: GraphSubject::Route(out_port, in_port),
+        cause: "Connecting these ports would create a cycle".into(),
+        hint: None,
+    });
+    let snapshot = service.snapshot();
+    for id in [source.id(), sink.id()] {
+        assert!(
+            snapshot.node_faulted(id),
+            "route endpoint {id:?} carries the fault"
+        );
+        assert_eq!(snapshot.faults_for_node(id).len(), 1);
+    }
+    // The previously faulted node keeps its own fault; routes don't leak.
+    assert_eq!(snapshot.faults_for_node(gain.id()).len(), 1);
+
+    // A graph-wide subject lands on no node (it surfaces on the status bar);
+    // checked on a fresh service so earlier node/route faults don't count.
+    let mut fresh = ServiceGraph::default();
+    fresh.record_fault(GraphFault {
+        subject: GraphSubject::Graph,
+        cause: "Invalid parameter".into(),
+        hint: None,
+    });
+    let fresh_snapshot = fresh.snapshot();
+    assert_eq!(fresh_snapshot.faults.len(), 1);
+    assert!(
+        fresh_snapshot
+            .nodes
+            .iter()
+            .all(|node| !fresh_snapshot.node_faulted(node.id))
+    );
+
+    // A successful edit clears the whole group, projection included.
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain.id(),
+            gain: 0.5,
+        })
+        .unwrap();
+    let snapshot = service.snapshot();
+    assert!(snapshot.faults.is_empty());
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .all(|node| !snapshot.node_faulted(node.id))
+    );
+}
+
+#[test]
+fn preparation_failures_name_the_node_they_came_from() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    let mut service = ServiceGraph::default();
+    let sink = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Sink)
+        .unwrap()
+        .id();
+    // The default session starts without a bound output device; the failure
+    // must point at the Sink node so the fault lands on its card and strip
+    // instead of the status bar.
+    let failure = service
+        .preparation()
+        .configured_engine_project(
+            256,
+            &AudioSettings::default(),
+            AudioLatencyProfile::default(),
+        )
+        .unwrap_err();
+    assert_eq!(failure.node, Some(sink));
+    assert_eq!(
+        failure.cause,
+        "The Sink node is not bound to an output device"
+    );
+
+    // Binding the output clears the objection.
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    assert!(
+        service
+            .preparation()
+            .configured_engine_project(
+                256,
+                &AudioSettings::default(),
+                AudioLatencyProfile::default()
+            )
+            .is_ok()
+    );
+}

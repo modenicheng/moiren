@@ -79,11 +79,20 @@ impl ManagedDriver {
         let project =
             match preparation.configured_engine_project(block, &settings, c.latency_profile) {
                 Ok(project) => project,
-                Err(error) => {
+                Err(failure) => {
                     if self.owner.is_none() && self.cleaning == 0 {
-                        c.core.failed(c.core.generation(), error.clone());
+                        c.core.failed(c.core.generation(), failure.cause.clone());
                     }
-                    c.graph.record_error(error);
+                    // A node-aimed failure (an unbound device, a duplicate
+                    // binding) lands on that node's card and strip; only a
+                    // genuinely graph-wide failure stays with the status bar.
+                    match failure.node {
+                        Some(node) => c.graph.record_error_with_subject(
+                            crate::service::GraphSubject::Node(node),
+                            &failure.cause,
+                        ),
+                        None => c.graph.record_error(failure.cause),
+                    }
                     self.apply = false;
                     return;
                 }

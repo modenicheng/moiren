@@ -1601,3 +1601,101 @@ fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
     assert!(probe.is_ok(), "the probe window stays open");
     finish_service(runtime);
 }
+
+/// The status bar's error summary is the unlocated errors' only surface
+/// since the error strip: absent while clean, a located fault never mounts
+/// it (that fault belongs to its own strip/card), a dispatch failure alone
+/// — written synchronously with no publish behind it, the regression the
+/// old error-strip key carried — mounts it, and clicking opens the
+/// graph-wide fault popover.
+#[gpui_kit::test]
+fn statusbar_summarizes_unlocated_errors_and_opens_the_fault_popover(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{GraphFault, GraphSubject};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_none(),
+            "a clean session wears no summary"
+        );
+    });
+
+    // A located fault goes to its node, never to the status bar.
+    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let mut snapshot = (*state.snapshot).clone();
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            graph.faults.push(GraphFault {
+                subject: GraphSubject::Node(target),
+                cause: "The input source configuration is invalid".into(),
+                hint: None,
+            });
+            state.snapshot = std::sync::Arc::new(snapshot);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_none(),
+            "a located fault must not surface on the status bar"
+        );
+    });
+
+    // A graph-wide fault does.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let mut snapshot = (*state.snapshot).clone();
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            graph.faults.push(GraphFault {
+                subject: GraphSubject::Graph,
+                cause: "Resumed without one node because its device is offline".into(),
+                hint: None,
+            });
+            state.snapshot = std::sync::Arc::new(snapshot);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(window.try_find("statusbar-faults").is_some());
+    });
+
+    // A dispatch failure with no publish behind it must mount the summary
+    // on its own notification.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch_error = Some("The session rejected the request".into());
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_some(),
+            "dispatch_error alone must surface the summary"
+        );
+    });
+
+    // The click opens the graph-wide fault popover.
+    cx.update(|window, cx| {
+        window.click("statusbar-faults", cx);
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        view.read_with(cx, |shell, _| shell
+            .fault_popover
+            .is_some_and(|popover| popover.node.is_none())),
+        "the summary click opens the graph-wide fault popover"
+    );
+    cx.update(|window, _| {
+        assert!(window.try_find("fault-popover").is_some());
+    });
+    finish_service(runtime);
+}

@@ -44,6 +44,10 @@ pub const TEXT_FAINT: Hsla = controls::MUTED;
 pub const SUCCESS: Hsla = SIGNAL_DEVICE;
 pub const WARNING: Hsla = hsla(0.120155, 0.964126, 0.562745, 1.0);
 pub const DANGER: Hsla = controls::DANGER;
+/// Faint red wash layered over a faulted object's own surface (graph card
+/// body, mixer strip): DANGER at low alpha so the underlying surface keeps
+/// its depth. The red border carries the strong signal; this only tints.
+pub const DANGER_WASH: Hsla = Hsla { a: 0.12, ..DANGER };
 
 // --- Level meters ----------------------------------------------------------
 /// Translucent overlay that darkens the transient zone between the bright

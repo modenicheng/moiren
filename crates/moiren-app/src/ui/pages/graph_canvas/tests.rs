@@ -907,3 +907,42 @@ fn spectrum_card_is_four_by_three_with_a_vertical_meter_and_a_clear_plot() {
     assert_close(plot.size.height, theme::card::SPECTRUM_BODY_H * 0.5);
     assert_close(plot.origin.x, camera.project_rect(layout.body).origin.x);
 }
+
+#[test]
+fn badge_hits_on_a_faulted_card_and_falls_through_to_the_card_without_one() {
+    // Faulted: the badge rect resolves to HitTarget::Badge ahead of the
+    // card check, so the popover anchor hangs off the same rect.
+    let mut source = node("source", "Input", "Device")
+        .at(-200., 40.)
+        .ports(false, true);
+    source.faulted = true;
+    source.faults.push(super::CardFault {
+        cause: "cause".into(),
+        hint: None,
+    });
+    let world = Arc::new(CanvasWorld::new(vec![source], Vec::new()));
+    let frame = CanvasFrame::new(world, Camera::default(), viewport());
+    let badge = frame.nodes[0].badge;
+    let position = (
+        f32::from(frame.bounds.origin.x) + badge.origin.x + badge.size.width / 2.,
+        f32::from(frame.bounds.origin.y) + badge.origin.y + badge.size.height / 2.,
+    );
+    assert_eq!(
+        frame.hit_test(position),
+        Some(HitTarget::Badge { node: "source" })
+    );
+
+    // Not faulted: no badge is painted, so the same rect falls through to
+    // the card — gate and paint stay in agreement.
+    let plain = node("sink", "Output", "Device")
+        .at(-200., 40.)
+        .ports(false, true);
+    let world = Arc::new(CanvasWorld::new(vec![plain], Vec::new()));
+    let frame = CanvasFrame::new(world, Camera::default(), viewport());
+    let badge = frame.nodes[0].badge;
+    let position = (
+        f32::from(frame.bounds.origin.x) + badge.origin.x + badge.size.width / 2.,
+        f32::from(frame.bounds.origin.y) + badge.origin.y + badge.size.height / 2.,
+    );
+    assert_eq!(frame.hit_test(position), Some(HitTarget::Node("sink")));
+}

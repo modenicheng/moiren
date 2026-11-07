@@ -223,11 +223,17 @@ impl CachedPanel for ToolbarPanel {
     }
 }
 
-/// The status bar projects the published snapshot and nothing else; the
-/// service dedups publishes, so publish identity is the whole truth.
+/// The status bar projects the published snapshot; the service dedups
+/// publishes, so publish identity is most of the truth. The error summary
+/// also renders `dispatch_error`, which `UiState::try_dispatch` writes
+/// synchronously with no publish behind it — the old error strip's key
+/// carried it for exactly this reason, and the summary inherited the job:
+/// cloned only at capture time so a dispatch failure while the bar stands
+/// still rebuilds on its own notification.
 #[derive(PartialEq)]
 pub(in crate::ui::window) struct StatusbarKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
+    dispatch_error: Option<String>,
 }
 
 pub(super) struct StatusbarPanel;
@@ -237,8 +243,10 @@ impl CachedPanel for StatusbarPanel {
     type Key = StatusbarKey;
 
     fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
+        let state = shell.state.read(cx);
         Self::Key {
-            snapshot: PublishRef::new(Arc::clone(&shell.state.read(cx).snapshot)),
+            snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
+            dispatch_error: state.dispatch_error.clone(),
         }
     }
 
@@ -256,7 +264,7 @@ impl CachedPanel for StatusbarPanel {
         // allocated width explicitly, not its intrinsic content width.
         div()
             .size_full()
-            .child(statusbar(shell.state.read(cx)).gpui_test_observe())
+            .child(statusbar(shell, cx).gpui_test_observe())
             .into_any_element()
     }
 }
@@ -393,7 +401,8 @@ fn format_text(
     }
 }
 
-pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
+pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<Div> {
+    let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
     let running = snapshot.phase == SessionPhase::Running;
     let color = if running {
@@ -433,6 +442,12 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
                 .gap(px(theme::SPACE_3))
                 .min_w_0()
                 .child(badge(crate::ui::presentation::phase_text(snapshot), color))
+                // The unlocated errors' home after the error strip: a
+                // VS Code-style red summary beside the phase badge; clicking
+                // opens the fault popover with the whole group.
+                .when(super::fault_popover::has_unlocated(state), |view| {
+                    view.child(fault_summary(shell, cx))
+                })
                 .when(running || !snapshot.elapsed.is_zero(), |view| {
                     view.child(label(crate::ui::presentation::elapsed_text(snapshot)))
                 })
@@ -473,6 +488,66 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
                         .gpui_test_observe(),
                 ),
         )
+}
+
+/// The status bar's error summary: a "!" marker plus the first unlocated
+/// message in danger red, clickable into the fault popover with the whole
+/// graph-wide group. Located faults never land here — they surface on
+/// their own node card or mixer strip.
+fn fault_summary(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+    let this = cx.entity();
+    let summary = super::fault_popover::unlocated_summary(shell.state.read(cx)).unwrap_or_default();
+    div()
+        .id("statusbar-faults")
+        .flex()
+        .flex_none()
+        .min_w_0()
+        .max_w(px(420.))
+        .items_center()
+        .gap(px(6.))
+        .overflow_x_hidden()
+        .cursor_pointer()
+        .on_click(move |_, window, cx| {
+            this.update(cx, |shell, cx| {
+                let position = window.mouse_position();
+                shell.fault_popover = Some(super::fault_popover::FaultPopover {
+                    node: None,
+                    anchor: Bounds {
+                        origin: point(position.x, position.y - px(14.)),
+                        size: size(px(2.), px(14.)),
+                    },
+                });
+                cx.notify();
+            })
+        })
+        .tooltip(|window, cx| {
+            component::tooltip::Tooltip::new(t!("Show error details").into_owned())
+                .build(window, cx)
+        })
+        .child(
+            div()
+                .flex_none()
+                .size(px(14.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::DANGER)
+                .text_color(theme::controls::ON_ACCENT)
+                .text_size(px(9.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("!"),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .overflow_x_hidden()
+                .text_size(px(theme::TEXT_SM))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::DANGER)
+                .child(summary),
+        )
+        .gpui_test_observe()
 }
 
 #[cfg(test)]

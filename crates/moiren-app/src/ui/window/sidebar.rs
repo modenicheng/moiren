@@ -270,7 +270,13 @@ impl HotSurface for InspectorMeters {
         &self.geometry
     }
 
-    fn paint(&self, frame: &MeterTracks, window: &mut Window, cx: &mut App) {
+    fn paint(
+        &self,
+        frame: &MeterTracks,
+        _layer: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let Some(shell) = self.shell.upgrade() else {
             return;
         };

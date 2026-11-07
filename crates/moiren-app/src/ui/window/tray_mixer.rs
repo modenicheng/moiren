@@ -498,7 +498,13 @@ impl HotSurface for FlyoutMeters {
         &self.geometry
     }
 
-    fn paint(&self, frame: &MeterTracks, window: &mut Window, cx: &mut App) {
+    fn paint(
+        &self,
+        frame: &MeterTracks,
+        _layer: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let Some(flyout) = self.flyout.upgrade() else {
             return;
         };
