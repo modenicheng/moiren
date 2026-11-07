@@ -114,6 +114,7 @@ pub struct StudioShell {
     state: Entity<UiState>,
     settings_open: bool,
     settings: settings::SettingsEditor,
+    settings_menu: Option<settings::ValueMenu>,
     project_menu: bool,
     sidebar_open: bool,
     inspector_open: bool,
@@ -353,6 +354,7 @@ impl StudioShell {
             state,
             settings_open: false,
             settings,
+            settings_menu: None,
             project_menu: false,
             sidebar_open: true,
             inspector_open: true,
@@ -820,13 +822,21 @@ impl Render for StudioShell {
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .child(match self.presentation.page {
-                        Page::Graph => graph::page::page(self, window),
-                        Page::Mixer => mixer::page::page(self, window, cx),
-                        Page::Matrix => matrix::page_for(self, window, cx),
-                        Page::Devices => devices::page_for(self, window, cx),
+                    // Settings is a workspace page, not an overlay: it
+                    // replaces the page + inspector column entirely, so a
+                    // canvas gesture can never reach a hidden workspace.
+                    .when(self.settings_open, |row| {
+                        row.child(settings::page_for(self, window))
                     })
-                    .child(sidebar::inspector_host(self, window, cx)),
+                    .when(!self.settings_open, |row| {
+                        row.child(match self.presentation.page {
+                            Page::Graph => graph::page::page(self, window),
+                            Page::Mixer => mixer::page::page(self, window, cx),
+                            Page::Matrix => matrix::page_for(self, window, cx),
+                            Page::Devices => devices::page_for(self, window, cx),
+                        })
+                        .child(sidebar::inspector_host(self, window, cx))
+                    }),
             )
             .child(chrome::status_for_page(self, window))
             // Clicking anywhere outside an open inline editor commits it, so
@@ -846,14 +856,14 @@ impl Render for StudioShell {
                 }
             })
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
-            .when(self.settings_open, |v| {
-                v.child(settings::overlay_for(self, window))
-            })
             .when(self.detail_node.is_some(), |v| {
                 v.child(graph::detail_overlay(self, window, cx))
             })
             .when(self.binding_menu.is_some(), |v| {
                 v.child(graph::binding_menu_overlay(self, window, cx))
+            })
+            .when(self.settings_menu.is_some(), |v| {
+                v.child(settings::menu_overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);

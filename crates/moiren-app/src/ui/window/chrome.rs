@@ -1,6 +1,7 @@
 use rust_i18n::t;
 
 use super::*;
+use crate::ui::IconIntent;
 use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
 use std::sync::Arc;
@@ -128,11 +129,22 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 )
                 .child(
                     IconButton::new("open-settings", t!("Settings"), ActionIcon::Settings)
+                        // The gear is the page toggle: lit while the settings
+                        // workspace is open, and clicking again closes it.
+                        .intent(if shell.settings_open {
+                            IconIntent::Accent
+                        } else {
+                            IconIntent::Neutral
+                        })
                         .on_click({
                             let this = this.clone();
                             move |_, window, cx| {
                                 this.update(cx, |shell, cx| {
-                                    shell.open_settings(window, cx);
+                                    if shell.settings_open {
+                                        shell.close_settings(window, cx);
+                                    } else {
+                                        shell.open_settings(window, cx);
+                                    }
                                 })
                             }
                         }),
@@ -179,6 +191,7 @@ pub(in crate::ui::window) struct ToolbarKey {
     compact: bool,
     project_name: String,
     pending_request: bool,
+    settings_open: bool,
 }
 
 pub(super) struct ToolbarPanel;
@@ -195,6 +208,7 @@ impl CachedPanel for ToolbarPanel {
             compact: shell.compact,
             project_name: shell.project_name.clone(),
             pending_request: state.pending_request,
+            settings_open: shell.settings_open,
         }
     }
 

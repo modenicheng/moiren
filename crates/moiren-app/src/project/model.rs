@@ -400,6 +400,11 @@ pub enum UiDensity {
     Compact,
 }
 
+/// Legacy preference: the workstation is dark-only and nothing reads this
+/// any more. The field stays declared (never written) so older preferences
+/// files still parse under `deny_unknown_fields`; it drops out of the file
+/// on the next save, and removing the field entirely then needs no
+/// migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Appearance {
@@ -415,6 +420,7 @@ pub struct AppPreferences {
     pub export_authorizations: Vec<crate::service::ExportAuthorization>,
     pub version: u32,
     pub density: UiDensity,
+    #[serde(skip_serializing)]
     pub appearance: Appearance,
     pub language: crate::i18n::UiLanguage,
     /// Requested for the next audio apply/start, not a measured device result.

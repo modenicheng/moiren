@@ -10,7 +10,6 @@ pub(super) mod page;
 mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
-use component::menu::ContextMenuExt;
 // Slider-sync machinery is shared with the compressor parameter sliders
 // (window::graph::compressor), so the slot type, edit type and the
 // coalesced sync/commit entry points are visible across the window.
@@ -356,41 +355,9 @@ fn meter(
             .child(page::readout(shell, entry.id))
             .gpui_test_observe())
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
-            t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.").into_owned()
+            t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip.").into_owned()
         ).build(window, cx))
         .gpui_test_observe()
-        .context_menu({
-            let this = cx.entity();
-            let settings = shell.preferences.meters;
-            move |mut menu, _, _| {
-                use crate::project::{MeterFalloff, PeakHold};
-                use component::menu::PopupMenuItem;
-                menu = menu.label(t!("Peak fall-off · dB/s"));
-                for falloff in MeterFalloff::ALL {
-                    let this = this.clone();
-                    menu = menu.item(PopupMenuItem::new(format!("{} dB/s", falloff.db_per_second()))
-                        .checked(settings.falloff == falloff)
-                        .on_click(move |_, _, cx| this.update(cx, |shell, cx| {
-                            shell.preferences.meters.falloff = falloff;
-                            shell.save_preferences(cx);
-                            cx.notify();
-                        })));
-                }
-                menu = menu.separator().label(t!("Peak hold"));
-                for hold in PeakHold::ALL {
-                    let this = this.clone();
-                    menu = menu.item(PopupMenuItem::new(if hold == PeakHold::Off { t!("Off").into_owned() }
-                        else { format!("{} s", hold.duration().as_secs_f32()) })
-                        .checked(settings.peak_hold == hold)
-                        .on_click(move |_, _, cx| this.update(cx, |shell, cx| {
-                            shell.preferences.meters.peak_hold = hold;
-                            shell.save_preferences(cx);
-                            cx.notify();
-                        })));
-                }
-                menu
-            }
-        })
 }
 
 fn meter_probe(

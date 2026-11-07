@@ -153,15 +153,14 @@ fn production_navigation_opens_every_workspace_and_settings_overlays_matrix(
         assert!(window.find("disconnect-route").visible());
         window.click("open-settings", cx);
         assert!(window.find("settings-page").visible());
-        assert!(window.find("settings-dialog").visible());
-        assert!(window.find("settings-backdrop").visible());
+        assert!(window.find("settings-nav-audio").visible());
         assert!(
-            window.try_find("matrix-page").is_some(),
-            "Settings overlays the existing workspace"
+            window.try_find("matrix-page").is_none(),
+            "Settings replaces the workspace while open"
         );
         assert_eq!(page.read(cx).page, Page::Matrix);
         window.click("close-settings", cx);
-        assert!(window.try_find("settings-dialog").is_none());
+        assert!(window.try_find("settings-page").is_none());
         assert!(window.find("matrix-page").visible());
         assert!(
             window.find("disconnect-route").visible(),
