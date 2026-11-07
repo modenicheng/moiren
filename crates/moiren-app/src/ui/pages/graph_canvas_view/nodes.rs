@@ -6,8 +6,8 @@ use gpui_kit::{
 use rust_i18n::t;
 
 use super::super::graph_canvas::{
-    BindingChip, CanvasFrame, CanvasNode, CardKnob, ChipLayout, CurveSpec, KnobLayout, MeterLayout,
-    NodeLayout, TextLayout, curves,
+    BindingChip, CanvasFrame, CanvasNode, CardFault, CardKnob, ChipLayout, CurveSpec, KnobLayout,
+    MeterLayout, NodeLayout, TextLayout, curves,
 };
 use crate::ui::monitoring::{REST_DB, SPECTRUM_NOMINAL_SPAN_HZ, SpectrumCurve};
 use crate::ui::theme;
@@ -805,9 +805,71 @@ fn paint_rack_chain(
 /// a tooltip reads the same at every zoom — below the card, flipping
 /// above it when the canvas bottom is too close, and above every card
 /// because the hot layer paints it.
+/// The faulted card's "!" badge in the reserved header slot: a danger-red
+/// disc with a white glyph. The rect is camera-projected, so the badge
+/// reads at every zoom like the outline does. Hit-tested as
+/// `HitTarget::Badge`; clicking opens the fault detail popover.
+fn paint_fault_badge(frame: &CanvasFrame, badge: &Bounds<f32>, window: &mut Window, cx: &mut App) {
+    const GLYPH: f32 = theme::card::BADGE_SIZE * 0.72;
+    let bounds = frame.window_rect(*badge);
+    window.paint_quad(PaintQuad {
+        bounds,
+        corner_radii: (f32::from(bounds.size.width) / 2.).into(),
+        background: theme::DANGER.into(),
+        border_widths: 0f32.into(),
+        border_color: theme::DANGER,
+        border_style: BorderStyle::default(),
+    });
+    let glyph = shape_text(
+        window,
+        "!",
+        GLYPH,
+        Font {
+            weight: FontWeight::SEMIBOLD,
+            ..font(theme::FONT_UI)
+        },
+        theme::controls::ON_ACCENT,
+        GLYPH,
+    );
+    let left =
+        f32::from(bounds.origin.x) + (f32::from(bounds.size.width) - f32::from(glyph.width())) / 2.;
+    let top = f32::from(bounds.origin.y) + (f32::from(bounds.size.height) - GLYPH) / 2.;
+    let _ = glyph.paint(
+        point(px(left), px(top)),
+        px(GLYPH),
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
+/// The hovered card's fault banner, hung below the card the tooltip is
+/// for. The general painter below does the drawing; this only resolves
+/// the canvas's card and clip.
 pub(in crate::ui) fn paint_fault_tooltip(
     frame: &CanvasFrame,
     index: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let node = &frame.world.nodes[index];
+    if node.faults.is_empty() {
+        return;
+    }
+    let card = frame.window_rect(frame.nodes[index].card);
+    paint_fault_banner(&node.faults, card, frame.bounds, window, cx);
+}
+
+/// The fault banner: a window-pixel panel hung below `anchor`, flipping
+/// above it near `clip`'s bottom edge and clamped inside `clip`, listing
+/// every fault's translated cause and hint. Shared by the graph page (the
+/// hovered card) and the mixer page (the hovered strip), so both surfaces'
+/// hover errors read identically.
+pub(in crate::ui) fn paint_fault_banner(
+    faults: &[CardFault],
+    anchor: Bounds<Pixels>,
+    clip: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -815,13 +877,12 @@ pub(in crate::ui) fn paint_fault_tooltip(
     const GAP: f32 = 6.;
     const ICON: f32 = 14.;
     const MAX_LINE: f32 = 360.;
-    let node = &frame.world.nodes[index];
-    if node.faults.is_empty() {
+    if faults.is_empty() {
         return;
     }
     let line_height = theme::TEXT_SM + 6.;
     let mut lines: Vec<(ShapedLine, bool)> = Vec::new();
-    for fault in &node.faults {
+    for fault in faults {
         lines.push((
             shape_text(
                 window,
@@ -856,21 +917,19 @@ pub(in crate::ui) fn paint_fault_tooltip(
         .fold(0., f32::max);
     let width = PAD + ICON + 6. + text_width + PAD;
     let height = 2. * PAD + lines.len() as f32 * line_height;
-    let card = frame.window_rect(frame.nodes[index].card);
-    let canvas = frame.bounds;
-    let canvas_left = f32::from(canvas.origin.x);
-    let canvas_right = canvas_left + f32::from(canvas.size.width);
-    let canvas_bottom = f32::from(canvas.origin.y) + f32::from(canvas.size.height);
-    let left = f32::from(card.origin.x)
-        .min(canvas_right - width)
-        .max(canvas_left);
-    let below = f32::from(card.origin.y + card.size.height) + GAP;
-    let top = if below + height > canvas_bottom {
-        f32::from(card.origin.y) - GAP - height
+    let clip_left = f32::from(clip.origin.x);
+    let clip_right = clip_left + f32::from(clip.size.width);
+    let clip_bottom = f32::from(clip.origin.y) + f32::from(clip.size.height);
+    let left = f32::from(anchor.origin.x)
+        .min(clip_right - width)
+        .max(clip_left);
+    let below = f32::from(anchor.origin.y) + f32::from(anchor.size.height) + GAP;
+    let top = if below + height > clip_bottom {
+        f32::from(anchor.origin.y) - GAP - height
     } else {
         below
     };
-    window.with_content_mask(Some(ContentMask { bounds: canvas }), |window| {
+    window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
         window.paint_quad(PaintQuad {
             bounds: Bounds {
                 origin: point(px(left), px(top)),
@@ -967,10 +1026,12 @@ fn paint_port(
 /// expander glyph; full-height tint rail; per-kind body (the detail line
 /// until the body widgets land); the meter strip; and port rails with
 /// channel hints. Every card wears a gray outline so stacked cards keep
-/// their edges, and the outline alone carries state — danger while a
-/// fault names the node, warning while the engine re-prepares it, the
-/// primary highlight while selected — so a card's body never changes
-/// with its state. Faults themselves surface in [`paint_fault_tooltip`].
+/// their edges, and the outline carries state — danger while a fault names
+/// the node, warning while the engine re-prepares it, the primary highlight
+/// while selected — so a card's body never changes with its state except
+/// for a fault, which additionally tints the surface with the faint danger
+/// wash and pins the "!" badge. Fault details surface in
+/// [`paint_fault_tooltip`] on hover and in the fault popover via the badge.
 pub(super) fn paint_node(
     frame: &CanvasFrame,
     node: &CanvasNode,
@@ -993,6 +1054,11 @@ pub(super) fn paint_node(
         (theme::GRIP, theme::card::OUTLINE_REST_W)
     };
     rounded(card, theme::SURFACE_3, radius, window);
+    if node.faulted {
+        // The faint red wash over the card's own surface, under the rail
+        // and body that the masked paint lays on top of it.
+        rounded(card, theme::DANGER_WASH, radius, window);
+    }
     window.with_content_mask(Some(ContentMask { bounds: card }), |window| {
         // Tint rail: the card's own left edge just inside the outline. A
         // rail-wide quad cannot carry the card's corner radius (gpui clamps
@@ -1050,6 +1116,9 @@ pub(super) fn paint_node(
             theme::TEXT_FAINT,
             cx,
         );
+        if node.faulted {
+            paint_fault_badge(frame, &layout.badge, window, cx);
+        }
         // Body: knobs where the kind exposes its main control, else the
         // detail line. States never touch the body — a faulted or
         // preparing card keeps every control usable under its outline.

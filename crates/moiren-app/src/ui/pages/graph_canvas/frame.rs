@@ -21,6 +21,10 @@ pub enum HitTarget<'a> {
     Chip {
         node: &'a str,
     },
+    /// A faulted card's "!" badge; opens the fault detail popover.
+    Badge {
+        node: &'a str,
+    },
     Node(&'a str),
     Wire(&'a str),
 }
@@ -126,6 +130,11 @@ impl CanvasFrame {
                 .is_some_and(|chip| chip.bounds.contains(&point(local.0, local.1)))
             {
                 return Some(HitTarget::Chip { node: &node.id });
+            }
+            // The "!" badge only exists on a faulted card, so the gate and
+            // the paint agree; it wins over the card beneath it.
+            if node.faulted && layout.badge.contains(&point(local.0, local.1)) {
+                return Some(HitTarget::Badge { node: &node.id });
             }
             if layout.card.contains(&point(local.0, local.1)) {
                 return Some(HitTarget::Node(&node.id));

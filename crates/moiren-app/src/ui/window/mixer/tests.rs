@@ -2625,6 +2625,7 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
     finish_service(runtime);
 }
 
+/// == tests appended from feat/overlay-scrollbars ==
 /// An edge edit must hit every strip's cache equally: the routing rows
 /// moved out of the cached body, so edges render nowhere inside the cache
 /// and the pruned key no longer compares the touching edges (the old key
@@ -2787,6 +2788,156 @@ fn docked_strips_follow_the_dock_scroll(cx: &mut TestAppContext) {
         after.origin.x,
         before.origin.x - px(60.),
         "the docked strip must follow the dock pane's scroll"
+    );
+    finish_service(runtime);
+}
+
+/// Lands a node-subject fault on a strip through a fresh publish: the strip
+/// key projects its fault group, so exactly that strip rebuilds while its
+/// siblings replay; the badge appears and clicking it opens the fault
+/// popover, which a click outside dismisses; clearing the fault rebuilds
+/// the strip back to rest.
+#[gpui_kit::test]
+fn mixer_fault_rebuilds_only_its_strip_and_the_badge_opens_the_popover(cx: &mut TestAppContext) {
+    use crate::service::{GraphFault, GraphSubject};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let badge_id = SharedString::from(format!("strip-fault-{target:?}"));
+
+    // A publish that lands the fault, delivered the way the service does.
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let mut snapshot = (*state.snapshot).clone();
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            graph.faults.push(GraphFault {
+                subject: GraphSubject::Node(target),
+                cause: "The input source configuration is invalid".into(),
+                hint: Some("Choose an input source at the top of the channel".into()),
+            });
+            state.snapshot = std::sync::Arc::new(snapshot);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    assert_eq!(
+        after - before,
+        1,
+        "only the faulted strip may rebuild; siblings must replay"
+    );
+
+    // The badge opens the popover on this strip's fault group.
+    cx.update(|window, cx| {
+        window.click(badge_id.clone(), cx);
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        view.read_with(cx, |shell, _| shell
+            .fault_popover
+            .is_some_and(|popover| popover.node == Some(target))),
+        "the badge click must open the fault popover on its strip"
+    );
+    cx.update(|window, _| {
+        assert!(
+            window.try_find("fault-popover").is_some(),
+            "popover renders"
+        );
+    });
+
+    // A press outside the popover dismisses it.
+    cx.update(|window, cx| {
+        window.click("statusbar-format", cx);
+        window.draw(cx).clear(cx);
+    });
+    assert!(view.read_with(cx, |shell, _| shell.fault_popover.is_none()));
+    cx.update(|window, _| {
+        assert!(window.try_find("fault-popover").is_none());
+    });
+
+    // Clearing the fault rebuilds the strip back to rest; the badge goes.
+    // Re-baseline first: the clicks above refresh the whole window, which
+    // rebuilds every panel regardless of the caches and would pollute the
+    // delta.
+    let before_clear = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let mut snapshot = (*state.snapshot).clone();
+            std::sync::Arc::make_mut(&mut snapshot.graph).faults.clear();
+            state.snapshot = std::sync::Arc::new(snapshot);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let cleared = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    assert_eq!(
+        cleared - before_clear,
+        1,
+        "clearing the fault rebuilds exactly the faulted strip"
+    );
+    cx.update(|window, _| {
+        assert!(window.try_find(badge_id).is_none(), "the badge is gone");
+    });
+    finish_service(runtime);
+}
+
+/// Hover feeds the meter frame's fault banner through the shell's
+/// `hovered_strip`, never a panel key: hovering a strip tracks it, leaving
+/// clears it, and neither rebuilds a strip panel.
+#[gpui_kit::test]
+fn mixer_strip_hover_tracks_the_strip_for_the_fault_banner(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    cx.update(|window, cx| {
+        window.hover(SharedString::from(format!("strip-{target:?}")), cx);
+    });
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.hovered_strip),
+        Some(target),
+        "hovering the strip must track it for the banner"
+    );
+    // The hover-driven notify rides the cached path: on the next cached
+    // frames no strip panel may rebuild — hover lives outside every key.
+    // (window.hover itself refreshes the whole window, so the baseline
+    // sits after it, measuring the cached frames alone.)
+    cx.update(|window, cx| {
+        window.hover("engine-statusbar", cx);
+    });
+    assert_eq!(view.read_with(cx, |shell, _| shell.hovered_strip), None);
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    assert_eq!(
+        after - before,
+        0,
+        "a hover change must never rebuild a strip panel"
     );
     finish_service(runtime);
 }

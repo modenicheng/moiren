@@ -8,6 +8,7 @@ use moiren_signal::ErasedBinding;
 use thiserror::Error;
 
 pub mod builtin;
+pub mod plugin;
 
 pub(crate) use builtin::PassThrough;
 pub use builtin::{
@@ -15,6 +16,7 @@ pub use builtin::{
     DelaySettings, Eq, EqSettings, Gain, Gate, GateSettings, Limiter, LimiterSettings, Pan,
 };
 pub use builtin::{ChannelMode, StripConfig};
+pub use plugin::{PluginProcessor, PluginSettings};
 
 #[cfg(test)]
 mod tests;

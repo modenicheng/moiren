@@ -8,6 +8,7 @@ workspace = true
 
 [dependencies]
 moiren-core = { path = "../moiren-core" }
+moiren-plugins = { path = "../moiren-plugins" }
 moiren-signal = { path = "../moiren-signal" }
 rtrb = { workspace = true }
 thiserror = { workspace = true }

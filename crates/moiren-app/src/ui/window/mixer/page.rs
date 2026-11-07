@@ -37,6 +37,10 @@ impl Placement {
 pub(in crate::ui::window) struct MeterGeometry {
     tracks: BTreeMap<NodeId, (Placement, usize, Option<bool>)>,
     readouts: BTreeMap<NodeId, Placement>,
+    /// The strip rect the hovered fault banner hangs from. No clip rides
+    /// along: the banner may reach below the scroll viewport's edge, so it
+    /// clamps against the hot layer's own bounds instead.
+    pub(in crate::ui::window) banners: BTreeMap<NodeId, Bounds<Pixels>>,
 }
 
 /// Where the strip's meter tracks and readouts sit, registered by the
@@ -91,6 +95,11 @@ pub(in crate::ui::window) struct StripKey {
     /// in the key — the main strip row or the dock, per kind.
     scroll: Point<Pixels>,
     meters: crate::project::MeterDisplayPreferences,
+    /// The shared `GraphSnapshot` projection says this strip's fault group
+    /// is non-empty: the strip wears the danger frame, the wash and the "!"
+    /// badge. Projected as one allocation-free bool so a fault landing or
+    /// clearing rebuilds only this strip.
+    faulted: bool,
 }
 
 impl PartialEq for StripKey {
@@ -104,6 +113,7 @@ impl PartialEq for StripKey {
             && self.editing_balance == other.editing_balance
             && self.scroll == other.scroll
             && self.meters == other.meters
+            && self.faulted == other.faulted
             && self.catalog == other.catalog
             && strip_content_eq(&self.graph, &other.graph, self.id)
     }
@@ -144,6 +154,7 @@ impl StripPanel {
                 shell.mixer_scroll.offset()
             },
             meters: shell.preferences.meters,
+            faulted: graph.node_faulted(id),
         }
     }
 }
@@ -221,6 +232,7 @@ impl CachedPanel for StripPanel {
         shell.mixer_geometry.update(|geometry| {
             geometry.tracks.remove(&self.id);
             geometry.readouts.remove(&self.id);
+            geometry.banners.remove(&self.id);
         });
         shell.node_meter_points.borrow_mut().remove(&self.id);
     }
@@ -331,6 +343,11 @@ fn strip_column(
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
     let selected = shell.selected_node == Some(id);
+    // The shared fault projection: the live column wears the danger frame,
+    // the faint red wash and the banner anchor while the strip holds a
+    // fault; the "!" badge rides the cached title row off the same
+    // projection via `StripKey::faulted`.
+    let faulted = shell.state.read(cx).snapshot.graph.node_faulted(id);
     let cached_body = {
         // The cached wrapper carries its load-bearing sizing: it takes the
         // column height the sections leave over (cached views lay out by
@@ -358,7 +375,26 @@ fn strip_column(
         .border_t_1()
         .border_b_1()
         .border_r_1()
-        .border_color(theme::BORDER)
+        .border_color(if faulted {
+            theme::DANGER
+        } else {
+            theme::BORDER
+        })
+        .on_hover({
+            let this = this.clone();
+            move |hovered, _, cx| {
+                this.update(cx, |shell, cx| {
+                    // Hover feeds the meter frame's fault banner alone, the
+                    // graph's `hovered_node` twin: one notified frame per
+                    // change, never a panel key.
+                    let next = hovered.then_some(id);
+                    if shell.hovered_strip != next {
+                        shell.hovered_strip = next;
+                        cx.notify();
+                    }
+                })
+            }
+        })
         .on_drop(move |dragged: &NodeId, _, cx| {
             this.update(cx, |shell, cx| {
                 let graph = &shell.state.read(cx).snapshot.graph.graph;
@@ -372,6 +408,33 @@ fn strip_column(
                 }
                 cx.notify();
             })
+        })
+        .child({
+            // The fault banner's anchor: the whole strip's window rect,
+            // registered for the meter frame the same way meter tracks are.
+            let geometry = shell.mixer_geometry.clone();
+            canvas(
+                move |bounds, _window, _| {
+                    geometry.update(|geometry| {
+                        geometry.banners.insert(id, bounds);
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0()
+        })
+        .when(faulted, |strip| {
+            // The faint red wash over the strip's own surface: painted
+            // above the background and below every control that follows.
+            strip.child(
+                div()
+                    .id(SharedString::from(format!("strip-wash-{id:?}")))
+                    .absolute()
+                    .inset_0()
+                    .bg(theme::DANGER_WASH)
+                    .gpui_test_observe(),
+            )
         })
         .child(
             div()
@@ -739,12 +802,18 @@ impl HotSurface for MixerMeters {
         &self.geometry
     }
 
-    fn paint(&self, frame: &MeterGeometry, window: &mut Window, cx: &mut App) {
+    fn paint(
+        &self,
+        frame: &MeterGeometry,
+        layer: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let Some(shell) = self.shell.upgrade() else {
             return;
         };
         shell.update(cx, |shell, cx| {
-            paint_mixer_meter_frame(frame, shell, window, cx, &self.readouts)
+            paint_mixer_meter_frame(frame, shell, layer, window, cx, &self.readouts)
         });
     }
 }
@@ -769,6 +838,7 @@ fn readout_text(levels: Option<&[DisplayLevel]>) -> String {
 fn paint_mixer_meter_frame(
     frame: &MeterGeometry,
     shell: &mut StudioShell,
+    layer: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut Context<StudioShell>,
     readouts: &std::cell::RefCell<ReadoutShapes>,
@@ -858,6 +928,30 @@ fn paint_mixer_meter_frame(
         trace.meter_paints += 1;
         trace.add(began.elapsed());
         trace.finish(shell.node_meter_points.borrow().len());
+    }
+    // The hovered faulted strip's banner, hung under the strip and clamped
+    // against the hot layer's own bounds. Like the graph page's tooltip it
+    // lives on the shell outside every panel key: one notified frame per
+    // hover change paints it, and it stands until the next change repaints.
+    if let Some(id) = shell.hovered_strip
+        && let Some(bounds) = frame.banners.get(&id)
+    {
+        let faults: Vec<crate::ui::pages::graph_canvas::CardFault> = {
+            let state = shell.state.read(cx);
+            state
+                .snapshot
+                .graph
+                .faults_for_node(id)
+                .into_iter()
+                .map(|fault| crate::ui::pages::graph_canvas::CardFault {
+                    cause: fault.cause,
+                    hint: fault.hint,
+                })
+                .collect()
+        };
+        crate::ui::pages::graph_canvas_view::paint_fault_banner(
+            &faults, *bounds, layer, window, cx,
+        );
     }
 }
 

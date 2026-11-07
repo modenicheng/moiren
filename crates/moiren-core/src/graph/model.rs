@@ -69,6 +69,8 @@ pub enum NodeKind {
     SpectrumAnalyzer,
     /// Linear chain of built-in processors.
     Rack,
+    /// Third-party plugin instance (CLAP/VST2/VST3) loaded by the engine.
+    Plugin,
 }
 
 impl NodeKind {
@@ -93,7 +95,8 @@ impl NodeKind {
             | Self::Recorder
             | Self::Meter
             | Self::SpectrumAnalyzer
-            | Self::Rack => (1, 1),
+            | Self::Rack
+            | Self::Plugin => (1, 1),
         }
     }
 }

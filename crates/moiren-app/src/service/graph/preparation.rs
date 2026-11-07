@@ -1,5 +1,31 @@
 use super::*;
 
+/// Why a project could not be prepared, and the node it points at — `None`
+/// when the failure is genuinely graph-wide (settings, exports, topology
+/// shape). Callers record this as a fault so a node-aimed cause lands on
+/// that node's card and strip instead of the status bar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparationFailure {
+    pub node: Option<NodeId>,
+    pub cause: String,
+}
+
+impl PreparationFailure {
+    fn graph_wide(cause: impl Into<String>) -> Self {
+        Self {
+            node: None,
+            cause: cause.into(),
+        }
+    }
+
+    fn at(node: NodeId, cause: impl Into<String>) -> Self {
+        Self {
+            node: Some(node),
+            cause: cause.into(),
+        }
+    }
+}
+
 impl GraphPreparation {
     /// Default-settings translation used only by the tests; production always
     /// carries the effective audio settings through
@@ -14,6 +40,7 @@ impl GraphPreparation {
             &crate::service::AudioSettings::default(),
             crate::service::AudioLatencyProfile::default(),
         )
+        .map_err(|failure| failure.cause)
     }
 
     pub fn configured_engine_project(
@@ -21,7 +48,7 @@ impl GraphPreparation {
         max_block_frames: usize,
         settings: &crate::service::AudioSettings,
         profile: crate::service::AudioLatencyProfile,
-    ) -> Result<moiren_engine::host::EngineProject, String> {
+    ) -> Result<moiren_engine::host::EngineProject, PreparationFailure> {
         use moiren_core::protocol::ParamValue;
         use moiren_engine::{
             boundary::{CaptureIntent, ClockRole},
@@ -32,11 +59,14 @@ impl GraphPreparation {
             },
             processor::{Gain, Pan},
         };
-        settings.validate().map_err(|error| error.to_string())?;
+        settings
+            .validate()
+            .map_err(|error| PreparationFailure::graph_wide(error.to_string()))?;
         let profile_buffer = profile
             .requested_buffer_frames()
             .map(|frames| frames as usize);
-        self.primary_io_nodes()?;
+        self.primary_io_nodes()
+            .map_err(PreparationFailure::graph_wide)?;
         let mut project = EngineProject {
             graph: self.graph.clone(),
             ..EngineProject::default()
@@ -102,17 +132,18 @@ impl GraphPreparation {
                 }
                 NodeKind::Source => {
                     let mut device = DeviceOptions::default();
-                    let source = match state
-                        .source
-                        .as_ref()
-                        .ok_or("The Source node is not bound to an input source")?
-                    {
+                    let source = match state.source.as_ref().ok_or_else(|| {
+                        PreparationFailure::at(
+                            node.id(),
+                            "The Source node is not bound to an input source",
+                        )
+                    })? {
                         InputSelection::Physical { endpoint_id } => {
                             if !inputs.insert(format!("physical:{endpoint_id}")) {
-                                return Err(
-                                    "Multiple Source nodes are bound to the same physical device"
-                                        .into(),
-                                );
+                                return Err(PreparationFailure::at(
+                                    node.id(),
+                                    "Multiple Source nodes are bound to the same physical device",
+                                ));
                             }
                             device = settings.effective_input(endpoint_id).device_options(
                                 settings.backend,
@@ -131,14 +162,17 @@ impl GraphPreparation {
                             creation_time_100ns,
                         } => {
                             if *creation_time_100ns == 0 {
-                                return Err(
-                                    "The application source is missing a stable process identity"
-                                        .into(),
-                                );
+                                return Err(PreparationFailure::at(
+                                    node.id(),
+                                    "The application source is missing a stable process identity",
+                                ));
                             }
                             let executable = format!("moiren:process:{pid}:{creation_time_100ns}");
                             if !inputs.insert(executable.clone()) {
-                                return Err("Multiple Source nodes are bound to the same application source".into());
+                                return Err(PreparationFailure::at(
+                                    node.id(),
+                                    "Multiple Source nodes are bound to the same application source",
+                                ));
                             }
                             // Process loopback owns a fixed WASAPI Shared float
                             // stream. Physical input defaults cannot turn it
@@ -161,12 +195,17 @@ impl GraphPreparation {
                     })
                 }
                 NodeKind::Sink => {
-                    let endpoint = state
-                        .output_endpoint_id
-                        .as_ref()
-                        .ok_or("The Sink node is not bound to an output device")?;
+                    let endpoint = state.output_endpoint_id.as_ref().ok_or_else(|| {
+                        PreparationFailure::at(
+                            node.id(),
+                            "The Sink node is not bound to an output device",
+                        )
+                    })?;
                     if !endpoints.insert(endpoint.clone()) {
-                        return Err("Multiple Sink nodes are bound to the same device".into());
+                        return Err(PreparationFailure::at(
+                            node.id(),
+                            "Multiple Sink nodes are bound to the same device",
+                        ));
                     }
                     let clock_role = if Some(node.id()) == master {
                         ClockRole::Master
@@ -205,9 +244,21 @@ impl GraphPreparation {
                 | NodeKind::SpectrumAnalyzer
                 | NodeKind::Rack => state
                     .builtin
-                    .node_config(node.kind())?
-                    .ok_or_else(|| format!("missing settings for {:?} node", node.kind()))?,
+                    .node_config(node.kind())
+                    .map_err(|error| PreparationFailure::at(node.id(), error))?
+                    .ok_or_else(|| {
+                        PreparationFailure::at(
+                            node.id(),
+                            format!("missing settings for {:?} node", node.kind()),
+                        )
+                    })?,
                 NodeKind::Bus => NodeConfig::Bus,
+                NodeKind::Plugin => {
+                    return Err(PreparationFailure::at(
+                        node.id(),
+                        format!("plugin node {node:?} has no plugin assignment yet"),
+                    ));
+                }
             };
             project.nodes.insert(node.id(), config);
             let values = match node.kind() {
@@ -237,7 +288,9 @@ impl GraphPreparation {
                         }),
                 );
         }
-        project.validate().map_err(|e| e.to_string())?;
+        project
+            .validate()
+            .map_err(|e| PreparationFailure::graph_wide(e.to_string()))?;
         Ok(project)
     }
     pub fn primary_io_nodes(&self) -> Result<(NodeId, NodeId), String> {

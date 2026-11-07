@@ -346,7 +346,8 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                             HitTarget::Node(id)
                             | HitTarget::Knob { node: id, .. }
                             | HitTarget::Expand { node: id }
-                            | HitTarget::Chip { node: id } => id.to_owned(),
+                            | HitTarget::Chip { node: id }
+                            | HitTarget::Badge { node: id } => id.to_owned(),
                             HitTarget::Port(port) => return frame.world.node_of_port(port),
                             HitTarget::Wire(_) => return None,
                         };
@@ -777,6 +778,33 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
                         shell.selected_route = None;
                         shell.binding_menu = Some(BindingMenu {
                             node: node_id,
+                            anchor,
+                        });
+                        cx.notify();
+                    })
+                }
+            }),
+            on_badge: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(id, anchor), window, cx| {
+                    this.update(cx, |shell, cx| {
+                        if shell.begin_pointer_session(window) {
+                            return;
+                        }
+                        let Some(node_id) = nodes
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .and_then(|node| node.node_id)
+                        else {
+                            return;
+                        };
+                        // The badge opens the fault popover on the card's
+                        // fault group; it selects nothing, mirroring the
+                        // hover tooltip that also presumes nothing.
+                        shell.fault_popover = Some(super::fault_popover::FaultPopover {
+                            node: Some(node_id),
                             anchor,
                         });
                         cx.notify();

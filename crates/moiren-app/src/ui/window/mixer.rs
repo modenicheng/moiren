@@ -112,6 +112,11 @@ fn strip_body(
         shell.trace.borrow_mut().strip_renders += 1;
     }
     let id = entry.id;
+    // The strip's "!" badge rides the cached title row: the fault state is
+    // a StripKey field. The danger frame, wash and banner anchor live on the
+    // page's live column (see `strip_column`), which reads the same fault
+    // projection every frame without a rebuild.
+    let faulted = shell.state.read(cx).snapshot.graph.node_faulted(id);
     let title = div()
         .id(SharedString::from(format!("strip-header-{id:?}")))
         .flex()
@@ -126,15 +131,25 @@ fn strip_body(
         .cursor_pointer()
         .child(
             div()
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .overflow_hidden()
-                .text_ellipsis()
-                .child(crate::ui::presentation::display_label(
-                    &shell.state.read(cx).snapshot,
-                    entry,
-                    kind,
-                )),
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(crate::ui::presentation::display_label(
+                            &shell.state.read(cx).snapshot,
+                            entry,
+                            kind,
+                        )),
+                )
+                .when(faulted, |row| row.child(strip_fault_badge(id, cx))),
         )
         .child(
             label(format!(
@@ -234,6 +249,49 @@ fn strip_body(
 }
 
 pub(super) use strip_controls::node_controls;
+
+/// The faulted strip's "!" badge at the title row's right edge — the graph
+/// card badge's twin. Clicking it opens the fault popover on this strip's
+/// fault group; the press is stopped here so the title row keeps its
+/// select / double-click-to-inspect behavior for itself.
+fn strip_fault_badge(id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement {
+    let this = cx.entity();
+    div()
+        .id(SharedString::from(format!("strip-fault-{id:?}")))
+        .flex_none()
+        .size(px(14.))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::DANGER)
+        .text_color(theme::controls::ON_ACCENT)
+        .text_size(px(9.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .child("!")
+        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_click(move |_, window, cx| {
+            this.update(cx, |shell, cx| {
+                // Anchor the popover on the badge: the click position sits
+                // on it, so a badge-sized rect under the pointer is the
+                // same hang point the graph badge uses.
+                let position = window.mouse_position();
+                let half = px(7.);
+                shell.fault_popover = Some(super::fault_popover::FaultPopover {
+                    node: Some(id),
+                    anchor: Bounds {
+                        origin: point(position.x - half, position.y - half),
+                        size: size(px(14.), px(14.)),
+                    },
+                });
+                cx.notify();
+            })
+        })
+        .gpui_test_observe()
+}
 
 fn meter(
     shell: &StudioShell,
