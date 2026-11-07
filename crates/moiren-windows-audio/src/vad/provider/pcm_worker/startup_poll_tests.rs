@@ -1,5 +1,5 @@
 use super::*;
-use crate::vad::{Capabilities, EndpointSnapshot};
+use crate::vad::{Capabilities, EndpointSnapshot, ProtocolError};
 
 fn capabilities() -> Capabilities {
     let mut bytes = [0; 64];
@@ -339,5 +339,56 @@ fn first_microphone_startup_does_not_exempt_old_owner_generation_or_gate_reset()
         assert!(f.io.written.is_empty());
         f.wait();
         assert_eq!(*f.clock.sleeps.borrow(), [POLL_INTERVAL]);
+    }
+}
+
+#[test]
+fn first_playback_owner_waits_for_native_packet_allocation_before_preparing_pcm() {
+    let f = Startup::new(0);
+    let paused = patch(f.current, 20, Intent::Playback as u32);
+    for unallocated in [paused, patch(paused, 88, 0)] {
+        assert_eq!(
+            unallocated.pcm_shape(capabilities()),
+            Err(ProtocolError::NotReady)
+        );
+        assert!(
+            !transport::playback_ready(unallocated, &f.state, false),
+            "legal first Paused/zero-frame observation must not prepare an owner"
+        );
+    }
+    let allocated = patch(paused, 92, 144);
+    assert!(transport::playback_ready(allocated, &f.state, false));
+    assert_eq!(allocated.pcm_shape(capabilities()).unwrap().frames(), 144);
+    assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 0);
+    assert_eq!(f.state.telemetry.snapshot().recovery_events, 0);
+}
+
+#[test]
+fn playback_startup_wait_does_not_exempt_running_or_previous_transport_faults() {
+    for case in 0..6 {
+        let f = Startup::new(0);
+        let mut current = patch(f.current, 20, Intent::Playback as u32);
+        let mut started = false;
+        match case {
+            0 => current = patch(current, 100, StreamState::Running as u32),
+            1 => started = true,
+            2 => f.state.reset_epoch.store(1, Ordering::Release),
+            3 => current = patch(current, 92, 144),
+            4 => f.state.producer_quiesced_epoch.store(1, Ordering::Release),
+            5 => f.state.consumer_quiesced_epoch.store(1, Ordering::Release),
+            _ => unreachable!(),
+        }
+        assert!(
+            transport::playback_ready(current, &f.state, started),
+            "case {case}"
+        );
+        if case == 3 {
+            assert!(current.pcm_shape(capabilities()).is_ok());
+        } else {
+            assert_eq!(
+                current.pcm_shape(capabilities()),
+                Err(ProtocolError::NotReady)
+            );
+        }
     }
 }

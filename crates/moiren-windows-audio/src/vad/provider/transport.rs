@@ -2,6 +2,28 @@
 //! only the lifecycle adapter can open a native gate.
 use super::{lifecycle::EndpointControl, *};
 
+pub(super) fn playback_ready(
+    current: super::super::EndpointSnapshot,
+    state: &SessionState,
+    transport_started: bool,
+) -> bool {
+    // Acquire publishes Paused before allocating native packets. With no prior
+    // transport there is no PCM owner to prepare yet; a later QUERY must supply
+    // its shape. Never give an old/recovering owner or Running this exception.
+    let allocating_first_packets = !transport_started
+        && state.reset_epoch.load(Ordering::Acquire) == 0
+        && state.producer_quiesced_epoch.load(Ordering::Acquire) == 0
+        && state.consumer_quiesced_epoch.load(Ordering::Acquire) == 0
+        && current.stream_state() == StreamState::Paused
+        && current.packet_frames() == 0;
+    matches!(
+        current.stream_state(),
+        StreamState::Paused | StreamState::Running
+    ) && current.gate_open()
+        && state.admitted()
+        && !allocating_first_packets
+}
+
 pub(super) fn microphone_running(
     current: super::super::EndpointSnapshot,
     state: &SessionState,

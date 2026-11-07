@@ -903,12 +903,7 @@ fn run_playback(
                     thread::sleep(POLL_INTERVAL);
                     continue;
                 }
-                if matches!(
-                    current.stream_state(),
-                    StreamState::Paused | StreamState::Running
-                ) && current.gate_open()
-                    && state.admitted()
-                {
+                if transport::playback_ready(current, state, transport_started) {
                     if owner.is_none() {
                         // Latch admission before creating the owner. Later atomic
                         // revisions must never relabel this owner's borrowed PCM.
