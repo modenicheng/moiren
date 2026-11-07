@@ -45,9 +45,19 @@ prematurely prepare the first Playback owner. The focused source fix passes
 the final workspace/headless tests,145 opt-in integration example tests and
 strict workspace/all-target Clippy at18:40. The startup exception is limited
 to the first Paused/zero-frame observation with all recovery epochs zero.
-This does not establish this run's unique cause or completion of S4/S5; a
-corrected release still requires its own remote test. The requested-name
-suffix and full native matrix remain open, as do physical and sustained gates.
+This does not establish this run's unique cause or completion of S4/S5.
+
+The clean corrected release from4d9195a is tested at19:01 on the same explicit
+seeded fixture and unchanged612 driver. Both held clients now initialize and
+release; both renames retain direct old-Removed evidence. Playback replacement
+MMDevice enumeration still times out. Microphone replacement initialization,
+release and fresh Engine confirmation succeed, but exact Windows FriendlyName
+still fails on the adapter suffix. The run remains failed/unqualified, with no
+Start/PCM claim. Its cleanup_error is null, join/control release succeed and
+the later wrapper confirms no test owner/present child and unchanged external
+state. This is progress beyond the earlier failure, not full acceptance or a
+proof of its unique cause. The requested-name suffix and full native matrix
+remain open, as do physical and sustained gates.
 
 The [remote-priority receipt](../../docs/validation/2026-11-07-remote-priority.md)
 records current target evidence, not new audio or driver qualification. The

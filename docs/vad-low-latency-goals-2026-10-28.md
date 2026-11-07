@@ -141,8 +141,13 @@ diagnostic initializes Playback but fails Stop with a sticky no-ready packet
 stream error and nonempty public exit cleanup_error. Source investigation
 identifies early first-owner preparation during legal Paused/zero-packet
 allocation; the focused repair passes workspace/headless tests, the145-test
-integration example suite and strict Clippy, pending its own remote run. None of these
-steps closes exact-name/streaming/held/repetition/race/default-role acceptance,
+integration example suite and strict Clippy. Its clean corrected release is
+tested at19:01 on the same explicit fixture: both held clients and direct old
+Removed checkpoints complete; Playback replacement enumeration fails while
+Microphone replacement/Engine confirmation succeeds but exact name fails on
+the adapter suffix. Cleanup/join/release and external-state audits pass; this
+held-only run makes no Start/PCM claim. None of these steps closes full
+exact-name/streaming/held/repetition/race/default-role acceptance,
 the desktop gate, sustained audio or calibrated physical p95/p99.
 
 ### Remote-priority update - 2026-11-07

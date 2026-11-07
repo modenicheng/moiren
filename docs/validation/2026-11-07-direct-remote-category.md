@@ -239,7 +239,8 @@ at18:40:31 with all three exits0:
 
 - `cargo test --locked -j 1 --workspace --features
   moiren-app/gpui-test,moiren-app/vad-integration-probe`; Windows-audio again
-  reports876 passed,5ignored. The full workspace includes headless UI tests.
+  reports876 passed,5ignored. Across73 harnesses the workspace reports2627
+  passed,10ignored,0failed, including headless UI tests.
 - The explicit opt-in `vad_integration` example suite reports145 passed.
 - Strict workspace/all-target Clippy with both opt-in features passes.
 
@@ -251,3 +252,57 @@ terminal timestamps are in `workspace-tests.log`,
 pass. Independent final source review finds no blocking issue. These are host
 software checks; a separately pinned corrected release and remote run are
 still required for native lifecycle evidence.
+
+## Corrected release: same-fixture direct remote retest
+
+The repair is committed as `d24a93e`; the clean release build uses source
+`4d9195a1b114b3b756e590beeeb39c83351c335f`, tree
+`4f733825b95cfb806646a2369b4d6aef02bdad1b`. The optimized
+`vad_integration-4d9195a.exe` is7818752 bytes, SHA-256:
+
+```text
+29040924C4B20B481712F2E1E1E379287DB88AFE7955453CB5C8AD5C5BD98785
+```
+
+Fresh local and remote evidence roots are respectively
+`D:\coding\moiren-evidence\20261107-playback-owner-1850` and
+`D:\MoirenTest\20261107-playback-owner-1850`. The finite worker is adapted
+only for these fresh paths and the new binary pins, retaining the same
+explicit fixture seed202611071825, held-rename flags and90s overall timeout.
+Its eight actual-invocation/refusal checks pass under each of PS5/PS7. Worker
+SHA-256 is `A57E9C9C4587E8F98193228C8A473E95918C71C33D0A21F9567B0811CFB4C718`.
+The frozen helper definitions, candidate manifest, installed612 driver,
+before/after external-state comparisons and no-owner/child gates are unchanged.
+No new rename mode, identity rotation, driver install or desktop action occurs.
+
+At19:01:08..31, the corrected native run fails acceptance after15232ms but
+advances beyond the prior sticky startup/Stop failure:
+
+- Both directions initialize and release their held exclusive clients,
+  submit their rename, and retain direct old-Removed evidence before observing
+  the replacement. Stable project ID and graph binding are retained.
+- Playback reaches replacement-present, but replacement native initialization
+  times out in MMDevice enumeration. Its replacement service observation still
+  carries the old composed Windows name; no exact-name or fresh Engine/native
+  confirmation is accepted for Playback.
+- Microphone initializes/releases its replacement client and obtains fresh
+  Engine confirmation. It still fails the exact-name gate: requested
+  `Moiren rename Microphone 11228`, observed
+  `Moiren rename Microphone 11228 (70- Moiren virtual audio endpoint)`.
+- Service join/control release succeed, report.cleanup_error is null, and
+  the exit snapshot records removal requested with closed gates. This proves
+  control-file release, not final PDO absence. The wrapper separately checks
+  no remaining test owner or present child. Boot/driver/default/volume/security
+  and protected-process comparisons pass; the sole audit failure is the
+  intentionally retained failed native acceptance report.
+
+The same-fixture retest is consistent with the repair removing the previous
+early-owner failure; it is not a paired causal proof, a complete rename pass,
+an A-to-B-to-A test, or an independent test of locked-screen operation. Neither
+unlock nor VM startup is performed or required by this worker. No Start, PCM,
+continuous-audio, physical-latency or S4/S5 completion is claimed.
+
+All17 terminal artifacts are archived without raw audio. Remote/local/archive
+entry lengths and SHA-256 match. The41621-byte `native-fixed-seeded.zip` has
+SHA-256 `A54F3D5EF2250BC312DEA3E1115E491971CC34ADD98ADC6A52AC5F608A7919CB`.
+Original deployment and failed native evidence remain unchanged.
