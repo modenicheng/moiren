@@ -147,8 +147,9 @@ This closes a real cross-token runner defect and establishes that a changed
 foreground alone does not unblock strict owned input. Do not retry unchanged
 or weaken exact receiver/DPI/geometry,400/900ms timing, retained-order, waveform
 or physical gates. Existing UIA two-second and retained event-overlap refusals
-remain independent; the old desktop worker also has known replacement-owner
-generation expectations that require correction before reuse.
+remain independent. The local-only correction below fixes the old desktop
+worker's replacement-owner expectations; it is not a deployable package or
+evidence of successful desktop reuse.
 
 S3 needs a usable unobstructed owned-input surface and actual successful
 Stop/join/Evaluate/explicitApply, not this stopped control. The user may need
@@ -160,3 +161,56 @@ satisfied or a separately reviewed new evidence scope, not a bypass. S1
 waveform/gaps, S2 native periods, S4 full lifecycle matrix and S5 sustained
 calibrated p95/p99 remain unqualified. The new A/B/A mode is still only the
 unapproved proposal; remote priority does not approve its implementation.
+
+## Retained desktop worker: local-only contract correction
+
+After the remote control, inspect the existing retained-Apply worker against
+the production service regression
+`retained_apply_reopens_stopped_host_in_both_precisions_and_preserves_original_request`.
+The predecessor is owner1; Stop advances the intent to2 without starting an
+owner; explicit retained Apply starts owner3. The request still refers to
+predecessor1. The worker incorrectly waited for replacement owner2.
+
+Copy the historical runner into a new host evidence directory and correct
+five expectation sites: the activation gate, ordered replacement-start lookup,
+successful final Stop/join, unconfirmed-Apply Stop/join and idle recovery.
+Only those sites and two explanatory comments change. The original worker and
+all three contract/test files retain their original hashes, and the copied
+contract files are byte-identical. Source identity, native format and queues,
+predecessor1 request, two-owner ceiling,400/900ms timing, violation gates and
+cleanup deadlines remain unchanged.
+
+An AST-extracted regression first rejects the original worker, then passes
+8 actual condition/lookup/join checks under each of Windows PowerShell5.1 and
+PowerShell7.6.6. Existing runner17 and hot-path9 checks also pass per shell;
+a separate closure rerun confirms34 pure checks per shell. These do not call
+the worker entrypoint or native APIs. The exact production Rust service test
+finishes at17:27:40+08:00 with1passed/0failed, including its F32/F64 loop,
+against integration source`1126bb1`. It uses the software test backend, not
+native audio or a desktop acceptance run.
+
+The corrected worker is42589bytes, SHA256:
+
+```text
+ED87934FB26C8577E2D5CA77D611A3CC6F33350586D5517B82B1815220EA3D2D
+```
+
+Evidence is retained at
+`D:\coding\moiren-evidence\20261107-172427-retained-desktop-owner`.
+No native intent, launcher, supervisor or binary is copied into this repair
+directory. Nothing is deployed or executed natively. The43519-byte compact
+archive contains35 verified files, SHA256:
+
+```text
+812CADC291B44AABFE2FA1CB2577031219EA2589F9BAC3AF542431B10AA71809
+```
+
+A final strict-known-host read-only SSH observation at target17:31:38+08:00
+again finds no app/probe/recorder owners or running Moiren tasks. All four
+owned tasks remain Ready with their existing0/0/1/1 results. QQMusic15096 and
+the separately owned PowerShell27444 retain their exact creation-ms pins;
+historical OBS12648 remains absent and MoirenVad remains Running. VMware's
+host inventory still reports zero running VMs. No app launch, click, audio,
+reader invocation, driver installation or unchanged native retry follows.
+This closes the generation-expectation runner defect only; all outstanding
+native waveform, desktop, lifecycle, sustained and physical gates remain open.

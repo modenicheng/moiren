@@ -19,6 +19,17 @@ still has an admin token. The existing encrypted driver VM remains stopped,
 and no new package installation, host native operation, unchanged retry,
 Windows-name acceptance or physical-latency verdict occurs.
 
+A separate local-only retained desktop runner correction follows the existing
+service contract: predecessor1 -> stopped intent2 -> replacement owner3, with
+the measured request still bound to predecessor1. The fresh evidence copy
+changes five expectation sites, passes34 pure checks on each PowerShell
+version and1software-backed Rust service test covering F32/F64. Historical
+pins/contracts are unchanged; no corrected runner deployment or native run
+occurs. The final17:31:38 read-only target check still has no owned test
+processes or running owned tasks, unchanged protected identities and a Running
+driver; the host VMware inventory is zero. S3 and all other native/physical
+gates remain open.
+
 ## Pipeline integration checkpoint - 2026-11-05
 
 The [current integration checkpoint](../../docs/validation/2026-11-04-pipeline-checkpoint.md)

@@ -124,6 +124,15 @@ guard as well as its exact non-admin token. The driver VM remains stopped.
 No unchanged native retry, new driver installation, threshold change or
 physical/full-pipeline verdict follows.
 
+The same receipt records a local-only retained desktop worker repair: Stop
+advances intent1->2, and explicit retained Apply starts owner3 rather than2.
+Five expectation sites now follow the existing service contract without
+changing predecessor evidence or timing gates. Both PowerShell shells pass34
+pure checks each, and the software-backed Rust service regression passes1test
+with its F32/F64 loop. No corrected worker is deployed or run natively; the
+17:31:38 read-only remote check still finds no test owners and the driver VM
+inventory remains empty. These checks do not close S3 or any physical gate.
+
 The later [wait-error repair](validation/2026-11-05-s4-wait-error-retention.md)
 closes two source-supported false-acceptance paths, not native qualification.
 

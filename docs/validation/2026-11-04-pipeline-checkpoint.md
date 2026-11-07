@@ -625,6 +625,15 @@ regression-tested, not counted as native acceptance. Historical OBS12648 is
 now absent; the frozen reader's process guard and non-admin-token guard remain
 unsatisfied. VMware still reports zero running. No unchanged retry follows.
 
+The same receipt separately pins a host-only retained desktop runner repair:
+the replacement is owner3 after stopped intent2, while its measured request
+still names predecessor1. Five expectation sites are corrected in a fresh
+evidence copy; both shells pass34 pure checks each and the exact F32/F64
+software-backed service regression passes1test. Historical source pins and
+contracts are unchanged. No deployment/native execution or desktop acceptance
+is inferred. The17:31:38 remote observation leaves the same guarded blockers
+and no running owned test task or app; the encrypted VM remains stopped.
+
 One read-only SSH preflight reaches the existing pinned `moiren-lan` target at
 23:15:31. It reports machine `LAPTOP-NP49RG6H`, build22631, boot2026-10-30,
 24266188KiB available memory and144438063104bytes free onD:. The DAWN PRO2
