@@ -613,6 +613,15 @@ external readiness change.
 
 ## Target Readiness
 
+The later November7 user amendment selects the existing standalone remote
+computer directly; the encrypted VM need not be started for further driver
+work. Older VM-only blockers below are historical, not current requirements.
+Keep package/signature/rollback and protected-client guards. Desktop unlock
+is only an ordinary visible-input acceptance prerequisite, not a blanket
+condition for SSH/CLI/metadata/noninteractive audio tests; evaluate each
+test's actual token/session/device needs independently. See the amendment in
+the [November7 receipt](2026-11-07-remote-priority.md).
+
 The [2026-11-07 remote-priority receipt](2026-11-07-remote-priority.md)
 supersedes the following historical readiness observations. The target is
 reachable with its original loaded driver, and a Limited/session1 observer

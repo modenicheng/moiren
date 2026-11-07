@@ -23,14 +23,34 @@ The canonical driver qualification verdict remains in
 - Treat application bypass here as the existing Process Loopback capture path,
   not bypassing a DSP node. Compare it with VAD under the same output conditions.
 - Build and prepare on the development host; install and debug the kernel
-  driver only on the separate test target. The existing VMware guest is the
-  functional driver target, not permission to install the driver on the host.
+  driver only on the separate test target. Per the 2026-11-07 user amendment,
+  use the existing standalone remote test computer directly; VMware is not a
+  prerequisite. This is not permission to install the driver on the host.
 - Keep each implementation/test/documentation slice atomic locally. Per the
   2026-10-29 user update, batch pushes at meaningful verified integration
   checkpoints to avoid triggering CI for every small commit.
   Do not stage unrelated screenshots, JSON, or other user work.
-- The VM has a roughly 64 GB system disk. Delete obsolete, owned scratch
-  artifacts after verified archival; do not accumulate build trees or binaries.
+- Delete obsolete, owned scratch artifacts after verified archival; do not
+  accumulate build trees or binaries. If the optional historical VM is reused,
+  its roughly 64 GB system disk remains a separate storage constraint.
+
+### 2026-11-07 direct remote target and desktop scope
+
+The user explicitly selects the existing separate remote test computer instead
+of requiring VMware. Earlier records that require starting/unlocking the
+encrypted VM describe the then-current plan and no longer block direct remote
+driver work. Keep package/signature/loaded-SYS provenance, rollback readiness,
+endpoint ownership and explicit handling of disruptive install/reboot steps;
+do not silently alter boot/security policy or stop protected external clients.
+
+An unlocked, usable desktop is a prerequisite only for tests that exercise
+ordinary visible desktop input, not for every SSH, CLI, metadata or audio test.
+Schedule noninteractive work independently when its own token/session/device
+requirements are met; a locked screen is not itself evidence that such work
+cannot run. Conversely, a reachable SSH/session0 token does not establish
+usable input in the app's interactive session. The stopped point observation
+supports exact-root input refusal in that snapshot, not a WTS lock-state
+diagnosis. Do not bypass a foreign/system cover to obtain a desktop pass.
 
 ### 2026-11-03 development and test scheduling
 
@@ -100,7 +120,7 @@ configuration or acceptance evidence.
 | S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. Frozen metadata rules out assigning all replacement residuals to client Stop-tail inventory, without implying DAC presentation. PCM persistence/decode refusals pass 35 regressions per platform. The exact reviewed terminal-reader script/manifest are staged and hash-verified remotely, without execution. | The reader still lacks its exact permitted non-admin token and historical OBS12648 process guard; the manifest is not rewritten. Matched routes, explained full waveform correspondence and calibrated measurement remain open; original residuals/gaps remain failures. |
 | S2 | Independent VAD target/capacity, actual-demand admission, priming, servo and bounded recovery are implemented. | Native period/block combinations and sustained quality do not yet qualify a lower default. |
 | S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. The November7 stopped-only read-only point snapshot identifies a foreign LockScreenBackstopFrame over Settings, without diagnostic input or audio. The separate local runner generation correction passes software checks only. | An unobstructed interactive target, successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open; the retained archive's event-order refusal is separate. Forced diagnostic-app cleanup remains a failed lifecycle, not desktop acceptance. |
-| S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist; the software-output category candidate passes host/portable/WDK checks. The streaming harness requires old/new Start/PCM, direct Removed, exact name and fresh confirmation. Readiness waits now retain current-request errors from both route exports before checking readiness; final PCM retains the bounded gate/freshness contract. Pre-client admission permits legal generation zero while final PCM still requires a nonzero generation. Tests pass 145 on Windows and 124 on Linux stable. | Windows-visible name acceptance, migration/default roles and the required native streaming/held-client/race/repetition cases remain open; the VM needs unlock/start. |
+| S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist; the software-output category candidate passes host/portable/WDK checks. The streaming harness requires old/new Start/PCM, direct Removed, exact name and fresh confirmation. Readiness waits now retain current-request errors from both route exports before checking readiness; final PCM retains the bounded gate/freshness contract. Pre-client admission permits legal generation zero while final PCM still requires a nonzero generation. Tests pass 145 on Windows and 124 on Linux stable. | Windows-visible name acceptance, migration/default roles and the required native streaming/held-client/race/repetition cases remain open. Use the standalone remote target per the November7 amendment, with package/signature/rollback and endpoint guards; VM startup is not required. |
 | S5 | Deterministic/RT software checks and finite native receipts exist. Offline qualification now checks both p95 and p99 plus calibration uncertainty strictly below10ms, matching the current S5 requirement rather than the older p95-only rule. | Repeated/load/non-silent sustained runs and calibrated p95/p99 below10ms, or the evidenced device-limited fallback, remain open. |
 
 No aggregate percentage, software test total or successful lifecycle substitutes
@@ -141,7 +161,8 @@ remains a failed lifecycle;13 raw artifacts are verified, protected identities
 and driver/defaults/render controls are unchanged, and no owner/running test
 task remains. This snapshot neither explains the earlier run retrospectively
 nor establishes WTS lock state or a product/DPI defect. No unchanged retry or
-bypass follows; the remote desktop and encrypted-VM prerequisites stay open.
+bypass follows. Visible desktop input remains unqualified; the later direct
+remote amendment removes VM startup as a prerequisite for independent work.
 
 The later [wait-error repair](validation/2026-11-05-s4-wait-error-retention.md)
 closes two source-supported false-acceptance paths, not native qualification.
@@ -308,10 +329,11 @@ analyzer on known delay, drift, silence, dropped data, and epoch changes. Report
 measurement endpoints, uncertainty, sample count, p50/p95/p99/max and startup
 separately. A software-loopback receipt does not certify acoustic/physical E2E.
 
-The VM remains the driver functional and failure-recovery target. Physical
-qualification needs a suitable separate hardware target, or an explicitly
-documented physical-device/measurement setup in the guest. Do not install the
-test driver on the development host to bypass this constraint.
+Use the separate remote computer for driver functional and failure-recovery
+work per the November7 user amendment; a VM is optional, not mandatory.
+Physical qualification still needs a declared hardware/measurement setup and
+calibration; standalone execution alone is not physical latency evidence.
+Do not install the test driver on the development host to bypass this constraint.
 
 ### S2 - VAD operating budget, independently of capacity
 

@@ -5,6 +5,25 @@ This records actual remote work after the user prioritized the test target.
 The complete S0-S5 objective remains open; no audio or physical qualification
 is inferred from desktop accessibility, software checks, or process cleanup.
 
+## Later user amendment: direct remote testing
+
+After the observations below, the user explicitly asks to use the standalone
+remote target directly rather than require VMware. VM startup/unlock is no
+longer a prerequisite for driver candidate qualification. Preserve exact
+package/signature/loaded-driver provenance, rollback and endpoint/client
+guards; this does not authorize development-host installation or undisclosed
+boot/security changes, reboot, or interference with protected external audio.
+
+The earlier blanket request for an unlocked remote desktop was too broad.
+Only ordinary visible-input desktop acceptance needs an accessible,
+unobstructed interactive desktop. SSH/CLI/metadata and noninteractive audio
+work are scheduled by their actual token/session/device requirements, not by
+a blanket unlock gate. The point snapshot below identifies what the API
+reported at that point, not WTS lock/security state. Neither changing to the
+standalone target nor successful background work closes the desktop gate.
+Historical VM-precondition statements below are superseded by this amendment;
+the actual observations, refusals, hashes and acceptance gaps remain intact.
+
 ## Fresh target state
 
 At host17:01:42..17:01:45, strict-known-host, batch SSH reaches the expected

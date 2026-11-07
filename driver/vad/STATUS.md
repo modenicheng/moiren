@@ -4,6 +4,18 @@ This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
 verdict. Status updated 2026-11-07.
 
+## Direct remote target amendment - 2026-11-07
+
+The user now selects the existing separate remote computer directly. VMware
+startup/unlock is no longer a driver-work prerequisite; older VM-only planning
+statements below are historical. Retain package/signature/SYS pins, rollback,
+endpoint and protected-client guards, with disruptive install/reboot/security
+steps handled explicitly. Development-host driver/audio/UI operation remains
+outside scope. An accessible unlocked desktop is needed only for ordinary
+visible-input acceptance, not as a blanket gate for SSH, CLI, metadata or
+noninteractive audio work. Those still require their actual token/session/
+device prerequisites. The hit snapshot is not a WTS lock-state verdict.
+
 ## Remote-priority revalidation - 2026-11-07
 
 The [remote-priority receipt](../../docs/validation/2026-11-07-remote-priority.md)
