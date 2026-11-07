@@ -6,6 +6,7 @@ pub mod actions;
 pub mod fader;
 pub mod meters;
 pub mod navigation;
+pub mod overlay_scrollbar;
 pub mod scroll_step;
 
 #[cfg(all(test, feature = "gpui-test"))]

@@ -2,6 +2,8 @@
 use rust_i18n::t;
 
 use super::*;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use gpui_kit::base::ScrollbarAxis;
 
 pub(super) fn label(text: impl Into<SharedString>) -> Div {
     div()
@@ -152,22 +154,47 @@ pub(super) fn editable_value(
         .on_click(on_start)
 }
 
-pub(super) fn panel(id: &'static str) -> Stateful<Div> {
+/// The inspector panel's scroll container. The outer column sizing lives on
+/// [`panel_host`] so the bar overlay can pin there as the panel's sibling
+/// (a scroll container translates its children by the offset at prepaint,
+/// so an overlay inside it would drift away with the content). The panel
+/// renders inside the cached inspector splice: its offset rides the
+/// `InspectorKey`, since a cached panel replays baked paint coordinates
+/// until its key changes.
+pub(super) fn panel(id: &'static str, scroll: &ScrollHandle) -> Stateful<Div> {
     div()
         .id(id)
+        .w_full()
+        .h_full()
         .flex()
         .flex_col()
-        .flex_none()
-        .w(px(theme::INSPECTOR_WIDTH))
-        // Fill the sidebar column so short content (the empty state) never
-        // exposes the workspace behind it; overflow scrolls inside instead.
-        .h_full()
         .p(px(theme::SPACE_4))
         .gap(px(theme::SPACE_3))
         .bg(theme::SURFACE)
         .border_l_1()
         .border_color(theme::BORDER)
+        .track_scroll(scroll)
         .overflow_y_scroll()
+}
+
+/// The inspector panel's host: the fixed-width column whose bar overlay
+/// pins outside the cached panel splice.
+pub(super) fn panel_host(
+    id: &'static str,
+    scroll: &ScrollHandle,
+    panel: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .relative()
+        .flex_none()
+        .w(px(theme::INSPECTOR_WIDTH))
+        .h_full()
+        .child(panel)
+        .child(overlay_scrollbar(
+            scroll,
+            SharedString::from(format!("scrollbar-{id}")),
+            ScrollbarAxis::Vertical,
+        ))
 }
 
 pub(super) fn button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> ActionButton {

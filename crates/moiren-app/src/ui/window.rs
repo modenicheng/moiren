@@ -105,6 +105,19 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
                 desktop.spawn_poll(cx);
             });
             cx.on_action::<app_view::Quit>(|_, cx| cx.quit());
+            // A terminal Ctrl+C must land on the same graceful path as the
+            // in-app quit: the default handler would kill the process before
+            // the quit observers flush autosave and the service retires.
+            #[cfg(windows)]
+            {
+                crate::console::install_quit_handler();
+                cx.spawn(async move |cx| {
+                    crate::console::quit_requested().await;
+                    log::info!(target: "moiren::app", "console interrupt: quitting gracefully");
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
         });
     Ok(())
 }
@@ -114,6 +127,7 @@ pub struct StudioShell {
     state: Entity<UiState>,
     settings_open: bool,
     settings: settings::SettingsEditor,
+    settings_menu: Option<settings::ValueMenu>,
     project_menu: bool,
     sidebar_open: bool,
     inspector_open: bool,
@@ -177,6 +191,21 @@ pub struct StudioShell {
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
+    /// The shared inspector panel's scroll (graph/matrix/device inspectors
+    /// are mutually exclusive), plus the other cached panels' scroll
+    /// containers: their offsets ride the panel keys, since a cached panel
+    /// replays baked paint coordinates until its key changes.
+    inspector_scroll: ScrollHandle,
+    library_scroll: ScrollHandle,
+    library_rail_scroll: ScrollHandle,
+    settings_scroll: ScrollHandle,
+    device_list_scroll: ScrollHandle,
+    device_override_scroll: ScrollHandle,
+    binding_menu_scroll: ScrollHandle,
+    /// The dock pane's own scroll: docked strips key their cached paint on
+    /// this offset, so a dock scroll rebuilds them instead of leaving the
+    /// main row's stale coordinates on screen.
+    dock_scroll: ScrollHandle,
     exports_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
     /// Render/frame instrumentation for the whole window (shell, chrome,
@@ -206,8 +235,15 @@ pub struct StudioShell {
     /// The canvas card under the pointer, tracked on idle moves for the
     /// fault tooltip the meter frame paints; never part of a panel key.
     hovered_node: Option<moiren_core::graph::NodeId>,
+    /// The mixer strip under the pointer, tracked by the strip's hover
+    /// listener for the fault banner the meter frame paints; the graph
+    /// field's twin, likewise never part of a panel key.
+    hovered_strip: Option<moiren_core::graph::NodeId>,
     /// The endpoint menu hanging off a source/sink card's binding chip.
     binding_menu: Option<graph::BindingMenu>,
+    /// The fault detail popover hanging off a faulted object's "!" marker
+    /// (graph badge, mixer strip badge, status bar summary).
+    fault_popover: Option<fault_popover::FaultPopover>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
@@ -218,8 +254,6 @@ pub struct StudioShell {
     /// canvases each frame and read by the sidebar hot layer.
     inspector_meters: sidebar::InspectorMeterFrame,
     inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
-    error_strip: Entity<error_strip::ErrorStripHost>,
-    matrix_panel: Entity<matrix::MatrixPanelHost>,
     devices_panel: Entity<devices::DevicesPanelHost>,
     settings_panel: Entity<settings::SettingsPanelHost>,
     inspector_panel: Entity<sidebar::InspectorPanelHost>,
@@ -256,6 +290,7 @@ impl StudioShell {
         desktop: Option<WeakEntity<desktop::Desktop>>,
     ) -> Self {
         component::Theme::change(component::ThemeMode::Dark, Some(window), cx);
+        crate::ui::theme::apply_component_tokens(cx);
         #[cfg(windows)]
         let touchpad = {
             let mut registration = super::touchpad::TouchpadRegistration::new();
@@ -317,11 +352,6 @@ impl StudioShell {
                 sidebar::InspectorMeters::new(shell_entity.downgrade(), inspector_meters.clone()),
             )))
         });
-        let error_strip = cx.new(|cx| {
-            error_strip::ErrorStripHost::new(error_strip::ErrorStripPanel, shell_entity.clone(), cx)
-        });
-        let matrix_panel = cx
-            .new(|cx| matrix::MatrixPanelHost::new(matrix::MatrixPanel, shell_entity.clone(), cx));
         let devices_panel = cx.new(|cx| {
             devices::DevicesPanelHost::new(devices::DevicesPanel, shell_entity.clone(), cx)
         });
@@ -353,6 +383,7 @@ impl StudioShell {
             state,
             settings_open: false,
             settings,
+            settings_menu: None,
             project_menu: false,
             sidebar_open: true,
             inspector_open: true,
@@ -398,6 +429,14 @@ impl StudioShell {
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
+            inspector_scroll: ScrollHandle::new(),
+            library_scroll: ScrollHandle::new(),
+            library_rail_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
+            device_list_scroll: ScrollHandle::new(),
+            device_override_scroll: ScrollHandle::new(),
+            binding_menu_scroll: ScrollHandle::new(),
+            dock_scroll: ScrollHandle::new(),
             exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
             #[cfg(feature = "gpui-test")]
@@ -412,14 +451,14 @@ impl StudioShell {
             graph_overlays: Default::default(),
             spectrum_scratch: Vec::new(),
             hovered_node: None,
+            hovered_strip: None,
             binding_menu: None,
+            fault_popover: None,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),
             inspector_meters,
             inspector_meter_layer,
-            error_strip,
-            matrix_panel,
             devices_panel,
             settings_panel,
             inspector_panel,
@@ -724,7 +763,7 @@ mod desktop;
 pub use capture::run_ui_capture;
 mod controls;
 mod devices;
-mod error_strip;
+mod fault_popover;
 mod graph;
 mod hot;
 mod matrix;
@@ -756,6 +795,7 @@ impl Render for StudioShell {
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         graph::sync_binding_menu(self, cx);
+        fault_popover::sync(self, cx);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
@@ -798,8 +838,6 @@ impl Render for StudioShell {
             self.meters.update(&self.state.read(cx).snapshot, false);
             self.update_node_meters(false, cx);
         }
-        let error_strip =
-            error_strip::has_faults(self, cx).then(|| error_strip::for_shell(self, window));
         div()
             .id("studio-shell")
             .relative()
@@ -812,7 +850,6 @@ impl Render for StudioShell {
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT_MD))
             .child(chrome::toolbar_for_page(self, window))
-            .when_some(error_strip, |view, error_strip| view.child(error_strip))
             .child(
                 div()
                     .id("workspace-row")
@@ -820,13 +857,21 @@ impl Render for StudioShell {
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .child(match self.presentation.page {
-                        Page::Graph => graph::page::page(self, window),
-                        Page::Mixer => mixer::page::page(self, window, cx),
-                        Page::Matrix => matrix::page_for(self, window, cx),
-                        Page::Devices => devices::page_for(self, window, cx),
+                    // Settings is a workspace page, not an overlay: it
+                    // replaces the page + inspector column entirely, so a
+                    // canvas gesture can never reach a hidden workspace.
+                    .when(self.settings_open, |row| {
+                        row.child(settings::page_for(self, window))
                     })
-                    .child(sidebar::inspector_host(self, window, cx)),
+                    .when(!self.settings_open, |row| {
+                        row.child(match self.presentation.page {
+                            Page::Graph => graph::page::page(self, window),
+                            Page::Mixer => mixer::page::page(self, window, cx),
+                            Page::Matrix => matrix::page(self, cx),
+                            Page::Devices => devices::page_for(self, window, cx),
+                        })
+                        .child(sidebar::inspector_host(self, window, cx))
+                    }),
             )
             .child(chrome::status_for_page(self, window))
             // Clicking anywhere outside an open inline editor commits it, so
@@ -846,14 +891,17 @@ impl Render for StudioShell {
                 }
             })
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
-            .when(self.settings_open, |v| {
-                v.child(settings::overlay_for(self, window))
-            })
             .when(self.detail_node.is_some(), |v| {
                 v.child(graph::detail_overlay(self, window, cx))
             })
             .when(self.binding_menu.is_some(), |v| {
                 v.child(graph::binding_menu_overlay(self, window, cx))
+            })
+            .when(self.settings_menu.is_some(), |v| {
+                v.child(settings::menu_overlay(self, window, cx))
+            })
+            .when(self.fault_popover.is_some(), |v| {
+                v.child(fault_popover::overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
                 shell.undo_redo_graph(false, window, cx);

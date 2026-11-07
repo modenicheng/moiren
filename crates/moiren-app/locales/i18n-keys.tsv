@@ -3,6 +3,8 @@ Search nodes	-	节点搜索输入框占位文本
 Untitled session	-	项目名默认值
 Application file logging is unavailable	-	错误条内日志路径缺失时的回退文本
 Diagnostics: %{log_path}	log_path=log_path（crate::logging::log_path().display()）	format! 原文 "Diagnostics: {log_path}"
+Error details	-	错误详情浮层标题（fault_popover.rs）
+Show error details	-	状态栏错误摘要的悬停提示（chrome.rs fault_summary）
 Start	-	传输按钮（未运行时）
 Stop	-	传输按钮（运行中）
 %{khz} kHz · %{frames} smp · %{ms} ms · %{precision}	khz=rate/1000 保留一位|frames=运行中取专业后端 master 输出流实测 buffer_frames 否则 processing.block_frames|ms=frames*1000/rate 一位小数|precision=f32/f64	状态栏音频格式行（chrome.rs format_text）
@@ -15,52 +17,28 @@ Stereo	-	导出声道选项
 Swap	-	立体声交换按钮
 Inspector	-	检查器开关按钮与面板标题
 Audio	-	设置页标签
-Appearance	-	设置页标签与分区标题
 Language	-	外观页语言切换字段标签
 Diagnostics	-	设置页标签
-Audio defaults for this workstation	-	设置页副标题
 Close	-	设置对话框关闭按钮
-Audio system	-	分区标题
 Backend	-	字段名，也是 merge_value 错误的 label 实参
 Processing sample rate	-	字段名
 Processing precision	-	字段名
-Processing block (frames / ms)	-	字段名
-Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics.	-	说明文本
 Input defaults	-	分区标题，也是 merge_value 错误的 label 实参
 Output defaults	-	分区标题，也是 merge_value 错误的 label 实参
-Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.	-	WASAPI 模式说明
-ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.	-	ASIO 模式说明
-%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.	input_count=config.input_overrides.len()|output_count=config.output_overrides.len()	format! 原文 "{} input / {} output overrides. ..."
 Device buffer policy	-	字段名
-Theme	-	字段名
-Dark workstation	-	detail 值文本
 Density	-	字段名，也是 merge_value 错误的 label 实参
 Comfortable	-	密度选项
 Compact	-	密度选项
-Save to use this density throughout the workstation.	-	说明文本
-Keyboard	-	分区标题
-Next / previous control	-	快捷键说明字段
-Activate focused action	-	快捷键说明字段
-Dismiss settings	-	快捷键说明字段
 Saved request	-	诊断/设备覆盖 detail 标签
 Processing	-	detail 标签，也是 merge_value 错误的 label 实参
 Input	-	detail 标签，也是 merge_value 错误的 label 实参
 Output	-	detail 标签，也是 merge_value 错误的 label 实参
-Unsaved edits stay in the Audio draft until Save or Restart Audio.	-	说明文本
 Active session	-	标题与徽章
-State	-	detail 标签
-Active backend	-	detail 标签
-Active processing	-	detail 标签
-Active input request	-	detail 标签
-Active output request	-	detail 标签
-No active audio configuration	-	空态文本
 Actual native timing	-	分区标题；presentation 回退行标签
 Catalog	-	detail 标签
 %{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications	inputs=snapshot.catalog.inputs.len()|outputs=snapshot.catalog.outputs.len()|asio=snapshot.catalog.asio_drivers.len()|apps=snapshot.catalog.processes.len()	format! 原文 "{} inputs / {} outputs / {} ASIO drivers / {} applications"
 ASIO discovery failed: %{error}	error=snapshot.catalog.asio_error	format! 原文 "ASIO discovery failed: {error}"
-CPU / physical latency / XRUN	-	detail 标签
 Unavailable	-	detail 值与徽章；MeterStatus::NotAvailable 标签
-Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.	-	说明文本
 Quit Moiren	-	危险按钮
 Driver encoding	-	stream_summary 中 ASIO 编码占位文本
 Follow processing	-	采样率下拉选项
@@ -72,7 +50,6 @@ Requested sample rate	-	字段名
 Client sample format	-	字段名
 Sample encoding	-	detail 标签
 Determined by ASIO driver	-	detail 值
-Requested device buffer (frames / ms)	-	字段名
 Unsaved changes	-	设置页脚状态文本
 Saved requests and active audio are shown separately in Diagnostics.	-	设置页脚状态文本
 Audio is stopped. Save keeps it stopped.	-	设置页脚状态文本
@@ -483,8 +460,6 @@ Dim attenuates the post-fader signal by 12 dB	-	Mixer integration
 Drag to reorder channels within the same mixer section	-	Mixer integration
 Scroll to adjust · double-click to reset	-	Mixer integration
 Click to type a value	-	Mixer integration
-Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.	-	Mixer integration
-Peak fall-off · dB/s	-	Mixer integration
 Peak hold	-	Mixer integration
 Off	-	Mixer integration
 Selected profile activates on the next audio start	-	自动应用改造后的延迟档位文案
@@ -550,3 +525,17 @@ A Microphone export can only bind an output node	-	BindExport 方向/节点类�
 The virtual export and graph node have different channel counts	-	BindExport 声道数校验
 Bind	-	设备页虚拟导出行快捷绑定按钮（未选中态）
 Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.	-	VAD 应用侧方向说明
+Interface	-	设置页导航项；与 Audio/Diagnostics 平级
+Processing block	-	音频页字段（tooltip 标注为请求值）
+Requested device buffer	-	输入/输出默认设置字段
+Buffers are requests; the active session reports the actual periods in Diagnostics.	-	处理块字段的 tooltip
+Exclusive requests sole access to the device and needs its support.	-	WASAPI 模式字段的 tooltip
+Device overrides	-	音频页行标签
+%{input_count} input / %{output_count} output	占位符：两个计数	音频页覆盖计数（点击"在设备页中配置"跳转）
+Configure in Devices	-	覆盖行右侧按钮
+Peak fall-off	-	界面页电平表回落分段（20/40/60 dB/s）
+Restore last project at launch	-	界面页开关，即时生效
+Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip.	-	混音器电平表 tooltip（右键菜单已并入设置页）
+General	-	界面页分组卡片标题（语言/密度/恢复开关）
+Meters	-	界面页电平表分组卡片标题
+System	-	诊断页分组卡片标题（目录/控制反馈/ASIO 错误）

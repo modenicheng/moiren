@@ -513,7 +513,7 @@ mod headless {
         cx.update(|window, cx| {
             window.click(key("mono"), cx);
             window.render_frame(cx);
-            assert!(window.find("error-strip").visible());
+            assert!(window.find("statusbar-faults").visible());
         });
         assert_eq!(candidate(&view, cx).exports[0].channels, 2);
         assert_eq!(candidate(&view, cx).exports[0].binding, Some(source));
@@ -629,7 +629,7 @@ mod headless {
             window.render_frame(cx);
             window.click("export-create", cx);
             window.render_frame(cx);
-            assert!(window.find("error-strip").visible());
+            assert!(window.find("statusbar-faults").visible());
         });
         assert!(candidate(&view, cx).exports.is_empty());
         cx.update(|window, cx| {
@@ -662,7 +662,7 @@ mod headless {
             window.render_frame(cx);
             window.click(SharedString::from(format!("export-rename-{id}")), cx);
             window.render_frame(cx);
-            assert!(window.find("error-strip").visible());
+            assert!(window.find("statusbar-faults").visible());
         });
         view.update(cx, |shell, cx| {
             assert_eq!(

@@ -19,7 +19,9 @@ use super::{
 };
 use crate::{
     compiler::{self, CompileConfig, CompiledBindings, CompiledUpdate, NodeBindings},
-    processor::{Compressor, Delay, Eq, Gain, Gate, Limiter, Pan, builtin::ChannelStrip},
+    processor::{
+        Compressor, Delay, Eq, Gain, Gate, Limiter, Pan, PluginProcessor, builtin::ChannelStrip,
+    },
     runtime::{PlanControlPort, PlanSnapshot},
     sample::ProcessingSample,
     spectrum::SignalSpectrumAnalyzer,
@@ -331,6 +333,23 @@ fn bind_host_processors<S: ProcessingSample>(
                     .and_then(|analyzer| bindings.bind_spectrum(node, analyzer))
             }
             NodeConfig::Rack(settings) => bindings.bind_rack(node, settings.clone()),
+            NodeConfig::Plugin(settings) => {
+                // Instantiation runs control-side here; the activated
+                // instance is adapted straight onto the plugin binding.
+                let engine = &job.project.processing.engine;
+                match PluginProcessor::<S>::new(
+                    settings,
+                    engine.processing_sr,
+                    engine.max_block_frames,
+                ) {
+                    Ok(processor) => bindings.bind_plugin(node, processor),
+                    Err(error) => {
+                        return Err(Diagnostic::Compile(format!(
+                            "plugin instantiation failed: {error}"
+                        )));
+                    }
+                }
+            }
             _ => unreachable!(),
         };
         result.map_err(|error| Diagnostic::Compile(error.to_string()))?;

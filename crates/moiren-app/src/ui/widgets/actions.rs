@@ -78,6 +78,7 @@ pub struct ActionButton {
     full_width: bool,
     justify_start: bool,
     trailing: Option<SharedString>,
+    trailing_icon: Option<ActionIcon>,
     square: bool,
     sample: Option<SampleState>,
 }
@@ -98,6 +99,7 @@ impl ActionButton {
             full_width: false,
             justify_start: false,
             trailing: None,
+            trailing_icon: None,
             square: false,
             sample: None,
         }
@@ -120,6 +122,12 @@ impl ActionButton {
     }
     pub fn trailing(mut self, text: impl Into<SharedString>) -> Self {
         self.trailing = Some(text.into());
+        self
+    }
+    /// An icon painted after the label, before any trailing text — the
+    /// dropdown chevron on a select-style trigger.
+    pub fn trailing_icon(mut self, icon: ActionIcon) -> Self {
+        self.trailing_icon = Some(icon);
         self
     }
     pub fn square(mut self) -> Self {
@@ -189,6 +197,7 @@ impl RenderOnce for ActionButton {
         .when(icon_only, |s| s.w(px(m.height)).justify_center().px(px(6.)))
         .when_some(self.icon, |s, icon| s.child(icon.element()))
         .when(!icon_only, |s| s.child(self.label))
+        .when_some(self.trailing_icon, |s, icon| s.child(icon.element()))
         .when_some(self.trailing, |s, text| s.child(div().flex_1()).child(text))
         .when_some(self.tooltip, |s, text| {
             s.tooltip(move |window, cx| {

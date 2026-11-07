@@ -82,6 +82,38 @@ impl GraphSnapshot {
         self.nodes.iter().find(|node| node.id == id)
     }
 
+    /// Whether any fault points at `id`: a `Node` subject names it directly,
+    /// a `Route` subject through both of its endpoint ports. Mixer strip keys
+    /// project this per capture, so it stays allocation-free.
+    pub fn node_faulted(&self, id: NodeId) -> bool {
+        self.faults
+            .iter()
+            .any(|fault| self.subject_points_at(fault.subject, id))
+    }
+
+    /// All faults pointing at `id`, in snapshot order. The one projection the
+    /// inline error UI shares (graph card tooltip and badge popover, mixer
+    /// strip hover banner), so subject→node resolution lives in exactly one
+    /// place.
+    pub fn faults_for_node(&self, id: NodeId) -> Vec<GraphFault> {
+        self.faults
+            .iter()
+            .filter(|fault| self.subject_points_at(fault.subject, id))
+            .cloned()
+            .collect()
+    }
+
+    fn subject_points_at(&self, subject: GraphSubject, id: NodeId) -> bool {
+        match subject {
+            GraphSubject::Node(node) => node == id,
+            GraphSubject::Route(source, destination) => {
+                node_of_port(&self.graph, source) == Some(id)
+                    || node_of_port(&self.graph, destination) == Some(id)
+            }
+            GraphSubject::Graph => false,
+        }
+    }
+
     /// Node kind of `id`, for surfaces that degrade gracefully when the
     /// topology row behind a state entry has already vanished.
     pub fn kind_of(&self, id: NodeId) -> Option<NodeKind> {
@@ -359,6 +391,7 @@ pub fn default_label(kind: NodeKind) -> &'static str {
         NodeKind::Meter => "Meter",
         NodeKind::SpectrumAnalyzer => "Spectrum Analyzer",
         NodeKind::Rack => "Rack",
+        NodeKind::Plugin => "Plugin",
     }
 }
 /// Real-time parameter intent derived from a graph edit. This mapping is the

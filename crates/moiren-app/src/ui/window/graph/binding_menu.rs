@@ -10,6 +10,8 @@ use super::*;
 use crate::service::{AppRequest, ExportDirection, GraphEdit, InputSelection};
 use crate::ui::theme;
 use crate::ui::widgets::actions::ButtonVariant;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use gpui_kit::base::ScrollbarAxis;
 use gpui_kit::{AnyElement, Bounds, MouseButton, Pixels, Window, px};
 use moiren_core::graph::{NodeId, NodeKind};
 
@@ -281,6 +283,8 @@ pub(in crate::ui::window) fn overlay(
         .on_mouse_move(|_, _, cx| cx.stop_propagation())
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .child(
+            // The menu box clips; the scrolling happens on an inner container
+            // so the bar overlay can pin beside it as a sibling.
             div()
                 .id("binding-menu")
                 .absolute()
@@ -290,14 +294,33 @@ pub(in crate::ui::window) fn overlay(
                 .max_h(px(height))
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .p(px(MENU_PAD))
                 .rounded(px(theme::RADIUS_MD))
                 .bg(theme::SURFACE)
                 .border_1()
                 .border_color(theme::BORDER_STRONG)
-                .overflow_y_scroll()
-                .children(rows)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .relative()
+                        .max_h(px(height))
+                        .child(
+                            div()
+                                .id("binding-menu-scroll")
+                                .max_h(px(height))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .p(px(MENU_PAD))
+                                .track_scroll(&shell.binding_menu_scroll)
+                                .overflow_y_scroll()
+                                .children(rows),
+                        )
+                        .child(overlay_scrollbar(
+                            &shell.binding_menu_scroll,
+                            "scrollbar-binding-menu",
+                            ScrollbarAxis::Vertical,
+                        )),
+                )
                 .gpui_test_observe(),
         )
         .into_any_element()

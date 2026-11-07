@@ -377,9 +377,7 @@ fn settle_settings(view: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::Visu
 }
 
 #[gpui_kit::test]
-fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(900.)));
@@ -397,14 +395,14 @@ fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
         window.render_frame(cx);
         window.click("open-settings", cx);
         window.render_frame(cx);
-        assert!(window.find("settings-dialog").visible());
+        assert!(window.find("settings-page").visible());
         assert!(
-            window.find("graph-page").visible(),
-            "workspace remains mounted"
+            window.try_find("graph-page").is_none(),
+            "settings replaces the workspace while open"
         );
         assert!(
             window.find("settings-save").visible(),
-            "footer stays visible"
+            "the audio footer stays visible"
         );
         window.press("delete", cx);
         for _ in 0..80 {
@@ -420,7 +418,7 @@ fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
         view.update(cx, |shell, cx| {
             assert!(
                 shell.settings.focus.contains_focused(window, cx),
-                "Tab remains inside modal"
+                "Tab remains inside the page"
             );
             assert_eq!(shell.state.read(cx).snapshot.graph.graph.nodes().len(), 4);
             assert!(shell.selected_node.is_some());
@@ -430,24 +428,34 @@ fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
             );
         });
         window.press("escape", cx);
-        assert!(window.try_find("settings-dialog").is_none());
+        assert!(window.try_find("settings-page").is_none());
+        assert!(window.find("graph-page").visible());
         view.update(cx, |shell, cx| {
             assert_eq!(shell.presentation.page, pages::Page::Graph);
             assert!(!shell.settings_open);
             assert!(!shell.settings.focus.contains_focused(window, cx));
+            assert_eq!(
+                (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
+                (123., 87., 0.89),
+                "workspace state survives the settings round trip"
+            );
         });
+        // The gear toggles the page.
         window.click("open-settings", cx);
-        window.click_at("settings-backdrop", point(px(8.), px(8.)), cx);
-        assert!(window.try_find("settings-dialog").is_none());
-        assert_eq!(window.find("tab-graph").selected(), Some(true));
+        assert!(window.find("settings-page").visible());
         window.click("open-settings", cx);
-        // A click at the underlying tab is a backdrop dismissal only.
+        assert!(window.try_find("settings-page").is_none());
+        // A workspace tab switches away and closes the page.
+        window.click("open-settings", cx);
         window.click("tab-mixer", cx);
-        assert_eq!(window.find("tab-graph").selected(), Some(true));
-        assert!(window.try_find("settings-dialog").is_none());
+        assert!(window.try_find("settings-page").is_none());
+        assert!(window.find("mixer-page").visible());
+        assert_eq!(window.find("tab-graph").selected(), Some(false));
+        window.click("tab-graph", cx);
+        assert!(window.find("graph-page").visible());
         window.click("open-settings", cx);
         window.click("close-settings", cx);
-        assert!(window.try_find("settings-dialog").is_none());
+        assert!(window.try_find("settings-page").is_none());
     });
     finish_service(runtime);
 }
@@ -469,12 +477,14 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         window.render_frame(cx);
         window.click("open-settings", cx);
         window.render_frame(cx);
-        assert!(window.find("settings-dialog").visible());
+        assert!(window.find("settings-page").visible());
         window.click("processing-rate-0", cx);
         window.render_frame(cx);
         window.click("processing-precision-1", cx);
         window.render_frame(cx);
-        window.click("processing-buffer-6", cx);
+        window.click("processing-buffer-trigger", cx);
+        window.render_frame(cx);
+        window.click("settings-menu-item-6", cx);
         window.render_frame(cx);
         window.click("audio-backend-1", cx);
         window.render_frame(cx);
@@ -521,26 +531,91 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
             .sample_rate,
         44_100
     );
+    // Density is an immediate preference: it applies on the click and
+    // persists through the quiet write chain, with no Save in the path.
     cx.update(|window, cx| {
-        window.click("settings-appearance", cx);
+        window.click("settings-nav-interface", cx);
         window.click("density-1", cx);
-        window.click("settings-save", cx);
     });
-    settle_settings(&view, cx);
+    cx.run_until_parked();
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.density, super::Density::Compact);
+        assert!(!shell.settings.global.dirty());
+        assert!(shell.settings.global.error.is_none());
+    });
     assert_eq!(
         crate::project::load_preferences_at(&path).unwrap().density,
         crate::project::UiDensity::Compact
     );
     finish_service(runtime);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+/// Meter ballistics moved from the mixer context menu into the Interface
+/// page; the click applies immediately and persists through the quiet write
+/// chain, same as before.
+#[gpui_kit::test]
+fn meter_preferences_apply_immediately_from_the_interface_page(cx: &mut gpui_kit::TestAppContext) {
+    use crate::project::{MeterFalloff, PeakHold};
+    let (view, cx, runtime) = test_shell(cx);
+    let path = settings_test_path("meters");
+    view.update(cx, |shell, cx| {
+        shell.preferences = crate::project::AppPreferences::default();
+        shell.preferences_path = Some(path.clone());
+        cx.notify();
+    });
     cx.update(|window, cx| {
-        window.click("density-0", cx);
-        window.click("settings-save", cx);
+        window.resize(gpui_kit::size(px(1440.), px(1000.)));
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.click("settings-nav-interface", cx);
+        window.render_frame(cx);
+        window.click("meter-falloff-0", cx);
+        window.render_frame(cx);
+        window.click("peak-hold-0", cx);
     });
+    cx.run_until_parked();
     view.update(cx, |shell, _| {
-        assert!(shell.settings.global.error.is_some());
-        assert!(shell.settings.global.dirty());
-        assert_eq!(shell.density, super::Density::Compact);
+        assert_eq!(shell.preferences.meters.falloff, MeterFalloff::Moderate);
+        assert_eq!(shell.preferences.meters.peak_hold, PeakHold::Off);
+        assert!(!shell.settings.global.dirty());
     });
+    let saved = crate::project::load_preferences_at(&path).unwrap();
+    assert_eq!(saved.meters.falloff, MeterFalloff::Moderate);
+    assert_eq!(saved.meters.peak_hold, PeakHold::Off);
+    finish_service(runtime);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+/// The restore-on-launch switch has no other UI; the toggle applies
+/// immediately and persists like the other Interface preferences.
+#[gpui_kit::test]
+fn restore_last_project_switch_applies_immediately(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    let path = settings_test_path("restore");
+    view.update(cx, |shell, cx| {
+        shell.preferences = crate::project::AppPreferences::default();
+        shell.preferences_path = Some(path.clone());
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(1000.)));
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.click("settings-nav-interface", cx);
+        window.render_frame(cx);
+        window.click("settings-restore-project", cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |shell, _| {
+        assert!(shell.preferences.restore_last_project);
+    });
+    assert!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .restore_last_project
+    );
+    finish_service(runtime);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
@@ -573,8 +648,14 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
         window.render_frame(cx);
         window.click("inspect-output-a", cx);
         window.click("device-override", cx);
-        window.click("device-output-rate-4", cx);
-        window.click("device-output-format-2", cx);
+        window.click("device-output-rate-trigger", cx);
+        window.render_frame(cx);
+        window.click("settings-menu-item-4", cx);
+        window.render_frame(cx);
+        window.click("device-output-format-trigger", cx);
+        window.render_frame(cx);
+        window.click("settings-menu-item-2", cx);
+        window.render_frame(cx);
         window.click("device-settings-save", cx);
     });
     settle_settings(&view, cx);
@@ -1518,5 +1599,103 @@ fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
         );
     });
     assert!(probe.is_ok(), "the probe window stays open");
+    finish_service(runtime);
+}
+
+/// The status bar's error summary is the unlocated errors' only surface
+/// since the error strip: absent while clean, a located fault never mounts
+/// it (that fault belongs to its own strip/card), a dispatch failure alone
+/// — written synchronously with no publish behind it, the regression the
+/// old error-strip key carried — mounts it, and clicking opens the
+/// graph-wide fault popover.
+#[gpui_kit::test]
+fn statusbar_summarizes_unlocated_errors_and_opens_the_fault_popover(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{GraphFault, GraphSubject};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_none(),
+            "a clean session wears no summary"
+        );
+    });
+
+    // A located fault goes to its node, never to the status bar.
+    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let mut snapshot = (*state.snapshot).clone();
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            graph.faults.push(GraphFault {
+                subject: GraphSubject::Node(target),
+                cause: "The input source configuration is invalid".into(),
+                hint: None,
+            });
+            state.snapshot = std::sync::Arc::new(snapshot);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_none(),
+            "a located fault must not surface on the status bar"
+        );
+    });
+
+    // A graph-wide fault does.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let mut snapshot = (*state.snapshot).clone();
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            graph.faults.push(GraphFault {
+                subject: GraphSubject::Graph,
+                cause: "Resumed without one node because its device is offline".into(),
+                hint: None,
+            });
+            state.snapshot = std::sync::Arc::new(snapshot);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(window.try_find("statusbar-faults").is_some());
+    });
+
+    // A dispatch failure with no publish behind it must mount the summary
+    // on its own notification.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch_error = Some("The session rejected the request".into());
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_some(),
+            "dispatch_error alone must surface the summary"
+        );
+    });
+
+    // The click opens the graph-wide fault popover.
+    cx.update(|window, cx| {
+        window.click("statusbar-faults", cx);
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        view.read_with(cx, |shell, _| shell
+            .fault_popover
+            .is_some_and(|popover| popover.node.is_none())),
+        "the summary click opens the graph-wide fault popover"
+    );
+    cx.update(|window, _| {
+        assert!(window.try_find("fault-popover").is_some());
+    });
     finish_service(runtime);
 }
