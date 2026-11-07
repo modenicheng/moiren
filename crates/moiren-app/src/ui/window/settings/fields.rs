@@ -385,9 +385,10 @@ pub(in super::super) fn footer(
         .py(px(12.))
         .border_t_1()
         .border_color(theme::BORDER)
-        .bg(theme::SURFACE)
-        // The transaction bar keeps the full-width rule, but its contents
-        // share the reading measure of the cards above.
+        // No fill of its own: the bar sits on whatever surface carries it
+        // (canvas on the settings page, the inspector panel for device
+        // overrides) instead of drawing a second band across the bottom.
+        // Its contents share the reading measure of the cards above.
         .child(
             div()
                 .w_full()
