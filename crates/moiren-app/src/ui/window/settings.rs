@@ -161,7 +161,7 @@ pub(super) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .size_full()
         .flex()
         .min_h_0()
-        .bg(theme::SURFACE)
+        .bg(theme::WINDOW_BG)
         .gpui_test_observe()
         // The focus trap owns the element it wraps (the id above stays the
         // observable page root), so keyboard dispatch keeps living here —
@@ -237,9 +237,23 @@ pub(super) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                 .flex_1()
                                 .min_h_0()
                                 .overflow_y_scroll()
-                                .px(px(28.))
-                                .py(px(20.))
-                                .child(content)
+                                .px(px(16.))
+                                .py(px(24.))
+                                // A fixed reading measure, centered: on wide
+                                // windows the section content holds together
+                                // as one block instead of rows drifting
+                                // apart across the workspace.
+                                .child(
+                                    div().flex().justify_center().child(
+                                        div()
+                                            .w(px(COLUMN_WIDTH))
+                                            .max_w_full()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(16.))
+                                            .child(content),
+                                    ),
+                                )
                                 .gpui_test_observe(),
                         )
                         .when(shell.settings.section == Section::Audio, |column| {
@@ -250,6 +264,43 @@ pub(super) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .into_any_element()
 }
 
+/// The reading measure of the settings content column.
+const COLUMN_WIDTH: f32 = 680.;
+
+/// A group card's title: one step under the section heading so the card
+/// reads as a unit, not a second page.
+fn group_title(text: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(px(theme::TEXT_MD))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text.into())
+}
+
+/// The card shell shared by titled and untitled groups: raised surface,
+/// hairline border, the page's one structural voice against the canvas.
+fn card_shell() -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_color(theme::HAIRLINE)
+        .bg(theme::SURFACE)
+}
+
+/// A titled settings group: the reading unit of the page. Rows go inside
+/// via [`rows`]; the card bounds their measure on wide windows.
+fn group(title: impl Into<SharedString>, body: impl IntoElement) -> Div {
+    card_shell()
+        .px(px(16.))
+        .pt(px(12.))
+        .pb(px(4.))
+        .gap(px(10.))
+        .child(group_title(title))
+        .child(body)
+}
+
 fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let draft = &shell.settings.global;
     let config = &draft.audio;
@@ -257,10 +308,11 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(20.))
-        .max_w(px(960.))
-        .child(heading(t!("Audio system")))
-        .child(rows([
+        .gap(px(16.))
+        .child(heading(t!("Audio")))
+        .child(group(
+            t!("Processing"),
+            rows([
             row(
                 &t!("Backend"),
                 choices(
@@ -316,92 +368,90 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     cx,
                 ),
             ),
-        ]))
+            ]),
+        ))
         .child(
-            div()
-                .flex()
-                .gap(px(28.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(12.))
-                        .child(heading(t!("Input defaults")))
-                        .child(stream_editor(
-                            shell,
-                            Editor::Global,
-                            Direction::Input,
-                            None,
-                            cx,
-                        )),
-                )
-                .child(div().w(px(1.)).bg(theme::HAIRLINE))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(12.))
-                        .child(heading(t!("Output defaults")))
-                        .child(stream_editor(
-                            shell,
-                            Editor::Global,
-                            Direction::Output,
-                            None,
-                            cx,
-                        )),
-                ),
+            card_shell().p(px(16.)).child(
+                div()
+                    .flex()
+                    .gap(px(24.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(group_title(t!("Input defaults")))
+                            .child(stream_editor(
+                                shell,
+                                Editor::Global,
+                                Direction::Input,
+                                None,
+                                cx,
+                            )),
+                    )
+                    .child(div().w(px(1.)).bg(theme::HAIRLINE))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(group_title(t!("Output defaults")))
+                            .child(stream_editor(
+                                shell,
+                                Editor::Global,
+                                Direction::Output,
+                                None,
+                                cx,
+                            )),
+                    ),
+            ),
         )
-        .child(
+        .child(group(
+            t!("Device buffer policy"),
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
-                .child(heading(t!("Device buffer policy")))
-                .child(
+                .gap(px(8.))
+                .child(choices(
+                    shell,
+                    Editor::Global,
+                    "latency",
+                    shell.settings.global.profile,
+                    [
+                        AudioLatencyProfile::Compatible,
+                        AudioLatencyProfile::Balanced,
+                        AudioLatencyProfile::Low,
+                    ]
+                    .map(|profile| (profile, t!(profile.title()).into())),
+                    |draft, profile| draft.profile = profile,
+                    cx,
+                ))
+                .child(label(t!(shell.settings.global.profile.description())))
+                .child(div().h(px(1.)).bg(theme::HAIRLINE))
+                .child(row(
+                    &t!("Device overrides"),
                     div()
                         .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .child(choices(
-                            shell,
-                            Editor::Global,
-                            "latency",
-                            shell.settings.global.profile,
-                            [
-                                AudioLatencyProfile::Compatible,
-                                AudioLatencyProfile::Balanced,
-                                AudioLatencyProfile::Low,
-                            ]
-                            .map(|profile| (profile, t!(profile.title()).into())),
-                            |draft, profile| draft.profile = profile,
-                            cx,
-                        ))
-                        .child(label(t!(shell.settings.global.profile.description()))),
-                ),
-        )
-        .child(row(
-            &t!("Device overrides"),
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(label(t!(
-                    "%{input_count} input / %{output_count} output",
-                    input_count = config.input_overrides.len(),
-                    output_count = config.output_overrides.len()
-                )))
-                .child(
-                    button("settings-overrides-devices", t!("Configure in Devices"))
-                        .on_click(move |_, _, cx| {
-                            overrides_this.update(cx, |shell, cx| {
-                                shell.set_page(Page::Devices, cx)
-                            })
-                        }),
-                ),
+                        .items_center()
+                        .gap(px(12.))
+                        .child(label(t!(
+                            "%{input_count} input / %{output_count} output",
+                            input_count = config.input_overrides.len(),
+                            output_count = config.output_overrides.len()
+                        )))
+                        .child(
+                            button("settings-overrides-devices", t!("Configure in Devices"))
+                                .on_click(move |_, _, cx| {
+                                    overrides_this.update(cx, |shell, cx| {
+                                        shell.set_page(Page::Devices, cx)
+                                    })
+                                }),
+                        ),
+                )),
         ))
 }
 
@@ -411,73 +461,80 @@ fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(20.))
-        .max_w(px(860.))
+        .gap(px(16.))
         .child(heading(t!("Interface")))
-        .child(rows([
-            row(
-                &t!("Language"),
-                pref_choices(
-                    shell,
-                    "language",
-                    shell.preferences.language,
-                    crate::i18n::UiLanguage::ALL
-                        .map(|language| (language, language.title().to_owned())),
-                    |shell, language, window, cx| shell.set_language(language, window, cx),
-                    cx,
+        .child(group(
+            t!("General"),
+            rows([
+                row(
+                    &t!("Language"),
+                    pref_choices(
+                        shell,
+                        "language",
+                        shell.preferences.language,
+                        crate::i18n::UiLanguage::ALL
+                            .map(|language| (language, language.title().to_owned())),
+                        |shell, language, window, cx| shell.set_language(language, window, cx),
+                        cx,
+                    ),
                 ),
-            ),
-            row(
-                &t!("Density"),
-                pref_choices(
-                    shell,
-                    "density",
-                    shell.density,
-                    [
-                        (Density::Comfortable, t!("Comfortable").into()),
-                        (Density::Compact, t!("Compact").into()),
-                    ],
-                    |shell, density, _, cx| shell.set_density(density, cx),
-                    cx,
+                row(
+                    &t!("Density"),
+                    pref_choices(
+                        shell,
+                        "density",
+                        shell.density,
+                        [
+                            (Density::Comfortable, t!("Comfortable").into()),
+                            (Density::Compact, t!("Compact").into()),
+                        ],
+                        |shell, density, _, cx| shell.set_density(density, cx),
+                        cx,
+                    ),
                 ),
-            ),
-            row(
-                &t!("Peak fall-off"),
-                pref_choices(
-                    shell,
-                    "meter-falloff",
-                    meters.falloff,
-                    crate::project::MeterFalloff::ALL
-                        .map(|falloff| (falloff, format!("{} dB/s", falloff.db_per_second()))),
-                    |shell, falloff, _, cx| shell.set_meter_falloff(falloff, cx),
-                    cx,
+                row(
+                    &t!("Restore last project at launch"),
+                    component::switch::Switch::new("settings-restore-project")
+                        .checked(shell.preferences.restore_last_project)
+                        .on_click({
+                            let this = this.clone();
+                            move |checked, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.set_restore_last_project(*checked, cx);
+                                })
+                            }
+                        }),
                 ),
-            ),
-            row(
-                &t!("Peak hold"),
-                pref_choices(
-                    shell,
-                    "peak-hold",
-                    meters.peak_hold,
-                    crate::project::PeakHold::ALL.map(|hold| (hold, peak_hold_title(hold))),
-                    |shell, hold, _, cx| shell.set_peak_hold(hold, cx),
-                    cx,
+            ]),
+        ))
+        .child(group(
+            t!("Meters"),
+            rows([
+                row(
+                    &t!("Peak fall-off"),
+                    pref_choices(
+                        shell,
+                        "meter-falloff",
+                        meters.falloff,
+                        crate::project::MeterFalloff::ALL
+                            .map(|falloff| (falloff, format!("{} dB/s", falloff.db_per_second()))),
+                        |shell, falloff, _, cx| shell.set_meter_falloff(falloff, cx),
+                        cx,
+                    ),
                 ),
-            ),
-            row(
-                &t!("Restore last project at launch"),
-                component::switch::Switch::new("settings-restore-project")
-                    .checked(shell.preferences.restore_last_project)
-                    .on_click({
-                        let this = this.clone();
-                        move |checked, _, cx| {
-                            this.update(cx, |shell, cx| {
-                                shell.set_restore_last_project(*checked, cx);
-                            })
-                        }
-                    }),
-            ),
-        ]))
+                row(
+                    &t!("Peak hold"),
+                    pref_choices(
+                        shell,
+                        "peak-hold",
+                        meters.peak_hold,
+                        crate::project::PeakHold::ALL.map(|hold| (hold, peak_hold_title(hold))),
+                        |shell, hold, _, cx| shell.set_peak_hold(hold, cx),
+                        cx,
+                    ),
+                ),
+            ]),
+        ))
 }
 
 fn peak_hold_title(hold: crate::project::PeakHold) -> String {
@@ -545,8 +602,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(20.))
-        .max_w(px(980.))
+        .gap(px(16.))
         .child(
             div()
                 .flex()
@@ -562,38 +618,47 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     },
                 )),
         )
-        .child(columns.max_w(px(760.)))
-        .child(rows(
+        .child(card_shell().p(px(16.)).child(columns))
+        // The timing rows carry their own names, so the card stays untitled
+        // rather than repeating one.
+        .child(card_shell().px(px(16.)).pt(px(8.)).pb(px(8.)).child(rows(
             crate::ui::presentation::native_timing_rows(snapshot)
                 .into_iter()
                 .map(|(key, value)| detail(&key, value)),
-        ))
-        .child(label(crate::ui::presentation::control_feedback(
-            snapshot,
-            state.pending_request,
         )))
-        .child(detail(
-            &t!("Catalog"),
-            t!(
-                "%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications",
-                inputs = snapshot.catalog.inputs.len(),
-                outputs = snapshot.catalog.outputs.len(),
-                asio = snapshot.catalog.asio_drivers.len(),
-                apps = snapshot.catalog.processes.len()
-            ),
+        .child(group(
+            t!("System"),
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(rows([detail(
+                    &t!("Catalog"),
+                    t!(
+                        "%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications",
+                        inputs = snapshot.catalog.inputs.len(),
+                        outputs = snapshot.catalog.outputs.len(),
+                        asio = snapshot.catalog.asio_drivers.len(),
+                        apps = snapshot.catalog.processes.len()
+                    ),
+                )]))
+                .child(label(crate::ui::presentation::control_feedback(
+                    snapshot,
+                    state.pending_request,
+                )))
+                .when_some(snapshot.catalog.asio_error.clone(), |view, error| {
+                    view.child(
+                        div()
+                            .id("settings-asio-error")
+                            .text_color(theme::DANGER)
+                            .child(t!("ASIO discovery failed: %{error}", error = error).to_string())
+                            .gpui_test_observe(),
+                    )
+                })
+                .when_some(shell.project_message.clone(), |view, text| {
+                    view.child(label(text))
+                }),
         ))
-        .when_some(snapshot.catalog.asio_error.clone(), |view, error| {
-            view.child(
-                div()
-                    .id("settings-asio-error")
-                    .text_color(theme::DANGER)
-                    .child(t!("ASIO discovery failed: %{error}", error = error).to_string())
-                    .gpui_test_observe(),
-            )
-        })
-        .when_some(shell.project_message.clone(), |view, text| {
-            view.child(label(text))
-        })
         .child(
             div().self_start().child(
                 button("quit-application", t!("Quit Moiren"))

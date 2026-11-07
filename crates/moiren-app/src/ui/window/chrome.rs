@@ -1,7 +1,6 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::ui::IconIntent;
 use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
 use std::sync::Arc;
@@ -44,7 +43,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     Page::Matrix => ActionIcon::Matrix,
                     Page::Devices => ActionIcon::Devices,
                 })
-                .active(shell.presentation.page == page)
+                .active(shell.presentation.page == page && !shell.settings_open)
                 .on_click(move |_, _, cx| this.update(cx, |shell, cx| shell.set_page(page, cx))),
         );
     }
@@ -128,14 +127,11 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         }),
                 )
                 .child(
+                    // The gear is the page toggle (click again closes it) but
+                    // carries no active state of its own: the page itself is
+                    // the open indicator, and a lit button beside the
+                    // transport reads as a second stop control.
                     IconButton::new("open-settings", t!("Settings"), ActionIcon::Settings)
-                        // The gear is the page toggle: lit while the settings
-                        // workspace is open, and clicking again closes it.
-                        .intent(if shell.settings_open {
-                            IconIntent::Accent
-                        } else {
-                            IconIntent::Neutral
-                        })
                         .on_click({
                             let this = this.clone();
                             move |_, window, cx| {

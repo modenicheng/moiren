@@ -18,7 +18,6 @@ Audio	-	设置页标签
 Language	-	外观页语言切换字段标签
 Diagnostics	-	设置页标签
 Close	-	设置对话框关闭按钮
-Audio system	-	分区标题
 Backend	-	字段名，也是 merge_value 错误的 label 实参
 Processing sample rate	-	字段名
 Processing precision	-	字段名
@@ -535,3 +534,6 @@ Configure in Devices	-	覆盖行右侧按钮
 Peak fall-off	-	界面页电平表回落分段（20/40/60 dB/s）
 Restore last project at launch	-	界面页开关，即时生效
 Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip.	-	混音器电平表 tooltip（右键菜单已并入设置页）
+General	-	界面页分组卡片标题（语言/密度/恢复开关）
+Meters	-	界面页电平表分组卡片标题
+System	-	诊断页分组卡片标题（目录/控制反馈/ASIO 错误）
