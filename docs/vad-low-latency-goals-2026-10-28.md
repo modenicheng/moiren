@@ -34,6 +34,28 @@ The canonical driver qualification verdict remains in
   accumulate build trees or binaries. If the optional historical VM is reused,
   its roughly 64 GB system disk remains a separate storage constraint.
 
+### 2026-11-08 reusable test tools and user-owned reboot
+
+The user requires one reused OBS installation rather than copied executable
+trees for each experiment. Reuse the existing dedicated test installation at
+`D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable`; do not move it to
+another new path or create per-run OBS executables. Keep the user's ordinary
+OBS separate. Serialize use of the dedicated instance and archive the small
+profile/scene/log evidence per run, not another application tree. Preserve any
+externally owned running instance and never change firewall/security policy to
+suppress prompts. Remove obsolete owned test copies after evidence readback,
+and retire their archived test tasks so they cannot relaunch obsolete paths.
+The [November8 cleanup receipt](validation/2026-11-08-reused-obs-cleanup.md)
+records deletion of30redundant trees and retention of the original fixed path;
+its external-process continuity limitation remains explicit.
+
+The user performs any required system reboot. The agent must explain the
+observed reason and stop disruptive/native follow-up until the user has
+rebooted; this is not authorization for automatic reboot or retry. Driver
+installation returned3010 on November8; service-file/PnP613 does not establish
+that the in-memory image has completed its transition. All original S0-S5
+requirements remain unchanged.
+
 ### 2026-11-07 direct remote target and desktop scope
 
 The user explicitly selects the existing separate remote test computer instead
@@ -105,7 +127,7 @@ sub-10-ms limitation is evidenced; no such impossibility is established yet.
   be labelled a sub-10-ms pass. Do not silently enlarge a buffer or move the
   measurement boundary to produce a better claim.
 
-## Current pipeline status - 2026-11-07
+## Current pipeline status - 2026-11-08
 
 The original S0-S5 requirements below remain the completion criteria. Subsequent
 implementation is recorded in the
@@ -113,6 +135,12 @@ implementation is recorded in the
 [2026-11-04 pipeline checkpoint](validation/2026-11-04-pipeline-checkpoint.md).
 The original source audit in the next section is historical, not current
 configuration or acceptance evidence.
+
+The [November8 diagnostic deployment](validation/2026-11-08-vad-removal-stage-deployment.md)
+returns3010 and awaits the user's reboot. Disk/PnP613 metadata is not an
+in-memory transition or cleanup pass. Its29passing offline-reader tests
+cover association/refusal behavior, not a new native trace. No automatic
+reboot, unchanged failed native retry or acceptance-gate change follows.
 
 | Slice | Current evidence | Remaining acceptance |
 | --- | --- | --- |

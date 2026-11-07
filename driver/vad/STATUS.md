@@ -2,7 +2,7 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-11-07.
+verdict. Status updated 2026-11-08.
 
 ## Direct remote target amendment - 2026-11-07
 
@@ -16,6 +16,26 @@ visible-input acceptance, not as a blanket gate for SSH, CLI, metadata or
 noninteractive audio work. Those still require their actual token/session/
 device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
+## Diagnostic613 installation awaiting user reboot - 2026-11-08
+
+The [deployment and offline-reader receipt](../../docs/validation/2026-11-08-vad-removal-stage-deployment.md)
+records one guarded installation of signed613 (`23807f3`). ValidateOnly
+passes, but the real install returns3010 at00:10 on November8. The terminal
+receipt is explicitly `Verified=false`, `RebootRequired=true`. Service-file/
+PnP metadata now names613/oem207.inf; that does not verify the in-memory image
+transition. SetupAPI records a changed MoirenVad service image path and required
+reconfiguration of devices using the preceding package. The specific remaining
+reference is unknown. There is no device restart, retry, rollback or native
+audio acquisition after3010. The user will perform any system reboot; verify
+the new boot and driver provenance before the next finite diagnostic.
+
+The bounded offline reader passes29synthetic/source-contract tests and is
+included in CI. It associates partial decoded stages with the exact retained
+Fresh QUERY runtime/session while reporting direct Removed, source Stop/join,
+Closed Engine and native error separately. Callback entry, decoded loss0 and
+partial first/last/count history never prove cleanup or raw ETW completeness.
+There is no613native trace, cleanup repair or S0-S5 acceptance claim.
+
 ## Remote-priority revalidation - 2026-11-07
 
 The [removal-stage diagnostic slice](../../docs/validation/2026-11-07-vad-removal-stage-diagnostics.md)
@@ -25,8 +45,9 @@ direct-Removed gate. First/last/count and sticky failure remain explicit; slot
 reuse reports lost pending evidence rather than erasing it silently. New
 production-extracted RED/GREEN cases,21MSVC suites,16Windows/GCC portable suites,
 WDK Analyze/InfVerif and matching TMF generation pass. No Linux/native pass or
-runtime21 root cause is established. Direct remote612 remains unchanged; a
-guarded diagnostic deployment/acquisition is still required.
+runtime21 root cause is established. At that November7 checkpoint the direct
+remote612 installation was unchanged; the November8 follow-up above records
+the later613installation awaiting reboot and native acquisition.
 
 The later [paired-waveform cleanup receipt](../../docs/validation/2026-11-07-matched-waveform-cleanup.md)
 uses the established graceful OBS correction and a regression-tested refusal
