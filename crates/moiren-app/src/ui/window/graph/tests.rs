@@ -38,6 +38,36 @@ fn node_position(frame: &CanvasFrame, index: usize) -> Point<Pixels> {
         )
 }
 
+/// Dispatch an `AddNode` edit and wait for the service to acknowledge it.
+fn add_node(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    kind: moiren_core::graph::NodeKind,
+) -> moiren_core::graph::NodeId {
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::AddNode { kind, channels: 2 },
+            ));
+        });
+    });
+    wait_for(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .graph
+                .nodes()
+                .iter()
+                .find(|node| node.kind() == kind)
+                .map(|node| node.id())
+        })
+    })
+}
+
 fn wire_position(frame: &CanvasFrame, index: usize) -> Point<Pixels> {
     let geometry = &frame.wires[index];
     let middle = geometry.points.len() / 2;
@@ -667,6 +697,49 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
     });
     render(cx);
     cx.update(|window, _| assert!(window.try_find("compressor-input-0").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn inspector_hosts_the_headline_visualization_for_eq_and_dynamics(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    // The EQ inspector hosts the draggable curve editor and the Q readout.
+    let eq = add_node(&view, cx, NodeKind::Eq);
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(eq);
+        shell.inspector_open = true;
+        cx.notify();
+    });
+    render(cx);
+    cx.update(|window, _| {
+        assert!(window.find("eq-editor").visible());
+        assert!(window.find("eq-q-row").visible());
+    });
+    // The dynamics family hosts the static transfer curve instead.
+    let compressor = add_node(&view, cx, NodeKind::Compressor);
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(compressor);
+        cx.notify();
+    });
+    render(cx);
+    cx.update(|window, _| {
+        assert!(window.find("dynamics-curve").visible());
+        assert!(window.try_find("eq-editor").is_none());
+    });
+    // A node kind without a headline keeps the inspector unchanged.
+    let gain = add_node(&view, cx, NodeKind::Gain);
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(gain);
+        cx.notify();
+    });
+    render(cx);
+    cx.update(|window, _| {
+        assert!(window.try_find("dynamics-curve").is_none());
+    });
     finish_service(runtime);
 }
 

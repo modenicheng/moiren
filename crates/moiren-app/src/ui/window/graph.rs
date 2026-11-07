@@ -5,6 +5,7 @@ use super::*;
 mod binding_menu;
 mod compressor;
 mod detail;
+mod headline;
 mod library;
 pub(in crate::ui::window) use binding_menu::{
     BindingMenu, overlay as binding_menu_overlay, sync as sync_binding_menu,
