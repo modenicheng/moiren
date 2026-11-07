@@ -130,6 +130,14 @@ deferred; missing physical capture equipment does not block independent work.
 
 ### Later direct remote deployment - 2026-11-07
 
+The later [enumeration receipt](validation/2026-11-07-rename-enumeration-evidence.md)
+adds failure-only ALL-state metadata while retaining ACTIVE admission. Windows/
+Linux tests pass152/130 and strict Clippy passes. At19:29 both directions'
+held/replacement initialization, direct Removed and fresh Engine confirmation
+complete, but both exact Windows names retain adapter suffixes. Enumeration
+does not fail, so the prior timeout's cause/fix remains unproven; Starts0/no
+PCM. This bounded observation is still failed/unqualified, not S4 completion.
+
 The [direct remote612 receipt](validation/2026-11-07-direct-remote-category.md)
 records actual candidate/rollback signing verification, guarded installation
 and exact-root device restart with no Windows reboot or security/default/volume

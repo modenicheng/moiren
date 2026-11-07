@@ -18,6 +18,19 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+### Later held-rename observation and failure-only enumeration metadata
+
+The [enumeration receipt](../../docs/validation/2026-11-07-rename-enumeration-evidence.md)
+records a reviewed failure-only ALL-state metadata addition, without changing
+ACTIVE client admission or exact-name/lifecycle gates. Software suites pass
+152 on Windows/130 on Linux with strict Clippy. A clean9e5a5e3 release runs
+at19:29 on the same explicit fixture and unchanged612 driver: both held and
+replacement clients initialize/release, direct old Removed and fresh Engine
+confirmation succeed, but both raw Windows names retain adapter suffixes.
+The run is failed/unqualified. Enumeration does not fail this time, so neither
+failure-time native collector nor a timeout fix is proven. Starts0/no PCM;
+join/release and external-state/idle audits pass. Full S0-S5 remains open.
+
 ### Later direct remote 612 deployment and native refusals
 
 The [direct remote receipt](../../docs/validation/2026-11-07-direct-remote-category.md)
