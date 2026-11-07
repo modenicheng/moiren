@@ -18,6 +18,23 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+The later [paired-waveform cleanup receipt](../../docs/validation/2026-11-07-matched-waveform-cleanup.md)
+uses the established graceful OBS correction and a regression-tested refusal
+of non-null VAD native errors. Both OBS instances now close normally. Process
+source/graph/reference Stop and join complete; VAD source Stop/worker join and
+Closed Engine cleanup also complete, but runtime21 remains Removing/Closed
+until the unchanged20s cleanup deadline. The actual pair fails, Ready1, with
+no owners and successful before/after safety audits. A later absent PnP child
+is not direct Removed evidence. Source review identifies a ReleaseHardware
+status-observability gap, not a proven root cause or repaired product defect.
+No unchanged native retry, timeout extension, reset or identity rotation follows.
+Canonical v3/v4 analysis resolves all six Process/VAD reference codes and
+Process return0,2,3,4,5; code1 section matching remains unresolved. V4 locates
+the closed after-error VAD MKV but refuses its30.700s duration at the unchanged
+30s short-run cap. All28canonical and4new synthetic checks pass remotely;
+input hashes and166archive members verify, as do the original29draft/cache
+pins. Full S0-S5 and matched/physical qualification remain open.
+
 The later [waveform checkpoint](../../docs/validation/2026-11-07-matched-waveform-checkpoint.md)
 uses clean `b08f61b` releases and the unchanged612 driver directly on the
 standalone target. Actual Process source/reference/graph data and closed OBS
