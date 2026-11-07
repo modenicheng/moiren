@@ -1,5 +1,6 @@
 //! Shared workstation tokens. Pages and the action library use one palette.
 
+use gpui_kit::component;
 use gpui_kit::{Hsla, hsla};
 
 pub mod controls;
@@ -165,4 +166,27 @@ pub const TEXT_LG: f32 = 15.;
 /// Soft fill for an accent (16% alpha over transparent), for chips/badges.
 pub fn soft(hsla: Hsla) -> Hsla {
     Hsla { a: 0.16, ..hsla }
+}
+
+/// Projects the workstation palette onto the kit's shared component theme,
+/// so every gpui-component surface — switches, inputs, menus, tooltips —
+/// speaks the same accent instead of the library default. This is the one
+/// place to restyle them all: [`component::Theme::update`] reconciles the
+/// component tokens from these colors and refreshes every window.
+pub fn apply_component_tokens(cx: &mut gpui_kit::App) {
+    component::Theme::update(cx, |theme| {
+        let c = &mut theme.colors;
+        c.primary = controls::PRIMARY;
+        c.primary_hover = controls::PRIMARY_HOVER;
+        c.primary_active = controls::PRIMARY_PRESSED;
+        c.primary_foreground = controls::ON_ACCENT;
+        c.ring = controls::PRIMARY;
+        c.accent = soft(controls::PRIMARY);
+        c.accent_foreground = controls::TEXT;
+        c.danger = controls::DANGER;
+        c.danger_hover = controls::DANGER_HOVER;
+        c.danger_active = controls::DANGER_PRESSED;
+        c.danger_foreground = controls::ON_ACCENT;
+        c.selection = soft(controls::PRIMARY);
+    });
 }

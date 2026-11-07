@@ -257,6 +257,7 @@ impl StudioShell {
         desktop: Option<WeakEntity<desktop::Desktop>>,
     ) -> Self {
         component::Theme::change(component::ThemeMode::Dark, Some(window), cx);
+        crate::ui::theme::apply_component_tokens(cx);
         #[cfg(windows)]
         let touchpad = {
             let mut registration = super::touchpad::TouchpadRegistration::new();
