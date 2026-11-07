@@ -72,6 +72,7 @@
     <ClInclude Include="src\InterfaceName.h" />
     <ClInclude Include="src\TerminalPolicy.h" />
     <ClInclude Include="src\Lifecycle.h" />
+    <ClInclude Include="src\RemovalDiagnostic.h" />
     <ClInclude Include="src\PcmDiagnostics.h" />
     <ClInclude Include="src\PlaybackCopyDiagnostic.h" />
     <ClInclude Include="src\NativePlaybackDiagnostic.h" />

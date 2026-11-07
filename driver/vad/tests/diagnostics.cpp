@@ -4,6 +4,7 @@
 #include "../src/UnservedDiagnostics.h"
 #include "../src/Lifecycle.h"
 #include "../src/Ownership.h"
+#include "../src/RemovalDiagnostic.h"
 #if __has_include("../src/PlaybackCopyDiagnostic.h")
 #include "../src/PlaybackCopyDiagnostic.h"
 #include "../src/NativePlaybackDiagnostic.h"
@@ -55,6 +56,7 @@ struct Queue {
 struct VAD_SHARED {
     SpinLock Lock;
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    vad::RemovalDiagnostic RemovalDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
     vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
     vad::audio::CaptureDiagnostic CaptureDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
 #if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC && __has_include("../src/PlaybackCopyDiagnostic.h")

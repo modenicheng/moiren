@@ -18,6 +18,16 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+The [removal-stage diagnostic slice](../../docs/validation/2026-11-07-vad-removal-stage-diagnostics.md)
+adds bounded exact-runtime Remove/ReleaseHardware/Cleanup/Destroy-entry evidence
+and passive QUERY-only WPP, without changing ABI, LastStatus, ownership or the
+direct-Removed gate. First/last/count and sticky failure remain explicit; slot
+reuse reports lost pending evidence rather than erasing it silently. New
+production-extracted RED/GREEN cases,21MSVC suites,16Windows/GCC portable suites,
+WDK Analyze/InfVerif and matching TMF generation pass. No Linux/native pass or
+runtime21 root cause is established. Direct remote612 remains unchanged; a
+guarded diagnostic deployment/acquisition is still required.
+
 The later [paired-waveform cleanup receipt](../../docs/validation/2026-11-07-matched-waveform-cleanup.md)
 uses the established graceful OBS correction and a regression-tested refusal
 of non-null VAD native errors. Both OBS instances now close normally. Process

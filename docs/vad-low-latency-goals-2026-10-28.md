@@ -265,6 +265,13 @@ nor establishes WTS lock state or a product/DPI defect. No unchanged retry or
 bypass follows. Visible desktop input remains unqualified; the later direct
 remote amendment removes VM startup as a prerequisite for independent work.
 
+The [removal-stage diagnostic slice](validation/2026-11-07-vad-removal-stage-diagnostics.md)
+fills the source-supported native teardown observability gap with bounded
+exact-runtime stages and explicit lost-pending provenance, not a cleanup repair.
+Production RED/GREEN,21MSVC suites,16Windows/GCC portable suites and WDK Analyze/
+InfVerif pass; matching TMFs are generated. Direct remote612 is unchanged, so
+native stage acquisition and every original S0-S5 acceptance gate remain open.
+
 The [later paired-waveform receipt](validation/2026-11-07-matched-waveform-cleanup.md)
 retains one actual direct-remote Process/VAD pair with normal OBS shutdown,
 tested native-error refusal and VAD Removing/Closed cleanup failure. Both

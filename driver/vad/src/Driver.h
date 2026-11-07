@@ -13,6 +13,7 @@
 #include "audio/CaptureDiagnostic.h"
 #include "PlaybackCopyDiagnostic.h"
 #include "NativePlaybackDiagnostic.h"
+#include "RemovalDiagnostic.h"
 
 extern const GUID VadControlInterface;
 
@@ -28,6 +29,7 @@ struct VAD_SHARED {
     KSPIN_LOCK Lock;
     volatile LONG References;
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::RemovalDiagnostic RemovalDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     vad::audio::ClockDiagnostic ClockDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
@@ -117,6 +119,10 @@ void VadAudioDescribeStream(WDFDEVICE child, uint64_t generation,
     ULONG blockAlign, ULONG frames, ULONG state);
 void VadAudioRecordRun(WDFDEVICE child, uint64_t generation, uint64_t qpc);
 void VadAudioPrepareFailed(WDFDEVICE child, NTSTATUS status);
+// Bounded state collection only; final destroy may run above PASSIVE_LEVEL.
+void VadRecordRemoval(WDFDEVICE child, vad::RemovalStage stage,
+    bool hasStatus = false, NTSTATUS status = 0, bool nativeCall = false);
+void VadAudioRecordRelease(WDFDEVICE child, bool returned, NTSTATUS status, bool nativeCall);
 
 struct VAD_PCM_REQUEST {
     MOIREN_VAD_PCM_HEADER Header;

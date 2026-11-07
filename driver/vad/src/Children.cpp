@@ -84,6 +84,7 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
         request.Intent, request.Channels);
     if (reserved >= 0) {
         auto& slot = shared->Slots[reserved];
+        shared->RemovalDiagnostics[reserved].Reset(slot.Id, slot.Session);
         shared->PcmDiagnostics[reserved].Reset(0);
         shared->UnservedDiagnostics[reserved].Reset(0);
         shared->ClockDiagnostics[reserved].Reset(0);
@@ -186,13 +187,42 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
     return status;
 }
 
+void VadRecordRemoval(WDFDEVICE child, vad::RemovalStage stage,
+    bool hasStatus, NTSTATUS status, bool nativeCall)
+{
+    auto context = VadChild(child);
+    auto shared = context->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[context->Index];
+    if (slot.Id == context->Id) {
+        LARGE_INTEGER frequency;
+        const auto qpc = KeQueryPerformanceCounter(&frequency);
+        auto& diagnostic = shared->RemovalDiagnostics[context->Index];
+        diagnostic.Frequency = static_cast<uint64_t>(frequency.QuadPart);
+        diagnostic.Record(slot.Id, slot.Session, stage,
+            static_cast<uint64_t>(qpc.QuadPart), hasStatus,
+            static_cast<uint32_t>(status), nativeCall);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+void VadAudioRecordRelease(WDFDEVICE child, bool returned, NTSTATUS status, bool nativeCall)
+{
+    VadRecordRemoval(child, returned ? vad::RemovalStage::ReleaseReturn :
+        vad::RemovalStage::ReleaseEnter, returned, status, nativeCall);
+}
+
 static NTSTATUS MarkMissing(WDFDEVICE device, WDFDEVICE child)
 {
     auto context = VadChild(child);
+    VadRecordRemoval(child, vad::RemovalStage::RemoveEnter);
     if (InterlockedCompareExchange(&context->CircuitDeviceAdded, 0, 0) == 0) {
+        VadRecordRemoval(child, vad::RemovalStage::RemoveReturn, true, STATUS_SUCCESS, false);
         return STATUS_SUCCESS;
     }
     NTSTATUS status = AcxDeviceRemoveCircuitDevice(device, child);
+    VadRecordRemoval(child, vad::RemovalStage::RemoveReturn, true, status, true);
     if (NT_SUCCESS(status)) {
         InterlockedExchange(&context->CircuitDeviceAdded, 0);
     }
@@ -285,6 +315,7 @@ void VadChildCleanup(WDFOBJECT object)
     if (context->Shared == nullptr) {
         return;
     }
+    VadRecordRemoval(static_cast<WDFDEVICE>(object), vad::RemovalStage::Cleanup);
     auto shared = context->Shared;
     KIRQL irql;
     KeAcquireSpinLock(&shared->Lock, &irql);
@@ -316,6 +347,7 @@ void VadChildDestroy(WDFOBJECT object)
     if (context->Shared == nullptr) {
         return;
     }
+    VadRecordRemoval(static_cast<WDFDEVICE>(object), vad::RemovalStage::Destroy);
     auto shared = context->Shared;
     KIRQL irql;
     KeAcquireSpinLock(&shared->Lock, &irql);
@@ -323,7 +355,8 @@ void VadChildDestroy(WDFOBJECT object)
     NT_ASSERT(slot.Id == context->Id);
     (void)vad::FinishLifetime(slot, context->Id);
     KeReleaseSpinLock(&shared->Lock, irql);
-    // Final destroy may run outside PASSIVE_LEVEL; do not enter a pageable trace path.
+    // Final destroy only collects fixed scalar evidence; QUERY emits it passively.
+    // It may run outside PASSIVE_LEVEL; never enter a pageable trace path here.
     // No access to a cleaned-up root WDF object is required during teardown.
     VadSharedRelease(shared);
 }

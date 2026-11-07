@@ -5,6 +5,61 @@
 VAD_PAGE static EVT_WDF_WORKITEM ControlWork;
 static EVT_WDF_REQUEST_CANCEL CancelControl;
 
+static void TracePendingRemovalDiagnostic(VAD_SHARED* shared,
+    const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (!WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, VAD_CONTROL)) {
+        return;
+    }
+    vad::RemovalDiagnostic diagnostic = {};
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
+        const auto& slot = shared->Slots[i];
+        if (slot.Id == snapshot.EndpointId && slot.Session == snapshot.SessionEpoch) {
+            diagnostic = shared->RemovalDiagnostics[i].TakePending();
+            break;
+        }
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    // Only control QUERY exports. In particular, final PDO destroy never enters
+    // WPP or a pageable path. Missing callbacks remain unobserved, not successful.
+    if ((diagnostic.Pending & vad::RemovalLossPending) != 0) {
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Removal overwritten endpoint=%I64u session=%I64u count=%I64u old_endpoint=%I64u old_session=%I64u old_sequence=%I64u old_pending=%u saturated=%u",
+            diagnostic.Runtime, diagnostic.Session, diagnostic.DiscardedRuntimes,
+            diagnostic.DiscardedRuntime, diagnostic.DiscardedSession,
+            diagnostic.DiscardedSequence, diagnostic.DiscardedStages,
+            static_cast<ULONG>(diagnostic.DiscardSaturated));
+    }
+    for (ULONG stage = 0; stage < vad::RemovalStageCount; ++stage) {
+        if ((diagnostic.Pending & (uint32_t{1} << stage)) == 0) {
+            continue;
+        }
+        const auto& item = diagnostic.Stages[stage];
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Removal stage endpoint=%I64u session=%I64u stage=%u count=%u sequence=%I64u frequency=%I64u saturated=%u",
+            diagnostic.Runtime, diagnostic.Session, stage, item.Count,
+            diagnostic.Sequence, diagnostic.Frequency, static_cast<ULONG>(diagnostic.Saturated));
+        const vad::RemovalObservation* observations[] = {
+            &item.First, &item.Last, &item.FirstFailure};
+        for (ULONG kind = 0; kind < 3; ++kind) {
+            const auto& observation = *observations[kind];
+            if (observation.Sequence == 0) {
+                continue;
+            }
+            VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+                "Removal observation endpoint=%I64u session=%I64u stage=%u kind=%u sequence=%I64u qpc=%I64u has_status=%u status=%!STATUS! native_call=%u",
+                diagnostic.Runtime, diagnostic.Session, stage, kind,
+                observation.Sequence, observation.Qpc,
+                static_cast<ULONG>(observation.HasStatus),
+                static_cast<NTSTATUS>(observation.Status),
+                static_cast<ULONG>(observation.NativeCall));
+        }
+    }
+}
+
 // Only the passive control path emits diagnostics. Audio callbacks retain
 // fixed first observations; no user names, paths, or per-packet log stream.
 // The default-off Playback copy build explicitly adds three paired <=16-byte
@@ -572,6 +627,9 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
         }
     }
     if (NT_SUCCESS(status)) {
+        if (code == IOCTL_MOIREN_VAD_QUERY) {
+            TracePendingRemovalDiagnostic(shared, snapshot);
+        }
         // Gate close stops further admitted transfers before passive logging;
         // successful probes need no extra QUERY in their measured interval.
         if (code == IOCTL_MOIREN_VAD_QUERY ||

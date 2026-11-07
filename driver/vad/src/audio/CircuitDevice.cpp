@@ -135,6 +135,7 @@ static NTSTATUS Release(WDFDEVICE child, WDFCMRESLIST translated)
 {
     PAGED_CODE();
     UNREFERENCED_PARAMETER(translated);
+    VadAudioRecordRelease(child, false, STATUS_SUCCESS, false);
     auto device = VadAudioDevice(child);
     VadAudioSetReady(child, false);
     VadAudioLock(device);
@@ -146,6 +147,7 @@ static NTSTATUS Release(WDFDEVICE child, WDFCMRESLIST translated)
     VadAudioUnlock(device);
     if (!added) {
         DeleteUnpublishedCircuit(device);
+        VadAudioRecordRelease(child, true, STATUS_SUCCESS, false);
         return STATUS_SUCCESS;
     }
     NTSTATUS status = AcxDeviceRemoveCircuit(child, circuit);
@@ -158,5 +160,6 @@ static NTSTATUS Release(WDFDEVICE child, WDFCMRESLIST translated)
         device->HostPin = nullptr;
         VadAudioUnlock(device);
     }
+    VadAudioRecordRelease(child, true, status, true);
     return status;
 }
