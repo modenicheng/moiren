@@ -56,24 +56,15 @@ _version: 2
 "Audio":
   en: Audio
   zh-CN: 音频
-"Appearance":
-  en: Appearance
-  zh-CN: 外观
 "Language":
   en: Language
   zh-CN: 语言
 "Diagnostics":
   en: Diagnostics
   zh-CN: 诊断
-"Audio defaults for this workstation":
-  en: Audio defaults for this workstation
-  zh-CN: 本工作站的音频默认设置
 "Close":
   en: Close
   zh-CN: 关闭
-"Audio system":
-  en: Audio system
-  zh-CN: 音频系统
 "Backend":
   en: Backend
   zh-CN: 后端
@@ -83,36 +74,15 @@ _version: 2
 "Processing precision":
   en: Processing precision
   zh-CN: 处理精度
-"Processing block (frames / ms)":
-  en: Processing block (frames / ms)
-  zh-CN: 处理块（帧 / 毫秒）
-"Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics.":
-  en: Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics.
-  zh-CN: 处理精度与设备采样格式相互独立。缓冲大小为请求值；实际周期在诊断页中报告。
 "Input defaults":
   en: Input defaults
   zh-CN: 输入默认设置
 "Output defaults":
   en: Output defaults
   zh-CN: 输出默认设置
-"Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.":
-  en: Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.
-  zh-CN: 共享模式通过 Windows 客户端格式转换工作，不改变系统混音格式。独占模式需要设备支持并独占访问。不支持的请求会报错。
-"ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.":
-  en: ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.
-  zh-CN: ASIO 的输入与输出共用一个驱动会话。采样率与缓冲请求在整个会话中必须一致；编码由驱动决定。请在设备页中选择驱动。
-"%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.":
-  en: "%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change."
-  zh-CN: "%{input_count} 个输入 / %{output_count} 个输出覆盖配置。可在设备页中配置单个设备；默认设置变化时，覆盖配置会完整保留自身设置。"
 "Device buffer policy":
   en: Device buffer policy
   zh-CN: 设备缓冲策略
-"Theme":
-  en: Theme
-  zh-CN: 主题
-"Dark workstation":
-  en: Dark workstation
-  zh-CN: 深色工作站
 "Density":
   en: Density
   zh-CN: 密度
@@ -122,21 +92,6 @@ _version: 2
 "Compact":
   en: Compact
   zh-CN: 紧凑
-"Save to use this density throughout the workstation.":
-  en: Save to use this density throughout the workstation.
-  zh-CN: 保存后整个工作站将使用此密度。
-"Keyboard":
-  en: Keyboard
-  zh-CN: 键盘
-"Next / previous control":
-  en: Next / previous control
-  zh-CN: 下一个 / 上一个控件
-"Activate focused action":
-  en: Activate focused action
-  zh-CN: 激活焦点操作
-"Dismiss settings":
-  en: Dismiss settings
-  zh-CN: 关闭设置
 "Saved request":
   en: Saved request
   zh-CN: 已保存的请求
@@ -149,30 +104,9 @@ _version: 2
 "Output":
   en: Output
   zh-CN: 输出
-"Unsaved edits stay in the Audio draft until Save or Restart Audio.":
-  en: Unsaved edits stay in the Audio draft until Save or Restart Audio.
-  zh-CN: 未保存的编辑会保留在音频草稿中，直到保存或重启音频。
 "Active session":
   en: Active session
   zh-CN: 活动会话
-"State":
-  en: State
-  zh-CN: 状态
-"Active backend":
-  en: Active backend
-  zh-CN: 活动后端
-"Active processing":
-  en: Active processing
-  zh-CN: 活动处理设置
-"Active input request":
-  en: Active input request
-  zh-CN: 活动输入请求
-"Active output request":
-  en: Active output request
-  zh-CN: 活动输出请求
-"No active audio configuration":
-  en: No active audio configuration
-  zh-CN: 无活动音频配置
 "Actual native timing":
   en: Actual native timing
   zh-CN: 实际原生时序
@@ -185,15 +119,9 @@ _version: 2
 "ASIO discovery failed: %{error}":
   en: "ASIO discovery failed: %{error}"
   zh-CN: "ASIO 发现失败：%{error}"
-"CPU / physical latency / XRUN":
-  en: CPU / physical latency / XRUN
-  zh-CN: CPU / 物理延迟 / XRUN
 "Unavailable":
   en: Unavailable
   zh-CN: 不可用
-"Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.":
-  en: Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.
-  zh-CN: 队列填充与回调时序并不度量 CPU 负载、物理端到端延迟或 XRUN 次数。
 "Quit Moiren":
   en: Quit Moiren
   zh-CN: 退出 Moiren
@@ -227,9 +155,6 @@ _version: 2
 "Determined by ASIO driver":
   en: Determined by ASIO driver
   zh-CN: 由 ASIO 驱动决定
-"Requested device buffer (frames / ms)":
-  en: Requested device buffer (frames / ms)
-  zh-CN: 请求设备缓冲（帧 / 毫秒）
 "Unsaved changes":
   en: Unsaved changes
   zh-CN: 有未保存的更改
@@ -1466,12 +1391,6 @@ _version: 2
 "Click to type a value":
   en: Click to type a value
   zh-CN: 点击输入数值
-"Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.":
-  en: Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.
-  zh-CN: 显示采样峰值与 RMS（dBFS），与推子增益共用刻度。单击复位削波指示，右键调整响应。
-"Peak fall-off · dB/s":
-  en: Peak fall-off · dB/s
-  zh-CN: 峰值回落 · dB/s
 "Peak hold":
   en: Peak hold
   zh-CN: 峰值保持
@@ -1666,3 +1585,49 @@ _version: 2
 "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.":
   en: "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export."
   zh-CN: "虚拟扬声器：其他应用播放到 Moiren 输入。虚拟麦克风：Moiren 输出供其他应用录音。绑定时须匹配声道；每个 IO 仅属于一个导出。"
+
+"Interface":
+  en: Interface
+  zh-CN: 界面
+"Processing block":
+  en: Processing block
+  zh-CN: 处理块
+"Requested device buffer":
+  en: Requested device buffer
+  zh-CN: 请求的设备缓冲
+"Buffers are requests; the active session reports the actual periods in Diagnostics.":
+  en: Buffers are requests; the active session reports the actual periods in Diagnostics.
+  zh-CN: 缓冲大小为请求值；活动会话会在诊断页中报告实际周期。
+"Exclusive requests sole access to the device and needs its support.":
+  en: Exclusive requests sole access to the device and needs its support.
+  zh-CN: 独占模式请求对设备的独占访问，且需要设备支持。
+"Device overrides":
+  en: Device overrides
+  zh-CN: 设备覆盖配置
+"%{input_count} input / %{output_count} output":
+  en: "%{input_count} input / %{output_count} output"
+  zh-CN: "%{input_count} 个输入 / %{output_count} 个输出"
+"Configure in Devices":
+  en: Configure in Devices
+  zh-CN: 在设备页中配置
+"Peak fall-off":
+  en: Peak fall-off
+  zh-CN: 峰值回落
+"Restore last project at launch":
+  en: Restore last project at launch
+  zh-CN: 启动时恢复上次工程
+"Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip.":
+  en: Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip.
+  zh-CN: 采样峰值 / RMS（dBFS）。与推子增益共用 dB 刻度。点击可复位削波指示。
+
+"General":
+  en: General
+  zh-CN: 常规
+
+"Meters":
+  en: Meters
+  zh-CN: 电平表
+
+"System":
+  en: System
+  zh-CN: 系统

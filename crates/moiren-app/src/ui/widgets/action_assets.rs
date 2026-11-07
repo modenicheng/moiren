@@ -20,13 +20,17 @@ pub enum ActionIcon {
     HandMove,
     ZoomOut,
     ZoomIn,
+    Wave,
+    Sliders,
+    ListDetails,
+    ChevronDown,
 }
 
 impl ActionIcon {
     /// Every variant, so the asset regression test can enumerate all request
     /// sites instead of chasing scattered call sites.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::Plus,
         Self::Settings,
         Self::Graph,
@@ -40,6 +44,10 @@ impl ActionIcon {
         Self::HandMove,
         Self::ZoomOut,
         Self::ZoomIn,
+        Self::Wave,
+        Self::Sliders,
+        Self::ListDetails,
+        Self::ChevronDown,
     ];
 
     /// The asset path is a literal: every toolbar rebuild used to pay a
@@ -59,6 +67,10 @@ impl ActionIcon {
             Self::HandMove => "icons/hand-move.svg",
             Self::ZoomOut => "icons/minus.svg",
             Self::ZoomIn => "icons/plus.svg",
+            Self::Wave => "icons/wave.svg",
+            Self::Sliders => "icons/sliders.svg",
+            Self::ListDetails => "icons/list-details.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
         }
     }
 

@@ -15,11 +15,43 @@ pub(in super::super) enum Direction {
     Output,
 }
 
+/// Which stream a set of controls edits: the global defaults, or one
+/// device's override. Carried by `stream_editor`, the dropdown triggers and
+/// the open value menu so a menu keeps editing the stream it was opened for.
+#[derive(Clone)]
+pub(in super::super) struct StreamTarget {
+    pub direction: Direction,
+    pub device: Option<String>,
+}
+
+impl StreamTarget {
+    /// The stream as it would run: the device override when one exists, the
+    /// defaults otherwise. Owned because `effective_*` copies overrides out.
+    pub(in super::super) fn stream(&self, audio: &AudioSettings) -> StreamSettings {
+        match (&self.device, self.direction) {
+            (Some(id), Direction::Input) => audio.effective_input(id),
+            (Some(id), Direction::Output) => audio.effective_output(id),
+            (None, Direction::Input) => audio.input,
+            (None, Direction::Output) => audio.output,
+        }
+    }
+
+    pub(in super::super) fn stream_mut<'a>(&self, draft: &'a mut Draft) -> &'a mut StreamSettings {
+        match &self.device {
+            Some(id) => device_stream_mut(&mut draft.audio, self.direction, id),
+            None => match self.direction {
+                Direction::Input => &mut draft.audio.input,
+                Direction::Output => &mut draft.audio.output,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(in super::super) enum Section {
     #[default]
     Audio,
-    Appearance,
+    Interface,
     Diagnostics,
 }
 
@@ -27,8 +59,7 @@ pub(in super::super) enum Section {
 pub(in super::super) struct Draft {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
-    pub density: Density,
-    original: (AudioSettings, AudioLatencyProfile, Density),
+    original: (AudioSettings, AudioLatencyProfile),
     pub error: Option<String>,
     pub message: Option<String>,
     pub pending: Option<Pending>,
@@ -38,7 +69,6 @@ impl PartialEq for Draft {
     fn eq(&self, other: &Self) -> bool {
         self.audio == other.audio
             && self.profile == other.profile
-            && self.density == other.density
             && self.original == other.original
             && self.error == other.error
             && self.message == other.message
@@ -62,7 +92,6 @@ pub(in super::super) struct Pending {
 pub(in super::super) struct Submission {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
-    pub density: Density,
 }
 
 #[derive(Clone, Copy)]
@@ -73,12 +102,11 @@ pub(in super::super) enum Stage {
 }
 
 impl Draft {
-    pub fn new(audio: AudioSettings, profile: AudioLatencyProfile, density: Density) -> Self {
+    pub fn new(audio: AudioSettings, profile: AudioLatencyProfile) -> Self {
         Self {
-            original: (audio.clone(), profile, density),
+            original: (audio.clone(), profile),
             audio,
             profile,
-            density,
             error: None,
             message: None,
             pending: None,
@@ -86,10 +114,7 @@ impl Draft {
     }
 
     pub fn dirty(&self) -> bool {
-        self.error.is_some()
-            || self.audio != self.original.0
-            || self.profile != self.original.1
-            || self.density != self.original.2
+        self.error.is_some() || self.audio != self.original.0 || self.profile != self.original.1
     }
 
     pub fn changed(&mut self) {
@@ -98,7 +123,7 @@ impl Draft {
     }
 
     pub fn committed(&mut self) {
-        self.original = (self.audio.clone(), self.profile, self.density);
+        self.original = (self.audio.clone(), self.profile);
         self.pending = None;
         self.error = None;
         self.message = Some(t!("Saved. Audio settings apply on the next start.").into());
@@ -108,7 +133,6 @@ impl Draft {
         &self,
         current: &AudioSettings,
         profile: AudioLatencyProfile,
-        density: Density,
     ) -> Result<Submission, String> {
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,
@@ -118,7 +142,6 @@ impl Draft {
                 profile,
                 &t!("Device buffer policy"),
             )?,
-            density: merge_value(self.original.2, self.density, density, &t!("Density"))?,
         })
     }
 }
@@ -221,16 +244,7 @@ pub(in super::super) struct SettingsEditor {
 
 impl SettingsEditor {
     pub fn new(preferences: &crate::project::AppPreferences, cx: &mut App) -> Self {
-        let density = if preferences.density == crate::project::UiDensity::Compact {
-            Density::Compact
-        } else {
-            Density::Comfortable
-        };
-        let draft = Draft::new(
-            preferences.audio.clone(),
-            preferences.latency_profile,
-            density,
-        );
+        let draft = Draft::new(preferences.audio.clone(), preferences.latency_profile);
         Self {
             global: draft.clone(),
             device: draft,
@@ -322,6 +336,7 @@ impl StudioShell {
 
     pub(in super::super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings_open = false;
+        self.settings_menu = None;
         if let Some(focus) = self.settings.previous_focus.take() {
             window.focus(&focus, cx);
         } else {
@@ -344,11 +359,7 @@ impl StudioShell {
 
     pub(in super::super) fn current_settings_draft(&self, cx: &App) -> Draft {
         let snapshot = &self.state.read(cx).snapshot;
-        Draft::new(
-            snapshot.audio_settings.clone(),
-            snapshot.latency_profile,
-            self.density,
-        )
+        Draft::new(snapshot.audio_settings.clone(), snapshot.latency_profile)
     }
 
     pub(in super::super) fn inspect_device(&mut self, id: String, cx: &mut Context<Self>) {
@@ -358,6 +369,62 @@ impl StudioShell {
         self.selected_device = Some(id);
         // Configure is an explicit request for the override editor.
         self.open_inspector();
+        cx.notify();
+    }
+
+    /// Immediate preferences: apply to the live shell state and persist
+    /// through the quiet write chain. The interface speaks for itself — a
+    /// flipped control is already in effect, so there is nothing to save.
+    pub(in super::super) fn set_density(&mut self, density: Density, cx: &mut Context<Self>) {
+        if self.density == density {
+            return;
+        }
+        self.density = density;
+        self.preferences.density = if density == Density::Compact {
+            crate::project::UiDensity::Compact
+        } else {
+            crate::project::UiDensity::Comfortable
+        };
+        self.save_preferences_quiet(cx);
+        cx.notify();
+    }
+
+    pub(in super::super) fn set_meter_falloff(
+        &mut self,
+        falloff: crate::project::MeterFalloff,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preferences.meters.falloff == falloff {
+            return;
+        }
+        self.preferences.meters.falloff = falloff;
+        self.save_preferences_quiet(cx);
+        cx.notify();
+    }
+
+    pub(in super::super) fn set_peak_hold(
+        &mut self,
+        peak_hold: crate::project::PeakHold,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preferences.meters.peak_hold == peak_hold {
+            return;
+        }
+        self.preferences.meters.peak_hold = peak_hold;
+        self.save_preferences_quiet(cx);
+        cx.notify();
+    }
+
+    pub(in super::super) fn set_restore_last_project(
+        &mut self,
+        restore: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preferences.restore_last_project == restore {
+            return;
+        }
+        self.preferences.restore_last_project = restore;
+        self.save_preferences_quiet(cx);
         cx.notify();
     }
 }
