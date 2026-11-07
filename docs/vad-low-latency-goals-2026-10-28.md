@@ -130,6 +130,21 @@ deferred; missing physical capture equipment does not block independent work.
 
 ### Later direct remote deployment - 2026-11-07
 
+The later PCM extension in8318308 passes154 Windows/132 Linux example tests
+and strict Clippy without changing ACTIVE admission or PCM gates. At19:43 its
+failure collector completes both flows and finds the exact fixed-fixture
+Playback/provider MMDevice DISABLED, while the matching Microphone is ACTIVE.
+That narrows this failure snapshot; disablement origin, earlier state,
+creation-policy consumption and migration remain unproven. The mapping timeout
+occurs before probe Start and yields no PCM, despite observed Engine timeline
+advancement during the idle hold. Cleanup/join/release and external-state audits
+pass; report acceptance remains failed. Both independent PCM terminal archives
+are hash/length verified. No endpoint enablement, identity rotation, historical
+device deletion or lock-state inference is performed. Next inspect exact
+interface EP0 policy read-only rather than repeat the unchanged native run.
+Prior published c890e50 finishes all20 CI jobs at19:45; that result does not
+qualify the subsequent diagnostic commits or any native/physical gate.
+
 The later [enumeration receipt](validation/2026-11-07-rename-enumeration-evidence.md)
 adds failure-only ALL-state metadata while retaining ACTIVE admission. Windows/
 Linux tests pass152/130 and strict Clippy passes. At19:29 both directions'

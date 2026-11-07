@@ -100,3 +100,107 @@ operation, new A-to-B-to-A mode, raw-audio transfer or host native run occurs.
 Exact naming, the remaining native lifecycle/default/sibling/race/repetition
 matrix, ordinary desktop acceptance, sustained waveform/load and calibrated
 physical p95/p99 remain required and unqualified.
+
+## Independent PCM refusal and both-flow failure metadata
+
+The existing fixed-identity PCM fixture runs independently at19:34:42..35:05
+with9e5a5e3, without a rename or fixture-seed modifier. The report fails after
+15141ms with `owned MMDevices did not arrive; topology errors: []`, before
+the probe initializes/starts its native client pair. Its4002ms idle observation
+retains679 forward Engine timeline advances, including162 after the former
+three-second boundary, with zero timeline epoch changes. Starts0 does not mean
+the service/Engine has done no native work. PCM remains unverified, identity is
+null and all recorded sample counts are zero. Cleanup_error is null and service
+join/control release succeed; safety and terminal idle audits pass. Its only
+wrapper audit failure is the failed native report.
+
+This original timeout lacks failure-time PCM enumeration metadata. Commit
+`831830805dd85dea4391350417aca82481d4c6f1` extends the existing failure observer
+to both directions of PCM Pair preparation. The ordinary Pair::prepare wrapper
+retains its original streaming semantics. Both diagnostic flows share one
+one-second scheduling budget inside the existing deadline. Original failure and
+both pending records are published before COM reads; each completed flow is
+then published separately, so a second-flow stall cannot erase the first flow's
+metadata. ACTIVE-only admission, exact root/stable-ID/flow matching and all PCM
+gates remain unchanged. There is no new command-line option or automatic
+enablement, identity rotation, suffix stripping or migration acceptance.
+
+Final-source Windows example tests pass154 and Linux stable tests pass132.
+Strict Windows workspace/all-target Clippy with both opt-in features, Linux
+example Clippy and formatting checks pass. The final Windows example test
+run is freshly repeated before the documentation checkpoint and again passes
+154 with zero failures. Coverage includes explicit JSON key presence and
+retention of first-flow metadata during a simulated second-flow collector stall.
+Independent final source review finds no actionable blocker. These are software
+checks, not native audio acceptance.
+
+The clean8318308 optimized release is7915520 bytes, tree
+`69511e21ad4b0ecc2c1ed63be006455e60b7a179`, SHA-256:
+
+```text
+18F49ED3F458288E6865FF486C5E6435F31B2E5F3EE83F9514580AB874D898A9
+```
+
+Its bounded remote run at19:43:02..26 retains the same fixed fixture,612 driver
+and existing `--exercise --pcm --timeout-seconds=90` arguments. The worker's
+eight invocation/refusal checks pass on each of PS5/7. Worker SHA-256 is
+`B955C92AAAD96CC0CB772A0F829AAED471366BC6F44633F2985CA98E92150B34`.
+It fails after15539ms with the same mapping error. The4002ms idle observation
+retains695 forward advances,172 after three seconds and zero epoch changes;
+probe Starts remain0, no PCM is verified and cleanup/join/release succeed.
+Safety and no-owner/no-present-child audits pass; report acceptance still fails.
+
+The failure collector now runs natively, unlike the earlier held-rename run:
+
+| Failure snapshot | Playback | Microphone |
+| --- | --- | --- |
+| ALL-state rows / elapsed | 97 / 320ms | 53 / 34ms |
+| Completed / truncated / collection error | true / false / null | true / false / null |
+| Exact root/stable-ID/flow matches | 1 | 1 |
+| Exact matched MMDevice state | 2, DEVICE_STATE_DISABLED | 1, DEVICE_STATE_ACTIVE |
+| Provider checkpoint MMDevice matches | Yes | Yes |
+| Matched raw FriendlyName | Speakers in the target's Chinese locale, with `(8- Moiren virtual audio endpoint)` | `Moiren integration microphone (9- Moiren virtual audio endpoint)` |
+
+Playback's matched MMDevice is
+`{0.0.0.00000000}.{83b34e0c-fb74-435d-b573-18f1f549d0a6}`; Microphone's is
+`{0.0.1.00000000}.{0a1d19f5-d83c-4009-a6b9-247c6348c5a5}`. Both match the
+preceding live provider checkpoint, parent `ROOT\MEDIA\0001`, their exact
+fixture identity and direction. Playback's connected topology already reports
+OUTPUT_UNDEFINED and its interface FriendlyName is `Moiren integration playback`.
+The many historical state4/failed-topology rows are not substituted for either
+exact match.
+
+Microsoft defines state2 as DISABLED and permits new client streams only on
+ACTIVE endpoints. This explains why the matched Playback row cannot enter
+the ACTIVE-only pair at the failure snapshot; it does not prove the endpoint's
+state throughout the preceding wait, who disabled it, whether creation policy
+was consumed, or that the earlier seeded replacement timeout has the same cause.
+No lock-state diagnosis follows. EnableEndpointByDefault is documented as a
+creation policy, not evidence that this persisted fixture's state was migrated.
+Read-only exact-interface EP0 Association/EnableEndpointByDefault correlation is
+the next discriminator; correct staging alone would still not prove consumption
+or disablement origin. No enablement or historical-device deletion is performed.
+
+Both terminal archives independently verify17 entries by length and SHA-256:
+
+| Archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| native-pcm.zip | 28585 | B3FFA22315CD6933B2102858FBC72AEA9657F19D246EE5F2FDEF64E70345988A |
+| native-pcm-observed.zip | 223417 | DA93A92788F59B316A5631CA140239CE0EC67F0DB72592DDF4FA02787F8ACC4F |
+
+No raw audio is present or transferred. Neither refusal is a PCM, migration,
+exact-name, default-role, desktop, sustained-audio or physical-latency pass.
+
+## Published CI boundary
+
+The prior published headc890e50 completes run42367038940 onNovember7 at19:45
+with all20 jobs successful; its existing watcher exits0. This is not exact-head
+CI for the later9e5a5e3/8318308 diagnostic changes or this documentation update.
+The original29 draft/cache pins are reverified unchanged before these receipts.
+
+## Official interpretation references
+
+- Microsoft Learn, DEVICE_STATE_XXX Constants:
+  https://learn.microsoft.com/en-us/windows/win32/coreaudio/device-state-xxx-constants
+- Microsoft Learn, PKEY_AudioDevice_EnableEndpointByDefault:
+  https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/pkey-audiodevice-enableendpointbydefault

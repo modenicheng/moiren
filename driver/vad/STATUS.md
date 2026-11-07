@@ -18,6 +18,32 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+### Later PCM failure snapshot: exact Playback is disabled
+
+The [enumeration receipt](../../docs/validation/2026-11-07-rename-enumeration-evidence.md)
+now retains the independent fixed-fixture PCM refusals at19:34 and19:43.
+The second uses clean8318308 with failure-only both-flow metadata; software
+tests pass154 on Windows/132 on Linux and strict Clippy passes. Native ALL-state
+collection completes97 Playback/53 Microphone rows without truncation or a
+collection error. Each direction has one exact root/stable-ID/flow match and
+matches its live provider checkpoint. Playback is state2 DISABLED; Microphone
+is state1 ACTIVE. Playback already reports OUTPUT_UNDEFINED in its connected
+topology, so category alone does not explain the difference from the earlier
+seeded fixture. The disabled exact row cannot enter ACTIVE-only admission at
+this failure snapshot. Disablement origin, state throughout the polling window,
+creation-policy consumption and persisted-state migration remain unproven.
+
+Both PCM reports fail before probe Start, retain zero acquired samples and do
+not verify PCM. Engine timeline advancement during the idle hold is observed;
+Starts0 is not a no-native-activity claim. Cleanup/join/release and external
+state/idle audits pass, but report acceptance fails. Both17-entry terminal
+archives independently verify lengths/hashes. No endpoint is enabled, identity
+rotated, historical device deleted or gate relaxed. Next discriminate exact
+interface EP0 staging from persisted endpoint policy with read-only evidence.
+This is not a lock-screen diagnosis or S1/S4/S5 completion. Prior published
+c890e50 CI run42367038940 finishes all20 jobs successfully at19:45; later
+diagnostic commits still need their own exact-head CI.
+
 ### Later held-rename observation and failure-only enumeration metadata
 
 The [enumeration receipt](../../docs/validation/2026-11-07-rename-enumeration-evidence.md)
