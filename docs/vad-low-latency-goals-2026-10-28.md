@@ -117,7 +117,7 @@ configuration or acceptance evidence.
 | Slice | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | S0 | Requirements, scoped commits, binary/configuration pins and bounded archival workflows exist; current-main integration/release and scoped portability repairs have local evidence. Published both-route wait repair `8761d07` completes exact-head CI `41915822264` with all 20 jobs successful. Its final-source workspace/headless run passes 2625 tests with both opt-in features, and the optimized example has a verified immutable copy. | Preserve provenance and unrelated work across subsequent native/qualification changes. |
-| S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. Frozen metadata rules out assigning all replacement residuals to client Stop-tail inventory, without implying DAC presentation. PCM persistence/decode refusals pass 35 regressions per platform. The exact reviewed terminal-reader script/manifest are staged and hash-verified remotely, without execution. | The reader still lacks its exact permitted non-admin token and historical OBS12648 process guard; the manifest is not rewritten. Matched routes, explained full waveform correspondence and calibrated measurement remain open; original residuals/gaps remain failures. |
+| S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. Frozen metadata rules out assigning all replacement residuals to client Stop-tail inventory, without implying DAC presentation. PCM persistence/decode refusals pass 35 regressions per platform. A new direct-remote waveform scope retains actual Process reference/return media; unchanged nominal analysis resolves all six reference codes and return codes2,3,5. | The new pair stops on forced OBS cleanup before VAD; matched accepted routes and explained full waveform correspondence remain open. Its old close-order defect has an established tested correction, not another native pass. The separate frozen metadata reader still lacks its original token/OBS guard and is not rewritten. Calibrated measurement and original residual/gap failures remain open. |
 | S2 | Independent VAD target/capacity, actual-demand admission, priming, servo and bounded recovery are implemented. | Native period/block combinations and sustained quality do not yet qualify a lower default. |
 | S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. The November7 stopped-only read-only point snapshot identifies a foreign LockScreenBackstopFrame over Settings, without diagnostic input or audio. The separate local runner generation correction passes software checks only. | An unobstructed interactive target, successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open; the retained archive's event-order refusal is separate. Forced diagnostic-app cleanup remains a failed lifecycle, not desktop acceptance. |
 | S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist; the software-output category candidate passes host/portable/WDK checks. The streaming harness requires old/new Start/PCM, direct Removed, exact name and fresh confirmation. Readiness waits now retain current-request errors from both route exports before checking readiness; final PCM retains the bounded gate/freshness contract. Pre-client admission permits legal generation zero while final PCM still requires a nonzero generation. Tests pass 145 on Windows and 124 on Linux stable. | Windows-visible name acceptance, migration/default roles and the required native streaming/held-client/race/repetition cases remain open. Use the standalone remote target per the November7 amendment, with package/signature/rollback and endpoint guards; VM startup is not required. |
@@ -129,6 +129,18 @@ residuals and genuine PCM/epoch faults remain visible. Initial-packet work stays
 deferred; missing physical capture equipment does not block independent work.
 
 ### Later direct remote deployment - 2026-11-07
+
+The later [waveform checkpoint](validation/2026-11-07-matched-waveform-checkpoint.md)
+uses clean `b08f61b` binaries directly on the standalone target. One bounded
+Process acquisition retains complete source/reference/graph data and closed
+OBS media, but forced OBS cleanup stops the pair before VAD. This repeats a
+previously documented close-order runner defect; the established correction
+is recovered and passes15pure checks without another acquisition. Canonical
+v3 offline analysis passes28synthetic checks and finishes against the actual
+closed media with unchanged input hashes: all six reference identities, return
+identities2,3,5, no quality/latency pass. Both native safety audits and all100
+compact archive member pins verify; original29 draft/cache hashes remain
+unchanged. Full S0-S5 acceptance remains open.
 
 The later [history/consumption receipt](validation/2026-11-07-endpoint-history-and-consumption.md)
 uses guarded read-only queries at21:26 and21:38. Fixed raw PDOs first install

@@ -18,6 +18,17 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+The later [waveform checkpoint](../../docs/validation/2026-11-07-matched-waveform-checkpoint.md)
+uses clean `b08f61b` releases and the unchanged612 driver directly on the
+standalone target. Actual Process source/reference/graph data and closed OBS
+media are retained, but forced OBS shutdown makes the pair fail before VAD.
+The already documented close-order correction is recovered with15passing
+pure checks and no further acquisition. Canonical v3 analysis resolves all
+six reference codes and return codes2,3,5, preserving partial/quality failure.
+Its28synthetic checks and actual offline task pass; input hashes, both full
+native safety audits, all100compact archive members and original29draft/cache
+pins verify. Neither a VAD pass nor matched/physical qualification follows.
+
 ### Retained history and endpoint-store consumption diverge
 
 The [history/consumption receipt](../../docs/validation/2026-11-07-endpoint-history-and-consumption.md)
