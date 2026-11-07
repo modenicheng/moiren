@@ -18,6 +18,37 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+### Later direct remote 612 deployment and native refusals
+
+The [direct remote receipt](../../docs/validation/2026-11-07-direct-remote-category.md)
+supersedes the unchanged611 deployment observation below. At18:17 onNovember7,
+the reviewed finite installer adds the category/default-build candidate and
+restarts only `ROOT\MEDIA\0001`, with both helpers exit0. The target reports
+`oem206.inf`, version3.1.1.612, Running/PnP OK/problem0 and service-file SYS SHA
+`B25CA2E8DB8DD3E98D9B90AA6CF19822C879E6CA13D52B35D160CEF2056D1737`.
+The exact611 opt-in diagnostic package is preserved and independently verified
+on target/host; no rollback is executed. There is no reboot, security/default/
+volume write, host installation or protected-client manipulation.
+
+Source8761d07's frozen native Stage1 passes Apply/Stop/join. Streaming fails
+before any Start or rename: fixed Playback identity/name is not found among
+ACTIVE candidates despite an ALL-state old-name observation. A separately
+identified explicit fresh seeded held-client diagnostic initializes Playback
+and observes its requested base name plus adapter suffix, but then fails Stop
+with a sticky no-ready-native-packet-stream worker error and nonempty public
+exit cleanup_error. Neither native refusal is renamed into a pass, and no
+PCM, exact-name, removal/replacement or continuous-audio acceptance follows.
+No test owner or present child remains after either bounded operation.
+
+Source investigation finds that initial Paused/zero-packet allocation can
+prematurely prepare the first Playback owner. The focused source fix passes
+the final workspace/headless tests,145 opt-in integration example tests and
+strict workspace/all-target Clippy at18:40. The startup exception is limited
+to the first Paused/zero-frame observation with all recovery epochs zero.
+This does not establish this run's unique cause or completion of S4/S5; a
+corrected release still requires its own remote test. The requested-name
+suffix and full native matrix remain open, as do physical and sustained gates.
+
 The [remote-priority receipt](../../docs/validation/2026-11-07-remote-priority.md)
 records current target evidence, not new audio or driver qualification. The
 physical target remains reachable with the unchanged Running SYS hash. A

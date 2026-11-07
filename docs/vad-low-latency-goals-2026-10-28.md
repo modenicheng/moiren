@@ -128,6 +128,23 @@ for these acceptance requirements. Existing delivery-gap violations, waveform
 residuals and genuine PCM/epoch faults remain visible. Initial-packet work stays
 deferred; missing physical capture equipment does not block independent work.
 
+### Later direct remote deployment - 2026-11-07
+
+The [direct remote612 receipt](validation/2026-11-07-direct-remote-category.md)
+records actual candidate/rollback signing verification, guarded installation
+and exact-root device restart with no Windows reboot or security/default/volume
+changes. The old611 package remains verified locally/remotely. The candidate
+is the default non-opt-in diagnostic build, not a relabelled611 binary.
+Stage1 native service Apply/Stop/join passes. Streaming refuses before Start
+or rename on the existing identity; a separate explicitly seeded held-client
+diagnostic initializes Playback but fails Stop with a sticky no-ready packet
+stream error and nonempty public exit cleanup_error. Source investigation
+identifies early first-owner preparation during legal Paused/zero-packet
+allocation; the focused repair passes workspace/headless tests, the145-test
+integration example suite and strict Clippy, pending its own remote run. None of these
+steps closes exact-name/streaming/held/repetition/race/default-role acceptance,
+the desktop gate, sustained audio or calibrated physical p95/p99.
+
 ### Remote-priority update - 2026-11-07
 
 The [fresh remote receipt](validation/2026-11-07-remote-priority.md) supersedes
