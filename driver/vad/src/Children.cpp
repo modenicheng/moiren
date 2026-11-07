@@ -84,6 +84,14 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
         request.Intent, request.Channels);
     if (reserved >= 0) {
         auto& slot = shared->Slots[reserved];
+        shared->PcmDiagnostics[reserved].Reset(0);
+        shared->UnservedDiagnostics[reserved].Reset(0);
+        shared->ClockDiagnostics[reserved].Reset(0);
+        shared->CaptureDiagnostics[reserved].Reset(0);
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+        shared->PlaybackCopyDiagnostics[reserved].Reset();
+        shared->NativePlaybackDiagnostics[reserved].Reset();
+#endif
         slot.StableId = request.StableId;
         slot.AllowDefault = request.AllowDefault;
         RtlCopyMemory(slot.Name, request.Name, sizeof(request.Name));
@@ -143,7 +151,7 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
         status = VadInitializePolicy(child);
         if (NT_SUCCESS(status)) {
             status = VadAudioInitialize(child, request.Intent, request.Channels,
-                request.StableId);
+                request.StableId, request.Name);
         }
         if (NT_SUCCESS(status)) {
             // ACX owns the dynamic circuit-device list. Do not also add this
@@ -401,6 +409,10 @@ NTSTATUS VadAudioAcquireStream(WDFDEVICE child, uint64_t* generation)
             status = STATUS_INTEGER_OVERFLOW;
         } else if (InterlockedCompareExchange(&context->ActiveStreams, 1, 0) == 0) {
             *generation = ++slot.StreamGeneration;
+            shared->PcmDiagnostics[context->Index].Reset(*generation);
+            shared->UnservedDiagnostics[context->Index].Reset(*generation);
+            shared->ClockDiagnostics[context->Index].Reset(*generation);
+            shared->CaptureDiagnostics[context->Index].Reset(*generation);
             slot.SampleFormat = 0;
             slot.PacketFrames = 0;
             slot.StreamState = MOIREN_VAD_STREAM_PAUSED;
@@ -456,6 +468,9 @@ void VadAudioReleaseStream(WDFDEVICE child)
     KIRQL irql;
     KeAcquireSpinLock(&shared->Lock, &irql);
     auto& slot = shared->Slots[context->Index];
+    // Paused requests may arrive after Stop. Fence them atomically with Closed
+    // before purge; Closed then rejects any newly observed admission stamp.
+    vad::InvalidatePcmEpoch(slot);
     slot.SampleFormat = 0;
     slot.PacketFrames = 0;
     slot.StreamState = MOIREN_VAD_STREAM_CLOSED;
@@ -480,6 +495,39 @@ void VadAudioDescribeStream(WDFDEVICE child, uint64_t generation,
             MOIREN_VAD_FORMAT_PCM16 : MOIREN_VAD_FORMAT_FLOAT32;
         slot.PacketFrames = frames;
         slot.StreamState = state;
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+void VadAudioRebaseDiscontinuity(WDFDEVICE child, uint64_t generation,
+    uint64_t stream, const vad::audio::ClockRebaseObservation& observation)
+{
+    auto context = VadChild(child);
+    auto shared = context->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    auto& slot = shared->Slots[context->Index];
+    if (slot.Id == context->Id && slot.StreamGeneration == generation) {
+        const auto before = vad::audio::ObserveClockEndpoint(slot);
+        // Exactly the same transition as VadPcmDiscontinuity(pauseStream=false).
+        // Observe its actual result atomically; two lock acquisitions could
+        // misattribute a concurrent gate close/open to this callback's rebase.
+        vad::InvalidatePcmEpoch(slot);
+        shared->ClockDiagnostics[context->Index].Record(stream, before,
+            vad::audio::ObserveClockEndpoint(slot), observation);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+void VadAudioRecordRun(WDFDEVICE child, uint64_t generation, uint64_t qpc)
+{
+    auto context = VadChild(child);
+    auto shared = context->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[context->Index];
+    if (slot.Id == context->Id && slot.StreamGeneration == generation) {
+        shared->PcmDiagnostics[context->Index].RecordRun(slot.AdmissionGeneration, qpc);
     }
     KeReleaseSpinLock(&shared->Lock, irql);
 }

@@ -85,6 +85,16 @@ pub enum AppRequest {
     SetExportAuthorizations(Vec<super::ExportAuthorization>),
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),
+    SetTransportLatency(super::TransportLatencySettings),
+    /// Select current native evidence and rebuild; never mutates a live queue.
+    ApplyMeasuredProcessBridge(super::MeasuredProcessRequest),
+    /// Require a sealed supply/demand window from the service's pinned owner.
+    ApplyWindowedProcessBridge {
+        request: super::MeasuredProcessRequest,
+        policy: super::ProcessWindowPolicy,
+    },
+    #[cfg(windows)]
+    ApplyEvaluatedProcessBridge(super::EvaluatedProcessCandidate),
     EditGraph(super::GraphEdit),
     /// Restore the candidate content recorded before the last user edit.
     UndoGraph,
@@ -149,15 +159,28 @@ pub struct ControlSummary {
 pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
+    /// Last reaped host, kept separately from live-generation observations.
+    /// A joined service thread alone does not establish successful cleanup.
+    pub last_cleanup: Option<SessionCleanupObservation>,
+    #[cfg(windows)]
+    pub process_trace_status: Option<super::ProcessTraceCollectionStatus>,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     pub exports: Vec<super::ExportStatus>,
     pub export_plan: super::ExportReconcilePlan,
+    #[cfg(windows)]
+    pub native_observations: Option<NativeSessionObservations>,
     #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: super::AudioLatencyProfile,
     pub active_latency_profile: Option<super::AudioLatencyProfile>,
     pub audio_settings: super::AudioSettings,
     pub active_audio_settings: Option<super::AudioSettings>,
+    pub transport_latency: super::TransportLatencySettings,
+    /// Requested bounds owned by the Running generation. Effective native
+    /// queues are reported separately in its diagnostics.
+    pub active_transport_latency: Option<super::TransportLatencySettings>,
+    pub measured_process: Option<super::MeasuredProcessSummary>,
+    pub active_measured_process: Option<super::MeasuredProcessSummary>,
     pub graph: Arc<super::GraphSnapshot>,
     /// Consumption is published with the phase produced by those requests.
     pub consumed_request_id: RequestId,
@@ -179,6 +202,54 @@ pub struct AppSnapshot {
     pub tone_session: bool,
     pub elapsed: Duration,
 }
+
+#[derive(Debug, Clone)]
+pub struct SessionCleanupObservation {
+    pub generation: SessionGeneration,
+    pub state: moiren_engine::host::HostSnapshot,
+    #[cfg(windows)]
+    pub process_trace: Option<Arc<super::ProcessTraceSessionEvidence>>,
+    #[cfg(windows)]
+    pub final_observations: Option<Arc<JoinedSessionObservations>>,
+}
+
+/// Read from retained counter handles only after the corresponding host joined.
+/// Missing handles stay unknown; these are not the throttled UI snapshots.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinedSessionObservations {
+    pub graph_revision: u64,
+    pub host_revision: u64,
+    pub native: Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>,
+    pub backend: Option<moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot>,
+}
+// Retained trace evidence is immutable and Arc-backed; comparing identity
+// avoids walking its bounded packet history on every idle publication.
+impl PartialEq for SessionCleanupObservation {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(windows)]
+        {
+            match (&self.final_observations, &other.final_observations) {
+                (None, None) => {}
+                (Some(left), Some(right)) if Arc::ptr_eq(left, right) => {}
+                _ => return false,
+            }
+            match (&self.process_trace, &other.process_trace) {
+                (None, None) => {}
+                (Some(left), Some(right)) if Arc::ptr_eq(left, right) => {}
+                _ => return false,
+            }
+        }
+        self.generation == other.generation && self.state == other.state
+    }
+}
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeSessionObservations {
+    pub generation: SessionGeneration,
+    pub observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot,
+}
+
 /// Publish-side change detection: while a session runs the only fields that
 /// advance on their own are the quantized clock and the tick-batched
 /// observations, so equality holds between real events. The loaded project
@@ -190,7 +261,10 @@ impl PartialEq for AppSnapshot {
     fn eq(&self, other: &Self) -> bool {
         #[cfg(windows)]
         {
-            if self.professional_observations != other.professional_observations {
+            if self.professional_observations != other.professional_observations
+                || self.native_observations != other.native_observations
+                || self.process_trace_status != other.process_trace_status
+            {
                 return false;
             }
         }
@@ -202,6 +276,7 @@ impl PartialEq for AppSnapshot {
             }
         }
         same_arc(&self.loaded_project, &other.loaded_project)
+            && self.last_cleanup == other.last_cleanup
             && (Arc::ptr_eq(&self.catalog, &other.catalog) || self.catalog == other.catalog)
             && self.exports == other.exports
             && self.export_plan == other.export_plan
@@ -209,6 +284,10 @@ impl PartialEq for AppSnapshot {
             && self.active_latency_profile == other.active_latency_profile
             && self.audio_settings == other.audio_settings
             && self.active_audio_settings == other.active_audio_settings
+            && self.transport_latency == other.transport_latency
+            && self.active_transport_latency == other.active_transport_latency
+            && self.measured_process == other.measured_process
+            && self.active_measured_process == other.active_measured_process
             && self.graph == other.graph
             && self.consumed_request_id == other.consumed_request_id
             && self.generation == other.generation

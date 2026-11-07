@@ -142,6 +142,12 @@ pub(in super::super) fn stream_editor(
             t!("Determined by ASIO driver"),
         ));
     }
+    if audio.backend == AudioBackend::Wasapi && stream.mode == DeviceMode::Shared {
+        return view.child(field(
+            &t!("Requested device period (frames)"),
+            super::native_period::editor(shell, editor, direction, device, prefix),
+        ));
+    }
     view.child(field(
         &t!("Requested device buffer (frames / ms)"),
         choices(
@@ -174,9 +180,14 @@ pub(in super::super) fn footer(
     let draft = shell.settings.draft(editor);
     let state = shell.state.read(cx);
     let running = state.snapshot.phase == SessionPhase::Running;
-    let needs_restart = state.snapshot.active_audio_settings.as_ref() != Some(&draft.audio)
-        || state.snapshot.active_latency_profile
-            != super::model::expected_active_profile(draft.profile);
+    let submitted = draft.capture(&state.snapshot, shell.density);
+    let needs_restart = submitted
+        .as_ref()
+        .is_ok_and(|submitted| !submitted.matches_active(&state.snapshot));
+    let clears_measured = state.snapshot.measured_process.is_some()
+        && submitted
+            .as_ref()
+            .is_ok_and(|submitted| submitted.save_transport);
     let busy = shell.settings.busy()
         || state.pending_request
         || state.snapshot.graph.pending_revision.is_some()
@@ -192,6 +203,19 @@ pub(in super::super) fn footer(
     } else {
         "device-settings"
     };
+    let feedback = draft
+        .error
+        .clone()
+        .or_else(|| draft.message.clone())
+        .unwrap_or_else(|| {
+            if draft.dirty() {
+                t!("Unsaved changes").into()
+            } else if running {
+                t!("Saved requests and active audio are shown separately in Diagnostics.").into()
+            } else {
+                t!("Audio is stopped. Save keeps it stopped.").into()
+            }
+        });
     let this = cx.entity();
     let restart_this = this.clone();
     div()
@@ -206,50 +230,92 @@ pub(in super::super) fn footer(
         .child(
             div()
                 .id(SharedString::from(format!("{prefix}-feedback")))
+                .aria_label(feedback.clone())
                 .text_size(px(theme::TEXT_SM))
-                .text_color(if draft.error.is_some() { theme::DANGER } else { theme::TEXT_MUTED })
-                .child(draft.error.clone().or_else(|| draft.message.clone()).unwrap_or_else(|| {
-                    if draft.dirty() { t!("Unsaved changes").into() }
-                    else if running { t!("Saved requests and active audio are shown separately in Diagnostics.").into() }
-                    else { t!("Audio is stopped. Save keeps it stopped.").into() }
-                }))
+                .text_color(if draft.error.is_some() {
+                    theme::DANGER
+                } else {
+                    theme::TEXT_MUTED
+                })
+                .child(feedback)
                 .gpui_test_observe(),
         )
+        .when(clears_measured, |view| {
+            let warning = t!(
+                "Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart."
+            );
+            view.child(
+                div()
+                    .id(SharedString::from(format!("{prefix}-measured-invalidation")))
+                    .aria_label(warning.clone())
+                    .child(label(warning))
+                    .gpui_test_observe(),
+            )
+        })
         .child(
-            div().flex().flex_wrap().gap(px(8.)).justify_end()
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .justify_end()
                 .child(
-                    button(SharedString::from(format!("{prefix}-discard")), t!("Discard changes"))
-                        .disabled(busy || !draft.dirty())
-                        .on_click(move |_, _, cx| this.update(cx, |shell, cx| {
+                    button(
+                        SharedString::from(format!("{prefix}-discard")),
+                        t!("Discard changes"),
+                    )
+                    .disabled(busy || !draft.dirty())
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
+                            shell.settings.reset_period_inputs(editor);
+                            if editor == Editor::Global {
+                                shell.settings.reset_expert_inputs();
+                            }
                             *shell.settings.draft_mut(editor) = shell.current_settings_draft(cx);
                             cx.notify();
-                        })),
+                        })
+                    }),
                 )
                 .child(
                     button(SharedString::from(format!("{prefix}-save")), t!("Save"))
-                        .variant(if running { ButtonVariant::Secondary } else { ButtonVariant::Primary })
+                        .variant(if running {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Primary
+                        })
                         .disabled(busy || !draft.dirty())
                         .on_click({
                             let this = cx.entity();
-                            move |_, _, cx| this.update(cx, |shell, cx| shell.save_audio_settings(editor, false, cx))
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.save_audio_settings(editor, false, cx)
+                                })
+                            }
                         }),
                 )
-                .when(running, |view| view.child(
-                    button(SharedString::from(format!("{prefix}-restart")), t!("Restart Audio"))
+                .when(running, |view| {
+                    view.child(
+                        button(
+                            SharedString::from(format!("{prefix}-restart")),
+                            t!("Restart Audio"),
+                        )
                         .variant(ButtonVariant::Primary)
                         .disabled(busy || !needs_restart)
-                        .on_click(move |_, _, cx| restart_this.update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))),
-                )),
+                        .on_click(move |_, _, cx| {
+                            restart_this
+                                .update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))
+                        }),
+                    )
+                }),
         )
 }
 
-struct StreamTarget {
-    direction: Direction,
-    device: Option<String>,
+pub(super) struct StreamTarget {
+    pub(super) direction: Direction,
+    pub(super) device: Option<String>,
 }
 
 impl StreamTarget {
-    fn stream_mut<'a>(&self, draft: &'a mut Draft) -> &'a mut StreamSettings {
+    pub(super) fn stream_mut<'a>(&self, draft: &'a mut Draft) -> &'a mut StreamSettings {
         match &self.device {
             Some(id) => device_stream_mut(&mut draft.audio, self.direction, id),
             None => match self.direction {

@@ -1174,14 +1174,24 @@ mod tests {
             meters.update_points(&snapshot, true, true)
         });
 
-        // A delivery stall is a status change: it must wake exactly once,
-        // then stay quiet while the stall persists.
+        // Leave publications queued before pausing. Polling must drain that
+        // tail before the subscription's delivery-inactivity timer can expire;
+        // sleeping without polling would stamp the old tail as delivered now.
+        let before_pause = snapshot.signal_topics.monitor_output.stats().attempts;
+        wait_until(Duration::from_secs(3), || {
+            snapshot.signal_topics.monitor_output.stats().attempts >= before_pause + 2
+        });
         backend_state.pause_audio.store(true, Ordering::Relaxed);
-        std::thread::sleep(STALE_AFTER + Duration::from_millis(200));
-        assert!(
-            meters.update_points(&snapshot, true, true),
-            "the transition to Stale must wake"
-        );
+        wait_until(Duration::from_secs(3), || {
+            let woke = meters.update_points(&snapshot, true, true);
+            if meters.input_status != MeterStatus::Stale
+                || meters.output_status != MeterStatus::Stale
+            {
+                return false;
+            }
+            assert!(woke, "the transition to Stale must wake");
+            true
+        });
         assert!(
             !meters.update_points(&snapshot, true, true),
             "a persisted stall without new publications must not keep waking"
@@ -1190,7 +1200,13 @@ mod tests {
         // Recovery is a status change too: Stale → Live with fresh readings.
         backend_state.pause_audio.store(false, Ordering::Relaxed);
         wait_until(Duration::from_secs(3), || {
-            meters.update_points(&snapshot, true, true)
+            let woke = meters.update_points(&snapshot, true, true);
+            if meters.input_status != MeterStatus::Live || meters.output_status != MeterStatus::Live
+            {
+                return false;
+            }
+            assert!(woke, "the recovery to Live must wake");
+            true
         });
 
         finish_service(runtime);

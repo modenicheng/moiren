@@ -1,6 +1,6 @@
 //! Bounded read-only MMDevice/topology/PnP identity resolution.
 
-use super::{Candidate, EndpointNameReader, ObserverClock, select};
+use super::{Candidate, EndpointNameRead, EndpointNameReader, ObserverClock, select};
 use crate::{owner::Apartment, vad::DeviceInterface};
 use std::mem::size_of;
 use windows::{
@@ -74,7 +74,7 @@ impl EndpointNameReader for WindowsEndpointNameReader {
             super::super::StableEndpointId,
             super::super::Intent,
         )],
-    ) -> Vec<Result<(String, String), String>> {
+    ) -> Vec<Result<EndpointNameRead, String>> {
         let _apartment = match Apartment::new() {
             Ok(apartment) => apartment,
             Err(error) => {
@@ -186,7 +186,7 @@ fn read_name(
     stable_id: super::super::StableEndpointId,
     intent: super::super::Intent,
     root: &str,
-) -> Result<(String, String), String> {
+) -> Result<EndpointNameRead, String> {
     // Attribute enumeration failures only when ownership is confirmed. A hint
     // that itself fails (for example a removed endpoint whose connected-to
     // device no longer resolves through GetDevice) stays undecidable: reporting
@@ -221,7 +221,22 @@ fn read_name(
         .map_err(|error| hresult("IMMDevice::OpenPropertyStore(exact endpoint)", &error))?;
     let name = property_string(&store, &PKEY_Device_FriendlyName)
         .map_err(|error| format!("PKEY_Device_FriendlyName(exact endpoint): {error}"))?;
-    Ok((selected.mmdevice_id.clone(), name))
+    // Detached evidence only: query the already-selected endpoint after its
+    // raw name succeeds. A state failure must not discard that name or imply
+    // ACTIVE; preserve all returned bits without authorizing a native client.
+    let (device_state, device_state_error) = match unsafe { device.GetState() } {
+        Ok(state) => (Some(state.0), None),
+        Err(error) => (
+            None,
+            Some(hresult("IMMDevice::GetState(exact endpoint)", &error)),
+        ),
+    };
+    Ok(EndpointNameRead {
+        mmdevice_id: selected.mmdevice_id.clone(),
+        name,
+        device_state,
+        device_state_error,
+    })
 }
 
 fn instance_has_stable_suffix(instance: &str, stable_id: super::super::StableEndpointId) -> bool {

@@ -1,12 +1,14 @@
 //! Figma Navigation & Actions translated into native, reusable gpui components.
 //!
-//! Base Button/Toggle own focus, Enter/Space activation and accessibility.
+//! Base Button/Toggle own focus and Enter/Space activation. Action buttons also
+//! supply disabled accessibility metadata absent from the pinned base version.
 //! These components own the visual contract; callbacks request changes and
 //! never infer that the audio engine has accepted or applied them.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use super::action_accessibility::ActionAccessibility;
 use super::action_assets::ActionIcon;
 use super::action_style::{Paint, SampleState, Skin, styled_control};
 use crate::ui::theme::controls as t;
@@ -165,10 +167,10 @@ impl ActionButton {
 }
 
 impl RenderOnce for ActionButton {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let m = self.size.metrics(self.density);
         let icon_only = self.icon_only && self.icon.is_some();
-        styled_control(
+        let button = styled_control(
             base::Button::new(self.id)
                 .disabled(self.disabled)
                 .accessibility_label(self.label.clone()),
@@ -197,7 +199,11 @@ impl RenderOnce for ActionButton {
         })
         .when_some(self.on_click, |s, handler| {
             s.on_click(move |e, w, cx| handler(e, w, cx))
-        })
+        });
+        ActionAccessibility::new(
+            RenderOnce::render(button, window, cx).into_element(),
+            self.disabled,
+        )
     }
 }
 
@@ -299,9 +305,9 @@ impl IconButton {
 }
 
 impl RenderOnce for IconButton {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let b = self.button;
-        styled_control(
+        let button = styled_control(
             base::Button::new(b.id)
                 .disabled(b.disabled)
                 .accessibility_label(b.label),
@@ -313,7 +319,11 @@ impl RenderOnce for IconButton {
         .child(self.icon.element())
         .when_some(b.on_click, |s, handler| {
             s.on_click(move |e, w, cx| handler(e, w, cx))
-        })
+        });
+        ActionAccessibility::new(
+            RenderOnce::render(button, window, cx).into_element(),
+            b.disabled,
+        )
     }
 }
 

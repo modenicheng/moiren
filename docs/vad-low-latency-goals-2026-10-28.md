@@ -12,7 +12,10 @@ The canonical driver qualification verdict remains in
 
 - Make the minimum `Input -> Bus -> Output` route as low-latency as possible,
   aiming for measured end-to-end latency below 10 ms with stable, real output.
-  The graph contains no additional DSP or deliberate delay nodes.
+  The graph contains no additional DSP or deliberate delay nodes. Per the
+  2026-10-31 user amendment, if this is demonstrated impossible under the
+  current device conditions, pursue the defensible theoretical minimum and
+  best achievable stable setting instead, with the evidence limits below.
 - Do not trade continuity for a better number: count silence, short reads,
   dropped/duplicated frames, discontinuities, resets, and correlation failures.
 - Users must be able to change a VAD endpoint's displayed name. Preserve the
@@ -20,14 +23,223 @@ The canonical driver qualification verdict remains in
 - Treat application bypass here as the existing Process Loopback capture path,
   not bypassing a DSP node. Compare it with VAD under the same output conditions.
 - Build and prepare on the development host; install and debug the kernel
-  driver only on the separate test target. The existing VMware guest is the
-  functional driver target, not permission to install the driver on the host.
-- Keep each implementation/test/documentation slice atomic and push promptly.
+  driver only on the separate test target. Per the 2026-11-07 user amendment,
+  use the existing standalone remote test computer directly; VMware is not a
+  prerequisite. This is not permission to install the driver on the host.
+- Keep each implementation/test/documentation slice atomic locally. Per the
+  2026-10-29 user update, batch pushes at meaningful verified integration
+  checkpoints to avoid triggering CI for every small commit.
   Do not stage unrelated screenshots, JSON, or other user work.
-- The VM has a roughly 64 GB system disk. Delete obsolete, owned scratch
-  artifacts after verified archival; do not accumulate build trees or binaries.
+- Delete obsolete, owned scratch artifacts after verified archival; do not
+  accumulate build trees or binaries. If the optional historical VM is reused,
+  its roughly 64 GB system disk remains a separate storage constraint.
 
-## Inspected state
+### 2026-11-07 direct remote target and desktop scope
+
+The user explicitly selects the existing separate remote test computer instead
+of requiring VMware. Earlier records that require starting/unlocking the
+encrypted VM describe the then-current plan and no longer block direct remote
+driver work. Keep package/signature/loaded-SYS provenance, rollback readiness,
+endpoint ownership and explicit handling of disruptive install/reboot steps;
+do not silently alter boot/security policy or stop protected external clients.
+
+An unlocked, usable desktop is a prerequisite only for tests that exercise
+ordinary visible desktop input, not for every SSH, CLI, metadata or audio test.
+Schedule noninteractive work independently when its own token/session/device
+requirements are met; a locked screen is not itself evidence that such work
+cannot run. Conversely, a reachable SSH/session0 token does not establish
+usable input in the app's interactive session. The stopped point observation
+supports exact-root input refusal in that snapshot, not a WTS lock-state
+diagnosis. Do not bypass a foreign/system cover to obtain a desktop pass.
+
+### 2026-11-03 development and test scheduling
+
+The user permits independent development and remote long-duration tests to run
+in parallel. Native audio, desktop UI, OBS and driver/device exercises remain
+remote-only; do not launch host audio/UI or operate existing host processes.
+Host compilation, pure/offline tests and headless UI tests are permitted.
+
+Run a long test only for a distinct unanswered question, with a pinned binary,
+isolated settings/evidence, a finite deadline and owned-process cleanup. Reuse
+the result while development continues; a new build does not retroactively
+change the revision under test. Serialize tests that share audio endpoints,
+drivers or recording resources. Preserve external OBS/QQMusic owners; unchanged
+process IDs alone do not prove their audio was uninterrupted.
+
+First-packet investigation remains deferred. The user's approximately ten-minute
+manual run is useful usability feedback, not calibrated latency or complete
+waveform evidence. Missing physical capture equipment and that deferred issue
+do not block independent product work. Do not repeat unchanged soaks or invent
+extra qualification requirements merely to keep this task active.
+
+### 2026-10-31 target-device fallback
+
+Sub-10-ms remains the preferred objective, not a reason to stop useful
+development or repeatedly retest an unrelated limitation. The user accepts
+the minimum achievable under the current device conditions only after the
+sub-10-ms limitation is evidenced; no such impossibility is established yet.
+
+- Declare the exact device, driver, source path, native mode/rate/period,
+  graph, load, measurement endpoints and uncertainty for every conclusion.
+  Keep VAD/Process and internal-software/physical results separate. A result
+  for one mode/device/path is not a result for every supported configuration.
+- Distinguish a justified theoretical lower bound, the minimum observed stable
+  configuration and the unresolved gap between them. Do not call the current
+  best run the theoretical minimum or add overlapping nominal buffer/period
+  quantities as if they were independently measured pipeline delays.
+- Support an irreducible limiting boundary with calibrated measurement and/or
+  a validated device/driver timing constraint for the declared configuration.
+  Account for uncertainty and demonstrate which remaining controls can or
+  cannot reduce it. One failed shallow-buffer run, API minimum period, current
+  Shared default, VM jitter or incomplete calibration does not prove that
+  sub-10-ms physical latency is impossible.
+- Reduce removable queue/phase/processing overhead one admitted configuration
+  at a time. If a lower bound is not defensible, report the best stable result
+  and remaining unknowns rather than manufacturing an impossibility verdict.
+- Keep real non-silent output, continuity, cleanup and sustained-load gates
+  unchanged. Correctness-mode jitter grace is diagnostic only; it neither
+  permits production audio latency nor hides underruns, loss or resets.
+- Once the evidence-gated fallback applies, report achieved p50/p95/p99/max,
+  uncertainty, the lower bound, remaining gap and owning boundary. A result
+  above10ms may meet this conditional device-limited objective, but must never
+  be labelled a sub-10-ms pass. Do not silently enlarge a buffer or move the
+  measurement boundary to produce a better claim.
+
+## Current pipeline status - 2026-11-07
+
+The original S0-S5 requirements below remain the completion criteria. Subsequent
+implementation is recorded in the
+[software ledger](validation/2026-10-29-s1-s3-software-ledger.md) and the
+[2026-11-04 pipeline checkpoint](validation/2026-11-04-pipeline-checkpoint.md).
+The original source audit in the next section is historical, not current
+configuration or acceptance evidence.
+
+| Slice | Current evidence | Remaining acceptance |
+| --- | --- | --- |
+| S0 | Requirements, scoped commits, binary/configuration pins and bounded archival workflows exist; current-main integration/release and scoped portability repairs have local evidence. Published both-route wait repair `8761d07` completes exact-head CI `41915822264` with all 20 jobs successful. Its final-source workspace/headless run passes 2625 tests with both opt-in features, and the optimized example has a verified immutable copy. | Preserve provenance and unrelated work across subsequent native/qualification changes. |
+| S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. Frozen metadata rules out assigning all replacement residuals to client Stop-tail inventory, without implying DAC presentation. PCM persistence/decode refusals pass 35 regressions per platform. The exact reviewed terminal-reader script/manifest are staged and hash-verified remotely, without execution. | The reader still lacks its exact permitted non-admin token and historical OBS12648 process guard; the manifest is not rewritten. Matched routes, explained full waveform correspondence and calibrated measurement remain open; original residuals/gaps remain failures. |
+| S2 | Independent VAD target/capacity, actual-demand admission, priming, servo and bounded recovery are implemented. | Native period/block combinations and sustained quality do not yet qualify a lower default. |
+| S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. The November7 stopped-only read-only point snapshot identifies a foreign LockScreenBackstopFrame over Settings, without diagnostic input or audio. The separate local runner generation correction passes software checks only. | An unobstructed interactive target, successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open; the retained archive's event-order refusal is separate. Forced diagnostic-app cleanup remains a failed lifecycle, not desktop acceptance. |
+| S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist; the software-output category candidate passes host/portable/WDK checks. The streaming harness requires old/new Start/PCM, direct Removed, exact name and fresh confirmation. Readiness waits now retain current-request errors from both route exports before checking readiness; final PCM retains the bounded gate/freshness contract. Pre-client admission permits legal generation zero while final PCM still requires a nonzero generation. Tests pass 145 on Windows and 124 on Linux stable. | Windows-visible name acceptance, migration/default roles and the required native streaming/held-client/race/repetition cases remain open. Use the standalone remote target per the November7 amendment, with package/signature/rollback and endpoint guards; VM startup is not required. |
+| S5 | Deterministic/RT software checks and finite native receipts exist. Offline qualification now checks both p95 and p99 plus calibration uncertainty strictly below10ms, matching the current S5 requirement rather than the older p95-only rule. | Repeated/load/non-silent sustained runs and calibrated p95/p99 below10ms, or the evidenced device-limited fallback, remain open. |
+
+No aggregate percentage, software test total or successful lifecycle substitutes
+for these acceptance requirements. Existing delivery-gap violations, waveform
+residuals and genuine PCM/epoch faults remain visible. Initial-packet work stays
+deferred; missing physical capture equipment does not block independent work.
+
+### Later direct remote deployment - 2026-11-07
+
+The [policy/state receipt](validation/2026-11-07-endpoint-state-and-policy.md)
+compares18 exact persisted registrations from the fixed and earlier seeded
+fixtures. Both Playback policies already contain0x101 enablement and the
+same OUTPUT_UNDEFINED association. The snapshot rules out currently missing
+staging, without proving policy consumption, disablement origin or migration.
+Exact phantom-allowed PDO reads distinguish the fixed Models description
+from requested bus text and report no FriendlyName value; no raw MMDevice
+name fix or live publication timing follows. All61 terminal files are archived
+and length/hash verified, including helper failures/corrections. The target
+is used directly, without VM startup, desktop input/unlock or native audio Start.
+
+Product observations now retain raw Windows endpoint state and independent
+state-read errors in the service, probe, Exports and diagnostics, separately
+from provider presence and Engine readiness. No ACTIVE inference, enablement
+or acceptance-gate change is introduced. The pinned17-file slice passes2636
+Windows workspace/headless tests with10 ignored and155 integration example
+tests; Linux example133, observer17, app618 with2 ignored and acceptance7 pass.
+Windows/Linux strict workspace Clippy and formatting pass. Clean released004809
+then runs once directly on the target at20:52:50..20:53:14: the new product
+fields observe initial NOTPRESENT followed by Microphone ACTIVE and Playback
+DISABLED on the same identities, independently matched by failure enumeration.
+The PCM run still fails before probe Start, with zero acquired signal frames;
+join/release/cleanup and external-state/idle audits pass. Its17 terminal files
+are hash/length archived. This verifies new-source state propagation, not
+Windows-name, PCM or S1/S4/S5 acceptance. Published6401849's20-job CI is green;
+the later source slice still requires matching publication CI.
+
+The later PCM extension in8318308 passes154 Windows/132 Linux example tests
+and strict Clippy without changing ACTIVE admission or PCM gates. At19:43 its
+failure collector completes both flows and finds the exact fixed-fixture
+Playback/provider MMDevice DISABLED, while the matching Microphone is ACTIVE.
+That narrows this failure snapshot; disablement origin, earlier state,
+creation-policy consumption and migration remain unproven. The mapping timeout
+occurs before probe Start and yields no PCM, despite observed Engine timeline
+advancement during the idle hold. Cleanup/join/release and external-state audits
+pass; report acceptance remains failed. Both independent PCM terminal archives
+are hash/length verified. No endpoint enablement, identity rotation, historical
+device deletion or lock-state inference is performed. Next inspect exact
+interface EP0 policy read-only rather than repeat the unchanged native run.
+Prior published c890e50 finishes all20 CI jobs at19:45; that result does not
+qualify the subsequent diagnostic commits or any native/physical gate.
+
+The later [enumeration receipt](validation/2026-11-07-rename-enumeration-evidence.md)
+adds failure-only ALL-state metadata while retaining ACTIVE admission. Windows/
+Linux tests pass152/130 and strict Clippy passes. At19:29 both directions'
+held/replacement initialization, direct Removed and fresh Engine confirmation
+complete, but both exact Windows names retain adapter suffixes. Enumeration
+does not fail, so the prior timeout's cause/fix remains unproven; Starts0/no
+PCM. This bounded observation is still failed/unqualified, not S4 completion.
+
+The [direct remote612 receipt](validation/2026-11-07-direct-remote-category.md)
+records actual candidate/rollback signing verification, guarded installation
+and exact-root device restart with no Windows reboot or security/default/volume
+changes. The old611 package remains verified locally/remotely. The candidate
+is the default non-opt-in diagnostic build, not a relabelled611 binary.
+Stage1 native service Apply/Stop/join passes. Streaming refuses before Start
+or rename on the existing identity; a separate explicitly seeded held-client
+diagnostic initializes Playback but fails Stop with a sticky no-ready packet
+stream error and nonempty public exit cleanup_error. Source investigation
+identifies early first-owner preparation during legal Paused/zero-packet
+allocation; the focused repair passes workspace/headless tests, the145-test
+integration example suite and strict Clippy. Its clean corrected release is
+tested at19:01 on the same explicit fixture: both held clients and direct old
+Removed checkpoints complete; Playback replacement enumeration fails while
+Microphone replacement/Engine confirmation succeeds but exact name fails on
+the adapter suffix. Cleanup/join/release and external-state audits pass; this
+held-only run makes no Start/PCM claim. None of these steps closes full
+exact-name/streaming/held/repetition/race/default-role acceptance,
+the desktop gate, sustained audio or calibrated physical p95/p99.
+
+### Remote-priority update - 2026-11-07
+
+The [fresh remote receipt](validation/2026-11-07-remote-priority.md) supersedes
+November5's readiness assumptions, not the S0-S5 acceptance criteria. The
+expected target and unchanged loaded driver are reachable. A bounded session1
+observer now sees a PowerShell foreground rather than the lock screen, but the
+subsequent stopped-only owned-input control still refuses an obscured or
+different/child HWND before posting any click. After correcting an evidenced
+cross-token process-metadata runner defect, that actual control terminates
+Ready/result1 with no audio start, no remaining owned process and unchanged
+defaults/render controls/protected identities. It is not desktop acceptance.
+Historical OBS12648 is now absent, so the frozen metadata reader lacks that
+guard as well as its exact non-admin token. The driver VM remains stopped.
+No unchanged native retry, new driver installation, threshold change or
+physical/full-pipeline verdict follows.
+
+The same receipt records a local-only retained desktop worker repair: Stop
+advances intent1->2, and explicit retained Apply starts owner3 rather than2.
+Five expectation sites now follow the existing service contract without
+changing predecessor evidence or timing gates. Both PowerShell shells pass34
+pure checks each, and the software-backed Rust service regression passes1test
+with its F32/F64 loop. No corrected worker is deployed or run natively; the
+17:31:38 read-only remote check still finds no test owners and the driver VM
+inventory remains empty. These checks do not close S3 or any physical gate.
+
+The receipt's later one-shot observation answers the missing hit identity:
+at17:42:07+08:00, Settings center1482/171 hits foreign PID13100,
+HWND855132, class`LockScreenBackstopFrame`, not the owned Moiren root.
+No diagnostic click/Invoke/audio occurs. Owned Close then forced cleanup
+remains a failed lifecycle;13 raw artifacts are verified, protected identities
+and driver/defaults/render controls are unchanged, and no owner/running test
+task remains. This snapshot neither explains the earlier run retrospectively
+nor establishes WTS lock state or a product/DPI defect. No unchanged retry or
+bypass follows. Visible desktop input remains unqualified; the later direct
+remote amendment removes VM startup as a prerequisite for independent work.
+
+The later [wait-error repair](validation/2026-11-05-s4-wait-error-retention.md)
+closes two source-supported false-acceptance paths, not native qualification.
+
+## Inspected state - original source audit
 
 ### Driver and naming
 
@@ -159,7 +371,8 @@ topology in core and preparation/runtime contracts in engine.
 
 - Commit/push this requirement and audit record separately from code.
 - Before each implementation slice, check worktree state; stage explicit paths,
-  run relevant checks, commit, push and verify the remote hash.
+  run relevant checks and commit locally. Batch remote updates at verified
+  integration checkpoints, then verify the remote hash.
 - Before deployment, record host/guest builds, loaded package/SYS hash, binary
   hash, active settings, installed-driver status and free space.
 
@@ -188,10 +401,11 @@ analyzer on known delay, drift, silence, dropped data, and epoch changes. Report
 measurement endpoints, uncertainty, sample count, p50/p95/p99/max and startup
 separately. A software-loopback receipt does not certify acoustic/physical E2E.
 
-The VM remains the driver functional and failure-recovery target. Physical
-qualification needs a suitable separate hardware target, or an explicitly
-documented physical-device/measurement setup in the guest. Do not install the
-test driver on the development host to bypass this constraint.
+Use the separate remote computer for driver functional and failure-recovery
+work per the November7 user amendment; a VM is optional, not mandatory.
+Physical qualification still needs a declared hardware/measurement setup and
+calibration; standalone execution alone is not physical latency evidence.
+Do not install the test driver on the development host to bypass this constraint.
 
 ### S2 - VAD operating budget, independently of capacity
 
@@ -252,11 +466,14 @@ test driver on the development host to bypass this constraint.
 - Require no unexplained steady-state drops, underruns, resets, silent holes or
   signal-analysis failures. Expected fault-injection loss is a separate verdict.
 - If native client/device cadence prevents the target, retain the best stable
-  setting and report the measured floor and owning boundary. Do not hide failure
-  by increasing buffer size or changing a threshold in the same experiment.
+  setting and apply the evidence-gated target-device fallback above. Report the
+  measured floor, justified lower bound, remaining gap and owning boundary.
+  Do not hide failure by increasing buffer size or changing a threshold in the
+  same experiment.
 - Run focused Rust/driver tests per slice; complete relevant fmt/check/test,
   strict Clippy and Windows/Ubuntu/Miri CI before integration. Kernel changes
   additionally require WDK analyzed build, INF checks and a new target package.
 
-Only S0 is performed by this document. S1-S5 are proposed future work; no new
-PCM measurement, buffer tuning, rename target run or stability pass is claimed.
+The initial2026-10-28audit performed S0 only. Later S1-S5 work is tracked in the
+current pipeline status and linked receipts; none of those software increments
+alone establishes a native waveform, rename, sustained or physical-latency pass.

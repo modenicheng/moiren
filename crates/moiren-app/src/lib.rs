@@ -5,6 +5,7 @@
 // strings. See `i18n` for the language list and runtime switching.
 rust_i18n::i18n!("locales", fallback = "en");
 
+pub mod cli;
 pub mod i18n;
 pub mod logging;
 pub mod project;

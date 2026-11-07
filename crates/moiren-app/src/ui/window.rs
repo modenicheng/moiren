@@ -753,7 +753,11 @@ impl Render for StudioShell {
             self.trace.borrow_mut().shell_renders += 1;
         }
         self.finish_settings_save(cx);
+        self.finish_measured_process(cx);
         self.keep_settings_focus(window, cx);
+        self.sync_native_period_inputs(window, cx);
+        self.sync_measured_exact_inputs(window, cx);
+        self.sync_expert_inputs(window, cx);
         self.finish_node_spawn(cx);
         graph::sync_binding_menu(self, cx);
         self.sync_node_name(window, cx);
@@ -905,6 +909,9 @@ impl StudioShell {
                 .text_input_entities()
                 .iter()
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self.settings.period_owns_focus(focused, cx)
+            || self.settings.exact_owns_focus(focused, cx)
+            || self.settings.expert_owns_focus(focused, cx)
     }
 
     /// Every text-input entity the shell renders nested in a cached panel:

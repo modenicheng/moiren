@@ -3,8 +3,12 @@ use super::{ProcessLoopbackOptions, activation, identity};
 use crate::{
     ActivationGate, StopSignal,
     capture::{
-        CaptureError, CaptureReport, CaptureSource, CaptureStatus, PreparedCapture,
-        wasapi::{Startup, api, handle, start_owner, stream},
+        CaptureError, CapturePreparationAbortFailure, CaptureReport, CaptureSource, CaptureStatus,
+        PreparedCapture,
+        wasapi::{
+            Startup, api, capture_failure_before_owner, finish_owner_retaining_report, handle,
+            start_owner_returning_with_abort, start_owner_returning_with_abort_policy, stream,
+        },
     },
     owner::{Apartment, OwnedHandle},
 };
@@ -48,15 +52,65 @@ pub fn prepare_process_capture_with_gate(
     stop: StopSignal,
     gate: ActivationGate,
 ) -> Result<PreparedCapture, CaptureError> {
+    prepare_process_capture_with_gate_and_pcm(options, stop, gate, None)
+}
+
+pub(crate) fn prepare_process_capture_with_gate_and_pcm(
+    options: ProcessLoopbackOptions,
+    stop: StopSignal,
+    gate: ActivationGate,
+    pcm: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
+) -> Result<PreparedCapture, CaptureError> {
     options.validate()?;
+    if let Some(config) = pcm {
+        config
+            .validate()
+            .map_err(|_| crate::clock_bridge::ClockBridgeError::BudgetExceeded)?;
+    }
     gate.validate_stop(&stop)?;
-    start_owner(stop, move |stop, sender, started| {
+    prepare_process_capture_with_abort_policy(options, stop, gate, || (), false, pcm)
+        .map_err(|failure| failure.legacy_error)
+}
+
+/// Stop already-prepared peers on the calling control thread before local reaping.
+pub fn prepare_process_capture_with_gate_returning_with_abort<A>(
+    options: ProcessLoopbackOptions,
+    stop: StopSignal,
+    gate: ActivationGate,
+    before_join: impl FnOnce() -> A,
+) -> Result<PreparedCapture, Box<CapturePreparationAbortFailure<A>>> {
+    prepare_process_capture_with_abort_policy(options, stop, gate, before_join, true, None)
+}
+fn prepare_process_capture_with_abort_policy<A>(
+    options: ProcessLoopbackOptions,
+    stop: StopSignal,
+    gate: ActivationGate,
+    before_join: impl FnOnce() -> A,
+    stop_without_owner: bool,
+    pcm: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
+) -> Result<PreparedCapture, Box<CapturePreparationAbortFailure<A>>> {
+    if let Err(error) = options
+        .validate()
+        .and_then(|()| gate.validate_stop(&stop).map_err(Into::into))
+    {
+        return Err(capture_failure_before_owner(error, stop, before_join));
+    }
+    let owner = move |stop: std::sync::Arc<StdHandle>,
+                      sender,
+                      started: std::sync::Arc<AtomicBool>| {
         let mut report = CaptureReport::new(CaptureSource::ProcessLoopback, options.duration);
         report.latency = crate::latency::LatencyRecorder::new(options.latency_telemetry).snapshot();
         report.process = Some(options.target.clone());
-        let result = owner(&options, &stop, &sender, &mut report, &gate, &started);
-        stream::finish(result, &stop, &sender, report)
-    })
+        report.delivery_bound = options.bridge.delivery;
+        finish_owner_retaining_report(report, &stop, &sender, |report| {
+            owner(&options, &stop, &sender, report, &gate, &started, pcm)
+        })
+    };
+    if stop_without_owner {
+        start_owner_returning_with_abort(stop, owner, before_join)
+    } else {
+        start_owner_returning_with_abort_policy(stop, owner, before_join, false)
+    }
 }
 fn cancelled(stop: &StdHandle) -> Result<(), CaptureError> {
     match unsafe { WaitForSingleObject(handle(stop), 0) } {
@@ -78,6 +132,7 @@ pub(crate) fn process_loopback_stream_flags() -> u32 {
         | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
 }
 
+#[allow(clippy::too_many_arguments)]
 fn owner(
     options: &ProcessLoopbackOptions,
     stop: &StdHandle,
@@ -85,6 +140,7 @@ fn owner(
     report: &mut CaptureReport,
     gate: &ActivationGate,
     started: &AtomicBool,
+    pcm: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
 ) -> Result<CaptureStatus, CaptureError> {
     cancelled(stop)?;
     let _apartment = api("CoInitializeEx(process capture)", Apartment::new())?;
@@ -120,6 +176,8 @@ fn owner(
     api("SetEventHandle(process capture)", unsafe {
         client.SetEventHandle(event.0)
     })?;
+    let mut bridge = options.bridge.clock_config()?;
+    bridge.native_pcm = pcm;
     stream::run(
         stream::StreamInput {
             client: &client,
@@ -132,9 +190,11 @@ fn owner(
             latency_telemetry: options.latency_telemetry,
             sample_rate: crate::NATIVE_SAMPLE_RATE,
             channels: 2,
+            artifact: options.artifact,
         },
         sender,
         report,
+        bridge,
     )
 }
 pub(crate) fn capture_format() -> WAVEFORMATEX {
@@ -178,6 +238,8 @@ mod tests {
         let stop = StopSignal::new().unwrap();
         stop.request_stop().unwrap();
         let options = ProcessLoopbackOptions {
+            artifact: None,
+            bridge: Default::default(),
             latency_telemetry: crate::latency::TelemetryMode::Summary,
             target: super::super::ProcessIdentity {
                 pid: u32::MAX,

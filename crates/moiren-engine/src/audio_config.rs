@@ -11,6 +11,8 @@ use crate::{
 
 pub const SAMPLE_RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
 pub const BUFFER_SIZES: [u32; 7] = [64, 128, 256, 512, 1024, 2048, 4096];
+/// Native Shared periods are exact device requests, independent of Engine blocks.
+pub const SHARED_PERIOD_RANGE: std::ops::RangeInclusive<u32> = 64..=4096;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,7 +128,13 @@ impl StreamSettings {
             validate_rate(rate)?;
         }
         if let Some(frames) = self.buffer_frames {
-            validate_buffer(frames)?;
+            if self.mode == DeviceMode::Shared {
+                if !SHARED_PERIOD_RANGE.contains(&frames) {
+                    return Err(AudioConfigError::InvalidSharedPeriod);
+                }
+            } else {
+                validate_buffer(frames)?;
+            }
         }
         Ok(())
     }
@@ -173,6 +181,8 @@ impl AudioSettings {
         self.processing.validate()?;
         self.input.validate()?;
         self.output.validate()?;
+        self.validate_backend_buffer(self.input)?;
+        self.validate_backend_buffer(self.output)?;
         for overrides in [&self.input_overrides, &self.output_overrides] {
             if overrides.len() > 256 {
                 return Err(AudioConfigError::TooManyDevices);
@@ -182,7 +192,17 @@ impl AudioSettings {
                     return Err(AudioConfigError::InvalidDeviceIdentity);
                 }
                 config.validate()?;
+                self.validate_backend_buffer(*config)?;
             }
+        }
+        Ok(())
+    }
+
+    fn validate_backend_buffer(&self, stream: StreamSettings) -> Result<(), AudioConfigError> {
+        if self.backend == AudioBackend::Asio
+            && let Some(frames) = stream.buffer_frames
+        {
+            validate_buffer(frames)?;
         }
         Ok(())
     }
@@ -208,6 +228,10 @@ pub enum AudioConfigError {
     InvalidSampleRate,
     #[error("buffer must be 64, 128, 256, 512, 1024, 2048 or 4096 frames")]
     InvalidBufferSize,
+    #[error(
+        "Shared device period must be within 64..=4096 frames; native preparation checks device support"
+    )]
+    InvalidSharedPeriod,
     #[error("device identity must contain 1 to 32768 bytes without NUL")]
     InvalidDeviceIdentity,
     #[error("at most 256 device overrides can be saved per direction")]

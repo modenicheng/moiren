@@ -10,18 +10,25 @@ use moiren_engine::audio_config::{
 };
 use moiren_engine::node::DeviceMode;
 
+#[cfg(all(test, feature = "gpui-test"))]
+mod cache_tests;
 mod fields;
+mod measured;
+#[cfg(all(test, windows, feature = "gpui-test"))]
+mod measured_ui_tests;
 mod model;
 #[cfg(test)]
 mod model_tests;
+mod native_period;
 mod persistence;
 mod transaction;
+mod transport;
 use fields::choices;
 pub(super) use fields::{field, footer, rate_title, stream_editor};
 pub(super) use model::{Direction, Draft, Editor, Section, SettingsEditor, device_stream_mut};
 
 /// The settings overlay behind a [`PanelHost`]: rebuilt only when the
-/// published snapshot (diagnostics), the active section, or a draft changed.
+/// published snapshot, active section, or rendered local editor state changed.
 pub(in crate::ui::window) struct SettingsPanel;
 
 #[derive(PartialEq)]
@@ -30,6 +37,10 @@ pub(in crate::ui::window) struct SettingsKey {
     section: Section,
     global: Draft,
     device: Draft,
+    pending_request: bool,
+    measured: model::MeasuredKey,
+    expert_modes: [bool; 2],
+    inputs: Vec<(Entity<component::input::InputState>, SharedString)>,
 }
 
 pub(in crate::ui::window) type SettingsPanelHost = PanelHost<SettingsPanel>;
@@ -40,12 +51,38 @@ impl CachedPanel for SettingsPanel {
 
     fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         let settings = &shell.settings;
+        let state = shell.state.read(cx);
         Self::Key {
-            snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
+            snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
             section: settings.section,
             global: settings.global.clone(),
             device: settings.device.clone(),
+            pending_request: state.pending_request,
+            measured: settings.measured.cache_key(),
+            expert_modes: settings.expert_inputs.modes(),
+            // Invalid text is intent too, even when the last valid draft did
+            // not move. Identity also replaces subscriptions after Discard.
+            inputs: settings
+                .period_inputs
+                .values()
+                .map(|entry| &entry.input)
+                .chain(settings.expert_inputs.inputs())
+                .chain(settings.measured.inputs())
+                .map(|input| (input.clone(), input.read(cx).value()))
+                .collect(),
         }
+    }
+
+    fn observe_nested(
+        &self,
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
+        let inputs = owner.read_with(cx, |shell, cx| self.key(shell, cx).inputs);
+        inputs
+            .into_iter()
+            .map(|(input, _)| cx.observe(&input, |host, _, cx| host.notify_nested(cx)))
+            .collect()
     }
 
     fn render(
@@ -87,6 +124,11 @@ pub(super) fn overlay(
     let mut tabs = div().flex().gap(px(6.));
     for (id, title, section) in [
         ("settings-audio", t!("Audio"), Section::Audio),
+        (
+            "settings-transport",
+            t!("Input buffers"),
+            Section::Transport,
+        ),
         ("settings-appearance", t!("Appearance"), Section::Appearance),
         (
             "settings-diagnostics",
@@ -112,6 +154,7 @@ pub(super) fn overlay(
     }
     let content = match shell.settings.section {
         Section::Audio => audio(shell, cx),
+        Section::Transport => transport::editor(shell, cx),
         Section::Appearance => appearance(shell, cx),
         Section::Diagnostics => diagnostics(shell, cx),
     };
@@ -179,8 +222,11 @@ pub(super) fn overlay(
                         .on_key_down(move |event, window, cx| {
                             if event.keystroke.key == "escape" {
                                 this.update(cx, |shell, cx| shell.close_settings(window, cx));
+                                cx.stop_propagation();
                             }
-                            cx.stop_propagation();
+                            // Focus is confined to this modal, a sibling of
+                            // the graph. Unhandled text keys must reach the
+                            // platform input handler after key dispatch.
                         })
                         .child(
                             div()
@@ -431,10 +477,37 @@ fn appearance(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(detail(&t!("Dismiss settings"), "Escape"))
 }
 
+fn process_input_summary(
+    input: Option<crate::service::ExpertInputBuffer>,
+    measured: Option<&crate::service::MeasuredProcessSummary>,
+) -> String {
+    match measured {
+        Some(measured) => t!(
+            "Measured source node %{node}; PID %{pid} (created %{created}); target %{target} / capacity %{capacity} / jitter %{jitter} frames at 48 kHz; origin session %{session} / owner %{owner} / revision %{revision}; selection %{selection}",
+            node = format!("{:?}", measured.request.node),
+            pid = measured.process_pid,
+            created = measured.process_creation_time_100ns,
+            target = measured.request.target_frames,
+            capacity = measured.request.capacity_frames,
+            jitter = measured.request.jitter_frames,
+            session = measured.request.session_generation.0,
+            owner = measured.request.native_owner_generation,
+            revision = measured.request.graph_revision,
+            selection = measured.selection_id,
+        )
+        .into(),
+        None => transport::summary(input),
+    }
+}
+
 fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
     let requested = &snapshot.audio_settings;
+    let requested_process = transport::process_summary(
+        snapshot.transport_latency,
+        snapshot.measured_process.as_ref(),
+    );
     let mut view = div()
         .flex()
         .flex_col()
@@ -457,6 +530,22 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(label(t!(
             "Unsaved edits stay in the Audio draft until Save or Restart Audio."
         )))
+        .child(
+            native_detail(
+                "process-input-requested",
+                &t!("Requested process input"),
+                requested_process,
+            )
+            .gpui_test_observe(),
+        )
+        .child(detail(
+            &t!("Requested VAD input"),
+            transport::vad_summary(snapshot.transport_latency),
+        ))
+        .child(detail(
+            &t!("Requested render queue"),
+            transport::render_summary(snapshot.transport_latency),
+        ))
         .child(div().mt(px(12.)).child(heading(t!("Active session"))))
         .child(detail(
             &t!("State"),
@@ -481,28 +570,138 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     } else {
         view = view.child(label(t!("No active audio configuration")));
     }
-    view = view.child(heading(t!("Actual native timing")));
-    for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
-        view = view.child(detail(&key, value));
+    if let Some(active) = snapshot.active_transport_latency {
+        let active_process =
+            transport::process_summary(active, snapshot.active_measured_process.as_ref());
+        view = view
+            .child(
+                native_detail(
+                    "process-input-active",
+                    &t!("Active process request"),
+                    active_process,
+                )
+                .gpui_test_observe(),
+            )
+            .child(detail(
+                &t!("Active VAD request"),
+                transport::vad_summary(active),
+            ))
+            .child(detail(
+                &t!("Active render queue"),
+                transport::render_summary(active),
+            ));
     }
+    view = view.child(label(t!(
+        "Input targets are estimates. Physical end-to-end latency is unqualified."
+    )));
+    view = view.child(heading(t!("Actual native timing")));
+    for (index, (key, value)) in crate::ui::presentation::process_trace_rows(snapshot)
+        .into_iter()
+        .enumerate()
+    {
+        view = view.child(
+            native_detail(("process-trace-row", index), &key, value.clone()).gpui_test_observe(),
+        );
+    }
+    for (index, (key, value)) in crate::ui::presentation::native_timing_rows(snapshot)
+        .into_iter()
+        .enumerate()
+    {
+        view = view.child(
+            native_detail(("native-timing-row", index), &key, value.clone()).gpui_test_observe(),
+        );
+    }
+    let mut exports = div()
+        .id("provider-export-diagnostics")
+        .flex()
+        .flex_col()
+        .flex_none()
+        .gap(px(8.))
+        .child(heading(t!("Provider export diagnostics")));
+    if snapshot.exports.is_empty() {
+        exports = exports.child(label(t!("No native export observations")));
+    }
+    for status in &snapshot.exports {
+        let id = SharedString::from(format!("provider-export-{}", status.intent.endpoint_id));
+        let mut endpoint = div()
+            .id(id.clone())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(4.));
+        for (index, (key, value)) in crate::ui::presentation::export_diagnostic_rows(status)
+            .into_iter()
+            .enumerate()
+        {
+            endpoint = endpoint.child(
+                detail(&key, value.clone())
+                    .id((id.clone(), index))
+                    .aria_label(format!("{key}: {value}"))
+                    .gpui_test_observe(),
+            );
+        }
+        exports = exports.child(endpoint.gpui_test_observe());
+    }
+    view = view.child(exports.gpui_test_observe());
     view.child(label(crate::ui::presentation::control_feedback(
         snapshot,
         state.pending_request,
     )))
-        .child(detail(&t!("Catalog"), t!(
+    .child(detail(
+        &t!("Catalog"),
+        t!(
             "%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications",
             inputs = snapshot.catalog.inputs.len(),
             outputs = snapshot.catalog.outputs.len(),
             asio = snapshot.catalog.asio_drivers.len(),
             apps = snapshot.catalog.processes.len()
-        )))
-        .when_some(snapshot.catalog.asio_error.clone(), |view, error| view.child(
-            div().id("settings-asio-error").text_color(theme::DANGER).child(t!("ASIO discovery failed: %{error}", error = error).to_string()).gpui_test_observe()
+        ),
+    ))
+    .when_some(snapshot.catalog.asio_error.clone(), |view, error| {
+        view.child(
+            div()
+                .id("settings-asio-error")
+                .text_color(theme::DANGER)
+                .child(t!("ASIO discovery failed: %{error}", error = error).to_string())
+                .gpui_test_observe(),
+        )
+    })
+    .child(detail(&t!("CPU load"), t!("Unavailable")))
+    .child(
+        detail(
+            &t!("Physical end-to-end latency"),
+            t!("Unknown / unqualified"),
+        )
+        .id("diagnostics-physical-latency")
+        .aria_label(format!(
+            "{}: {}",
+            t!("Physical end-to-end latency"),
+            t!("Unknown / unqualified")
         ))
-        .child(detail(&t!("CPU / physical latency / XRUN"), t!("Unavailable")))
-        .child(label(t!("Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.")))
-        .when_some(shell.project_message.clone(), |view, text| view.child(label(text)))
-        .child(button("quit-application", t!("Quit Moiren")).variant(ButtonVariant::Danger).on_click(|_, _, cx| cx.quit()))
+        .gpui_test_observe(),
+    )
+    .child(label(t!(
+        "Queue fill and packet timing do not measure CPU load or physical end-to-end latency."
+    )))
+    .when_some(shell.project_message.clone(), |view, text| {
+        view.child(label(text))
+    })
+    .child(
+        button("quit-application", t!("Quit Moiren"))
+            .variant(ButtonVariant::Danger)
+            .on_click(|_, _, cx| cx.quit()),
+    )
+}
+
+fn native_detail(id: impl Into<ElementId>, key: &str, value: String) -> Stateful<Div> {
+    let accessible_text = format!("{key}: {value}");
+    detail(key, value.clone())
+        .id(id)
+        // A label alone does not emit a native accessibility node in GPUI.
+        .role(Role::Label)
+        .aria_label(accessible_text.clone())
+        // AccessKit's text role derives its UIA Name from the text value.
+        .aria_value(accessible_text)
 }
 
 pub(super) fn processing_summary(audio: &AudioSettings) -> String {

@@ -1,5 +1,6 @@
 //! Shared native components and status text helpers.
 
+mod action_accessibility;
 pub mod action_assets;
 pub(super) mod action_style;
 pub mod actions;

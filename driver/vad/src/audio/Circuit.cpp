@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MS-PL
 // Derived ACX topology sequence: Samples/Common/{Render,Capture}Circuit.cpp.
 #include "Private.h"
+#include "../TerminalPolicy.h"
 #include "Circuit.tmh"
 
 static VAD_PAGE EVT_ACX_CIRCUIT_POWER_UP PowerUp;
@@ -66,7 +67,7 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
         return status;
     }
     UNICODE_STRING name;
-    RtlInitUnicodeString(&name, VadAudioReference);
+    RtlInitUnicodeString(&name, device->Reference);
     status = AcxCircuitInitAssignName(init, &name);
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
         "Circuit name status=%!STATUS!", status);
@@ -121,7 +122,7 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     ACX_PIN_CONFIG_INIT_ID(&config, VadAudioBridgePin);
     config.Type = capture ? AcxPinTypeSink : AcxPinTypeSource;
     config.Communication = AcxPinCommunicationNone;
-    config.Category = capture ? &KSNODETYPE_MICROPHONE : &KSNODETYPE_SPEAKER;
+    config.Category = &vad::EndpointTerminalPolicy(device->Intent).Category;
     ACX_PIN_CALLBACKS bridgeCallbacks;
     ACX_PIN_CALLBACKS_INIT(&bridgeCallbacks);
     bridgeCallbacks.EvtAcxPinRetrieveName = PinName;

@@ -26,6 +26,21 @@ impl QpcClock {
         (mode != TelemetryMode::Disabled).then(Self::new).flatten()
     }
     pub fn now(&self) -> Option<u64> {
+        #[cfg(windows)]
+        {
+            let mut ticks = 0;
+            unsafe { QueryPerformanceCounter(&mut ticks) }.ok()?;
+            qpc_ticks_to_100ns(u64::try_from(ticks).ok()?, self.frequency)
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    /// Raw system QPC for stamps defined in ticks, not WASAPI's 100 ns unit.
+    /// Frequency was obtained at preparation, never queried per completion.
+    pub fn now_ticks(&self) -> Option<u64> {
         #[cfg(not(windows))]
         {
             None
@@ -34,7 +49,18 @@ impl QpcClock {
         {
             let mut ticks = 0;
             unsafe { QueryPerformanceCounter(&mut ticks) }.ok()?;
-            qpc_ticks_to_100ns(u64::try_from(ticks).ok()?, self.frequency)
+            u64::try_from(ticks).ok().filter(|&value| value != 0)
+        }
+    }
+
+    pub fn frequency_hz(&self) -> Option<u64> {
+        #[cfg(windows)]
+        {
+            Some(self.frequency)
+        }
+        #[cfg(not(windows))]
+        {
+            None
         }
     }
 }

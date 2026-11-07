@@ -11,7 +11,12 @@ mod jobs_tests;
 mod latency;
 mod mailbox;
 mod managed;
+pub(crate) mod measured_process;
 mod model;
+#[cfg(windows)]
+pub(crate) mod process_trace;
+#[cfg(windows)]
+pub use process_trace::*;
 #[cfg(test)]
 mod settings_tests;
 mod signals;
@@ -19,6 +24,7 @@ mod startup;
 #[cfg(any(test, feature = "gpui-test"))]
 #[path = "managed/test_backend.rs"]
 pub(crate) mod test_backend;
+mod transport_latency;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
@@ -31,9 +37,15 @@ pub use graph::{
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
+pub use measured_process::{
+    MeasuredProcessRequest, MeasuredProcessSummary, MeasuredProcessWindow, ProcessWindowPolicy,
+};
 pub use moiren_engine::audio_config::*;
 pub use signals::{
     LevelTopic, SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket,
+};
+pub use transport_latency::{
+    DeliveryProvenance, ExpertInputBuffer, ExpertRenderQueue, TransportLatencySettings,
 };
 #[cfg(windows)]
 pub use windows::WindowsBackend;
@@ -110,14 +122,23 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    pub(crate) measured_process: Option<measured_process::MeasuredProcessProfile>,
+    pub active_measured_process: Option<MeasuredProcessSummary>,
+    pub last_cleanup: Option<SessionCleanupObservation>,
+    #[cfg(windows)]
+    pub process_trace_status: Option<ProcessTraceCollectionStatus>,
     pub exports: ExportService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
+    #[cfg(windows)]
+    pub native_observations: Option<NativeSessionObservations>,
     #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: AudioLatencyProfile,
     pub active_latency_profile: Option<AudioLatencyProfile>,
     pub audio_settings: AudioSettings,
     pub active_audio_settings: Option<AudioSettings>,
+    pub transport_latency: TransportLatencySettings,
+    pub active_transport_latency: Option<TransportLatencySettings>,
     pub graph: ServiceGraph,
     pub core: ServiceCore,
     pub catalog: Arc<DeviceCatalog>,
@@ -134,14 +155,23 @@ pub struct ServiceContext {
 impl Default for ServiceContext {
     fn default() -> Self {
         Self {
+            measured_process: None,
+            active_measured_process: None,
+            last_cleanup: None,
+            #[cfg(windows)]
+            process_trace_status: None,
             exports: ExportService::default(),
             loaded_project: None,
+            #[cfg(windows)]
+            native_observations: None,
             #[cfg(windows)]
             professional_observations: None,
             latency_profile: AudioLatencyProfile::default(),
             active_latency_profile: None,
             audio_settings: AudioSettings::default(),
             active_audio_settings: None,
+            transport_latency: TransportLatencySettings::default(),
+            active_transport_latency: None,
             graph: ServiceGraph::default(),
             core: ServiceCore::default(),
             catalog: Arc::new(DeviceCatalog::default()),
@@ -202,6 +232,7 @@ impl ServiceContext {
             self.graph.replace(candidate.graph, candidate.nodes)?;
         }
         self.audio_settings = audio;
+        self.measured_process = None;
         self.loaded_project = Some(Arc::new(document));
         Ok(())
     }
@@ -214,6 +245,16 @@ impl ServiceContext {
             return false;
         }
         self.audio_settings = settings;
+        true
+    }
+
+    pub(crate) fn set_transport_latency(&mut self, settings: TransportLatencySettings) -> bool {
+        if let Err(error) = settings.validate() {
+            self.graph.record_error(error);
+            return false;
+        }
+        self.transport_latency = settings;
+        self.measured_process = None;
         true
     }
 
@@ -321,6 +362,20 @@ impl ServiceDriver for CoreDriver {
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
             }
+            AppRequest::SetTransportLatency(settings) => {
+                c.set_transport_latency(settings);
+            }
+            AppRequest::ApplyMeasuredProcessBridge(_)
+            | AppRequest::ApplyWindowedProcessBridge { .. } => {
+                c.graph.record_error(
+                    "measured Process application requires the managed native service",
+                );
+            }
+            #[cfg(windows)]
+            AppRequest::ApplyEvaluatedProcessBridge(_) => {
+                c.graph
+                    .record_error("No native audio backend is configured");
+            }
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }
@@ -345,9 +400,25 @@ impl ServiceDriver for CoreDriver {
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     let graph = c.graph.snapshot();
     AppSnapshot {
+        measured_process: c
+            .measured_process
+            .as_ref()
+            .map(|profile| profile.summary().clone()),
+        active_measured_process: c
+            .active_measured_process
+            .clone()
+            .filter(|_| c.fresh(c.core.generation())),
+        last_cleanup: c.last_cleanup.clone(),
+        #[cfg(windows)]
+        process_trace_status: c.process_trace_status.clone(),
         loaded_project: c.loaded_project.clone(),
         exports: c.exports.statuses(&graph),
         export_plan: c.exports.reconcile(&graph),
+        #[cfg(windows)]
+        native_observations: c
+            .native_observations
+            .clone()
+            .filter(|value| c.fresh(value.generation)),
         #[cfg(windows)]
         professional_observations: c
             .professional_observations
@@ -359,6 +430,10 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         active_audio_settings: c
             .active_audio_settings
             .clone()
+            .filter(|_| c.fresh(c.core.generation())),
+        transport_latency: c.transport_latency,
+        active_transport_latency: c
+            .active_transport_latency
             .filter(|_| c.fresh(c.core.generation())),
         graph: Arc::new(graph),
         consumed_request_id: RequestId::default(),
@@ -421,7 +496,7 @@ impl ServiceRuntime {
         Self::spawn_with_context(driver, context)
     }
 
-    fn spawn_with_context(
+    pub(crate) fn spawn_with_context(
         mut driver: impl ServiceDriver,
         mut c: ServiceContext,
     ) -> io::Result<Self> {
@@ -508,6 +583,10 @@ impl ServiceRuntime {
     pub fn handle(&self) -> AppHandle {
         self.handle.clone()
     }
+    #[cfg(any(windows, test))]
+    pub(crate) fn is_finished(&self) -> bool {
+        self.thread.is_finished()
+    }
     /// Call after an Exited snapshot; this is the only UI-side service join.
     pub fn join(self) -> Result<(), ServiceJoinError> {
         self.thread
@@ -518,6 +597,7 @@ impl ServiceRuntime {
 
 #[cfg(test)]
 mod snapshot_publish_tests {
+    use super::measured_process::MeasuredDeliveryBound;
     use super::*;
 
     fn running_context() -> ServiceContext {
@@ -557,5 +637,208 @@ mod snapshot_publish_tests {
         let first = snapshot(&c);
         let second = snapshot(&c);
         assert_eq!(first, second);
+    }
+
+    fn assert_published_change(before: AppSnapshot, after: AppSnapshot) {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        assert_ne!(before, after, "diagnostic changes must not be deduplicated");
+        mailbox.publish(before);
+        let first = handle.try_snapshot().unwrap();
+        mailbox.publish(after.clone());
+        let changed = handle.try_snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        mailbox.publish(after);
+        assert!(Arc::ptr_eq(&changed, &handle.try_snapshot().unwrap()));
+    }
+
+    #[test]
+    fn transport_and_measured_selection_changes_are_never_idle_deduplicated() {
+        let initial = snapshot(&ServiceContext::default());
+        let transport = TransportLatencySettings {
+            process: Some(ExpertInputBuffer::default()),
+            ..Default::default()
+        };
+        let measured = MeasuredProcessSummary {
+            selection_id: 1,
+            request: MeasuredProcessRequest {
+                node: initial.graph.graph.nodes()[0].id(),
+                session_generation: SessionGeneration(1),
+                native_owner_generation: 1,
+                graph_revision: 1,
+                capacity_frames: 8192,
+                target_frames: 2048,
+                jitter_frames: 96,
+            },
+            process_pid: 42,
+            process_creation_time_100ns: 123,
+            delivery: MeasuredDeliveryBound {
+                sample_rate: 48_000,
+                max_packet_frames: 480,
+                max_gap_frames: 480,
+            },
+            observed_window: None,
+        };
+        for field in 0..4 {
+            let mut changed = initial.clone();
+            match field {
+                0 => changed.transport_latency = transport,
+                1 => changed.active_transport_latency = Some(transport),
+                2 => changed.measured_process = Some(measured.clone()),
+                3 => changed.active_measured_process = Some(measured.clone()),
+                _ => unreachable!(),
+            }
+            assert_published_change(initial.clone(), changed);
+        }
+    }
+
+    #[test]
+    fn joined_cleanup_state_and_generation_changes_are_published() {
+        let initial = snapshot(&ServiceContext::default());
+        let mut previous = initial.clone();
+        previous.last_cleanup = Some(SessionCleanupObservation {
+            generation: SessionGeneration(1),
+            state: moiren_engine::host::HostSnapshot {
+                host: moiren_engine::host::HostState::Closed,
+                execution: moiren_engine::host::ExecutionState::Dormant,
+                desired_revision: 1,
+                active_revision: None,
+                plan_revision: None,
+                owner_generation: 1,
+                resource_generation: 1,
+                timeline: None,
+                update: moiren_engine::host::UpdateState::Idle,
+                fault: None,
+                cleanup_error: None,
+            },
+            #[cfg(windows)]
+            process_trace: None,
+            #[cfg(windows)]
+            final_observations: None,
+        });
+        assert_published_change(initial, previous.clone());
+        for field in 0..2 {
+            let mut changed = previous.clone();
+            let cleanup = changed.last_cleanup.as_mut().unwrap();
+            match field {
+                0 => cleanup.generation.0 += 1,
+                1 => cleanup.state.host = moiren_engine::host::HostState::Closing,
+                _ => unreachable!(),
+            }
+            assert_published_change(previous.clone(), changed);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_telemetry_and_trace_refusals_remain_visible_with_idle_dedup() {
+        use moiren_windows_audio::virtual_owner::{
+            VirtualCallbackOutcome, VirtualCallbackSample, VirtualCallbackSnapshot,
+        };
+
+        let initial = snapshot(&ServiceContext::default());
+        let mut previous = initial.clone();
+        previous.native_observations = Some(NativeSessionObservations {
+            generation: SessionGeneration(1),
+            observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot {
+                owner_generation: 1,
+                running: true,
+                streams: Vec::new(),
+                bridges: Vec::new(),
+                boundary_probes: Vec::new(),
+                render_padding: Vec::new(),
+                process_delivery: Vec::new(),
+                virtual_clock: None,
+                virtual_callback: None,
+            },
+        });
+        assert_published_change(initial.clone(), previous.clone());
+
+        let mut context = running_context();
+        context.native_observations = previous.native_observations.clone();
+        let before_callback = snapshot(&context);
+        context
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .virtual_callback = Some(VirtualCallbackSnapshot::default());
+        let mut enabled = snapshot(&context);
+        // A quantized clock tick must not mask callback-only dedup regressions.
+        enabled.elapsed = before_callback.elapsed;
+        assert_published_change(before_callback, enabled.clone());
+
+        // Only callback evidence changes: an in-flight attempt must remain
+        // visible without inventing completion clocks or physical timing.
+        context
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .virtual_callback = Some(VirtualCallbackSnapshot {
+            attempts: 1,
+            latest: Some(VirtualCallbackSample {
+                attempt_sequence: 1,
+                epoch_before: 1,
+                frame_before: 256,
+                epoch_after: None,
+                frame_after: None,
+                requested_frames: 1280,
+                outcome: VirtualCallbackOutcome::Unfinished,
+                qpc_before_100ns: None,
+                qpc_after_100ns: None,
+                duration_100ns: None,
+            }),
+            ..VirtualCallbackSnapshot::default()
+        });
+        let mut unfinished = snapshot(&context);
+        unfinished.elapsed = enabled.elapsed;
+        assert_published_change(enabled, unfinished.clone());
+
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        mailbox.publish(unfinished);
+        let published = handle.try_snapshot().unwrap();
+        let json =
+            serde_json::to_value(&published.native_observations.as_ref().unwrap().observation)
+                .unwrap();
+        assert_eq!(
+            json["virtual_callback"],
+            serde_json::json!({
+                "attempts": 1,
+                "completed": 0,
+                "errors": 0,
+                "valid_timings": 0,
+                "missing_clocks": 0,
+                "regressed_clocks": 0,
+                "max_duration_100ns": null,
+                "saturated": false,
+                "latest": {
+                    "attempt_sequence": 1,
+                    "epoch_before": 1,
+                    "frame_before": 256,
+                    "epoch_after": null,
+                    "frame_after": null,
+                    "requested_frames": 1280,
+                    "outcome": "unfinished",
+                    "qpc_before_100ns": null,
+                    "qpc_after_100ns": null,
+                    "duration_100ns": null,
+                },
+            })
+        );
+
+        let mut changed = previous.clone();
+        changed
+            .native_observations
+            .as_mut()
+            .unwrap()
+            .observation
+            .running = false;
+        assert_published_change(previous, changed);
+        let mut changed = initial.clone();
+        changed.process_trace_status = Some(ProcessTraceCollectionStatus {
+            origin: None,
+            refusal: Some("history overwritten".into()),
+        });
+        assert_published_change(initial, changed);
     }
 }

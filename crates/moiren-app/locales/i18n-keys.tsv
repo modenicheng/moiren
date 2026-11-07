@@ -73,6 +73,19 @@ Client sample format	-	字段名
 Sample encoding	-	detail 标签
 Determined by ASIO driver	-	detail 值
 Requested device buffer (frames / ms)	-	字段名
+Requested device period (frames)	-	共享模式设备精确周期字段名
+Render queue	-	渲染队列设置与冲突域
+Full native capacity	-	保持填满原生容量的兼容策略
+Explicit render target	-	独立渲染目标策略
+Render target	-	渲染目标帧数
+Render wake margin	-	渲染唤醒余量帧数
+Render callback budget	-	渲染回调预算帧数
+Requested render queue	-	已请求渲染策略
+Active render queue	-	活动渲染策略
+Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.	-	原生渲染准入说明
+Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate	target=target_frames|wake=wake_margin_frames|callback=callback_budget_frames	渲染队列请求摘要
+Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.	-	设备周期输入校验
+Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.	-	设备周期说明
 Unsaved changes	-	设置页脚状态文本
 Saved requests and active audio are shown separately in Diagnostics.	-	设置页脚状态文本
 Audio is stopped. Save keeps it stopped.	-	设置页脚状态文本
@@ -113,6 +126,7 @@ Active	-	徽章
 Next start	-	按钮与徽章
 Use next start	-	按钮
 Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.	-	ASIO 下应用页提示
+Captures the selected process and its descendants, not an individual browser tab or audio session.	-	应用页进程树捕获范围说明
 No capturable applications	-	空态标题
 Start an application that plays audio, then refresh. Protected applications may be unavailable.	-	空态说明
 PID %{pid} · created %{created}	pid=process.pid|created=process.creation_time_100ns	format! 原文 "PID {} · created {}"
@@ -544,9 +558,198 @@ The input/output device configuration is invalid	-	服务层消息；中文即�
 Choose another device, or check the sample rate/precision settings	-	服务层消息；中文即迁移前原文
 Channel parameters are outside their valid range	-	服务层消息；中文即迁移前原文
 Parameters are outside their valid range	-	服务层消息；中文即迁移前原文
+%{rate} Hz  ·  period %{frames} frames	rate=d.observation.prepared.output.sample_rate|frames=actual_period_frames（未知时显示 "—"）	format! 原文 "{} Hz  ·  period {} frames"；注意原文双空格
+Managed observation becomes available after Apply graph.	-	说明文本
+Sum dynamic input ports	-	模板描述
+%{prefix}: effective prepared render queue	prefix=format!("{} {kind}", index+1)	实际准备的渲染队列
+%{prefix}: effective prepared bridge queue	prefix=format!("{} {kind}", index+1)	实际准备的桥接队列
+%{prefix}: prepared boundary capacity	prefix=stream index or unmapped label and kind	已准备的边界存储容量
+%{prefix}: total pre-transfer content target	prefix=stream index or unmapped label and kind	传输前总内容目标；无漂移适配时未知
+%{prefix}: post-transfer occupancy / correction	prefix=stream index or unmapped label and kind	传输后占用量与已应用的时钟校正
+%{prefix}: cumulative boundary events	prefix=stream index or unmapped label and kind	累计边界事件；不是驱动丢帧数或静音帧数
+%{frames} native frames at 48 kHz (storage headroom)	frames=probe.capacity_frames	原生帧容量是存储余量，不是延迟
+%{frames} native frames at 48 kHz	frames=probe.target_frames	准备已接受的目标原生帧数
+%{frames} native frames at 48 kHz; applied %{ppm} ppm	frames=probe.level_frames|ppm=probe.applied_milli_ppm / 1000	传输后占用量与 ppm 校正
+Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)	xruns=probe.xruns|soft=probe.soft_events	边界事件计数的单位与范围
+Provider export diagnostics	-	提供方导出诊断容器
+Stable endpoint ID	-	稳定端点身份
+Export direction	-	导出方向
+Requested endpoint name	-	请求端点名称
+Provider-created name	-	区分提供方创建名与 Windows 实际属性
+Windows endpoint name	-	显示 Windows MMDevice FriendlyName 读回
+Windows name match	-	区分请求名匹配状态
+Windows name readback error	-	保留 Windows 名称属性读取错误
+Windows name MMDevice ID	-	名称读回端点身份
+Windows name observation QPC (100 ns)	-	名称观测时间戳
+Unknown / not observed	-	未读回名称时明确显示未知
+Matches requested name	-	请求名称与 Windows 实际属性相等
+Does not match requested name	-	请求名称与 Windows 实际属性不等
+Read failed	-	区分名称读取失败
+Pending native recreation	-	原生端点重建前不误报名称已匹配
+Diagnostic scope	-	诊断范围
+Latest native export observation (not live audio)	-	最近一次原生导出观测，不代表实时音频
+Observation generation	-	观测代次
+Native transport preparation	-	原生传输准备状态
+Prepared (native observation only)	-	已准备但仅为原生观测
+Not prepared	-	未准备
+Endpoint error	-	端点错误
+None reported	-	未报告错误
+Provider packet telemetry	-	提供方数据包遥测
+Native export diagnostics	-	原生导出诊断
+Provider telemetry schema	-	提供方遥测版本
+Observed packet	-	观测到的数据包
+Maximum observed packet	-	观测到的最大数据包
+Completion interval observations	-	完成间隔观测数
+0 observations; timing unknown	-	无完成间隔观测时序未知
+%{count} observations; max %{ticks} x 100 ns	count,ticks	完成间隔保持 100 ns 原生单位
+Playback packet service	-	播放完成服务摘要，非源样本年龄或物理延迟
+Microphone packet service	-	麦克风完成服务摘要，非源样本年龄或物理延迟
+Playback service clock diagnostics	-	播放服务时钟频率与未知、未来及溢出计数
+Microphone service clock diagnostics	-	麦克风服务时钟频率与未知、未来及溢出计数
+Packet service observation scope	-	明确各服务摘要独立且不证明样本年龄或物理延迟
+Driver transfer -> owner collection	-	时间戳来源为驱动传输，终点为所有者收集
+Host submission -> owner collection	-	时间戳来源为主机提交，终点为所有者收集
+Unknown stamp origin	-	不按播放或麦克风方向臆造时间戳来源
+Completion service delay only; not source sample age or physical latency; independent live summaries.	-	完成服务延迟的证据范围与独立实时摘要限制
+%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns	origin,count,min,max	保留来源、完整整数位与100ns最小最大服务延迟
+%{origin}; %{count} observations; service delay unknown	origin,count	保留来源与观测数但不把未知服务延迟显示为零
+QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}	frequency,unavailable,future,overflows	保留QPC频率及服务时钟异常完整计数
+%{hz} Hz	hz	完整整数时钟频率
+Cumulative submissions	-	累计提交
+%{attempts} attempts / %{submitted} submitted packets	attempts,submitted	提交尝试与数据包计数
+Cumulative completions	-	累计完成
+%{count} packets	count	数据包计数
+Cumulative packet drops	-	累计丢包
+Driver %{driver} / quota %{quota} / carrier %{carrier} / total %{total} packets	driver,quota,carrier,total	驱动、配额、载体与总丢包计数
+Cumulative stale packets	-	累计过期数据包
+Cumulative silence	-	累计静音数据包与帧
+%{packets} packets / %{frames} frames	packets,frames	静音数据包与帧计数
+Cumulative epoch resets	-	累计纪元重置
+Cumulative recoveries	-	累计恢复
+Cumulative completion clock regressions	-	累计完成时钟回退
+No native export observations	-	无原生导出观测
+CPU load	-	CPU 负载仍不可用
+Physical end-to-end latency	-	物理端到端延迟保持未知
+Unknown / unqualified	-	未知且未经物理验证
+Queue fill and packet timing do not measure CPU load or physical end-to-end latency.	-	明确队列与数据包时序的测量边界
+%{prefix}: native delivery packets	prefix	原生交付数据包计数
+%{prefix}: maximum native packet	prefix	实际原生数据包最大帧数
+%{prefix}: maximum callback burst	prefix	回调突发最大帧数
+%{prefix}: native arrival gaps	prefix	原生到达间隔观测
+%{count} observations; timing unknown	count	保留观测计数但明确未知时序
+%{prefix}: delivery bound violations	prefix	原生交付边界超限计数
+%{prefix}: delivery clock observations	prefix	交付时钟不可用与回退计数
+Packet %{packet} / gap %{gap} observations	packet,gap	数据包与间隔超限观测
+Unavailable %{unavailable} / regressed %{regressed} observations	unavailable,regressed	时钟观测计数
+%{prefix}: oldest pending frame age estimate	prefix	上游提供的最早待处理帧年龄估计
+%{ticks} x 100 ns (owner-local estimate, not physical E2E)	ticks	明确100ns单位与非物理端到端测量范围
+%{prefix}: oldest frame correlation	prefix	最早帧代次位置与偏移
+Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames	generation,position,offset,accepted	完整整数帧关联依据
+%{prefix}: age QPC correlation	prefix	年龄估计QPC关联
+Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns	packet,frame,observed	100ns数据包帧与观测时刻
+%{prefix}: age rate basis	prefix	帧年龄采样率依据
+%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm	rate,ppm	已验证Capture/QPC速率校正
+%{rate} Hz nominal rate (Capture/QPC correction unqualified)	rate	未经速率校正验证时使用标称采样率
+%{prefix}: native render padding	prefix	原生输出队列填充量
+%{padding} / capacity %{capacity} frames (native queue only, not E2E)	padding,capacity	填充帧与容量并非端到端延迟
+%{prefix}: observed render rate	prefix	观测到的输出采样率
+%{rate} Hz	rate	整数采样率单位
+%{prefix}: observed render period	prefix	观测到的输出周期帧数
+%{prefix}: render sample sequence	prefix	完整u64输出观测序号
 The virtual export does not exist	-	BindExport 定位不到导出时的错误
 A Playback export can only bind an input node	-	BindExport 方向/节点类型不匹配
 A Microphone export can only bind an output node	-	BindExport 方向/节点类型不匹配
 The virtual export and graph node have different channel counts	-	BindExport 声道数校验
 Bind	-	设备页虚拟导出行快捷绑定按钮（未选中态）
+Measured Process input	-	设置页会话内实测进程输入配置
+Process source	-	实测输入源选择
+Apply measured budget and restart	-	显式替换音频会话，不是保存设置
+Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency.	-	实测预算适用范围与验收限制
+Ready to validate the measured input budget and restart audio.	-	实测配置预检通过
+Waiting for the current audio transaction.	-	音频操作期间禁止重复应用
+Save or discard other settings drafts before applying a measured budget.	-	实测操作与设置草稿冲突
+Measured selection requires a matching running graph and saved settings.	-	实测选择的图及设置前置条件
+Select a running Process source.	-	未选中可用进程输入源
+Matching live Process observations are unavailable.	-	观测身份或实时状态不匹配
+Measured Process selection is only supported on Windows.	-	非 Windows 平台拒绝实测操作
+Restarting audio; waiting for the measured budget to become active.	-	请求已入队但尚未确认生效
+Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later.	-	界面等待超时，不代表已取消服务操作
+Settings changed while applying the measured budget.	-	请求期间配置发生变化
+Measured budget was refused or replaced. Your draft is retained.	-	拒绝或其他请求覆盖，保留草稿
+Audio stopped before the measured budget became active.	-	生效前会话停止
+The graph changed while applying the measured budget.	-	请求期间图修订发生变化
+Measured budget is active; physical latency remains unqualified.	-	服务确认生效但未验收物理延迟
+Process trace collection	-	有界进程历史采集状态
+Collecting a bounded prefix; not latency qualification.	-	正在采集，不代表延迟验收
+Process trace predecessor	-	历史所属前序会话
+Process trace prefix	-	保留的历史事件数量与上限
+%{packets} packets / %{reads} reads retained; limit 8192 per writer	packets,reads	有界事件数量
+Process trace result	-	前序会话历史采集结果
+Closed prefix available; not latency qualification.	-	闭合历史可用但不代表延迟验收
+Evaluate closed Process prefix	-	打开有界历史评估
+Back to measured input	-	返回输入设置
+Closed Process prefix evaluation	-	有限窗口诊断标题
+Diagnostic replay only. Declared packet/gap assumptions do not bound native drains, future delivery or sample age. Live Apply still requires independent whole-wake admission.	-	诊断假设不替代实际准入
+Capacity / target / jitter (frames)	-	三个独立候选帧数
+Retained origin	-	历史所属会话身份
+Maximum initial unserved (output frames)	-	初始输出不足上限
+Maximum initial prime discard (input frames)	-	初始输入丢弃上限
+Minimum output frames	-	有效输出帧数下限
+Minimum output reads	-	有效输出读取下限
+Minimum output span (ms)	-	有效输出跨度下限
+Observed violation	-	已发现队列违规
+Insufficient exposure	-	证据不足而非通过
+No violation in this window	-	仅限已观测窗口
+Not qualified: no sustained, waveform, sample-age or physical latency proof	-	始终未验收
+Evaluating one bounded prefix on a background worker.	-	单后台评估
+Ready to evaluate; audio will not change.	-	诊断不修改音频
+Evaluate candidate window	-	开始有限回放
+Stop a collected Process session to evaluate its closed prefix.	-	缺少闭合历史
+The selected source is not the retained Process source.	-	选择与历史不符
+A finite-window evaluation is already running.	-	禁止并发评估
+Evaluation discarded: predecessor, candidate or policy changed.	-	过期结果已丢弃
+VAD recovery cap	-	虚拟时钟追赶周期上限
+Compatible (8 periods)	-	保持兼容追赶上限
+%{periods} periods	periods	显式追赶周期数
+Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods.	-	追赶上限不是延迟保证
+%{input}; virtual-clock recovery cap: %{cap}	input,cap	请求与生效追赶上限
+Process host ingress elapsed limit	-	进程输入主机发布起算时间上限，不是样本年龄
+Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy.	-	主机经过时间与物理延迟区分，说明保守恢复丢弃和实测准入限制
+%{input}; host ingress elapsed limit: %{limit}	input,limit	请求与生效进程输入上限，保留原有队列和实测身份
+%{ticks} x 100 ns	ticks	任意正整数上限保留完整数值和单位
+%{milliseconds} ms	milliseconds	主机经过时间预设毫秒数
 Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.	-	VAD 应用侧方向说明
+Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart.	-	修改渲染或输入设置后明确要求重新实测准入
+Enter exact input bounds	-	切换实测输入预算的精确整数编辑
+Use input presets	-	退出精确文本编辑，保留最后有效预算
+Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget.	-	无效整数不允许回退并提交旧值
+Exact input fields are not ready.	-	字段未创建时不允许准入
+Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.	-	说明精确预算单位和拒绝无效文本
+%{prefix}: admitted input reserve	prefix	当前所有者实际准入的输入储备
+Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)	minimum,low,high	保留未知模型下限，区分水位储备和实测延迟
+Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget.	-	精确专家预算范围校验，最终仍需原生准入
+Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value.	-	专家输入以输入帧计，无效文本禁止保存和重启
+%{prefix}: virtual Engine demand	prefix	虚拟时钟的完整 Engine 帧需求
+%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods	rate,block,burst,cap	Engine 帧单位与原生储备分行，显示整次追赶需求
+%{prefix}: virtual native reserve	prefix	虚拟边界的原生储备
+Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)	transfer,fir,wake	原生 48 kHz 帧模型，不是实测延迟
+%{prefix}: virtual delivery evidence	prefix	保留交付依据与未知协商结果
+%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz	evidence,packet,gap,negotiated	声明或实测边界不冒充协商帧数
+Declared assumption	-	声明的交付假设
+Empirical observation	-	实测交付观测
+Native packet observation	-	原生数据包来源的交付边界
+Virtual clock observation	-	虚拟时钟所属实例的累计观测
+Virtual clock configuration	-	实际时钟 Engine 速率和追赶上限
+Virtual clock rendered	-	累计已渲染 Engine 量
+Virtual clock recovery	-	迟到唤醒及被时钟跳过的 Engine 帧
+Virtual clock timeline	-	时间线重置及施加上限前的最大积欠
+Virtual clock counter saturation	-	饱和计数不是精确总量
+Schema 1 (owner-local cumulative counters, not latency)	-	累计计数不是延迟
+Unsupported schema %{schema}	schema	未知版本不能解释成健康零值
+%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods	rate,block,cap	Engine 配置不混用原生帧单位
+%{periods} periods / %{frames} Engine frames	periods,frames	精确整数累计渲染量
+Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)	late,periods,frames	跳过 Engine 帧不能当作原生 PCM 丢帧
+Resets %{resets}; maximum backlog %{backlog} periods (before cap)	resets,backlog	积欠保留施加追赶上限之前的峰值
+Saturated (counts are lower bounds)	-	已饱和计数仅为下界
+Not saturated	-	未饱和不代表没有故障
+Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.	-	重命名会重建端点，不能把请求名称当成 Windows 名称已生效

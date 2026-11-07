@@ -369,16 +369,8 @@ fn lifecycle_identity_and_all_generations_cannot_regress() {
 }
 
 #[test]
-fn pcm_shape_requires_open_running_stream_but_native_closed_gate_is_valid_snapshot() {
-    for (offset, value) in [
-        (16, 4),
-        (28, 0),
-        (32, 0),
-        (36, 0),
-        (92, 0),
-        (100, 0),
-        (100, 1),
-    ] {
+fn pcm_shape_requires_an_admitted_stream_but_accepts_paused_prerun() {
+    for (offset, value) in [(16, 4), (28, 0), (32, 0), (36, 0), (92, 0), (100, 0)] {
         let mut bytes = snapshot_bytes();
         put32(&mut bytes, offset, value);
         let result = EndpointSnapshot::decode(&bytes, caps()).and_then(|s| s.pcm_shape(caps()));
@@ -389,6 +381,10 @@ fn pcm_shape_requires_open_running_stream_but_native_closed_gate_is_valid_snapsh
     let native = EndpointSnapshot::decode(&bytes, caps()).unwrap();
     assert_eq!(native.stream_state(), StreamState::Running);
     assert_eq!(native.pcm_shape(caps()), Err(ProtocolError::NotReady));
+    let mut paused_bytes = snapshot_bytes();
+    put32(&mut paused_bytes, 100, 1);
+    let paused = EndpointSnapshot::decode(&paused_bytes, caps()).unwrap();
+    assert!(paused.pcm_shape(caps()).is_ok());
     // Native admission publishes its generation before format/packets exist.
     // QUERY during that interval is normal not-ready, not a malformed ABI.
     put32(&mut bytes, 88, 0);

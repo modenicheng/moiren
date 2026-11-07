@@ -369,6 +369,51 @@ fn export_row(
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
+        .child(
+            detail(&t!("Requested endpoint name"), status.intent.name.clone())
+                .id(SharedString::from(format!("export-requested-name-{id}")))
+                .aria_label(format!(
+                    "{}: {}",
+                    t!("Requested endpoint name"),
+                    status.intent.name
+                ))
+                .gpui_test_observe(),
+        )
+        .child(detail(
+            &t!("Provider-created name"),
+            status
+                .actual_name
+                .clone()
+                .unwrap_or_else(|| t!("Unknown / not present").into()),
+        ))
+        .child(detail(
+            &t!("Windows endpoint name"),
+            status
+                .windows_name
+                .as_ref()
+                .and_then(|observation| observation.name.clone())
+                .unwrap_or_else(|| t!("Unknown / not observed").into()),
+        ))
+        .child(
+            detail(
+                &t!("Windows endpoint state"),
+                crate::ui::presentation::windows_endpoint_state_text(status),
+            )
+            .id(SharedString::from(format!("export-windows-state-{id}")))
+            .aria_label(format!(
+                "{}: {}",
+                t!("Windows endpoint state"),
+                crate::ui::presentation::windows_endpoint_state_text(status)
+            ))
+            .gpui_test_observe(),
+        )
+        .child(detail(
+            &t!("Windows name match"),
+            crate::ui::presentation::windows_name_match_text(status),
+        ))
+        .when(status.rename_pending, |row| {
+            row.child(label(t!("Name pending; waiting for native recreation")))
+        })
         .child(label(format!(
             "{:?} / {} / {id}",
             status.intent.direction,
@@ -447,7 +492,18 @@ fn export_row(
         row = row.child(shape);
         if let Some(draft) = shell.export_controls.names.get(&id) {
             let this = cx.entity();
+            let rename_help = t!(
+                "Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above."
+            );
             row = row
+                .child(
+                    label(rename_help.clone())
+                        .id(SharedString::from(format!("export-rename-help-{id}")))
+                        .role(Role::Label)
+                        .aria_label(rename_help.clone())
+                        .aria_value(rename_help)
+                        .gpui_test_observe(),
+                )
                 .child(label(t!("Endpoint name")))
                 .child(
                     component::input::Input::new(&draft.input)

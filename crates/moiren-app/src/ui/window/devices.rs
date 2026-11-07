@@ -375,6 +375,17 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             }
         }
         DeviceTab::Applications => {
+            let scope = t!(
+                "Captures the selected process and its descendants, not an individual browser tab or audio session."
+            );
+            list = list.child(
+                label(scope.clone())
+                    .id("application-capture-scope")
+                    .role(Role::Label)
+                    .aria_label(scope.clone())
+                    .aria_value(scope)
+                    .gpui_test_observe(),
+            );
             if asio {
                 list = list.child(label(t!("Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.")));
             }

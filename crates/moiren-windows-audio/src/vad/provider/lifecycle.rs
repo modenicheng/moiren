@@ -18,6 +18,8 @@ pub struct ExportView {
     pub removing: bool,
     pub error: Option<String>,
     pub transport_prepared: bool,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
 }
 
 pub(super) struct EndpointRecord {
@@ -29,6 +31,21 @@ pub(super) struct EndpointRecord {
     removal_accepted: bool,
     pub sessions: Vec<Arc<SessionState>>,
     pub error: Option<String>,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
+}
+
+impl EndpointRecord {
+    pub(super) fn reap_sessions(&mut self) {
+        self.sessions.retain(|session| {
+            // Acquire completion BEFORE copying relaxed counters. If the
+            // worker finishes during that copy, retain it for another poll
+            // instead of discarding its final writes with an older snapshot.
+            let drained = session.drained.load(Ordering::Acquire);
+            self.telemetry = Some(session.telemetry_snapshot());
+            !drained
+        });
+    }
 }
 
 pub(super) trait EndpointControl {
@@ -172,6 +189,8 @@ impl<C: EndpointControl> Lifecycle<C> {
                 removal_accepted: false,
                 sessions: Vec::new(),
                 error: None,
+                telemetry: None,
+                diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
             },
         );
         let result = self.control.create(&spec);
@@ -196,9 +215,8 @@ impl<C: EndpointControl> Lifecycle<C> {
 
     pub fn poll(&mut self) -> Vec<ExportView> {
         for record in self.endpoints.values_mut() {
-            record
-                .sessions
-                .retain(|session| !session.drained.load(Ordering::Acquire));
+            record.diagnostic_provenance = VadExportDiagnosticProvenance::Fresh;
+            record.reap_sessions();
             if let Some(previous) = record.snapshot
                 && previous.state() != PdoState::Removed
             {
@@ -216,6 +234,9 @@ impl<C: EndpointControl> Lifecycle<C> {
                                 || record.error.is_some()
                                 || !record.sessions.iter().any(|s| s.admitted()))
                         {
+                            for session in &record.sessions {
+                                session.revoke();
+                            }
                             log::debug!(
                                 target: "moiren::audio::vad",
                                 "event=lifecycle_gate_close endpoint={:?} previous={previous:?} queried={snapshot:?} removing={} error={:?} admitted={}",
@@ -254,6 +275,8 @@ impl<C: EndpointControl> Lifecycle<C> {
                         }
                     }
                     Err(error) => {
+                        record.diagnostic_provenance =
+                            VadExportDiagnosticProvenance::CachedAfterQueryFailure;
                         record.error = Some(error.to_string());
                         for session in &record.sessions {
                             session.revoke();
@@ -270,6 +293,12 @@ impl<C: EndpointControl> Lifecycle<C> {
                 removing: record.removing,
                 error: record.error.clone(),
                 transport_prepared: record.sessions.iter().any(|s| s.prepared()),
+                telemetry: record
+                    .sessions
+                    .last()
+                    .map(|session| session.telemetry_snapshot())
+                    .or(record.telemetry),
+                diagnostic_provenance: record.diagnostic_provenance,
             })
             .collect()
     }
@@ -332,6 +361,13 @@ impl<C: EndpointControl> Lifecycle<C> {
             for session in &record.sessions {
                 session.admitted_ticket.store(ticket, Ordering::Release);
                 session.admitted_revision.store(revision, Ordering::Release);
+            }
+        } else {
+            // A validated close withdraws this endpoint's local permission
+            // before the native epoch changes, even if SET_GATE later fails.
+            // Do not cancel/drain here or revoke the shared sibling authority.
+            for session in &record.sessions {
+                session.revoke();
             }
         }
         match self.control.gate(current, open) {

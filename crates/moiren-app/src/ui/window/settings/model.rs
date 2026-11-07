@@ -1,15 +1,17 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::service::{AudioLatencyProfile, RequestId};
+use crate::service::{
+    AppSnapshot, AudioLatencyProfile, MeasuredProcessSummary, RequestId, TransportLatencySettings,
+};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(in super::super) enum Editor {
     Global,
     Device,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(in super::super) enum Direction {
     Input,
     Output,
@@ -19,6 +21,7 @@ pub(in super::super) enum Direction {
 pub(in super::super) enum Section {
     #[default]
     Audio,
+    Transport,
     Appearance,
     Diagnostics,
 }
@@ -28,7 +31,13 @@ pub(in super::super) struct Draft {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
     pub density: Density,
-    original: (AudioSettings, AudioLatencyProfile, Density),
+    pub transport: TransportLatencySettings,
+    original: (
+        AudioSettings,
+        AudioLatencyProfile,
+        Density,
+        TransportLatencySettings,
+    ),
     pub error: Option<String>,
     pub message: Option<String>,
     pub pending: Option<Pending>,
@@ -39,11 +48,40 @@ impl PartialEq for Draft {
         self.audio == other.audio
             && self.profile == other.profile
             && self.density == other.density
+            && self.transport == other.transport
             && self.original == other.original
             && self.error == other.error
             && self.message == other.message
             && self.pending.is_some() == other.pending.is_some()
     }
+}
+
+/// Local presentation only: deadlines and receipt bookkeeping do not repaint.
+#[derive(PartialEq)]
+pub(super) struct MeasuredKey {
+    pub node: Option<moiren_core::graph::NodeId>,
+    pub bounds: [u32; 3],
+    pub exact: bool,
+    pub busy: bool,
+    pub error: Option<String>,
+    pub message: Option<String>,
+    #[cfg(windows)]
+    pub retained_open: bool,
+    #[cfg(windows)]
+    pub retained: RetainedKey,
+    #[cfg(windows)]
+    pub live_open: bool,
+    #[cfg(windows)]
+    pub live_policy: [Option<u64>; 5],
+}
+
+#[cfg(windows)]
+#[derive(PartialEq)]
+pub(super) struct RetainedKey {
+    pub policy: moiren_windows_audio::process_loopback::ReplayWindowPolicy,
+    pub error: Option<String>,
+    pub busy: bool,
+    pub result_revision: u64,
 }
 
 #[derive(Clone)]
@@ -63,22 +101,32 @@ pub(in super::super) struct Submission {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
     pub density: Density,
+    pub transport: TransportLatencySettings,
+    pub measured_process: Option<MeasuredProcessSummary>,
+    pub save_transport: bool,
 }
 
 #[derive(Clone, Copy)]
 pub(in super::super) enum Stage {
     Audio,
+    Transport,
     Profile,
     Restart,
 }
 
 impl Draft {
-    pub fn new(audio: AudioSettings, profile: AudioLatencyProfile, density: Density) -> Self {
+    pub fn new(
+        audio: AudioSettings,
+        profile: AudioLatencyProfile,
+        density: Density,
+        transport: TransportLatencySettings,
+    ) -> Self {
         Self {
-            original: (audio.clone(), profile, density),
+            original: (audio.clone(), profile, density, transport),
             audio,
             profile,
             density,
+            transport,
             error: None,
             message: None,
             pending: None,
@@ -90,6 +138,7 @@ impl Draft {
             || self.audio != self.original.0
             || self.profile != self.original.1
             || self.density != self.original.2
+            || self.transport != self.original.3
     }
 
     pub fn changed(&mut self) {
@@ -98,7 +147,12 @@ impl Draft {
     }
 
     pub fn committed(&mut self) {
-        self.original = (self.audio.clone(), self.profile, self.density);
+        self.original = (
+            self.audio.clone(),
+            self.profile,
+            self.density,
+            self.transport,
+        );
         self.pending = None;
         self.error = None;
         self.message = Some(t!("Saved. Audio settings apply on the next start.").into());
@@ -109,7 +163,40 @@ impl Draft {
         current: &AudioSettings,
         profile: AudioLatencyProfile,
         density: Density,
+        transport: TransportLatencySettings,
     ) -> Result<Submission, String> {
+        let merged_transport = TransportLatencySettings {
+            render: merge_value(
+                self.original.3.render,
+                self.transport.render,
+                transport.render,
+                &t!("Render queue"),
+            )?,
+            process_max_ingress_elapsed_100ns: merge_value(
+                self.original.3.process_max_ingress_elapsed_100ns,
+                self.transport.process_max_ingress_elapsed_100ns,
+                transport.process_max_ingress_elapsed_100ns,
+                &t!("Process host ingress elapsed limit"),
+            )?,
+            process: merge_value(
+                self.original.3.process,
+                self.transport.process,
+                transport.process,
+                &t!("Process input buffer"),
+            )?,
+            vad: merge_value(
+                self.original.3.vad,
+                self.transport.vad,
+                transport.vad,
+                &t!("VAD input buffer"),
+            )?,
+            vad_recovery_cap_periods: merge_value(
+                self.original.3.vad_recovery_cap_periods,
+                self.transport.vad_recovery_cap_periods,
+                transport.vad_recovery_cap_periods,
+                &t!("VAD recovery cap"),
+            )?,
+        };
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,
             profile: merge_value(
@@ -119,7 +206,48 @@ impl Draft {
                 &t!("Device buffer policy"),
             )?,
             density: merge_value(self.original.2, self.density, density, &t!("Density"))?,
+            transport: merged_transport,
+            measured_process: None,
+            save_transport: merged_transport != transport,
         })
+    }
+
+    pub(super) fn capture(
+        &self,
+        snapshot: &AppSnapshot,
+        density: Density,
+    ) -> Result<Submission, String> {
+        let mut submitted = self.submission(
+            &snapshot.audio_settings,
+            snapshot.latency_profile,
+            density,
+            snapshot.transport_latency,
+        )?;
+        // SetTransportLatency intentionally clears measured intent, including
+        // VAD-only and render-only changes. A changed consumer envelope needs
+        // fresh admission; never reuse a finite-window proof for another one.
+        // Otherwise preserve the latest service selection, not the old draft.
+        if !submitted.save_transport {
+            submitted.measured_process = snapshot.measured_process.clone();
+        }
+        Ok(submitted)
+    }
+}
+
+impl Submission {
+    pub(super) fn matches_requested(&self, snapshot: &AppSnapshot) -> bool {
+        snapshot.audio_settings == self.audio
+            && snapshot.transport_latency == self.transport
+            && snapshot.latency_profile == self.profile
+            && snapshot.measured_process == self.measured_process
+    }
+
+    pub(super) fn matches_active(&self, snapshot: &AppSnapshot) -> bool {
+        snapshot.phase == SessionPhase::Running
+            && snapshot.active_audio_settings.as_ref() == Some(&self.audio)
+            && snapshot.active_transport_latency == Some(self.transport)
+            && snapshot.active_latency_profile == expected_active_profile(self.profile)
+            && snapshot.active_measured_process == self.measured_process
     }
 }
 
@@ -211,6 +339,9 @@ fn rebase_audio(
 }
 
 pub(in super::super) struct SettingsEditor {
+    pub(super) period_inputs: super::native_period::PeriodInputs,
+    pub(super) expert_inputs: super::transport::exact::ExpertInputs,
+    pub(super) measured: super::measured::MeasuredEditor,
     pub global: Draft,
     pub device: Draft,
     pub focus: FocusHandle,
@@ -230,8 +361,12 @@ impl SettingsEditor {
             preferences.audio.clone(),
             preferences.latency_profile,
             density,
+            preferences.transport_latency,
         );
         Self {
+            period_inputs: Default::default(),
+            expert_inputs: Default::default(),
+            measured: Default::default(),
             global: draft.clone(),
             device: draft,
             focus: cx.focus_handle(),
@@ -256,7 +391,7 @@ impl SettingsEditor {
     }
 
     pub fn busy(&self) -> bool {
-        self.global.pending.is_some() || self.device.pending.is_some()
+        self.global.pending.is_some() || self.device.pending.is_some() || self.measured.busy()
     }
 }
 
@@ -311,6 +446,8 @@ impl StudioShell {
 
     pub(in super::super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.settings.global.dirty() && self.settings.global.pending.is_none() {
+            self.settings.reset_period_inputs(Editor::Global);
+            self.settings.reset_expert_inputs();
             self.settings.global = self.current_settings_draft(cx);
         }
         self.settings.previous_focus = window.focused(cx);
@@ -348,11 +485,13 @@ impl StudioShell {
             snapshot.audio_settings.clone(),
             snapshot.latency_profile,
             self.density,
+            snapshot.transport_latency,
         )
     }
 
     pub(in super::super) fn inspect_device(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.settings.device.dirty() && self.settings.device.pending.is_none() {
+            self.settings.reset_period_inputs(Editor::Device);
             self.settings.device = self.current_settings_draft(cx);
         }
         self.selected_device = Some(id);

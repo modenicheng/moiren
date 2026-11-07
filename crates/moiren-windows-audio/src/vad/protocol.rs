@@ -509,7 +509,10 @@ impl EndpointSnapshot {
             || !self.audio_ready
             || !self.policy_prepared
             || !self.gate_open
-            || self.stream_state != StreamState::Running
+            || !matches!(
+                self.stream_state,
+                StreamState::Paused | StreamState::Running
+            )
             || self.stream_generation == 0
             || self.gate_epoch == 0
             || self.packet_frames == 0

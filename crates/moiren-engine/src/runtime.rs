@@ -2,7 +2,7 @@
 use crate::{
     buffer::{BufferArena, BufferError, PreparedIo},
     control::{ParameterBindings, ParameterRuntime},
-    processor::{ProcessContext, ProcessorError, ProcessorRole, RtProcessor},
+    processor::{ExecutionStamp, ProcessContext, ProcessorError, ProcessorRole, RtProcessor},
     sample::ProcessingSample,
     signal::{PreparedSignalPlan, ProcessSignals},
 };
@@ -10,6 +10,8 @@ use moiren_core::protocol::ProcessorId;
 use std::{any::TypeId, sync::Arc};
 use thiserror::Error;
 
+#[cfg(test)]
+mod execution_tests;
 mod mix;
 mod swap;
 use mix::{PreparedMixInput, process_mix};
@@ -371,6 +373,9 @@ pub struct Engine<S: ProcessingSample> {
     resources: RtResources<S>,
     parameters: ParameterRuntime,
     timeline: u64,
+    // Engine-lifetime applied events, not plan-local submissions. Keep unknown
+    // sticky on exhaustion and do not exchange it with candidate plan state.
+    control_generation: Option<u64>,
     snapshot: PlanSnapshot,
     swaps: Option<swap::RtPlanPort<S>>,
     signal_host: Option<moiren_signal::RtHost>,
@@ -442,6 +447,7 @@ impl<S: ProcessingSample> Engine<S> {
             resources,
             parameters,
             timeline: 0,
+            control_generation: Some(0),
             snapshot,
             swaps: None,
             signal_host: None,
@@ -541,11 +547,21 @@ impl<S: ProcessingSample> Engine<S> {
         let mut cursor = start;
         let mut segments = 0;
         while cursor < end {
+            let pending_before = remaining;
             let next = self
                 .parameters
                 .next_segment_end(cursor, end, &mut remaining);
+            self.control_generation = self
+                .control_generation
+                .and_then(|generation| generation.checked_add((pending_before - remaining) as u64));
             let count = (next - cursor) as usize;
             let ctx = ProcessContext {
+                execution: self
+                    .control_generation
+                    .map(|control_generation| ExecutionStamp {
+                        plan_revision: self.plan.revision,
+                        control_generation,
+                    }),
                 timeline_epoch: self.plan.epoch,
                 timeline_start: cursor,
                 frames: count,

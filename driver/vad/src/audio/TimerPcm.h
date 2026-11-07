@@ -8,6 +8,9 @@ struct TimerPcmPacket {
     uint64_t Session;
     uint64_t GateEpoch;
     bool Active;
+    // Diagnostic provenance only; never changes the copy/admission decision.
+    bool CaptureCopied;
+    uint64_t RequestSequence;
 };
 
 // The caller holds the endpoint state lock across validation and copying. Only

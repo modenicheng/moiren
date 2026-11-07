@@ -64,6 +64,20 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable fmt --all -- --check
+      - name: Test offline VAD rebase evidence association
+        run: python3 scripts/tests/vad-clock-rebase.tests.py
+      - name: Test offline VAD capture QPC evidence association
+        run: python3 scripts/tests/vad-capture-qpc.tests.py
+      - name: Test offline indexed model interval spacing
+        run: python3 scripts/tests/vad-indexed-spacing.tests.py
+      - name: Test independent SRC scalar archive readback
+        run: python3 scripts/tests/vad-src-archive.tests.py
+      - name: Test reset-aware callback-local SRC phase intervals
+        run: python3 scripts/tests/vad-src-phase.tests.py
+      - name: Test bounded two-FIR SRC dependency envelopes
+        run: python3 scripts/tests/vad-src-cascade.tests.py
+      - name: Test closed Process owner category ledgers
+        run: python3 scripts/tests/process-owner-ledger.tests.py
   test:
     needs: changes
     if: needs.changes.outputs.any == 'true'
@@ -107,6 +121,12 @@ jobs:
       - name: Test native-owner realtime contracts
         if: needs.changes.outputs.rtcheck == 'true'
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
+      # The Process-collection B path and the shared render preflight keep
+      # portable failure-first suites inside examples; `cargo test` alone does
+      # not execute example tests (they need an explicit --example).
+      - name: Test latency-probe and render-preflight example contracts
+        if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
+        run: cargo +stable test --locked -p moiren-windows-audio --example e2e_latency_probe --example shared_render_preflight
       - name: Test VAD probe contracts without devices
         if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
         run: cargo +stable test --locked -p moiren-windows-audio --features vad-probe --example vad_lifecycle --example vad_native --example vad_active_lifecycle

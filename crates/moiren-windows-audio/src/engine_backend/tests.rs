@@ -10,8 +10,22 @@ mod fakes;
 use fakes::*;
 use std::sync::atomic::Ordering;
 
+#[path = "measured_preparation_tests.rs"]
+mod measured_preparation;
 #[path = "packet_phase_tests.rs"]
 mod packet_phase;
+
+#[path = "tests/src_route.rs"]
+mod src_route;
+
+#[path = "tests/compatible_demand.rs"]
+mod compatible_demand;
+
+#[path = "tests/compatible_cleanup.rs"]
+mod compatible_cleanup;
+
+#[path = "tests/render_evidence.rs"]
+mod render_evidence;
 
 fn virtual_project(channels: usize, rate: u32) -> EngineProject {
     let mut project = EngineProject::default();
@@ -61,6 +75,7 @@ fn request<'a>(
         mode: PrepareMode::Initial,
         reuse: &[],
         graph_revision: 1,
+        plan_revision: 1,
         owner_generation: 7,
         resource_generation: 1,
         signal_host,
@@ -76,6 +91,192 @@ fn virtual_mono_does_not_require_a_physical_master() {
         validate(&request(&project, &host), true),
         Ok((96_000, ProjectClock::VirtualRealtime))
     );
+}
+
+#[test]
+fn direct_exclusive_render_144_requires_probe_feature_and_preserves_other_guards() {
+    let mut project = virtual_project(2, 48_000);
+    let (sink, config) = project
+        .nodes
+        .iter_mut()
+        .find(|(_, config)| matches!(config, NodeConfig::Output(_)))
+        .unwrap();
+    let sink = *sink;
+    let NodeConfig::Output(output) = config else {
+        unreachable!()
+    };
+    output.target = OutputTarget::Physical(EndpointSelector::PinnedEndpoint {
+        endpoint_id: "not-opened".into(),
+        stable_id: None,
+    });
+    output.device = DeviceOptions {
+        mode: DeviceMode::Exclusive,
+        period_frames: Some(144),
+        clock_role: ClockRole::Master,
+        ..Default::default()
+    };
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    assert_eq!(
+        validate(&request(&project, &host), true).is_ok(),
+        cfg!(feature = "vad-probe")
+    );
+    for period in [143, 145, 160, 192, 480] {
+        let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
+            unreachable!()
+        };
+        output.device.period_frames = Some(period);
+        assert!(validate(&request(&project, &host), true).is_err());
+    }
+    let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
+        unreachable!()
+    };
+    output.device.period_frames = Some(144);
+    output.device.mode = DeviceMode::Shared;
+    assert!(validate(&request(&project, &host), true).is_ok());
+    let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
+        unreachable!()
+    };
+    output.device.mode = DeviceMode::Exclusive;
+    output.device.backend = AudioBackend::Asio;
+    assert!(validate(&request(&project, &host), true).is_err());
+
+    let mut capture = virtual_project(2, 48_000);
+    let NodeConfig::Input(input) = capture
+        .nodes
+        .values_mut()
+        .find(|config| matches!(config, NodeConfig::Input(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    input.source = InputSource::Physical(EndpointSelector::PinnedEndpoint {
+        endpoint_id: "not-opened".into(),
+        stable_id: None,
+    });
+    input.device.mode = DeviceMode::Exclusive;
+    input.device.period_frames = Some(144);
+    assert!(validate(&request(&capture, &host), true).is_err());
+}
+
+#[test]
+fn small_virtual_target_prepares_and_repays_only_the_configured_recovery_burst() {
+    use crate::latency::transport::{
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,
+    };
+    use crate::virtual_owner::{ClockWake, VirtualBufferOptions, VirtualRealtimeClock};
+
+    struct LateClock {
+        now: u64,
+    }
+    impl VirtualRealtimeClock for LateClock {
+        fn frequency(&self) -> u64 {
+            48_000
+        }
+        fn now_ticks(&mut self) -> Result<u64, BackendError> {
+            Ok(self.now)
+        }
+        fn wait_ticks(&mut self, _: u64) -> Result<ClockWake, BackendError> {
+            if self.now != 0 {
+                return Ok(ClockWake::Stopped);
+            }
+            self.now = 10 * 256;
+            Ok(ClockWake::Timer)
+        }
+    }
+    struct LateFactory;
+    impl VirtualClockFactory for LateFactory {
+        fn prepare(
+            &self,
+            _: crate::StopSignal,
+        ) -> Result<Box<dyn VirtualRealtimeClock>, BackendError> {
+            Ok(Box::new(LateClock { now: 0 }))
+        }
+    }
+
+    let project = virtual_project(2, 48_000);
+    assert_eq!(project.processing.engine.max_block_frames, 256);
+    let probe = Arc::new(Probe::default());
+    let buffer = VirtualBufferOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 16_384,
+            target_frames: 480,
+            jitter_frames: 32,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 128,
+            max_gap_frames: 128,
+            source: DeliveryTimingSource::Declared,
+        }),
+        recovery_cap_periods: Some(1),
+    };
+    let backend = backend::<f32>(&probe)
+        .with_virtual_clock_factory(Arc::new(LateFactory))
+        .with_virtual_buffer(buffer)
+        .unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(
+            request(&project, &host),
+            &cancel,
+            &native_devices(Default::default()),
+        )
+        .expect("the one-period burst fits without silently reserving eight periods");
+    for boundary in probe.requests.lock().unwrap().iter() {
+        assert_eq!(boundary.max_demand_frames, 256);
+        assert_eq!(boundary.buffer.recovery_cap_periods, Some(1));
+        let admitted = boundary.prepared_budget().unwrap();
+        assert_eq!(admitted.engine_burst_frames, 256);
+        assert_eq!(admitted.queue.unwrap().prime_frames, 480);
+        assert_eq!(admitted.queue.unwrap().modeled_minimum_frames, Some(449));
+        assert_eq!(admitted.native_packet_frames, None);
+    }
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    let snapshot = backend.native_observations().snapshot().unwrap();
+    let retained = backend.native_observations().retain_session().unwrap();
+    assert_eq!(snapshot.streams.len(), 2);
+    for kind in [
+        NativeStreamKind::VirtualPlayback,
+        NativeStreamKind::VirtualMicrophone,
+    ] {
+        let stream = snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.kind == kind)
+            .unwrap();
+        let budget = stream.virtual_budget.expect("published VAD admission");
+        assert_eq!(budget, buffer.prepare_recovery(48_000, 256).unwrap());
+        assert_eq!(stream.input_queue, budget.queue);
+        assert_eq!(budget.native_packet_frames, None);
+    }
+    wait_until(|| {
+        owner
+            .timeline()
+            .is_some_and(|timeline| timeline.frame >= 256)
+    });
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert_eq!(
+        returned.engine.timeline(),
+        256,
+        "nine clamped periods are not repaid"
+    );
+    let final_observation = serde_json::to_value(retained.snapshot()).unwrap();
+    assert_eq!(
+        final_observation["virtual_clock"]["clamped_periods"], 9,
+        "clock debt discarded by this joined owner must survive outside debug-log tails"
+    );
+    assert_eq!(
+        final_observation["virtual_clock"]["clamped_frames"],
+        9 * 256
+    );
+    assert_eq!(final_observation["virtual_clock"]["rendered_periods"], 1);
+    assert_eq!(final_observation["virtual_clock"]["timeline_resets"], 0);
+    assert_sessions_joined(&probe, 2);
 }
 
 fn backend<S: ProcessingSample>(probe: &Arc<Probe>) -> ProfessionalBackend<S> {
@@ -145,6 +346,150 @@ fn replace_with_physical_capture(project: &mut EngineProject) -> NodeId {
         }),
     );
     source
+}
+
+#[test]
+fn virtual_budget_observations_preserve_whole_physical_master_demand() {
+    use crate::latency::transport::{
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,
+    };
+    use crate::virtual_owner::VirtualBufferOptions;
+
+    let mut project = virtual_project(2, 48_000);
+    let physical = add_physical_output(&mut project, 2);
+    let buffer = VirtualBufferOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 16_384,
+            target_frames: 1024,
+            jitter_frames: 32,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 128,
+            max_gap_frames: 128,
+            source: DeliveryTimingSource::Declared,
+        }),
+        recovery_cap_periods: Some(1),
+    };
+    let probe = Arc::new(Probe::default());
+    let backend = backend::<f32>(&probe).with_virtual_buffer(buffer).unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(
+            request(&project, &host),
+            &cancel,
+            &native_devices(Default::default()),
+        )
+        .unwrap();
+    // The 96 kHz master's 128-frame period needs 64 Engine frames, plus
+    // the nominal 16-frame FIR reserve, independent of the Graph256 ceiling.
+    let budget = buffer.prepare_budget(48_000, 256, 80).unwrap();
+    let requests = probe.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        assert_eq!(request.prepared_budget().unwrap(), budget);
+    }
+    drop(requests);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    let snapshot = backend.native_observations().snapshot().unwrap();
+    assert_eq!(snapshot.streams.len(), 3);
+    assert!(
+        snapshot.virtual_clock.is_none(),
+        "physical master owns no virtual clock"
+    );
+    for kind in [
+        NativeStreamKind::VirtualPlayback,
+        NativeStreamKind::VirtualMicrophone,
+    ] {
+        let stream = snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.kind == kind)
+            .unwrap();
+        assert_eq!(stream.virtual_budget, Some(budget));
+        assert_eq!(stream.input_queue, budget.queue);
+        assert_eq!(stream.virtual_budget.unwrap().native_packet_frames, None);
+    }
+    assert_eq!(
+        snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.node == physical)
+            .unwrap()
+            .virtual_budget,
+        None
+    );
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+    assert!(backend.native_observations().snapshot().is_none());
+    assert_sessions_joined(&probe, 2);
+}
+
+#[test]
+fn process_bridge_storage_is_admitted_within_the_project_audio_budget() {
+    let mut project = EngineProject::default();
+    project.processing.engine.processing_sr = 48_000.0;
+    let source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+    project
+        .graph
+        .connect(
+            project.graph.get_node(source).unwrap().outputs()[0].id(),
+            project.graph.get_node(sink).unwrap().inputs()[0].id(),
+            Default::default(),
+        )
+        .unwrap();
+    project.processing.audio_byte_budget = 3 * 1024 * 1024;
+    project.nodes.insert(
+        source,
+        NodeConfig::Input(InputConfig {
+            source: InputSource::Application {
+                executable: "moiren:process:1:1".into(),
+                intent: CaptureIntent::PassiveTap,
+            },
+            channels: 2,
+            device: Default::default(),
+        }),
+    );
+    project.nodes.insert(
+        sink,
+        NodeConfig::Output(OutputConfig {
+            target: OutputTarget::Physical(endpoint("native")),
+            channels: 2,
+            device: physical_device(ClockRole::Master),
+        }),
+    );
+    let bridge = crate::process_loopback::ProcessBridgeOptions {
+        input: crate::latency::transport::TransportInputPolicy::Target {
+            capacity_frames: 65_536,
+            target_frames: 8_192,
+            jitter_frames: 0,
+        },
+        delivery: Some(crate::latency::transport::InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 480,
+            max_gap_frames: 480,
+            source: crate::latency::transport::DeliveryTimingSource::Declared,
+        }),
+        engine_sample_rate: 48_000,
+        max_demand_frames: 256,
+        age_limit_100ns: None,
+        max_ingress_elapsed_100ns: None,
+    };
+    let backend = ProfessionalBackend::<f32>::new()
+        .unwrap()
+        .with_process_bridge(bridge)
+        .unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    assert!(
+        backend
+            .prepare(request(&project, &host), &CancellationToken::default())
+            .is_err()
+    );
 }
 
 fn attach<S: ProcessingSample>(
@@ -253,6 +598,91 @@ fn virtual_owner_runs_f64_mono_and_stereo_at_all_professional_rates() {
     virtual_matrix::<f64>();
 }
 
+fn virtual_callback_backend_projection<S: ProcessingSample>() {
+    for enabled in [false, true] {
+        let project = virtual_project(2, 48_000);
+        let probe = Arc::new(Probe::default());
+        let native = native_devices(Default::default());
+        let backend = backend::<S>(&probe);
+        // Leave the disabled case at its real constructor default.
+        let backend = if enabled {
+            backend.with_virtual_callback_timing(true)
+        } else {
+            backend
+        };
+        let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+        let (host, _rt) = bus.create_host(8).unwrap();
+        let cancel = CancellationToken::default();
+        let prepared = backend
+            .prepare_with_native(request(&project, &host), &cancel, &native)
+            .unwrap();
+        let observations = backend.native_observations();
+        // Preparation does not publish a live owner. Retain only after the
+        // existing activation path publishes this exact prepared probe.
+        assert!(observations.retain_session().is_none());
+        assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
+        assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+
+        let owner = attach(&project, prepared, cancel);
+        owner.activate().unwrap();
+        let retained = observations.retain_session().unwrap();
+        assert_eq!(retained.snapshot().owner_generation, 7);
+        wait_until(|| {
+            owner
+                .timeline()
+                .is_some_and(|timeline| timeline.frame >= 512)
+        });
+        owner.cancel();
+        let returned = owner.stop_and_join();
+        assert_eq!(returned.error, None);
+        assert!(returned.engine.timeline() >= 512);
+        assert!(observations.snapshot().is_none());
+        assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+        assert_sessions_joined(&probe, 2);
+
+        // Join makes the final publication stable; no retry or timing guess is
+        // needed to compare the prepared probe with the returned real Engine.
+        let final_snapshot = retained.snapshot();
+        assert_eq!(final_snapshot.owner_generation, 7);
+        assert!(!final_snapshot.running);
+        let clock = final_snapshot.virtual_clock.unwrap();
+        assert!(clock.counters.rendered_frames >= 512);
+        assert_eq!(clock.counters.rendered_frames, returned.engine.timeline());
+        if enabled {
+            let callback = final_snapshot.virtual_callback.unwrap();
+            assert_eq!(callback.attempts, clock.counters.rendered_periods);
+            assert_eq!(callback.completed, callback.attempts);
+            assert_eq!(callback.errors, 0);
+            assert!(!callback.saturated);
+            let latest = callback.latest.unwrap();
+            assert_eq!(latest.attempt_sequence, callback.attempts);
+            assert_eq!(
+                latest.outcome,
+                crate::virtual_owner::VirtualCallbackOutcome::Success
+            );
+            assert_eq!(latest.epoch_before, returned.engine.epoch());
+            assert_eq!(latest.epoch_after, Some(returned.engine.epoch()));
+            assert_eq!(latest.frame_after, Some(returned.engine.timeline()));
+            assert_eq!(
+                latest.requested_frames,
+                project.processing.engine.max_block_frames as u64
+            );
+            assert_eq!(
+                latest.frame_before + latest.requested_frames,
+                latest.frame_after.unwrap()
+            );
+        } else {
+            assert!(final_snapshot.virtual_callback.is_none());
+        }
+    }
+}
+
+#[test]
+fn virtual_callback_backend_opt_in_reaches_the_prepared_retained_owner_in_both_precisions() {
+    virtual_callback_backend_projection::<f32>();
+    virtual_callback_backend_projection::<f64>();
+}
+
 #[test]
 fn virtual_intent_without_provider_never_opens_native_devices_or_clock() {
     let mut project = virtual_project(2, 48_000);
@@ -354,7 +784,7 @@ fn prepared_sessions_join_after_provider_binding_or_cancellation_failure() {
 }
 
 #[test]
-fn native_prepare_failures_join_every_virtual_session_without_fallback() {
+fn native_prepare_failures_do_not_prepare_virtual_sessions_or_fallback() {
     let mut project = virtual_project(2, 88_200);
     add_physical_output(&mut project, 2);
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
@@ -386,7 +816,10 @@ fn native_prepare_failures_join_every_virtual_session_without_fallback() {
             &native,
         );
         assert!(result.is_err());
-        assert_sessions_joined(&probe, 2);
+        assert_sessions_joined(&probe, 0);
+        assert!(probe.requests.lock().unwrap().is_empty());
+        assert!(probe.playback.lock().unwrap().is_empty());
+        assert!(probe.microphones.lock().unwrap().is_empty());
         assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 0);
         assert_eq!(probe.activated.load(Ordering::Acquire), 0);
         assert_eq!(native.probe.started.load(Ordering::Acquire), 0);
@@ -769,9 +1202,139 @@ fn virtual_endpoints_publish_stream_observations() {
     assert!(!microphone.input);
     assert!(!microphone.master);
     assert_eq!(microphone.actual.channels, 2);
+    let native = backend.native_observations().snapshot().unwrap();
+    assert_eq!(native.owner_generation, snapshot.owner_generation);
+    assert!(native.running);
+    assert_eq!(native.streams.len(), 2);
+    assert_eq!(native.boundary_probes.len(), 2);
+    assert!(native.streams.iter().any(|stream| stream.node == source && stream.kind == NativeStreamKind::VirtualPlayback));
+    assert!(native.streams.iter().any(|stream| stream.node == sink && stream.kind == NativeStreamKind::VirtualMicrophone));
+    let budget = crate::virtual_owner::VirtualBufferOptions::default()
+        .prepare_recovery(48_000, 256)
+        .unwrap();
+    for stream in &native.streams {
+        assert_eq!(stream.virtual_budget, Some(budget));
+        assert_eq!(stream.input_queue, None);
+        assert_eq!(stream.virtual_budget.unwrap().native_packet_frames, None);
+    }
     owner.cancel();
     assert_eq!(owner.stop_and_join().error, None);
     assert!(backend.observations().snapshot().is_none());
+    assert!(backend.native_observations().snapshot().is_none());
+}
+
+#[test]
+fn virtual_src_archive_retains_actual_owner_callbacks_until_returned_engine_retires() {
+    let mut project = virtual_project(2, 48_000);
+    let source = *project.nodes.keys().next().unwrap();
+    let sink = *project.nodes.keys().last().unwrap();
+    let source_port = project.graph.get_node(source).unwrap().outputs()[0].id();
+    let sink_port = project.graph.get_node(sink).unwrap().inputs()[0].id();
+    let direct = project.graph.edges()[0].id();
+    project.graph.disconnect(direct).unwrap();
+    let bus_node = project.graph.create_node(NodeKind::Bus, 2).unwrap();
+    moiren_core::graph::edit::connect_to_new_bus_input(
+        &mut project.graph,
+        source_port,
+        bus_node,
+        Default::default(),
+    )
+    .unwrap();
+    let bus_output = project.graph.get_node(bus_node).unwrap().outputs()[0].id();
+    project
+        .graph
+        .connect(bus_output, sink_port, Default::default())
+        .unwrap();
+    project.nodes.insert(bus_node, NodeConfig::Bus);
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = backend::<f32>(&probe);
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| {
+        owner
+            .timeline()
+            .is_some_and(|timeline| timeline.frame >= 512)
+    });
+    let retained = backend.native_observations().retain_session().unwrap();
+    let mut collector = retained.src_trace_collector(1024).unwrap();
+    collector.poll();
+    owner.cancel();
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert!(backend.native_observations().snapshot().is_none());
+    collector.poll();
+    assert!(
+        collector
+            .artifact()
+            .boundaries
+            .iter()
+            .all(|boundary| !boundary.writer_finished)
+    );
+    // Joining the owner returns prepared Engine bindings to control. Only
+    // their actual retirement proves that no further boundary call can occur.
+    drop(returned);
+    collector.finish();
+    let artifact = collector.artifact();
+    assert!(artifact.history_complete, "{:?}", artifact.refusal);
+    assert_eq!(artifact.boundaries.len(), 2);
+    for boundary in &artifact.boundaries {
+        assert!(boundary.writer_finished);
+        assert!(boundary.total_callbacks >= 2);
+        assert_eq!(boundary.checkpoints.len() as u64, boundary.total_callbacks);
+    }
+    assert!(!artifact.qualified);
+}
+
+#[test]
+fn virtual_src_archive_finalizes_after_real_host_drop_without_native_devices() {
+    let probe = Arc::new(Probe::default());
+    let backend = backend::<f32>(&probe);
+    let observations = backend.native_observations();
+    let host = moiren_engine::host::EngineHost::open(
+        Default::default(),
+        virtual_project(2, 48_000),
+        backend,
+    )
+    .unwrap();
+    let observer = host.observer();
+    wait_until(|| {
+        observer
+            .snapshot()
+            .timeline
+            .is_some_and(|timeline| timeline.frame >= 512)
+    });
+    let mut collector = observations
+        .retain_session()
+        .unwrap()
+        .src_trace_collector(1024)
+        .unwrap();
+    collector.poll();
+    drop(host);
+    assert_eq!(
+        observer.snapshot().host,
+        moiren_engine::host::HostState::Closed
+    );
+    assert!(observer.snapshot().cleanup_error.is_none());
+    collector.finish();
+    assert!(
+        collector.artifact().history_complete,
+        "{:?}",
+        collector.artifact().refusal
+    );
+    assert!(
+        collector
+            .artifact()
+            .boundaries
+            .iter()
+            .all(|boundary| boundary.writer_finished)
+    );
 }
 
 #[test]

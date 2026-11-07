@@ -434,7 +434,38 @@ fn finish_close(
     // Lifecycle and PCM workers share the file but can race to close the same
     // gate. Confirm only the same stream is now closed. Never retry SET_GATE
     // using a refreshed epoch: that could close a newly admitted stream/revision.
-    let current = query()?.require_progress_after(previous)?;
+    let current = match query() {
+        Ok(snapshot) => match snapshot.require_progress_after(previous) {
+            Ok(current) => current,
+            Err(progress_error) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=gate_close_confirmation decision=invalid_progress previous={previous:?} confirmation={snapshot:?} close_error={error:?} progress_error={progress_error:?}"
+                );
+                return Err(progress_error.into());
+            }
+        },
+        Err(query_error) => {
+            log::debug!(
+                target: "moiren::audio::vad",
+                "event=gate_close_confirmation decision=query_failed previous={previous:?} confirmation={query_error:?} close_error={error:?}"
+            );
+            return Err(query_error);
+        }
+    };
+    let decision = if current.stream_generation() != previous.stream_generation() {
+        "rejected_changed_stream"
+    } else if current.gate_open() {
+        "rejected_still_open"
+    } else if current.gate_epoch() <= previous.gate_epoch() {
+        "rejected_epoch_not_advanced"
+    } else {
+        "accepted_closed_same_stream"
+    };
+    log::debug!(
+        target: "moiren::audio::vad",
+        "event=gate_close_confirmation decision={decision} previous={previous:?} confirmation={current:?} close_error={error:?}"
+    );
     if !current.gate_open()
         && current.stream_generation() == previous.stream_generation()
         && current.gate_epoch() > previous.gate_epoch()
@@ -604,6 +635,109 @@ mod tests {
             finish_close(previous, Ok(closed), || panic!("already complete")).unwrap(),
             closed
         );
+    }
+
+    #[test]
+    fn close_confirmation_log_child() {
+        let Ok(filter) = std::env::var("MOIREN_CLOSE_CONFIRMATION_LOG_CHILD") else {
+            return;
+        };
+        let _logger = if filter == "off" {
+            None
+        } else {
+            Some(
+                flexi_logger::Logger::try_with_str(filter)
+                    .unwrap()
+                    .log_to_stderr()
+                    .start()
+                    .unwrap(),
+            )
+        };
+        let previous = gate_snapshot(3, 5, true);
+        for (snapshot, accepted, protocol_error) in [
+            (gate_snapshot(3, 6, false), true, false),
+            (gate_snapshot(4, 6, false), false, false),
+            (gate_snapshot(3, 6, true), false, false),
+            (gate_snapshot(3, 5, false), false, false),
+            (gate_snapshot_for(8, 11, 3, 6, false), false, true),
+        ] {
+            let calls = std::cell::Cell::new(0);
+            let result = finish_close(previous, Err(revision_mismatch()), || {
+                calls.set(calls.get() + 1);
+                Ok(snapshot)
+            });
+            assert_eq!(calls.get(), 1);
+            assert_eq!(result.is_ok(), accepted);
+            if protocol_error {
+                assert!(matches!(result, Err(ClientError::Protocol(_))));
+            } else if !accepted {
+                assert!(matches!(result, Err(ClientError::Windows { .. })));
+            }
+        }
+        let calls = std::cell::Cell::new(0);
+        assert!(matches!(
+            finish_close(previous, Err(revision_mismatch()), || {
+                calls.set(calls.get() + 1);
+                Err(ClientError::DeadlineExceeded)
+            }),
+            Err(ClientError::DeadlineExceeded)
+        ));
+        assert_eq!(calls.get(), 1);
+        finish_close(previous, Ok(gate_snapshot(3, 6, false)), || {
+            panic!("successful close must not query")
+        })
+        .unwrap();
+        assert!(matches!(
+            finish_close(previous, Err(ClientError::Cancelled), || {
+                panic!("unrelated error must not query")
+            }),
+            Err(ClientError::Cancelled)
+        ));
+    }
+
+    fn close_confirmation_child(filter: &str) -> std::process::Output {
+        // Isolate the global logger from other library logger tests. No native
+        // handle or device is opened by the actual finish_close helper.
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vad::client::tests::close_confirmation_log_child",
+                "--nocapture",
+            ])
+            .env("MOIREN_CLOSE_CONFIRMATION_LOG_CHILD", filter)
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn close_confirmation_debug_records_single_query_and_unchanged_decisions() {
+        let output = close_confirmation_child("moiren::audio::vad=debug");
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("event=gate_close_confirmation ").count(), 6);
+        for decision in [
+            "accepted_closed_same_stream",
+            "rejected_changed_stream",
+            "rejected_still_open",
+            "rejected_epoch_not_advanced",
+            "invalid_progress",
+            "query_failed",
+        ] {
+            let line = stderr
+                .lines()
+                .find(|line| line.contains(&format!("decision={decision}")))
+                .unwrap_or_else(|| panic!("missing {decision}: {stderr}"));
+            assert!(line.contains("previous=EndpointSnapshot"), "{line}");
+            assert!(line.contains("confirmation="), "{line}");
+            assert!(line.contains("close_error="), "{line}");
+        }
+    }
+
+    #[test]
+    fn close_confirmation_logging_disabled_preserves_results_without_output() {
+        let output = close_confirmation_child("off");
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
     }
 
     #[test]

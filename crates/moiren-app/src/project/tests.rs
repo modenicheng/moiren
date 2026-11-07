@@ -22,6 +22,27 @@ use crate::service::{
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn render_queue_preferences_preserve_three_independent_bounds() {
+    let directory = TestDirectory::new();
+    let path = directory.file("render-queue.json");
+    fs::write(&path, br#"{"version":2,"transport_latency":{"render":{"target_frames":512,"wake_margin_frames":64,"callback_budget_frames":64}}}"#).unwrap();
+    let preferences = load_preferences_at(&path).unwrap();
+    save_preferences_at(&path, &preferences).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(value["transport_latency"]["render"]["target_frames"], 512);
+    assert_eq!(
+        value["transport_latency"]["render"]["wake_margin_frames"],
+        64
+    );
+    assert_eq!(
+        value["transport_latency"]["render"]["callback_budget_frames"],
+        64
+    );
+    fs::write(&path, br#"{"version":2,"transport_latency":{"render":{"target_frames":0,"wake_margin_frames":64,"callback_budget_frames":64}}}"#).unwrap();
+    assert!(load_preferences_at(&path).is_err());
+}
+
+#[test]
 fn audio_defaults_and_directional_overrides_round_trip_without_active_state() {
     use moiren_engine::{
         audio_config::{AudioBackend, ProcessingPrecision, SampleFormat},
@@ -62,9 +83,29 @@ fn invalid_audio_preferences_do_not_replace_a_valid_file() {
     save_preferences_at(&path, &AppPreferences::default()).unwrap();
     let original = fs::read(&path).unwrap();
     let mut preferences = AppPreferences::default();
-    preferences.audio.output.buffer_frames = Some(480);
+    preferences.audio.output.buffer_frames = Some(4097);
     assert!(save_preferences_at(&path, &preferences).is_err());
     assert_eq!(fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn shared_native_period_round_trip_preserves_exact_global_and_device_requests() {
+    let directory = TestDirectory::new();
+    let path = directory.file("shared-period.json");
+    let mut preferences = AppPreferences::default();
+    preferences.audio.output.buffer_frames = Some(480);
+    let mut stream = preferences.audio.output;
+    stream.buffer_frames = Some(336);
+    preferences
+        .audio
+        .output_overrides
+        .insert("exact-render".into(), stream);
+    save_preferences_at(&path, &preferences).unwrap();
+    assert_eq!(load_preferences_at(&path).unwrap(), preferences);
+    let bytes = fs::read(&path).unwrap();
+    preferences.audio.processing.block_frames = 336;
+    assert!(save_preferences_at(&path, &preferences).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -862,6 +903,48 @@ fn preferences_restore_every_latency_profile_and_default_older_documents() {
 }
 
 #[test]
+fn preferences_persist_transport_latency_and_startup_keeps_it_requested() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+
+    let directory = TestDirectory::new();
+    let path = directory.file("transport-preferences.json");
+    let transport = TransportLatencySettings {
+        process: Some(ExpertInputBuffer {
+            capacity_frames: 2048,
+            target_frames: 512,
+            jitter_frames: 32,
+            max_packet_frames: 128,
+            max_gap_frames: 128,
+            ..Default::default()
+        }),
+        vad: Some(ExpertInputBuffer {
+            capacity_frames: 4096,
+            target_frames: 1024,
+            jitter_frames: 64,
+            max_packet_frames: 240,
+            max_gap_frames: 256,
+            ..Default::default()
+        }),
+        vad_recovery_cap_periods: Some(1),
+        ..Default::default()
+    };
+    let preferences = AppPreferences {
+        transport_latency: transport,
+        ..Default::default()
+    };
+
+    save_preferences_at(&path, &preferences).unwrap();
+    let restored = load_preferences_at(&path).unwrap();
+    assert_eq!(restored.transport_latency, transport);
+
+    let startup = StartupDocuments::load_at(&path).unwrap();
+    let context = startup.into_context().unwrap();
+    assert_eq!(context.transport_latency, transport);
+    assert_eq!(context.active_transport_latency, None);
+    assert_eq!(context.core.phase(), crate::service::SessionPhase::Idle);
+}
+
+#[test]
 fn unbound_candidate_graph_saves_without_creating_an_active_session() {
     let directory = TestDirectory::new();
     let path = directory.file("unbound.moiren");
@@ -875,6 +958,48 @@ fn unbound_candidate_graph_saves_without_creating_an_active_session() {
     service.replace(graph, nodes).unwrap();
     assert_eq!(service.snapshot().active_revision, None);
     assert_eq!(service.snapshot().pending_revision, None);
+}
+
+#[test]
+fn stopped_ui_fixture_restores_empty_candidate_and_suppresses_default_startup_selection() {
+    let directory = TestDirectory::new();
+    let project_path = directory.file("stopped.moiren");
+    let preferences_path = directory.file("preferences.json");
+    // This is the deliberately narrow fixture in desktop-stopped-startup.ps1.
+    // An absent restored project selects automatic startup in start_service;
+    // gain zero or restore_last_project=false does not keep devices closed.
+    fs::write(
+        &project_path,
+        br#"{"version":2,"name":"Stopped UI control","session":null,"graph":{"nodes":[],"edges":[]},"exports":[]}"#,
+    )
+    .unwrap();
+    let mut preferences = serde_json::json!({
+        "version": 2,
+        "language": "en",
+        "restore_last_project": true,
+        "last_project_path": project_path,
+    });
+    fs::write(&preferences_path, serde_json::to_vec(&preferences).unwrap()).unwrap();
+    let startup = StartupDocuments::load_at(&preferences_path).unwrap();
+    assert!(
+        startup.project.is_some(),
+        "restoration disables automatic startup"
+    );
+    let context = startup.into_context().unwrap();
+    assert_eq!(context.core.phase(), crate::service::SessionPhase::Idle);
+    assert!(context.core.desired().is_none());
+    assert!(context.graph.snapshot().graph.nodes().is_empty());
+    assert!(context.graph.snapshot().exports.is_empty());
+    assert!(context.graph.snapshot().active_revision.is_none());
+    assert!(context.graph.snapshot().pending_revision.is_none());
+
+    preferences["restore_last_project"] = serde_json::json!(false);
+    fs::write(&preferences_path, serde_json::to_vec(&preferences).unwrap()).unwrap();
+    let startup = StartupDocuments::load_at(&preferences_path).unwrap();
+    assert!(
+        startup.project.is_none(),
+        "false is not a stopped startup contract"
+    );
 }
 
 #[test]

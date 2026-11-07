@@ -196,6 +196,7 @@ mod tests {
 
     fn context(start: u64, frames: usize) -> ProcessContext {
         ProcessContext {
+            execution: None,
             timeline_epoch: 9,
             timeline_start: start,
             frames,

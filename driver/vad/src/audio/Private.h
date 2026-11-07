@@ -4,6 +4,7 @@
 #include "Clock.h"
 #include "TimerPcm.h"
 #include "CircuitIdentity.h"
+#include "../EndpointReference.h"
 #include <windef.h>
 #include <mmsystem.h>
 #include <ks.h>
@@ -30,6 +31,9 @@ struct VAD_AUDIO_DEVICE {
     ACXPIN HostPin;
     ACXSTREAM Stream; // Borrowed; cleared by stream cleanup under Lifecycle.
     vad::audio::CircuitIdentity Identity; // Immutable across Prepare/Release.
+    // Name-derived circuit name; mirrors the interface reference string the
+    // policy worker registers from the same slot name.
+    WCHAR Reference[vad::EndpointReferenceUnits];
     uint32_t Intent;
     uint32_t Channels;
     BOOLEAN Added;
@@ -58,6 +62,8 @@ struct VAD_AUDIO_STREAM {
     ULONG TimerScratchBytes;
     uint64_t Generation;
     vad::audio::Clock Clock;
+    // State-protected last event arm, replaced only after WdfTimerStart returns.
+    vad::audio::EventTimerArm EventArm;
     uint64_t CompletedPackets;
     uint64_t DeliveredPackets;
     uint64_t LastCaptureStart;
