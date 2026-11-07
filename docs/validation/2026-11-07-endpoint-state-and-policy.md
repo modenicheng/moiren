@@ -145,16 +145,62 @@ The first Linux offline app attempt fails before tests because atomic0.5.3 is
 not cached; the retained V2 receipts record the successful dependency fetch
 and complete checks. No host native audio/UI/driver entrypoint is executed.
 
-A subsequent native state observation remains required; the earlier612
-receipts do not retroactively test this new source. Software passing does not
-establish native publication, waveform, exact-name or physical acceptance.
+These checks support the software slice, not native publication, waveform,
+exact-name or physical acceptance. The separate native observation below
+retains its own failed acceptance verdict.
+
+## New-source native observation, not an audio pass
+
+The reviewed slice is committed clean asd004809. Its optimized integration
+example builds on the host without execution, then is copied immutably:
+7915008bytes, SHA-256
+`693B54879B8089DEF7D312188EEB25F65B63E5B6506DFBAA368CAF6F0C9A5C58`.
+Source tree is81d1cf05c53027d0e4480e140b431408f39da1e9. The finite worker
+changes only the previous PCM worker's paths, mode/binary pins and recorded
+source provenance. Eight actual invocation/refusal cases pass on each PS5/7.
+Worker SHA-256 is
+`4CF73E75C0B6111C05E9928C9AC4752F54856FCAD9936EAB4858A4D131042923`.
+Fresh remote paths and free space are checked before upload; strict known-host
+SSH invokes exactly `--exercise --output-dir=... --pcm --timeout-seconds=90`.
+No rename seed, round trip, enablement or silent fallback is added.
+
+At20:52:50..20:53:14 on the standalone remote target, the unchanged612 driver
+is Running/PnP OK/problem0 with the same SYS/INF pins. The new product fields
+observe both exact endpoint identities as state4/NOTPRESENT during initial
+Apply. Their later four-second no-probe-client hold observes Microphone
+state1/ACTIVE and Playback state2/DISABLED on those same MMDevice IDs and native
+identities. All recorded name/state reads have no error. The independent
+failure-only ALL-state collection completes97 Playback/53 Microphone rows,
+without truncation/error, and its one exact match per flow agrees with the
+product's later state/name/ID. Product propagation and observed state change
+are demonstrated; the cause and entire state history are not established.
+
+The run still fails `owned MMDevices did not arrive; topology errors: []`
+before any probe Start, with zero acquired signal frames and PCM unverified.
+Idle Engine timeline advances699 times over4003ms, with zero epoch changes;
+that is not proof of PCM flow or no native activity. Raw names still retain
+the adapter suffix, and Playback's raw name remains the generic speaker text
+at this observation. No exact-name condition is relaxed.
+
+Report status is failed, native exit1, cleanup_error null, service joined and
+control session released. The wrapper's only audit error is the expected
+failed report-acceptance condition; boot/driver, final no-owner/no-present-child,
+six default roles, render controls, security and protected-process identity
+audits pass. This does not prove uninterrupted external audio. The17 terminal
+files independently verify remote/local/archive lengths and SHA-256;
+`native-state-pcm.zip` is223708bytes, SHA-256
+`C84829A174396D9B905053314DC58EB9D71343B33923563FB37E4C0B45379A3A`.
+No raw audio is transferred. Do not repeat the unchanged acquisition: state
+consumption/migration and Windows-name publication remain separate unresolved
+questions, as do the complete S1/S4/S5 native/physical acceptance gates.
 
 ## Publication boundary
 
 Reviewed diagnostics through6401849 are pushed at20:18 and remote hash/PR26
 head are independently verified. PR26 stays Draft/open and must not be merged
-wholesale. Matching CI42371855897 is observed with its original watcher;
-prior20green belongs to c890e50/run42367038940, not this source slice.
+wholesale. Matching CI42371855897 completes all20 jobs successfully; original
+watcher54337 exits0. This result covers6401849, not the laterd004809 source
+slice, which requires its own exact-head CI after the next publication.
 
 ## Official interpretation references
 

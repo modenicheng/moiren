@@ -147,9 +147,15 @@ from provider presence and Engine readiness. No ACTIVE inference, enablement
 or acceptance-gate change is introduced. The pinned17-file slice passes2636
 Windows workspace/headless tests with10 ignored and155 integration example
 tests; Linux example133, observer17, app618 with2 ignored and acceptance7 pass.
-Windows/Linux strict workspace Clippy and formatting pass. A native observation
-of the new source is still required; these software checks close no S1/S4/S5
-acceptance. The earlier612 receipts cannot retroactively qualify this slice.
+Windows/Linux strict workspace Clippy and formatting pass. Clean released004809
+then runs once directly on the target at20:52:50..20:53:14: the new product
+fields observe initial NOTPRESENT followed by Microphone ACTIVE and Playback
+DISABLED on the same identities, independently matched by failure enumeration.
+The PCM run still fails before probe Start, with zero acquired signal frames;
+join/release/cleanup and external-state/idle audits pass. Its17 terminal files
+are hash/length archived. This verifies new-source state propagation, not
+Windows-name, PCM or S1/S4/S5 acceptance. Published6401849's20-job CI is green;
+the later source slice still requires matching publication CI.
 
 The later PCM extension in8318308 passes154 Windows/132 Linux example tests
 and strict Clippy without changing ACTIVE admission or PCM gates. At19:43 its

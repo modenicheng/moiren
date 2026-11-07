@@ -44,8 +44,17 @@ Windows-name acceptance, lifecycle and client-admission rules are unchanged.
 The pinned17-file source passes2636 Windows workspace/headless tests with
 10 ignored,155 Windows example tests,133 Linux example tests,17 Linux observer
 tests,618 Linux app tests with2 ignored,7 Linux headless acceptance tests and
-strict Windows/Linux workspace Clippy. Native testing of this new source
-is still pending; earlier612 results do not qualify it. Full S0-S5 remains open.
+strict Windows/Linux workspace Clippy. Clean released004809 then runs once
+directly on the remote target at20:52:50..20:53:14. Product state observations
+change from initial NOTPRESENT for both exact identities to Microphone ACTIVE
+and Playback DISABLED during the idle hold; independent failure enumeration
+agrees on both exact MMDevice IDs. Raw name/state reads succeed, demonstrating
+the new propagation, not a cause or audio pass. The run fails before probe
+Start with zero acquired signal frames. Join/release/cleanup and external
+state/idle audits pass; report acceptance fails. All17 terminal archive files
+verify lengths/hashes. No enablement/identity rotation/unchanged retry follows.
+Published6401849's own CI completes20/20 successfully; the newer slice needs
+its matching CI after publication. Full S0-S5 remains open.
 
 ### Later PCM failure snapshot: exact Playback is disabled
 
