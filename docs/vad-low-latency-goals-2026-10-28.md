@@ -130,6 +130,23 @@ deferred; missing physical capture equipment does not block independent work.
 
 ### Later direct remote deployment - 2026-11-07
 
+The later [history/consumption receipt](validation/2026-11-07-endpoint-history-and-consumption.md)
+uses guarded read-only queries at21:26 and21:38. Fixed raw PDOs first install
+on October25, while the seeded controls first install November7; these dates
+do not prove MMDevice consumption or who disabled a device. Exact retained
+endpoint GetDevice succeeds for all six IDs, including fixed Playback missing
+from a separate PnP inventory. Its endpoint store has no EnableEndpointByDefault
+value (S_OK/VT_EMPTY), while both seeded Playback stores retain0x101 despite
+identical current interface staging. All are NOTPRESENT after cleanup; the
+earlier live DISABLED failure remains. This is a retained policy/name divergence,
+not a migration fix, enablement, PCM pass or exact-name acceptance. Both13-file
+archives and external-state/idle audits verify; original29 draft/cache pins
+remain unchanged. Published0fdc2c6 completes CI42374879801 with20/20 successful
+jobs and original watcher99946 exit0, closing software CI for the state slice.
+The current display-name-derived KS reference also needs reconciliation with
+Windows endpoint settings/identity preservation; do not rotate identities to
+manufacture a fresh-policy/name pass. All original S0-S5 gates remain in force.
+
 The [policy/state receipt](validation/2026-11-07-endpoint-state-and-policy.md)
 compares18 exact persisted registrations from the fixed and earlier seeded
 fixtures. Both Playback policies already contain0x101 enablement and the
@@ -155,7 +172,7 @@ The PCM run still fails before probe Start, with zero acquired signal frames;
 join/release/cleanup and external-state/idle audits pass. Its17 terminal files
 are hash/length archived. This verifies new-source state propagation, not
 Windows-name, PCM or S1/S4/S5 acceptance. Published6401849's20-job CI is green;
-the later source slice still requires matching publication CI.
+the later0fdc2c6 source publication now also has matching20-job green CI.
 
 The later PCM extension in8318308 passes154 Windows/132 Linux example tests
 and strict Clippy without changing ACTIVE admission or PCM gates. At19:43 its

@@ -202,6 +202,12 @@ wholesale. Matching CI42371855897 completes all20 jobs successfully; original
 watcher54337 exits0. This result covers6401849, not the laterd004809 source
 slice, which requires its own exact-head CI after the next publication.
 
+Later publication0fdc2c6 includes that source slice and finishes Runtime
+foundation run42374879801 with all20 jobs successful; original watcher99946
+exits0. The [history/consumption follow-up](2026-11-07-endpoint-history-and-consumption.md)
+records the subsequent read-only endpoint-store divergence. Neither result
+changes the failed native acceptance above or closes the full S0-S5 goal.
+
 ## Official interpretation references
 
 - Microsoft, PKEY_AudioDevice_EnableEndpointByDefault:

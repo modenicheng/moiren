@@ -18,6 +18,33 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+### Retained history and endpoint-store consumption diverge
+
+The [history/consumption receipt](../../docs/validation/2026-11-07-endpoint-history-and-consumption.md)
+records two guarded read-only native queries at21:26 and21:38 on the standalone
+remote target. Typed raw PDO dates distinguish older fixed fixtures from seeded
+controls, without proving MMDevice creation or disablement origin. Exact COM
+GetDevice succeeds for all six retained endpoint IDs, including fixed Playback
+whose SWD node is absent from a separate102-entry PnP inventory. All are
+NOTPRESENT after cleanup; that does not change the preceding live DISABLED
+verdict. Fixed Playback's endpoint property store lacks EnableEndpointByDefault
+(S_OK/VT_EMPTY), whereas both seeded Playback stores retain0x101 despite
+identical currently staged interface policy. All retain OUTPUT_UNDEFINED,
+UnknownFormFactor and NeverSetAsDefaultEndpoint0x307. This proves a retained
+property divergence, not its cause or permission to reset/enable a device.
+Endpoint adapter labels and final names remain composed, unlike the exact
+names independently read from KS interface properties. No name gate is relaxed.
+Both13-file terminal archives independently verify length/SHA; driver/boot,
+defaults/render/security/protected identity and idle audits pass. No audio
+Start, installation, endpoint enablement/rotation or desktop input occurs.
+
+Published0fdc2c6 completes exact-head CI42374879801 with20/20 jobs successful;
+original watcher99946 exits0. This covers the product-state slice, not native
+or physical qualification. S4 additionally needs reconciliation of the current
+name-derived KS reference with Windows endpoint identity/settings preservation;
+new endpoint IDs must not be treated as a harmless naming refresh. Full S0-S5
+remains open and PR26 stays Draft/open, not a wholesale merge candidate.
+
 ### Exact interface policy and product Windows-state visibility
 
 The [policy/state receipt](../../docs/validation/2026-11-07-endpoint-state-and-policy.md)
@@ -53,8 +80,8 @@ the new propagation, not a cause or audio pass. The run fails before probe
 Start with zero acquired signal frames. Join/release/cleanup and external
 state/idle audits pass; report acceptance fails. All17 terminal archive files
 verify lengths/hashes. No enablement/identity rotation/unchanged retry follows.
-Published6401849's own CI completes20/20 successfully; the newer slice needs
-its matching CI after publication. Full S0-S5 remains open.
+Published6401849's own CI completes20/20 successfully; the later0fdc2c6
+publication also completes20/20 as recorded above. Full S0-S5 remains open.
 
 ### Later PCM failure snapshot: exact Playback is disabled
 
