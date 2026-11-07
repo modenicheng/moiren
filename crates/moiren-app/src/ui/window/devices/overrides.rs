@@ -1,5 +1,7 @@
 use super::*;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use crate::ui::window::settings::{Direction, Editor};
+use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
 
 pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
@@ -165,13 +167,29 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .rounded(px(theme::RADIUS_MD))
         .child(
             div()
-                .id("device-override-scroll")
+                .relative()
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
-                .p(px(16.))
-                .child(content)
-                .gpui_test_observe(),
+                .child(
+                    div()
+                        .id("device-override-scroll")
+                        .w_full()
+                        .h_full()
+                        .track_scroll(&shell.device_override_scroll)
+                        .overflow_y_scroll()
+                        .on_scroll_wheel({
+                            let this = cx.entity();
+                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+                        })
+                        .p(px(16.))
+                        .child(content)
+                        .gpui_test_observe(),
+                )
+                .child(overlay_scrollbar(
+                    &shell.device_override_scroll,
+                    "scrollbar-device-override-scroll",
+                    ScrollbarAxis::Vertical,
+                )),
         )
         .child(settings::footer(shell, Editor::Device, cx))
         .gpui_test_observe()

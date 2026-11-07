@@ -1,6 +1,9 @@
-use super::{Duration, NodeId, NodeKind, Page, StudioShell, reorder};
+use super::model::reorder;
+use super::{Duration, NodeId, NodeKind, Page, StudioShell};
 use crate::ui::widgets::fader::FaderScale;
-use crate::ui::window::test_harness::{finish_service, shell_with_state, test_shell, wait_until};
+use crate::ui::window::test_harness::{
+    finish_service, settle_panels, shell_with_state, test_shell, wait_until,
+};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
@@ -469,8 +472,10 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     );
 
     // A real control edit invalidates the cache without a forced refresh.
+    // (Selection styles the live column since the routing split, so the
+    // cached body's edit flag steps in as the trigger instead.)
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(node);
+        shell.mixer.editing_value = Some(node);
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -2617,6 +2622,173 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
         assert_eq!(graph.node(pan_id).unwrap().mixer.balance, 0.);
         assert!(shell.mixer.editing_node_pan.is_none());
     });
+    finish_service(runtime);
+}
+
+/// == tests appended from feat/overlay-scrollbars ==
+/// An edge edit must hit every strip's cache equally: the routing rows
+/// moved out of the cached body, so edges render nowhere inside the cache
+/// and the pruned key no longer compares the touching edges (the old key
+/// rebuilt the two endpoint strips while their siblings replayed). The live
+/// sections pick the new rows up on the same notification.
+#[gpui_kit::test]
+fn edge_edits_hit_every_strip_cache_equally_after_the_routing_split(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let (source, destination) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        let source = graph
+            .nodes()
+            .iter()
+            .find(|node| !node.outputs().is_empty())
+            .unwrap()
+            .outputs()[0]
+            .id();
+        let sink = graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Sink)
+            .unwrap()
+            .id();
+        let destination = graph
+            .nodes()
+            .iter()
+            .find(|node| !node.inputs().is_empty() && node.id() != sink)
+            .unwrap()
+            .inputs()[0]
+            .id();
+        (source, destination)
+    });
+    poll(&view, cx);
+    // The inspector's closing spring and the sliders' first value write-backs
+    // churn rebuilds for about a second after opening; let them drain so the
+    // baseline counts a steady state.
+    settle_panels(cx);
+    poll(&view, cx);
+    let before = view.read_with(cx, |shell, cx| {
+        let deltas: Vec<usize> = shell
+            .mixer
+            .strips
+            .values()
+            .map(|host| host.read(cx).rebuild_count())
+            .collect();
+        (deltas, shell.trace.borrow().strip_renders)
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::Connect {
+                    source,
+                    destination,
+                },
+            ));
+        });
+        cx.notify();
+    });
+    poll(&view, cx);
+    // The new send slider's first value write-back rides the same churn;
+    // let it drain before counting.
+    settle_panels(cx);
+    poll(&view, cx);
+    cx.update(|window, cx| window.render_frame(cx));
+    let after = view.read_with(cx, |shell, cx| {
+        let deltas: Vec<usize> = shell
+            .mixer
+            .strips
+            .values()
+            .map(|host| host.read(cx).rebuild_count())
+            .collect();
+        (deltas, shell.trace.borrow().strip_renders)
+    });
+    let per_strip: Vec<usize> = after
+        .0
+        .iter()
+        .zip(before.0.iter())
+        .map(|(a, b)| a - b)
+        .collect();
+    assert!(
+        per_strip.iter().all(|d| *d == per_strip[0]),
+        "an edge edit must hit every strip's cache equally, got {per_strip:?}"
+    );
+    assert!(
+        after.1 >= before.1,
+        "the connect publish must have gone through"
+    );
+    // The live routing section shows the new row on the same frame.
+    assert!(
+        view.read_with(cx, |shell, cx| shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .edges()
+            .iter()
+            .any(|edge| {
+                edge.src_port() == source && edge.dst_port() == destination
+            })),
+        "the connect must have published"
+    );
+    finish_service(runtime);
+}
+
+/// Docked strips scroll with the dock pane: their cached paint keys on the
+/// dock's own offset, so a dock scroll moves them instead of freezing the
+/// old coordinates (the dock container never tracked a handle before).
+#[gpui_kit::test]
+fn docked_strips_follow_the_dock_scroll(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        // Narrow the pane below one strip so the dock overflows.
+        shell.mixer.dock_width = 100.;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The inspector's closing spring slides the whole row while it settles;
+    // let it finish or the strip's absolute x drifts between measurements.
+    settle_panels(cx);
+    let sink = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Sink)
+            .unwrap()
+            .id()
+    });
+    let before = cx.update(|window, _| {
+        window
+            .find(SharedString::from(format!("strip-{sink:?}")))
+            .bounds()
+    });
+    view.update(cx, |shell, cx| {
+        shell.dock_scroll.set_offset(point(px(-60.), px(0.)));
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after = cx.update(|window, _| {
+        window
+            .find(SharedString::from(format!("strip-{sink:?}")))
+            .bounds()
+    });
+    assert_eq!(
+        after.origin.x,
+        before.origin.x - px(60.),
+        "the docked strip must follow the dock pane's scroll"
+    );
     finish_service(runtime);
 }
 

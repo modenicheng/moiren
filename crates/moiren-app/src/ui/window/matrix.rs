@@ -1,72 +1,24 @@
 //! Direct port connections of the same LogicalGraph used by Graph and Mixer.
+//!
+//! The page renders uncached, on purpose: the grid scrolls natively, and a
+//! cache keyed on the scroll offset (the old design) both rebuilt every cell
+//! on every wheel step and skewed the frozen headers against the body — the
+//! headers read the offset at render, the body clamps it at prepaint, so an
+//! overscroll showed the header overshoot then snap back while the grid
+//! never followed. Without the cache the body moves at prepaint and the
+//! headers read the clamped offset instead.
 use rust_i18n::t;
 
 use super::*;
 use crate::service::GraphEdit;
 use crate::ui::presentation::{db_text, step_db};
-use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
+use crate::ui::widgets::overlay_scrollbar::{clamped_offset, overlay_scrollbar};
 use controls::*;
+use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{PortId, SendParams};
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
-
-/// The matrix page behind a [`PanelHost`]: rebuilt only when the published
-/// snapshot, the selected route, the scroll offset, or the preferences change
-/// (the row height follows the density, which settings may switch
-/// mid-session).
-pub(in crate::ui::window) struct MatrixPanel;
-
-#[derive(PartialEq)]
-pub(in crate::ui::window) struct MatrixKey {
-    snapshot: PublishRef<crate::service::AppSnapshot>,
-    selected_route: Option<(PortId, PortId)>,
-    scroll: Point<Pixels>,
-    compact: bool,
-    /// Carried whole like on the other pages: the render's density input is
-    /// `shell.density`, which the settings transaction and the desktop
-    /// presentation apply together with `preferences.density`.
-    preferences: crate::project::AppPreferences,
-}
-
-pub(in crate::ui::window) type MatrixPanelHost = PanelHost<MatrixPanel>;
-
-impl CachedPanel for MatrixPanel {
-    type Owner = StudioShell;
-    type Key = MatrixKey;
-
-    fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
-        Self::Key {
-            snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
-            selected_route: shell.selected_route,
-            scroll: shell.matrix_scroll.offset(),
-            compact: shell.compact,
-            preferences: shell.preferences.clone(),
-        }
-    }
-
-    fn render(
-        &self,
-        shell: &mut Self::Owner,
-        _window: &mut Window,
-        cx: &mut Context<Self::Owner>,
-    ) -> AnyElement {
-        page(shell, cx)
-    }
-}
-
-/// The matrix page's cached splice.
-pub(in crate::ui::window) fn page_for(
-    shell: &StudioShell,
-    _window: &Window,
-    _cx: &Context<StudioShell>,
-) -> AnyElement {
-    shell
-        .matrix_panel
-        .clone()
-        .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
-        .into_any_element()
-}
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
@@ -89,7 +41,13 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     };
     let width = inputs.len() as f32 * 112.;
     let height = outputs.len() as f32 * row_height;
-    let offset = shell.matrix_scroll.offset();
+    // The headers read the clamped offset: the scroll container clamps at its
+    // prepaint — after this render — so an unclamped read would push a header
+    // past the scroll edge and leave it snapping back while the grid never
+    // followed (the rebound the clamped read exists to kill). A wheel event
+    // that lands mid-frame can still skew the pair for one frame; the body
+    // always wins the next notification.
+    let offset = clamped_offset(&shell.matrix_scroll, size(px(width), px(height)));
     let name = |id| {
         snapshot
             .node(id)
@@ -97,6 +55,8 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             .unwrap_or_default()
     };
     let mut column_header = div()
+        .id("matrix-column-header-strip")
+        .gpui_test_observe()
         .absolute()
         .left(offset.x)
         .flex()
@@ -118,6 +78,8 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         );
     }
     let mut row_header = div()
+        .id("matrix-row-header-strip")
+        .gpui_test_observe()
         .absolute()
         .top(offset.y)
         .flex()
@@ -282,17 +244,35 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         .gpui_test_observe(),
                                 )
                                 .child(
+                                    // The bar overlay is a sibling of the
+                                    // scroll container, never a child: the
+                                    // container translates its children by
+                                    // the offset at prepaint, so an overlay
+                                    // inside it would drift away with the
+                                    // content. The outer sizing lives on the
+                                    // relative wrapper.
                                     div()
-                                        .id("matrix-grid")
+                                        .relative()
                                         .flex_1()
                                         .min_w_0()
-                                        .overflow_scroll()
-                                        .track_scroll(&shell.matrix_scroll)
-                                        .on_scroll_wheel(move |_, _, cx| {
-                                            this.update(cx, |_, cx| cx.notify())
-                                        })
-                                        .child(grid)
-                                        .gpui_test_observe(),
+                                        .child(
+                                            div()
+                                                .id("matrix-grid")
+                                                .w_full()
+                                                .h_full()
+                                                .overflow_scroll()
+                                                .track_scroll(&shell.matrix_scroll)
+                                                .on_scroll_wheel(move |_, _, cx| {
+                                                    this.update(cx, |_, cx| cx.notify())
+                                                })
+                                                .child(grid)
+                                                .gpui_test_observe(),
+                                        )
+                                        .child(overlay_scrollbar(
+                                            &shell.matrix_scroll,
+                                            "scrollbar-matrix-grid",
+                                            ScrollbarAxis::Both,
+                                        )),
                                 ),
                         )
                         .child(div().flex_none().p(px(12.)).child(label(t!(
@@ -310,7 +290,8 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
 pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot.graph;
-    let mut view = panel("matrix-inspector").child(heading(t!("Connection")));
+    let mut view =
+        panel("matrix-inspector", &shell.inspector_scroll).child(heading(t!("Connection")));
     if let Some((source, destination)) = shell.selected_route {
         if let Some((src, dst, channels)) = find_nodes(snapshot, source, destination) {
             view = view
@@ -426,7 +407,12 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             "Select an intersection to inspect or change a direct connection."
         )));
     }
-    view.gpui_test_observe().into_any_element()
+    panel_host(
+        "matrix-inspector",
+        &shell.inspector_scroll,
+        view.gpui_test_observe(),
+    )
+    .into_any_element()
 }
 
 fn find_nodes(

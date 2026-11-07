@@ -8,7 +8,9 @@ use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
+use gpui_kit::base::ScrollbarAxis;
 
 /// The inspector panel behind a [`PanelHost`]: rebuilt only when its inputs
 /// changed — the published snapshot, the selection, the active page, the
@@ -35,6 +37,12 @@ pub(in crate::ui::window) struct InspectorKey {
     editing_send: Option<moiren_core::graph::EdgeId>,
     compact: bool,
     preferences: crate::project::AppPreferences,
+    /// The panel scrolls inside the cached splice, whose paint bakes
+    /// coordinates: the offsets must ride the key or a scroll freezes.
+    /// `override_scroll` is the device overrides editor nested in the device
+    /// inspector, scrolling apart from the panel itself.
+    inspector_scroll: Pixels,
+    override_scroll: Pixels,
 }
 
 pub(in crate::ui::window) type InspectorPanelHost = PanelHost<InspectorPanel>;
@@ -60,6 +68,8 @@ impl CachedPanel for InspectorPanel {
             editing_send: shell.mixer.editing_send,
             compact: shell.compact,
             preferences: shell.preferences.clone(),
+            inspector_scroll: shell.inspector_scroll.offset().y,
+            override_scroll: shell.device_override_scroll.offset().y,
         }
     }
 
@@ -128,12 +138,26 @@ impl CachedPanel for InspectorPanel {
     }
 }
 
-/// The inspector panel's cached splice.
+/// The inspector panel's cached splice, under the pinned bar overlay: the
+/// overlay is a sibling of the splice, never inside it — a cached panel
+/// replays paint without re-running closures, so a bar inside would freeze
+/// and lose its drag target on cache hits.
 fn inspector_panel_for(shell: &StudioShell, _window: &Window) -> AnyElement {
-    shell
-        .inspector_panel
-        .clone()
-        .cached(StyleRefinement::default().size_full())
+    div()
+        .relative()
+        .size_full()
+        .child(
+            shell
+                .inspector_panel
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+        )
+        .child(overlay_scrollbar(
+            &shell.inspector_scroll,
+            "scrollbar-inspector-panel",
+            ScrollbarAxis::Vertical,
+        ))
         .into_any_element()
 }
 
@@ -153,6 +177,10 @@ pub(in crate::ui::window) struct LibraryKey {
     pending_spawn: bool,
     compact: bool,
     preferences: crate::project::AppPreferences,
+    /// The list and the rail scroll inside their cached splices: offsets
+    /// ride the key (see `InspectorKey`'s scroll fields).
+    scroll: Pixels,
+    rail_scroll: Pixels,
 }
 
 fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
@@ -162,6 +190,8 @@ fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
         pending_spawn: shell.pending_node_spawn.is_some(),
         compact: shell.compact,
         preferences: shell.preferences.clone(),
+        scroll: shell.library_scroll.offset().y,
+        rail_scroll: shell.library_rail_scroll.offset().y,
     }
 }
 
@@ -395,10 +425,21 @@ pub(super) fn library_host(
             !shell.sidebar_open,
             theme::LIBRARY_RAIL_WIDTH,
             deselecting(
-                shell
-                    .library_rail_panel
-                    .clone()
-                    .cached(StyleRefinement::default().size_full())
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        shell
+                            .library_rail_panel
+                            .clone()
+                            .cached(StyleRefinement::default().size_full())
+                            .into_any_element(),
+                    )
+                    .child(overlay_scrollbar(
+                        &shell.library_rail_scroll,
+                        "scrollbar-library-rail",
+                        ScrollbarAxis::Vertical,
+                    ))
                     .into_any_element(),
                 &this,
             ),
@@ -408,10 +449,21 @@ pub(super) fn library_host(
             shell.sidebar_open,
             theme::LIBRARY_WIDTH,
             deselecting(
-                shell
-                    .library_panel
-                    .clone()
-                    .cached(StyleRefinement::default().size_full())
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        shell
+                            .library_panel
+                            .clone()
+                            .cached(StyleRefinement::default().size_full())
+                            .into_any_element(),
+                    )
+                    .child(overlay_scrollbar(
+                        &shell.library_scroll,
+                        "scrollbar-node-library",
+                        ScrollbarAxis::Vertical,
+                    ))
                     .into_any_element(),
                 &this,
             ),

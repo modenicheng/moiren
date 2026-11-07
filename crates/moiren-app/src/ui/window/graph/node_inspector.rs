@@ -55,9 +55,10 @@ pub(in crate::ui::window) fn inspector(
         .nodes()
         .iter()
         .find(|node| shell.selected_node == Some(node.id()));
-    let mut view = panel("graph-inspector").child(heading(t!("Inspector")));
+    let mut view =
+        panel("graph-inspector", &shell.inspector_scroll).child(heading(t!("Inspector")));
     let Some(node) = selected else {
-        return view
+        let view = view
             .child(
                 div()
                     .id("inspector-empty")
@@ -90,8 +91,8 @@ pub(in crate::ui::window) fn inspector(
                     .child(label(t!("Select a node to inspect its properties.")))
                     .gpui_test_observe(),
             )
-            .gpui_test_observe()
-            .into_any_element();
+            .gpui_test_observe();
+        return panel_host("graph-inspector", &shell.inspector_scroll, view).into_any_element();
     };
     let id = node.id();
     let entry = snapshot.graph.node(id).expect("service node metadata");
@@ -630,7 +631,7 @@ fn node_observation(
         }
         view = view.child(readings);
     }
-    view.into_any_element()
+    panel_host("graph-inspector", &shell.inspector_scroll, view).into_any_element()
 }
 
 fn builtin_controls(

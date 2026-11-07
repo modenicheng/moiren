@@ -8,8 +8,10 @@
 use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use crate::ui::window::hot::{HotLayerView, HotSurface};
 use crate::ui::window::panel::{CachedPanel, PanelHost};
+use gpui_kit::base::ScrollbarAxis;
 use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Copy)]
@@ -67,10 +69,13 @@ pub(in crate::ui::window) struct StripPanel {
     pub(in crate::ui::window) id: NodeId,
 }
 
-/// Only this strip's control-tree inputs, projected: derived booleans over
-/// the snapshot (`managed`, `probe`) instead of the snapshot fields behind
-/// them, so a key capture stays allocation-free apart from the graph Arc.
-/// Elapsed time and audio observations must not appear here.
+/// Only the cached body's inputs, projected: derived booleans over the
+/// snapshot (`managed`, `probe`) instead of the snapshot fields behind them,
+/// so a key capture stays allocation-free apart from the graph Arc. The
+/// routing rows render live outside this cache, so edges, the collapse
+/// flags, the send editor and the strip selection (which styles the live
+/// column) are not key inputs here. Elapsed time and audio observations must
+/// not appear either.
 pub(in crate::ui::window) struct StripKey {
     id: NodeId,
     graph: std::sync::Arc<crate::service::GraphSnapshot>,
@@ -81,15 +86,13 @@ pub(in crate::ui::window) struct StripKey {
     /// The strip is the session's observed source/sink: the legacy probe
     /// canvas claims one of the shared `meter_points` flags.
     probe: bool,
-    selected: bool,
     compact: bool,
     position: usize,
     editing_value: bool,
     editing_balance: bool,
-    editing_send: Option<EdgeId>,
-    collapsed: (bool, bool),
     /// Registered meter geometry goes stale under scroll just like under any
-    /// other layout change, so the offset rides in the key.
+    /// other layout change, so the offset of the strip's own container rides
+    /// in the key — the main strip row or the dock, per kind.
     scroll: Point<Pixels>,
     meters: crate::project::MeterDisplayPreferences,
     /// The shared `GraphSnapshot` projection says this strip's fault group
@@ -104,13 +107,10 @@ impl PartialEq for StripKey {
         self.id == other.id
             && self.managed == other.managed
             && self.probe == other.probe
-            && self.selected == other.selected
             && self.compact == other.compact
             && self.position == other.position
             && self.editing_value == other.editing_value
             && self.editing_balance == other.editing_balance
-            && self.editing_send == other.editing_send
-            && self.collapsed == other.collapsed
             && self.scroll == other.scroll
             && self.meters == other.meters
             && self.faulted == other.faulted
@@ -124,19 +124,21 @@ impl StripPanel {
         let state = shell.state.read(cx);
         let snapshot = &state.snapshot;
         let graph = &snapshot.graph;
-        let probe = graph
-            .graph
-            .get_node(id)
+        let node = graph.graph.get_node(id);
+        let probe = node
             .ok()
             .zip(graph.node(id))
             .is_some_and(|(node, entry)| strip_probe_candidate(snapshot, entry, node.kind()));
+        // Docked strips scroll with the dock pane, channel strips with the
+        // main row: a stale container's offset would freeze the strip's
+        // cached paint (scroll-under-cache) on the other container's scroll.
+        let docked = node.is_ok_and(|node| matches!(node.kind(), NodeKind::Bus | NodeKind::Sink));
         StripKey {
             id,
             graph: snapshot.graph.clone(),
             catalog: snapshot.catalog.clone(),
             managed: snapshot.signal_topics.node_levels.contains_key(&id),
             probe,
-            selected: shell.selected_node == Some(id),
             compact: shell.compact,
             position: shell
                 .mixer
@@ -146,22 +148,25 @@ impl StripPanel {
                 .unwrap_or(0),
             editing_value: shell.mixer.editing_value == Some(id),
             editing_balance: shell.mixer.editing_balance == Some(id),
-            editing_send: shell.mixer.editing_send,
-            collapsed: (shell.mixer.inputs_collapsed, shell.mixer.sends_collapsed),
-            scroll: shell.mixer_scroll.offset(),
+            scroll: if docked {
+                shell.dock_scroll.offset()
+            } else {
+                shell.mixer_scroll.offset()
+            },
             meters: shell.preferences.meters,
             faulted: graph.node_faulted(id),
         }
     }
 }
 
-/// Whether a strip's rendered content is identical between two snapshots: its
-/// own node state, kind, channels and ports, the edges terminating at or
-/// originating from it in graph order (input/send rows render in that order,
-/// with each far end's display name), and the export intents that can name a
-/// rendered node. Deliberately ignores session bookkeeping — revisions,
-/// faults, undo flags — that no strip renders: a whole-snapshot compare would
-/// drag every sibling strip into a rebuild on every edit publish.
+/// Whether a strip's cached body is identical between two snapshots: its own
+/// node state, kind, channels, and the export intents that can name a
+/// rendered node. The routing rows moved out of the cached body (they own
+/// live scroll containers), so edges no longer render inside the cache and
+/// an edge edit rebuilds no strip at all. Deliberately ignores session
+/// bookkeeping — revisions, faults, undo flags — that no strip renders: a
+/// whole-snapshot compare would drag every sibling strip into a rebuild on
+/// every edit publish.
 fn strip_content_eq(
     a: &std::sync::Arc<crate::service::GraphSnapshot>,
     b: &std::sync::Arc<crate::service::GraphSnapshot>,
@@ -174,58 +179,15 @@ fn strip_content_eq(
     if a.node(id) != b.node(id) {
         return false;
     }
-    let touching = |snapshot: &crate::service::GraphSnapshot| {
-        snapshot
-            .graph
-            .edges()
-            .iter()
-            .filter(|edge| edge.dst() == id || edge.src() == id)
-            .map(|edge| {
-                (
-                    edge.id(),
-                    edge.src(),
-                    edge.dst(),
-                    edge.src_port(),
-                    edge.dst_port(),
-                    *edge.params(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    if touching(a) != touching(b) {
-        return false;
-    }
-    let far_ends = |snapshot: &crate::service::GraphSnapshot| {
-        snapshot
-            .graph
-            .edges()
-            .iter()
-            .filter(|edge| edge.dst() == id || edge.src() == id)
-            .flat_map(|edge| [edge.src(), edge.dst()])
-            .filter(|end| *end != id)
-            .collect::<std::collections::BTreeSet<NodeId>>()
-    };
-    let (a_ends, b_ends) = (far_ends(a), far_ends(b));
-    if a_ends != b_ends {
-        return false;
-    }
-    for end in a_ends {
-        // A far end renders only its display identity (the name in input and
-        // send rows), not its mixer state: muting node 0 must not rebuild
-        // node 1 merely because node 1 shows node 0's name.
-        let (Some(a_end), Some(b_end)) = (a.node(end), b.node(end)) else {
-            return false;
-        };
-        if a_end.label != b_end.label
-            || a_end.source != b_end.source
-            || a_end.output_endpoint_id != b_end.output_endpoint_id
-        {
-            return false;
+    // The kind and channel count style the body (color bar, meter tracks)
+    // but live on the logical node, not the session state.
+    match (a.graph.get_node(id), b.graph.get_node(id)) {
+        (Ok(x), Ok(y)) => {
+            if x.kind() != y.kind() || x.channels() != y.channels() {
+                return false;
+            }
         }
-        match (a.graph.get_node(end), b.graph.get_node(end)) {
-            (Ok(x), Ok(y)) if x.kind() == y.kind() => {}
-            _ => return false,
-        }
+        _ => return false,
     }
     a.exports == b.exports
 }
@@ -254,7 +216,7 @@ impl CachedPanel for StripPanel {
         let Some(node) = graph.graph.get_node(self.id).ok() else {
             return div().into_any_element();
         };
-        super::strip(shell, entry, node.kind(), node.channels(), cx).into_any_element()
+        super::strip_body(shell, entry, node.kind(), node.channels(), cx).into_any_element()
     }
 
     fn on_rebuild(&self, shell: &mut StudioShell) {
@@ -280,10 +242,11 @@ impl CachedPanel for StripPanel {
         shell: &Entity<StudioShell>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
-        // Every model entity nested in THIS strip: its fader, its readout
-        // and balance editors, and the send sliders and editors of its own
-        // out-edges. Their notifications cannot invalidate this cached
-        // ancestor by themselves.
+        // The model entities nested in THIS strip's cached body: its fader
+        // and its readout/balance editors. The send sliders and editors of
+        // its out-edges render in the live routing sections, outside this
+        // cache — their entities notify the shell directly, which re-renders
+        // the sections without a rebuild here.
         let (sliders, inputs) = shell.read_with(cx, |shell, _| {
             let mut sliders = Vec::new();
             let mut inputs = Vec::new();
@@ -295,23 +258,6 @@ impl CachedPanel for StripPanel {
             }
             if let Some(input) = shell.mixer.balance_inputs.get(&self.id) {
                 inputs.push(input.clone());
-            }
-            for edge in shell
-                .state
-                .read(cx)
-                .snapshot
-                .graph
-                .graph
-                .edges()
-                .iter()
-                .filter(|edge| edge.src() == self.id)
-            {
-                if let Some(slot) = shell.mixer.sends.get(&edge.id()) {
-                    sliders.push(slot.state.clone());
-                }
-                if let Some(input) = shell.mixer.send_inputs.get(&edge.id()) {
-                    inputs.push(input.clone());
-                }
             }
             (sliders, inputs)
         });
@@ -381,6 +327,143 @@ fn strip_probe_candidate(
 /// of the 1px border it straddles.
 const DOCK_RESIZE_REACH: f32 = 3.;
 
+/// One strip's live column: the scrollable routing sections render above the
+/// cached control stack, *outside* it. The rows are a handful of labels and
+/// they own the sections' scroll containers, whose paint and hitboxes must
+/// stay live — a scroll container inside a cached panel freezes its paint on
+/// cache hits (the cache replays baked coordinates), and a cached scrollbar
+/// thumb loses its drag target with them. The cached body replays beneath
+/// the sections; the selection styles this live column, not the cache.
+fn strip_column(
+    shell: &StudioShell,
+    id: NodeId,
+    entry: &crate::service::GraphNodeState,
+    kind: NodeKind,
+    host: &Entity<StripPanelHost>,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
+    let selected = shell.selected_node == Some(id);
+    // The shared fault projection: the live column wears the danger frame,
+    // the faint red wash and the banner anchor while the strip holds a
+    // fault; the "!" badge rides the cached title row off the same
+    // projection via `StripKey::faulted`.
+    let faulted = shell.state.read(cx).snapshot.graph.node_faulted(id);
+    let cached_body = {
+        // The cached wrapper carries its load-bearing sizing: it takes the
+        // column height the sections leave over (cached views lay out by
+        // their wrapper).
+        host.clone()
+            .cached(StyleRefinement::default().flex_1().min_h_0())
+            .into_any_element()
+    };
+    let this = cx.entity();
+    div()
+        .id(SharedString::from(format!("strip-{id:?}")))
+        .flex()
+        .flex_none()
+        .w(px(MixerPresentation::STRIP_WIDTH))
+        .h_full()
+        .min_h_0()
+        .bg(if selected {
+            theme::SURFACE_3
+        } else {
+            theme::SURFACE
+        })
+        .relative()
+        .rounded_none()
+        .border_l_1()
+        .border_t_1()
+        .border_b_1()
+        .border_r_1()
+        .border_color(if faulted {
+            theme::DANGER
+        } else {
+            theme::BORDER
+        })
+        .on_hover({
+            let this = this.clone();
+            move |hovered, _, cx| {
+                this.update(cx, |shell, cx| {
+                    // Hover feeds the meter frame's fault banner alone, the
+                    // graph's `hovered_node` twin: one notified frame per
+                    // change, never a panel key.
+                    let next = hovered.then_some(id);
+                    if shell.hovered_strip != next {
+                        shell.hovered_strip = next;
+                        cx.notify();
+                    }
+                })
+            }
+        })
+        .on_drop(move |dragged: &NodeId, _, cx| {
+            this.update(cx, |shell, cx| {
+                let graph = &shell.state.read(cx).snapshot.graph.graph;
+                let docked = |id| {
+                    graph
+                        .get_node(id)
+                        .is_ok_and(|node| matches!(node.kind(), NodeKind::Bus | NodeKind::Sink))
+                };
+                if docked(*dragged) == docked(id) {
+                    model::reorder(&mut shell.mixer.order, *dragged, id);
+                }
+                cx.notify();
+            })
+        })
+        .child({
+            // The fault banner's anchor: the whole strip's window rect,
+            // registered for the meter frame the same way meter tracks are.
+            let geometry = shell.mixer_geometry.clone();
+            canvas(
+                move |bounds, _window, _| {
+                    geometry.update(|geometry| {
+                        geometry.banners.insert(id, bounds);
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0()
+        })
+        .when(faulted, |strip| {
+            // The faint red wash over the strip's own surface: painted
+            // above the background and below every control that follows.
+            strip.child(
+                div()
+                    .id(SharedString::from(format!("strip-wash-{id:?}")))
+                    .absolute()
+                    .inset_0()
+                    .bg(theme::DANGER_WASH)
+                    .gpui_test_observe(),
+            )
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .pt(px(4.))
+                .child(routing::inputs(shell, entry, cx))
+                .child(routing::sends(shell, id, cx))
+                .child(cached_body),
+        )
+        .child(
+            // The kind color rides the live column: an observed element
+            // inside the cached body would report stale bounds on cache-hit
+            // frames.
+            div()
+                .id(SharedString::from(format!("strip-color-{id:?}")))
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(4.))
+                .bg(node_kind_color(kind).opacity(0.8))
+                .gpui_test_observe(),
+        )
+        .gpui_test_observe()
+}
+
 /// The dock divider's live resize gesture. Renders nothing: the drag exists
 /// only so its `on_drag_move` keeps receiving pointer moves after the press
 /// leaves the divider's hitbox.
@@ -399,12 +482,15 @@ pub(in crate::ui::window) fn page(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let graph = &shell.state.read(cx).snapshot.graph;
-    let mut channels = div()
+    // The strip rows' scrollbar overlays are siblings of their scroll
+    // containers, never children: a scroll container translates its children
+    // by the offset at prepaint, so an overlay inside it would drift away
+    // with the content. The outer sizing lives on the relative wrapper.
+    let mut channels_area = div()
         .id("mixer-strips")
+        .w_full()
+        .h_full()
         .flex()
-        .flex_1()
-        .min_w_0()
-        .min_h_0()
         .track_scroll(&shell.mixer_scroll)
         .overflow_x_scroll()
         .overflow_y_scroll()
@@ -415,10 +501,12 @@ pub(in crate::ui::window) fn page(
     let mut dock = div().flex().flex_none().min_w_full().h_full().justify_end();
     let dock_container = div()
         .id("mixer-dock")
+        .w_full()
+        .h_full()
         .flex()
-        .size_full()
         .border_l_1()
         .border_color(theme::BORDER_STRONG)
+        .track_scroll(&shell.dock_scroll)
         .overflow_x_scroll()
         .overflow_y_scroll()
         .on_scroll_wheel({
@@ -429,29 +517,39 @@ pub(in crate::ui::window) fn page(
         let Ok(node) = graph.graph.get_node(*id) else {
             continue;
         };
+        let Some(entry) = graph.node(*id) else {
+            continue;
+        };
         let Some(host) = shell.mixer.strips.get(id) else {
             continue;
         };
-        // The strip is cached behind a wrapper carrying its load-bearing
-        // outer sizing (cached views lay out by their wrapper).
-        let strip = {
-            let width = px(MixerPresentation::STRIP_WIDTH);
-            host.clone()
-                .cached(
-                    StyleRefinement::default()
-                        .flex_none()
-                        .w(width)
-                        .h_full()
-                        .min_h_0(),
-                )
-                .into_any_element()
-        };
+        let column = strip_column(shell, *id, entry, node.kind(), host, cx);
         if matches!(node.kind(), NodeKind::Bus | NodeKind::Sink) {
-            dock = dock.child(strip);
+            dock = dock.child(column);
         } else {
-            channels = channels.child(strip);
+            channels_area = channels_area.child(column);
         }
     }
+    let channels = div()
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .child(channels_area.gpui_test_observe())
+        .child(overlay_scrollbar(
+            &shell.mixer_scroll,
+            "scrollbar-mixer-strips",
+            ScrollbarAxis::Both,
+        ));
+    let dock_host = div()
+        .relative()
+        .size_full()
+        .child(dock_container.child(dock).gpui_test_observe())
+        .child(overlay_scrollbar(
+            &shell.dock_scroll,
+            "scrollbar-mixer-dock",
+            ScrollbarAxis::Horizontal,
+        ));
     // The dock pane owns the user-resizable width (and its 55% cap) so the
     // divider border stays the pane's left edge and the grab handle can
     // straddle it without the scroll container clipping the reach; the
@@ -466,7 +564,7 @@ pub(in crate::ui::window) fn page(
         .min_h_0()
         .w(px(shell.mixer.dock_width))
         .max_w(relative(MixerPresentation::DOCK_MAX_FRACTION))
-        .child(dock_container.child(dock).gpui_test_observe())
+        .child(dock_host)
         .child(
             div()
                 .id("mixer-dock-resize")
@@ -520,7 +618,7 @@ pub(in crate::ui::window) fn page(
                         .left_0()
                         .size_full(),
                 )
-                .child(channels.gpui_test_observe())
+                .child(channels)
                 .child(dock_pane),
         )
         .child(shell.mixer_frame.clone())

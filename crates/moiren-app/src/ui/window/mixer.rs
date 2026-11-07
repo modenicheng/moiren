@@ -13,13 +13,12 @@ use crate::ui::widgets::fader::{FaderScale, fader, ruler};
 // Slider-sync machinery is shared with the compressor parameter sliders
 // (window::graph::compressor), so the slot type, edit type and the
 // coalesced sync/commit entry points are visible across the window.
+use model::StripDrag;
 pub(super) use model::{
     EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text,
     commit_active_editor, commit_closure, fader_rows, gain_db_text, mixer_edit,
     reset_clip_on_click, start_value_edit, sync_faders, sync_slider_range,
 };
-use model::{StripDrag, reorder};
-use routing::{inputs, sends};
 
 impl StudioShell {
     pub(super) fn update_node_meters(&mut self, visible: bool, cx: &mut Context<Self>) -> bool {
@@ -95,23 +94,28 @@ pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
     }
 }
 
-fn strip(
+/// The strip's cached control stack: everything below the live routing
+/// sections, keyed by `StripKey`. Between key changes this subtree replays
+/// its paint while the meter hot layer paints the live bars above it; the
+/// routing rows and the strip selection live outside on the page's live
+/// column exactly because they change or scroll at display rate.
+fn strip_body(
     shell: &StudioShell,
     entry: &GraphNodeState,
     kind: NodeKind,
     channels: usize,
     cx: &Context<StudioShell>,
-) -> impl IntoElement {
+) -> Div {
     #[cfg(feature = "gpui-test")]
     {
         shell.trace.borrow_mut().strip_renders += 1;
     }
     let id = entry.id;
-    let selected = shell.selected_node == Some(id);
-    // The shared fault projection: the strip wears the danger frame, the
-    // faint red wash and the "!" badge while it holds a fault.
+    // The strip's "!" badge rides the cached title row: the fault state is
+    // a StripKey field. The danger frame, wash and banner anchor live on the
+    // page's live column (see `strip_column`), which reads the same fault
+    // projection every frame without a rebuild.
     let faulted = shell.state.read(cx).snapshot.graph.node_faulted(id);
-    let color = node_kind_color(kind);
     let title = div()
         .id(SharedString::from(format!("strip-header-{id:?}")))
         .flex()
@@ -182,168 +186,65 @@ fn strip(
         })
         .gpui_test_observe();
     div()
-        .id(SharedString::from(format!("strip-{id:?}")))
         .flex()
-        .flex_none()
-        .w(px(MixerPresentation::STRIP_WIDTH))
-        .h_full()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
         .min_h_0()
-        .bg(if selected {
-            theme::SURFACE_3
-        } else {
-            theme::SURFACE
-        })
-        .relative()
-        .rounded_none()
-        .border_l_1()
-        .border_t_1()
-        .border_b_1()
-        .border_r_1()
-        .border_color(if faulted {
-            theme::DANGER
-        } else {
-            theme::BORDER
-        })
-        .on_hover({
-            let this = cx.entity();
-            move |hovered, _, cx| {
-                this.update(cx, |shell, cx| {
-                    // Hover feeds the meter frame's fault banner alone, the
-                    // graph's `hovered_node` twin: one notified frame per
-                    // change, never a panel key.
-                    let next = hovered.then_some(id);
-                    if shell.hovered_strip != next {
-                        shell.hovered_strip = next;
-                        cx.notify();
-                    }
-                })
-            }
-        })
-        .on_drop({
-            let this = cx.entity();
-            move |dragged: &NodeId, _, cx| {
-                this.update(cx, |shell, cx| {
-                    let graph = &shell.state.read(cx).snapshot.graph.graph;
-                    let docked = |id| {
-                        graph
-                            .get_node(id)
-                            .is_ok_and(|node| matches!(node.kind(), NodeKind::Bus | NodeKind::Sink))
-                    };
-                    if docked(*dragged) == docked(id) {
-                        reorder(&mut shell.mixer.order, *dragged, id);
-                    }
-                    cx.notify();
-                })
-            }
-        })
+        .child(strip_controls::balance(shell, entry, channels, cx))
+        .child(node_controls(shell, entry, channels, cx))
         .child({
-            // The fault banner's anchor: the whole strip's window rect,
-            // registered for the meter frame the same way meter tracks are.
-            let geometry = shell.mixer_geometry.clone();
-            canvas(
-                move |bounds, _window, _| {
-                    geometry.update(|geometry| {
-                        geometry.banners.insert(id, bounds);
-                    });
-                },
-                |_, _, _, _| {},
+            let editing = shell.mixer.editing_value == Some(id);
+            editable_value(
+                SharedString::from(format!("strip-readout-{id:?}")),
+                db_text(entry.mixer.gain),
+                editing,
+                &shell.mixer.value_inputs[&id],
+                start_value_edit(cx.entity(), EditableValueFamily::Fader, id, move |graph| {
+                    graph
+                        .node(id)
+                        .map(|node| gain_db_text(node.mixer.gain))
+                        .unwrap_or_default()
+                }),
+                px(12.),
+                TextAlign::Center,
             )
-            .absolute()
-            .inset_0()
-        })
-        .when(faulted, |strip| {
-            // The faint red wash over the strip's own surface: painted
-            // above the background and below every control that follows.
-            strip.child(
-                div()
-                    .id(SharedString::from(format!("strip-wash-{id:?}")))
-                    .absolute()
-                    .inset_0()
-                    .bg(theme::DANGER_WASH)
-                    .gpui_test_observe(),
-            )
+            .flex_none()
+            .h(px(24.))
+            .font_family(theme::FONT_MONO)
+            .gpui_test_observe()
         })
         .child(
             div()
+                .id(SharedString::from(format!("strip-levels-{id:?}")))
+                .relative()
                 .flex()
-                .flex_col()
                 .flex_1()
-                .min_w_0()
-                .pt(px(4.))
-                .child(inputs(shell, entry, cx))
-                .child(sends(shell, id, cx))
-                .child(strip_controls::balance(shell, entry, channels, cx))
-                .child(node_controls(shell, entry, channels, cx))
-                .child({
-                    let editing = shell.mixer.editing_value == Some(id);
-                    editable_value(
-                        SharedString::from(format!("strip-readout-{id:?}")),
-                        db_text(entry.mixer.gain),
-                        editing,
-                        &shell.mixer.value_inputs[&id],
-                        start_value_edit(
-                            cx.entity(),
-                            EditableValueFamily::Fader,
-                            id,
-                            move |graph| {
-                                graph
-                                    .node(id)
-                                    .map(|node| gain_db_text(node.mixer.gain))
-                                    .unwrap_or_default()
-                            },
-                        ),
-                        px(12.),
-                        TextAlign::Center,
-                    )
-                    .flex_none()
-                    .h(px(24.))
-                    .font_family(theme::FONT_MONO)
-                    .gpui_test_observe()
-                })
+                .min_h(px(160.))
+                .justify_center()
+                .gap(px(6.))
+                .mt(px(14.))
+                .mb(px(32.))
                 .child(
                     div()
-                        .id(SharedString::from(format!("strip-levels-{id:?}")))
-                        .relative()
-                        .flex()
-                        .flex_1()
-                        .min_h(px(160.))
-                        .justify_center()
-                        .gap(px(6.))
-                        .mt(px(14.))
-                        .mb(px(32.))
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("strip-unity-{id:?}")))
-                                .absolute()
-                                .top(relative(FaderScale::position(1.)))
-                                .h(px(1.))
-                                .w_full()
-                                .bg(theme::BORDER_STRONG)
-                                .gpui_test_observe(),
-                        )
-                        .child(meter(shell, entry, kind, channels, cx))
-                        .child(ruler())
-                        .child(fader(
-                            &shell.mixer.faders[&id].state,
-                            &shell.mixer.faders[&id].behavior,
-                            cx,
-                        ))
+                        .id(SharedString::from(format!("strip-unity-{id:?}")))
+                        .absolute()
+                        .top(relative(FaderScale::position(1.)))
+                        .h(px(1.))
+                        .w_full()
+                        .bg(theme::BORDER_STRONG)
                         .gpui_test_observe(),
                 )
-                .child(title),
-        )
-        .child(
-            div()
-                .id(SharedString::from(format!("strip-color-{id:?}")))
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .h(px(4.))
-                .bg(color.opacity(0.8))
+                .child(meter(shell, entry, kind, channels, cx))
+                .child(ruler())
+                .child(fader(
+                    &shell.mixer.faders[&id].state,
+                    &shell.mixer.faders[&id].behavior,
+                    cx,
+                ))
                 .gpui_test_observe(),
         )
-        .gpui_test_observe()
+        .child(title)
 }
 
 pub(super) use strip_controls::node_controls;

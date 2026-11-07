@@ -1,29 +1,71 @@
-//! Matrix page cache tests (design 17 hazard 6): rebuild counters pair with
-//! paint-output checks, never with the root's per-frame render count.
+//! Matrix page scroll tests. The page renders uncached (the scroll offset is
+//! no longer a cache key: a scroll-coupled cache rebuilt every cell per wheel
+//! step and let the frozen headers overshoot the clamp edge while the grid
+//! never followed), so these pin the header/body scroll contract instead:
+//! headers sit exactly on the offset the body applies — mid-range and at the
+//! clamp edges — and density changes still land on a plain shell
+//! notification.
+
+use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{Entity, TestAppContext, VisualTestContext, px, size};
+use gpui_kit::{
+    Entity, ScrollDelta, SharedString, TestAppContext, VisualTestContext, point, px, size,
+};
 
 use super::{Page, StudioShell};
+use crate::service::{AppRequest, GraphEdit};
 use crate::ui::widgets::actions::Density;
-use crate::ui::window::test_harness::{finish_service, settle_panels, test_shell};
+use crate::ui::window::test_harness::{finish_service, settle_panels, test_shell, wait_until};
 
-/// One cached-path frame: notified views re-render, unnotified cached
-/// subtrees replay their paint. `render_frame` refreshes the whole window and
-/// would rebuild every panel regardless of the caches.
-fn cached_frame(cx: &mut VisualTestContext) {
+/// One frame: notified views re-render and the scroll containers re-clamp.
+fn frame(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
 }
 
-fn matrix_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
-    view.read_with(cx, |shell, cx| shell.matrix_panel.read(cx).rebuild_count())
+/// Drives the state's mailbox until the dispatched request publishes, like
+/// the mixer suite's helper: the dispatch rides the mailbox and only a poll
+/// consumes it.
+fn poll(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
+    wait_until(Duration::from_secs(2), || {
+        let pending = view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).pending_request
+        });
+        cx.update(|window, cx| window.render_frame(cx));
+        !pending
+    });
 }
 
 fn route_cell_height(cx: &mut VisualTestContext) -> f32 {
     cx.update(|window, _| f32::from(window.find("route-0-0").bounds().size.height))
+}
+
+/// Header/body alignment: the frozen header strips must sit on the same
+/// offset the grid body applies, header column 0 on body column 0 and header
+/// row 0 on body row 0. Compared with sub-pixel tolerance: the body's offset
+/// is pixel-snapped at prepaint, the headers' is not.
+fn assert_headers_align_with_body(cx: &mut VisualTestContext) {
+    let ((strip_x, cell_x), (strip_y, cell_y)) = cx.update(|window, _| {
+        let column = window.find("matrix-column-header-strip").bounds();
+        let row = window.find("matrix-row-header-strip").bounds();
+        let cell = window.find("route-0-0").bounds();
+        (
+            (column.origin.x, cell.origin.x),
+            (row.origin.y, cell.origin.y),
+        )
+    });
+    assert!(
+        (strip_x - cell_x).abs() < px(1.),
+        "column header must track the body x offset ({strip_x} vs {cell_x})"
+    );
+    assert!(
+        (strip_y - cell_y).abs() < px(1.),
+        "row header must track the body y offset ({strip_y} vs {cell_y})"
+    );
 }
 
 /// Opens the Matrix page on a settled shell. Density is loaded from the
@@ -39,86 +81,127 @@ fn open_matrix_page(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
     });
     cx.update(|window, cx| window.render_frame(cx));
     // The inspector's closing spring notifies its way through the first
-    // second; let it finish or every frame rebuilds every panel.
+    // second; let it finish before measuring anything.
     settle_panels(cx);
 }
 
-/// The panel with no nested models (HC-3): its cache must ride on the key
-/// alone, so the shell notifies that a poll/publish emits — none of whose
-/// inputs moved — leave the panel untouched, while a real key input moving
-/// rebuilds exactly once.
+/// Fills the grid until it overflows both axes: sixteen 2-channel gains on
+/// top of the default session, each waited through the service's publish.
+fn grow_grid(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
+    for _ in 0..16 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                    kind: moiren_core::graph::NodeKind::Gain,
+                    channels: 2,
+                }));
+            });
+            cx.notify();
+        });
+        poll(view, cx);
+    }
+    wait_until(Duration::from_secs(3), || {
+        view.read_with(cx, |shell, cx| {
+            shell.state.read(cx).snapshot.graph.graph.nodes().len() == 20
+        })
+    });
+    frame(cx);
+}
+
+/// The header/body scroll contract, mid-range and at the clamp edge. The old
+/// page broke the clamp half of this: the headers read an unclamped offset at
+/// render while the body clamps at prepaint, so an overscroll showed the
+/// header overshoot then snap back while the grid never followed.
 #[gpui_kit::test]
-fn matrix_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut TestAppContext) {
+fn matrix_headers_track_the_grid_scroll_through_the_clamp(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     open_matrix_page(&view, cx);
-    let before = matrix_rebuilds(&view, cx);
-    let grid = cx.update(|window, _| window.find("matrix-grid").bounds());
-    for _ in 0..2 {
-        view.update(cx, |_, cx| cx.notify());
-        cached_frame(cx);
-    }
-    assert_eq!(
-        matrix_rebuilds(&view, cx),
-        before,
-        "a shell notification whose key inputs all hold must not reach the panel"
-    );
-    assert_eq!(
-        cx.update(|window, _| window.find("matrix-grid").bounds()),
-        grid,
-        "the cached paint must not move"
-    );
+    grow_grid(&view, cx);
 
-    // Moving a key input rebuilds exactly once; the following key-neutral
-    // notification replays the cached paint again.
-    let route = view.update(cx, |shell, cx| {
+    // Mid-range: exact pixel scrolls move header and body together. One axis
+    // per event: the scroll handler only applies the dominant axis of a
+    // diagonal delta.
+    cx.update(|window, cx| {
+        window.scroll(
+            "matrix-grid",
+            ScrollDelta::Pixels(point(px(-200.), px(0.))),
+            cx,
+        );
+        window.scroll(
+            "matrix-grid",
+            ScrollDelta::Pixels(point(px(0.), px(-150.))),
+            cx,
+        );
+    });
+    frame(cx);
+    assert_headers_align_with_body(cx);
+
+    // Overscroll far past both edges: the body clamps at its prepaint, and
+    // the headers must land on that same clamp — the last cell's edges meet
+    // the grid viewport's edges.
+    cx.update(|window, cx| {
+        window.scroll(
+            "matrix-grid",
+            ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+            cx,
+        );
+        window.scroll(
+            "matrix-grid",
+            ScrollDelta::Pixels(point(px(-100_000.), px(0.))),
+            cx,
+        );
+    });
+    frame(cx);
+    assert_headers_align_with_body(cx);
+
+    let (outputs, inputs) = view.read_with(cx, |shell, cx| {
         let graph = &shell.state.read(cx).snapshot.graph.graph;
-        let from = graph
+        let inputs = graph
             .nodes()
             .iter()
-            .find(|node| !node.outputs().is_empty())
-            .unwrap();
-        let source = from.outputs()[0].id();
-        let destination = graph
+            .map(|node| node.inputs().len())
+            .sum::<usize>();
+        let outputs = graph
             .nodes()
             .iter()
-            .find(|node| !node.inputs().is_empty() && node.id() != from.id())
-            .unwrap()
-            .inputs()[0]
-            .id();
-        (source, destination)
+            .map(|node| node.outputs().len())
+            .sum::<usize>();
+        (outputs, inputs)
     });
-    view.update(cx, |shell, cx| {
-        shell.selected_route = Some(route);
-        cx.notify();
+    cx.update(|window, _| {
+        let grid = window.find("matrix-grid").bounds();
+        let last = window
+            .find(SharedString::from(format!(
+                "route-{}-{}",
+                outputs - 1,
+                inputs - 1
+            )))
+            .bounds();
+        assert_eq!(
+            last.bottom(),
+            grid.bottom(),
+            "the clamped body must end at the viewport's bottom edge"
+        );
+        assert_eq!(
+            last.right(),
+            grid.right(),
+            "the clamped body must end at the viewport's right edge"
+        );
     });
-    cached_frame(cx);
-    assert_eq!(
-        matrix_rebuilds(&view, cx),
-        before + 1,
-        "a key change must rebuild exactly once"
-    );
-    view.update(cx, |_, cx| cx.notify());
-    cached_frame(cx);
-    assert_eq!(
-        matrix_rebuilds(&view, cx),
-        before + 1,
-        "the replayed paint must not rebuild the panel"
-    );
     finish_service(runtime);
 }
 
 /// The settings transaction applies a new density with a plain shell
 /// notification (settings/transaction.rs); an idle session has no publishes
 /// to paper over a key that missed the input, so the row height must follow
-/// on that notification alone and hold across density-neutral ones.
+/// on that notification alone and hold across density-neutral frames.
 #[gpui_kit::test]
-fn matrix_panel_rebuilds_rows_when_the_session_density_changes(cx: &mut TestAppContext) {
+fn matrix_rows_follow_density_on_a_plain_notification(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     open_matrix_page(&view, cx);
     let comfortable = route_cell_height(cx);
-    let before = matrix_rebuilds(&view, cx);
     // Mirrors the settings transaction: preferences.density and the theme
     // density move together.
     view.update(cx, |shell, cx| {
@@ -126,24 +209,17 @@ fn matrix_panel_rebuilds_rows_when_the_session_density_changes(cx: &mut TestAppC
         shell.density = Density::Compact;
         cx.notify();
     });
-    cached_frame(cx);
+    frame(cx);
     let compact = route_cell_height(cx);
     assert!(
         compact < comfortable,
         "compact rows must repaint shorter ({compact} vs {comfortable})"
     );
-    assert_eq!(
-        matrix_rebuilds(&view, cx),
-        before + 1,
-        "the density change must rebuild the panel exactly once"
-    );
-    view.update(cx, |_, cx| cx.notify());
-    cached_frame(cx);
-    assert_eq!(matrix_rebuilds(&view, cx), before + 1);
+    frame(cx);
     assert_eq!(
         route_cell_height(cx),
         compact,
-        "a density-neutral notification must keep the compact rows"
+        "a density-neutral frame must keep the compact rows"
     );
     finish_service(runtime);
 }

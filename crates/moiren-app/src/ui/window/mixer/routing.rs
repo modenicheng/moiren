@@ -2,6 +2,8 @@
 use super::*;
 use crate::service::GraphEdit;
 use crate::ui::widgets::fader::hslider;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use gpui_kit::base::ScrollbarAxis;
 
 fn section(
     id: String,
@@ -83,14 +85,18 @@ pub(super) fn inputs(
         cx,
     );
     if !shell.mixer.inputs_collapsed {
+        let scrolls = &shell.mixer.row_scrolls[&entry.id];
+        let this = cx.entity();
         let mut rows = div()
             .id(SharedString::from(format!("input-rows-{:?}", entry.id)))
             .flex()
             .flex_col()
-            .flex_1()
-            .min_h_0()
+            .w_full()
+            .h_full()
             .px(px(8.))
-            .overflow_y_scroll();
+            .track_scroll(&scrolls.input)
+            .overflow_y_scroll()
+            .on_scroll_wheel(move |_, _, cx| this.update(cx, |_, cx| cx.notify()));
         let mut count = 0;
         for edge in graph
             .graph
@@ -172,7 +178,16 @@ pub(super) fn inputs(
                 label(resource.unwrap_or_else(|| t!("No inputs").into_owned())).text_size(px(10.)),
             );
         }
-        view = view.child(rows);
+        // The bar overlay is a sibling of the scroll container, never a
+        // child: the container translates its children by the offset at
+        // prepaint, so an overlay inside it would drift away with the rows.
+        view = view.child(div().relative().flex_1().min_h_0().child(rows).child(
+            overlay_scrollbar(
+                &scrolls.input,
+                SharedString::from(format!("scrollbar-input-rows-{:?}", entry.id)),
+                ScrollbarAxis::Vertical,
+            ),
+        ));
     }
     view.gpui_test_observe()
 }
@@ -214,15 +229,19 @@ pub(super) fn sends(
         cx,
     );
     if !shell.mixer.sends_collapsed {
+        let scrolls = &shell.mixer.row_scrolls[&id];
+        let this = cx.entity();
         let mut rows = div()
             .id(SharedString::from(format!("send-rows-{id:?}")))
             .flex()
             .flex_col()
             .gap(px(4.))
-            .flex_1()
-            .min_h_0()
+            .w_full()
+            .h_full()
             .px(px(8.))
-            .overflow_y_scroll();
+            .track_scroll(&scrolls.send)
+            .overflow_y_scroll()
+            .on_scroll_wheel(move |_, _, cx| this.update(cx, |_, cx| cx.notify()));
         let mut count = 0;
         for edge in graph.graph.edges().iter().filter(|edge| edge.src() == id) {
             count += 1;
@@ -345,7 +364,16 @@ pub(super) fn sends(
         if count == 0 {
             rows = rows.child(label(t!("No sends")).text_size(px(10.)));
         }
-        view = view.child(rows);
+        // The bar overlay is a sibling of the scroll container, never a
+        // child: the container translates its children by the offset at
+        // prepaint, so an overlay inside it would drift away with the rows.
+        view = view.child(div().relative().flex_1().min_h_0().child(rows).child(
+            overlay_scrollbar(
+                &scrolls.send,
+                SharedString::from(format!("scrollbar-send-rows-{:?}", id)),
+                ScrollbarAxis::Vertical,
+            ),
+        ));
     }
     view.gpui_test_observe()
 }

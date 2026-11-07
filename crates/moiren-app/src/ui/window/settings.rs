@@ -3,8 +3,10 @@ use rust_i18n::t;
 use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
 use crate::service::AudioLatencyProfile;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
+use gpui_kit::base::ScrollbarAxis;
 use moiren_engine::audio_config::{
     AudioBackend, AudioSettings, ProcessingPrecision, SAMPLE_RATES, StreamSettings,
 };
@@ -37,6 +39,9 @@ pub(in crate::ui::window) struct SettingsKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     section: Section,
     global: Draft,
+    /// The page body scrolls inside the cached splice, whose paint bakes
+    /// coordinates: the offset rides the key or a scroll freezes.
+    scroll: Pixels,
     meters: crate::project::MeterDisplayPreferences,
     density: Density,
     restore_last_project: bool,
@@ -62,6 +67,7 @@ impl CachedPanel for SettingsPanel {
             restore_last_project: shell.preferences.restore_last_project,
             pending_request: state.pending_request,
             project_message: shell.project_message.clone(),
+            scroll: shell.settings_scroll.offset().y,
         }
     }
 
@@ -232,34 +238,57 @@ pub(super) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .flex()
                         .flex_col()
                         .child(
+                            // The bar overlay is a sibling of the scroll
+                            // container, never a child: the container
+                            // translates its children by the offset at
+                            // prepaint, so an overlay inside it would drift
+                            // away with the content.
                             div()
-                                .id("settings-scroll")
+                                .relative()
                                 .flex_1()
+                                .min_w_0()
                                 .min_h_0()
-                                .overflow_y_scroll()
-                                .px(px(16.))
-                                .py(px(24.))
-                                // A fixed reading measure, centered: on wide
-                                // windows the section content holds together
-                                // as one block instead of rows drifting
-                                // apart across the workspace.
                                 .child(
-                                    div().flex().justify_center().child(
-                                        div()
-                                            .w(px(COLUMN_WIDTH))
-                                            .max_w_full()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(16.))
-                                            .child(content),
-                                    ),
+                                    div()
+                                        .id("settings-scroll")
+                                        .flex_1()
+                                        .min_h_0()
+                                        .track_scroll(&shell.settings_scroll)
+                                        .overflow_y_scroll()
+                                        .on_scroll_wheel({
+                                            let this = this.clone();
+                                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+                                        })
+                                        .px(px(16.))
+                                        .py(px(24.))
+                                        // A fixed reading measure, centered: on wide
+                                        // windows the section content holds together
+                                        // as one block instead of rows drifting
+                                        // apart across the workspace.
+                                        .child(
+                                            div().flex().justify_center().child(
+                                                div()
+                                                    .w(px(COLUMN_WIDTH))
+                                                    .max_w_full()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(16.))
+                                                    .child(content),
+                                            ),
+                                        )
+                                        .gpui_test_observe(),
                                 )
-                                .gpui_test_observe(),
+                                .child(overlay_scrollbar(
+                                    &shell.settings_scroll,
+                                    "scrollbar-settings-scroll",
+                                    ScrollbarAxis::Vertical,
+                                )),
                         )
                         .when(shell.settings.section == Section::Audio, |column| {
                             column.child(footer(shell, Editor::Global, cx))
                         }),
-                ),
+                )
+                .into_any_element(),
         )
         .into_any_element()
 }
