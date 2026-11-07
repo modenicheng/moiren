@@ -113,7 +113,7 @@ fn assert_export_rows(
     window: &mut Window,
     cx: &mut App,
     id: &SharedString,
-    names: &[&str; 6],
+    names: &[&str; 7],
     lifecycle: &[&str],
 ) {
     window.scroll(
@@ -150,8 +150,8 @@ fn accept_rename_snapshots(
     cx: &mut TestAppContext,
     status: ExportStatus,
     id: &'static str,
-    held_names: [&str; 6],
-    recreated_names: [&str; 6],
+    held_names: [&str; 7],
+    recreated_names: [&str; 7],
 ) {
     // The core-driver service supplies the shell handle only. These replacements
     // deliberately do not dispatch rename requests or exercise a native adapter.
@@ -204,6 +204,7 @@ fn accept_rename_snapshots(
             held_names[2],
             "Provider-created name: Unknown / not present",
             "Windows endpoint name: Unknown / not observed",
+            "Windows endpoint state: Unknown / not observed",
             "Windows name match: Pending native recreation",
         ];
         assert_export_rows(window, cx, &id, &refused_names, &REFUSED_ROWS);
@@ -247,6 +248,7 @@ fn playback_rendered_rename_refusal_and_fresh_replacement(cx: &mut TestAppContex
             "Requested endpoint name: Renamed playback",
             "Provider-created name: Held playback",
             "Windows endpoint name: Unknown / not observed",
+            "Windows endpoint state: Unknown / not observed",
             "Windows name match: Pending native recreation",
         ],
         [
@@ -255,6 +257,7 @@ fn playback_rendered_rename_refusal_and_fresh_replacement(cx: &mut TestAppContex
             "Requested endpoint name: Renamed playback",
             "Provider-created name: Renamed playback",
             "Windows endpoint name: Unknown / not observed",
+            "Windows endpoint state: Unknown / not observed",
             "Windows name match: Unknown / not observed",
         ],
     );
@@ -278,6 +281,7 @@ fn microphone_rendered_rename_refusal_and_fresh_replacement(cx: &mut TestAppCont
             "Requested endpoint name: \u{9ea6}\u{514b}\u{98ce} Renamed",
             "Provider-created name: Held microphone",
             "Windows endpoint name: Unknown / not observed",
+            "Windows endpoint state: Unknown / not observed",
             "Windows name match: Pending native recreation",
         ],
         [
@@ -286,6 +290,7 @@ fn microphone_rendered_rename_refusal_and_fresh_replacement(cx: &mut TestAppCont
             "Requested endpoint name: \u{9ea6}\u{514b}\u{98ce} Renamed",
             "Provider-created name: \u{9ea6}\u{514b}\u{98ce} Renamed",
             "Windows endpoint name: Unknown / not observed",
+            "Windows endpoint state: Unknown / not observed",
             "Windows name match: Unknown / not observed",
         ],
     );

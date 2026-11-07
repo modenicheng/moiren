@@ -163,6 +163,8 @@ fn owned_vad_rows_bind_in_opposite_app_directions_without_starting_audio(
             status.windows_name = Some(WindowsEndpointNameObservation {
                 native_identity: [1, 2, 3],
                 observed_qpc_100ns: None,
+                device_state: None,
+                device_state_error: None,
                 mmdevice_id: Some(status.intent.name.clone()),
                 name: Some(status.intent.name.clone()),
                 error: None,

@@ -12,7 +12,9 @@ use std::borrow::Cow;
 
 mod export_diagnostics;
 mod process_trace;
-pub use export_diagnostics::{export_diagnostic_rows, windows_name_match_text};
+pub use export_diagnostics::{
+    export_diagnostic_rows, windows_endpoint_state_text, windows_name_match_text,
+};
 pub use process_trace::process_trace_rows;
 #[cfg(windows)]
 mod native_live;

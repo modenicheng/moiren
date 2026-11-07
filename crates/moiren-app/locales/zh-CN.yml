@@ -1585,6 +1585,27 @@ _version: 2
 "Windows name match":
   en: Windows name match
   zh-CN: Windows 名称匹配状态
+"Windows endpoint state":
+  en: Windows endpoint state
+  zh-CN: Windows 端点状态
+"Windows endpoint state readback error":
+  en: Windows endpoint state readback error
+  zh-CN: Windows 端点状态读取错误
+"Active (not a flow signal)":
+  en: Active (not a flow signal)
+  zh-CN: 活动（不代表音频正在流动）
+"Disabled in Windows":
+  en: Disabled in Windows
+  zh-CN: 已在 Windows 中禁用
+"Not present in Windows":
+  en: Not present in Windows
+  zh-CN: Windows 中不存在
+"Unplugged in Windows":
+  en: Unplugged in Windows
+  zh-CN: 已从 Windows 拔出
+"Unknown Windows endpoint state 0x%{state}":
+  en: Unknown Windows endpoint state 0x%{state}
+  zh-CN: 未知 Windows 端点状态 0x%{state}
 "Windows name readback error":
   en: Windows name readback error
   zh-CN: Windows 名称读取错误

@@ -37,11 +37,21 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
         ),
         (t!("Windows endpoint name").into(), windows_name_text),
         (
+            t!("Windows endpoint state").into(),
+            windows_endpoint_state_text(status),
+        ),
+        (
             t!("Windows name match").into(),
             windows_name_match_text(status),
         ),
     ];
     if let Some(observation) = windows_name {
+        if let Some(error) = &observation.device_state_error {
+            rows.push((
+                t!("Windows endpoint state readback error").into(),
+                error.clone(),
+            ));
+        }
         if let Some(error) = &observation.error {
             rows.push((t!("Windows name readback error").into(), error.clone()));
         }
@@ -271,6 +281,32 @@ pub fn windows_name_match_text(status: &ExportStatus) -> String {
     }
     if status.rename_pending {
         t!("Pending native recreation").into()
+    } else {
+        t!("Unknown / not observed").into()
+    }
+}
+
+/// The raw Windows state is independent of provider presence, gate and Engine
+/// revision. Even ACTIVE only permits opening a stream; it does not prove flow.
+pub fn windows_endpoint_state_text(status: &ExportStatus) -> String {
+    let Some(observation) = displayed_windows_name(status) else {
+        return t!("Unknown / not observed").into();
+    };
+    if let Some(state) = observation.device_state {
+        return match state {
+            1 => t!("Active (not a flow signal)").into(),
+            2 => t!("Disabled in Windows").into(),
+            4 => t!("Not present in Windows").into(),
+            8 => t!("Unplugged in Windows").into(),
+            _ => t!(
+                "Unknown Windows endpoint state 0x%{state}",
+                state = format!("{state:08X}")
+            )
+            .into(),
+        };
+    }
+    if observation.device_state_error.is_some() {
+        t!("Read failed").into()
     } else {
         t!("Unknown / not observed").into()
     }

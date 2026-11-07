@@ -409,6 +409,81 @@ mod headless {
     }
 
     #[gpui_kit::test]
+    fn export_row_shows_disabled_windows_state_without_sending_audio_requests(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::service::{
+            ExportIntent, ExportObservation, ExportResourceState, GraphEdit, ServiceContext,
+            ServiceMailbox, WindowsEndpointNameObservation,
+        };
+        let mut context = ServiceContext::default();
+        let endpoint_id = super::id(14);
+        let intent = ExportIntent {
+            endpoint_id,
+            direction: ExportDirection::Playback,
+            name: "Requested playback".into(),
+            channels: 2,
+            enabled: true,
+            binding: None,
+        };
+        context
+            .graph
+            .edit(GraphEdit::SetExports(vec![intent.clone()]))
+            .unwrap();
+        context.exports.set_available(true);
+        context
+            .exports
+            .observe(ExportObservation {
+                intent,
+                generation: 1,
+                resource: ExportResourceState::Present,
+                allow_default: false,
+                gate_open: false,
+                active_revision: None,
+            })
+            .unwrap();
+        let mut snapshot = crate::service::snapshot(&context);
+        snapshot.exports[0].windows_name = Some(WindowsEndpointNameObservation {
+            native_identity: [1, 2, 3],
+            observed_qpc_100ns: Some(42),
+            device_state: Some(2),
+            device_state_error: None,
+            mmdevice_id: Some("{disabled-exact-device}".into()),
+            name: Some("Raw Windows name".into()),
+            error: None,
+        });
+        let (handle, mailbox) = ServiceMailbox::with_snapshot(std::thread::current(), snapshot);
+        let initial = handle.try_snapshot().unwrap();
+        let state = cx.new(|_| UiState::new(handle, initial));
+        let (view, cx) = super::super::super::super::test_harness::shell_with_state(cx, state);
+        while mailbox.try_request().is_some() {}
+        view.update(cx, |shell, cx| {
+            shell.presentation.page = pages::Page::Devices;
+            shell.device_tab = devices::DeviceTab::Exports;
+            shell.inspector_open = false;
+            shell.sidebar_open = false;
+            cx.notify();
+        });
+        let key = SharedString::from(format!("export-windows-state-{endpoint_id}"));
+        for viewport in [size(px(1440.), px(1600.)), size(px(1024.), px(720.))] {
+            cx.update(|window, cx| {
+                window.resize(viewport);
+                window.render_frame(cx);
+            });
+            scroll_to_control(cx, key.clone());
+            cx.update(|window, _| {
+                let row = window.find(key.clone());
+                assert!(row.visible());
+                assert_eq!(
+                    row.label(),
+                    Some("Windows endpoint state: Disabled in Windows")
+                );
+            });
+        }
+        assert!(mailbox.try_request().is_none());
+    }
+
+    #[gpui_kit::test]
     fn rename_controls_explain_native_recreation_without_claiming_windows_success(
         cx: &mut gpui_kit::TestAppContext,
     ) {

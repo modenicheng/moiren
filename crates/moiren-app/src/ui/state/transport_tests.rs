@@ -263,6 +263,8 @@ fn device_rows_project_vad_in_app_direction_without_reversing_physical_devices()
         windows_name: Some(WindowsEndpointNameObservation {
             native_identity: [1, 2, 3],
             observed_qpc_100ns: None,
+            device_state: None,
+            device_state_error: None,
             mmdevice_id: Some(mmdevice.into()),
             name: Some("Observed".into()),
             error: None,

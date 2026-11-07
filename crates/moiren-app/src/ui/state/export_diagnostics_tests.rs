@@ -90,6 +90,65 @@ fn provider_created_name_is_not_presented_as_windows_name_evidence() {
 }
 
 #[test]
+fn windows_endpoint_state_is_explicitly_unknown_without_readback() {
+    let mut status = export();
+    status.resource = ExportResourceState::Present;
+    status.gate_open = true;
+    status.rename_pending = false;
+    let rows = export_diagnostic_rows(&status);
+    assert_eq!(
+        value(&rows, "Windows endpoint state"),
+        "Unknown / not observed",
+        "provider presence and an open gate must not imply an ACTIVE MMDevice"
+    );
+}
+
+#[test]
+fn windows_endpoint_state_never_implies_flow_or_overrides_the_exact_name() {
+    let mut status = export();
+    status.rename_pending = false;
+    status.windows_name = Some(crate::service::WindowsEndpointNameObservation {
+        native_identity: [1, 2, 3],
+        observed_qpc_100ns: Some(1234),
+        device_state: None,
+        device_state_error: None,
+        mmdevice_id: Some("{exact-device}".into()),
+        name: Some("Raw mismatched name".into()),
+        error: None,
+    });
+    for (raw, expected) in [
+        (1, "Active (not a flow signal)"),
+        (2, "Disabled in Windows"),
+        (4, "Not present in Windows"),
+        (8, "Unplugged in Windows"),
+        (0, "Unknown Windows endpoint state 0x00000000"),
+        (3, "Unknown Windows endpoint state 0x00000003"),
+        (0x80000000, "Unknown Windows endpoint state 0x80000000"),
+    ] {
+        status.windows_name.as_mut().unwrap().device_state = Some(raw);
+        let rows = export_diagnostic_rows(&status);
+        assert_eq!(value(&rows, "Windows endpoint state"), expected);
+        assert_eq!(value(&rows, "Windows endpoint name"), "Raw mismatched name");
+        assert_eq!(
+            value(&rows, "Windows name match"),
+            "Does not match requested name"
+        );
+        assert_eq!(status.active_revision, None);
+        assert!(!status.gate_open);
+    }
+    let observation = status.windows_name.as_mut().unwrap();
+    observation.device_state = None;
+    observation.device_state_error = Some("IMMDevice::GetState(exact endpoint): 0x80070005".into());
+    let rows = export_diagnostic_rows(&status);
+    assert_eq!(value(&rows, "Windows endpoint state"), "Read failed");
+    assert_eq!(
+        value(&rows, "Windows endpoint state readback error"),
+        "IMMDevice::GetState(exact endpoint): 0x80070005"
+    );
+    assert_eq!(value(&rows, "Windows endpoint name"), "Raw mismatched name");
+}
+
+#[test]
 fn windows_name_mismatch_and_read_error_are_visible() {
     let mut status = export();
     status.actual_name = Some(status.intent.name.clone());
@@ -97,6 +156,8 @@ fn windows_name_mismatch_and_read_error_are_visible() {
     status.windows_name = Some(crate::service::WindowsEndpointNameObservation {
         native_identity: [1, 2, 3],
         observed_qpc_100ns: Some(1234),
+        device_state: None,
+        device_state_error: None,
         mmdevice_id: Some("{observed-device}".into()),
         name: Some("Stale Windows name".into()),
         error: None,
@@ -127,6 +188,8 @@ fn windows_name_mismatch_and_read_error_are_visible() {
     status.windows_name = Some(crate::service::WindowsEndpointNameObservation {
         native_identity: [1, 2, 3],
         observed_qpc_100ns: Some(5678),
+        device_state: None,
+        device_state_error: None,
         mmdevice_id: Some("{failed-device}".into()),
         name: None,
         error: Some("GetValue FriendlyName: 0x80070005".into()),
@@ -723,6 +786,15 @@ fn provider_diagnostics_translate_scope_units_counters_and_unknown_states() {
         ("Provider-created name", "提供方创建名称"),
         ("Windows endpoint name", "Windows 端点名称"),
         ("Windows name match", "Windows 名称匹配状态"),
+        ("Windows endpoint state", "Windows 端点状态"),
+        (
+            "Windows endpoint state readback error",
+            "Windows 端点状态读取错误",
+        ),
+        ("Active (not a flow signal)", "活动（不代表音频正在流动）"),
+        ("Disabled in Windows", "已在 Windows 中禁用"),
+        ("Not present in Windows", "Windows 中不存在"),
+        ("Unplugged in Windows", "已从 Windows 拔出"),
         ("Unknown / not observed", "未知 / 尚未观测"),
         ("Pending native recreation", "等待原生端点重建"),
         ("Matches requested name", "与请求名称一致"),

@@ -130,6 +130,27 @@ deferred; missing physical capture equipment does not block independent work.
 
 ### Later direct remote deployment - 2026-11-07
 
+The [policy/state receipt](validation/2026-11-07-endpoint-state-and-policy.md)
+compares18 exact persisted registrations from the fixed and earlier seeded
+fixtures. Both Playback policies already contain0x101 enablement and the
+same OUTPUT_UNDEFINED association. The snapshot rules out currently missing
+staging, without proving policy consumption, disablement origin or migration.
+Exact phantom-allowed PDO reads distinguish the fixed Models description
+from requested bus text and report no FriendlyName value; no raw MMDevice
+name fix or live publication timing follows. All61 terminal files are archived
+and length/hash verified, including helper failures/corrections. The target
+is used directly, without VM startup, desktop input/unlock or native audio Start.
+
+Product observations now retain raw Windows endpoint state and independent
+state-read errors in the service, probe, Exports and diagnostics, separately
+from provider presence and Engine readiness. No ACTIVE inference, enablement
+or acceptance-gate change is introduced. The pinned17-file slice passes2636
+Windows workspace/headless tests with10 ignored and155 integration example
+tests; Linux example133, observer17, app618 with2 ignored and acceptance7 pass.
+Windows/Linux strict workspace Clippy and formatting pass. A native observation
+of the new source is still required; these software checks close no S1/S4/S5
+acceptance. The earlier612 receipts cannot retroactively qualify this slice.
+
 The later PCM extension in8318308 passes154 Windows/132 Linux example tests
 and strict Clippy without changing ACTIVE admission or PCM gates. At19:43 its
 failure collector completes both flows and finds the exact fixed-fixture

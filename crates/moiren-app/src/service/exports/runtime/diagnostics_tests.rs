@@ -170,6 +170,8 @@ fn windows_name(identity: [u64; 3], name: Option<&str>) -> WindowsEndpointNameOb
     WindowsEndpointNameObservation {
         native_identity: identity,
         observed_qpc_100ns: Some(1234),
+        device_state: None,
+        device_state_error: None,
         mmdevice_id: Some("{exact-mmdevice}".into()),
         name: name.map(str::to_owned),
         error: name.is_none().then(|| "FriendlyName read failed".into()),
@@ -223,6 +225,32 @@ fn windows_name_evidence_is_exact_identity_scoped_and_not_provider_name_fallback
     let status = service.statuses(&graph).remove(0);
     assert_eq!(status.windows_name, Some(current_name));
     assert!(!status.rename_pending);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_state_is_detached_and_uses_the_same_native_identity_filter() {
+    let (graph, intent) = runtime_graph();
+    let mut runtime = Runtime::default();
+    let mut service = ExportService::default();
+    service.set_available(true);
+    let mut native = NativeObservation::from(provider_view(&intent));
+    let mut observed = with_windows_name(&mut native, Some("Disabled exact endpoint"));
+    observed.device_state = Some(2);
+    native.windows_name = Some(observed.clone());
+    complete_native(&mut runtime, &mut service, native);
+    let status = service.statuses(&graph).remove(0);
+    assert_eq!(status.windows_name, Some(observed));
+    assert!(!status.gate_open);
+    assert_eq!(status.active_revision, None);
+
+    let mut stale = NativeObservation::from(provider_view(&intent));
+    stale.snapshot = Some([2, 7, 2, 0, 5]);
+    let mut old = windows_name([1, 7, 1], Some("Old disabled endpoint"));
+    old.device_state = Some(2);
+    stale.windows_name = Some(old);
+    complete_native(&mut runtime, &mut service, stale);
+    assert_eq!(service.statuses(&graph)[0].windows_name, None);
 }
 
 #[test]

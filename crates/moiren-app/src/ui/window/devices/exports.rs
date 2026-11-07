@@ -394,6 +394,19 @@ fn export_row(
                 .and_then(|observation| observation.name.clone())
                 .unwrap_or_else(|| t!("Unknown / not observed").into()),
         ))
+        .child(
+            detail(
+                &t!("Windows endpoint state"),
+                crate::ui::presentation::windows_endpoint_state_text(status),
+            )
+            .id(SharedString::from(format!("export-windows-state-{id}")))
+            .aria_label(format!(
+                "{}: {}",
+                t!("Windows endpoint state"),
+                crate::ui::presentation::windows_endpoint_state_text(status)
+            ))
+            .gpui_test_observe(),
+        )
         .child(detail(
             &t!("Windows name match"),
             crate::ui::presentation::windows_name_match_text(status),

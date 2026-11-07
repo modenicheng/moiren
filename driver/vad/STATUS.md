@@ -18,6 +18,35 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Remote-priority revalidation - 2026-11-07
 
+### Exact interface policy and product Windows-state visibility
+
+The [policy/state receipt](../../docs/validation/2026-11-07-endpoint-state-and-policy.md)
+records read-only observations on the standalone remote target at20:15..20:20.
+All18 exact persisted Audio/flow/Realtime registrations resolve and open.
+Fixed and earlier seeded Playback both stage EnableEndpointByDefault0x101
+and OUTPUT_UNDEFINED; all directions retain NeverSetAsDefaultEndpoint0x307.
+The staged interface/EP0 names match their recorded requested names.
+This rules out currently missing staged enablement, not when Windows consumed
+it, disablement origin or persisted-state migration. Four exact phantom-allowed
+PDO reads report no FriendlyName value, a fixed Models DeviceDesc and the
+latest requested BusReportedDeviceDesc. These removed-device observations
+do not prove live publication timing or a fix for the composed MMDevice suffix.
+Helper failures/corrections are retained; all61 terminal files independently
+verify remote/local/archive lengths and hashes. No enablement, identity
+rotation, native client, install/restart, default/volume or security write occurs.
+
+The product now carries the selected MMDevice's raw GetState flags and an
+independent state-read error through provider/service/probe to Exports and
+diagnostics. UNKNOWN, DISABLED, NOTPRESENT, UNPLUGGED and unexpected raw bits
+remain explicit; ACTIVE is labelled as not proof of flow. Successful raw name
+readback survives a separate state-read failure. Cache, exact identity,
+Windows-name acceptance, lifecycle and client-admission rules are unchanged.
+The pinned17-file source passes2636 Windows workspace/headless tests with
+10 ignored,155 Windows example tests,133 Linux example tests,17 Linux observer
+tests,618 Linux app tests with2 ignored,7 Linux headless acceptance tests and
+strict Windows/Linux workspace Clippy. Native testing of this new source
+is still pending; earlier612 results do not qualify it. Full S0-S5 remains open.
+
 ### Later PCM failure snapshot: exact Playback is disabled
 
 The [enumeration receipt](../../docs/validation/2026-11-07-rename-enumeration-evidence.md)

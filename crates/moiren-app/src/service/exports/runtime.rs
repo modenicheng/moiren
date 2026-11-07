@@ -621,6 +621,8 @@ impl Adapter for WindowsAdapter {
                     .map(|observation| WindowsEndpointNameObservation {
                         native_identity: observation.native_identity,
                         observed_qpc_100ns: observation.observed_qpc_100ns,
+                        device_state: observation.device_state,
+                        device_state_error: observation.device_state_error.clone(),
                         mmdevice_id: observation.mmdevice_id.clone(),
                         name: observation.name.clone(),
                         error: observation.error.clone(),

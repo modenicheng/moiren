@@ -81,6 +81,9 @@ pub struct ExportStatus {
 pub struct WindowsEndpointNameObservation {
     pub native_identity: [u64; 3],
     pub observed_qpc_100ns: Option<u64>,
+    /// Detached IMMDevice GetState evidence; never grants audio admission.
+    pub device_state: Option<u32>,
+    pub device_state_error: Option<String>,
     pub mmdevice_id: Option<String>,
     pub name: Option<String>,
     pub error: Option<String>,

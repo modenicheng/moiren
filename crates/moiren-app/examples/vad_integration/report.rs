@@ -175,6 +175,8 @@ pub(super) struct ExportEvidence {
 pub(super) struct WindowsNameObservation {
     pub native_identity: [u64; 3],
     pub observed_qpc_100ns: Option<u64>,
+    pub device_state: Option<u32>,
+    pub device_state_error: Option<String>,
     pub mmdevice_id: Option<String>,
     pub name: Option<String>,
     pub error: Option<String>,
@@ -199,6 +201,8 @@ impl From<&ExportStatus> for ExportEvidence {
                 .map(|observation| WindowsNameObservation {
                     native_identity: observation.native_identity,
                     observed_qpc_100ns: observation.observed_qpc_100ns,
+                    device_state: observation.device_state,
+                    device_state_error: observation.device_state_error.clone(),
                     mmdevice_id: observation.mmdevice_id.clone(),
                     name: observation.name.clone(),
                     error: observation.error.clone(),
@@ -473,6 +477,8 @@ mod tests {
             windows_name: Some(moiren_app::service::WindowsEndpointNameObservation {
                 native_identity: [31, 42, 31],
                 observed_qpc_100ns: Some(123_456),
+                device_state: None,
+                device_state_error: None,
                 mmdevice_id: Some("{exact-owned-render-id}".into()),
                 name: Some("Actual Windows name".into()),
                 error: None,
@@ -500,6 +506,8 @@ mod tests {
             serde_json::json!({
                 "native_identity": [31, 42, 31],
                 "observed_qpc_100ns": 123456,
+                "device_state": null,
+                "device_state_error": null,
                 "mmdevice_id": "{exact-owned-render-id}",
                 "name": "Actual Windows name",
                 "error": null,
@@ -534,6 +542,8 @@ mod tests {
                 serde_json::json!({
                     "native_identity": name.native_identity,
                     "observed_qpc_100ns": name.observed_qpc_100ns,
+                    "device_state": name.device_state,
+                    "device_state_error": name.device_state_error,
                     "mmdevice_id": name.mmdevice_id,
                     "name": name.name,
                     "error": name.error,
@@ -544,6 +554,29 @@ mod tests {
                 expected.unwrap_or(serde_json::Value::Null),
                 "lost raw observation for {change}"
             );
+        }
+    }
+
+    #[test]
+    fn windows_state_report_is_raw_detached_evidence_not_readiness() {
+        for state in [None, Some(1), Some(2), Some(3), Some(0x80000000)] {
+            let mut status = export_status();
+            let name = status.windows_name.as_mut().unwrap();
+            name.device_state = state;
+            name.device_state_error = state.is_none().then(|| "GetState failed".into());
+            let export = ExportEvidence::from(&status);
+            let json = serde_json::to_value(&export).unwrap();
+            assert_eq!(
+                json["windows_name"]["device_state"],
+                serde_json::json!(state)
+            );
+            assert!(json["windows_name"].get("device_state_error").is_some());
+            assert_eq!(json["windows_name"]["name"], "Actual Windows name");
+            let mut evidence = running();
+            let mut export = export;
+            export.endpoint_id = ids()[0].clone();
+            evidence.exports[0] = export;
+            assert!(evidence.running(&ids(), 2));
         }
     }
 

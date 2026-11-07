@@ -674,6 +674,8 @@ fn windows_identity_projection_requires_current_healthy_native_identity() {
                 windows_name: Some(WindowsEndpointNameObservation {
                     native_identity: identity,
                     observed_qpc_100ns: None,
+                    device_state: None,
+                    device_state_error: None,
                     mmdevice_id: Some("exact-id".into()),
                     name: Some("Exact name".into()),
                     error: None,
@@ -739,6 +741,8 @@ fn windows_identity_projection_requires_current_healthy_native_identity() {
         WindowsEndpointNameObservation {
             native_identity: [1, 7, 1],
             observed_qpc_100ns: None,
+            device_state: None,
+            device_state_error: None,
             mmdevice_id: Some("exact-id".into()),
             name: Some("Exact name".into()),
             error: None,
@@ -759,6 +763,8 @@ fn adapter_for_name_test(intent: &ExportIntent) -> NativeObservation {
         windows_name: Some(WindowsEndpointNameObservation {
             native_identity: [1, 7, 1],
             observed_qpc_100ns: None,
+            device_state: None,
+            device_state_error: None,
             mmdevice_id: Some("exact-id".into()),
             name: Some("Exact name".into()),
             error: None,
