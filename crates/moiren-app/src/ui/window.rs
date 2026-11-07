@@ -105,6 +105,19 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
                 desktop.spawn_poll(cx);
             });
             cx.on_action::<app_view::Quit>(|_, cx| cx.quit());
+            // A terminal Ctrl+C must land on the same graceful path as the
+            // in-app quit: the default handler would kill the process before
+            // the quit observers flush autosave and the service retires.
+            #[cfg(windows)]
+            {
+                crate::console::install_quit_handler();
+                cx.spawn(async move |cx| {
+                    crate::console::quit_requested().await;
+                    log::info!(target: "moiren::app", "console interrupt: quitting gracefully");
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
         });
     Ok(())
 }
