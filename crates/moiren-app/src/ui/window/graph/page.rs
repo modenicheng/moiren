@@ -174,7 +174,13 @@ impl HotSurface for GraphMeters {
         &self.frame
     }
 
-    fn paint(&self, frame: &CanvasFrame, window: &mut Window, cx: &mut App) {
+    fn paint(
+        &self,
+        frame: &CanvasFrame,
+        _layer: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let Some(shell) = self.shell.upgrade() else {
             return;
         };

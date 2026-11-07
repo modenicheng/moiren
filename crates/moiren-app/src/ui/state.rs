@@ -594,7 +594,9 @@ impl UiState {
                 &self.snapshot.audio_settings,
                 self.snapshot.latency_profile,
             )
-            .map_err(|error| t!("Graph is not ready: %{error}", error = error).to_string())?;
+            .map_err(|failure| {
+                t!("Graph is not ready: %{error}", error = failure.cause).to_string()
+            })?;
         Ok(request)
     }
 

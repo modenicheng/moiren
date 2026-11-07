@@ -109,6 +109,9 @@ fn strip(
     }
     let id = entry.id;
     let selected = shell.selected_node == Some(id);
+    // The shared fault projection: the strip wears the danger frame, the
+    // faint red wash and the "!" badge while it holds a fault.
+    let faulted = shell.state.read(cx).snapshot.graph.node_faulted(id);
     let color = node_kind_color(kind);
     let title = div()
         .id(SharedString::from(format!("strip-header-{id:?}")))
@@ -124,15 +127,25 @@ fn strip(
         .cursor_pointer()
         .child(
             div()
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .overflow_hidden()
-                .text_ellipsis()
-                .child(crate::ui::presentation::display_label(
-                    &shell.state.read(cx).snapshot,
-                    entry,
-                    kind,
-                )),
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(crate::ui::presentation::display_label(
+                            &shell.state.read(cx).snapshot,
+                            entry,
+                            kind,
+                        )),
+                )
+                .when(faulted, |row| row.child(strip_fault_badge(id, cx))),
         )
         .child(
             label(format!(
@@ -187,7 +200,26 @@ fn strip(
         .border_t_1()
         .border_b_1()
         .border_r_1()
-        .border_color(theme::BORDER)
+        .border_color(if faulted {
+            theme::DANGER
+        } else {
+            theme::BORDER
+        })
+        .on_hover({
+            let this = cx.entity();
+            move |hovered, _, cx| {
+                this.update(cx, |shell, cx| {
+                    // Hover feeds the meter frame's fault banner alone, the
+                    // graph's `hovered_node` twin: one notified frame per
+                    // change, never a panel key.
+                    let next = hovered.then_some(id);
+                    if shell.hovered_strip != next {
+                        shell.hovered_strip = next;
+                        cx.notify();
+                    }
+                })
+            }
+        })
         .on_drop({
             let this = cx.entity();
             move |dragged: &NodeId, _, cx| {
@@ -204,6 +236,33 @@ fn strip(
                     cx.notify();
                 })
             }
+        })
+        .child({
+            // The fault banner's anchor: the whole strip's window rect,
+            // registered for the meter frame the same way meter tracks are.
+            let geometry = shell.mixer_geometry.clone();
+            canvas(
+                move |bounds, _window, _| {
+                    geometry.update(|geometry| {
+                        geometry.banners.insert(id, bounds);
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0()
+        })
+        .when(faulted, |strip| {
+            // The faint red wash over the strip's own surface: painted
+            // above the background and below every control that follows.
+            strip.child(
+                div()
+                    .id(SharedString::from(format!("strip-wash-{id:?}")))
+                    .absolute()
+                    .inset_0()
+                    .bg(theme::DANGER_WASH)
+                    .gpui_test_observe(),
+            )
         })
         .child(
             div()
@@ -289,6 +348,49 @@ fn strip(
 }
 
 pub(super) use strip_controls::node_controls;
+
+/// The faulted strip's "!" badge at the title row's right edge — the graph
+/// card badge's twin. Clicking it opens the fault popover on this strip's
+/// fault group; the press is stopped here so the title row keeps its
+/// select / double-click-to-inspect behavior for itself.
+fn strip_fault_badge(id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement {
+    let this = cx.entity();
+    div()
+        .id(SharedString::from(format!("strip-fault-{id:?}")))
+        .flex_none()
+        .size(px(14.))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::DANGER)
+        .text_color(theme::controls::ON_ACCENT)
+        .text_size(px(9.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .child("!")
+        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_click(move |_, window, cx| {
+            this.update(cx, |shell, cx| {
+                // Anchor the popover on the badge: the click position sits
+                // on it, so a badge-sized rect under the pointer is the
+                // same hang point the graph badge uses.
+                let position = window.mouse_position();
+                let half = px(7.);
+                shell.fault_popover = Some(super::fault_popover::FaultPopover {
+                    node: Some(id),
+                    anchor: Bounds {
+                        origin: point(position.x - half, position.y - half),
+                        size: size(px(14.), px(14.)),
+                    },
+                });
+                cx.notify();
+            })
+        })
+        .gpui_test_observe()
+}
 
 fn meter(
     shell: &StudioShell,
