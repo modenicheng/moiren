@@ -23,7 +23,7 @@ function Get-RemovalRunFixedPins {
 }
 
 function Get-RemovalRunSourceNames {
-    @('collector-boundary.ps1','collector-worker.ps1','diagnostic-controller.ps1','diagnostic-lease.ps1',
+    @('closed-export.ps1','collector-boundary.ps1','collector-worker.ps1','controller-seal.ps1','diagnostic-controller.ps1','diagnostic-lease.ps1',
         'finish-session.ps1','finite-tool.ps1','invoke-diagnostic.ps1','invoke-preflight.ps1','native-admission.ps1',
         'preflight-session.ps1','probe-boundary.ps1','readonly-preflight.ps1','run-inputs.ps1',
         'safety-audit.ps1','session-identity.ps1','target-readiness.ps1','task-boundary.ps1',
@@ -40,7 +40,7 @@ function Assert-RemovalRunInteger($Value,[long]$Minimum,[long]$Maximum) {
 function Copy-RemovalRunSources($Rows,[string]$Directory) {
     Assert-FiniteToolPath $Directory $false
     if(-not(Test-Path -LiteralPath $Directory -PathType Container)){throw 'Existing production source directory required.'}
-    if($Rows -isnot [array] -or $Rows.Count -lt 25 -or $Rows.Count -gt 64){throw 'Complete bounded production source membership required.'}
+    if($Rows -isnot [array] -or $Rows.Count -lt 27 -or $Rows.Count -gt 64){throw 'Complete bounded production source membership required.'}
     $names=Get-RemovalRunSourceNames;$seen=@{};$pins=@();$total=[long]0
     foreach($row in $Rows){
         if($row.Name -isnot [string] -or $row.Name -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9_.-]*\.ps1\z' -or

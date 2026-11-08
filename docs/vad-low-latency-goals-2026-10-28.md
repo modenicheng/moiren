@@ -36,6 +36,15 @@ The canonical driver qualification verdict remains in
 
 ### 2026-11-08 reusable test tools and user-owned reboot
 
+The [closed diagnostic export](validation/2026-11-08-removal-closed-export.md)
+now composes original result persistence and writer closure with bounded
+whole-run ZIP/readback and local-only acknowledgment. Original worker/probe and
+collector owners still drain after identity refusal without admitting new work
+or trusting caller completion flags. This host-only integration is not remote
+transfer, native approval, removal/name repair or S0-S5 acceptance. The next
+target run still requires the user's reboot confirmation and fresh provenance;
+local implementation/verification continues without operating the test machine.
+
 The user requires one reused OBS installation rather than copied executable
 trees for each experiment. Reuse the existing dedicated test installation at
 `D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable`; do not move it to

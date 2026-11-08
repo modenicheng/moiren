@@ -19,6 +19,15 @@ if([Environment]::MachineName -ceq 'LAPTOP-NP49RG6H'){throw 'Host-only controlle
 $root=Join-Path $PSScriptRoot ('logs\controller-'+[Guid]::NewGuid().ToString('N'))
 $null=[IO.Directory]::CreateDirectory($root)
 function Event([string]$Name){$script:f.Events.Add($Name)}
+# TEST ONLY: this suite mocks every lifetime resource. Actual private sealing
+# and FileStream/collector closure are exercised by test-closed-controller.
+function Register-RemovalControllerLifetime($Owner){}
+function Bind-RemovalControllerLifetime($Owner){}
+function Assert-RemovalControllerSealedIdentity($Owner){}
+function Confirm-RemovalControllerEarlyRefusal($Owner){}
+function Test-RemovalControllerDrainOnly($Owner,[int]$ObservationMilliseconds){return $false}
+function Prepare-RemovalClosedControllerSeal($Owner){}
+function Complete-RemovalClosedControllerSeal($Owner){}
 function Assert-RemovalTaskHost {}
 function Assert-RemovalRunInputs($Owner){Event 'inputs';if($script:f.InputsChanged){throw 'Original inputs changed.'}}
 function New-RemovalDiagnosticLease {

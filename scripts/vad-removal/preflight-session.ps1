@@ -145,7 +145,7 @@ function New-RemovalPreflightSession {
         CollectorPath=$CollectorPath;CollectorSha256=$CollectorSha256;CollectorOwner=$null;RetainedOwner=$null
         StartAttempted=$false;Ready=$false;ObservationAccepted=$false;ObservationMode=$ObservationMode
         ObservationComplete=$false;ReceiptAttempted=$false;ReceiptPin=$null;ReceiptPinJson=$null;SnapshotJson=$null
-        ExecutionMode=$mode;SourceIdentityJson=$sourceIdentity;ReadToolPinsJson=$readToolPinsJson
+        ExecutionMode=$mode;SourceIdentityJson=$sourceIdentity;ReadToolPinsJson=$readToolPinsJson;DispatchState=$null
         Error=$null}
 }
 
@@ -169,10 +169,16 @@ function Start-RemovalPreflightSession {
     Assert-RemovalTaskHost;Assert-RemovalPreflightSessionIdentity $Session
     if($Session.StartAttempted){throw 'Collector already attempted; observe retained invocation, never restart.'}
     $Session.StartAttempted=$true
-    $owner=Start-RemovalCollectorWorker -FiniteToolPath $Session.FiniteToolPath -FiniteToolSha256 $Session.FiniteToolSha256 `
-        -CollectorPath $Session.CollectorPath -CollectorSha256 $Session.CollectorSha256 -EvidenceDirectory $Session.EvidenceDirectory `
-        -ReadToolPinsJson $Session.ReadToolPinsJson
-    $Session.RetainedOwner=$owner;$Session.CollectorOwner=$owner
+    $state=@{Entered=$false;BeginInvokeAttempted=$false;Owner=$null};$Session.DispatchState=$state
+    try {
+        $owner=Start-RemovalCollectorWorker -FiniteToolPath $Session.FiniteToolPath -FiniteToolSha256 $Session.FiniteToolSha256 `
+            -CollectorPath $Session.CollectorPath -CollectorSha256 $Session.CollectorSha256 -EvidenceDirectory $Session.EvidenceDirectory `
+            -ReadToolPinsJson $Session.ReadToolPinsJson -DispatchState $state
+        $Session.RetainedOwner=$owner;$Session.CollectorOwner=$owner
+    } finally {
+        # A lost wrapper return cannot discard the exact pre-published owner.
+        if($null-ne$state.Owner){$Session.RetainedOwner=$state.Owner;$Session.CollectorOwner=$state.Owner}
+    }
 }
 
 function Save-RemovalPreflightReceipt($Session) {

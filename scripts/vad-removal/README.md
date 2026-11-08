@@ -112,6 +112,10 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-native-guard-routing.ps1
 .\test-native-query-admission.ps1
 .\test-native-admission-lifetime.ps1
+.\test-closed-controller.ps1
+.\test-closed-export.ps1
+.\test-closed-entry.ps1
+.\test-closed-finish.ps1
 ```
 
 The task scheduler, device APIs and target identity are mocked. Real children only output,
@@ -257,3 +261,38 @@ uses real writer exclusion, actual retained synthetic collector runspaces and
 production C# trace-owner buffers with injected native delegates. Its children
 only wait/output/exit. Neither test is actual scheduler/ETW/audio acceptance,
 an OBS acquisition, or a complete approved native diagnostic.
+
+## Closed-run evidence export
+
+`controller-seal.ps1` privately retains constructor and creation-seam resource
+references. It seals only the original persisted terminal result while the
+original writer is still held, then confirms that exact FileStream is closed.
+Public `Completed` flags, copied controllers and substituted owners grant no
+export authority. Identity failure is sticky: original process handles and
+already-started collectors/tools continue to drain independently, but cannot
+create new bindings, admission, Finish, retirement or a completion seal.
+Known pre-BeginInvoke refusals are recorded separately from an unknown dispatch;
+no synthetic EndInvoke or missing-output-as-absence shortcut is introduced.
+
+`closed-export.ps1` consumes that original seal and archives the complete closed
+run tree, including empty directories and failed evidence, plus the immutable
+input/source/result provenance. It copies no probe or OBS executable. The five
+staged worker scripts must still match their original captured pins. Limits are
+eight run-relative components, 512 total ZIP members, 16 MiB per member and
+64 MiB total uncompressed. Reparse paths, executables, unknown artifact classes,
+missing terminal pins or any changed membership refuse rather than truncate.
+
+The normal entry and its caught/drained path converge on one export tail.
+Create-new sibling ZIP and inventory are independently reopened and every
+member length/SHA256 is checked. A second readback binds the original export,
+result, nonce, inventory and ZIP to `*.archive-local.json`. Its explicit meaning
+is `LOCAL_ARCHIVE_VERIFICATION_ONLY`: it is not remote download confirmation,
+cleanup permission, native success or physical qualification. Any archive/ack
+failure preserves existing outputs and the refused result, with no retry,
+overwrite, deletion or owner relaunch. Remote transfer/acknowledgment and actual
+target runner review remain missing; the native executable release stays closed.
+
+The closed-controller tests compose actual root/FileStream/collector ownership
+with real export and local acknowledgment after injected trace-enable failure.
+Exporter-only tests use a synthetic seal getter, and entry-tail tests replace
+export IO. These distinct test boundaries must not be presented as native runs.

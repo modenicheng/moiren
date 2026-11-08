@@ -7,12 +7,17 @@ Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'safety-audit.ps1')
 . (Join-Path $PSScriptRoot 'finish-session.ps1')
 . (Join-Path $PSScriptRoot 'native-admission.ps1')
+. (Join-Path $PSScriptRoot 'controller-seal.ps1')
 
 function Add-RemovalControllerError($Owner,[string]$Message) {
-    if($Owner.Errors.Count -lt 16 -and -not$Owner.Errors.Contains($Message)){$Owner.Errors.Add($Message)}
+    Add-RemovalControllerErrorRecord $Owner $Message
     # Late original receipts must remain observable; only new audio admission
     # closes. Observe-RemovalManagedSession retains/binds those owners on failure.
     if($null -ne $Owner.RetainedManaged -and -not$Owner.RetainedManaged.Error){$Owner.RetainedManaged.Error=$Message}
+}
+
+function Add-RemovalControllerErrorRecord($Owner,[string]$Message) {
+    if($Owner.Errors.Count -lt 16 -and -not$Owner.Errors.Contains($Message)){$Owner.Errors.Add($Message)}
 }
 
 function New-RemovalDiagnosticController {
@@ -30,7 +35,7 @@ function New-RemovalDiagnosticController {
     $trace=New-RemovalTraceSession -Session ('MoirenRemoval613'+$nonce) -EtlPath (Join-Path $RunDirectory 'driver.etl')
     $config=ConvertTo-Json -InputObject ([ordered]@{RunDirectory=$RunDirectory;Nonce=$nonce;ControllerPid=$self.Id
         ControllerCreationUtcTicks=$self.StartTime.ToUniversalTime().Ticks;WorkerSessionId=$WorkerSessionId}) -Compress
-    [pscustomobject]@{RunDirectory=$RunDirectory;OriginalDirectory=$RunDirectory;Nonce=$nonce;ControllerPid=$self.Id
+    $owner=[pscustomobject]@{RunDirectory=$RunDirectory;OriginalDirectory=$RunDirectory;Nonce=$nonce;ControllerPid=$self.Id
         ControllerCreationUtcTicks=$self.StartTime.ToUniversalTime().Ticks;WorkerSessionId=$WorkerSessionId;ConfigJson=$config
         Inputs=$Inputs;RetainedInputs=$Inputs;Lease=$lease;RetainedLease=$lease;BeforeReadiness=$before;RetainedBefore=$before
         TraceSession=$trace;RetainedTrace=$trace;OriginalNativeOwner=$trace.NativeOwner;OriginalReadback=$trace.Readback
@@ -40,6 +45,8 @@ function New-RemovalDiagnosticController {
         Completed=$false;Refused=$false;Safe=$false;Phase='Prepared';Errors=(New-Object Collections.Generic.List[string])
         Clock=[Diagnostics.Stopwatch]::StartNew();DeadlineMilliseconds=[long]240000;TimedOut=$false
         NativePassed=$false;Qualified=$false}
+    Register-RemovalControllerLifetime $owner
+    return $owner
 }
 
 function Assert-RemovalControllerIdentity($Owner) {
@@ -78,13 +85,17 @@ function Start-RemovalDiagnosticController {
     try {
         Assert-RemovalControllerIdentity $Owner
         Acquire-RemovalDiagnosticLease $Owner.RetainedLease
+        Bind-RemovalControllerLifetime $Owner 'Writer'
         $null=[IO.Directory]::CreateDirectory($Owner.RunDirectory)
-        Start-RemovalTargetReadiness $Owner.RetainedBefore;$Owner.Phase='Before'
+        try{Start-RemovalTargetReadiness $Owner.RetainedBefore}
+        finally{Bind-RemovalControllerLifetime $Owner 'Before'}
+        $Owner.Phase='Before'
     } catch {
         Add-RemovalControllerError $Owner $_.Exception.Message
         if(-not$Owner.RetainedBefore.StartAttempted -and -not$Owner.OriginalNativeOwner.StartAttempted -and
             $null -eq $Owner.RetainedManaged){
             if($Owner.RetainedLease.Owned){Release-RemovalDiagnosticLease $Owner.RetainedLease}
+            Confirm-RemovalControllerEarlyRefusal $Owner
             $Owner.Refused=$true;$Owner.Phase='RefusedBeforeAcquisition'
         }
         throw
@@ -139,7 +150,10 @@ function Observe-RemovalControllerAbort($Owner,[int]$ObservationMilliseconds=25)
         # Let that observation run even when root trace composition was altered.
         $finished=Observe-RemovalManagedFinish $Owner.RetainedFinish -ObservationMilliseconds $ObservationMilliseconds
     } elseif($null -ne $managed -and $managed.TaskOwner.DispatchAttempted){
-        $managedObservation=Observe-RemovalManagedSession $managed
+        Bind-RemovalControllerLifetime $Owner
+        Assert-RemovalControllerSealedIdentity $Owner
+        try{$managedObservation=Observe-RemovalManagedSession $managed}
+        finally{Bind-RemovalControllerLifetime $Owner 'Probe' $managed.ProbeOwner}
     }
     if(-not[Object]::ReferenceEquals($trace.NativeOwner,$native) -or
         -not[Object]::ReferenceEquals($trace.Readback,$Owner.OriginalReadback)){
@@ -163,6 +177,7 @@ function Observe-RemovalControllerAbort($Owner,[int]$ObservationMilliseconds=25)
         $r=$managedObservation
         if(-not$r.Terminal){$Owner.Phase='PendingManaged';return $false}
         $finish=New-RemovalManagedFinish $managed;$Owner.RetainedFinish=$finish;$Owner.Finish=$finish
+        Bind-RemovalControllerLifetime $Owner 'Finish' $finish
         $Owner.Phase='Finish';return $false
     }
     # Self-owned STOP is independent of current source/Explorer freshness.
@@ -206,9 +221,11 @@ function Save-RemovalControllerResult($Owner) {
         AbortEvidence=$Owner.AbortEvidencePin;After=$(if($null -ne $after){$after.ReceiptPin}else{$null})
         Errors=@($Owner.Errors.ToArray());TimedOut=$Owner.TimedOut}
     $Owner.ResultPin=Write-RemovalControllerReceipt $Owner 'controller-result.json' $value
+    Prepare-RemovalClosedControllerSeal $Owner
     # Keep the exclusive writer through all actual collection and evidence.
     # Only a persisted result releases this original handle; no file deletion.
     Release-RemovalDiagnosticLease $Owner.RetainedLease
+    Complete-RemovalClosedControllerSeal $Owner
     $Owner.Completed=$true;$Owner.Phase='Complete'
 }
 
@@ -222,6 +239,11 @@ function Observe-RemovalDiagnosticController {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true,Position=0)]$Owner,[ValidateRange(1,15000)][int]$ObservationMilliseconds=25)
     $ErrorActionPreference='Stop'
+    if(Test-RemovalControllerDrainOnly $Owner $ObservationMilliseconds){
+        return [pscustomobject]@{Completed=$false;Refused=$false;Safe=$false;NeedsObservation=$true
+            NativePassed=$false;Qualified=$false;Phase='IdentityRefusedDrainOnly';ReceiptPin=$null
+            Errors=@($Owner.Errors.ToArray());TimedOut=$Owner.TimedOut}
+    }
     if($Owner.Completed -or $Owner.Refused){return Get-RemovalControllerResult $Owner}
     $afterObservation=$null
     try {
@@ -240,6 +262,8 @@ function Observe-RemovalDiagnosticController {
                 else{Add-RemovalControllerError $Owner ('Preflight refused: '+$before.Error)}
             }
         }
+        Bind-RemovalControllerLifetime $Owner
+        Assert-RemovalControllerSealedIdentity $Owner
         Assert-RemovalControllerIdentity $Owner
         if(-not$Owner.StartAttempted){throw 'Diagnostic controller has not started.'}
         if($Owner.Clock.ElapsedMilliseconds -ge $Owner.DeadlineMilliseconds){
@@ -255,6 +279,7 @@ function Observe-RemovalDiagnosticController {
                     $audit=New-RemovalSafetyAudit -BeforeReadiness $Owner.RetainedBefore `
                         -EvidenceDirectory (Join-Path $Owner.OriginalDirectory 'after') -UserRebootConfirmed
                     $Owner.RetainedAfter=$audit;$Owner.AfterAudit=$audit
+                    Bind-RemovalControllerLifetime $Owner 'After' $audit
                 }
                 $path=Join-Path $Owner.RunDirectory 'managed'
                 $arguments=Get-RemovalDiagnosticArguments $Owner.RetainedInputs -ArtifactDirectory (Join-Path $path 'artifacts')
@@ -263,6 +288,7 @@ function Observe-RemovalDiagnosticController {
                     -Executable $pins.Probe.File.Path -ExpectedSha256 $pins.Probe.File.Sha256 -ProbeArguments $arguments `
                     -SessionId $user.SessionId -Sid $user.Sid -Nonce $Owner.Nonce -TraceSession $Owner.RetainedTrace
                 $Owner.RetainedManaged=$managed;$Owner.ManagedSession=$managed
+                Bind-RemovalControllerLifetime $Owner 'Managed' $managed
                 if($null -eq $Owner.OriginalNativeOwner.Boundary){Initialize-RemovalNativeContext $Owner}
             }
             if(-not$Owner.RetainedTrace.StartAttempted){
@@ -283,10 +309,14 @@ function Observe-RemovalDiagnosticController {
             # If it fails, the catch latches Session.Error before drain-only reads.
             if($null -eq $Owner.RetainedFinish){
                 Assert-RemovalDiagnosticAdmission $Owner
-                $managed=Observe-RemovalManagedSession $Owner.RetainedManaged
+                Bind-RemovalControllerLifetime $Owner
+                Assert-RemovalControllerSealedIdentity $Owner
+                try{$managed=Observe-RemovalManagedSession $Owner.RetainedManaged}
+                finally{Bind-RemovalControllerLifetime $Owner 'Probe' $Owner.RetainedManaged.ProbeOwner}
                 if(-not$managed.Terminal){$Owner.Phase='Managed';return Get-RemovalControllerResult $Owner}
                 $finish=New-RemovalManagedFinish $Owner.RetainedManaged
                 $Owner.RetainedFinish=$finish;$Owner.Finish=$finish
+                Bind-RemovalControllerLifetime $Owner 'Finish' $finish
             }
             $finished=Observe-RemovalManagedFinish $Owner.RetainedFinish -ObservationMilliseconds $ObservationMilliseconds
             if($finished.Phase -ceq 'AwaitingDecodePins' -and $null -eq $Owner.RetainedFinish.RetainedDecode){
@@ -309,11 +339,13 @@ function Observe-RemovalDiagnosticController {
         if($null -eq $Owner.RetainedAfter){
             $audit=New-RemovalSafetyAudit -BeforeReadiness $Owner.RetainedBefore -EvidenceDirectory (Join-Path $Owner.OriginalDirectory 'after') -UserRebootConfirmed
             $Owner.RetainedAfter=$audit;$Owner.AfterAudit=$audit
+            Bind-RemovalControllerLifetime $Owner 'After' $audit
         }
         if(-not$Owner.AfterStartAttempted){
             $Owner.AfterStartAttempted=$true
             $audit=$Owner.RetainedAfter
-            Start-RemovalSafetyAudit $audit
+            try{Start-RemovalSafetyAudit $audit}
+            finally{Bind-RemovalControllerLifetime $Owner 'AfterCollector'}
         }
         $after=if($null -ne $afterObservation){$afterObservation}else{
             Observe-RemovalSafetyAudit $Owner.RetainedAfter -ObservationMilliseconds $ObservationMilliseconds

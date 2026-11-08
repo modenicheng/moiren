@@ -67,6 +67,16 @@ raw final-name checks and installed613are unchanged.
 
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
+The [closed-run export integration](../../docs/validation/2026-11-08-removal-closed-export.md)
+connects original terminal result/writer closure to bounded whole-tree ZIP,
+independent length/SHA256 readback and an explicitly local-only acknowledgment.
+Identity refusal preserves original process/collector drains without new
+admission, retirement or forged completion. Host fixtures compose failed-enable
+and retired-Finish evidence; they are not real target execution. Remote
+transfer/acknowledgment and native release review remain open. Exact published
+predecessor e4e07d2 finishes20/20CI jobs; this new delta needs separate verification.
+User reboot is still unconfirmed, installed613 unchanged, and full S0-S5 open.
+
 The [owner-aware admission preparation](../../docs/validation/2026-11-08-removal-native-admission.md)
 associates exact task/trace/managed/decode resources with the original controller
 and live writer. Final dispatch checks and separate cleanup authority preserve

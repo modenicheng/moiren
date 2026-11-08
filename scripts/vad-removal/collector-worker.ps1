@@ -55,9 +55,12 @@ function Start-RemovalCollectorWorker {
         [Parameter(Mandatory=$true)][string]$CollectorPath,
         [Parameter(Mandatory=$true)][string]$CollectorSha256,
         [Parameter(Mandatory=$true)][string]$EvidenceDirectory,
-        [string]$ReadToolPinsJson,
+        [string]$ReadToolPinsJson,[hashtable]$DispatchState=$null,
         [ValidateRange(0.01,120)][double]$TimeoutSeconds=120)
     $ErrorActionPreference='Stop'
+    if($null-ne$DispatchState){
+        $DispatchState.Entered=$true;$DispatchState.BeginInvokeAttempted=$false;$DispatchState.Owner=$null
+    }
     Assert-CollectorInput $FiniteToolPath $FiniteToolSha256
     Assert-CollectorInput $CollectorPath $CollectorSha256
     if($ReadToolPinsJson.Length -gt 16384){throw 'Read-tool pin configuration exceeds bounded input cap.'}
@@ -65,9 +68,10 @@ function Start-RemovalCollectorWorker {
         $EvidenceDirectory -match '[\x00\r\n"*?]' -or (Test-Path -LiteralPath $EvidenceDirectory)){throw 'Fresh canonical evidence path required.'}
     $shared=[hashtable]::Synchronized(@{ToolOwners=New-Object Collections.Generic.List[object];Snapshot=$null;Error=$null;OutputCount=0})
     $owner=[pscustomobject]@{PowerShell=$null;Invocation=$null;Shared=$shared;ToolOwners=$shared.ToolOwners;Diagnostics=$null
-        LaunchAttempted=$false;Completed=$false;Closed=$false;TimedOut=$false;CompletionObservedMilliseconds=$null
+        LaunchAttempted=$false;KnownNoDispatch=$false;Completed=$false;Closed=$false;TimedOut=$false;CompletionObservedMilliseconds=$null
         EndInvoked=$false;Error=$null;Clock=[Diagnostics.Stopwatch]::StartNew()
         DeadlineMilliseconds=[long][Math]::Ceiling($TimeoutSeconds*1000);EvidenceDirectory=$EvidenceDirectory}
+    if($null-ne$DispatchState){$DispatchState.Owner=$owner}
     try {
         $owner.PowerShell=[PowerShell]::Create()
         $owner.Diagnostics=New-CollectorDiagnosticDrain $owner.PowerShell
@@ -138,8 +142,21 @@ try {
 '@
         $null=$owner.PowerShell.AddScript($script).AddArgument($shared).AddArgument($FiniteToolPath).AddArgument($FiniteToolSha256).AddArgument($CollectorPath).AddArgument($CollectorSha256).AddArgument($EvidenceDirectory).AddArgument($ReadToolPinsJson)
         $owner.LaunchAttempted=$true
+        if($null-ne$DispatchState){$DispatchState.BeginInvokeAttempted=$true}
         $owner.Invocation=$owner.PowerShell.BeginInvoke()
-    } catch {$owner.Error='Worker dispatch failed/unknown; retain original owner.'}
+    } catch {
+        $owner.Error='Worker dispatch failed/unknown; retain original owner.'
+        if($null-ne$DispatchState-and[Object]::ReferenceEquals($DispatchState.Owner,$owner)-and
+            $DispatchState.Entered-is[bool]-and$DispatchState.Entered-and
+            $DispatchState.BeginInvokeAttempted-is[bool]-and-not$DispatchState.BeginInvokeAttempted-and
+            -not$owner.LaunchAttempted-and$null-eq$owner.Invocation-and$owner.ToolOwners.Count-eq0){
+            # No BeginInvoke was attempted: dispose only the exact synchronous
+            # setup object. Do not fabricate EndInvoke or a native return.
+            if($null-ne$owner.PowerShell){$owner.PowerShell.Dispose()}
+            $owner.KnownNoDispatch=$true;$owner.Completed=$true;$owner.Closed=$true
+            $owner.CompletionObservedMilliseconds=$owner.Clock.ElapsedMilliseconds
+        }
+    }
     return $owner
 }
 

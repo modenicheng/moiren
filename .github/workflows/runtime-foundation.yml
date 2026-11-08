@@ -140,7 +140,8 @@ jobs:
             'test-diagnostic-lease.ps1', 'test-run-inputs.ps1', 'test-safety-audit.ps1',
             'test-diagnostic-controller.ps1', 'test-diagnostic-entry.ps1', 'test-diagnostic-lifetime.ps1',
             'test-native-admission.ps1', 'test-native-guard-routing.ps1', 'test-native-query-admission.ps1',
-            'test-native-admission-lifetime.ps1'
+            'test-native-admission-lifetime.ps1', 'test-closed-controller.ps1',
+            'test-closed-export.ps1', 'test-closed-entry.ps1', 'test-closed-finish.ps1'
           )
           foreach ($engine in $engines) {
             foreach ($test in $tests) {
