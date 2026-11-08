@@ -1,7 +1,49 @@
 use rust_i18n::t;
 
+use super::menu::ValueField;
 use super::*;
 
+type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// A connected segmented group: the shell carries the inset well and its
+/// border, the segments stay square so the selected fill reads as one
+/// control rather than a row of separate buttons.
+fn segmented_group(
+    shell: &StudioShell,
+    id: &str,
+    disabled: bool,
+    items: Vec<(String, bool, ClickHandler)>,
+) -> Div {
+    let mut group = div()
+        .flex()
+        .flex_wrap()
+        .items_stretch()
+        .max_w_full()
+        .self_start()
+        .rounded(px(theme::RADIUS_SM))
+        .border_1()
+        .border_color(theme::BORDER)
+        .bg(theme::WINDOW_BG)
+        .overflow_hidden();
+    for (index, (title, selected, handler)) in items.into_iter().enumerate() {
+        group = group.child(
+            button(SharedString::from(format!("{id}-{index}")), title)
+                .density(shell.density)
+                .variant(if selected {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .square()
+                .disabled(disabled)
+                .on_click(handler),
+        );
+    }
+    group
+}
+
+/// Draft-backed segmented group for the audio transaction: clicks land in the
+/// draft and stay there until Save/Restart Audio.
 pub(in super::super) fn choices<T: Copy + PartialEq + 'static>(
     shell: &StudioShell,
     editor: Editor,
@@ -11,22 +53,20 @@ pub(in super::super) fn choices<T: Copy + PartialEq + 'static>(
     set: impl Fn(&mut Draft, T) + 'static,
     cx: &Context<StudioShell>,
 ) -> Div {
-    let mut row = div().flex().flex_wrap().gap(px(4.));
     let set = std::rc::Rc::new(set);
-    for (index, (value, title)) in options.into_iter().enumerate() {
-        let this = cx.entity();
-        let set = set.clone();
-        row = row.child(
-            button(SharedString::from(format!("{id}-{index}")), title)
-                .density(shell.settings.draft(editor).density)
-                .variant(if value == selected {
-                    ButtonVariant::Primary
-                } else {
-                    ButtonVariant::Secondary
-                })
-                .disabled(shell.settings.busy())
-                .on_click(move |_, _, cx| {
+    let items = options
+        .into_iter()
+        .map(|(value, title)| {
+            let this = cx.entity();
+            let set = set.clone();
+            (
+                title,
+                value == selected,
+                Box::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                     this.update(cx, |shell, cx| {
+                        if shell.settings.busy() {
+                            return;
+                        }
                         let draft = shell.settings.draft_mut(editor);
                         if draft.pending.is_none() {
                             set(draft, value);
@@ -34,10 +74,39 @@ pub(in super::super) fn choices<T: Copy + PartialEq + 'static>(
                         }
                         cx.notify();
                     });
-                }),
-        );
-    }
-    row
+                }) as ClickHandler,
+            )
+        })
+        .collect::<Vec<_>>();
+    segmented_group(shell, id, shell.settings.busy(), items)
+}
+
+/// Preference-backed segmented group: clicks apply immediately (and persist
+/// through the quiet preference chain), so there is nothing to save.
+pub(in super::super) fn pref_choices<T: Copy + PartialEq + 'static>(
+    shell: &StudioShell,
+    id: &str,
+    selected: T,
+    options: impl IntoIterator<Item = (T, String)>,
+    set: impl Fn(&mut StudioShell, T, &mut Window, &mut Context<StudioShell>) + 'static,
+    cx: &Context<StudioShell>,
+) -> Div {
+    let set = std::rc::Rc::new(set);
+    let items = options
+        .into_iter()
+        .map(|(value, title)| {
+            let this = cx.entity();
+            let set = set.clone();
+            (
+                title,
+                value == selected,
+                Box::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    this.update(cx, |shell, cx| set(shell, value, window, cx));
+                }) as ClickHandler,
+            )
+        })
+        .collect::<Vec<_>>();
+    segmented_group(shell, id, shell.settings.busy(), items)
 }
 
 pub(in super::super) fn field(title: &str, value: impl IntoElement) -> Div {
@@ -49,12 +118,133 @@ pub(in super::super) fn field(title: &str, value: impl IntoElement) -> Div {
         .child(value)
 }
 
+/// A [`field`] whose label carries the one note a value can't say for
+/// itself. The note is a tooltip: it answers a question the user asks by
+/// hovering, instead of a paragraph they must read past.
+pub(in super::super) fn field_with_note(
+    title: &str,
+    note: impl Into<SharedString>,
+    value: impl IntoElement,
+) -> Div {
+    let note: SharedString = note.into();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(
+            div()
+                .id(SharedString::from(format!("field-note-{title}")))
+                .self_start()
+                .tooltip(move |window, cx| {
+                    component::tooltip::Tooltip::new(note.clone()).build(window, cx)
+                })
+                .child(label(title.to_owned())),
+        )
+        .child(value)
+}
+
+/// A settings row: name on the left, the control that changes it on the
+/// right. Dividers between rows come from [`rows`].
+pub(in super::super) fn row(title: &str, control: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACE_3))
+        .py(px(7.))
+        .child(label(title.to_owned()))
+        .child(control)
+}
+
+/// A [`row`] whose name carries a hover note (see [`field_with_note`]).
+pub(in super::super) fn row_with_note(
+    title: &str,
+    note: impl Into<SharedString>,
+    control: impl IntoElement,
+) -> Div {
+    let note: SharedString = note.into();
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACE_3))
+        .py(px(7.))
+        .child(
+            div()
+                .id(SharedString::from(format!("field-note-{title}")))
+                .self_start()
+                .tooltip(move |window, cx| {
+                    component::tooltip::Tooltip::new(note.clone()).build(window, cx)
+                })
+                .child(label(title.to_owned())),
+        )
+        .child(control)
+}
+
+/// Lays out [`row`]s with hairline dividers between them (never on the
+/// group's outer edges).
+pub(in super::super) fn rows(items: impl IntoIterator<Item = Div>) -> Div {
+    let mut group = div().flex().flex_col();
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            group = group.child(div().h(px(1.)).bg(theme::HAIRLINE));
+        }
+        group = group.child(item);
+    }
+    group
+}
+
 pub(in super::super) fn rate_title(rate: u32) -> String {
     format!("{} kHz", rate as f32 / 1000.)
 }
 
 pub(in super::super) fn buffer_title(frames: u32, rate: u32) -> String {
     format!("{frames} / {:.2} ms", frames as f64 * 1000. / rate as f64)
+}
+
+/// The dropdown affordance: a control-styled trigger showing the current
+/// value; clicking opens the value menu at the click position (see
+/// [`ValueMenu`]). The trigger itself shows no open state — the menu
+/// covering the page is the open state.
+pub(in super::super) fn select_trigger(
+    shell: &StudioShell,
+    editor: Editor,
+    id: &str,
+    target: StreamTarget,
+    field: ValueField,
+    title: String,
+    cx: &Context<StudioShell>,
+) -> ActionButton {
+    let this = cx.entity();
+    button(SharedString::from(format!("{id}-trigger")), title)
+        .density(shell.density)
+        .variant(ButtonVariant::Secondary)
+        .trailing_icon(ActionIcon::ChevronDown)
+        .disabled(shell.settings.busy())
+        .on_click(move |event, _, cx| {
+            this.update(cx, |shell, cx| {
+                shell.settings_menu = Some(ValueMenu {
+                    editor,
+                    target: target.clone(),
+                    field,
+                    at: event.position(),
+                });
+                cx.notify();
+            });
+        })
+}
+
+fn rate_value(rate: Option<u32>) -> String {
+    rate.map(rate_title)
+        .unwrap_or_else(|| t!("Follow processing").into_owned())
+}
+
+fn buffer_value(buffer: Option<u32>, effective: u32) -> String {
+    buffer
+        .map(|frames| buffer_title(frames, effective))
+        .unwrap_or_else(|| t!("Driver default").into_owned())
 }
 
 pub(in super::super) fn stream_editor(
@@ -78,22 +268,22 @@ pub(in super::super) fn stream_editor(
         (Direction::Input, Some(_)) => "device-input",
         (Direction::Output, Some(_)) => "device-output",
     };
-    let update = std::rc::Rc::new(StreamTarget {
+    let target = StreamTarget {
         direction,
         device: device.map(str::to_owned),
-    });
+    };
     let mut view = div()
         .flex()
         .flex_col()
-        .gap(px(if draft.density == Density::Compact {
+        .gap(px(if shell.density == Density::Compact {
             10.
         } else {
             14.
         }));
     if audio.backend == AudioBackend::Wasapi {
-        let update = update.clone();
-        view = view.child(field(
+        view = view.child(field_with_note(
             &t!("WASAPI mode"),
+            t!("Exclusive requests sole access to the device and needs its support.").into_owned(),
             choices(
                 shell,
                 editor,
@@ -103,36 +293,38 @@ pub(in super::super) fn stream_editor(
                     (DeviceMode::Shared, t!("Shared").into()),
                     (DeviceMode::Exclusive, t!("Exclusive").into()),
                 ],
-                move |draft, value| update.stream_mut(draft).mode = value,
+                {
+                    let target = target.clone();
+                    move |draft, value| target.stream_mut(draft).mode = value
+                },
                 cx,
             ),
         ));
     }
-    let setter = update.clone();
+    let rate_target = target.clone();
     view = view.child(field(
         &t!("Requested sample rate"),
-        choices(
+        select_trigger(
             shell,
             editor,
             &format!("{prefix}-rate"),
-            stream.sample_rate,
-            std::iter::once((None, t!("Follow processing").into()))
-                .chain(SAMPLE_RATES.map(|rate| (Some(rate), rate_title(rate)))),
-            move |draft, value| setter.stream_mut(draft).sample_rate = value,
+            rate_target,
+            ValueField::StreamRate,
+            rate_value(stream.sample_rate),
             cx,
         ),
     ));
     if audio.backend == AudioBackend::Wasapi {
-        let setter = update.clone();
+        let format_target = target.clone();
         view = view.child(field(
             &t!("Client sample format"),
-            choices(
+            select_trigger(
                 shell,
                 editor,
                 &format!("{prefix}-format"),
-                stream.format,
-                SampleFormat::ALL.map(|value| (value, t!(value.title()).into())),
-                move |draft, value| setter.stream_mut(draft).format = value,
+                format_target,
+                ValueField::StreamFormat,
+                t!(stream.format.title()).into_owned(),
                 cx,
             ),
         ));
@@ -148,25 +340,19 @@ pub(in super::super) fn stream_editor(
             super::native_period::editor(shell, editor, direction, device, prefix),
         ));
     }
+    let buffer_target = target.clone();
     view.child(field(
-        &t!("Requested device buffer (frames / ms)"),
-        choices(
+        &t!("Requested device buffer"),
+        select_trigger(
             shell,
             editor,
             &format!("{prefix}-buffer"),
-            stream.buffer_frames,
-            std::iter::once((None, t!("Driver default").into())).chain(BUFFER_SIZES.map(
-                |frames| {
-                    (
-                        Some(frames),
-                        buffer_title(
-                            frames,
-                            stream.sample_rate.unwrap_or(audio.processing.sample_rate),
-                        ),
-                    )
-                },
-            )),
-            move |draft, value| update.stream_mut(draft).buffer_frames = value,
+            buffer_target,
+            ValueField::StreamBuffer,
+            buffer_value(
+                stream.buffer_frames,
+                stream.sample_rate.unwrap_or(audio.processing.sample_rate),
+            ),
             cx,
         ),
     ))
@@ -180,7 +366,7 @@ pub(in super::super) fn footer(
     let draft = shell.settings.draft(editor);
     let state = shell.state.read(cx);
     let running = state.snapshot.phase == SessionPhase::Running;
-    let submitted = draft.capture(&state.snapshot, shell.density);
+    let submitted = draft.capture(&state.snapshot);
     let needs_restart = submitted
         .as_ref()
         .is_ok_and(|submitted| !submitted.matches_active(&state.snapshot));
@@ -218,15 +404,63 @@ pub(in super::super) fn footer(
         });
     let this = cx.entity();
     let restart_this = this.clone();
-    div()
-        .flex_none()
+    let actions = div()
+        .flex()
+        .flex_wrap()
+        .gap(px(8.))
+        .justify_end()
+        .child(
+            button(
+                SharedString::from(format!("{prefix}-discard")),
+                t!("Discard changes"),
+            )
+            .disabled(busy || !draft.dirty())
+            .on_click(move |_, _, cx| {
+                this.update(cx, |shell, cx| {
+                    shell.settings.reset_period_inputs(editor);
+                    if editor == Editor::Global {
+                        shell.settings.reset_expert_inputs();
+                    }
+                    *shell.settings.draft_mut(editor) = shell.current_settings_draft(cx);
+                    cx.notify();
+                })
+            }),
+        )
+        .child(
+            button(SharedString::from(format!("{prefix}-save")), t!("Save"))
+                .variant(if running {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Primary
+                })
+                .disabled(busy || !draft.dirty())
+                .on_click({
+                    let this = cx.entity();
+                    move |_, _, cx| {
+                        this.update(cx, |shell, cx| shell.save_audio_settings(editor, false, cx))
+                    }
+                }),
+        )
+        .when(running, |view| {
+            view.child(
+                button(
+                    SharedString::from(format!("{prefix}-restart")),
+                    t!("Restart Audio"),
+                )
+                .variant(ButtonVariant::Primary)
+                .disabled(busy || !needs_restart)
+                .on_click(move |_, _, cx| {
+                    restart_this.update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))
+                }),
+            )
+        });
+    let content = div()
+        .w_full()
+        .max_w(px(680.))
+        .mx_auto()
         .flex()
         .flex_col()
         .gap(px(8.))
-        .p(px(16.))
-        .border_t_1()
-        .border_color(theme::BORDER)
-        .bg(theme::SURFACE)
         .child(
             div()
                 .id(SharedString::from(format!("{prefix}-feedback")))
@@ -252,76 +486,16 @@ pub(in super::super) fn footer(
                     .gpui_test_observe(),
             )
         })
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(8.))
-                .justify_end()
-                .child(
-                    button(
-                        SharedString::from(format!("{prefix}-discard")),
-                        t!("Discard changes"),
-                    )
-                    .disabled(busy || !draft.dirty())
-                    .on_click(move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            shell.settings.reset_period_inputs(editor);
-                            if editor == Editor::Global {
-                                shell.settings.reset_expert_inputs();
-                            }
-                            *shell.settings.draft_mut(editor) = shell.current_settings_draft(cx);
-                            cx.notify();
-                        })
-                    }),
-                )
-                .child(
-                    button(SharedString::from(format!("{prefix}-save")), t!("Save"))
-                        .variant(if running {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Primary
-                        })
-                        .disabled(busy || !draft.dirty())
-                        .on_click({
-                            let this = cx.entity();
-                            move |_, _, cx| {
-                                this.update(cx, |shell, cx| {
-                                    shell.save_audio_settings(editor, false, cx)
-                                })
-                            }
-                        }),
-                )
-                .when(running, |view| {
-                    view.child(
-                        button(
-                            SharedString::from(format!("{prefix}-restart")),
-                            t!("Restart Audio"),
-                        )
-                        .variant(ButtonVariant::Primary)
-                        .disabled(busy || !needs_restart)
-                        .on_click(move |_, _, cx| {
-                            restart_this
-                                .update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))
-                        }),
-                    )
-                }),
-        )
-}
-
-pub(super) struct StreamTarget {
-    pub(super) direction: Direction,
-    pub(super) device: Option<String>,
-}
-
-impl StreamTarget {
-    pub(super) fn stream_mut<'a>(&self, draft: &'a mut Draft) -> &'a mut StreamSettings {
-        match &self.device {
-            Some(id) => device_stream_mut(&mut draft.audio, self.direction, id),
-            None => match self.direction {
-                Direction::Input => &mut draft.audio.input,
-                Direction::Output => &mut draft.audio.output,
-            },
-        }
-    }
+        .child(actions);
+    // Keep the transaction bar aligned with the workspace's reading column;
+    // device overrides use the same bar inside their narrower inspector.
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .px(px(16.))
+        .py(px(12.))
+        .border_t_1()
+        .border_color(theme::BORDER)
+        .child(content)
 }

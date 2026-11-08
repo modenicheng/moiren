@@ -112,6 +112,11 @@ impl StudioShell {
                         &input,
                         move |shell, input, event: &component::input::InputEvent, cx| {
                             if shell.settings.busy()
+                                || shell
+                                    .settings
+                                    .period_inputs
+                                    .get(&key)
+                                    .is_none_or(|entry| entry.input != input)
                                 || !matches!(
                                     event,
                                     component::input::InputEvent::Change
@@ -136,7 +141,7 @@ impl StudioShell {
                                         entry.value = value;
                                     }
                                     let draft = shell.settings.draft_mut(key.0);
-                                    let target = super::fields::StreamTarget {
+                                    let target = StreamTarget {
                                         direction: key.1,
                                         device: key.2.clone(),
                                     };
@@ -185,4 +190,45 @@ pub(super) fn editor(
         );
     }
     row.child(label(t!("Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.")))
+}
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests {
+    #[gpui_kit::test]
+    fn shared_native_period_replaced_input_cannot_mutate_the_new_draft(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use super::*;
+        use crate::ui::window::test_harness::{finish_service, test_shell};
+        let (view, cx, runtime) = test_shell(cx);
+        let key = (Editor::Global, Direction::Output, None);
+        let old = cx.update(|window, cx| {
+            view.update(cx, |shell, cx| {
+                shell.settings_open = true;
+                shell.settings.global.audio = AudioSettings::default();
+                shell.sync_native_period_inputs(window, cx);
+                shell.settings.period_inputs[&key].input.clone()
+            })
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |shell, cx| {
+                shell.settings.reset_period_inputs(Editor::Global);
+                shell.sync_native_period_inputs(window, cx);
+                assert_ne!(&shell.settings.period_inputs[&key].input, &old);
+                old.update(cx, |input, cx| {
+                    input.set_value("336", window, cx);
+                    cx.emit(crate::ui::window::component::input::InputEvent::Change);
+                });
+            });
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |shell, cx| {
+            assert_eq!(shell.settings.global.audio.output.buffer_frames, None);
+            assert_eq!(
+                shell.settings.period_inputs[&key].input.read(cx).value(),
+                ""
+            );
+        });
+        finish_service(runtime);
+    }
 }

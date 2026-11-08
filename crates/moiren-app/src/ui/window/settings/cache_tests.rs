@@ -45,7 +45,7 @@ pub(super) fn cached_click(cx: &mut VisualTestContext, id: &'static str) {
         assert!(target.visible(), "{id} must be visible before dispatch");
         let center = target.bounds().center();
         assert!(
-            window.find("settings-dialog").bounds().contains(&center),
+            window.find("settings-page").bounds().contains(&center),
             "{id} must be inside the dialog"
         );
         center

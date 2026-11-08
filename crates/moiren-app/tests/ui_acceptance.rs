@@ -118,7 +118,7 @@ fn provider_diagnostics_render_last_observations_and_missing_evidence(
     cx.update_window(window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-diagnostics", cx);
+        window.click("settings-nav-diagnostics", cx);
         assert!(window.try_find("provider-export-diagnostics").is_some());
         for (id, rows) in &expected {
             assert!(window.try_find(id.clone()).is_some());
@@ -173,7 +173,7 @@ fn expert_input_buffers_are_explicit_drafts_with_unqualified_latency(
     cx.update_window(window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
         // The measured admission modes precede Expert input buffers. Reach
         // the warning through the real viewport instead of assuming it fits.
         for _ in 0..16 {
@@ -385,15 +385,14 @@ fn production_navigation_opens_every_workspace_and_settings_overlays_matrix(
         assert!(window.find("disconnect-route").visible());
         window.click("open-settings", cx);
         assert!(window.find("settings-page").visible());
-        assert!(window.find("settings-dialog").visible());
-        assert!(window.find("settings-backdrop").visible());
+        assert!(window.find("settings-nav-audio").visible());
         assert!(
-            window.try_find("matrix-page").is_some(),
-            "Settings overlays the existing workspace"
+            window.try_find("matrix-page").is_none(),
+            "Settings replaces the workspace while open"
         );
         assert_eq!(page.read(cx).page, Page::Matrix);
         window.click("close-settings", cx);
-        assert!(window.try_find("settings-dialog").is_none());
+        assert!(window.try_find("settings-page").is_none());
         assert!(window.find("matrix-page").visible());
         assert!(
             window.find("disconnect-route").visible(),

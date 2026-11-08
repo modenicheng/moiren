@@ -1,5 +1,6 @@
 //! Native visual review of approved action components; no audio service starts.
 
+use gpui_kit::base::ScrollbarAxis;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -10,6 +11,7 @@ use super::{
     ActionButton, ActionIcon, ButtonVariant, ControlSize, Density, IconButton, IconIntent,
     ToggleIconButton, WindowAction, WindowControlButton, WorkspaceTab,
 };
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 
 const STATES: [SampleState; 5] = [
     SampleState::Default,
@@ -80,6 +82,9 @@ pub fn run_component_preview() {
 pub(crate) struct ComponentGallery {
     density: Density,
     group: Group,
+    /// The gallery body's scroll; a plain view field — the gallery carries
+    /// no cached panels, so nothing freezes under it.
+    scroll: gpui_kit::ScrollHandle,
     clicks: usize,
     selected: bool,
     workspace: usize,
@@ -350,22 +355,42 @@ impl Render for ComponentGallery {
                     ),
             )
             .child(
+                // The bar overlay is a sibling of the scroll container,
+                // never a child: the container translates its children by
+                // the offset at prepaint, so an overlay inside it would
+                // drift away with the content.
                 div()
-                    .id("component-scroll")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_scroll()
-                    .p(px(16.))
                     .child(
-                        (match self.group {
-                            Group::Buttons => div().flex().gap(px(24.)).child(filled).child(quiet),
-                            Group::Icons => div().flex().gap(px(24.)).child(icons).child(toggles),
-                            Group::Navigation => {
-                                div().flex().gap(px(24.)).child(windows).child(tabs)
-                            }
-                        })
-                        .when(narrow, |s| s.flex_col().items_start()),
-                    ),
+                        div()
+                            .id("component-scroll")
+                            .w_full()
+                            .h_full()
+                            .overflow_scroll()
+                            .track_scroll(&self.scroll)
+                            .p(px(16.))
+                            .child(
+                                (match self.group {
+                                    Group::Buttons => {
+                                        div().flex().gap(px(24.)).child(filled).child(quiet)
+                                    }
+                                    Group::Icons => {
+                                        div().flex().gap(px(24.)).child(icons).child(toggles)
+                                    }
+                                    Group::Navigation => {
+                                        div().flex().gap(px(24.)).child(windows).child(tabs)
+                                    }
+                                })
+                                .when(narrow, |s| s.flex_col().items_start()),
+                            ),
+                    )
+                    .child(overlay_scrollbar(
+                        &self.scroll,
+                        "scrollbar-component-scroll",
+                        ScrollbarAxis::Both,
+                    )),
             )
             .child(
                 div()

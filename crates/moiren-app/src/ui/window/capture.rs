@@ -305,7 +305,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     });
                     for (suffix, section) in [
                         ("settings", settings::Section::Audio),
-                        ("settings-appearance", settings::Section::Appearance),
+                        ("settings-interface", settings::Section::Interface),
                         ("settings-diagnostics", settings::Section::Diagnostics),
                     ] {
                         shell.update(cx, |s, cx| {

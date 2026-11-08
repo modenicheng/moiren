@@ -1,8 +1,10 @@
 use super::*;
 use crate::ui::presentation::{output_name, source_name};
 use crate::ui::state::SourceMode;
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use crate::ui::window::panel::{CachedPanel, PanelHost, PublishRef};
 use controls::*;
+use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
 
 mod exports;
@@ -58,6 +60,9 @@ pub(in crate::ui::window) struct DevicesKey {
     device_tab: DeviceTab,
     selected_device: Option<String>,
     exports_scroll: Point<Pixels>,
+    /// The device list scrolls inside the cached page (same
+    /// scroll-under-cache rationale as `exports_scroll`).
+    device_list_scroll: Pixels,
 }
 
 pub(in crate::ui::window) type DevicesPanelHost = PanelHost<DevicesPanel>;
@@ -75,6 +80,7 @@ impl CachedPanel for DevicesPanel {
             // rides in the key so wheel steps rebuild it (the mixer's
             // precedent for scrollable containers under a cached panel).
             exports_scroll: shell.exports_scroll.offset(),
+            device_list_scroll: shell.device_list_scroll.offset().y,
         }
     }
 
@@ -159,8 +165,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(8.))
-        .overflow_y_scroll();
+        .track_scroll(&shell.device_list_scroll)
+        .overflow_y_scroll()
+        .on_scroll_wheel({
+            let this = cx.entity();
+            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+        });
     match shell.device_tab {
         DeviceTab::Exports => {
             list = exports::list(shell, cx);
@@ -510,7 +520,42 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .min_h_0()
                 .min_w_0()
                 .p(px(16.))
-                .child(list),
+                // The bar overlay is a sibling of the scroll container,
+                // never a child: the container translates its children by
+                // the offset at prepaint, so an overlay inside it would
+                // drift away with the content. The tab decides which list
+                // and bar are mounted — stacking both bars' viewport
+                // hitboxes would deafen the list beneath them to the wheel.
+                .child(
+                    // The wrapper mirrors the list's own flex sizing: in a
+                    // real viewport the pair stretches to the padded row, in
+                    // a degenerate replay layout the rows' content height
+                    // keeps them visible (percentage heights would collapse
+                    // to zero there). The bar overlay is a sibling of the
+                    // scroll container, never a child: the container
+                    // translates its children by the offset at prepaint, so
+                    // an overlay inside it would drift away with the
+                    // content.
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(list.gpui_test_observe())
+                        .child(match shell.device_tab {
+                            DeviceTab::Exports => overlay_scrollbar(
+                                &shell.exports_scroll,
+                                "scrollbar-virtual-export-list",
+                                ScrollbarAxis::Vertical,
+                            ),
+                            _ => overlay_scrollbar(
+                                &shell.device_list_scroll,
+                                "scrollbar-device-list",
+                                ScrollbarAxis::Vertical,
+                            ),
+                        }),
+                ),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -534,7 +579,8 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     }
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
-    let mut view = panel("device-inspector").child(heading(t!("Session resources")));
+    let mut view =
+        panel("device-inspector", &shell.inspector_scroll).child(heading(t!("Session resources")));
     if let Some(active) = snapshot
         .desired
         .as_ref()
@@ -550,7 +596,8 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     } else {
         view = view.child(label(t!("No active session")));
     }
-    view.child(badge(t!("Next start"), theme::WARNING))
+    view = view
+        .child(badge(t!("Next start"), theme::WARNING))
         .child(detail(&t!("Source mode"), t!(state.source_mode.title())))
         .child(detail(
             &t!("Source"),
@@ -570,9 +617,13 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         ))
         .child(label(t!(
             "Selecting another resource leaves the running session unchanged. Stop and start to switch devices."
-        )))
-        .gpui_test_observe()
-        .into_any_element()
+        )));
+    panel_host(
+        "device-inspector",
+        &shell.inspector_scroll,
+        view.gpui_test_observe(),
+    )
+    .into_any_element()
 }
 
 #[cfg(test)]

@@ -35,7 +35,7 @@ impl StudioShell {
             return;
         }
         let snapshot = &self.state.read(cx).snapshot;
-        let submitted = match draft.capture(snapshot, self.density) {
+        let submitted = match draft.capture(snapshot) {
             Ok(submitted) => submitted,
             Err(error) => {
                 draft.error = Some(error);
@@ -205,17 +205,10 @@ impl StudioShell {
                 let draft = self.settings.draft_mut(editor);
                 draft.audio = pending.submitted.audio;
                 draft.profile = pending.submitted.profile;
-                draft.density = pending.submitted.density;
                 draft.transport = pending.submitted.transport;
                 self.preferences.audio = draft.audio.clone();
                 self.preferences.latency_profile = draft.profile;
                 self.preferences.transport_latency = draft.transport;
-                self.preferences.density = if draft.density == Density::Compact {
-                    crate::project::UiDensity::Compact
-                } else {
-                    crate::project::UiDensity::Comfortable
-                };
-                self.density = draft.density;
                 draft.committed();
                 if matches!(pending.stage, Stage::Restart) {
                     draft.message = Some(t!("Audio restarted with the saved settings.").into());

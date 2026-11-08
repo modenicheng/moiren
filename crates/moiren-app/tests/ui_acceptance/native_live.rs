@@ -196,8 +196,8 @@ fn with_native_diagnostics(
     cx.update_window(window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-diagnostics", cx);
-        assert!(window.find("settings-dialog").visible());
+        window.click("settings-nav-diagnostics", cx);
+        assert!(window.find("settings-page").visible());
         assert!(
             !window.find(("native-timing-row", 18_usize)).visible(),
             "compact acceptance must exercise clipped rows, not an oversized window"

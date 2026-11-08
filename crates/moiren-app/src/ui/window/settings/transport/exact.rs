@@ -186,7 +186,7 @@ pub(super) fn policy(shell: &StudioShell, input: Input, cx: &Context<StudioShell
                 SharedString::from(format!("{}-policy-{index}", input.prefix())),
                 title,
             )
-            .density(shell.settings.global.density)
+            .density(shell.density)
             .variant(if input.get(&shell.settings.global).is_some() == enabled {
                 ButtonVariant::Primary
             } else {

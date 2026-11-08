@@ -31,7 +31,7 @@ fn open(cx: &mut gpui_kit::VisualTestContext) {
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
     });
 }
 

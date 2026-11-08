@@ -677,7 +677,7 @@ impl Fixture {
             window.resize(size(px(1440.), px(1000.)));
             window.render_frame(cx);
             window.click("open-settings", cx);
-            window.click("settings-transport", cx);
+            window.click("settings-nav-transport", cx);
             window.render_frame(cx);
         });
         (view, cx)

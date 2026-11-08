@@ -30,7 +30,7 @@ fn render_queue_stopped_save_preserves_independent_input_policies_and_defaults(
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
     });
     reveal(cx, "render-policy-1");
     cx.update(|window, cx| window.click("render-policy-1", cx));
@@ -113,7 +113,7 @@ fn render_queue_running_restart_waits_for_matching_active_confirmation(
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
     });
     reveal(cx, "render-policy-1");
     cx.update(|window, cx| window.click("render-policy-1", cx));
@@ -246,7 +246,7 @@ fn render_only_change_warns_that_measured_input_needs_fresh_admission(
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
     });
     reveal(cx, "render-policy-1");
     cx.update(|window, cx| {

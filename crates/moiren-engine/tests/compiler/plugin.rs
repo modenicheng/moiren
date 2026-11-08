@@ -67,6 +67,10 @@ fn fixture_settings() -> PluginSettings {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns rustc to build the fixture and loads it as a dynamic library, both outside Miri"
+)]
 fn plugin_node_renders_stereo_gain_and_exports_its_schema() {
     let settings = fixture_settings();
     let mut signal_bus = Bus::new(Default::default()).unwrap();

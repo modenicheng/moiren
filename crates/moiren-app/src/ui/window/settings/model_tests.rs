@@ -1,5 +1,6 @@
 use super::model::*;
-use super::{AudioSettings, Density, SampleFormat, StreamSettings};
+use super::{AudioSettings, StreamSettings};
+use moiren_engine::audio_config::SampleFormat;
 
 #[test]
 fn native_diagnostic_rows_expose_a_named_accessibility_node() {
@@ -24,7 +25,6 @@ fn draft(audio: AudioSettings) -> Draft {
     Draft::new(
         audio,
         crate::service::AudioLatencyProfile::Compatible,
-        Density::Comfortable,
         Default::default(),
     )
 }
@@ -55,7 +55,7 @@ fn render_queue_draft_rebases_independently_and_conflicts_without_losing_intent(
         ..Default::default()
     };
     let merged = edited
-        .submission(&edited.audio, edited.profile, edited.density, current)
+        .submission(&edited.audio, edited.profile, current)
         .unwrap();
     assert_eq!(merged.transport.render, edited.transport.render);
     assert_eq!(merged.transport.process, current.process);
@@ -66,7 +66,7 @@ fn render_queue_draft_rebases_independently_and_conflicts_without_losing_intent(
     };
     assert!(
         edited
-            .submission(&edited.audio, edited.profile, edited.density, conflict)
+            .submission(&edited.audio, edited.profile, conflict)
             .is_err()
     );
     assert_eq!(edited.transport.render.unwrap().target_frames, 512);
@@ -82,7 +82,7 @@ fn render_only_save_requires_new_measured_admission_not_the_old_active_proof() {
     let mut snapshot = running_settings();
     snapshot.measured_process = Some(measured(17));
     snapshot.active_measured_process = snapshot.measured_process.clone();
-    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    let captured = editor.capture(&snapshot).unwrap();
     assert!(captured.save_transport);
     assert!(captured.measured_process.is_none());
     assert!(!captured.matches_active(&snapshot));
@@ -121,7 +121,7 @@ fn stale_device_draft_preserves_new_defaults_and_other_device_overrides() {
         },
     );
     let merged = device
-        .submission(&current, device.profile, device.density, Default::default())
+        .submission(&current, device.profile, Default::default())
         .unwrap()
         .audio;
     assert_eq!(merged.processing, current.processing);
@@ -153,7 +153,7 @@ fn stale_global_draft_preserves_new_and_removed_device_overrides() {
         },
     );
     let merged = global
-        .submission(&current, global.profile, global.density, Default::default())
+        .submission(&current, global.profile, Default::default())
         .unwrap()
         .audio;
     assert_eq!(merged.input.sample_rate, Some(96_000));
@@ -179,7 +179,7 @@ fn reset_removes_only_the_edited_override_and_uses_latest_defaults() {
         .input_overrides
         .insert("b".into(), StreamSettings::default());
     let merged = device
-        .submission(&current, device.profile, device.density, Default::default())
+        .submission(&current, device.profile, Default::default())
         .unwrap()
         .audio;
     assert!(!merged.input_overrides.contains_key("a"));
@@ -201,7 +201,7 @@ fn conflicting_full_device_override_is_rejected_without_losing_draft() {
         },
     );
     let error = device
-        .submission(&current, device.profile, device.density, Default::default())
+        .submission(&current, device.profile, Default::default())
         .err()
         .unwrap();
     assert!(error.starts_with("Input override for a changed elsewhere"));
@@ -218,12 +218,12 @@ fn failed_submission_rebase_does_not_turn_unedited_defaults_into_owned_edits() {
     let mut current = original;
     current.output.sample_rate = Some(88_200);
     let first = device
-        .submission(&current, device.profile, device.density, Default::default())
+        .submission(&current, device.profile, Default::default())
         .unwrap();
     assert_eq!(first.audio.output.sample_rate, Some(88_200));
     current.output.sample_rate = Some(96_000);
     let retry = device
-        .submission(&current, device.profile, device.density, Default::default())
+        .submission(&current, device.profile, Default::default())
         .unwrap();
     assert_eq!(retry.audio.output.sample_rate, Some(96_000));
     assert_eq!(retry.audio.output_overrides["a"].buffer_frames, Some(64));
@@ -276,7 +276,7 @@ fn transport_draft_rebases_independent_inputs_and_rejects_same_input_conflicts()
         ..Default::default()
     };
     let merged = edited
-        .submission(&edited.audio, edited.profile, edited.density, current)
+        .submission(&edited.audio, edited.profile, current)
         .unwrap();
     assert_eq!(merged.transport.process, edited.transport.process);
     assert_eq!(merged.transport.vad, current.vad);
@@ -289,7 +289,7 @@ fn transport_draft_rebases_independent_inputs_and_rejects_same_input_conflicts()
     };
     assert!(
         edited
-            .submission(&edited.audio, edited.profile, edited.density, conflict)
+            .submission(&edited.audio, edited.profile, conflict)
             .is_err()
     );
     assert_eq!(edited.transport.process.unwrap().target_frames, 2048);
@@ -307,7 +307,7 @@ fn vad_recovery_cap_rebases_independently_and_conflicts_without_losing_draft() {
         ..Default::default()
     };
     let merged = edited
-        .submission(&edited.audio, edited.profile, edited.density, current)
+        .submission(&edited.audio, edited.profile, current)
         .unwrap();
     assert_eq!(merged.transport.vad_recovery_cap_periods, Some(1));
     assert_eq!(merged.transport.process, current.process);
@@ -318,7 +318,7 @@ fn vad_recovery_cap_rebases_independently_and_conflicts_without_losing_draft() {
         ..current
     };
     let error = edited
-        .submission(&edited.audio, edited.profile, edited.density, conflict)
+        .submission(&edited.audio, edited.profile, conflict)
         .err()
         .unwrap();
     assert!(error.contains("VAD recovery cap"), "{error}");
@@ -328,12 +328,7 @@ fn vad_recovery_cap_rebases_independently_and_conflicts_without_losing_draft() {
     let mut independent = draft(AudioSettings::default());
     independent.transport.vad = Some(ExpertInputBuffer::default());
     let merged = independent
-        .submission(
-            &independent.audio,
-            independent.profile,
-            independent.density,
-            conflict,
-        )
+        .submission(&independent.audio, independent.profile, conflict)
         .unwrap();
     assert_eq!(merged.transport.vad_recovery_cap_periods, Some(2));
 }
@@ -368,12 +363,7 @@ fn device_draft_does_not_overwrite_new_transport_intent_and_commit_tracks_it() {
         ..Default::default()
     };
     let merged = device
-        .submission(
-            &AudioSettings::default(),
-            device.profile,
-            device.density,
-            transport,
-        )
+        .submission(&AudioSettings::default(), device.profile, transport)
         .unwrap();
     assert_eq!(merged.transport, transport);
     device.transport = merged.transport;
@@ -446,7 +436,7 @@ fn measured_capture_rebases_current_selection_not_the_old_desktop_draft() {
     let mut snapshot = running_settings();
     snapshot.measured_process = Some(measured(17));
     snapshot.active_measured_process = Some(measured(16));
-    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    let captured = editor.capture(&snapshot).unwrap();
     assert_eq!(captured.measured_process, snapshot.measured_process);
     assert!(captured.matches_requested(&snapshot));
     assert!(!captured.matches_active(&snapshot));
@@ -461,7 +451,7 @@ fn measured_capture_expects_transport_save_to_clear_desired_override() {
     let mut snapshot = running_settings();
     snapshot.measured_process = Some(measured(17));
     snapshot.active_measured_process = snapshot.measured_process.clone();
-    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    let captured = editor.capture(&snapshot).unwrap();
     assert!(captured.measured_process.is_none());
     assert!(!captured.matches_active(&snapshot));
     snapshot.transport_latency = captured.transport;
@@ -482,7 +472,7 @@ fn measured_restart_cannot_confirm_a_new_selection_over_the_captured_request() {
     let mut snapshot = running_settings();
     snapshot.measured_process = Some(measured(17));
     snapshot.active_measured_process = snapshot.measured_process.clone();
-    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    let captured = editor.capture(&snapshot).unwrap();
     snapshot.measured_process = Some(measured(18));
     snapshot.active_measured_process = snapshot.measured_process.clone();
     assert!(!captured.matches_requested(&snapshot));
@@ -510,7 +500,7 @@ fn ingress_elapsed_draft_rebases_independently_and_preserves_conflicting_edits()
         ..Default::default()
     };
     let merged = edited
-        .submission(&edited.audio, edited.profile, edited.density, current)
+        .submission(&edited.audio, edited.profile, current)
         .unwrap();
     assert_eq!(merged.transport.process, current.process);
     assert_eq!(merged.transport.vad_recovery_cap_periods, Some(2));
@@ -522,7 +512,7 @@ fn ingress_elapsed_draft_rebases_independently_and_preserves_conflicting_edits()
 
     let conflict = settings(200_000_u64);
     let error = edited
-        .submission(&edited.audio, edited.profile, edited.density, conflict)
+        .submission(&edited.audio, edited.profile, conflict)
         .err()
         .unwrap();
     assert!(error.contains("ingress"), "{error}");
@@ -535,12 +525,7 @@ fn ingress_elapsed_draft_rebases_independently_and_preserves_conflicting_edits()
     let mut independent = draft(AudioSettings::default());
     independent.transport.process = Some(ExpertInputBuffer::default());
     let merged = independent
-        .submission(
-            &independent.audio,
-            independent.profile,
-            independent.density,
-            conflict,
-        )
+        .submission(&independent.audio, independent.profile, conflict)
         .unwrap();
     assert_eq!(
         serde_json::to_value(merged.transport).unwrap()["process_max_ingress_elapsed_100ns"],
@@ -558,7 +543,7 @@ fn ingress_elapsed_restart_confirmation_requires_the_active_policy() {
     }))
     .unwrap();
     let mut snapshot = running_settings();
-    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    let captured = editor.capture(&snapshot).unwrap();
     snapshot.transport_latency = captured.transport;
     assert!(captured.matches_requested(&snapshot));
     assert!(!captured.matches_active(&snapshot));

@@ -40,7 +40,7 @@ fn ingress_elapsed_click_stopped_save_persists_without_starting_audio(
         window.resize(gpui_kit::size(px(1440.), px(900.)));
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
     });
     click_ingress_choice(cx, 3); // 50 ms; Compatible queue policy is unchanged.
     view.update(cx, |shell, cx| {
@@ -119,7 +119,7 @@ fn ingress_elapsed_click_restart_keeps_requested_and_active_distinct_until_confi
         window.resize(gpui_kit::size(px(1440.), px(900.)));
         window.render_frame(cx);
         window.click("open-settings", cx);
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
     });
     click_ingress_choice(cx, 1); // 10 ms.
     cx.update(|window, cx| window.click("settings-save", cx));
@@ -195,7 +195,7 @@ fn ingress_elapsed_click_restart_keeps_requested_and_active_distinct_until_confi
                 .unwrap()
                 .contains("host ingress elapsed limit: Disabled")
         );
-        window.click("settings-diagnostics", cx);
+        window.click("settings-nav-diagnostics", cx);
         window.render_frame(cx);
         // A test-observed label is not enough: native UIA needs a role and value.
         for id in ["process-input-requested", "process-input-active"] {
@@ -246,7 +246,7 @@ fn ingress_elapsed_click_restart_keeps_requested_and_active_distinct_until_confi
                 .unwrap()
                 .contains("host ingress elapsed limit: 200000 x 100 ns")
         );
-        window.click("settings-transport", cx);
+        window.click("settings-nav-transport", cx);
         window.render_frame(cx);
         assert!(
             window

@@ -181,8 +181,8 @@ fn accept_rename_snapshots(
         window.render_frame(cx);
         assert!(window.find("engine-statusbar").visible());
         window.click("open-settings", cx);
-        window.click("settings-diagnostics", cx);
-        assert!(window.find("settings-dialog").visible());
+        window.click("settings-nav-diagnostics", cx);
+        assert!(window.find("settings-page").visible());
         let id = SharedString::from(id);
         assert_export_rows(window, cx, &id, &held_names, &HELD_ROWS);
 

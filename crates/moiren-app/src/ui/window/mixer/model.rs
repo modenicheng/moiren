@@ -15,6 +15,11 @@ pub(in crate::ui::window) struct MixerPresentation {
     /// publish during a fader drag rebuilds only the strip whose content
     /// changed. Created and retained by [`StudioShell::sync_mixer_controls`].
     pub strips: BTreeMap<NodeId, Entity<super::page::StripPanelHost>>,
+    /// The strip's routing rows' scroll containers. The INPUTS/SENDS sections
+    /// render live (outside the cached body), so these handles track their
+    /// wheel and thumb drags for the overlay bars; retained like the strip
+    /// hosts.
+    pub row_scrolls: BTreeMap<NodeId, RowScrolls>,
     /// The inspector's channel-strip fader row gets its own slider slot per
     /// node: the kit's `SliderState` stores the pointer-mapping bounds of
     /// whichever view registered last, so the strip's vertical fader and the
@@ -51,6 +56,14 @@ pub(in crate::ui::window) struct MixerPresentation {
     synced_revision: Option<u64>,
 }
 
+/// One strip's two routing-row scroll containers, keyed like the strip's
+/// other per-node state.
+#[derive(Default)]
+pub(in crate::ui::window) struct RowScrolls {
+    pub input: ScrollHandle,
+    pub send: ScrollHandle,
+}
+
 impl Default for MixerPresentation {
     fn default() -> Self {
         Self {
@@ -70,6 +83,7 @@ impl MixerPresentation {
             faders: BTreeMap::new(),
             sends: BTreeMap::new(),
             strips: BTreeMap::new(),
+            row_scrolls: BTreeMap::new(),
             inspector_faders: BTreeMap::new(),
             send_inputs: BTreeMap::new(),
             editing_send: None,
@@ -928,6 +942,9 @@ impl StudioShell {
         // Created after the slider maps are synced so the panel's nested
         // observers find their entities on the first rebuild.
         self.mixer.strips.retain(|id, _| graph.node(*id).is_some());
+        self.mixer
+            .row_scrolls
+            .retain(|id, _| graph.node(*id).is_some());
         for node in &graph.nodes {
             let id = node.id;
             self.mixer.strips.entry(id).or_insert_with(|| {
@@ -935,6 +952,7 @@ impl StudioShell {
                 let shell = cx.entity();
                 cx.new(|child_cx| super::page::StripPanelHost::new(panel, shell, child_cx))
             });
+            self.mixer.row_scrolls.entry(id).or_default();
         }
         sync_faders(
             window,

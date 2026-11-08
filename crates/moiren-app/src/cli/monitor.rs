@@ -314,7 +314,7 @@ fn context(
             &options.audio,
             context.latency_profile,
         )
-        .map_err(anyhow::Error::msg)?;
+        .map_err(|failure| anyhow::Error::msg(failure.cause))?;
     Ok((context, spec))
 }
 
