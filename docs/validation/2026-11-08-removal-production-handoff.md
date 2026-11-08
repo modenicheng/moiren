@@ -83,7 +83,7 @@ the pre-encoding-repair source, not an unqualified final-source total.
 
 ## Published CI And Remaining Work
 
-Fresh GitHub observations show PR26 OPEN/Draft, head1d7aab3, mergeable=false,
+The pre-integration GitHub observations show PR26 OPEN/Draft, head1d7aab3, mergeable=false,
 mergeable_state=dirty, merge_commit_sha=null and no exact-head run. The PR's
 cached base SHA is c8ab5e4 while actual branches/main is7e4024e. The workflow
 runs on pull_request and main push, not this branch push or workflow_dispatch;
@@ -99,9 +99,28 @@ all-target gpui-test check, formatting and strict scoped Clippy finish0.
 The staged merge/closed verification logs are archived in
 `main-integration-8a617067.zip`,649166bytes/104members, SHA256
 `6EC20AD888F15DEAEEC366A45BC2BB6AA713F7B4878CFE4E7177AFFBC3558C47`,
-with every member independently read back. This commit has not yet been
-integrated with the handoff slice or pushed; it is not a merge to main, exact
-new-head CI or native desktop acceptance.
+with every member independently read back. The handoff implementation is
+committed as `54c1ecd3`; `c68990a9` combines it with `822e5374` without changing
+the tested application tree or the frozen probe/driver bytes.
+
+Main then advances to `a50d52cd`. A second isolated integration retains the
+preference-store grouping and all feature assertions. Its reviewed index tree
+`8cc7c5152ebe17b390ddf5d7548f8d916320eedf` is committed as `dec2e5d1`, then
+combined in `bd149cd9`. All26application source pins match the tested tree;
+scripts, driver, backend, core, engine, signals and Cargo.lock remain identical
+to `54c1ecd3`. The final all-target check, headless tests939passed/0failed/
+4ignored, workspace fmt and strict scoped Clippy all finish0. Initial fmt and
+E0308 fixture failures remain archived; the source snapshot was taken during
+the test, not falsely described as before its launch. Independent review
+covers this exact staged tree. `combined-a50-review.json` SHA256 is
+`7D9694FBC2803FDD1F2B63BB2BD3638568CDA5A76725B4234BCAFA2587DFEBC6`.
+`main-integration-a50-8cc7c515.zip` is190067bytes/41members, including26source
+files and original terminal/log pins; every member is independently read back.
+Its SHA256 is
+`2F755B11C743F1241E86AD88423365F2E8D3FD10E445ED32CF4C73F1D5D3158D`.
+This is local feature integration, not a merge to main or native acceptance.
+Publication must remain a normal fast-forward of the feature ref with PR26
+Draft; only the resulting exact-head run can establish its CI verdict.
 
 The final independent review also identifies an actual-entry encoding gap:
 `invoke-diagnostic.ps1` does not set child console UTF-8, although host delivery

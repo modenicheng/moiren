@@ -24,8 +24,14 @@ complete source locks, a retained bounded entry process and original child
 stdout acknowledgment to host delivery. A closed diagnostic exit1 remains
 failure evidence, not native acceptance. Target execution/release review and
 the user's reboot confirmation remain outstanding; installed613, original
-probe pins and all S0-S5 acceptance gates are unchanged. The current published
-head has no CI run because PR26 is conflicted; prior green CI is not its pass.
+probe pins and all S0-S5 acceptance gates are unchanged. The pre-integration
+published head1d7aab3has no CI run because PR26 is conflicted; prior green CI
+is not its pass. Handoff54c1ecd3and both reviewed main snapshots through
+a50d52cdare locally combined in bd149cd9. The second integration has939
+passing headless app tests/0failures/4ignored, final all-target check/fmt/strict
+scoped Clippy0and verified source/log archival. Feature-ref publication and
+exact resulting-head CI remain a separate gate; PR26 stays Draft, with no
+merge to main or test-machine operation.
 
 The [closed-run delivery implementation](../../docs/validation/2026-11-08-removal-delivery.md)
 adds original-ack-pinned download, host member-by-member ZIP verification,

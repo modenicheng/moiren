@@ -60,8 +60,13 @@ before invoking the builder; fixture success is not an actual-layout pass.
 Original matrix:86suites/1032checks, zero failures/drift. Final review's actual
 entry UTF-8 defect is reproduced RED on both interpreters, then repaired;
 post-fix entry/wrapper/handoff42checks and neighboring Python67tests pass.
-The isolated reviewed main merge is committed822e5374but not yet integrated
-with this slice or pushed. New fixture archival is verified, but the literal
+The handoff is committed54c1ecd3and combined with the first reviewed main
+merge822e5374in c68990a9. The second main snapshot a50d52cdis integrated in
+reviewed tree8cc7c515, committeddec2e5d1and combined in bd149cd9. Its final
+all-target check,939headless tests/0failures/4ignored, workspace fmt and strict
+scoped Clippy finish0; all41archive members read back. Exact published-head CI
+still needs observation after the normal feature-ref push; PR26 stays Draft
+and main is not merged. New fixture archival is verified, but the literal
 PowerShell deletion request is rejected by tool policy; zero reclaimed bytes
 are claimed and no alternate deletion is attempted.
 

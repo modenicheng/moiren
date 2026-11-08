@@ -61,9 +61,14 @@ local-ack pins feeding the existing delivery pipeline. Closed exit1 evidence
 is delivered without native-success promotion. The independently reviewed
 source bundle names its base commit honestly rather than claiming an exact
 uncommitted Git tree. Host-only software/harmless-child composition does not
-perform a remote acquisition or open the native release. Current PR26 conflicts
-with main, so predecessor CI success does not cover the latest published head;
-separate isolated main integration is in progress without touching old drafts.
+perform a remote acquisition or open the native release. The pre-integration
+published PR26head1d7aab3conflicts with main; predecessor CI does not cover it.
+The handoff54c1ecd3and reviewed main snapshots7e4024e/ a50d52cdare now locally
+combined in bd149cd9without touching the original drafts. The final second
+integration passes939headless app tests/0failures/4ignored, all-target check,
+fmt and strict scoped Clippy. Its exact tree/source/log archive is verified.
+Keep PR26Draft, publish by normal fast-forward and observe that exact new head;
+local integration is not a new CI or native verdict.
 
 The user requires one reused OBS installation rather than copied executable
 trees for each experiment. Reuse the existing dedicated test installation at
