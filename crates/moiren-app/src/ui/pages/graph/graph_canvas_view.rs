@@ -376,21 +376,7 @@ pub(in crate::ui) fn node_drag_preview(
     // The ghost paints the library's own glyph for the kind, so the card
     // that lands looks exactly like the card that was dragged.
     let icon = template.icon();
-    let tint = match template {
-        NodeTemplate::Input | NodeTemplate::Application | NodeTemplate::Tone => theme::NODE_SOURCE,
-        NodeTemplate::Output => theme::NODE_SINK,
-        NodeTemplate::Bus | NodeTemplate::ChannelMapper | NodeTemplate::Rack => theme::NODE_UTILITY,
-        NodeTemplate::Recorder | NodeTemplate::Meter | NodeTemplate::Spectrum => {
-            theme::NODE_ANALYSIS
-        }
-        NodeTemplate::Delay
-        | NodeTemplate::Gain
-        | NodeTemplate::Balance
-        | NodeTemplate::Compressor
-        | NodeTemplate::Eq
-        | NodeTemplate::Gate
-        | NodeTemplate::Limiter => theme::NODE_DSP,
-    };
+    let tint = template.tint();
     // A fresh card's port shape: sources only output, the sink only inputs.
     let (input_count, has_output) = match template {
         NodeTemplate::Input | NodeTemplate::Application | NodeTemplate::Tone => (0, true),

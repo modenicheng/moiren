@@ -85,14 +85,7 @@ impl StudioShell {
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 
-pub(crate) fn node_kind_color(kind: NodeKind) -> Hsla {
-    match kind {
-        NodeKind::Source => theme::NODE_SOURCE,
-        NodeKind::Sink => theme::NODE_SINK,
-        NodeKind::Bus => theme::NODE_UTILITY,
-        _ => theme::NODE_DSP,
-    }
-}
+pub(crate) use crate::ui::pages::graph::node_catalog::kind_tint as node_kind_color;
 
 /// The strip's cached control stack: everything below the live routing
 /// sections, keyed by `StripKey`. Between key changes this subtree replays

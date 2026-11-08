@@ -24,6 +24,52 @@ pub enum NodeTemplate {
     Output,
 }
 
+/// The single NodeKind presentation registry (issue #122): every surface
+/// that colors or icons a node — canvas cards, drag ghosts, catalog
+/// tiles, mixer/tray color bars — resolves through here, so a new kind
+/// lands everywhere by extending one match.
+pub(crate) fn kind_tint(kind: NodeKind) -> Hsla {
+    use moiren_core::graph::NodeKind::*;
+    match kind {
+        Source => theme::NODE_SOURCE,
+        Sink => theme::NODE_SINK,
+        Bus | Rack | ChannelMapper => theme::NODE_UTILITY,
+        Recorder | Meter | SpectrumAnalyzer => theme::NODE_ANALYSIS,
+        _ => theme::NODE_DSP,
+    }
+}
+
+/// The card icon for a kind; a Source's icon follows its live input
+/// selection (physical mic, application loopback, or the tone generator).
+pub(crate) fn kind_icon(
+    kind: NodeKind,
+    source: Option<&crate::service::InputSelection>,
+) -> &'static str {
+    use moiren_core::graph::NodeKind::*;
+    match kind {
+        Source => match source {
+            Some(crate::service::InputSelection::Process { .. }) => "app",
+            Some(crate::service::InputSelection::Tone { .. }) => "wave",
+            Some(crate::service::InputSelection::Physical { .. }) | None => "mic",
+        },
+        Sink => "speaker",
+        Bus => "git-merge",
+        Recorder => "radio",
+        Meter => "activity",
+        SpectrumAnalyzer => "chart-histogram",
+        Delay => "clock",
+        Gain => "volume",
+        Pan => "arrows-horizontal",
+        Eq => "wave-square",
+        Compressor => "arrows-minimize",
+        Gate => "door",
+        Limiter => "wall",
+        Rack => "list-details",
+        ChannelMapper => "route",
+        Plugin => "sliders",
+    }
+}
+
 impl NodeTemplate {
     pub const ALL: [Self; 17] = [
         Self::Input,
@@ -150,14 +196,7 @@ impl NodeTemplate {
     }
 
     pub fn tint(self) -> Hsla {
-        match self {
-            Self::Input | Self::Application | Self::Tone => theme::NODE_SOURCE,
-            Self::Bus => theme::NODE_UTILITY,
-            Self::Output => theme::NODE_SINK,
-            Self::Recorder | Self::Meter | Self::Spectrum => theme::NODE_ANALYSIS,
-            Self::Rack => theme::NODE_UTILITY,
-            _ => theme::NODE_DSP,
-        }
+        self.kind().map_or(theme::NODE_DSP, kind_tint)
     }
 
     pub fn matches(self, query: &str) -> bool {

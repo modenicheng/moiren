@@ -351,31 +351,10 @@ impl CanvasWorld {
                 format!("{} ch", logical.channels())
             };
             let detail = detail_string(logical.kind(), state, &channels);
-            let (icon, tint) = match logical.kind() {
-                NodeKind::Source => (
-                    match state.source {
-                        Some(crate::service::InputSelection::Physical { .. }) | None => "mic",
-                        Some(crate::service::InputSelection::Process { .. }) => "app",
-                        Some(crate::service::InputSelection::Tone { .. }) => "wave",
-                    },
-                    theme::NODE_SOURCE,
-                ),
-                NodeKind::Sink => ("speaker", theme::NODE_SINK),
-                NodeKind::Bus => ("git-merge", theme::NODE_UTILITY),
-                NodeKind::Recorder => ("radio", theme::NODE_ANALYSIS),
-                NodeKind::Meter => ("activity", theme::NODE_ANALYSIS),
-                NodeKind::SpectrumAnalyzer => ("chart-histogram", theme::NODE_ANALYSIS),
-                NodeKind::Delay => ("clock", theme::NODE_DSP),
-                NodeKind::Gain => ("volume", theme::NODE_DSP),
-                NodeKind::Pan => ("arrows-horizontal", theme::NODE_DSP),
-                NodeKind::Eq => ("wave-square", theme::NODE_DSP),
-                NodeKind::Compressor => ("arrows-minimize", theme::NODE_DSP),
-                NodeKind::Gate => ("door", theme::NODE_DSP),
-                NodeKind::Limiter => ("wall", theme::NODE_DSP),
-                NodeKind::Rack => ("list-details", theme::NODE_UTILITY),
-                NodeKind::ChannelMapper => ("route", theme::NODE_UTILITY),
-                NodeKind::Plugin => ("sliders", theme::NODE_DSP),
-            };
+            let (icon, tint) = (
+                super::node_catalog::kind_icon(logical.kind(), state.source.as_ref()),
+                super::node_catalog::kind_tint(logical.kind()),
+            );
             let mut card = node(&key, &crate::ui::presentation::display_label(state), detail)
                 .at(position.0, position.1)
                 .icon(icon)
