@@ -63,6 +63,19 @@ pub(crate) struct Draft {
     pub error: Option<String>,
     pub message: Option<String>,
     pub pending: Option<Pending>,
+    /// Edit revision for the cached-panel keys (issues #117/#118): the
+    /// Devices and Inspector panels render draft-derived content, but
+    /// keying the draft by value would clone (and compare) a whole
+    /// `AudioSettings` — the override maps make `PartialEq` a full-value
+    /// walk — on every owner notification. Every draft-mutating method
+    /// bumps this counter (`changed`, `committed`, and the whole-draft
+    /// replacement in `inspect_device`, which carries the successor); the
+    /// keys compare the u64. Smallest correct option: no Arc wraps the
+    /// draft, so `PublishRef` identity was not available. Deliberately
+    /// excluded from [`PartialEq`] — content equality still drives
+    /// `SettingsKey`, and a bump without a content change is one harmless
+    /// extra rebuild, never staleness.
+    pub revision: u64,
 }
 
 impl PartialEq for Draft {
@@ -110,6 +123,7 @@ impl Draft {
             error: None,
             message: None,
             pending: None,
+            revision: 0,
         }
     }
 
@@ -117,12 +131,18 @@ impl Draft {
         self.error.is_some() || self.audio != self.original.0 || self.profile != self.original.1
     }
 
+    /// Marks the draft user-edited. Every interactive write (segmented
+    /// choices, value-menu items, the Override/Use-defaults buttons, the
+    /// save entry point) funnels through here right after mutating, so the
+    /// revision bump rides the one call they already share.
     pub fn changed(&mut self) {
+        self.revision += 1;
         self.error = None;
         self.message = None;
     }
 
     pub fn committed(&mut self) {
+        self.revision += 1;
         self.original = (self.audio.clone(), self.profile);
         self.pending = None;
         self.error = None;
@@ -363,7 +383,13 @@ impl StudioShell {
 
     pub(crate) fn inspect_device(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.settings.editor.device.dirty() && self.settings.editor.device.pending.is_none() {
-            self.settings.editor.device = self.current_settings_draft(cx);
+            let mut fresh = self.current_settings_draft(cx);
+            // A fresh draft restarts at revision 0; carrying the successor
+            // keeps the replacement visible to the panel keys even when the
+            // selection (and the captured values) compare equal — the draft
+            // is a render input of the Devices and Inspector panels.
+            fresh.revision = self.settings.editor.device.revision.wrapping_add(1);
+            self.settings.editor.device = fresh;
         }
         self.devices.selected_device = Some(id);
         // Configure is an explicit request for the override editor.

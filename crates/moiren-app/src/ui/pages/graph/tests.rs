@@ -3299,3 +3299,94 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
     });
     finish_service(runtime);
 }
+
+/// == cached panel keys (issues #117/#118) ==
+/// One cached-path frame: notified views re-render, unnotified cached
+/// subtrees replay their paint. `render` (the `render_frame` helper above)
+/// refreshes the whole window and would rebuild every panel regardless of
+/// the caches.
+fn cached_frame(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+}
+
+fn controls_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
+    view.read_with(cx, |shell, cx| {
+        shell.graph_view.controls.read(cx).rebuild_count()
+    })
+}
+
+/// Delivers a snapshot the way the service does — a fresh Arc behind a shell
+/// notification — without a full-window refresh, which rebuilds every panel
+/// regardless of the caches. The graph Arc is shared with the clone, so the
+/// caller's change is the only `ControlsKey` input that moves.
+fn publish_snapshot(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    change: impl FnOnce(&mut crate::service::AppSnapshot),
+) {
+    view.update(cx, |shell, cx| {
+        let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+        change(&mut snapshot);
+        shell
+            .state
+            .update(cx, |state, _| state.snapshot = Arc::new(snapshot));
+        cx.notify();
+    });
+    cached_frame(cx);
+}
+
+/// The canvas world reads the node catalog for the cards' binding chips, so
+/// a catalog-only republish (a device refresh with the graph untouched) must
+/// rebuild the cached page on that notification alone — the value-equal graph
+/// must not hold it back — and later key-neutral notifications must replay
+/// the fresh paint.
+#[gpui_kit::test]
+fn graph_panel_rebuilds_on_a_catalog_only_republish(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::DeviceRow;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    // Absorb the first-notification rebuild the retained-frame bookkeeping
+    // can spend after a full-window refresh, then read the settled baseline.
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    let before = controls_rebuilds(&view, cx);
+
+    publish_snapshot(&view, cx, |snapshot| {
+        std::sync::Arc::make_mut(&mut snapshot.catalog)
+            .outputs
+            .push(DeviceRow {
+                endpoint_id: "probe-speakers".into(),
+                name: "Probe speakers".into(),
+            });
+    });
+    assert_eq!(
+        controls_rebuilds(&view, cx),
+        before + 1,
+        "a catalog-only publish must rebuild the graph page exactly once"
+    );
+    assert!(
+        view.read_with(cx, |shell, cx| shell
+            .state
+            .read(cx)
+            .snapshot
+            .catalog
+            .outputs
+            .iter()
+            .any(|row| row.endpoint_id == "probe-speakers")),
+        "the probe row must be in the published catalog"
+    );
+
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(
+        controls_rebuilds(&view, cx),
+        before + 1,
+        "a notification without a publish must replay the cached page"
+    );
+    finish_service(runtime);
+}
