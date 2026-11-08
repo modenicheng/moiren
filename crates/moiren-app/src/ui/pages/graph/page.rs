@@ -21,6 +21,14 @@ pub(crate) struct GraphPanel;
 #[derive(PartialEq)]
 pub(crate) struct ControlsKey {
     graph: ArcSnapshot<crate::service::GraphSnapshot>,
+    // The canvas world projects the cards' binding chips from the catalog
+    // (`CanvasWorld::positioned`), so a catalog-only republish must rebuild
+    // the page even while the graph compares equal; the ArcSnapshot keeps
+    // the usual publish on the pointer fast path.
+    catalog: ArcSnapshot<crate::service::DeviceCatalog>,
+    // Which rows a catalog offers (WASAPI endpoints vs ASIO drivers) flips
+    // with the backend discriminator, a small Copy enum — keyed directly.
+    backend: moiren_engine::audio_config::AudioBackend,
     generation: crate::service::SessionGeneration,
     phase: SessionPhase,
     desired: Option<crate::service::SessionSpec>,
@@ -45,6 +53,8 @@ impl ControlsKey {
         let snapshot = &shell.state.read(cx).snapshot;
         Self {
             graph: ArcSnapshot::new(snapshot.graph.clone()),
+            catalog: ArcSnapshot::new(snapshot.catalog.clone()),
+            backend: snapshot.audio_settings.backend,
             generation: snapshot.generation,
             phase: snapshot.phase,
             desired: snapshot.desired.clone(),

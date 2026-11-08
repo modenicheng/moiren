@@ -29,6 +29,16 @@ pub(crate) struct InspectorKey {
     page: Page,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
+    /// The device-override rows and the save footer render from the same
+    /// settings-editor device draft as the Devices page, so the same edit
+    /// revision (`Draft::revision`) keys them here — see `DevicesKey`'s
+    /// field for why the revision stands in for the draft value.
+    device_revision: u64,
+    // TODO(#118 follow-up): the node-observation readouts (`node_observation`
+    // in `graph/node_inspector.rs`) render from `node_meters`, which the
+    // metering path updates without notifying the shell — keying them needs
+    // a notify-path change, not just another key field, so they stay unkeyed
+    // here for now.
     node_name_editing: Option<moiren_core::graph::NodeId>,
     editing_value: Option<moiren_core::graph::NodeId>,
     editing_balance: Option<moiren_core::graph::NodeId>,
@@ -60,6 +70,7 @@ impl CachedPanel for InspectorPanel {
             page: shell.presentation.page,
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
+            device_revision: shell.settings.editor.device.revision,
             node_name_editing: shell.inspector.node_name_editing,
             editing_value: shell.mixer.presentation.editing_value,
             editing_balance: shell.mixer.presentation.editing_balance,

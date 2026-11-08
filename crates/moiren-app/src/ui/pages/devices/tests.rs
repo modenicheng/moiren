@@ -408,3 +408,116 @@ fn devices_panel_repaints_a_published_catalog_row_exactly_once(cx: &mut gpui_kit
     );
     finish_service(runtime);
 }
+
+/// The devices page and the inspector render from the settings editor's
+/// device draft, keyed by its edit revision: the Override edit mutates only
+/// that draft, so the one notification it emits must rebuild both cached
+/// panels — the row badge on the Devices page, the stream editor in the
+/// inspector — and follow-up key-neutral notifications must replay the
+/// fresh paint.
+#[cfg(feature = "gpui-test")]
+#[gpui_kit::test]
+fn override_draft_revision_rebuilds_the_devices_and_inspector_panels(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::DeviceRow;
+    use crate::ui::shell::test_harness::{finish_service, settle_panels, test_shell};
+    use gpui_kit::size;
+    use gpui_kit::test::TestWindowExt;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.set_page(crate::ui::pages::Page::Devices, cx);
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    // The core-driver service ships an empty catalog; publish one output
+    // row to configure, exactly as a device refresh would deliver it.
+    publish_snapshot(&view, cx, |snapshot| {
+        std::sync::Arc::make_mut(&mut snapshot.catalog)
+            .outputs
+            .push(DeviceRow {
+                endpoint_id: "probe-speakers".into(),
+                name: "Probe speakers".into(),
+            });
+    });
+    view.update(cx, |shell, cx| {
+        shell.inspect_device("probe-speakers".into(), cx);
+    });
+    cached_frame(cx);
+    assert!(
+        cx.update(|window, _| window.find("device-override").visible()),
+        "the override editor must be showing"
+    );
+    // Absorb the first-notification rebuild the retained-frame bookkeeping
+    // can spend after a full-window refresh, then read both baselines.
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    let devices_before = devices_rebuilds(&view, cx);
+    let inspector_before = view.read_with(cx, |shell, cx| {
+        shell.inspector.panel.read(cx).rebuild_count()
+    });
+
+    // Drive the Override button's handler body directly: `window.click`
+    // runs a full-window `render_frame` internally, which rebuilds every
+    // panel regardless of the caches and would drown the exact count. The
+    // shell notification this handler emits is the cache-path delivery.
+    view.update(cx, |shell, cx| {
+        crate::ui::shell::settings::device_stream_mut(
+            &mut shell.settings.editor.device.audio,
+            crate::ui::shell::settings::Direction::Output,
+            "probe-speakers",
+        );
+        shell.settings.editor.device.changed();
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert_eq!(
+        devices_rebuilds(&view, cx),
+        devices_before + 1,
+        "the draft edit must rebuild the devices page exactly once"
+    );
+    assert_eq!(
+        view.read_with(cx, |shell, cx| shell
+            .inspector
+            .panel
+            .read(cx)
+            .rebuild_count()),
+        inspector_before + 1,
+        "the draft edit must rebuild the inspector exactly once"
+    );
+    // Paint witnesses: the override materialized in the draft and the
+    // per-device stream editor replaced the defaults note.
+    assert!(
+        view.read_with(cx, |shell, _| shell
+            .settings
+            .editor
+            .device
+            .audio
+            .output_overrides
+            .contains_key("probe-speakers")),
+        "the Override edit must write the draft"
+    );
+    assert!(
+        cx.update(|window, _| window.find("device-output-rate-trigger").visible()),
+        "the rebuilt inspector must show the device stream editor"
+    );
+
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(
+        devices_rebuilds(&view, cx),
+        devices_before + 1,
+        "a notification without a draft edit must replay the cached rows"
+    );
+    assert_eq!(
+        view.read_with(cx, |shell, cx| shell
+            .inspector
+            .panel
+            .read(cx)
+            .rebuild_count()),
+        inspector_before + 1,
+        "a notification without a draft edit must replay the cached inspector"
+    );
+    finish_service(runtime);
+}

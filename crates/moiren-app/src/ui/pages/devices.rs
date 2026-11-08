@@ -59,6 +59,12 @@ pub(crate) struct DevicesKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     device_tab: DeviceTab,
     selected_device: Option<String>,
+    /// The rows read the settings editor's device draft (the Override badge
+    /// and the saved-override rows). The draft does not compare cheaply —
+    /// `AudioSettings` carries the override maps — so the key rides the
+    /// draft's edit revision (`Draft::revision`) instead of cloning the
+    /// value; see the field's doc in `settings::model` for the rationale.
+    device_revision: u64,
     exports_scroll: Point<Pixels>,
     /// The device list scrolls inside the cached page (same
     /// scroll-under-cache rationale as `exports_scroll`).
@@ -76,6 +82,7 @@ impl CachedPanel for DevicesPanel {
             snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
+            device_revision: shell.settings.editor.device.revision,
             // The export list scrolls inside the cached page; the offset
             // rides in the key so wheel steps rebuild it (the mixer's
             // precedent for scrollable containers under a cached panel).
