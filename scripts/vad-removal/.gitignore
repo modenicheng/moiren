@@ -1,0 +1,5 @@
+# Closed host-only test outputs, never executable deployment artifacts.
+/logs/
+/task-fixtures/
+/trace-finite-fixture-*/
+/trace-sharing-fixture-*.log

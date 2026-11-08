@@ -122,6 +122,20 @@ jobs:
             libgtk-3-dev libfontconfig1-dev libxkbcommon-x11-dev \
             libwayland-dev libvulkan-dev libxdo-dev
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Test removal preparation without scheduler or native tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $engines = @("$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe", "$PSHOME\pwsh.exe")
+          foreach ($engine in $engines) {
+            foreach ($test in @('test-finite-tool.ps1', 'test-task-boundary.ps1', 'test-trace-boundary.ps1', 'test-trace-finite.ps1')) {
+              & $engine -NoLogo -NoProfile -NonInteractive -File "scripts/vad-removal/$test"
+              if ($LASTEXITCODE -ne 0) { throw "$test failed under $engine ($LASTEXITCODE)." }
+            }
+          }
+          # The real worker-token check requires a nonzero interactive session;
+          # run test-task-process.ps1 explicitly on the non-elevated dev host.
       - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
       # cargo -p takes one package per flag, so expand the list first.
       # No separate `cargo check` pass: `cargo test` compiles the same targets
