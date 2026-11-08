@@ -2860,3 +2860,361 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     view.update(cx, |shell, _| assert!(shell.binding_menu.is_none()));
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn right_click_opens_the_node_context_menu_and_delete_removes_the_node(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{Modifiers, MouseButton};
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let node = add_node(&view, cx, NodeKind::Gain);
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|n| n.node_id == Some(node))
+        .expect("projected card");
+    let at = node_position(&frame, index);
+    // Right press + release within the drag threshold opens the menu.
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    render(cx);
+    cx.update(|window, _| assert!(window.find("context-menu").visible()));
+    // Delete removes the node and closes the menu.
+    cx.update(|window, cx| window.click("context-menu-delete", cx));
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.node(node).is_none()
+        })
+    });
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn context_menu_actions_open_the_inspector_rename_and_tint(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton};
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let node = add_node(&view, cx, NodeKind::Eq);
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|n| n.node_id == Some(node))
+        .expect("projected card");
+    let at = node_position(&frame, index);
+    let right_click = |cx: &mut VisualTestContext| {
+        cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+        render(cx);
+    };
+    // 详情 selects the node and opens the inspector.
+    right_click(cx);
+    cx.update(|window, cx| window.click("context-menu-inspector", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert!(shell.inspector_open);
+        assert_eq!(shell.selected_node, Some(node));
+        assert!(shell.context_menu.is_none());
+    });
+    // 重命名 enters the inline editor seeded with the label.
+    right_click(cx);
+    cx.update(|window, cx| window.click("context-menu-rename", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.node_name_editing, Some(node));
+    });
+    // 调色 rides straight in the menu: the swatches are visible on open
+    // and picking one applies the tint.
+    right_click(cx);
+    cx.update(|window, _| assert!(window.find("node-tint-0").visible()));
+    cx.update(|window, cx| window.click("node-tint-0", cx));
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .and_then(|entry| entry.tint)
+                == Some(0)
+        })
+    });
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn background_right_click_arranges_and_the_three_dot_opens_the_same_menu(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{Modifiers, MouseButton};
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let node = add_node(&view, cx, NodeKind::Gain);
+    // Park the node far off-axis so arrange has somewhere to move it.
+    view.update(cx, |shell, cx| {
+        shell.node_positions.insert(node, (600., 400.));
+        cx.notify();
+    });
+    render(cx);
+    // The three-dot glyph opens the same menu as a right click.
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|n| n.node_id == Some(node))
+        .expect("projected card");
+    let card = frame.nodes[index].card;
+    let dot = frame.bounds.origin
+        + point(
+            px(card.origin.x + card.size.width - 14.),
+            px(card.origin.y + 14.),
+        );
+    cx.simulate_mouse_down(dot, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(dot, MouseButton::Left, Modifiers::default());
+    render(cx);
+    cx.update(|window, _| assert!(window.find("context-menu").visible()));
+    view.update(cx, |shell, _| assert!(shell.context_menu.is_some()));
+    // The occluding menu page closes on any outside press, so the next
+    // background right-click starts from a closed menu.
+    cx.simulate_keystrokes("escape");
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    // A background right-click offers arrange, which moves the parked node
+    // and closes the menu. The fit camera pulls the parked card into view,
+    // so the background press goes to the canvas's lower-left corner, away
+    // from every fitted card.
+    let far = point(px(350.), px(900.));
+    cx.simulate_mouse_down(far, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(far, MouseButton::Right, Modifiers::default());
+    render(cx);
+    cx.update(|window, cx| window.click("context-menu-arrange", cx));
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, _| {
+            shell.node_positions.get(&node).copied() != Some((600., 400.))
+        })
+    });
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn escape_closes_the_context_menu(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let frame = canvas_frame(&view, cx);
+    let at = node_position(&frame, 0);
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    render(cx);
+    cx.update(|window, _| assert!(window.find("context-menu").visible()));
+    cx.simulate_keystrokes("escape");
+    view.update(cx, |shell, _| assert!(shell.context_menu.is_none()));
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let first = add_node(&view, cx, NodeKind::Gain);
+    let second = add_node(&view, cx, NodeKind::Eq);
+    view.update(cx, |shell, cx| {
+        shell.node_positions.insert(first, (0., 0.));
+        shell.node_positions.insert(second, (400., 300.));
+        cx.notify();
+    });
+    render(cx);
+    // World-space geometry (frame.nodes are screen-projected; the snap
+    // math runs in world units).
+    let (grab, raw_dx, raw_dy, first_right, second_height) = view.update(cx, |shell, _cx| {
+        let frame = shell.graph_canvas_frame.read().unwrap().clone();
+        let zoom = frame.camera.zoom;
+        let world_card = |id: moiren_core::graph::NodeId| {
+            let node = frame
+                .world
+                .nodes
+                .iter()
+                .find(|node| node.node_id == Some(id))
+                .expect("projected card");
+            pages::graph_canvas::NodeLayout::new(node).card
+        };
+        let first_card = world_card(first);
+        let second_card = world_card(second);
+        let to_screen = |world: (f32, f32)| {
+            let canvas = frame.camera.world_to_canvas(world);
+            point(
+                px(canvas.0 + f32::from(frame.bounds.origin.x)),
+                px(canvas.1 + f32::from(frame.bounds.origin.y)),
+            )
+        };
+        let grab = to_screen((
+            second_card.origin.x + second_card.size.width / 2.,
+            second_card.origin.y + second_card.size.height / 2.,
+        ));
+        // The raw drop leaves second's left edge 4 screen px short of
+        // first's right edge and its middle exactly on the axis — both
+        // within the 6 screen px threshold, so snap closes both gaps.
+        let raw_dx =
+            (first_card.origin.x + first_card.size.width - 4. / zoom) - second_card.origin.x;
+        let raw_dy = -(second_card.origin.y + second_card.size.height / 2.);
+        (
+            grab,
+            raw_dx,
+            raw_dy,
+            first_card.origin.x + first_card.size.width,
+            second_card.size.height,
+        )
+    });
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+    // The press anchors the drag at the shell's recorded cursor, which may
+    // sit a hair off the frame-derived grab: read the real anchor back and
+    // drop exactly raw_dx/raw_dy (world) away from it.
+    let (anchor, zoom) = view.read_with(cx, |shell, _| {
+        (
+            shell
+                .node_drag
+                .map(|(_, x, y)| (x, y))
+                .expect("card drag armed"),
+            shell.camera.zoom,
+        )
+    });
+    let drop = point(px(anchor.0 + raw_dx * zoom), px(anchor.1 + raw_dy * zoom));
+    cx.simulate_mouse_move(drop, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    view.update(cx, |shell, _| {
+        let guides = shell.drag_guides.expect("aligned drag paints guides");
+        assert!(
+            guides.x.is_some() && guides.y.is_some(),
+            "guides={guides:?}"
+        );
+    });
+    cx.simulate_mouse_up(drop, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, _| {
+        // Guides clear with the gesture; both axes snapped exactly.
+        assert!(shell.drag_guides.is_none());
+        let dx = shell.node_positions[&second].0 - shell.node_positions[&first].0;
+        let dy = shell.node_positions[&second].1;
+        assert!(
+            (dx - first_right).abs() < 0.5,
+            "left edge should align with first's right edge: dx={dx}"
+        );
+        assert!(
+            (dy + second_height / 2.).abs() < 0.5,
+            "middle should sit on the axis: dy={dy}"
+        );
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let first = add_node(&view, cx, NodeKind::Gain);
+    let second = add_node(&view, cx, NodeKind::Eq);
+    view.update(cx, |shell, cx| {
+        shell.node_positions.insert(first, (0., 0.));
+        shell.node_positions.insert(second, (400., 300.));
+        cx.notify();
+    });
+    render(cx);
+    let (grab, raw_dx, first_right) = view.update(cx, |shell, _cx| {
+        let frame = shell.graph_canvas_frame.read().unwrap().clone();
+        let zoom = frame.camera.zoom;
+        let card = |id: moiren_core::graph::NodeId| {
+            let node = frame
+                .world
+                .nodes
+                .iter()
+                .find(|node| node.node_id == Some(id))
+                .expect("projected card");
+            pages::graph_canvas::NodeLayout::new(node).card
+        };
+        let first_card = card(first);
+        let second_card = card(second);
+        let grab_canvas = frame.camera.world_to_canvas((
+            second_card.origin.x + second_card.size.width / 2.,
+            second_card.origin.y + second_card.size.height / 2.,
+        ));
+        let grab = point(
+            px(grab_canvas.0 + f32::from(frame.bounds.origin.x)),
+            px(grab_canvas.1 + f32::from(frame.bounds.origin.y)),
+        );
+        // One move lands second's left edge 4 screen px short of first's
+        // right edge; the snap closes the gap and bakes the offset in.
+        let raw_dx =
+            (first_card.origin.x + first_card.size.width - 4. / zoom) - second_card.origin.x;
+        (grab, raw_dx, first_card.origin.x + first_card.size.width)
+    });
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+    let (anchor, zoom) = view.read_with(cx, |shell, _| {
+        (
+            shell
+                .node_drag
+                .map(|(_, x, y)| (x, y))
+                .expect("card drag armed"),
+            shell.camera.zoom,
+        )
+    });
+    let aligned = point(px(anchor.0 + raw_dx * zoom), px(anchor.1));
+    cx.simulate_mouse_move(aligned, Some(MouseButton::Left), Modifiers::default());
+    // Single-px steps away from the target: within the 6 screen px
+    // threshold the card stays pinned on the alignment, then it lets go
+    // and follows the free path again — a snapped card must not re-match
+    // the same target on every sub-threshold step.
+    for step in 1..=12u32 {
+        let at = point(px(anchor.0 + raw_dx * zoom + step as f32), px(anchor.1));
+        cx.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::default());
+        if step == 4 {
+            view.update(cx, |shell, _| {
+                let guides = shell.drag_guides.expect("still within the threshold");
+                assert!(guides.x.is_some(), "guides={guides:?}");
+                let left = shell.node_positions[&second].0;
+                assert!(
+                    (left - first_right).abs() < 0.1,
+                    "pinned on the alignment: left={left}"
+                );
+            });
+        }
+    }
+    view.update(cx, |shell, _| {
+        // Twelve 1-px steps against a target reached with a 4-px gap: the
+        // free path sits 8 screen px past the alignment, beyond the 6 px
+        // threshold — the snap released and the card follows the cursor.
+        assert!(
+            shell.drag_guides.and_then(|guides| guides.x).is_none(),
+            "guides={:?}",
+            shell.drag_guides
+        );
+        let left = shell.node_positions[&second].0;
+        let expected = first_right + (12. - 4.) / zoom;
+        assert!(
+            (left - expected).abs() < 0.5,
+            "free path: left={left} expected={expected}"
+        );
+    });
+    finish_service(runtime);
+}

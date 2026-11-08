@@ -22,35 +22,17 @@ pub(in crate::ui::window) const EQ_GAIN_SPAN: f64 = 24.;
 pub(in crate::ui::window) const EQ_INSPECTOR_HEIGHT: f32 = 200.;
 pub(in crate::ui::window) const DYNAMICS_INSPECTOR_HEIGHT: f32 = 180.;
 
-/// How the headline fills its host: the detail overlay stretches it over
-/// the flex body; the scrolling inspector column pins a fixed height.
-#[derive(Clone, Copy)]
-pub(in crate::ui::window) enum HeadlineSizing {
-    Fill,
-    Fixed(f32),
-}
-
-fn host(sizing: HeadlineSizing) -> gpui_kit::Div {
-    match sizing {
-        HeadlineSizing::Fill => div().flex_1().min_h_0(),
-        HeadlineSizing::Fixed(height) => div().flex_none().h(px(height)),
-    }
-}
-
-/// The section wrapper stretches with the overlay body; in the scrolling
-/// inspector column it must not grow, or the flex basis collapses it.
-fn wrapper(sizing: HeadlineSizing) -> gpui_kit::Div {
-    match sizing {
-        HeadlineSizing::Fill => div().flex().flex_col().flex_1().min_h_0(),
-        HeadlineSizing::Fixed(_) => div().flex().flex_col().flex_none(),
-    }
+/// The headline host: a fixed height inside the scrolling inspector
+/// column — the stretching overlay retired, so no fill mode remains.
+fn host(height: f32) -> gpui_kit::Div {
+    div().flex_none().h(px(height))
 }
 
 pub(in crate::ui::window) fn eq_section(
     node: NodeId,
     entry: &crate::service::GraphNodeState,
     cx: &Context<StudioShell>,
-    sizing: HeadlineSizing,
+    height: f32,
 ) -> AnyElement {
     let settings = entry.builtin.eq().cloned().unwrap_or_default();
     let this = cx.entity();
@@ -77,9 +59,12 @@ pub(in crate::ui::window) fn eq_section(
                 .child(format!("{q:.1}")),
         )
         .gpui_test_observe();
-    wrapper(sizing)
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
         .child(
-            host(sizing)
+            host(height)
                 .id("eq-editor-host")
                 .relative()
                 .mx(px(theme::SPACE_3))
@@ -302,7 +287,7 @@ fn paint_eq_plot(
 pub(in crate::ui::window) fn dynamics_section(
     kind: moiren_core::graph::NodeKind,
     entry: &crate::service::GraphNodeState,
-    sizing: HeadlineSizing,
+    height: f32,
 ) -> AnyElement {
     let curve = match kind {
         moiren_core::graph::NodeKind::Gate => entry
@@ -318,13 +303,12 @@ pub(in crate::ui::window) fn dynamics_section(
         )),
     }
     .unwrap_or_else(|| pages::graph_canvas::curves::DynamicsCurve::compressor(&Default::default()));
-    // The pointer to the full parameter tail only makes sense in the
-    // detail overlay; the inspector IS the parameter tail.
-    let note =
-        matches!(sizing, HeadlineSizing::Fill).then(|| t!("Full parameters live in the inspector"));
-    wrapper(sizing)
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
         .child(
-            host(sizing)
+            host(height)
                 .id("dynamics-curve")
                 .m(px(theme::SPACE_3))
                 .rounded(px(theme::RADIUS_MD))
@@ -340,14 +324,6 @@ pub(in crate::ui::window) fn dynamics_section(
                     .size_full(),
                 ),
         )
-        .children(note.map(|note| {
-            div()
-                .px(px(theme::SPACE_3))
-                .pb(px(theme::SPACE_2))
-                .text_size(px(theme::TEXT_XS))
-                .text_color(theme::TEXT_FAINT)
-                .child(note)
-        }))
         .into_any_element()
 }
 
