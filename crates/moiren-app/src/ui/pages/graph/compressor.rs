@@ -48,10 +48,12 @@ fn default_position(parameter: CompressorParameter) -> f32 {
 impl StudioShell {
     pub(crate) fn sync_compressor_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.state.read(cx).snapshot.graph.clone();
-        self.compressor
+        self.inspector
+            .compressor
             .inputs
             .retain(|(id, _), _| snapshot.node(*id).is_some());
-        self.compressor
+        self.inspector
+            .compressor
             .sliders
             .retain(|(id, _), _| snapshot.node(*id).is_some());
         let Some(node) = snapshot.graph.nodes().iter().find(|node| {
@@ -67,7 +69,8 @@ impl StudioShell {
         for parameter in CompressorParameter::ALL {
             let value = state.value(parameter);
             let input =
-                self.compressor
+                self.inspector
+                    .compressor
                     .inputs
                     .entry((id, parameter))
                     .or_insert_with(|| {
@@ -139,7 +142,7 @@ impl StudioShell {
             window,
             cx,
             &self.state,
-            &mut self.compressor.sliders,
+            &mut self.inspector.compressor.sliders,
             rows,
             [0., 1., SLIDER_STEP],
             |key, ui, edit, slider| slider_behavior(ui, edit, slider, key.1),

@@ -531,6 +531,7 @@ fn graph_backspace_in_node_name_edits_text_without_removing_node(
     cx.update(|window, cx| {
         view.update(cx, |shell, cx| {
             shell
+                .inspector
                 .node_name
                 .update(cx, |input, cx| input.set_value("Rename me", window, cx));
         });
@@ -540,7 +541,7 @@ fn graph_backspace_in_node_name_edits_text_without_removing_node(
     view.update(cx, |shell, cx| {
         assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), 4);
         assert!(shell.selected_node.is_some());
-        assert_eq!(shell.node_name.read(cx).value().as_str(), "");
+        assert_eq!(shell.inspector.node_name.read(cx).value().as_str(), "");
     });
     finish_service(runtime);
 }
@@ -651,7 +652,7 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
     cx.update(|window, _| assert!(window.find("compressor-input-0").visible()));
     cx.update(|window, cx| {
         view.update(cx, |shell, cx| {
-            let input = &shell.compressor.inputs[&(id, CompressorParameter::Threshold)];
+            let input = &shell.inspector.compressor.inputs[&(id, CompressorParameter::Threshold)];
             input.update(cx, |state, cx| {
                 state.set_value("-30", window, cx);
                 cx.emit(gpui_kit::component::input::InputEvent::PressEnter {
@@ -2945,7 +2946,7 @@ fn context_menu_actions_open_the_inspector_rename_and_tint(cx: &mut gpui_kit::Te
     cx.update(|window, cx| window.click("context-menu-rename", cx));
     render(cx);
     view.update(cx, |shell, _| {
-        assert_eq!(shell.node_name_editing, Some(node));
+        assert_eq!(shell.inspector.node_name_editing, Some(node));
     });
     // 调色 rides straight in the menu: the swatches are visible on open
     // and picking one applies the tint.

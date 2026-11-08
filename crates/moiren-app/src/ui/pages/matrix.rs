@@ -299,7 +299,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot.graph;
     let mut view =
-        panel("matrix-inspector", &shell.inspector_scroll).child(heading(t!("Connection")));
+        panel("matrix-inspector", &shell.inspector.scroll).child(heading(t!("Connection")));
     if let Some((source, destination)) = shell.selected_route {
         if let Some((src, dst, channels)) = find_nodes(snapshot, source, destination) {
             view = view
@@ -417,7 +417,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     }
     panel_host(
         "matrix-inspector",
-        &shell.inspector_scroll,
+        &shell.inspector.scroll,
         view.gpui_test_observe(),
     )
     .into_any_element()

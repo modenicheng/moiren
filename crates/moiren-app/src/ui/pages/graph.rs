@@ -239,12 +239,13 @@ impl StudioShell {
                 .node(node)
                 .map(crate::ui::presentation::display_label)
         };
-        self.node_name_editing = Some(node);
+        self.inspector.node_name_editing = Some(node);
         if let Some(initial) = initial {
-            self.node_name
+            self.inspector
+                .node_name
                 .update(cx, |input, cx| input.set_value(initial, window, cx));
         }
-        let input = self.node_name.clone();
+        let input = self.inspector.node_name.clone();
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }

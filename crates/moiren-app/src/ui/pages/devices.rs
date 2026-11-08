@@ -587,7 +587,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
     let mut view =
-        panel("device-inspector", &shell.inspector_scroll).child(heading(t!("Session resources")));
+        panel("device-inspector", &shell.inspector.scroll).child(heading(t!("Session resources")));
     if let Some(active) = snapshot
         .desired
         .as_ref()
@@ -627,7 +627,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         )));
     panel_host(
         "device-inspector",
-        &shell.inspector_scroll,
+        &shell.inspector.scroll,
         view.gpui_test_observe(),
     )
     .into_any_element()

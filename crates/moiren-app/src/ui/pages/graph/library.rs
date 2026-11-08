@@ -215,7 +215,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         .w_full()
                         .h_full()
                         .px(px(12.))
-                        .track_scroll(&shell.library_scroll)
+                        .track_scroll(&shell.library.scroll)
                         .overflow_y_scroll()
                         .on_scroll_wheel({
                             let this = cx.entity();
@@ -226,7 +226,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         .gpui_test_observe(),
                 )
                 .child(overlay_scrollbar(
-                    &shell.library_scroll,
+                    &shell.library.scroll,
                     "scrollbar-node-library-scroll",
                     ScrollbarAxis::Vertical,
                 )),
@@ -262,7 +262,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
         .items_center()
         .gap(px(2.))
         .py(px(10.))
-        .track_scroll(&shell.library_rail_scroll)
+        .track_scroll(&shell.library.rail_scroll)
         .overflow_y_scroll()
         .on_scroll_wheel({
             let this = this.clone();
@@ -317,7 +317,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
         .border_color(theme::HAIRLINE)
         .child(rail.gpui_test_observe())
         .child(overlay_scrollbar(
-            &shell.library_rail_scroll,
+            &shell.library.rail_scroll,
             "scrollbar-library-rail-scroll",
             ScrollbarAxis::Vertical,
         ))

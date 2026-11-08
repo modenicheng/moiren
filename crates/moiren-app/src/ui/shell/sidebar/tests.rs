@@ -21,17 +21,17 @@ fn cached_frame(cx: &mut VisualTestContext) {
 
 fn inspector_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
     view.read_with(cx, |shell, cx| {
-        shell.inspector_panel.read(cx).rebuild_count()
+        shell.inspector.panel.read(cx).rebuild_count()
     })
 }
 
 fn library_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
-    view.read_with(cx, |shell, cx| shell.library_panel.read(cx).rebuild_count())
+    view.read_with(cx, |shell, cx| shell.library.panel.read(cx).rebuild_count())
 }
 
 fn rail_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
     view.read_with(cx, |shell, cx| {
-        shell.library_rail_panel.read(cx).rebuild_count()
+        shell.library.rail_panel.read(cx).rebuild_count()
     })
 }
 
