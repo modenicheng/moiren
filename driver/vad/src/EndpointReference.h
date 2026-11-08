@@ -6,16 +6,14 @@ namespace vad {
 // "MoirenEndpoint-" + 16 hex digits + NUL.
 inline constexpr uint32_t EndpointReferenceUnits = 32;
 
-// Derive the audio interface reference string (and the matching ACX circuit
-// name) from the requested endpoint name. The audio service composes and
-// persists the MMDevice friendly name per endpoint identity, and the device
-// interface reference string participates in that identity: with a fixed
-// reference, a same-ID replacement endpoint returns to the previously
-// composed name and never consumes the properties staged before enable.
-// A name-derived reference gives each requested name a fresh endpoint
-// identity that is composed from the newly staged properties. The hash keeps
-// the reference bounded and charset-safe; display text always comes from the
-// staged properties, never from this string.
+// Current implementation hashes mutable display text into the interface and
+// ACX circuit reference. That reference is an input to Windows endpoint
+// identity: changing it can lose retained endpoint settings. This is not a
+// qualified rename contract. Separate immutable publication identity from the
+// requested name, with explicit adoption of existing references; simply
+// switching installed endpoints to a new constant would also change identity.
+// See docs/validation/2026-11-08-vad-name-identity-contract.md. The hash below
+// remains the historical derivation until publication/migration is implemented.
 inline void EndpointReference(const wchar_t (&name)[MOIREN_VAD_MAX_NAME_UNITS],
     wchar_t (&reference)[EndpointReferenceUnits])
 {

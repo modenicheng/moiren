@@ -48,6 +48,11 @@ and retire their archived test tasks so they cannot relaunch obsolete paths.
 The [November8 cleanup receipt](validation/2026-11-08-reused-obs-cleanup.md)
 records deletion of30redundant trees and retention of the original fixed path;
 its external-process continuity limitation remains explicit.
+The [reused-path helper](validation/2026-11-08-obs-reuse-helper.md) implements
+exclusive live-handle leasing, bounded configuration-only archival and one
+observable launch at that fixed path. Its26file/mocked-boundary tests and actual target
+read-only check do not substitute for wiring the next native acquisition or
+for recording/quality acceptance. Historical copying runners stay retired.
 
 The user performs any required system reboot. The agent must explain the
 observed reason and stop disruptive/native follow-up until the user has
@@ -141,6 +146,13 @@ returns3010 and awaits the user's reboot. Disk/PnP613 metadata is not an
 in-memory transition or cleanup pass. Its29passing offline-reader tests
 cover association/refusal behavior, not a new native trace. No automatic
 reboot, unchanged failed native retry or acceptance-gate change follows.
+
+The [November8 naming identity audit](validation/2026-11-08-vad-name-identity-contract.md)
+confirms that the current name-derived interface/circuit reference conflicts
+with retaining Windows endpoint identity/settings. Existing tests enforce that
+reference change and therefore do not establish S4 preservation. Separate
+immutable publication identity, installed-endpoint adoption and actual mutable
+Windows name publication; a refusal-only safeguard does not complete S4.
 
 | Slice | Current evidence | Remaining acceptance |
 | --- | --- | --- |

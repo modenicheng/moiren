@@ -16,6 +16,21 @@ visible-input acceptance, not as a blanket gate for SSH, CLI, metadata or
 noninteractive audio work. Those still require their actual token/session/
 device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
+## Reused tools and naming contract - 2026-11-08
+
+The [OBS helper receipt](../../docs/validation/2026-11-08-obs-reuse-helper.md)
+adds fixed-path, exclusive-lease reuse without executable copies.26focused
+tests and the final target read-only check pass; this is not OBS launch,
+recording acceptance or proof that a future acquisition is wired to the helper.
+The completed30-copy cleanup is retained separately. No native/audio work
+follows the still-unverified613reboot transition.
+
+The [name/identity audit](../../docs/validation/2026-11-08-vad-name-identity-contract.md)
+confirms that the current display-name-derived interface/circuit reference
+conflicts with Windows identity/settings preservation. Existing tests require
+the conflicting reference change. Only the misleading source explanation is
+corrected here; no publication/migration implementation or S4 pass is claimed.
+
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
 The [deployment and offline-reader receipt](../../docs/validation/2026-11-08-vad-removal-stage-deployment.md)
