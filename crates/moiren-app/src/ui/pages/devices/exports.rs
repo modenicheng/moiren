@@ -3,6 +3,7 @@ use crate::service::{
     ExportAuthorization, ExportDirection, ExportIntent, ExportResourceState, ExportStatus,
     GraphEdit, GraphSnapshot, validate_exports,
 };
+use crate::ui::widgets::overlay_scrollbar::notify_owner;
 use moiren_core::graph::NodeId;
 use moiren_engine::node::VirtualEndpointId;
 use rust_i18n::t;
@@ -216,10 +217,7 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .gap(px(12.))
         .overflow_y_scroll()
         .track_scroll(&shell.devices.exports_scroll)
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        })
+        .on_scroll_wheel(notify_owner(cx.entity()))
         .child(heading(t!("Virtual exports")))
         .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
         .child(creation_controls(shell, cx))

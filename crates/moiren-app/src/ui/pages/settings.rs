@@ -3,7 +3,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::AudioLatencyProfile;
 use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
 use gpui_kit::base::ScrollbarAxis;
@@ -267,10 +267,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                         .min_h_0()
                                         .track_scroll(&shell.settings.scroll)
                                         .overflow_y_scroll()
-                                        .on_scroll_wheel({
-                                            let this = this.clone();
-                                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-                                        })
+                                        .on_scroll_wheel(notify_owner(this.clone()))
                                         .px(px(16.))
                                         .py(px(24.))
                                         // A fixed reading measure, centered: on wide

@@ -3,7 +3,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::{GraphEdit, InputSelection, RequestId};
 use crate::ui::pages::graph::node_catalog::NodeTemplate;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
 use gpui_kit::base::ScrollbarAxis;
 
 #[derive(Clone)]
@@ -217,10 +217,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         .px(px(12.))
                         .track_scroll(&shell.library.scroll)
                         .overflow_y_scroll()
-                        .on_scroll_wheel({
-                            let this = cx.entity();
-                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-                        })
+                        .on_scroll_wheel(notify_owner(cx.entity()))
                         .child(items)
                         .child(session)
                         .gpui_test_observe(),
@@ -264,10 +261,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
         .py(px(10.))
         .track_scroll(&shell.library.rail_scroll)
         .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = this.clone();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
+        .on_scroll_wheel(notify_owner(this.clone()));
     for template in NodeTemplate::ALL {
         let enabled = shell.graph_view.pending_node_spawn.is_none();
         let this = this.clone();
