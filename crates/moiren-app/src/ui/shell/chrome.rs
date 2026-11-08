@@ -1,0 +1,639 @@
+use rust_i18n::t;
+
+use super::*;
+use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
+use controls::*;
+use std::sync::Arc;
+
+pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+    #[cfg(feature = "gpui-test")]
+    {
+        shell.trace.borrow_mut().toolbar_renders += 1;
+    }
+    let this = cx.entity();
+    let state = shell.state.read(cx);
+    // The toolbar's project label shares the status bar's truncation, at a
+    // tighter limit when the window goes compact.
+    let project_label = truncate_name(
+        &shell.project_name,
+        if shell.compact { 16 } else { STATUS_NAME_LIMIT },
+    );
+    let running = matches!(
+        state.snapshot.phase,
+        SessionPhase::Running | SessionPhase::Starting
+    );
+    let mut tabs = div()
+        .id("workspace-tabs")
+        .role(Role::TabList)
+        .flex()
+        .h_full()
+        .items_center();
+    for (id, page) in [
+        ("tab-graph", Page::Graph),
+        ("tab-mixer", Page::Mixer),
+        ("tab-matrix", Page::Matrix),
+        ("tab-devices", Page::Devices),
+    ] {
+        let this = this.clone();
+        tabs = tabs.child(
+            WorkspaceTab::new(id, t!(page.title()))
+                .icon(match page {
+                    Page::Graph => ActionIcon::Graph,
+                    Page::Mixer => ActionIcon::Mixer,
+                    Page::Matrix => ActionIcon::Matrix,
+                    Page::Devices => ActionIcon::Devices,
+                })
+                .active(shell.presentation.page == page && !shell.settings_open)
+                .on_click(move |_, _, cx| this.update(cx, |shell, cx| shell.set_page(page, cx))),
+        );
+    }
+    div()
+        .id("app-toolbar")
+        .flex()
+        .flex_none()
+        .h(px(theme::TOOLBAR_HEIGHT))
+        .items_center()
+        .justify_between()
+        .px(px(theme::SPACE_2))
+        .gap(px(theme::SPACE_2))
+        .bg(theme::SURFACE)
+        .border_b_1()
+        .border_color(theme::BORDER)
+        .child(
+            div()
+                .relative()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_2))
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .window_control_area(WindowControlArea::Drag)
+                        .child(gpui_kit::img("brand/mark.svg").size(px(24.)))
+                        .when(!shell.compact, |v| v.child(heading("Moiren"))),
+                )
+                .child(
+                    ActionButton::new("project-menu", project_label)
+                        .variant(ButtonVariant::Ghost)
+                        .size(ControlSize::Small)
+                        .on_click({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.project_menu = !shell.project_menu;
+                                    cx.notify();
+                                })
+                            }
+                        }),
+                ),
+        )
+        .child(titlebar_drag_region("titlebar-drag-leading"))
+        .child(tabs)
+        .child(titlebar_drag_region("titlebar-drag-trailing"))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    button("transport", if running { t!("Stop") } else { t!("Start") })
+                        .variant(if running {
+                            ButtonVariant::Danger
+                        } else {
+                            ButtonVariant::Primary
+                        })
+                        .disabled(
+                            state.pending_request
+                                || matches!(
+                                    state.snapshot.phase,
+                                    SessionPhase::Stopping
+                                        | SessionPhase::Exiting
+                                        | SessionPhase::Exited
+                                )
+                                || (!running && !state.can_start_transport()),
+                        )
+                        .on_click({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.state.update(cx, |state, _| state.toggle_transport());
+                                    cx.notify();
+                                })
+                            }
+                        }),
+                )
+                .child(
+                    // The gear is the page toggle (click again closes it) but
+                    // carries no active state of its own: the page itself is
+                    // the open indicator, and a lit button beside the
+                    // transport reads as a second stop control.
+                    IconButton::new("open-settings", t!("Settings"), ActionIcon::Settings)
+                        .on_click({
+                            let this = this.clone();
+                            move |_, window, cx| {
+                                this.update(cx, |shell, cx| {
+                                    if shell.settings_open {
+                                        shell.close_settings(window, cx);
+                                    } else {
+                                        shell.open_settings(window, cx);
+                                    }
+                                })
+                            }
+                        }),
+                )
+                .child(
+                    WindowControlButton::new("win-min", WindowAction::Minimize)
+                        .on_click(|_, window, _| window.minimize_window()),
+                )
+                .child(
+                    WindowControlButton::new("win-max", WindowAction::Maximize).on_click(
+                        |_, window, _| {
+                            if let Err(error) = super::native::toggle_maximize(window) {
+                                eprintln!("Moiren maximize: {error}");
+                            }
+                        },
+                    ),
+                )
+                .child(
+                    WindowControlButton::new("win-close", WindowAction::Close).on_click({
+                        let this = cx.entity().downgrade();
+                        move |_, window, cx| {
+                            let _ = this.update(cx, |shell, cx| shell.close_window(window, cx));
+                        }
+                    }),
+                ),
+        )
+        .gpui_test_observe()
+}
+
+/// The chrome panels are siblings of the animated meter views, never cached
+/// parents of the page panels: rebuilding a cached parent forces its nested
+/// caches fresh.
+pub(super) type ToolbarChrome = PanelHost<ToolbarPanel>;
+pub(super) type StatusbarChrome = PanelHost<StatusbarPanel>;
+
+/// Everything the toolbar tree consumes. Shell notifications arrive far more
+/// often than these inputs change (meter pumps are excluded by design — the
+/// meter frames own the animation loops), so the key exists to keep those
+/// notifications from rebuilding the chrome.
+#[derive(PartialEq)]
+pub(crate) struct ToolbarKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    page: Page,
+    compact: bool,
+    project_name: String,
+    pending_request: bool,
+    settings_open: bool,
+}
+
+pub(crate) struct ToolbarPanel;
+
+impl CachedPanel for ToolbarPanel {
+    type Owner = StudioShell;
+    type Key = ToolbarKey;
+
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
+        let state = shell.state.read(cx);
+        Self::Key {
+            snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
+            page: shell.presentation.page,
+            compact: shell.compact,
+            project_name: shell.project_name.clone(),
+            pending_request: state.pending_request,
+            settings_open: shell.settings_open,
+        }
+    }
+
+    fn render(
+        &self,
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        // A cached view is laid out as a root. Give the original flex row its
+        // allocated width explicitly, not its intrinsic content width.
+        div()
+            .size_full()
+            .child(toolbar(shell, cx))
+            .into_any_element()
+    }
+}
+
+/// The status bar projects the published snapshot; the service dedups
+/// publishes, so publish identity is most of the truth. The error summary
+/// also renders `dispatch_error`, which `UiState::try_dispatch` writes
+/// synchronously with no publish behind it — the old error strip's key
+/// carried it for exactly this reason, and the summary inherited the job:
+/// cloned only at capture time so a dispatch failure while the bar stands
+/// still rebuilds on its own notification.
+#[derive(PartialEq)]
+pub(crate) struct StatusbarKey {
+    snapshot: PublishRef<crate::service::AppSnapshot>,
+    dispatch_error: Option<String>,
+}
+
+pub(crate) struct StatusbarPanel;
+
+impl CachedPanel for StatusbarPanel {
+    type Owner = StudioShell;
+    type Key = StatusbarKey;
+
+    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
+        let state = shell.state.read(cx);
+        Self::Key {
+            snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
+            dispatch_error: state.dispatch_error.clone(),
+        }
+    }
+
+    fn render(
+        &self,
+        shell: &mut StudioShell,
+        _window: &mut Window,
+        cx: &mut Context<StudioShell>,
+    ) -> AnyElement {
+        #[cfg(feature = "gpui-test")]
+        {
+            shell.trace.borrow_mut().status_renders += 1;
+        }
+        // A cached view is laid out as a root. Give the original flex row its
+        // allocated width explicitly, not its intrinsic content width.
+        div()
+            .size_full()
+            .child(statusbar(shell, cx).gpui_test_observe())
+            .into_any_element()
+    }
+}
+
+pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
+    // The chrome keeps its keyed `PanelHost` render dedup (`ToolbarChrome`
+    // / `StatusbarChrome` above) but is deliberately NOT `.cached()`-spliced:
+    // the toolbar and status bar carry the window drag regions
+    // (`window_control_area(Drag)`), whose hitboxes are registered during
+    // prepaint and cleared every frame. gpui-fast's splice replays
+    // layout/paint/a11y but not those registrations, so a spliced chrome
+    // would drop its drag regions from the platform's hit test after the
+    // first cache hit — the title bar simply stopped dragging. Both bars
+    // are cheap to rebuild; the pages stay cached.
+    div()
+        .w_full()
+        .h(px(theme::TOOLBAR_HEIGHT))
+        .flex_none()
+        .child(shell.toolbar_chrome.clone())
+        .into_any_element()
+}
+
+pub(super) fn status_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
+    // See `toolbar_for_page`: the status bar's drag region needs a fresh
+    // registration every frame.
+    div()
+        .w_full()
+        .h(px(28.))
+        .flex_none()
+        .child(shell.status_chrome.clone())
+        .into_any_element()
+}
+
+fn titlebar_drag_region(id: &'static str) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_1()
+        .min_w(px(20.0))
+        .h_full()
+        .window_control_area(WindowControlArea::Drag)
+        .gpui_test_observe()
+}
+
+/// Resolves an endpoint id against the catalog, falling back to the raw id
+/// when the device has vanished since the session started.
+fn endpoint_name<'a>(rows: &'a [crate::service::DeviceRow], endpoint_id: &'a str) -> &'a str {
+    rows.iter()
+        .find(|row| row.endpoint_id == endpoint_id)
+        .map(|row| row.name.as_str())
+        .unwrap_or(endpoint_id)
+}
+
+/// Status-bar names must survive long Windows device names.
+const STATUS_NAME_LIMIT: usize = 24;
+
+/// Truncates `name` to `limit` characters, reserving one slot for the
+/// ellipsis so the result never exceeds the limit. Long Windows device names
+/// and the toolbar's project label share it at their own limits.
+fn truncate_name(name: &str, limit: usize) -> String {
+    if name.chars().count() > limit {
+        format!("{}…", name.chars().take(limit - 1).collect::<String>())
+    } else {
+        name.to_string()
+    }
+}
+
+/// "In name → Out name" for the desired session chain; software sources name
+/// themselves instead of borrowing a device row.
+fn route_label(
+    source: &crate::service::InputSelection,
+    output_endpoint_id: &str,
+    catalog: &crate::service::DeviceCatalog,
+) -> String {
+    let source = match source {
+        crate::service::InputSelection::Physical { endpoint_id } => truncate_name(
+            endpoint_name(&catalog.inputs, endpoint_id),
+            STATUS_NAME_LIMIT,
+        ),
+        crate::service::InputSelection::Process {
+            pid,
+            creation_time_100ns,
+        } => catalog
+            .processes
+            .iter()
+            .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
+            .map(|row| truncate_name(&row.name, STATUS_NAME_LIMIT))
+            .unwrap_or_else(|| format!("#{pid}")),
+        crate::service::InputSelection::Tone { frequency_hz } => {
+            t!("Tone generator · %{hz} Hz", hz = frequency_hz).to_string()
+        }
+    };
+    let sink = truncate_name(
+        endpoint_name(&catalog.outputs, output_endpoint_id),
+        STATUS_NAME_LIMIT,
+    );
+    t!("%{source} → %{sink}", source = source, sink = sink).to_string()
+}
+
+/// One compact audio-format line: rate, period, and the period's duration.
+/// Running monitors report measured device truth; everything else shows the
+/// configured processing values instead of an empty bar.
+fn format_text(
+    rate: u32,
+    period: Option<u32>,
+    precision: moiren_engine::audio_config::ProcessingPrecision,
+) -> String {
+    use moiren_engine::audio_config::ProcessingPrecision;
+    if rate == 0 {
+        return "—".into();
+    }
+    let khz = format!("{:.1}", f64::from(rate) / 1000.);
+    let short = match precision {
+        ProcessingPrecision::F32 => "f32",
+        ProcessingPrecision::F64 => "f64",
+    };
+    match period.filter(|frames| *frames != 0) {
+        Some(frames) => {
+            let ms = f64::from(frames) * 1000. / f64::from(rate);
+            t!(
+                "%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}",
+                khz = khz,
+                frames = frames,
+                ms = format!("{ms:.1}"),
+                precision = short
+            )
+            .to_string()
+        }
+        None => t!(
+            "%{khz} kHz · period unknown · %{precision}",
+            khz = khz,
+            precision = short
+        )
+        .to_string(),
+    }
+}
+
+pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<Div> {
+    let state = shell.state.read(cx);
+    let snapshot = &state.snapshot;
+    let running = snapshot.phase == SessionPhase::Running;
+    let color = if running {
+        theme::SUCCESS
+    } else if snapshot.phase == SessionPhase::Failed {
+        theme::DANGER
+    } else {
+        theme::TEXT_FAINT
+    };
+    let settings = snapshot
+        .active_audio_settings
+        .as_ref()
+        .unwrap_or(&snapshot.audio_settings);
+    let (rate, period) = match crate::ui::presentation::measured_master_output(snapshot) {
+        Some((rate, frames)) => (rate, Some(frames)),
+        None => (
+            settings.processing.sample_rate,
+            Some(settings.processing.block_frames),
+        ),
+    };
+    div()
+        .id("engine-statusbar")
+        .flex()
+        .flex_none()
+        .h(px(28.))
+        .px(px(theme::SPACE_3))
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACE_3))
+        .bg(theme::SURFACE)
+        .border_t_1()
+        .border_color(theme::BORDER)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_3))
+                .min_w_0()
+                .child(badge(crate::ui::presentation::phase_text(snapshot), color))
+                // The unlocated errors' home after the error strip: a
+                // VS Code-style red summary beside the phase badge; clicking
+                // opens the fault popover with the whole group.
+                .when(super::fault_popover::has_unlocated(state), |view| {
+                    view.child(fault_summary(shell, cx))
+                })
+                .when(running || !snapshot.elapsed.is_zero(), |view| {
+                    view.child(label(crate::ui::presentation::elapsed_text(snapshot)))
+                })
+                .when_some(
+                    snapshot.desired.as_ref().map(|desired| {
+                        route_label(
+                            &desired.source,
+                            &desired.output_endpoint_id,
+                            &snapshot.catalog,
+                        )
+                    }),
+                    |view, route| {
+                        view.child(
+                            div()
+                                .id("statusbar-route")
+                                .min_w_0()
+                                .overflow_x_hidden()
+                                .text_size(px(theme::TEXT_SM))
+                                .text_color(theme::TEXT_MUTED)
+                                .child(route)
+                                .gpui_test_observe(),
+                        )
+                    },
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(theme::SPACE_3))
+                .child(
+                    div()
+                        .id("statusbar-format")
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::TEXT_MUTED)
+                        .child(format_text(rate, period, settings.processing.precision))
+                        .gpui_test_observe(),
+                ),
+        )
+}
+
+/// The status bar's error summary: a "!" marker plus the first unlocated
+/// message in danger red, clickable into the fault popover with the whole
+/// graph-wide group. Located faults never land here — they surface on
+/// their own node card or mixer strip.
+fn fault_summary(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+    let this = cx.entity();
+    let summary = super::fault_popover::unlocated_summary(shell.state.read(cx)).unwrap_or_default();
+    div()
+        .id("statusbar-faults")
+        .flex()
+        .flex_none()
+        .min_w_0()
+        .max_w(px(420.))
+        .items_center()
+        .gap(px(6.))
+        .overflow_x_hidden()
+        .cursor_pointer()
+        .on_click(move |_, window, cx| {
+            this.update(cx, |shell, cx| {
+                let position = window.mouse_position();
+                shell.fault_popover = Some(super::fault_popover::FaultPopover {
+                    node: None,
+                    anchor: Bounds {
+                        origin: point(position.x, position.y - px(14.)),
+                        size: size(px(2.), px(14.)),
+                    },
+                });
+                cx.notify();
+            })
+        })
+        .tooltip(|window, cx| {
+            component::tooltip::Tooltip::new(t!("Show error details").into_owned())
+                .build(window, cx)
+        })
+        .child(
+            div()
+                .flex_none()
+                .size(px(14.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::DANGER)
+                .text_color(theme::controls::ON_ACCENT)
+                .text_size(px(9.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("!"),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .overflow_x_hidden()
+                .text_size(px(theme::TEXT_SM))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::DANGER)
+                .child(summary),
+        )
+        .gpui_test_observe()
+}
+
+#[cfg(test)]
+mod tests {
+    // Explicit imports: a glob here would shadow the built-in #[test] with
+    // the gpui test macro re-exported through the window module chain.
+    use super::{format_text, route_label};
+    use crate::service::{DeviceCatalog, DeviceRow, InputSelection};
+    use moiren_engine::audio_config::ProcessingPrecision;
+
+    fn catalog_with(named: &[(&str, &str)]) -> DeviceCatalog {
+        let mut catalog = DeviceCatalog::default();
+        for (endpoint_id, name) in named {
+            catalog.outputs.push(DeviceRow {
+                endpoint_id: (*endpoint_id).into(),
+                name: (*name).into(),
+            });
+        }
+        catalog
+    }
+
+    // Expected strings assert on the interpolated facts (names, numbers,
+    // units) rather than whole translations so they hold under any locale.
+
+    #[test]
+    fn route_names_tone_sources_and_resolves_catalog_rows() {
+        let catalog = catalog_with(&[("out-1", "Studio monitors")]);
+        let label = route_label(
+            &InputSelection::Tone { frequency_hz: 440. },
+            "out-1",
+            &catalog,
+        );
+        assert!(label.contains("440"), "names the frequency: {label}");
+        assert!(label.contains("Studio monitors"), "names the sink: {label}");
+        assert!(label.contains('\u{2192}'), "joins source and sink: {label}");
+    }
+
+    #[test]
+    fn route_falls_back_to_the_endpoint_id_for_vanished_devices() {
+        let label = route_label(
+            &InputSelection::Physical {
+                endpoint_id: "gone-input".into(),
+            },
+            "gone-output",
+            &DeviceCatalog::default(),
+        );
+        assert!(label.contains("gone-input"), "{label}");
+        assert!(label.contains("gone-output"), "{label}");
+    }
+
+    #[test]
+    fn route_truncates_long_windows_device_names() {
+        let catalog = catalog_with(&[(
+            "out-1",
+            "Very Long Manufacturer Name With Many Words (High Definition Audio)",
+        )]);
+        let label = route_label(
+            &InputSelection::Tone { frequency_hz: 440. },
+            "out-1",
+            &catalog,
+        );
+        assert!(label.chars().count() < 60, "label stays compact: {label}");
+        assert!(
+            label.ends_with('\u{2026}'),
+            "truncated name ends with ellipsis"
+        );
+    }
+
+    #[test]
+    fn format_shows_rate_period_duration_and_precision() {
+        let text = format_text(48_000, Some(256), ProcessingPrecision::F32);
+        assert!(text.contains("48.0"), "rate in kHz: {text}");
+        assert!(text.contains("256"), "period in samples: {text}");
+        assert!(text.contains("5.3"), "period duration: {text}");
+        assert!(text.contains("f32"), "precision: {text}");
+    }
+
+    #[test]
+    fn format_admits_an_unknown_period_instead_of_inventing_one() {
+        let text = format_text(96_000, None, ProcessingPrecision::F64);
+        assert!(text.contains("96.0"), "{text}");
+        assert!(text.contains("f64"), "{text}");
+        assert!(!text.contains(" smp"), "no invented period: {text}");
+        assert_eq!(
+            format_text(0, Some(256), ProcessingPrecision::F32),
+            "\u{2014}"
+        );
+    }
+}
