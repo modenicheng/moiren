@@ -1,4 +1,4 @@
-use super::super::Page;
+use super::super::{Page, WorkspaceView};
 use super::model::reorder;
 use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{
@@ -29,7 +29,7 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -93,7 +93,7 @@ fn mixer_header_drag_reorders_channels(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -137,7 +137,7 @@ fn mixer_dock_divider_drag_resizes_the_dock(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -242,7 +242,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -397,7 +397,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -501,7 +501,9 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     );
 
     view.update(cx, |shell, cx| {
-        shell.settings_open = true;
+        shell.presentation.workspace = WorkspaceView::Settings {
+            resume: shell.presentation.workspace.page(),
+        };
         cx.notify();
     });
     cx.update(|window, cx| {
@@ -559,7 +561,7 @@ fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut Te
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -608,7 +610,7 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         shell.state.update(cx, |state, _| {
             let snapshot = std::sync::Arc::make_mut(&mut state.snapshot);
@@ -668,7 +670,7 @@ fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -725,7 +727,7 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -879,7 +881,7 @@ fn mixer_fader_small_drag_survives_strip_selection(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1050,7 +1052,7 @@ fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppC
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1147,7 +1149,7 @@ fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut T
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1320,7 +1322,7 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
     let (view, cx) = crate::ui::shell::test_harness::shell_with_state(cx, state);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1415,7 +1417,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1587,7 +1589,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1723,7 +1725,7 @@ fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1790,7 +1792,7 @@ fn balance_drag_targets_its_own_strip_and_double_click_centers_it(cx: &mut TestA
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1868,7 +1870,7 @@ fn balance_wheel_steps_a_tenth_and_clamps_at_the_limits(cx: &mut TestAppContext)
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1949,7 +1951,7 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2047,7 +2049,7 @@ fn send_numeric_edit_commits_on_blur_and_rejects_invalid(cx: &mut TestAppContext
     cx.simulate_resize(size(px(1440.), px(900.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2130,7 +2132,7 @@ fn send_editor_accepts_the_shared_silence_spellings(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(1440.), px(900.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2266,7 +2268,7 @@ fn fader_readout_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2333,7 +2335,7 @@ fn fader_readout_blur_commits_valid_and_rejects_invalid(cx: &mut TestAppContext)
     cx.simulate_resize(size(px(1600.), px(1000.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2388,7 +2390,7 @@ fn fader_readout_enter_then_stale_blur_commits_once(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(1600.), px(1000.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2443,7 +2445,7 @@ fn fader_readout_commits_when_clicking_outside_the_editor(cx: &mut TestAppContex
     cx.simulate_resize(size(px(1600.), px(1000.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2523,7 +2525,7 @@ fn fader_readout_editor_occupies_the_label_box(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2564,7 +2566,7 @@ fn balance_label_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
     cx.simulate_resize(size(px(1440.), px(900.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2642,7 +2644,7 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2759,7 +2761,7 @@ fn edge_edits_hit_every_strip_cache_equally_after_the_routing_split(cx: &mut Tes
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -2871,7 +2873,7 @@ fn docked_strips_follow_the_dock_scroll(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         // Narrow the pane below one strip so the dock overflows.
         shell.mixer.presentation.dock_width = 100.;
@@ -2928,7 +2930,7 @@ fn mixer_fault_rebuilds_only_its_strip_and_the_badge_opens_the_popover(cx: &mut 
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -3034,7 +3036,7 @@ fn mixer_strip_body_fills_the_strip_and_pins_the_title_to_its_bottom(cx: &mut Te
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -3087,7 +3089,7 @@ fn mixer_strip_hover_tracks_the_strip_for_the_fault_banner(cx: &mut TestAppConte
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });

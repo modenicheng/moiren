@@ -8,7 +8,7 @@ pub(crate) use rust_i18n::t;
 
 pub(crate) use super::actions;
 pub(crate) use super::monitoring::MeterSubscriptions;
-use super::pages::{self, Page};
+use super::pages::{self, Page, WorkspaceView};
 pub(crate) use super::pages::{devices, graph, matrix, mixer, settings};
 pub(crate) use super::state::UiState;
 pub(crate) use super::theme;
@@ -28,10 +28,16 @@ pub(crate) use pages::graph::graph_canvas::Camera;
 pub struct WindowPresentation {
     pub visible: bool,
     pub minimized: bool,
-    pub page: Page,
+    pub workspace: WorkspaceView,
 }
 
 impl WindowPresentation {
+    /// The page the workspace is on — the shown page, or the one Settings
+    /// resumes to while it replaces the workspace ([`WorkspaceView::page`]).
+    pub fn page(&self) -> Page {
+        self.workspace.page()
+    }
+
     pub fn show(&mut self) {
         self.visible = true;
         self.minimized = false;
@@ -169,7 +175,6 @@ pub struct StudioShell {
     pub(crate) selection: graph::Selection,
     pub(crate) press: PressTracker,
     pub(crate) metering: MeteringInfra,
-    pub(crate) settings_open: bool,
     pub(crate) settings: settings::SettingsPageState,
     /// Live preference values plus the quiet-save machinery (design 20 §4).
     pub(crate) preferences: preferences::PreferenceStore,
@@ -367,7 +372,6 @@ impl StudioShell {
             },
             selection: graph::Selection::default(),
             press: PressTracker::default(),
-            settings_open: false,
             settings: settings::SettingsPageState {
                 editor: settings,
                 menu: None,
@@ -468,7 +472,8 @@ impl StudioShell {
         shell.autosave.stamp = autosave::AutosaveStamp::capture(&shell, cx);
         cx.observe_window_bounds(window, |shell, window, _| {
             if shell.presentation.visible {
-                shell.window_state = desktop::capture_window_state(window, shell.presentation.page);
+                shell.window_state =
+                    desktop::capture_window_state(window, shell.presentation.page());
             }
         })
         .detach();
@@ -584,8 +589,10 @@ impl StudioShell {
         let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
-            && !self.settings_open
-            && matches!(self.presentation.page, Page::Graph | Page::Mixer)
+            && matches!(
+                self.presentation.workspace,
+                WorkspaceView::Page(Page::Graph | Page::Mixer)
+            )
             && snapshot.phase == SessionPhase::Running
     }
 
@@ -601,7 +608,7 @@ impl StudioShell {
         // though: a grab that outlived the page (some lifecycle path missed
         // the mouse-up) must not starve the control-side poll, which is the
         // only meter pump the pages without hot layers have.
-        (self.drag_active() && self.presentation.page == Page::Graph)
+        (self.drag_active() && self.presentation.page() == Page::Graph)
             || (self.frames_eligible(cx) && self.metering.frame_demand.any())
     }
 
@@ -699,9 +706,10 @@ impl StudioShell {
         // its closing mouse-up (the new page's background has no canvas
         // handlers); cancel it here or it stays armed across pages.
         self.cancel_active_gesture(cx);
-        self.presentation.page = page;
+        // Selecting a tab also leaves the Settings page: the tab strip stays
+        // clickable while Settings shows, and a click switches away from it.
+        self.presentation.workspace = WorkspaceView::Page(page);
         self.window_state.workspace = desktop::workspace(page);
-        self.settings_open = false;
         self.chrome.project_menu = false;
         #[cfg(feature = "gpui-test")]
         if let Some(cell) = &self.test_page {
@@ -712,7 +720,7 @@ impl StudioShell {
 
     fn prepare_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.presentation.visible {
-            self.window_state = desktop::capture_window_state(window, self.presentation.page);
+            self.window_state = desktop::capture_window_state(window, self.presentation.page());
         }
         self.presentation.hide_to_tray();
         self.metering
@@ -827,7 +835,14 @@ impl Render for StudioShell {
         }
         #[cfg(feature = "gpui-test")]
         if let Some(page) = &self.test_page {
-            self.presentation.page = page.read(cx).page;
+            // The cell drives the page only: an open Settings page keeps its
+            // open state across the sync and merely resumes to the cell's
+            // page, exactly as the old page-only write did.
+            let page = page.read(cx).page;
+            self.presentation.workspace = match self.presentation.workspace {
+                WorkspaceView::Settings { .. } => WorkspaceView::Settings { resume: page },
+                WorkspaceView::Page(_) => WorkspaceView::Page(page),
+            };
         }
         let compact = f32::from(window.viewport_size().width) < 1200.;
         if compact != self.chrome.compact {
@@ -836,7 +851,7 @@ impl Render for StudioShell {
         }
         self.chrome.compact = compact;
         let visible =
-            window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
+            window.is_visible() && matches!(self.presentation.page(), Page::Graph | Page::Mixer);
         // Meter pumping lives in the pages' dedicated meter-frame views
         // (Graph and Mixer each own one), so animation frames no longer
         // notify this root. A drawn frame still rebuilds the root element;
@@ -846,7 +861,7 @@ impl Render for StudioShell {
         // which re-register on a cache rebuild. Clearing on an ordinary
         // frame would unsubscribe meters that remain visible; other pages
         // hold no meter demand of their own.
-        if !matches!(self.presentation.page, Page::Graph | Page::Mixer) {
+        if !matches!(self.presentation.page(), Page::Graph | Page::Mixer) {
             self.metering.meter_points.set((false, false));
             self.metering.node_meter_points.borrow_mut().clear();
         }
@@ -868,29 +883,28 @@ impl Render for StudioShell {
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT_MD))
             .child(chrome::toolbar_for_page(self, window))
-            .child(
-                div()
+            .child({
+                // Settings is a workspace page, not an overlay: it
+                // replaces the page + inspector column entirely, so a
+                // canvas gesture can never reach a hidden workspace.
+                let row = div()
                     .id("workspace-row")
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .min_w_0()
-                    // Settings is a workspace page, not an overlay: it
-                    // replaces the page + inspector column entirely, so a
-                    // canvas gesture can never reach a hidden workspace.
-                    .when(self.settings_open, |row| {
-                        row.child(settings::mount(self, window))
-                    })
-                    .when(!self.settings_open, |row| {
-                        row.child(match self.presentation.page {
+                    .min_w_0();
+                match self.presentation.workspace {
+                    WorkspaceView::Settings { .. } => row.child(settings::mount(self, window)),
+                    WorkspaceView::Page(page) => row
+                        .child(match page {
                             Page::Graph => graph::page::mount(self, window),
                             Page::Mixer => mixer::page::page(self, window, cx),
                             Page::Matrix => matrix::page(self, cx),
                             Page::Devices => devices::mount(self, window, cx),
                         })
-                        .child(sidebar::inspector_host(self, window, cx))
-                    }),
-            )
+                        .child(sidebar::inspector_host(self, window, cx)),
+                }
+            })
             .child(chrome::status_for_page(self, window))
             // Clicking anywhere outside an open inline editor commits it, so
             // saving never requires Enter. Editors stop presses inside their
@@ -1027,7 +1041,7 @@ impl StudioShell {
                 state.snapshot.graph.can_undo
             }
         };
-        if !can_step || self.settings_open {
+        if !can_step || self.presentation.workspace.is_settings() {
             return;
         }
         // A focused text field owns ctrl-z; undoing the graph out from under
@@ -1058,9 +1072,10 @@ impl StudioShell {
     /// Without this, clicking any button or panel leaves keystrokes routed to
     /// a stale focus target and Delete appears dead.
     fn keep_graph_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings_open
-            || self.presentation.page != Page::Graph
-            || self.graph_view.focus.contains_focused(window, cx)
+        if !matches!(
+            self.presentation.workspace,
+            WorkspaceView::Page(Page::Graph)
+        ) || self.graph_view.focus.contains_focused(window, cx)
         {
             return;
         }

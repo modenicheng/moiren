@@ -997,7 +997,7 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     view.update(cx, |shell, cx| {
         shell.selection.node = Some(node);
         shell.chrome.inspector_open = true;
-        shell.presentation.page = pages::Page::Graph;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Graph);
         shell.metering.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
     });
@@ -1006,7 +1006,7 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     // pump gate still open and the node still selected, the demand must
     // release there instead of riding the selection forever (SD-9).
     view.update(cx, |shell, cx| {
-        shell.presentation.page = pages::Page::Matrix;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Matrix);
         shell.metering.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
     });
@@ -1021,7 +1021,7 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     // Back on the Graph page the meter surface returns and takes the
     // selection's demand with it.
     view.update(cx, |shell, cx| {
-        shell.presentation.page = pages::Page::Graph;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Graph);
         shell.metering.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
     });
@@ -2030,7 +2030,9 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
 
     // The settings overlay must stop the meter frame loop.
     view.update(cx, |shell, cx| {
-        shell.settings_open = true;
+        shell.presentation.workspace = pages::WorkspaceView::Settings {
+            resume: shell.presentation.workspace.page(),
+        };
         cx.notify();
     });
     cx.update(|window, cx| {

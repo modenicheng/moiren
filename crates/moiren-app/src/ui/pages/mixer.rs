@@ -31,7 +31,7 @@ impl StudioShell {
         // gesture, not that the current page's inspector paints the node.
         let inspector_selected = if visible
             && self.chrome.inspector_open
-            && matches!(self.presentation.page, Page::Graph | Page::Mixer)
+            && matches!(self.presentation.page(), Page::Graph | Page::Mixer)
             && let Some(selected) = self.selection.node
             && self
                 .state
@@ -49,7 +49,7 @@ impl StudioShell {
         let preferences = self.preferences.values.meters;
         // Only the graph card paints a spectrum body: a Mixer strip or an
         // inspector selection must not keep an analyzer's FFT demanded.
-        let spectra_visible = visible && self.presentation.page == Page::Graph;
+        let spectra_visible = visible && self.presentation.page() == Page::Graph;
         self.state.update(cx, |state, _| {
             state.node_meters.set_preferences(preferences);
             // Borrow the registered set straight through: the pump runs at

@@ -351,14 +351,16 @@ impl StudioShell {
             self.settings.editor.global = self.current_settings_draft(cx);
         }
         self.settings.editor.previous_focus = window.focused(cx);
-        self.settings_open = true;
+        self.presentation.workspace = WorkspaceView::Settings {
+            resume: self.presentation.workspace.page(),
+        };
         self.chrome.project_menu = false;
         window.focus(&self.settings.editor.focus, cx);
         cx.notify();
     }
 
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_open = false;
+        self.presentation.workspace = WorkspaceView::Page(self.presentation.workspace.page());
         self.settings.menu = None;
         if let Some(focus) = self.settings.editor.previous_focus.take() {
             window.focus(&focus, cx);
@@ -368,10 +370,22 @@ impl StudioShell {
         cx.notify();
     }
 
+    /// The gear's click: flips between the workspace page and the Settings
+    /// page that replaces it.
+    pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.presentation.workspace.is_settings() {
+            self.close_settings(window, cx);
+        } else {
+            self.open_settings(window, cx);
+        }
+    }
+
     pub(crate) fn keep_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The modal is a sibling of the retained workspace. Moving focus also
         // removes graph Delete/Escape handlers from the keyboard dispatch path.
-        if self.settings_open && !self.settings.editor.focus.contains_focused(window, cx) {
+        if self.presentation.workspace.is_settings()
+            && !self.settings.editor.focus.contains_focused(window, cx)
+        {
             window.focus(&self.settings.editor.focus, cx);
         }
     }
