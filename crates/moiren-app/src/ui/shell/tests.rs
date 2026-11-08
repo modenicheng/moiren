@@ -59,8 +59,8 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             shell.camera.pan_x = 84.0;
             shell.sidebar_open = true;
             shell.inspector_open = true;
-            shell.device_tab = super::devices::DeviceTab::Inputs;
-            shell.selected_device = Some("selected-input".into());
+            shell.devices.device_tab = super::devices::DeviceTab::Inputs;
+            shell.devices.selected_device = Some("selected-input".into());
             shell.node_positions.insert(test_node, (12.0, 34.0));
             shell.project_name = "Keep candidate".into();
             shell.mixer.order.reverse();
@@ -102,10 +102,13 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
                     "reopen must preserve manually opened compact drawers"
                 );
                 assert!(matches!(
-                    shell.device_tab,
+                    shell.devices.device_tab,
                     super::devices::DeviceTab::Inputs
                 ));
-                assert_eq!(shell.selected_device.as_deref(), Some("selected-input"));
+                assert_eq!(
+                    shell.devices.selected_device.as_deref(),
+                    Some("selected-input")
+                );
             })
             .unwrap();
     });
@@ -371,7 +374,7 @@ fn settle_settings(view: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::Visu
         });
         cx.update(|window, cx| window.render_frame(cx));
         cx.run_until_parked();
-        view.update(cx, |shell, _| !shell.settings.busy())
+        view.update(cx, |shell, _| !shell.settings.editor.busy())
     });
     cx.run_until_parked();
 }
@@ -417,7 +420,7 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
     cx.update(|window, cx| {
         view.update(cx, |shell, cx| {
             assert!(
-                shell.settings.focus.contains_focused(window, cx),
+                shell.settings.editor.focus.contains_focused(window, cx),
                 "Tab remains inside the page"
             );
             assert_eq!(shell.state.read(cx).snapshot.graph.graph.nodes().len(), 4);
@@ -433,7 +436,7 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
         view.update(cx, |shell, cx| {
             assert_eq!(shell.presentation.page, pages::Page::Graph);
             assert!(!shell.settings_open);
-            assert!(!shell.settings.focus.contains_focused(window, cx));
+            assert!(!shell.settings.editor.focus.contains_focused(window, cx));
             assert_eq!(
                 (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
                 (123., 87., 0.89),
@@ -493,7 +496,7 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         assert!(window.try_find("settings-restart").is_none());
     });
     view.update(cx, |shell, cx| {
-        assert!(shell.settings.global.dirty());
+        assert!(shell.settings.editor.global.dirty());
         assert_eq!(
             shell
                 .state
@@ -520,7 +523,7 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
             ProcessingPrecision::F64
         );
         assert_eq!(state.snapshot.audio_settings.processing.block_frames, 4096);
-        assert!(!shell.settings.global.dirty());
+        assert!(!shell.settings.editor.global.dirty());
         assert_eq!(shell.project_message.as_deref(), Some("Preferences saved"));
     });
     assert_eq!(
@@ -540,8 +543,8 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
     cx.run_until_parked();
     view.update(cx, |shell, _| {
         assert_eq!(shell.density, super::Density::Compact);
-        assert!(!shell.settings.global.dirty());
-        assert!(shell.settings.global.error.is_none());
+        assert!(!shell.settings.editor.global.dirty());
+        assert!(shell.settings.editor.global.error.is_none());
     });
     assert_eq!(
         crate::project::load_preferences_at(&path).unwrap().density,
@@ -578,7 +581,7 @@ fn meter_preferences_apply_immediately_from_the_interface_page(cx: &mut gpui_kit
     view.update(cx, |shell, _| {
         assert_eq!(shell.preferences.meters.falloff, MeterFalloff::Moderate);
         assert_eq!(shell.preferences.meters.peak_hold, PeakHold::Off);
-        assert!(!shell.settings.global.dirty());
+        assert!(!shell.settings.editor.global.dirty());
     });
     let saved = crate::project::load_preferences_at(&path).unwrap();
     assert_eq!(saved.meters.falloff, MeterFalloff::Moderate);
@@ -696,15 +699,15 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
         );
         // Dirty device A, then save a global default and an unrelated override.
         super::settings::device_stream_mut(
-            &mut shell.settings.device.audio,
+            &mut shell.settings.editor.device.audio,
             Direction::Output,
             "output-a",
         )
         .buffer_frames = Some(128);
-        shell.settings.global = shell.current_settings_draft(cx);
-        shell.settings.global.audio.output.sample_rate = Some(88_200);
+        shell.settings.editor.global = shell.current_settings_draft(cx);
+        shell.settings.editor.global.audio.output.sample_rate = Some(88_200);
         super::settings::device_stream_mut(
-            &mut shell.settings.global.audio,
+            &mut shell.settings.editor.global.audio,
             Direction::Input,
             "input-b",
         )
@@ -887,7 +890,7 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
                 .sample_rate,
             48_000
         );
-        shell.settings.global.profile = AudioLatencyProfile::Balanced;
+        shell.settings.editor.global.profile = AudioLatencyProfile::Balanced;
     });
     cx.update(|window, cx| {
         window.click("processing-rate-0", cx);
@@ -913,7 +916,7 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
     );
     assert_eq!(requests[requests.len() - 1], AppRequest::ApplyGraph);
     view.update(cx, |shell, cx| {
-        assert!(shell.settings.global.pending.is_some());
+        assert!(shell.settings.editor.global.pending.is_some());
         assert_eq!(
             shell
                 .state
@@ -945,11 +948,15 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
     });
     settle_settings(&view, cx);
     view.update(cx, |shell, cx| {
-        assert!(shell.settings.global.dirty());
-        assert_eq!(shell.settings.global.audio.processing.sample_rate, 96_000);
+        assert!(shell.settings.editor.global.dirty());
+        assert_eq!(
+            shell.settings.editor.global.audio.processing.sample_rate,
+            96_000
+        );
         assert!(
             shell
                 .settings
+                .editor
                 .global
                 .error
                 .as_deref()

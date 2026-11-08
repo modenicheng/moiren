@@ -92,7 +92,7 @@ fn owned_vad_rows_bind_in_opposite_app_directions_without_starting_audio(
         view.update(cx, |shell, cx| {
             shell.preferences_path = None;
             shell.presentation.page = crate::ui::pages::Page::Devices;
-            shell.device_tab = if input {
+            shell.devices.device_tab = if input {
                 super::DeviceTab::Inputs
             } else {
                 super::DeviceTab::Outputs
@@ -280,7 +280,7 @@ fn cached_frame(cx: &mut VisualTestContext) {
 
 #[cfg(feature = "gpui-test")]
 fn devices_rebuilds(view: &Entity<super::super::StudioShell>, cx: &mut VisualTestContext) -> usize {
-    view.read_with(cx, |shell, cx| shell.devices_panel.read(cx).rebuild_count())
+    view.read_with(cx, |shell, cx| shell.devices.panel.read(cx).rebuild_count())
 }
 
 /// Delivers a snapshot the way the service does — a fresh Arc behind a shell

@@ -131,8 +131,7 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 pub struct StudioShell {
     pub(crate) state: Entity<UiState>,
     pub(crate) settings_open: bool,
-    pub(crate) settings: settings::SettingsEditor,
-    pub(crate) settings_menu: Option<settings::ValueMenu>,
+    pub(crate) settings: settings::SettingsPageState,
     pub(crate) project_menu: bool,
     pub(crate) sidebar_open: bool,
     pub(crate) inspector_open: bool,
@@ -151,9 +150,7 @@ pub struct StudioShell {
     pub(crate) autosave_timer: Option<Task<()>>,
     pub(crate) autosave_write:
         Option<std::sync::Arc<std::sync::Mutex<autosave::AutosaveWriteCompletion>>>,
-    pub(crate) device_tab: devices::DeviceTab,
-    pub(crate) selected_device: Option<String>,
-    pub(crate) export_controls: devices::ExportControls,
+    pub(crate) devices: devices::DevicesPageState,
     pub(crate) selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     pub(crate) meters: MeterSubscriptions,
     pub(crate) node_meter_points:
@@ -216,15 +213,11 @@ pub struct StudioShell {
     pub(crate) inspector_scroll: ScrollHandle,
     pub(crate) library_scroll: ScrollHandle,
     pub(crate) library_rail_scroll: ScrollHandle,
-    pub(crate) settings_scroll: ScrollHandle,
-    pub(crate) device_list_scroll: ScrollHandle,
-    pub(crate) device_override_scroll: ScrollHandle,
     pub(crate) binding_menu_scroll: ScrollHandle,
     /// The dock pane's own scroll: docked strips key their cached paint on
     /// this offset, so a dock scroll rebuilds them instead of leaving the
     /// main row's stale coordinates on screen.
     pub(crate) dock_scroll: ScrollHandle,
-    pub(crate) exports_scroll: ScrollHandle,
     pub(crate) mixer: mixer::MixerPresentation,
     /// Render/frame instrumentation for the whole window (shell, chrome,
     /// every page), written by ui_capture and the gpui-test assertions.
@@ -272,8 +265,6 @@ pub struct StudioShell {
     /// canvases each frame and read by the sidebar hot layer.
     pub(crate) inspector_meters: sidebar::InspectorMeterFrame,
     pub(crate) inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
-    pub(crate) devices_panel: Entity<devices::DevicesPanelHost>,
-    pub(crate) settings_panel: Entity<settings::SettingsPanelHost>,
     pub(crate) inspector_panel: Entity<sidebar::InspectorPanelHost>,
     pub(crate) library_panel: Entity<sidebar::LibraryPanelHost>,
     pub(crate) library_rail_panel: Entity<sidebar::LibraryRailPanelHost>,
@@ -400,8 +391,12 @@ impl StudioShell {
         let mut shell = Self {
             state,
             settings_open: false,
-            settings,
-            settings_menu: None,
+            settings: settings::SettingsPageState {
+                editor: settings,
+                menu: None,
+                scroll: ScrollHandle::new(),
+                panel: settings_panel,
+            },
             project_menu: false,
             sidebar_open: true,
             inspector_open: true,
@@ -417,9 +412,15 @@ impl StudioShell {
             autosave_deadline: None,
             autosave_timer: None,
             autosave_write: None,
-            device_tab: devices::DeviceTab::Outputs,
-            selected_device: None,
-            export_controls,
+            devices: devices::DevicesPageState {
+                device_tab: devices::DeviceTab::Outputs,
+                selected_device: None,
+                export_controls,
+                device_list_scroll: ScrollHandle::new(),
+                device_override_scroll: ScrollHandle::new(),
+                exports_scroll: ScrollHandle::new(),
+                panel: devices_panel,
+            },
             selected_route: None,
             meters,
             node_meter_points: Default::default(),
@@ -453,12 +454,8 @@ impl StudioShell {
             inspector_scroll: ScrollHandle::new(),
             library_scroll: ScrollHandle::new(),
             library_rail_scroll: ScrollHandle::new(),
-            settings_scroll: ScrollHandle::new(),
-            device_list_scroll: ScrollHandle::new(),
-            device_override_scroll: ScrollHandle::new(),
             binding_menu_scroll: ScrollHandle::new(),
             dock_scroll: ScrollHandle::new(),
-            exports_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
             #[cfg(feature = "gpui-test")]
             trace: Default::default(),
@@ -480,8 +477,6 @@ impl StudioShell {
             frame_demand: Default::default(),
             inspector_meters,
             inspector_meter_layer,
-            devices_panel,
-            settings_panel,
             inspector_panel,
             library_panel,
             library_rail_panel,
@@ -913,7 +908,7 @@ impl Render for StudioShell {
             .when(self.binding_menu.is_some(), |v| {
                 v.child(graph::binding_menu_overlay(self, window, cx))
             })
-            .when(self.settings_menu.is_some(), |v| {
+            .when(self.settings.menu.is_some(), |v| {
                 v.child(settings::menu_overlay(self, window, cx))
             })
             .when(self.fault_popover.is_some(), |v| {
@@ -981,7 +976,7 @@ impl StudioShell {
         let mut inputs = vec![self.node_name.clone()];
         inputs.extend(self.mixer.text_input_entities().cloned());
         inputs.extend(self.compressor.inputs.values().cloned());
-        inputs.extend(self.export_controls.input_entities());
+        inputs.extend(self.devices.export_controls.input_entities());
         inputs
     }
 

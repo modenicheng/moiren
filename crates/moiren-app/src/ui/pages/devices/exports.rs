@@ -126,15 +126,18 @@ fn binding_candidate(
 
 impl StudioShell {
     pub(crate) fn sync_export_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.presentation.page != Page::Devices || self.device_tab != DeviceTab::Exports {
+        if self.presentation.page != Page::Devices || self.devices.device_tab != DeviceTab::Exports
+        {
             return;
         }
         let exports = self.state.read(cx).snapshot.graph.exports.clone();
-        self.export_controls
+        self.devices
+            .export_controls
             .names
             .retain(|id, _| exports.iter().any(|export| export.endpoint_id == *id));
         for export in exports {
             let draft = self
+                .devices
                 .export_controls
                 .names
                 .entry(export.endpoint_id)
@@ -212,7 +215,7 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .min_w_0()
         .gap(px(12.))
         .overflow_y_scroll()
-        .track_scroll(&shell.exports_scroll)
+        .track_scroll(&shell.devices.exports_scroll)
         .on_scroll_wheel({
             let this = cx.entity();
             move |_, _, cx| this.update(cx, |_, cx| cx.notify())
@@ -257,7 +260,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         let this = cx.entity();
         choices = choices.child(
             button(id, title)
-                .variant(if shell.export_controls.direction == direction {
+                .variant(if shell.devices.export_controls.direction == direction {
                     ButtonVariant::Primary
                 } else {
                     ButtonVariant::Secondary
@@ -265,7 +268,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 .disabled(pending)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |shell, cx| {
-                        shell.export_controls.direction = direction;
+                        shell.devices.export_controls.direction = direction;
                         cx.notify();
                     });
                 }),
@@ -278,7 +281,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         let this = cx.entity();
         choices = choices.child(
             button(id, title)
-                .variant(if shell.export_controls.channels == channels {
+                .variant(if shell.devices.export_controls.channels == channels {
                     ButtonVariant::Primary
                 } else {
                     ButtonVariant::Secondary
@@ -286,7 +289,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 .disabled(pending)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |shell, cx| {
-                        shell.export_controls.channels = channels;
+                        shell.devices.export_controls.channels = channels;
                         cx.notify();
                     });
                 }),
@@ -307,7 +310,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
             "Endpoint name (1-63 UTF-16 units; no control characters)"
         )))
         .child(
-            component::input::Input::new(&shell.export_controls.name)
+            component::input::Input::new(&shell.devices.export_controls.name)
                 .id("export-create-name")
                 .bg(theme::SURFACE_3)
                 .text_color(theme::TEXT)
@@ -328,14 +331,14 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                             let id = VirtualEndpointId::from_bytes(
                                 *gpui_kit::accesskit::Uuid::new_v4().as_bytes(),
                             );
-                            let name = shell.export_controls.name.read(cx).value();
+                            let name = shell.devices.export_controls.name.read(cx).value();
                             let graph = &shell.state.read(cx).snapshot.graph;
                             let result = create_export(
                                 graph,
                                 id,
-                                shell.export_controls.direction,
+                                shell.devices.export_controls.direction,
                                 &name,
-                                shell.export_controls.channels,
+                                shell.devices.export_controls.channels,
                             );
                             shell.dispatch_exports(result, cx);
                         });
@@ -439,7 +442,7 @@ fn export_row(
             );
         }
         row = row.child(shape);
-        if let Some(draft) = shell.export_controls.names.get(&id) {
+        if let Some(draft) = shell.devices.export_controls.names.get(&id) {
             let this = cx.entity();
             row = row
                 .child(label(t!("Endpoint name")))
@@ -461,7 +464,7 @@ fn export_row(
                     )
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
-                            if let Some(draft) = shell.export_controls.names.get(&id) {
+                            if let Some(draft) = shell.devices.export_controls.names.get(&id) {
                                 let name = draft.input.read(cx).value().to_string();
                                 shell.submit_export_edit(id, IntentEdit::Rename(name), cx);
                             }

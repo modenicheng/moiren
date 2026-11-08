@@ -64,8 +64,8 @@ impl PresentationSnapshot {
             sidebar_open: shell.sidebar_open,
             inspector_open: shell.inspector_open,
             compact: shell.compact,
-            device_tab: shell.device_tab,
-            selected_device: shell.selected_device.take(),
+            device_tab: shell.devices.device_tab,
+            selected_device: shell.devices.selected_device.take(),
             project_path: shell.project_path.take(),
             project_name: std::mem::take(&mut shell.project_name),
             project_message: shell.project_message.take(),
@@ -86,8 +86,8 @@ impl PresentationSnapshot {
         shell.sidebar_open = self.sidebar_open;
         shell.inspector_open = self.inspector_open;
         shell.compact = self.compact;
-        shell.device_tab = self.device_tab;
-        shell.selected_device = self.selected_device;
+        shell.devices.device_tab = self.device_tab;
+        shell.devices.selected_device = self.selected_device;
         shell.project_path = self.project_path;
         shell.project_name = self.project_name;
         shell.project_message = self.project_message;

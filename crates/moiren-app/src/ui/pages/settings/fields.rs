@@ -63,7 +63,7 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(
                 value == selected,
                 Box::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                     this.update(cx, |shell, cx| {
-                        let draft = shell.settings.draft_mut(editor);
+                        let draft = shell.settings.editor.draft_mut(editor);
                         if draft.pending.is_none() {
                             set(draft, value);
                             draft.changed();
@@ -74,7 +74,7 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(
             )
         })
         .collect::<Vec<_>>();
-    segmented_group(shell, id, shell.settings.busy(), items)
+    segmented_group(shell, id, shell.settings.editor.busy(), items)
 }
 
 /// Preference-backed segmented group: clicks apply immediately (and persist
@@ -102,7 +102,7 @@ pub(crate) fn pref_choices<T: Copy + PartialEq + 'static>(
             )
         })
         .collect::<Vec<_>>();
-    segmented_group(shell, id, shell.settings.busy(), items)
+    segmented_group(shell, id, shell.settings.editor.busy(), items)
 }
 
 pub(crate) fn field(title: &str, value: impl IntoElement) -> Div {
@@ -218,10 +218,10 @@ pub(crate) fn select_trigger(
         .density(shell.density)
         .variant(ButtonVariant::Secondary)
         .trailing_icon(ActionIcon::ChevronDown)
-        .disabled(shell.settings.busy())
+        .disabled(shell.settings.editor.busy())
         .on_click(move |event, _, cx| {
             this.update(cx, |shell, cx| {
-                shell.settings_menu = Some(ValueMenu {
+                shell.settings.menu = Some(ValueMenu {
                     editor,
                     target: target.clone(),
                     field,
@@ -250,7 +250,7 @@ pub(crate) fn stream_editor(
     device: Option<&str>,
     cx: &Context<StudioShell>,
 ) -> Div {
-    let draft = shell.settings.draft(editor);
+    let draft = shell.settings.editor.draft(editor);
     let audio = &draft.audio;
     let stream = match (direction, device) {
         (Direction::Input, Some(id)) => audio.effective_input(id),
@@ -349,13 +349,13 @@ pub(crate) fn stream_editor(
 }
 
 pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShell>) -> Div {
-    let draft = shell.settings.draft(editor);
+    let draft = shell.settings.editor.draft(editor);
     let state = shell.state.read(cx);
     let running = state.snapshot.phase == SessionPhase::Running;
     let needs_restart = state.snapshot.active_audio_settings.as_ref() != Some(&draft.audio)
         || state.snapshot.active_latency_profile
             != super::model::expected_active_profile(draft.profile);
-    let busy = shell.settings.busy()
+    let busy = shell.settings.editor.busy()
         || state.pending_request
         || state.snapshot.graph.pending_revision.is_some()
         || matches!(
@@ -421,7 +421,7 @@ pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShe
                                 .disabled(busy || !draft.dirty())
                                 .on_click(move |_, _, cx| {
                                     this.update(cx, |shell, cx| {
-                                        *shell.settings.draft_mut(editor) =
+                                        *shell.settings.editor.draft_mut(editor) =
                                             shell.current_settings_draft(cx);
                                         cx.notify();
                                     })

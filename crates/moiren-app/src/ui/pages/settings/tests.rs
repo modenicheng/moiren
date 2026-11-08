@@ -19,7 +19,7 @@ fn cached_frame(cx: &mut VisualTestContext) {
 
 fn settings_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
     view.read_with(cx, |shell, cx| {
-        shell.settings_panel.read(cx).rebuild_count()
+        shell.settings.panel.read(cx).rebuild_count()
     })
 }
 
@@ -85,11 +85,11 @@ fn settings_panel_repaints_section_and_density_changes_exactly_once(cx: &mut Tes
     );
     let before = settings_rebuilds(&view, cx);
 
-    // Mirrors the nav item click: `shell.settings.section = …` plus a
+    // Mirrors the nav item click: `shell.settings.editor.section = …` plus a
     // plain shell notification (the click path itself re-renders the whole
     // window, which would rebuild every panel regardless of the caches).
     view.update(cx, |shell, cx| {
-        shell.settings.section = Section::Interface;
+        shell.settings.editor.section = Section::Interface;
         cx.notify();
     });
     cached_frame(cx);
@@ -145,6 +145,7 @@ fn settings_page_rebuilds_on_global_draft_but_not_device_draft(cx: &mut TestAppC
         use moiren_engine::audio_config::SAMPLE_RATES;
         shell
             .settings
+            .editor
             .draft_mut(Editor::Global)
             .audio
             .processing
@@ -162,6 +163,7 @@ fn settings_page_rebuilds_on_global_draft_but_not_device_draft(cx: &mut TestAppC
         use moiren_engine::audio_config::SAMPLE_RATES;
         shell
             .settings
+            .editor
             .draft_mut(Editor::Device)
             .audio
             .processing

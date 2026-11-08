@@ -79,10 +79,10 @@ impl StudioShell {
                 if shell.preference_save_revision == revision {
                     if report
                         && let Err(error) = &result
-                        && let Some((saved_revision, editor)) = shell.settings.save_revision
+                        && let Some((saved_revision, editor)) = shell.settings.editor.save_revision
                         && saved_revision == revision
                     {
-                        let draft = shell.settings.draft_mut(editor);
+                        let draft = shell.settings.editor.draft_mut(editor);
                         draft.error = Some(
                             t!("Could not save preferences: %{error}", error = error).to_string(),
                         );
