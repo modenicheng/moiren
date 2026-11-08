@@ -73,11 +73,14 @@ function Observe-RemovalManagedSession {
     if($null -ne $Session.ProbeOwner){$retainedProbe=Observe-RemovalProbe $Session.ProbeOwner}
     try {
         $workerPath=Join-Path $root 'worker-start.json'
-        if(-not $Session.Error -and -not $o.WorkerBindingKnown -and (Test-Path -LiteralPath $workerPath)){
+        # A root refusal closes admission, not observation. Late original
+        # receipts may still bind retained processes for natural-exit evidence.
+        if(-not $o.WorkerBindingKnown -and $null -eq $o.WorkerProcess -and -not $o.WorkerBindingError -and
+            (Test-Path -LiteralPath $workerPath)){
             Attach-RemovalWorkerProcess $o (Read-RemovalJsonBounded $workerPath)
         }
         $readyPath=Join-Path $root 'probe-ready.json'
-        if(-not $Session.Error -and $o.WorkerBindingKnown -and $null -eq $Session.ProbeOwner -and (Test-Path -LiteralPath $readyPath)){
+        if($o.WorkerBindingKnown -and $null -eq $Session.ProbeOwner -and (Test-Path -LiteralPath $readyPath)){
             $s=New-RemovalProbeSpec -Executable $Session.Config.Executable -ExpectedSha256 $Session.Config.ExpectedSha256 `
                 -RunDirectory $root -Nonce $o.Spec.Nonce -SessionId $o.Spec.SessionId -Sid $o.Spec.Sid `
                 -ControllerPid $Session.ControllerPid -ControllerCreationUtcTicks $Session.ControllerCreationUtcTicks `

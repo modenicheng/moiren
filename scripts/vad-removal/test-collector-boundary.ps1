@@ -111,6 +111,28 @@ Case 'real-final-admission-guard-refreshes-exact-session-and-rejects-stale-provi
  Reject {&$actualTraceAdmission $session}
  Check ($script:refreshes-eq2) 'Detached readback was substituted before refresh'
 }
+Case 'root-refusal-still-binds-late-original-owners-without-admitting-audio' {
+ $run=Join-Path $root 'late-root-refusal';$null=[IO.Directory]::CreateDirectory($run)
+ $script:events=New-Object Collections.Generic.List[string]
+ $session=[pscustomobject]@{RunDirectory=$run;ProbeOwner=$null;Error='Root input provenance changed';Terminal=$null;LastResult=$null
+  ControllerPid=$PID;ControllerCreationUtcTicks=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks
+  TaskOwner=[pscustomobject]@{WorkerBindingKnown=$false;WorkerBindingError=$null;WorkerProcess=$null;WorkerPid=5678;WorkerCreationUtcTicks=638981280000000001L
+   Spec=[pscustomobject]@{Nonce='a'*32;SessionId=2;Sid='S-1-5-21-1-2-3-1001'}}
+  Config=@{Executable='C:\fixture.exe';ExpectedSha256='A'*64;ProbeArguments=@('live-vad')}}
+ foreach($name in @('worker-start.json','probe-ready.json')){Write-RemovalJsonOnce (Join-Path $run $name) @{fixture=$name}}
+ function Attach-RemovalWorkerProcess {param($Owner,$Receipt)$script:events.Add('worker');$Owner.WorkerProcess=[pscustomobject]@{fixture='retained'};$Owner.WorkerBindingKnown=$true}
+ function New-RemovalProbeSpec {param($Executable,$ExpectedSha256,$RunDirectory,$Nonce,$SessionId,$Sid,$ControllerPid,$ControllerCreationUtcTicks,$WorkerPid,$WorkerCreationUtcTicks)return @{fixture='original-spec'}}
+ function New-RemovalProbeOwner {param($Spec)return [pscustomobject]@{BindingKnown=$false;AdmissionAttempted=$false;Process=$null;Spec=$Spec}}
+ function Attach-RemovalProbeProcess {param($Owner,$Receipt)$script:events.Add('probe');$Owner.BindingKnown=$true}
+ function Admit-RemovalProbe {param($Owner)$script:events.Add('UNSAFE-ADMIT');$Owner.AdmissionAttempted=$true}
+ function Observe-RemovalProbe {param($Owner)return @{ExitKnown=$false;NeedsObservation=$true}}
+ function Observe-RemovalRetainedWorker {param($Owner)return @{NeedsObservation=$true}}
+ function Get-RemovalTaskObservation {param($Owner)return @{fixture='original-task'}}
+ $r=Observe-RemovalManagedSession $session
+ Check (($script:events-join',')-ceq'worker,probe'-and$r.NeedsObservation-and-not$session.ProbeOwner.AdmissionAttempted) 'Root failure lost arriving original process or admitted audio.'
+ $original=$session.ProbeOwner;$null=Observe-RemovalManagedSession $session
+ Check ([Object]::ReferenceEquals($original,$session.ProbeOwner)-and$script:events.Count-eq2) 'Drain-only observation reacquired owners.'
+}
 $checks|ConvertTo-Json -Depth 6
 $failed=@($checks|Where-Object{-not$_.passed}).Count
 Write-Output ('CHECKS='+$checks.Count+' FAILED='+$failed+' NATIVE_EXECUTED=false')

@@ -100,10 +100,54 @@ function Invoke-RemovalReadTool([string]$Name,[string]$Executable,[string]$Sha25
     return $result
 }
 
+function Get-RemovalReadTools {
+    @{
+        SignTool=@{Path='D:\MoirenTest\20261029-0118a54\signtool.exe'
+            Sha256='C8AC2561B1E75031EE864CCA3FB2B4CD06630E3EEA42D86AB80A573BCF8B9472'}
+        Catalog=@{Path='D:\MoirenTest\20261029-0118a54\bin\w00_probe.exe'
+            Sha256='58552AEC72650250FA0C01A309B6B885561A38F925842175C1C5B0EEEB0F081A'}
+        BcdEdit=@{Path=(Join-Path $env:SystemRoot 'System32\bcdedit.exe');Sha256=$null}
+    }
+}
+
+function Resolve-RemovalReadTools {
+    [CmdletBinding()]
+    param($ReadToolPins=$null)
+    $ErrorActionPreference='Stop'
+    $defaults=Get-RemovalReadTools;$resolved=@{}
+    foreach($key in @('SignTool','Catalog','BcdEdit')){
+        $expected=$defaults[$key];$path=$expected.Path
+        Assert-FiniteToolPath $path $true
+        $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if($item.PSIsContainer -or $item.Length -lt 1 -or $item.Length -gt 268435456){
+            throw ('Read tool identity has invalid file type/length: '+$key)
+        }
+        $pin=$null
+        if($null -ne $ReadToolPins){
+            # A full input Tools object may include decoder tools. Only these
+            # three exact read-tool identities have authority in this collector.
+            $pin=if($ReadToolPins -is [Collections.IDictionary]){$ReadToolPins[$key]}else{$ReadToolPins.$key}
+            if($null -eq $pin -or $pin.Path -isnot [string] -or $pin.Path -cne $path -or
+                ($pin.Bytes -isnot [int] -and $pin.Bytes -isnot [long]) -or $pin.Bytes -ne $item.Length -or
+                $pin.Sha256 -isnot [string] -or $pin.Sha256 -cnotmatch '\A[A-Fa-f0-9]{64}\z'){
+                throw ('Read tool pin path/length/hash is missing or malformed: '+$key)
+            }
+        }
+        $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash
+        if(($null -ne $expected.Sha256 -and $hash -ine $expected.Sha256) -or
+            ($null -ne $pin -and $hash -ine $pin.Sha256)){
+            throw ('Read tool identity differs from original pin: '+$key)
+        }
+        $resolved[$key]=[pscustomobject]@{Path=$path;Bytes=[long]$item.Length;Sha256=$hash.ToUpperInvariant()}
+    }
+    return $resolved
+}
+
 function Read-RemovalPreflight {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][string]$EvidenceDirectory,
-        [Parameter(Mandatory=$true)][AllowEmptyCollection()][Collections.Generic.List[object]]$ToolOwners)
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][Collections.Generic.List[object]]$ToolOwners,
+        $ReadToolPins=$null)
     $ErrorActionPreference='Stop'
     $started=[DateTimeOffset]::UtcNow
     $identity=Read-RemovalTargetIdentity
@@ -114,11 +158,12 @@ function Read-RemovalPreflight {
     $boot=[DateTimeOffset]$os.LastBootUpTime
     $initial=New-RemovalBootObservation $boot ([DateTimeOffset]::UtcNow) (Read-RemovalUptime)
     if(-not $initial.BootAfterDeployment -or -not $initial.ClockConsistent){throw 'User reboot not established; no subsequent tool/device collection.'}
+    # Freeze/validate all three before the first signature tool can launch. The
+    # finite launcher checks the frozen expected hash again at each dispatch.
+    $readTools=Resolve-RemovalReadTools -ReadToolPins $ReadToolPins
     $base='D:\MoirenTest\20261107-233656-removal-diagnostic'
-    $signtool='D:\MoirenTest\20261029-0118a54\signtool.exe'
-    $sigHash='C8AC2561B1E75031EE864CCA3FB2B4CD06630E3EEA42D86AB80A573BCF8B9472'
-    $catalog='D:\MoirenTest\20261029-0118a54\bin\w00_probe.exe'
-    $catalogHash='58552AEC72650250FA0C01A309B6B885561A38F925842175C1C5B0EEEB0F081A'
+    $signtool=$readTools.SignTool.Path;$sigHash=$readTools.SignTool.Sha256
+    $catalog=$readTools.Catalog.Path;$catalogHash=$readTools.Catalog.Sha256
     $signer='7F17CCDCA257D6ABC84255DD0D1854E93B9B5C1D'
     foreach($pin in @(
         @((Join-Path $base 'package-manifest.json'),'DEF621D149EF43753D27B8CE2A8DFA1237E6D8B106D369931A50F07E24AC1317'),
@@ -177,8 +222,7 @@ function Read-RemovalPreflight {
         $driver.InfSha256 -cne $expected['package-613']['MoirenVad.inf'][1]){throw 'Unhealthy or wrong installed driver binding.'}
     $r=Invoke-RemovalReadTool 'catalog' $catalog $catalogHash @('--list') $EvidenceDirectory $ToolOwners
     $controls=Convert-RemovalCatalog ([IO.File]::ReadAllText($r.StdoutPath)|ConvertFrom-Json)
-    $bcd=Join-Path $env:SystemRoot 'System32\bcdedit.exe'
-    $bcdHash=(Get-FileHash -LiteralPath $bcd).Hash
+    $bcd=$readTools.BcdEdit.Path;$bcdHash=$readTools.BcdEdit.Sha256
     $r=Invoke-RemovalReadTool 'bcd' $bcd $bcdHash @('/enum','{current}') $EvidenceDirectory $ToolOwners
     $guard=@(Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard -OperationTimeoutSec 5 -ErrorAction Stop)
     if($guard.Count -ne 1){throw 'Unknown DeviceGuard state.'}

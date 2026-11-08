@@ -8,9 +8,9 @@ function New-RemovalTargetReadiness {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][string]$EvidenceDirectory,[switch]$UserRebootConfirmed,
         [ValidateRange(0,65535)][int]$WorkerSessionId=0,
-        [string]$CollectorPath=(Join-Path $PSScriptRoot 'readonly-preflight.ps1'),[string]$CollectorSha256)
+        [string]$CollectorPath=(Join-Path $PSScriptRoot 'readonly-preflight.ps1'),[string]$CollectorSha256,$ReadToolPins=$null)
     $preflight=New-RemovalPreflightSession -EvidenceDirectory $EvidenceDirectory -UserRebootConfirmed:$UserRebootConfirmed `
-        -CollectorPath $CollectorPath -CollectorSha256 $CollectorSha256
+        -CollectorPath $CollectorPath -CollectorSha256 $CollectorSha256 -ReadToolPins $ReadToolPins
     $user=New-RemovalSessionIdentity -Sid 'S-1-5-21-3080296863-1242338503-1346362208-1001' -WorkerSessionId $WorkerSessionId
     $config=ConvertTo-Json -InputObject ([ordered]@{EvidenceDirectory=$EvidenceDirectory;RequestedWorkerSessionId=$WorkerSessionId}) -Compress
     [pscustomobject]@{EvidenceDirectory=$EvidenceDirectory;RequestedWorkerSessionId=$WorkerSessionId;ConfigJson=$config

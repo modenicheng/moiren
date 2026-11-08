@@ -55,10 +55,12 @@ function Start-RemovalCollectorWorker {
         [Parameter(Mandatory=$true)][string]$CollectorPath,
         [Parameter(Mandatory=$true)][string]$CollectorSha256,
         [Parameter(Mandatory=$true)][string]$EvidenceDirectory,
+        [string]$ReadToolPinsJson,
         [ValidateRange(0.01,120)][double]$TimeoutSeconds=120)
     $ErrorActionPreference='Stop'
     Assert-CollectorInput $FiniteToolPath $FiniteToolSha256
     Assert-CollectorInput $CollectorPath $CollectorSha256
+    if($ReadToolPinsJson.Length -gt 16384){throw 'Read-tool pin configuration exceeds bounded input cap.'}
     if($EvidenceDirectory -notmatch '^[A-Za-z]:\\' -or [IO.Path]::GetFullPath($EvidenceDirectory) -cne $EvidenceDirectory -or
         $EvidenceDirectory -match '[\x00\r\n"*?]' -or (Test-Path -LiteralPath $EvidenceDirectory)){throw 'Fresh canonical evidence path required.'}
     $shared=[hashtable]::Synchronized(@{ToolOwners=New-Object Collections.Generic.List[object];Snapshot=$null;Error=$null;OutputCount=0})
@@ -72,7 +74,7 @@ function Start-RemovalCollectorWorker {
         # The one owned runspace retains live .NET tool handles in shared memory.
         # Parent observation never calls Stop/Dispose on an unfinished pipeline.
         $script=@'
-param($state,$finite,$finiteHash,$collector,$collectorHash,$directory)
+param($state,$finite,$finiteHash,$collector,$collectorHash,$directory,$readToolPinsJson)
 $ErrorActionPreference='Stop'
 $WarningPreference='Stop'
 $InformationPreference='SilentlyContinue'
@@ -116,7 +118,12 @@ try {
     # Stream validation rejects the first unexpected value rather than building
     # an unbounded @() array before discovering malformed collector output.
     $candidate=$null
-    Read-RemovalPreflight -EvidenceDirectory $directory -ToolOwners $state.ToolOwners | ForEach-Object {
+    $arguments=@{EvidenceDirectory=$directory;ToolOwners=$state.ToolOwners}
+    if($readToolPinsJson){
+        $pins=ConvertFrom-Json -InputObject $readToolPinsJson
+        if($null -ne $pins){$arguments.ReadToolPins=$pins}
+    }
+    Read-RemovalPreflight @arguments | ForEach-Object {
         $state.OutputCount++
         if($state.OutputCount -ne 1 -or $_ -isnot [Collections.IDictionary]){throw 'Collector returned missing/multiple/non-dictionary snapshot.'}
         $candidate=$_
@@ -129,7 +136,7 @@ try {
     $state.Snapshot=$snapshot
 } catch { $message=$_.Exception.Message;$state.Error=$message.Substring(0,[Math]::Min(4096,$message.Length)) }
 '@
-        $null=$owner.PowerShell.AddScript($script).AddArgument($shared).AddArgument($FiniteToolPath).AddArgument($FiniteToolSha256).AddArgument($CollectorPath).AddArgument($CollectorSha256).AddArgument($EvidenceDirectory)
+        $null=$owner.PowerShell.AddScript($script).AddArgument($shared).AddArgument($FiniteToolPath).AddArgument($FiniteToolSha256).AddArgument($CollectorPath).AddArgument($CollectorSha256).AddArgument($EvidenceDirectory).AddArgument($ReadToolPinsJson)
         $owner.LaunchAttempted=$true
         $owner.Invocation=$owner.PowerShell.BeginInvoke()
     } catch {$owner.Error='Worker dispatch failed/unknown; retain original owner.'}

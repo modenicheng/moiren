@@ -67,6 +67,17 @@ raw final-name checks and installed613are unchanged.
 
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
+The later [retained diagnostic controller](../../docs/validation/2026-11-08-removal-diagnostic-controller.md)
+composes the actual software entry, exclusive original writer, immutable run
+inputs, retained BEFORE/AFTER collection and finish/retirement ownership. Exact
+read-tool pins cross the real runspace and remain frozen across AFTER. Root
+timeout/refusal cannot skip original pending children or persisted unsafe
+evidence, repeat a confirmed deletion or adopt an unknown trace by name. A
+host-only lifetime test uses the actual root/lease/runspaces/C# trace owner
+with injected native delegates; it is not actual ETW/audio/scheduler acceptance.
+Native guards stay closed, user reboot is unconfirmed and installed613 is
+unchanged. Full S0-S5 remains open.
+
 The later [read-only target readiness](../../docs/validation/2026-11-08-removal-target-readiness.md)
 connects the actual entry to one retained collector runspace and separately
 retained process-handle-based Limited user-session discovery. Actual controller

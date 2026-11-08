@@ -136,7 +136,9 @@ jobs:
             'test-probe-boundary.ps1', 'test-worker-boundary.ps1', 'test-collector-boundary.ps1',
             'test-worker-entry.ps1', 'test-readonly-preflight.ps1', 'test-preflight-collector.ps1',
             'test-read-wrapper.ps1', 'test-collector-worker.ps1', 'test-preflight-session.ps1',
-            'test-session-identity.ps1', 'test-target-readiness.ps1', 'test-preflight-entry.ps1'
+            'test-session-identity.ps1', 'test-target-readiness.ps1', 'test-preflight-entry.ps1',
+            'test-diagnostic-lease.ps1', 'test-run-inputs.ps1', 'test-safety-audit.ps1',
+            'test-diagnostic-controller.ps1', 'test-diagnostic-entry.ps1', 'test-diagnostic-lifetime.ps1'
           )
           foreach ($engine in $engines) {
             foreach ($test in $tests) {

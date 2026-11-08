@@ -4,6 +4,7 @@ Set-StrictMode -Version 2
 $ErrorActionPreference='Stop'
 if(-not $Collector){$Collector=Join-Path $PSScriptRoot 'readonly-preflight.ps1'}
 if(Test-Path -LiteralPath $Collector){. $Collector}
+. (Join-Path $PSScriptRoot 'finite-tool.ps1')
 $checks=New-Object Collections.Generic.List[object]
 function Check([bool]$Value,[string]$Why){if(-not $Value){throw $Why}}
 function Reject([scriptblock]$Action){$refused=$false;try{&$Action|Out-Null}catch{$refused=$true};Check $refused 'Expected refusal'}
@@ -88,6 +89,105 @@ Case 'definitions-have-no-install-reboot-native-audio-or-network-command' {
  foreach($bad in @('Restart-Computer','Stop-Computer','Restart-Service','Set-PnpDeviceProperty','pnputil','ssh','scp','Set-NetFirewallProfile','Stop-Process')){
   Check (-not($commands-contains$bad)) ('Disruptive command present: '+$bad)
  }
+}
+$root=Join-Path $PSScriptRoot ('logs\read-tool-pins-'+[Guid]::NewGuid().ToString('N'))
+$null=[IO.Directory]::CreateDirectory($root)
+function New-ReadToolFixture {
+ $directory=Join-Path $root ([Guid]::NewGuid().ToString('N'));$null=[IO.Directory]::CreateDirectory($directory)
+ $pins=@{}
+ foreach($entry in @(@{Key='SignTool';Name='signtool.exe'},@{Key='Catalog';Name='w00_probe.exe'},@{Key='BcdEdit';Name='bcdedit.exe'})){
+  $path=Join-Path $directory $entry.Name;[IO.File]::WriteAllText($path,('fixture-'+$entry.Key),[Text.UTF8Encoding]::new($false))
+  $pins[$entry.Key]=[pscustomobject]@{Path=$path;Bytes=[long](Get-Item -LiteralPath $path).Length;Sha256=(Get-FileHash -LiteralPath $path).Hash}
+ }
+ return $pins
+}
+function Use-ReadToolFixture($Pins) {
+ $script:readToolDefaults=@{
+  SignTool=@{Path=$Pins.SignTool.Path;Sha256=$Pins.SignTool.Sha256}
+  Catalog=@{Path=$Pins.Catalog.Path;Sha256=$Pins.Catalog.Sha256}
+  BcdEdit=@{Path=$Pins.BcdEdit.Path;Sha256=$null}
+ }
+}
+$originalDefaults=Get-Command Get-RemovalReadTools -ErrorAction SilentlyContinue
+try {
+ # Only immutable production locations/content constants are substituted; all
+ # file/path/hash/length validation below uses the real filesystem.
+ function Get-RemovalReadTools {return $script:readToolDefaults}
+ Case 'original-read-tool-pins-resolve-detached-exact-real-files' {
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins
+  $r=Resolve-RemovalReadTools -ReadToolPins $pins
+  foreach($key in @('SignTool','Catalog','BcdEdit')){
+   Check ($r[$key].Path-ceq$pins[$key].Path-and$r[$key].Bytes-eq$pins[$key].Bytes-and$r[$key].Sha256-ceq$pins[$key].Sha256) 'Original tool pin not consumed'
+   Check (-not[Object]::ReferenceEquals($r[$key],$pins[$key])) 'Returned caller pin alias'
+  }
+ }
+ Case 'full-six-tool-json-object-selects-only-three-read-pins' {
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins
+  foreach($key in @('Tracefmt','Python','Reader')){$pins[$key]=@{UnrelatedDecoderEntry=$true}}
+  $json=$pins|ConvertTo-Json -Depth 6 -Compress|ConvertFrom-Json
+  $r=Resolve-RemovalReadTools -ReadToolPins $json
+  Check ($r.Count-eq3-and$r.BcdEdit.Sha256-ceq$pins.BcdEdit.Sha256) 'Whole JSON Tools map was not supported'
+ }
+ Case 'original-bcd-content-mutation-refuses-without-adopting-new-hash' {
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins;$original=$pins.BcdEdit.Sha256
+  $null=Resolve-RemovalReadTools -ReadToolPins $pins
+  [IO.File]::WriteAllText($pins.BcdEdit.Path,'different-bcd-content')
+  Reject {Resolve-RemovalReadTools -ReadToolPins $pins}
+  Check ($pins.BcdEdit.Sha256-ceq$original) 'Original expected pin rewritten'
+ }
+ Case 'each-real-tool-content-mutation-refuses-original-pins' {
+  foreach($key in @('SignTool','Catalog','BcdEdit')){
+   $pins=New-ReadToolFixture;Use-ReadToolFixture $pins
+   $null=Resolve-RemovalReadTools -ReadToolPins $pins
+   $text=[IO.File]::ReadAllText($pins[$key].Path)
+   [IO.File]::WriteAllText($pins[$key].Path,('X'+$text.Substring(1)),[Text.UTF8Encoding]::new($false))
+   Reject {Resolve-RemovalReadTools -ReadToolPins $pins}
+  }
+ }
+ Case 'all-three-path-hash-and-length-mismatches-refuse' {
+  foreach($key in @('SignTool','Catalog','BcdEdit')){
+   foreach($field in @('Path','Bytes','Sha256')){
+    $pins=New-ReadToolFixture;Use-ReadToolFixture $pins
+    switch($field){
+     'Path' {$other=Join-Path ([IO.Path]::GetDirectoryName($pins[$key].Path)) ('other-'+[IO.Path]::GetFileName($pins[$key].Path));[IO.File]::Copy($pins[$key].Path,$other);$pins[$key].Path=$other}
+     'Bytes' {$pins[$key].Bytes++}
+     'Sha256' {$pins[$key].Sha256='0'*64}
+    }
+    Reject {Resolve-RemovalReadTools -ReadToolPins $pins}
+   }
+  }
+ }
+ Case 'missing-malformed-and-string-length-pins-refuse' {
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins;$pins.Remove('BcdEdit');Reject {Resolve-RemovalReadTools -ReadToolPins $pins}
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins;$pins.BcdEdit.Bytes=[string]$pins.BcdEdit.Bytes;Reject {Resolve-RemovalReadTools -ReadToolPins $pins}
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins;$pins.BcdEdit.Sha256='not-a-sha';Reject {Resolve-RemovalReadTools -ReadToolPins $pins}
+ }
+ Case 'standalone-freezes-bcd-once-and-retains-fixed-tool-identities' {
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins
+  $frozen=Resolve-RemovalReadTools
+  Check ($frozen.BcdEdit.Sha256-ceq$pins.BcdEdit.Sha256-and$frozen.BcdEdit.Bytes-eq$pins.BcdEdit.Bytes) 'Standalone BCD was not frozen'
+  [IO.File]::WriteAllText($pins.BcdEdit.Path,'post-freeze-bcd')
+  Check ($frozen.BcdEdit.Sha256-ceq$pins.BcdEdit.Sha256) 'Detached standalone pin changed'
+  Reject {Resolve-RemovalReadTools -ReadToolPins $frozen}
+  [IO.File]::WriteAllText($pins.SignTool.Path,'changed-signer')
+  Reject {Resolve-RemovalReadTools}
+ }
+ Case 'collector-validates-all-read-pins-before-any-tool-dispatch' {
+  $pins=New-ReadToolFixture;Use-ReadToolFixture $pins;$pins.BcdEdit.Sha256='0'*64
+  $script:pinToolLaunches=0
+  function Read-RemovalTargetIdentity {@{host='mock-target';sid='mock-sid';session=0}}
+  function Read-RemovalUptime {return [uint64]60000}
+  function Get-CimInstance {return [pscustomobject]@{LastBootUpTime=[DateTimeOffset]::UtcNow.AddSeconds(-60).LocalDateTime}}
+  function Invoke-RemovalReadTool {$script:pinToolLaunches++;throw 'Unexpected tool dispatch'}
+  $message=$null
+  try {Read-RemovalPreflight -EvidenceDirectory (Join-Path $root ([Guid]::NewGuid().ToString('N'))) `
+    -ToolOwners (New-Object Collections.Generic.List[object]) -ReadToolPins $pins|Out-Null}catch{$message=$_.Exception.Message}
+  Check ($message-match'(?i)read.tool.*pin|tool.*identity') 'Collector did not reject the supplied tool identity'
+  Check ($script:pinToolLaunches-eq0) 'A tool launched before complete pin validation'
+ }
+} finally {
+ if($null-ne$originalDefaults){Set-Item -LiteralPath Function:\Get-RemovalReadTools -Value $originalDefaults.ScriptBlock}
+ else {Remove-Item -LiteralPath Function:\Get-RemovalReadTools}
 }
 $checks|ConvertTo-Json -Depth 6
 $failed=@($checks|Where-Object{-not$_.passed}).Count

@@ -371,3 +371,42 @@ function Remove-RemovalOwnedTask {
         $Owner.Retired=$true
     } catch {$Owner.RetirementError='Task retirement failed/unknown: '+$_.Exception.Message;throw}
 }
+
+function Remove-RemovalUnstartedTask {
+    param([Parameter(Mandatory=$true,Position=0)]$Owner)
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval
+    if($Owner.RetirementAttempted -or $Owner.Retired -or -not$Owner.RegistrationAttempted -or
+        -not$Owner.RegistrationKnown -or $Owner.DispatchAttempted -or $Owner.WorkerBindingKnown -or
+        $null -ne $Owner.WorkerProcess -or $null -eq $Owner.Folder){throw 'Exact known-created never-dispatched task required.'}
+    Assert-RemovalTaskDefinition $Owner.Spec $Owner.RegisteredTask
+    $task=$Owner.Folder.GetTask($Owner.Spec.Name)
+    Assert-RemovalTaskDefinition $Owner.Spec $task
+    foreach($current in @($task,$Owner.RegisteredTask)){
+        if($current.Xml -cne $Owner.RegisteredXml -or $current.State -ne 3 -or
+            $current.GetInstances(0).Count -ne 0 -or $current.LastTaskResult -ne 267011){
+            throw 'Original never-run task changed, became busy or may have run.'
+        }
+    }
+    $path=Join-Path $Owner.Spec.RunDirectory 'retired-task.xml';Assert-RemovalTaskPath $path
+    $bytes=([Text.UTF8Encoding]::new($false,$true)).GetBytes($Owner.RegisteredXml)
+    if($bytes.Length -eq 0 -or $bytes.Length -gt 1048576){throw 'Bounded original task XML required.'}
+    $file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try{$expected=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','')}finally{$sha.Dispose()}
+    $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    if((Get-Item -LiteralPath $path).Length -ne $bytes.Length -or $actual -cne $expected){throw 'Original never-run task XML readback differs.'}
+    $Owner.RetiredXmlPath=$path;$Owner.RetiredXmlSha256=$actual
+    $Owner.RetirementAttempted=$true
+    try {
+        $Owner.Folder.DeleteTask($Owner.Spec.Name,0)
+        $absent=$false
+        try{$null=$Owner.Folder.GetTask($Owner.Spec.Name)}catch{
+            $errorValue=$_.Exception
+            while($null -ne $errorValue.InnerException){$errorValue=$errorValue.InnerException}
+            if($errorValue -is [Runtime.InteropServices.COMException] -and $errorValue.HResult -eq -2147024894){$absent=$true}else{throw}
+        }
+        if(-not$absent){throw 'Never-run task absence unconfirmed; retain original owner, never retry.'}
+        $Owner.Retired=$true
+    } catch {$Owner.RetirementError='Never-run retirement failed/unknown: '+$_.Exception.Message;throw}
+}

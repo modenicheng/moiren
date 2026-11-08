@@ -65,6 +65,18 @@ Case 'constructor-retains-both-owners-without-discovery-or-collection' {
  Check ($f.Enumerations-eq0-and$f.Opens-eq0-and-not$o.StartAttempted-and$null-eq$o.Preflight.CollectorOwner) 'Constructor started work.'
  Check ([Object]::ReferenceEquals($o.Preflight,$o.RetainedPreflight)-and[Object]::ReferenceEquals($o.UserSession,$o.RetainedUserSession)) 'Nested original owners not retained.'
 }
+Case 'constructor-freezes-read-tool-pins-and-source-identity-refuses-repinning' {
+ $o=Fixture;$pins=@{BcdEdit=@{Path='C:\Windows\System32\bcdedit.exe';Bytes=123;Sha256=('A'*64)}}
+ $pinned=New-RemovalTargetReadiness -EvidenceDirectory (Join-Path $f.Root 'pinned') -UserRebootConfirmed `
+  -CollectorPath $o.Preflight.CollectorPath -CollectorSha256 $o.Preflight.CollectorSha256 -ReadToolPins $pins
+ $pins.BcdEdit.Sha256='B'*64
+ $saved=ConvertFrom-Json -InputObject $pinned.RetainedPreflight.ReadToolPinsJson
+ Check ($saved.BcdEdit.Sha256-ceq('A'*64)) 'Caller mutation changed original before read-tool pins.'
+ Assert-RemovalPreflightSessionIdentity $pinned.RetainedPreflight
+ $pinned.RetainedPreflight.ReadToolPinsJson=ConvertTo-Json -InputObject $pins -Depth 5 -Compress
+ Reject {Assert-RemovalPreflightSessionIdentity $pinned.RetainedPreflight}
+ Check ($null-eq$pinned.RetainedPreflight.RetainedOwner) 'Changed pin test launched a collector.'
+}
 Case 'actual-runspace-and-session-discovery-compose-with-distinct-controller-and-worker' {
  $o=Fixture;$r=Run $o
  Check ($r.Ready-and-not$r.NeedsObservation-and-not$r.NativeApproved-and-not$r.Qualified) 'Composed readonly readiness failed/promoted.'

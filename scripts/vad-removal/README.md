@@ -101,6 +101,12 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-session-identity.ps1
 .\test-target-readiness.ps1
 .\test-preflight-entry.ps1
+.\test-diagnostic-lease.ps1
+.\test-run-inputs.ps1
+.\test-safety-audit.ps1
+.\test-diagnostic-controller.ps1
+.\test-diagnostic-entry.ps1
+.\test-diagnostic-lifetime.ps1
 ```
 
 The task scheduler, device APIs and target identity are mocked. Real children only output,
@@ -189,3 +195,46 @@ Full S0-S5 acceptance is unchanged. Use the separate standalone remote target
 directly; no VM or blanket desktop-unlock prerequisite. The user owns reboot.
 Reuse the fixed dedicated OBS installation; never copy executable trees or
 change firewall/security policy to suppress prompts.
+
+## Retained diagnostic controller preparation
+
+`invoke-diagnostic.ps1` is the full-lifetime software entry, not approval to
+run the native diagnostic. It refuses missing user reboot confirmation or the
+wrong target host/SID before imports and requires an already elevated
+controller. It never elevates or reboots automatically. No native target run
+has been made with this entry; the lower scheduler/ETW/decode/retirement
+dispatch guards remain closed pending owner-aware native admission review.
+
+The controller retains one `diagnostic-lease.ps1` writer at the fixed
+`D:\MoirenTest\removal-613-controller.lock` path through original before
+collection, trace, managed worker/probe, finish/decode, after collection and
+flushed/readback-hashed result. A live FileStream excludes cooperating writers;
+file contents alone never establish ownership. It is closed, not deleted or
+rotated. `run-inputs.ps1` requires an independently supplied manifest SHA256
+and revalidates the actual production script set, managed26cd706 probe release,
+613 signed package/PDB/TMF set, original schedule and exact tool pins.
+
+The original SignTool/catalog/BcdEdit pins cross the actual collector runspace
+as detached JSON values and are reused for AFTER. They are not freshly adopted
+after admission. `safety-audit.ps1` retains the historical accepted BEFORE
+evidence independently of later readiness freshness or Explorer liveness. Its
+Audit-mode collector preserves busy/failed snapshots without granting new
+admission. Missing/replaced external process identities, changed defaults,
+render controls, security, boot or driver provenance are evidenced as unsafe;
+external processes are never stopped or adopted as test owners.
+
+Timeout or changed outer configuration closes new admission but still observes
+original pending collector/decoder children. An unknown Start/registration/
+RunEx/delete result cannot become absence, a fresh retry or a by-name cleanup.
+A captured nonzero Start status does not create trace ownership or permit
+STOP. A confirmed never-dispatched task has its own archive-before-delete
+retirement, at most once; pending AFTER collection cannot repeat deletion.
+The root cannot complete or release its lease without original persisted AFTER
+and controller result evidence. NativePassed/Qualified stay false even for
+safe orchestration; driver removal and physical qualification are separate.
+
+Controller unit tests replace lower boundaries. The lifetime composition test
+uses real writer exclusion, actual retained synthetic collector runspaces and
+production C# trace-owner buffers with injected native delegates. Its children
+only wait/output/exit. Neither test is actual scheduler/ETW/audio acceptance,
+an OBS acquisition, or a complete approved native diagnostic.

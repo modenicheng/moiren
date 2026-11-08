@@ -142,6 +142,16 @@ sub-10-ms limitation is evidenced; no such impossibility is established yet.
 
 ## Current pipeline status - 2026-11-08
 
+The later [retained diagnostic controller](validation/2026-11-08-removal-diagnostic-controller.md)
+connects the original writer, pinned run inputs, actual BEFORE/AFTER collector
+runspaces, managed staging and finish/retirement composition. Read-tool pins
+remain identical through real runspace dispatch; timeout/configuration refusal
+continues observing original children instead of retrying or dropping owners.
+Host-only lifetime composition uses the actual controller/lease/C# trace owner
+with injected APIs, not native diagnostic acceptance. Owner-aware actual native
+admission and postboot verification remain open; no driver/audio/OBS/reboot or
+replacement EXE tree is introduced, and all S0-S5 requirements remain intact.
+
 The original S0-S5 requirements below remain the completion criteria. Subsequent
 implementation is recorded in the
 [software ledger](validation/2026-10-29-s1-s3-software-ledger.md) and the

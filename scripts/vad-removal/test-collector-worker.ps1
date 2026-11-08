@@ -32,6 +32,18 @@ Case 'pinned-fixture-collects-once-preserves-real-dictionary-and-closes' {
  Check (-not$r.NativeApproved-and-not$r.Qualified-and$r.InnerOwnersClosed) 'False native approval/unclosed owner'
  Close-RemovalCollectorWorker $o;Check $o.Closed 'Completed worker not closed'
 }
+Case 'original-read-tool-pins-cross-the-actual-runspace-as-detached-values' {
+ $collector=Fixture 'function Read-RemovalPreflight {param($EvidenceDirectory,$ToolOwners,$ReadToolPins)@{schema_version=1;NativeTestStarted=$false;Qualified=$false;BcdPath=$ReadToolPins.BcdEdit.Path;BcdHash=$ReadToolPins.BcdEdit.Sha256}}'
+ $pins=@{BcdEdit=@{Path='C:\Windows\System32\bcdedit.exe';Bytes=123;Sha256=('A'*64)}}
+ $original=ConvertTo-Json -InputObject $pins -Depth 4 -Compress
+ $o=Start-RemovalCollectorWorker -FiniteToolPath $finite -FiniteToolSha256 $finiteHash -CollectorPath $collector `
+  -CollectorSha256 (Get-FileHash -LiteralPath $collector).Hash -ReadToolPinsJson $original `
+  -EvidenceDirectory (Join-Path $root ([Guid]::NewGuid().ToString('N')))
+ $pins.BcdEdit.Sha256='B'*64
+ $r=Observe-RemovalCollectorWorker $o
+ Check ($r.CollectionComplete-and$r.Snapshot.BcdPath-ceq'C:\Windows\System32\bcdedit.exe'-and$r.Snapshot.BcdHash-ceq('A'*64)) 'Original read-tool pins missing or aliased after dispatch.'
+ Close-RemovalCollectorWorker $o
+}
 Case 'bad-hash-refuses-before-worker-or-evidence-directory' {
  $collector=Fixture 'throw "must never run"';$directory=Join-Path $root ([Guid]::NewGuid().ToString('N'))
  Reject {Start-RemovalCollectorWorker -FiniteToolPath $finite -FiniteToolSha256 $finiteHash -CollectorPath $collector -CollectorSha256 ('0'*64) -EvidenceDirectory $directory}

@@ -37,7 +37,7 @@ function Fixture {
   NativeTestStarted=$false;RebootRequested=$false;Qualified=$false;IdentityScope='Fresh postboot service-file/PnP provenance, not in-memory image attestation.'}
  [pscustomobject]@{Root=$r;Snapshot=$p;Mode='normal';Session=$null}
 }
-function Prepare($f,[string]$Prefix=''){
+function Prepare($f,[string]$Prefix='',[string]$ObservationMode='Admission'){
  $collector=Join-Path $f.Root 'collector.ps1'
  $data=[Management.Automation.PSSerializer]::Serialize($f.Snapshot,16)
  $escaped=$data.Replace("'","''")
@@ -46,8 +46,9 @@ function Prepare($f,[string]$Prefix=''){
   'foreach($key in @("Configured","Running")){$s.Security[$key]=[object[]]$s.Security[$key]}; return $s'
  $source="function Read-RemovalPreflight { param(`$EvidenceDirectory,`$ToolOwners) $Prefix $restore }"
  [IO.File]::WriteAllText($collector,$source,[Text.UTF8Encoding]::new($false))
+ $options=@{};if($ObservationMode-cne'Admission'){$options.ObservationMode=$ObservationMode}
  $f.Session=New-RemovalPreflightSession -EvidenceDirectory (Join-Path $f.Root 'evidence') `
-  -CollectorPath $collector -CollectorSha256 (Get-FileHash $collector).Hash -UserRebootConfirmed
+  -CollectorPath $collector -CollectorSha256 (Get-FileHash $collector).Hash -UserRebootConfirmed @options
  $script:sessions.Add($f.Session)
 }
 function Run($f){
@@ -115,6 +116,43 @@ Case 'timeout-keeps-one-original-runspace-and-never-restarts-or-accepts-late-res
 Case 'unexpected-diagnostics-refuse-without-saving-readiness' {
  $f=Fixture;Prepare $f 'Write-Error "synthetic failure";'
  $r=Run $f;Check (-not$r.Ready) 'Failed collector gained readiness.'
+}
+Case 'audit-observation-preserves-typed-busy-rows-without-admission' {
+ $f=Fixture
+ $f.Snapshot.NativeOwners=@(@{Pid=42;Name='vad_native.exe';Session=7;CreationUnixMs=[long]1794000000000;ExecutablePath='D:\probe\vad_native.exe'})
+ $f.Snapshot.RunningTasks=@(@{Path='\';Name='MoirenPending';State='Queued'})
+ $f.Snapshot.PresentRawChildren=@(@{InstanceId='MOIREN\VAD_RAW\held';Status='OK'})
+ Prepare $f '' 'Audit';$r=Run $f
+ Check ($r.ObservationAccepted-and-not$r.Ready-and-not$r.NativeApproved-and-not$r.Qualified) 'Audit observation was lost or authorized admission.'
+ Check ($f.Session.RetainedOwner.Closed-and$null-ne$r.ReceiptPin) 'Busy audit did not settle and persist.'
+ Assert-RemovalPreflightObservation $f.Session
+ Reject {Assert-RemovalPreflightSession $f.Session}
+ $saved=[IO.File]::ReadAllText($r.ReceiptPin.Path)|ConvertFrom-Json
+ Check ($saved.ObservationMode-ceq'Audit'-and$saved.Snapshot.NativeOwners.Count-eq1-and$saved.Snapshot.RunningTasks.Count-eq1-and$saved.Snapshot.PresentRawChildren.Count-eq1) 'Busy evidence was filtered out.'
+}
+Case 'audit-mode-still-refuses-malformed-busy-rows-package-and-freshness' {
+ foreach($mode in @('native','task','raw','cap','driver','stale')){
+  $f=Fixture
+  switch($mode){
+   'native'{$f.Snapshot.NativeOwners=@('busy')}
+   'task'{$f.Snapshot.RunningTasks=@(@{Path='\';Name='MoirenPending';State=7})}
+   'raw'{$f.Snapshot.PresentRawChildren=@(@{InstanceId='other';Status='OK'})}
+   'cap'{$f.Snapshot.PresentRawChildren=@(1..257|ForEach-Object{@{InstanceId=('MOIREN\VAD_RAW\'+$_);Status='OK'}})}
+   'driver'{$f.Snapshot.Driver.SysSha256='b'*64}
+   'stale'{$f.Snapshot.ObservedUtc=[DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')}
+  }
+  Prepare $f '' 'Audit';$r=Run $f
+  Check (-not$r.ObservationAccepted-and-not$r.Ready-and$r.Error-and$f.Session.RetainedOwner.Closed) ('Malformed audit accepted: '+$mode)
+ }
+}
+Case 'audit-mode-and-original-observation-receipt-cannot-be-relabelled' {
+ $f=Fixture;Prepare $f '' 'Audit';$r=Run $f
+ Check $r.ObservationAccepted 'Empty audit observation refused.'
+ $f.Session.ObservationMode='Admission'
+ Reject {Assert-RemovalPreflightObservation $f.Session}
+ $f.Session.ObservationMode='Audit'
+ [IO.File]::AppendAllText($r.ReceiptPin.Path,' ')
+ Reject {Assert-RemovalPreflightObservation $f.Session}
 }
 Case 'pending-real-inner-child-is-settled-through-original-handle-after-collector-failure' {
  $f=Fixture;Prepare $f

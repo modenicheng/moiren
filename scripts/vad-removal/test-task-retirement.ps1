@@ -134,6 +134,36 @@ Case 'readback-access-error-is-not-task-absence' {
  Reject {&$actualCleanup $s}
  Check ($s.TaskOwner.RetirementAttempted-and-not$s.TaskOwner.Retired-and$s.TaskOwner.Folder.DeleteCalls-eq1) 'Access denied became verified retirement'
 }
+function Unstarted {
+ $s=Fixture;$o=$s.TaskOwner
+ $o.DispatchAttempted=$false;$o.DispatchUtc=$null;$o.InstanceGuid=$null;$o.WorkerBindingKnown=$false
+ $o.WorkerProcess=$null;$o.WorkerPid=$null;$o.WorkerCreationUtcTicks=$null
+ $o.RegisteredTask.LastTaskResult=267011;$o.RegisteredTask.LastRunTime=[DateTime]::MinValue
+ return $s
+}
+Case 'known-created-never-dispatched-task-has-distinct-verified-retirement' {
+ Check ($null-ne(Get-Command Remove-RemovalUnstartedTask -ErrorAction SilentlyContinue)) 'Never-dispatched cleanup is missing.'
+ $s=Unstarted;Remove-RemovalUnstartedTask $s.TaskOwner
+ Check ($s.TaskOwner.Retired-and$s.TaskOwner.Folder.DeleteCalls-eq1-and$s.TaskOwner.Folder.ArchivedBeforeDelete) 'Never-run task XML/one-shot retirement missing.'
+}
+Case 'unstarted-retirement-refuses-any-possible-dispatch-or-foreign-definition' {
+ foreach($mode in @('dispatch','unknown-registration','worker','instance','run-result','xml')){
+  $s=Unstarted;$o=$s.TaskOwner
+  switch($mode){'dispatch'{$o.DispatchAttempted=$true};'unknown-registration'{$o.RegistrationKnown=$false}
+   'worker'{$o.WorkerProcess=[pscustomobject]@{fixture='unknown-child'}};'instance'{$o.RegisteredTask.Instances=1}
+   'run-result'{$o.RegisteredTask.LastTaskResult=1};'xml'{$o.RegisteredTask.Xml='<foreign/>'}}
+  Reject {Remove-RemovalUnstartedTask $o}
+  Check ($o.Folder.DeleteCalls-eq0) ('Unsafe never-run deletion: '+$mode)
+ }
+}
+Case 'unknown-unstarted-deletion-retains-original-intent-and-is-never-retried' {
+ Check ($null-ne(Get-Command Remove-RemovalUnstartedTask -ErrorAction SilentlyContinue)) 'Never-dispatched cleanup is missing.'
+ $s=Unstarted;$s.TaskOwner.Folder.DeleteThrows=$true
+ Reject {Remove-RemovalUnstartedTask $s.TaskOwner}
+ Check ($s.TaskOwner.RetirementAttempted-and-not$s.TaskOwner.Retired-and$s.TaskOwner.RetirementError) 'Unknown never-run delete became absence.'
+ Reject {Remove-RemovalUnstartedTask $s.TaskOwner}
+ Check ($s.TaskOwner.Folder.DeleteCalls-eq1) 'Never-run deletion retried.'
+}
 $checks|ConvertTo-Json -Depth 6
 $failed=@($checks|Where-Object{-not$_.passed}).Count
 Write-Output ('CHECKS='+$checks.Count+' FAILED='+$failed+' SCHEDULER=mock NATIVE_EXECUTED=false')

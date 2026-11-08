@@ -15,7 +15,21 @@ function Convert-RemovalPreflightTime($Value) {
     return [DateTimeOffset]::Parse($Value,[Globalization.CultureInfo]::InvariantCulture)
 }
 
-function Assert-RemovalPreflightSnapshot($Snapshot,[DateTimeOffset]$Now,[int]$ControllerSession) {
+function Assert-RemovalPreflightProcesses($Rows) {
+    if($Rows -isnot [Array] -or $Rows.Count -gt 256){throw 'Missing/oversize process observations.'}
+    $seen=@{}
+    foreach($row in $Rows){
+        Assert-RemovalPreflightInteger $row.Pid 1 4294967295
+        Assert-RemovalPreflightInteger $row.Session 0 65535
+        Assert-RemovalPreflightInteger $row.CreationUnixMs 1 253402300799999
+        if($row.Name -isnot [string] -or $row.Name.Length -gt 256 -or $row.Name -cnotmatch '\A[A-Za-z0-9_.-]+\.exe\z' -or
+            $seen.ContainsKey([string]$row.Pid)){throw 'Malformed/duplicate process identity.'}
+        Assert-FiniteToolPath $row.ExecutablePath $false;$seen[[string]$row.Pid]=$true
+    }
+}
+
+function Assert-RemovalPreflightSnapshot($Snapshot,[DateTimeOffset]$Now,[int]$ControllerSession,
+    [ValidateSet('Admission','Audit')][string]$ObservationMode='Admission') {
     $p=$Snapshot
     if($p -isnot [Collections.IDictionary] -or $p.schema_version -ne 1 -or
         $p.host -cne 'LAPTOP-NP49RG6H' -or $p.sid -cne 'S-1-5-21-3080296863-1242338503-1346362208-1001'){
@@ -41,7 +55,26 @@ function Assert-RemovalPreflightSnapshot($Snapshot,[DateTimeOffset]$Now,[int]$Co
         throw 'No fresh corroborated post-install boot/collection interval.'
     }
     foreach($field in @('NativeOwners','RunningTasks','PresentRawChildren')){
-        if($p[$field] -isnot [Array] -or $p[$field].Count -ne 0){throw ('Busy/unknown '+$field)}
+        if($p[$field] -isnot [Array] -or $p[$field].Count -gt 256 -or
+            ($ObservationMode -ceq 'Admission' -and $p[$field].Count -ne 0)){throw ('Busy/unknown/oversize '+$field)}
+    }
+    if($ObservationMode -ceq 'Audit'){
+        Assert-RemovalPreflightProcesses $p.NativeOwners
+        $seen=@{}
+        foreach($task in $p.RunningTasks){
+            if($task.Path -isnot [string] -or $task.Path -notmatch '\A\\' -or $task.Path.Length -gt 1024 -or
+                $task.Name -isnot [string] -or $task.Name -notlike 'Moiren*' -or $task.Name.Length -gt 256 -or
+                $task.State -isnot [string] -or -not$task.State -or $task.State.Length -gt 256 -or
+                $seen.ContainsKey($task.Path+[char]0+$task.Name)){throw 'Malformed/duplicate pending task observation.'}
+            $seen[$task.Path+[char]0+$task.Name]=$true
+        }
+        $seen=@{}
+        foreach($child in $p.PresentRawChildren){
+            if($child.InstanceId -isnot [string] -or $child.InstanceId -notlike 'MOIREN\VAD_RAW\*' -or
+                $child.InstanceId.Length -gt 1024 -or $child.Status -isnot [string] -or -not$child.Status -or
+                $child.Status.Length -gt 256 -or $seen.ContainsKey($child.InstanceId)){throw 'Malformed/duplicate raw child observation.'}
+            $seen[$child.InstanceId]=$true
+        }
     }
     $driver=$p.Driver
     if($null -eq $driver -or $driver.Version -cne '3.1.1.613' -or $driver.Inf -cne 'oem207.inf' -or
@@ -54,15 +87,7 @@ function Assert-RemovalPreflightSnapshot($Snapshot,[DateTimeOffset]$Now,[int]$Co
     Assert-FiniteToolPath $driver.SysPath $false
     if($p.ExternalOwners -isnot [Array] -or $p.ExternalOwnersProvenance -cne 'ObservedComplete' -or
         $p.ExternalOwnersObservedUtc -cne $p.ObservedUtc){throw 'Fresh complete explicit external-owner observation required.'}
-    $seen=@{}
-    foreach($owner in $p.ExternalOwners){
-        Assert-RemovalPreflightInteger $owner.Pid 1 4294967295
-        Assert-RemovalPreflightInteger $owner.Session 0 65535
-        Assert-RemovalPreflightInteger $owner.CreationUnixMs 1 253402300799999
-        if($owner.Name -isnot [string] -or $owner.Name -cnotmatch '\A[A-Za-z0-9_.-]+\.exe\z' -or
-            $seen.ContainsKey([string]$owner.Pid)){throw 'Malformed/duplicate external process identity.'}
-        Assert-FiniteToolPath $owner.ExecutablePath $false;$seen[[string]$owner.Pid]=$true
-    }
+    Assert-RemovalPreflightProcesses $p.ExternalOwners
     if($p.Defaults -isnot [Array] -or $p.Defaults.Count -ne 6){throw 'All six exact default roles required.'}
     foreach($flow in @('capture','render')){foreach($role in @('communications','console','multimedia')){
         $rows=@($p.Defaults|Where-Object{$_.flow -ceq $flow -and $_.role -ceq $role})
@@ -91,7 +116,8 @@ function Assert-RemovalPreflightSnapshot($Snapshot,[DateTimeOffset]$Now,[int]$Co
 function New-RemovalPreflightSession {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][string]$EvidenceDirectory,[switch]$UserRebootConfirmed,
-        [string]$CollectorPath=(Join-Path $PSScriptRoot 'readonly-preflight.ps1'),[string]$CollectorSha256)
+        [string]$CollectorPath=(Join-Path $PSScriptRoot 'readonly-preflight.ps1'),[string]$CollectorSha256,
+        [ValidateSet('Admission','Audit')][string]$ObservationMode='Admission',$ReadToolPins=$null)
     if(-not$UserRebootConfirmed){throw 'User reboot confirmation required before target collection; never reboot automatically.'}
     Assert-RemovalTaskHost
     Assert-FiniteToolPath $EvidenceDirectory $false
@@ -103,13 +129,23 @@ function New-RemovalPreflightSession {
     Assert-CollectorInput $CollectorPath $CollectorSha256
     $self=[Diagnostics.Process]::GetCurrentProcess()
     $mode=if($CollectorPath -ceq (Join-Path $PSScriptRoot 'readonly-preflight.ps1')){'RepositoryCollector'}else{'InjectedCollectorSource'}
+    if($mode -ceq 'RepositoryCollector' -and $null -eq $ReadToolPins){
+        # Freeze standalone read-tool identity before the first collector. AFTER
+        # inherits this JSON; no later observation may adopt a replacement tool.
+        . (Join-Path $PSScriptRoot 'readonly-preflight.ps1')
+        $ReadToolPins=Resolve-RemovalReadTools
+    }
+    $readToolPinsJson=if($null -eq $ReadToolPins){'null'}else{ConvertTo-Json -InputObject $ReadToolPins -Depth 5 -Compress}
+    if($readToolPinsJson.Length -gt 16384){throw 'Read-tool pin configuration exceeds bounded input cap.'}
     $sourceIdentity=ConvertTo-Json -InputObject ([ordered]@{FiniteToolPath=$finite;FiniteToolSha256=$finiteHash
-        CollectorPath=$CollectorPath;CollectorSha256=$CollectorSha256;ExecutionMode=$mode}) -Compress
+        CollectorPath=$CollectorPath;CollectorSha256=$CollectorSha256;ExecutionMode=$mode;ObservationMode=$ObservationMode
+        ReadToolPinsJson=$readToolPinsJson}) -Compress
     [pscustomobject]@{ControllerPid=$self.Id;ControllerCreationUtcTicks=$self.StartTime.ToUniversalTime().Ticks;ControllerSession=$self.SessionId
         EvidenceDirectory=$EvidenceDirectory;FiniteToolPath=$finite;FiniteToolSha256=$finiteHash
         CollectorPath=$CollectorPath;CollectorSha256=$CollectorSha256;CollectorOwner=$null;RetainedOwner=$null
-        StartAttempted=$false;Ready=$false;ObservationComplete=$false;ReceiptAttempted=$false;ReceiptPin=$null;ReceiptPinJson=$null;SnapshotJson=$null
-        ExecutionMode=$mode;SourceIdentityJson=$sourceIdentity
+        StartAttempted=$false;Ready=$false;ObservationAccepted=$false;ObservationMode=$ObservationMode
+        ObservationComplete=$false;ReceiptAttempted=$false;ReceiptPin=$null;ReceiptPinJson=$null;SnapshotJson=$null
+        ExecutionMode=$mode;SourceIdentityJson=$sourceIdentity;ReadToolPinsJson=$readToolPinsJson
         Error=$null}
 }
 
@@ -121,7 +157,8 @@ function Assert-RemovalPreflightSessionIdentity($Session) {
         throw 'Original preflight controller/collector identity differs.'
     }
     $source=ConvertTo-Json -InputObject ([ordered]@{FiniteToolPath=$Session.FiniteToolPath;FiniteToolSha256=$Session.FiniteToolSha256
-        CollectorPath=$Session.CollectorPath;CollectorSha256=$Session.CollectorSha256;ExecutionMode=$Session.ExecutionMode}) -Compress
+        CollectorPath=$Session.CollectorPath;CollectorSha256=$Session.CollectorSha256;ExecutionMode=$Session.ExecutionMode
+        ObservationMode=$Session.ObservationMode;ReadToolPinsJson=$Session.ReadToolPinsJson}) -Compress
     if($source -cne $Session.SourceIdentityJson){throw 'Original collector/helper source identity changed; no repinning.'}
     Assert-CollectorInput $Session.FiniteToolPath $Session.FiniteToolSha256
     Assert-CollectorInput $Session.CollectorPath $Session.CollectorSha256
@@ -133,7 +170,8 @@ function Start-RemovalPreflightSession {
     if($Session.StartAttempted){throw 'Collector already attempted; observe retained invocation, never restart.'}
     $Session.StartAttempted=$true
     $owner=Start-RemovalCollectorWorker -FiniteToolPath $Session.FiniteToolPath -FiniteToolSha256 $Session.FiniteToolSha256 `
-        -CollectorPath $Session.CollectorPath -CollectorSha256 $Session.CollectorSha256 -EvidenceDirectory $Session.EvidenceDirectory
+        -CollectorPath $Session.CollectorPath -CollectorSha256 $Session.CollectorSha256 -EvidenceDirectory $Session.EvidenceDirectory `
+        -ReadToolPinsJson $Session.ReadToolPinsJson
     $Session.RetainedOwner=$owner;$Session.CollectorOwner=$owner
 }
 
@@ -144,8 +182,9 @@ function Save-RemovalPreflightReceipt($Session) {
     $Session.SnapshotJson=ConvertTo-Json -InputObject $snapshot -Depth 16 -Compress
     $r=[ordered]@{SchemaVersion=1;NativeApproved=$false;Qualified=$false;ControllerPid=$Session.ControllerPid
         ControllerCreationUtcTicks=$Session.ControllerCreationUtcTicks;ControllerSession=$Session.ControllerSession
-        ExecutionMode=$Session.ExecutionMode;CollectorPath=$Session.CollectorPath;CollectorSha256=$Session.CollectorSha256
-        FiniteToolSha256=$Session.FiniteToolSha256;Snapshot=$snapshot}
+        ExecutionMode=$Session.ExecutionMode;ObservationMode=$Session.ObservationMode
+        CollectorPath=$Session.CollectorPath;CollectorSha256=$Session.CollectorSha256
+        FiniteToolSha256=$Session.FiniteToolSha256;ReadToolPins=(ConvertFrom-Json -InputObject $Session.ReadToolPinsJson);Snapshot=$snapshot}
     $bytes=[Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $r -Depth 18))
     if($bytes.Length -gt 1048576){throw 'Preflight receipt exceeds 1 MiB cap.'}
     $null=[IO.Directory]::CreateDirectory($Session.EvidenceDirectory)
@@ -159,19 +198,35 @@ function Save-RemovalPreflightReceipt($Session) {
     $Session.ReceiptPinJson=ConvertTo-Json -InputObject $Session.ReceiptPin -Compress
 }
 
-function Assert-RemovalPreflightSession {
+function Assert-RemovalPreflightEvidence {
     param([Parameter(Mandatory=$true,Position=0)]$Session)
     Assert-RemovalTaskHost;Assert-RemovalPreflightSessionIdentity $Session
     $owner=$Session.RetainedOwner
-    if(-not$Session.Ready -or $null -eq $owner -or -not$owner.Completed -or -not$owner.Closed -or $owner.TimedOut -or
-        $owner.Error -or $owner.Shared.Error -or $null -eq $Session.ReceiptPin){throw 'Original collector is not accepted, closed and evidenced.'}
-    Assert-RemovalPreflightSnapshot $owner.Shared.Snapshot ([DateTimeOffset]::UtcNow) $Session.ControllerSession
+    if(-not$Session.ObservationAccepted -or $Session.Error -or $null -eq $owner -or -not$owner.Completed -or -not$owner.Closed -or
+        $owner.TimedOut -or $owner.Error -or $owner.Shared.Error -or $null -eq $Session.ReceiptPin){throw 'Original collector is not accepted, closed and evidenced.'}
+    # Historical evidence is checked at its original observation time. This does
+    # not renew admission; current readiness also requires the fresh assertion.
+    $observed=Convert-RemovalPreflightTime $owner.Shared.Snapshot.ObservedUtc
+    Assert-RemovalPreflightSnapshot $owner.Shared.Snapshot $observed $Session.ControllerSession $Session.ObservationMode
     if((ConvertTo-Json -InputObject $owner.Shared.Snapshot -Depth 16 -Compress) -cne $Session.SnapshotJson){throw 'Original accepted snapshot changed.'}
     $pin=$Session.ReceiptPin
     if((ConvertTo-Json -InputObject $pin -Compress) -cne $Session.ReceiptPinJson -or
         $pin.Path -cne (Join-Path $Session.EvidenceDirectory 'preflight-receipt.json')){throw 'Original preflight receipt pin changed; no repinning.'}
     Assert-FiniteToolPath $pin.Path $false
     if((Get-Item -LiteralPath $pin.Path).Length -ne $pin.Bytes -or (Get-FileHash -LiteralPath $pin.Path).Hash -cne $pin.Sha256){throw 'Original preflight receipt changed.'}
+}
+
+function Assert-RemovalPreflightObservation {
+    param([Parameter(Mandatory=$true,Position=0)]$Session)
+    Assert-RemovalPreflightEvidence $Session
+    Assert-RemovalPreflightSnapshot $Session.RetainedOwner.Shared.Snapshot ([DateTimeOffset]::UtcNow) $Session.ControllerSession $Session.ObservationMode
+    if($Session.ObservationMode -ceq 'Audit' -and $Session.Ready){throw 'Audit observation cannot authorize readiness.'}
+}
+
+function Assert-RemovalPreflightSession {
+    param([Parameter(Mandatory=$true,Position=0)]$Session)
+    if($Session.ObservationMode -cne 'Admission' -or -not$Session.Ready){throw 'Original preflight is not admission readiness.'}
+    Assert-RemovalPreflightObservation $Session
 }
 
 function Observe-RemovalPreflightSession {
@@ -205,13 +260,14 @@ function Observe-RemovalPreflightSession {
         if($null -ne $owner -and $owner.Closed){$needs=$false}
         Assert-RemovalPreflightSessionIdentity $Session
         if($Session.Error){throw $Session.Error}
-        if($Session.Ready){Assert-RemovalPreflightSession $Session}
+        if($Session.ObservationAccepted){Assert-RemovalPreflightObservation $Session}
         elseif($Session.ObservationComplete){
-            Assert-RemovalPreflightSnapshot $owner.Shared.Snapshot ([DateTimeOffset]::UtcNow) $Session.ControllerSession
-            Save-RemovalPreflightReceipt $Session;$Session.Ready=$true
-            Assert-RemovalPreflightSession $Session
+            Assert-RemovalPreflightSnapshot $owner.Shared.Snapshot ([DateTimeOffset]::UtcNow) $Session.ControllerSession $Session.ObservationMode
+            Save-RemovalPreflightReceipt $Session;$Session.ObservationAccepted=$true
+            $Session.Ready=($Session.ObservationMode -ceq 'Admission')
+            Assert-RemovalPreflightObservation $Session
         }
-    } catch {$Session.Ready=$false;if(-not$Session.Error){$Session.Error=$_.Exception.Message}}
-    [pscustomobject]@{Ready=$Session.Ready;NeedsObservation=$needs;NativeApproved=$false;Qualified=$false
+    } catch {$Session.Ready=$false;$Session.ObservationAccepted=$false;if(-not$Session.Error){$Session.Error=$_.Exception.Message}}
+    [pscustomobject]@{Ready=$Session.Ready;ObservationAccepted=$Session.ObservationAccepted;NeedsObservation=$needs;NativeApproved=$false;Qualified=$false
         ReceiptPin=$Session.ReceiptPin;Error=$Session.Error}
 }

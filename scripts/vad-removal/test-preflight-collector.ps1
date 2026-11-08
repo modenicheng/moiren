@@ -49,6 +49,11 @@ function Get-ScheduledTask([string]$ErrorAction) {
  return @()
 }
 function Confirm-SecureBootUEFI {return $true}
+function Resolve-RemovalReadTools {
+ @{SignTool=@{Path='D:\MoirenTest\20261029-0118a54\signtool.exe';Sha256='C8AC2561B1E75031EE864CCA3FB2B4CD06630E3EEA42D86AB80A573BCF8B9472'}
+   Catalog=@{Path='D:\MoirenTest\20261029-0118a54\bin\w00_probe.exe';Sha256='58552AEC72650250FA0C01A309B6B885561A38F925842175C1C5B0EEEB0F081A'}
+   BcdEdit=@{Path=(Join-Path $env:SystemRoot 'System32\bcdedit.exe');Sha256=('1'*64)}}
+}
 function Get-AuthenticodeSignature([string]$LiteralPath) {
  [pscustomobject]@{Status=$(if($script:mode-eq'bad-signature'){'NotSigned'}else{'Valid'});SignerCertificate=[pscustomobject]@{Thumbprint='7F17CCDCA257D6ABC84255DD0D1854E93B9B5C1D'}}
 }
