@@ -351,7 +351,10 @@ fn strip_column(
     let cached_body = {
         // The cached wrapper carries its load-bearing sizing: it takes the
         // column height the sections leave over (cached views lay out by
-        // their wrapper).
+        // their wrapper). The wrapper only reserves that space — the body's
+        // own root must claim it with definite extents, because a cached
+        // view lays its content out as a layout root where `flex_1` has no
+        // parent to grow against (see `strip_body`).
         host.clone()
             .cached(StyleRefinement::default().flex_1().min_h_0())
             .into_any_element()
