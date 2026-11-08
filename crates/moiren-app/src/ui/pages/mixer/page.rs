@@ -235,7 +235,11 @@ impl CachedPanel for StripPanel {
             geometry.readouts.remove(&self.id);
             geometry.banners.remove(&self.id);
         });
-        shell.node_meter_points.borrow_mut().remove(&self.id);
+        shell
+            .metering
+            .node_meter_points
+            .borrow_mut()
+            .remove(&self.id);
     }
 
     fn observe_nested(
@@ -287,6 +291,7 @@ pub(crate) fn meter_probe_eligible(
     let input = kind == NodeKind::Source;
     matches!(kind, NodeKind::Source | NodeKind::Sink)
         && shell
+            .metering
             .observation_nodes
             .is_some_and(|(generation, source, sink)| {
                 generation == snapshot.generation && entry.id == if input { source } else { sink }
@@ -853,9 +858,9 @@ fn paint_mixer_meter_frame(
         }
         let legacy = legacy_input.and_then(|input| {
             if input {
-                shell.meters.display_input()
+                shell.metering.meters.display_input()
             } else {
-                shell.meters.display_output()
+                shell.metering.meters.display_output()
             }
         });
         let levels = {
@@ -889,9 +894,9 @@ fn paint_mixer_meter_frame(
         let legacy = frame.tracks.get(&id).and_then(|&(_, _, legacy_input)| {
             legacy_input.and_then(|input| {
                 if input {
-                    shell.meters.display_input()
+                    shell.metering.meters.display_input()
                 } else {
-                    shell.meters.display_output()
+                    shell.metering.meters.display_output()
                 }
             })
         });
@@ -927,7 +932,7 @@ fn paint_mixer_meter_frame(
         trace.levels(levels_fingerprint);
         trace.meter_paints += 1;
         trace.add(began.elapsed());
-        trace.finish(shell.node_meter_points.borrow().len());
+        trace.finish(shell.metering.node_meter_points.borrow().len());
     }
     // The hovered faulted strip's banner, hung under the strip and clamped
     // against the hot layer's own bounds. Like the graph page's tooltip it

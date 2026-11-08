@@ -778,7 +778,7 @@ impl StudioShell {
                 }
             }
         }
-        self.observation_nodes = None;
+        self.metering.observation_nodes = None;
         if let Some(spec) = document.session_spec()? {
             self.state
                 .update(cx, |state, _| state.restore_candidate(&spec));

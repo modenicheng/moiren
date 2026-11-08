@@ -91,8 +91,8 @@ impl CachedPanel for GraphPanel {
     fn on_rebuild(&self, shell: &mut StudioShell) {
         // Fresh visibility demand: the canvas prepaint re-registers the
         // nodes its fitted camera shows during this same layout pass.
-        shell.meter_points.set((false, false));
-        shell.node_meter_points.borrow_mut().clear();
+        shell.metering.meter_points.set((false, false));
+        shell.metering.node_meter_points.borrow_mut().clear();
     }
 
     fn observe_nested(
@@ -190,7 +190,7 @@ impl HotSurface for GraphMeters {
                 let mut trace = shell.trace.borrow_mut();
                 trace.add(began.elapsed());
                 trace.graph_frames += 1;
-                trace.finish(shell.node_meter_points.borrow().len());
+                trace.finish(shell.metering.node_meter_points.borrow().len());
             }
             shell.frames_wanted(cx)
         })

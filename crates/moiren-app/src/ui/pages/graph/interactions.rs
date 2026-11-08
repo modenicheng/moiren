@@ -365,7 +365,7 @@ pub(super) fn camera_fit(
                 // screen, or their level windows keep being drained and
                 // their ballistics advancing for a view nobody sees
                 // (audit HC-9).
-                let mut points = shell.node_meter_points.borrow_mut();
+                let mut points = shell.metering.node_meter_points.borrow_mut();
                 points.clear();
                 points.extend(
                     nodes

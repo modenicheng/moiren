@@ -58,7 +58,7 @@ impl StudioShell {
             // the same iterator instead of being inserted into the
             // registration set, which belongs to the canvases alone.
             if visible {
-                let points = self.node_meter_points.borrow();
+                let points = self.metering.node_meter_points.borrow();
                 let meters = state.node_meters.update(
                     &state.snapshot,
                     points.iter().copied().chain(inspector_selected),
@@ -343,7 +343,7 @@ fn meter(
         // registration, because per-strip panels no longer run a
         // whole-table reset over their siblings.
         .child({
-            let points = shell.node_meter_points.clone();
+            let points = shell.metering.node_meter_points.clone();
             let id = entry.id;
             canvas(
                 move |bounds, window, _| {
@@ -367,7 +367,7 @@ fn meter(
             // an eligibility or identity transition resets the flags in
             // `refresh_observation_nodes` and the new owners re-register on
             // their rebuild in the same layout pass.
-            view.child(meter_probe(shell.meter_points.clone(), input))
+            view.child(meter_probe(shell.metering.meter_points.clone(), input))
         })
         .child(page::track(shell, entry.id, channels, eligible.then_some(input)))
         .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
