@@ -2,9 +2,10 @@
 
 These Windows PowerShell 5.1-compatible definitions prepare the next finite VAD
 removal diagnostic. They are **not a native-approved runnable pipeline**.
-Loading them launches no tools. Real task registration/dispatch and default
-trace tools unconditionally refuse until reviewed orchestration exists;
-changing an approval boolean is not authorization.
+Loading them launches no tools. Lower native/tool guards require the exact
+retained operation context; the executable release unconditionally refuses
+until actual target orchestration/archive review. Changing an approval boolean
+is not authorization.
 
 - `finite-tool.ps1` retains exact process/handle/creation and bounded redirected
   output. Timeout retains the same owner, not kill/relaunch or success.
@@ -107,6 +108,10 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-diagnostic-controller.ps1
 .\test-diagnostic-entry.ps1
 .\test-diagnostic-lifetime.ps1
+.\test-native-admission.ps1
+.\test-native-guard-routing.ps1
+.\test-native-query-admission.ps1
+.\test-native-admission-lifetime.ps1
 ```
 
 The task scheduler, device APIs and target identity are mocked. Real children only output,
@@ -132,7 +137,7 @@ reads are not hard cancellation or crash recovery. Retain unresolved owners.
 The five trace suites run the production C# layouts, allocation/parsing and
 retained-owner composition with only native API delegates replaced. They do
 not create a real ETW session. Real native start/enable/query/STOP dispatch in
-the native owner remains unconditionally guarded. Provider-idle enumeration is
+the native owner remains context-guarded behind a closed release. Provider-idle enumeration is
 not an atomic reservation against another controller; combined admission must
 exclude competing owners rather than claim this observation prevents stealing.
 
@@ -203,7 +208,21 @@ run the native diagnostic. It refuses missing user reboot confirmation or the
 wrong target host/SID before imports and requires an already elevated
 controller. It never elevates or reboots automatically. No native target run
 has been made with this entry; the lower scheduler/ETW/decode/retirement
-dispatch guards remain closed pending owner-aware native admission review.
+dispatch guards require the owner-aware context described below. Its executable
+release guard remains unconditionally closed pending target runner/archive review.
+
+`native-admission.ps1` retains exact resource associations and once-only
+operation keys, not a Reviewed/NativeApproved flag. Birth rechecks immutable
+inputs, actual readiness and deadline after blocking validation; the final
+RunEx and post-readback acknowledgement have their own admission checks.
+Cleanup requires original controller/resource/writer identity independently of
+expired BEFORE or Explorer liveness. Original COM references/XML, full-chain
+terminal checks and saved finish/abort evidence guard task retirement. Decode
+static pins match the original input snapshot, and canonical tool requests
+cannot adopt late alternate tools. Start and tool dispatch intent distinguishes
+known predispatch refusal from actual unknown output without retries.
+The [dated receipt](../../docs/validation/2026-11-08-removal-native-admission.md)
+states test adapters, verification scope and the remaining release/target gates.
 
 The controller retains one `diagnostic-lease.ps1` writer at the fixed
 `D:\MoirenTest\removal-613-controller.lock` path through original before

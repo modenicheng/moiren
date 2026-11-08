@@ -8,9 +8,20 @@ function Assert-RemovalManagedTraceAdmission($Session) {
         -not[object]::ReferenceEquals($Session.TraceReadback,$Session.TraceSession.Readback)){
         throw 'Collector needs the exact retained trace session, not detached readback flags.'
     }
+    if($null -eq $Session.TraceSession.NativeOwner.Boundary){
+        if($null -eq (Get-Command Assert-RemovalNativeOperation -ErrorAction SilentlyContinue)){
+            throw 'Managed probe admission requires retained operation admission; no live trace refresh.'
+        }
+        Assert-RemovalNativeOperation -Resource $Session -Operation 'ManagedAdmit'
+    }
     Refresh-RemovalTraceSession $Session.TraceSession
     if(-not(Test-RemovalTraceCaptureAdmission $Session.TraceReadback)){
         throw 'Probe admission requires the exact live owned trace readback.'
+    }
+    if($null -eq $Session.TraceSession.NativeOwner.Boundary){
+        # Native readback may block. Refuse a late acknowledgement after it
+        # returns, even when the retained trace snapshot itself is valid.
+        Assert-RemovalNativeOperation -Resource $Session -Operation 'ManagedAdmit'
     }
 }
 
@@ -109,7 +120,7 @@ function Observe-RemovalManagedSession {
 
 function Complete-RemovalManagedTaskCleanup {
     param([Parameter(Mandatory=$true,Position=0)]$Session)
-    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval $Session 'ManagedRetire'
     $trace=$Session.TraceSession
     if($null -eq $trace -or $null -eq $Session.TraceReadback -or $null -eq $trace.Readback -or
         -not[object]::ReferenceEquals($Session.TraceReadback,$trace.Readback) -or

@@ -6,6 +6,7 @@ Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'run-inputs.ps1')
 . (Join-Path $PSScriptRoot 'safety-audit.ps1')
 . (Join-Path $PSScriptRoot 'finish-session.ps1')
+. (Join-Path $PSScriptRoot 'native-admission.ps1')
 
 function Add-RemovalControllerError($Owner,[string]$Message) {
     if($Owner.Errors.Count -lt 16 -and -not$Owner.Errors.Contains($Message)){$Owner.Errors.Add($Message)}
@@ -109,7 +110,8 @@ function Test-RemovalControllerTraceStopped($Owner) {
         # A captured nonzero Start result is failure, not ownership of an
         # existing session. A missing result (or success with invalid handle)
         # remains unresolved; neither path ever grants STOP by name.
-        return (-not$native.StartAttempted -or ($null -ne $native.StartStatus -and
+        return (-not$native.StartAttempted -or ($null -ne $native.PSObject.Properties['StartDispatchAttempted'] -and
+            -not$native.StartDispatchAttempted) -or ($null -ne $native.StartStatus -and
             $native.StartStatus -is [uint32] -and $native.StartStatus -ne 0))
     }
     $receipt=$native.StopReceipt
@@ -150,6 +152,7 @@ function Observe-RemovalControllerAbort($Owner,[int]$ObservationMilliseconds=25)
         if($r.Phase -ceq 'AwaitingDecodePins' -and $null -eq $Owner.RetainedFinish.RetainedDecode){
             $pins=New-RemovalDiagnosticDecodePins $Owner.RetainedInputs -TraceSession $trace -ManagedSession $managed
             Set-RemovalManagedFinishDecode -Finish $Owner.RetainedFinish -Pins $pins -OutputDirectory (Join-Path $Owner.OriginalDirectory 'decode')
+            if($null -eq $Owner.OriginalNativeOwner.Boundary){Register-RemovalNativeDecode $Owner}
         }
         if(-not$r.Terminal){$Owner.Phase=$r.Phase}
         return $r.Terminal
@@ -260,6 +263,7 @@ function Observe-RemovalDiagnosticController {
                     -Executable $pins.Probe.File.Path -ExpectedSha256 $pins.Probe.File.Sha256 -ProbeArguments $arguments `
                     -SessionId $user.SessionId -Sid $user.Sid -Nonce $Owner.Nonce -TraceSession $Owner.RetainedTrace
                 $Owner.RetainedManaged=$managed;$Owner.ManagedSession=$managed
+                if($null -eq $Owner.OriginalNativeOwner.Boundary){Initialize-RemovalNativeContext $Owner}
             }
             if(-not$Owner.RetainedTrace.StartAttempted){
                 Assert-RemovalDiagnosticAdmission $Owner
@@ -288,6 +292,7 @@ function Observe-RemovalDiagnosticController {
             if($finished.Phase -ceq 'AwaitingDecodePins' -and $null -eq $Owner.RetainedFinish.RetainedDecode){
                 $pins=New-RemovalDiagnosticDecodePins $Owner.RetainedInputs -TraceSession $Owner.RetainedTrace -ManagedSession $Owner.RetainedManaged
                 Set-RemovalManagedFinishDecode -Finish $Owner.RetainedFinish -Pins $pins -OutputDirectory (Join-Path $Owner.RunDirectory 'decode')
+                if($null -eq $Owner.OriginalNativeOwner.Boundary){Register-RemovalNativeDecode $Owner}
                 $Owner.Phase='Finish';return Get-RemovalControllerResult $Owner
             }
             if(-not$finished.Terminal){$Owner.Phase=$finished.Phase;return Get-RemovalControllerResult $Owner}

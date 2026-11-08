@@ -1,6 +1,6 @@
 #requires -Version 5.1
-# Definitions only. Native dispatch is deliberately refused pending combined
-# runner/preflight review. Injected delegates exercise the same buffers in tests.
+# Definitions only. Native dispatch requires owner-aware operation admission;
+# standalone imports stay closed. Injected delegates use the same test buffers.
 # StartTrace/ControlTrace contracts:
 # https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew
 # https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew
@@ -75,6 +75,7 @@ namespace Moiren.RemovalTraceNativeV1 {
         public Guid SessionGuid { get; private set; }
         public ulong Handle { get; private set; }
         public bool StartAttempted { get; private set; }
+        public bool StartDispatchAttempted { get; private set; }
         public uint? StartStatus { get; private set; }
         public bool TraceOwned { get; private set; }
         public bool EnableAttempted { get; private set; }
@@ -116,6 +117,11 @@ namespace Moiren.RemovalTraceNativeV1 {
             startCaptured=true;
             Handle=handle; StartStatus=status;
             TraceOwned=status.HasValue && status.Value==0 && handle!=0 && handle!=ulong.MaxValue;
+        }
+        internal void BeginStartDispatch() {
+            if(!StartAttempted || StartDispatchAttempted || startCaptured)
+                throw new InvalidOperationException("Original pending Start dispatch required; no retry.");
+            StartDispatchAttempted=true;
         }
         internal void BeginIdle() {
             if(!TraceOwned || ProviderIdleAttempted || EnableAttempted || Failed)
@@ -194,6 +200,7 @@ namespace Moiren.RemovalTraceNativeV1 {
         public Owner Owner { get; private set; }
         public Bridge(string session,string path,object boundary) { Owner=new Owner(session,path,boundary); }
         public void BeginStart() { Owner.BeginStart(); }
+        public void BeginStartDispatch() { Owner.BeginStartDispatch(); }
         public void CaptureStart(uint? status,ulong handle) { Owner.CaptureStart(status,handle); }
         public void BeginIdle() { Owner.BeginIdle(); }
         public void CaptureIdle(uint status,bool confirmed) { Owner.CaptureIdle(status,confirmed); }
@@ -232,7 +239,11 @@ namespace Moiren.RemovalTraceNativeV1 {
 }
 
 function Assert-RemovalTraceNativeOwnerApproval {
-    throw 'Native trace owner awaits reviewed combined preflight/runner approval; no host ETW dispatch.'
+    param($Owner,[string]$Operation)
+    if($null -eq (Get-Command Assert-RemovalNativeOperation -ErrorAction SilentlyContinue)){
+        throw 'Native trace owner requires retained operation admission; no host ETW dispatch.'
+    }
+    Assert-RemovalNativeOperation -Resource $Owner -Operation $Operation
 }
 
 function New-RemovalNativeTrace {
@@ -292,7 +303,22 @@ function Invoke-RemovalNativeBoundary($Owner,[string]$Operation,[object[]]$Value
         if($result -isnot [UInt32]){throw 'Native boundary must return exactly one typed UInt32 status; unknown is not zero.'}
         return $result
     }
-    Assert-RemovalTraceNativeOwnerApproval
+    # Pre-entry and dispatch have different bridge flags. Forward the exact
+    # retained owner at each boundary; a blanket approval cannot cover both.
+    $admissionOperation=switch($Operation){
+        'Start'{'TraceStartDispatch'}
+        'Enumerate'{'TraceEnumerate'}
+        'Enable'{'TraceEnable'}
+        'Query'{'TraceStopQuery'}
+        'Stop'{'TraceStop'}
+        default{throw 'Unknown native trace operation.'}
+    }
+    Assert-RemovalTraceNativeOwnerApproval $Owner $admissionOperation
+    if($Operation -ceq 'Start'){
+        $bridge=$null
+        if(-not$script:RemovalNativeBridges.TryGetValue($Owner,[ref]$bridge)){throw 'Original native Start dispatcher missing.'}
+        $bridge.BeginStartDispatch()
+    }
     switch($Operation){
         'Start'{return [Moiren.RemovalTraceNativeV1.Api]::Start($Values[0],$Values[1],$Values[2])}
         'Enumerate'{return [Moiren.RemovalTraceNativeV1.Api]::Enumerate($Values[0],$Values[1],$Values[2])}
@@ -346,7 +372,7 @@ function Start-RemovalNativeTrace {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true,Position=0)]$Owner)
     $ErrorActionPreference='Stop'
-    if($null -eq $Owner.Boundary){Assert-RemovalTraceNativeOwnerApproval}
+    if($null -eq $Owner.Boundary){Assert-RemovalTraceNativeOwnerApproval $Owner 'TraceStart'}
     $bridge=$null
     if(-not $script:RemovalNativeBridges.TryGetValue($Owner,[ref]$bridge)){throw 'Owner has no retained native dispatcher capability.'}
     $bridge.BeginStart()
@@ -355,7 +381,10 @@ function Start-RemovalNativeTrace {
         $p=New-RemovalNativeProperties $Owner -Start
         $handle=[Runtime.InteropServices.Marshal]::AllocHGlobal(8)
         [Runtime.InteropServices.Marshal]::WriteInt64($handle,0)
-        try {$status=Invoke-RemovalNativeBoundary $Owner 'Start' @($handle,$Owner.Session,$p)}
+        try {
+            if($null -ne $Owner.Boundary){$bridge.BeginStartDispatch()}
+            $status=Invoke-RemovalNativeBoundary $Owner 'Start' @($handle,$Owner.Session,$p)
+        }
         finally {
             # Preserve even ambiguous/failed output before freeing the native
             # allocation. Only successful Start grants any cleanup authority.
@@ -389,7 +418,7 @@ function Stop-RemovalNativeTrace {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true,Position=0)]$Owner)
     $ErrorActionPreference='Stop'
-    if($null -eq $Owner.Boundary){Assert-RemovalTraceNativeOwnerApproval}
+    if($null -eq $Owner.Boundary){Assert-RemovalTraceNativeOwnerApproval $Owner 'TraceStopPrepare'}
     $bridge=$null
     if(-not $script:RemovalNativeBridges.TryGetValue($Owner,[ref]$bridge)){throw 'Owner has no retained native dispatcher capability.'}
     $bridge.BeginStopQuery()

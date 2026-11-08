@@ -230,16 +230,32 @@ function Get-RemovalTraceQuerySnapshot {
         [Parameter(Mandatory=$true)][Guid]$SessionGuid,
         [Parameter(Mandatory=$true)][UInt64]$Handle,
         [Guid]$ProviderGuid='7DC75BA9-8274-4EAE-A42D-B4C74E0209D2',
-        [hashtable]$QueryBoundary
+        [hashtable]$QueryBoundary,
+        $NativeOwner=$null
     )
-    Initialize-RemovalTraceQuery
     if($null -ne $QueryBoundary){
         if($QueryBoundary.Query -isnot [scriptblock] -or $QueryBoundary.Enumerate -isnot [scriptblock]){
             throw 'Both mocked query boundaries are required; no native fallback.'
         }
+        Initialize-RemovalTraceQuery
         return [Moiren.RemovalTraceQueryV1.Reader]::QueryWith($SessionName,$SessionGuid,$Handle,$ProviderGuid,
             [Func[UInt64,IntPtr,UInt32]]$QueryBoundary.Query,[Func[IntPtr,UInt32,IntPtr,UInt32]]$QueryBoundary.Enumerate)
     }
+    # Reject standalone/foreign identities before importing even the read-only
+    # native reader. The operation context, not a caller-supplied tuple, grants
+    # access to this exact retained StartTrace owner.
+    if($null -eq $NativeOwner -or $NativeOwner.Session -isnot [string] -or
+        $NativeOwner.Session -cne $SessionName -or $NativeOwner.SessionGuid -isnot [Guid] -or
+        $NativeOwner.SessionGuid -ne $SessionGuid -or $SessionGuid -eq [Guid]::Empty -or
+        $NativeOwner.Handle -isnot [UInt64] -or $NativeOwner.Handle -ne $Handle -or
+        $Handle -eq 0 -or $Handle -eq [UInt64]::MaxValue){
+        throw 'Exact retained native trace owner/name/GUID/handle required for readback.'
+    }
+    if($null -eq (Get-Command Assert-RemovalNativeOperation -CommandType Function -ErrorAction SilentlyContinue)){
+        throw 'Native trace readback requires the combined owner-bound operation admission context.'
+    }
+    $null=Assert-RemovalNativeOperation -Resource $NativeOwner -Operation TraceReadback
+    Initialize-RemovalTraceQuery
     # Actual read-only native path. No StartTrace/Enable/Stop/CloseTrace import.
     # Caller must place synchronous API reads inside its owned bounded collector.
     # A successful query never grants ownership: Handle/SessionGuid must already

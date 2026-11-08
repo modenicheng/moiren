@@ -149,8 +149,20 @@ remain identical through real runspace dispatch; timeout/configuration refusal
 continues observing original children instead of retrying or dropping owners.
 Host-only lifetime composition uses the actual controller/lease/C# trace owner
 with injected APIs, not native diagnostic acceptance. Owner-aware actual native
-admission and postboot verification remain open; no driver/audio/OBS/reboot or
+admission is extended by the software preparation below; postboot verification
+remains open. No driver/audio/OBS/reboot or
 replacement EXE tree is introduced, and all S0-S5 requirements remain intact.
+
+The [owner-aware operation admission](validation/2026-11-08-removal-native-admission.md)
+binds exact trace/task/managed/decode resources to the original live controller
+and writer, with final birth freshness and separate cleanup lifetime authority.
+Registration seals original COM owners/XML; direct retirement requires whole
+terminal checks and persisted evidence. Known predispatch refusal is distinct
+from unknown native output, without retries or invented status. Host-only
+composition covers failed-enable exact STOP and AFTER receipts, not actual
+native acceptance. The executable release remains unconditionally closed
+pending reviewed target orchestration and bounded archive/transfer; user reboot
+confirmation and fresh postboot provenance are still required.
 
 The original S0-S5 requirements below remain the completion criteria. Subsequent
 implementation is recorded in the

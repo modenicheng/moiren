@@ -52,6 +52,20 @@ function Attach-Decode($Fixture,[hashtable]$Boundary){
  Set-RemovalManagedFinishDecode -Finish $Fixture.Finish -Pins $Fixture.Pins `
   -OutputDirectory (Join-Path $Fixture.Root 'decode') -ToolBoundary $Boundary
 }
+Case 'only-explicit-known-no-dispatch-can-settle-without-a-tool-owner' {
+ foreach($mode in @('not-dispatched','unknown-dispatched','missing','nonbool')){
+  $step=[pscustomobject]@{Owner=$null}
+  switch($mode){
+   'not-dispatched'{$step|Add-Member NoteProperty DispatchAttempted $false}
+   'unknown-dispatched'{$step|Add-Member NoteProperty DispatchAttempted $true}
+   'nonbool'{$step|Add-Member NoteProperty DispatchAttempted 'false'}
+  }
+  $d=[pscustomobject]@{ToolOwners=@();Steps=@($step)}
+  $h=[pscustomobject]@{RetainedDecode=$d;ToolReceipts=@();ToolLogPins=@();Errors=(New-Object Collections.Generic.List[string])}
+  $resolved=Observe-RemovalFinishTools $h 1
+  Check ($resolved-eq($mode-ceq'not-dispatched')) ('Tool dispatch ambiguity incorrectly settled: '+$mode)
+ }
+}
 Case 'fresh-terminal-then-one-stop-then-retained-decode-then-evidence-then-retirement' {
  $f=New-FinishFixture;$h=$f.Finish
  Check (-not$f.Session.StopAttempted-and$null-eq$h.Decode) 'Construction mutated trace/tools.'

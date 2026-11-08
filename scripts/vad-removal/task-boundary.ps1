@@ -10,9 +10,13 @@ function Assert-RemovalTaskHost {
 }
 
 function Assert-RemovalTaskNativeApproval {
-    # The handshake exists, but combined fresh-target orchestration is not yet
-    # approved. A boolean on Spec cannot authorize native scheduler operations.
-    throw 'Task preparation is not approved for native registration or launch.'
+    param($Owner,[string]$Operation)
+    # The staged worker imports no controller authority. Missing admission must
+    # stay closed; a boolean on Spec cannot authorize scheduler operations.
+    if($null -eq (Get-Command Assert-RemovalNativeOperation -ErrorAction SilentlyContinue)){
+        throw 'Task preparation requires retained operation admission; no scheduler mutation.'
+    }
+    Assert-RemovalNativeOperation -Resource $Owner -Operation $Operation
 }
 
 function Assert-RemovalTaskPath([string]$Path) {
@@ -93,7 +97,7 @@ function New-RemovalTaskScheduler {
 function Register-RemovalTaskDefinition {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)]$Owner)
-    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskNativeApproval
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskNativeApproval $Owner 'TaskRegister'
     if($Owner.RegistrationAttempted -or $Owner.Closed -or $Owner.Error){throw 'Registration already attempted/refused; retain exact intent, never retry.'}
     $s=$Owner.Spec
     try {
@@ -111,16 +115,18 @@ function Register-RemovalTaskDefinition {
         # Retain intent and COM owners before TASK_CREATE can commit. A lost
         # return is an unknown registration, never permission to create again.
         $Owner.RegistrationUtc=[DateTimeOffset]::UtcNow.ToString('o')
+        Assert-RemovalTaskNativeApproval $Owner 'TaskRegisterDispatch'
         $Owner.RegistrationAttempted=$true
         $Owner.RegisteredTask=$Owner.Folder.RegisterTaskDefinition($s.Name,$d,2,$s.Sid,$null,3,$null)
         Assert-RemovalTaskDefinition $s $Owner.RegisteredTask
         $Owner.RegisteredXml=$Owner.RegisteredTask.Xml
+        Assert-RemovalTaskNativeApproval $Owner 'TaskRegistered'
         $Owner.RegistrationKnown=$true
     } catch {$Owner.Error='Task registration failed/unknown: '+$_.Exception.Message}
 }
 
 function Start-RemovalTaskOnce($Owner) {
-    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskNativeApproval
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskNativeApproval $Owner 'TaskDispatch'
     if(-not $Owner.RegistrationKnown -or $Owner.Error -or $Owner.Closed){throw 'No verified exact task registration.'}
     if($Owner.DispatchAttempted){throw 'Dispatch already attempted; observe exact task, never rerun.'}
     Assert-RemovalTaskDefinition $Owner.Spec $Owner.RegisteredTask
@@ -129,6 +135,7 @@ function Start-RemovalTaskOnce($Owner) {
     foreach($path in @($Owner.Spec.WorkerPath,$Owner.Spec.Executable,$Owner.Spec.RunDirectory)){Assert-RemovalTaskPath $path}
     if((Get-FileHash -LiteralPath $Owner.Spec.WorkerPath).Hash -cne $Owner.Spec.WorkerSha256 -or
         (Get-FileHash -LiteralPath $Owner.Spec.Executable).Hash -cne $Owner.Spec.ExecutableSha256){throw 'Task entry executable/script changed.'}
+    Assert-RemovalTaskNativeApproval $Owner 'TaskDispatchInvoke'
     $Owner.DispatchAttempted=$true;$Owner.DispatchUtc=[DateTimeOffset]::UtcNow.ToString('o')
     try {
         $Owner.RunningTask=$Owner.RegisteredTask.RunEx($null,4,$Owner.Spec.SessionId,$null)
@@ -323,12 +330,16 @@ function Observe-RemovalRetainedWorker($Owner) {
 }
 
 function Assert-RemovalTaskCleanupApproval {
-    throw 'Exact task retirement awaits reviewed combined target orchestration; no scheduler deletion.'
+    param($Owner,[string]$Operation)
+    if($null -eq (Get-Command Assert-RemovalNativeOperation -ErrorAction SilentlyContinue)){
+        throw 'Exact task retirement requires retained operation admission; no scheduler deletion.'
+    }
+    Assert-RemovalNativeOperation -Resource $Owner -Operation $Operation
 }
 
 function Remove-RemovalOwnedTask {
     param([Parameter(Mandatory=$true,Position=0)]$Owner)
-    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval $Owner 'TaskRetire'
     if($Owner.RetirementAttempted -or $Owner.Retired -or -not$Owner.RegistrationKnown -or
         -not$Owner.DispatchAttempted -or -not$Owner.WorkerBindingKnown -or $Owner.WorkerBindingError -or
         $null -eq $Owner.WorkerProcess -or $null -eq $Owner.Folder){throw 'No unused exact terminal task retirement authority.'}
@@ -374,7 +385,7 @@ function Remove-RemovalOwnedTask {
 
 function Remove-RemovalUnstartedTask {
     param([Parameter(Mandatory=$true,Position=0)]$Owner)
-    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval $Owner 'TaskRetireUnstarted'
     if($Owner.RetirementAttempted -or $Owner.Retired -or -not$Owner.RegistrationAttempted -or
         -not$Owner.RegistrationKnown -or $Owner.DispatchAttempted -or $Owner.WorkerBindingKnown -or
         $null -ne $Owner.WorkerProcess -or $null -eq $Owner.Folder){throw 'Exact known-created never-dispatched task required.'}

@@ -363,6 +363,15 @@ Case 'default-native-start-refuses-before-attempt-or-import' {
     Check (-not $source.Contains('CloseTrace(')) 'Controller incorrectly closes consumer handle.'
     Check ($source.Contains('StartTraceW') -and $source.Contains('EnableTraceEx2') -and $source.Contains('ControlTraceW')) 'Actual APIs missing.'
 }
+Case 'second-start-admission-refusal-retains-known-no-native-dispatch' {
+    $o=New-RemovalNativeTrace -Session 'MoirenRemoval613diagnostic' -EtlPath 'D:\owned\removal.etl'
+    function Assert-RemovalTraceNativeOwnerApproval($Owner,[string]$Operation){
+        if($Operation-cne'TraceStart'){throw 'Fresh admission expired before StartTrace.'}
+    }
+    $null=Start-RemovalNativeTrace $o
+    Check ($o.StartAttempted-and$o.Failed-and-not$o.TraceOwned-and$null-eq$o.StartStatus) 'Predispatch refusal fabricated native status.'
+    Check ($null-ne$o.PSObject.Properties['StartDispatchAttempted']-and-not$o.StartDispatchAttempted) 'Known no-dispatch was not retained separately from unknown native Start.'
+}
 $checks|ConvertTo-Json -Depth 6
 $failed=@($checks|Where-Object{-not $_.passed}).Count
 Write-Output ('CHECKS='+$checks.Count+' FAILED='+$failed+' ETW_CALLS=0')

@@ -111,7 +111,10 @@ function Observe-RemovalFinishTools($Finish,[int]$ObservationMilliseconds) {
         } catch {$all=$false;Add-RemovalFinishError $Finish ('Retained tool observation: '+$_.Exception.Message)}
     }
     # A dispatch that never returned an owner cannot establish process absence.
-    foreach($step in $d.Steps){if($null -eq $step.Owner){$all=$false}}
+    foreach($step in $d.Steps){
+        if($null -eq $step.Owner -and ($null -eq $step.PSObject.Properties['DispatchAttempted'] -or
+            $step.DispatchAttempted -isnot [bool] -or $step.DispatchAttempted)){$all=$false}
+    }
     $Finish.ToolReceipts=$receipts;$Finish.ToolLogPins=$logs
     return $all
 }

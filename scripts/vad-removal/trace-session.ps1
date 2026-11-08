@@ -27,9 +27,10 @@ function New-RemovalTraceSession {
 }
 
 function Get-RemovalOwnedTraceSnapshot($Session) {
-    Get-RemovalTraceQuerySnapshot -SessionName $Session.NativeOwner.Session `
-        -SessionGuid $Session.NativeOwner.SessionGuid -Handle $Session.NativeOwner.Handle `
-        -QueryBoundary $Session.QueryBoundary
+    $arguments=@{SessionName=$Session.NativeOwner.Session;SessionGuid=$Session.NativeOwner.SessionGuid
+        Handle=$Session.NativeOwner.Handle;QueryBoundary=$Session.QueryBoundary}
+    if($null -eq $Session.QueryBoundary){$arguments.NativeOwner=$Session.NativeOwner}
+    Get-RemovalTraceQuerySnapshot @arguments
 }
 
 function Start-RemovalTraceSession {

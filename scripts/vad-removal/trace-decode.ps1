@@ -8,7 +8,11 @@ Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'collector-boundary.ps1')
 
 function Assert-RemovalTraceDecodeToolApproval {
-    throw 'Closed trace decode awaits reviewed actual runner approval; no default tool launch.'
+    param($Decode,[string]$Operation,$Request=$null)
+    if($null -eq (Get-Command Assert-RemovalNativeOperation -ErrorAction SilentlyContinue)){
+        throw 'Closed trace decode requires retained operation admission; no default tool launch.'
+    }
+    Assert-RemovalNativeOperation -Resource $Decode -Operation $Operation -Request $Request
 }
 
 function Read-RemovalDecodeFile {
@@ -240,12 +244,13 @@ function Add-RemovalDecodeError($Decode,[string]$Message) {
 }
 
 function Invoke-RemovalDecodeTool($Decode,$Request,[switch]$AllowReaderRefusal) {
-    $step=[pscustomobject]@{Request=$Request;Owner=$null;Receipt=$null}
+    $step=[pscustomobject]@{Request=$Request;Owner=$null;Receipt=$null;DispatchAttempted=$false}
     $Decode.Steps.Add($step)
     try {
-        if($null -ne $Decode.ToolBoundary){$owner=&$Decode.ToolBoundary.Start $Request}
+        if($null -ne $Decode.ToolBoundary){$step.DispatchAttempted=$true;$owner=&$Decode.ToolBoundary.Start $Request}
         else {
-            Assert-RemovalTraceDecodeToolApproval
+            Assert-RemovalTraceDecodeToolApproval $Decode 'DecodeTool' $Request
+            $step.DispatchAttempted=$true
             $owner=Start-FiniteTool -Executable $Request.Executable -ExpectedSha256 $Request.ExpectedSha256 `
                 -OutputDirectory $Request.OutputDirectory -ArgumentList $Request.ArgumentList -TimeoutSeconds 15 -MaxLogBytes 1048576
         }
@@ -308,7 +313,7 @@ function Save-RemovalDecodeReceipt($Decode) {
                 ExitedConfirmed=$r.ExitedConfirmed;TimedOut=$r.TimedOut;OutputStable=$r.OutputStable
                 NeedsObservation=$r.NeedsObservation;Success=$r.Success;Errors=$r.Errors}
         }
-        @{Step=$step.Request.Step;Executable=$step.Request.Executable;ExpectedSha256=$step.Request.ExpectedSha256
+        @{Step=$step.Request.Step;DispatchAttempted=$step.DispatchAttempted;Executable=$step.Request.Executable;ExpectedSha256=$step.Request.ExpectedSha256
             Arguments=$step.Request.ArgumentList;ActualOwner=$actualOwner;Tool=$tool}
     }
     $r=[ordered]@{SchemaVersion=1;Qualified=$false;NativePassed=$false;Completed=$Decode.Completed;Failed=$Decode.Failed
@@ -341,7 +346,7 @@ function Invoke-RemovalTraceDecode {
     param([Parameter(Mandatory=$true,Position=0)]$Decode)
     $ErrorActionPreference='Stop'
     if($Decode.Attempted){throw 'Decode already attempted; retain original owners/outputs, never retry.'}
-    if($null -eq $Decode.ToolBoundary){Assert-RemovalTraceDecodeToolApproval}
+    if($null -eq $Decode.ToolBoundary){Assert-RemovalTraceDecodeToolApproval $Decode 'DecodeBegin'}
     $Decode.Attempted=$true
     try {
         $receipt=Assert-RemovalDecodeStoppedSession $Decode.TraceSession

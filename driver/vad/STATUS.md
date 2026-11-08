@@ -67,6 +67,15 @@ raw final-name checks and installed613are unchanged.
 
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
+The [owner-aware admission preparation](../../docs/validation/2026-11-08-removal-native-admission.md)
+associates exact task/trace/managed/decode resources with the original controller
+and live writer. Final dispatch checks and separate cleanup authority preserve
+one-shot intent and original terminal/evidence requirements. Host-only failed-
+enable composition exercises owned STOP and AFTER persistence, not target
+acceptance. The executable release stays unconditionally closed pending actual
+runner/archive review. Reboot is still user-owned/unconfirmed; no remote driver,
+audio, OBS or new613provenance is claimed. Full S0-S5 remains open.
+
 The later [retained diagnostic controller](../../docs/validation/2026-11-08-removal-diagnostic-controller.md)
 composes the actual software entry, exclusive original writer, immutable run
 inputs, retained BEFORE/AFTER collection and finish/retirement ownership. Exact

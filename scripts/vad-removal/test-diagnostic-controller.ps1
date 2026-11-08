@@ -46,7 +46,7 @@ function Assert-RemovalTargetReadiness($Owner){Check $Owner.Ready 'Original read
 function New-RemovalTraceSession {
  param($Session,$EtlPath)
  [pscustomobject]@{StartAttempted=$false;StopAttempted=$false;Readback=[pscustomobject]@{fixture='original-readback'}
-  NativeOwner=[pscustomobject]@{TraceOwned=$false;TraceStopped=$false;StartAttempted=$false;StartStatus=$null;Failed=$false;StopReceipt=$null};StoppedReceipt=$null}
+  NativeOwner=[pscustomobject]@{TraceOwned=$false;TraceStopped=$false;StartAttempted=$false;StartStatus=$null;Failed=$false;StopReceipt=$null;Boundary=@{}};StoppedReceipt=$null}
 }
 function Start-RemovalTraceSession($Session){
  Event 'trace-start';$Session.StartAttempted=$true;$Session.NativeOwner.StartAttempted=$true
@@ -135,6 +135,16 @@ function Fixture {
 function Settle($Owner){
  for($i=0;$i-lt20;$i++){$r=Observe-RemovalDiagnosticController $Owner -ObservationMilliseconds 1;if(-not$r.NeedsObservation){return $r}}
  throw ('Controller boundary fixture remained pending: '+($Owner.Errors -join '; '))
+}
+Case 'real-controller-binds-original-context-before-start-and-decode-before-tools' {
+ $o=Fixture;$o.OriginalNativeOwner.Boundary=$null
+ function Initialize-RemovalNativeContext($Owner){Event 'operation-context';Check ([Object]::ReferenceEquals($Owner,$o)) 'Context rebound root.'}
+ function Register-RemovalNativeDecode($Owner){Event 'decode-context';Check ($null-ne$Owner.RetainedFinish.RetainedDecode) 'Decode binding precedes original owner.'}
+ Start-RemovalDiagnosticController $o;$r=Settle $o
+ Check ($r.Completed-and$r.Safe) 'Native-boundary fixture did not settle.'
+ $events=$f.Events.ToArray()
+ Check (($events-contains'operation-context')-and[Array]::IndexOf($events,'operation-context')-lt[Array]::IndexOf($events,'trace-start')) 'Controller started native work without retained operation binding.'
+ Check (($events-contains'decode-context')-and[Array]::IndexOf($events,'decode-attach')-lt[Array]::IndexOf($events,'decode-context')) 'Original decode never received operation binding.'
 }
 Case 'constructor-retains-owners-without-dispatch-and-confirmation-is-required' {
  $o=Fixture

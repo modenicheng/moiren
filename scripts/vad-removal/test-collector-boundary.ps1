@@ -98,9 +98,9 @@ Case 'real-final-admission-guard-refreshes-exact-session-and-rejects-stale-provi
   $script:refreshes++
   if($script:queryChanged){$Session.Readback.Invalid=$true;throw 'Actual provider disabled or session replaced'}
  }
- $trace=[pscustomobject]@{TraceOwned=$true;TraceStopped=$false;SessionReadbackConfirmed=$true;Failed=$false}
+ $trace=[pscustomobject]@{TraceOwned=$true;TraceStopped=$false;SessionReadbackConfirmed=$true;Failed=$false;Boundary=@{}}
  $readback=[pscustomobject]@{Invalid=$false;Initial=@{verified='initial'};Trace=$trace}
- $traceSession=[pscustomobject]@{Readback=$readback}
+ $traceSession=[pscustomobject]@{Readback=$readback;NativeOwner=$trace}
  $session=[pscustomobject]@{TraceSession=$traceSession;TraceReadback=$readback}
  &$actualTraceAdmission $session
  Check ($script:refreshes-eq1) 'Final guard did not perform a fresh query'
@@ -110,6 +110,19 @@ Case 'real-final-admission-guard-refreshes-exact-session-and-rejects-stale-provi
  $session.TraceReadback=[pscustomobject]@{Invalid=$false;Initial=@{};Trace=$trace}
  Reject {&$actualTraceAdmission $session}
  Check ($script:refreshes-eq2) 'Detached readback was substituted before refresh'
+}
+Case 'expiry-during-native-trace-refresh-cannot-acknowledge-probe' {
+ $script:expired=$false;$script:admissions=0
+ $readback=[pscustomobject]@{fixture='retained-readback'}
+ $session=[pscustomobject]@{TraceReadback=$readback;TraceSession=[pscustomobject]@{Readback=$readback;NativeOwner=@{Boundary=$null}}}
+ function Assert-RemovalNativeOperation {param($Resource,$Operation)
+  Check ([Object]::ReferenceEquals($Resource,$session)-and$Operation-ceq'ManagedAdmit') 'Original managed context changed.'
+  $script:admissions++;if($script:expired){throw 'Root expired during synchronous native readback.'}
+ }
+ function Refresh-RemovalTraceSession($Trace){$script:expired=$true}
+ function Test-RemovalTraceCaptureAdmission($Readback){return $true}
+ Reject {&$actualTraceAdmission $session}
+ Check ($script:admissions-eq2) 'Final post-query probe admission was not rechecked.'
 }
 Case 'root-refusal-still-binds-late-original-owners-without-admitting-audio' {
  $run=Join-Path $root 'late-root-refusal';$null=[IO.Directory]::CreateDirectory($run)

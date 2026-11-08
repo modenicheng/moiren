@@ -92,6 +92,19 @@ Case 'registration-intent-remains-owned-after-ambiguous-commit' {
  Reject {Start-RemovalTaskOnce $o}
  Check ($script:mockScheduler.Folder.Calls-eq1) 'Repeated unknown registration'
 }
+Case 'pre-com-admission-refusal-is-not-an-unknown-registration' {
+ $s=Spec;$o=New-RemovalTaskOwner -Spec $s;$script:mockScheduler=FakeScheduler $s 'ok'
+ function Assert-RemovalTaskNativeApproval($Owner,[string]$Operation){if($Operation-ceq'TaskRegisterDispatch'){throw 'Fresh admission expired before COM.'}}
+ Register-RemovalTaskDefinition -Owner $o
+ Check (-not$o.RegistrationAttempted-and-not$o.RegistrationKnown-and$o.Error-and$script:mockScheduler.Folder.Calls-eq0) 'Predispatch refusal invented an unresolved native registration.'
+}
+Case 'final-runex-admission-refusal-does-not-dispatch' {
+ $s=Spec;$task=FakeTask $s;$o=New-RemovalTaskOwner -Spec $s -RegisteredTask $task
+ $task.State=3;$task.LastTaskResult=267011
+ function Assert-RemovalTaskNativeApproval($Owner,[string]$Operation){if($Operation-ceq'TaskDispatchInvoke'){throw 'Fresh admission expired before RunEx.'}}
+ Reject {Start-RemovalTaskOnce $o}
+ Check (-not$o.DispatchAttempted-and$task.RunCalls-eq0) 'Final admission refusal dispatched RunEx or invented unknown dispatch.'
+}
 Case 'wrong-registration-return-is-retained-and-cannot-dispatch' {
  $s=Spec;$o=New-RemovalTaskOwner -Spec $s
  $script:mockScheduler=FakeScheduler $s 'wrong'

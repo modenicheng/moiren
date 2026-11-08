@@ -119,7 +119,9 @@ new controller delta.
 
 ## Remaining completion gates
 
-Owner-aware native operation admission, reviewed actual target orchestration,
+The later [owner-aware operation preparation](2026-11-08-removal-native-admission.md)
+adds resource-bound lower guards while its executable release remains closed.
+Reviewed actual target orchestration,
 bounded closed-run archive/transfer and fresh post-reboot target provenance
 remain before a finite native diagnostic. Current guards deliberately do not
 accept generic Reviewed/NativeApproved booleans. Cleanup authority must remain
