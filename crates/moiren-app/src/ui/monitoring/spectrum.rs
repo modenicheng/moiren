@@ -4,6 +4,7 @@
 //! dBFS, and decayed in the dB domain — so an idle card parks at the floor
 //! exactly like the meters do, and silence stands the frame loop down.
 
+#[cfg(any(test, feature = "gpui-test"))]
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -12,8 +13,9 @@ use moiren_engine::spectrum::SpectrumWindow;
 use moiren_signal::{PublisherStatus, Subscriber, SubscriptionOptions, Topic, TopicLifecycle};
 use rust_i18n::t;
 
-use super::{MeterStatus, REST_DB, STALE_AFTER, SUBSCRIPTION_GRACE};
-use crate::service::{AppHandle, AppSnapshot, SessionGeneration, SessionPhase, SpectrumTopic};
+use super::table::{SubscriptionTable, TopicSubscription};
+use super::{MeterStatus, REST_DB, STALE_AFTER};
+use crate::service::{AppHandle, AppSnapshot, SpectrumTopic};
 
 /// The analyzer's projection knobs, gathered as the one seam future
 /// parameter wiring plugs into at the code level (the UI does not expose
@@ -203,16 +205,15 @@ pub fn project_spectrum(
     }
 }
 
+/// The per-node spectrum table: one [`SpectrumSubscription`] per visible
+/// node (outliving visibility by the shared grace window), plus the payload
+/// state the lifecycle does not own — the projection parameters, and the
+/// capture/test curve injections.
 pub struct NodeSpectra {
-    handle: AppHandle,
     /// The projection's knobs — today the shipping defaults, tomorrow the
     /// seam parameter wiring sets (the UI does not expose them yet).
     params: SpectrumParams,
-    generation: Option<SessionGeneration>,
-    subscriptions: BTreeMap<NodeId, SpectrumSubscription>,
-    /// Nodes seen visible recently; subscriptions outlive the visible set by
-    /// [`SUBSCRIPTION_GRACE`] instead of flapping with per-frame visibility.
-    seen: BTreeMap<NodeId, Instant>,
+    table: SubscriptionTable<SpectrumSubscription>,
     /// Curves placed without a session, for captures and tests.
     #[cfg(any(test, feature = "gpui-test"))]
     injected: BTreeMap<NodeId, Box<[f32]>>,
@@ -242,11 +243,8 @@ struct SpectrumSubscription {
 impl NodeSpectra {
     pub fn new(handle: AppHandle) -> Self {
         Self {
-            handle,
             params: SpectrumParams::default(),
-            generation: None,
-            subscriptions: Default::default(),
-            seen: Default::default(),
+            table: SubscriptionTable::new(handle),
             #[cfg(any(test, feature = "gpui-test"))]
             injected: Default::default(),
         }
@@ -266,58 +264,20 @@ impl NodeSpectra {
         visible: impl IntoIterator<Item = NodeId>,
         now: Instant,
     ) -> bool {
-        if self.generation != Some(snapshot.generation) {
-            self.subscriptions.clear();
-            self.seen.clear();
-            self.generation = Some(snapshot.generation);
-        }
-        // Spectra belong to the running session: candidate edits and the
-        // brief swap window of an automatic rebuild must never blank them.
-        let active = snapshot.phase == SessionPhase::Running;
-        for id in visible {
-            self.seen.insert(id, now);
-        }
-        self.seen.retain(|id, seen| {
-            snapshot.graph.node(*id).is_some()
-                && now.saturating_duration_since(*seen) < SUBSCRIPTION_GRACE
-        });
-        let before = self.subscriptions.len();
-        self.subscriptions.retain(|id, _| {
-            active
-                && self.seen.contains_key(id)
-                && snapshot.signal_topics.node_spectra.contains_key(id)
-        });
-        let mut changed = before != self.subscriptions.len();
-        if !active {
-            return changed;
-        }
-        for id in self.seen.keys() {
-            let Some(topic) = snapshot.signal_topics.node_spectra.get(id) else {
-                continue;
-            };
-            let (handle, params) = (self.handle.clone(), self.params);
-            let subscription = self.subscriptions.entry(*id).or_insert_with(|| {
-                SpectrumSubscription::new(handle.clone(), topic.clone(), params)
-            });
-            if subscription.topic != *topic {
-                *subscription = SpectrumSubscription::new(handle, topic.clone(), params);
-            }
-            let status = subscription.status.clone();
-            let raw_changed = subscription.poll(now);
-            // A publication alone must not wake the interface: only the
-            // projected curve moving, or a status change, may — the rule
-            // the level path applies.
-            changed |= subscription.status != status || raw_changed;
-        }
-        changed
+        let (params, table) = (&self.params, &mut self.table);
+        table.update_at(
+            snapshot,
+            visible,
+            params,
+            |id| snapshot.signal_topics.node_spectra.get(&id).cloned(),
+            now,
+        )
     }
 
     /// Whether every observed curve has decayed to the floor, so the
     /// animation loop can stand down until fresh data lifts a band.
     pub fn at_rest(&self) -> bool {
-        self.subscriptions
-            .values()
-            .all(SpectrumSubscription::at_rest)
+        self.table.values().all(SpectrumSubscription::at_rest)
     }
 
     pub fn curve(&self, id: NodeId) -> Option<SpectrumCurve<'_>> {
@@ -330,7 +290,7 @@ impl NodeSpectra {
                 hi_hz: grid.hi_hz(),
             });
         }
-        let subscription = self.subscriptions.get(&id)?;
+        let subscription = self.table.get(id)?;
         let points = subscription.points.as_deref()?;
         let (_, grid) = subscription.grid.as_ref()?;
         Some(SpectrumCurve {
@@ -341,8 +301,8 @@ impl NodeSpectra {
     }
 
     pub fn status(&self, id: NodeId) -> MeterStatus {
-        self.subscriptions
-            .get(&id)
+        self.table
+            .get(id)
             .map(|subscription| subscription.status.clone())
             .unwrap_or(MeterStatus::Waiting)
     }
@@ -352,6 +312,36 @@ impl NodeSpectra {
     #[cfg(any(test, feature = "gpui-test"))]
     pub fn inject_curve(&mut self, id: NodeId, points: &[f32]) {
         self.injected.insert(id, points.to_vec().into_boxed_slice());
+    }
+}
+
+impl TopicSubscription for SpectrumSubscription {
+    /// The analyzer topic: a shape change (an FFT size change) arrives as a
+    /// new topic instead of a new header.
+    type Topic = Topic<SpectrumTopic>;
+    /// The projection's parameters, baked into the subscription at build
+    /// time.
+    type Context = SpectrumParams;
+
+    fn build(handle: AppHandle, topic: &Self::Topic, params: &SpectrumParams) -> Self {
+        Self::new(handle, topic.clone(), *params)
+    }
+
+    fn reads(&self, topic: &Self::Topic) -> bool {
+        self.topic == *topic
+    }
+
+    fn prepare(&mut self, _: &SpectrumParams) {}
+
+    /// Drain the queue, continue the fall, and report the payload's wake
+    /// rule: only the projected curve moving, or a status change, may wake
+    /// the interface — a publication alone must not, the rule the level
+    /// path applies (the decay alone never counts as a change either).
+    fn poll(&mut self, now: Instant) -> bool {
+        let status = self.status.clone();
+        let raw_changed = self.poll_windows(now);
+        self.advance(now);
+        self.status != status || raw_changed
     }
 }
 
@@ -403,14 +393,8 @@ impl SpectrumSubscription {
             .is_none_or(|points| points.iter().all(|point| *point <= REST_DB))
     }
 
-    /// Drain the queue and continue the fall; reports whether the projected
-    /// curve moved (the decay alone never counts as a change).
-    fn poll(&mut self, now: Instant) -> bool {
-        let raw_changed = self.poll_windows(now);
-        self.advance(now);
-        raw_changed
-    }
-
+    /// Drain the queue; reports whether the projected curve moved (the
+    /// decay alone never counts as a change).
     fn poll_windows(&mut self, now: Instant) -> bool {
         let mut raw_changed = false;
         let status = self.topic.status();

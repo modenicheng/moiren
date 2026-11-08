@@ -3,8 +3,10 @@
 //! Legacy source/output topics and managed per-node topics share lifecycle
 //! validation and display envelopes.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use moiren_core::graph::NodeId;
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
 use moiren_signal::{PublisherStatus, Subscriber, SubscriptionOptions, Topic, TopicLifecycle};
 use rust_i18n::t;
@@ -16,10 +18,6 @@ use crate::service::{
 /// A complete window must keep arriving; a retained value is not proof that
 /// the audio thread or publisher is still advancing.
 const STALE_AFTER: Duration = Duration::from_millis(500);
-
-/// Keep brief visibility changes from recreating subscriptions and fencing
-/// fresh publications while the graph canvas is panned or zoomed.
-const SUBSCRIPTION_GRACE: Duration = Duration::from_millis(750);
 
 /// Queued depth for level subscriptions: sixteen windows hold ~67 ms of the
 /// 240 Hz publication stream, covering both display-rate readers and the
@@ -43,11 +41,13 @@ pub(super) const REST_DB: f32 = SCALE_TICK_DB - REST_BELOW_TICK_DB;
 
 mod ballistics;
 mod spectrum;
+mod table;
 use crate::project::MeterDisplayPreferences;
 use ballistics::ChannelBallistics;
 #[cfg(test)]
 use ballistics::{PEAK_HOLD, RMS_INTEGRATION};
 pub use spectrum::{NodeSpectra, OctaveGrid, SPECTRUM_NOMINAL_SPAN_HZ, SpectrumCurve};
+use table::{SubscriptionTable, TopicSubscription};
 
 /// Ballistics-processed presentation reading for one channel: the moving
 /// peak-programme bar fill, the held recent-maximum marker, and the smoothed
@@ -330,17 +330,25 @@ struct MeterSubscription {
     settings: MeterDisplayPreferences,
     ballistics: Vec<ChannelBallistics>,
     display: Option<Box<[DisplayLevel]>>,
+    /// Whether the last poll drained a publication: only a published
+    /// window may latch a clip, so a manual clip reset holds while the
+    /// stream stalls instead of re-latching off the persisted reading.
+    /// The table's caller reads this after the pass.
+    last_poll_published: bool,
 }
 
+/// The per-node level table: one [`MeterSubscription`] per visible node
+/// (outliving visibility by the shared grace window), plus the payload
+/// state the lifecycle does not own — the clip latches, which survive even
+/// an unsubscribed node, and the display preferences.
 pub struct NodeMeters {
-    handle: AppHandle,
+    /// Clip latches are fenced by the session generation alongside the
+    /// table's own reset: they outlive subscriptions (and visibility), but
+    /// not sessions.
     generation: Option<SessionGeneration>,
     settings: MeterDisplayPreferences,
-    subscriptions: std::collections::BTreeMap<moiren_core::graph::NodeId, MeterSubscription>,
-    clips: std::collections::BTreeMap<moiren_core::graph::NodeId, ClipHold>,
-    /// Nodes seen visible recently; subscriptions outlive the visible set by
-    /// [`SUBSCRIPTION_GRACE`] instead of flapping with per-frame visibility.
-    seen: std::collections::BTreeMap<moiren_core::graph::NodeId, Instant>,
+    table: SubscriptionTable<MeterSubscription>,
+    clips: BTreeMap<NodeId, ClipHold>,
 }
 
 #[derive(Default)]
@@ -367,12 +375,10 @@ impl ClipHold {
 impl NodeMeters {
     pub fn new(handle: AppHandle) -> Self {
         Self {
-            handle,
             generation: None,
             settings: MeterDisplayPreferences::default(),
-            subscriptions: Default::default(),
-            clips: Default::default(),
-            seen: Default::default(),
+            table: SubscriptionTable::new(handle),
+            clips: BTreeMap::new(),
         }
     }
 
@@ -383,7 +389,7 @@ impl NodeMeters {
     pub fn update(
         &mut self,
         snapshot: &AppSnapshot,
-        visible: impl IntoIterator<Item = moiren_core::graph::NodeId>,
+        visible: impl IntoIterator<Item = NodeId>,
     ) -> bool {
         self.update_at(snapshot, visible, Instant::now())
     }
@@ -391,75 +397,45 @@ impl NodeMeters {
     pub fn update_at(
         &mut self,
         snapshot: &AppSnapshot,
-        visible: impl IntoIterator<Item = moiren_core::graph::NodeId>,
+        visible: impl IntoIterator<Item = NodeId>,
         now: Instant,
     ) -> bool {
         if self.generation != Some(snapshot.generation) {
-            self.subscriptions.clear();
             self.clips.clear();
-            self.seen.clear();
             self.generation = Some(snapshot.generation);
         }
-        // Meters belong to the running session: candidate edits and the
-        // brief swap window of an automatic rebuild must never blank them.
-        let active = snapshot.phase == SessionPhase::Running;
-        for id in visible {
-            self.seen.insert(id, now);
-        }
-        self.seen.retain(|id, seen| {
-            snapshot.graph.node(*id).is_some()
-                && now.saturating_duration_since(*seen) < SUBSCRIPTION_GRACE
-        });
-        let before = self.subscriptions.len();
-        self.subscriptions.retain(|id, _| {
-            active
-                && self.seen.contains_key(id)
-                && snapshot.signal_topics.node_levels.contains_key(id)
-        });
+        let resolve = |id: NodeId| {
+            let topic = snapshot.signal_topics.node_levels.get(&id)?;
+            // The window layout rides with the node: a channel-count
+            // change is part of the demand key, and rebuilds exactly like a
+            // topic change does.
+            let channels = snapshot
+                .graph
+                .graph
+                .get_node(id)
+                .ok()
+                .map(|node| node.channels())?;
+            Some((topic.clone(), channels))
+        };
+        let (settings, table) = (&self.settings, &mut self.table);
+        let mut changed = table.update_at(snapshot, visible, settings, resolve, now);
+        // Clip latches outlive the running phase and the visible set — a
+        // node keeps its latch while its subscription is between graces —
+        // but only while the node exists, and a rebuilt subscription
+        // (fresh topic or channel width) starts the latch over.
         self.clips
             .retain(|id, _| snapshot.graph.node(*id).is_some());
-        let mut changed = before != self.subscriptions.len();
-        if !active {
-            return changed;
+        for id in self.table.take_rebuilt() {
+            self.clips.remove(&id);
         }
-        // Borrow the seen table for the whole pass: the body only touches
-        // the sibling maps, and cloning the table here would allocate on
-        // every pump tick for every visible node (HC-14).
-        for id in self.seen.keys() {
-            let Some(topic) = snapshot.signal_topics.node_levels.get(id) else {
-                continue;
-            };
-            let Some(channels) = snapshot
-                .graph
-                .graph
-                .get_node(*id)
-                .ok()
-                .map(|node| node.channels())
-            else {
-                continue;
-            };
-            let subscription = self.subscriptions.entry(*id).or_insert_with(|| {
-                MeterSubscription::new(self.handle.clone(), topic.clone(), channels)
-            });
-            if subscription.topic != *topic || subscription.channels != channels {
-                *subscription =
-                    MeterSubscription::new(self.handle.clone(), topic.clone(), channels);
-                self.clips.remove(id);
-            }
-            let status = subscription.status.clone();
-            subscription.settings = self.settings;
-            let poll = subscription.poll(now);
-            // A publication alone must not wake the interface: a running
-            // stream publishes silence windows too, and notifying on each
-            // would repaint at the control-poll rate forever. Only a
-            // display-bearing change — raw readings, status, or a freshly
-            // latched clip — justifies a repaint.
-            changed |= subscription.status != status || poll.raw_changed;
-            if poll.published
+        // Only a freshly published window may latch a clip: observing the
+        // persisted reading between windows would re-latch a manually reset
+        // latch while the stream stalls.
+        for (id, subscription) in self.table.iter() {
+            if subscription.last_poll_published
                 && let Some(levels) = subscription.levels.as_deref()
             {
-                let clips = self.clips.entry(*id).or_default();
-                changed |= clips.observe(levels);
+                changed |= self.clips.entry(*id).or_default().observe(levels);
             }
         }
         changed
@@ -468,36 +444,36 @@ impl NodeMeters {
     /// Whether every observed node is parked at the scale bottom, so the
     /// display stays current without animation frames.
     pub fn at_rest(&self) -> bool {
-        self.subscriptions.values().all(MeterSubscription::at_rest)
+        self.table.values().all(MeterSubscription::at_rest)
     }
 
     /// Ballistics-smoothed stereo projection for presentation.
-    pub fn levels(&self, id: moiren_core::graph::NodeId) -> Option<[DisplayLevel; 2]> {
+    pub fn levels(&self, id: NodeId) -> Option<[DisplayLevel; 2]> {
         let levels: &[DisplayLevel; 2] = self.channel_levels(id)?.try_into().ok()?;
         Some(*levels)
     }
 
     /// Ballistics-smoothed per-channel readings for presentation.
-    pub fn channel_levels(&self, id: moiren_core::graph::NodeId) -> Option<&[DisplayLevel]> {
-        self.subscriptions
-            .get(&id)
+    pub fn channel_levels(&self, id: NodeId) -> Option<&[DisplayLevel]> {
+        self.table
+            .get(id)
             .and_then(|subscription| subscription.display.as_deref())
     }
 
-    pub fn raw_levels(&self, id: moiren_core::graph::NodeId) -> Option<&[ChannelLevel]> {
-        self.subscriptions
-            .get(&id)
+    pub fn raw_levels(&self, id: NodeId) -> Option<&[ChannelLevel]> {
+        self.table
+            .get(id)
             .and_then(|subscription| subscription.levels.as_deref())
     }
 
-    pub fn status(&self, id: moiren_core::graph::NodeId) -> MeterStatus {
-        self.subscriptions
-            .get(&id)
+    pub fn status(&self, id: NodeId) -> MeterStatus {
+        self.table
+            .get(id)
             .map(|subscription| subscription.status.clone())
             .unwrap_or(MeterStatus::Waiting)
     }
 
-    pub fn clips(&self, id: moiren_core::graph::NodeId) -> [bool; 2] {
+    pub fn clips(&self, id: NodeId) -> [bool; 2] {
         let clips = self.channel_clips(id);
         [
             clips.first().copied().unwrap_or(false),
@@ -505,14 +481,14 @@ impl NodeMeters {
         ]
     }
 
-    pub fn channel_clips(&self, id: moiren_core::graph::NodeId) -> &[bool] {
+    pub fn channel_clips(&self, id: NodeId) -> &[bool] {
         self.clips
             .get(&id)
             .map(|hold| hold.0.as_slice())
             .unwrap_or_default()
     }
 
-    pub fn reset_clip(&mut self, id: moiren_core::graph::NodeId) {
+    pub fn reset_clip(&mut self, id: NodeId) {
         self.clips.remove(&id);
     }
 }
@@ -526,6 +502,44 @@ impl NodeMeters {
 struct MeterPoll {
     published: bool,
     raw_changed: bool,
+}
+
+impl TopicSubscription for MeterSubscription {
+    /// The level topic plus the node's channel width: the pair a window
+    /// must match, so either changing mid-session rebuilds in place.
+    type Topic = (Topic<LevelTopic>, usize);
+    /// The display preferences the ballistics follow, applied before every
+    /// poll.
+    type Context = MeterDisplayPreferences;
+
+    fn build(handle: AppHandle, topic: &Self::Topic, settings: &MeterDisplayPreferences) -> Self {
+        let mut this = Self::new(handle, topic.0.clone(), topic.1);
+        this.settings = *settings;
+        this
+    }
+
+    fn reads(&self, topic: &Self::Topic) -> bool {
+        self.topic == topic.0 && self.channels == topic.1
+    }
+
+    fn prepare(&mut self, settings: &MeterDisplayPreferences) {
+        self.settings = *settings;
+    }
+
+    /// Drain, step the display ballistics, and report the payload's wake
+    /// rule: a raw reading change or a status transition. A publication
+    /// alone must not wake the interface — a running stream publishes
+    /// silence windows too, and notifying on each would repaint at the
+    /// control-poll rate forever. (Clip-latch changes wake as well; the
+    /// table's caller folds those in, observing only freshly published
+    /// readings.)
+    fn poll(&mut self, now: Instant) -> bool {
+        let status = self.status.clone();
+        let poll = self.poll_windows(now);
+        self.advance_display(now);
+        self.last_poll_published = poll.published;
+        poll.raw_changed || self.status != status
+    }
 }
 
 impl MeterSubscription {
@@ -549,6 +563,7 @@ impl MeterSubscription {
             settings: MeterDisplayPreferences::default(),
             ballistics: Vec::new(),
             display: None,
+            last_poll_published: false,
         };
         match handle.subscribe_topic(
             this.topic.clone(),
@@ -564,12 +579,6 @@ impl MeterSubscription {
             }
         }
         this
-    }
-
-    fn poll(&mut self, now: Instant) -> MeterPoll {
-        let poll = self.poll_windows(now);
-        self.advance_display(now);
-        poll
     }
 
     /// Drains every queued window; reports whether a new publication was
