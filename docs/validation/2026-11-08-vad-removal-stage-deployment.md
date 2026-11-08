@@ -169,3 +169,10 @@ fresh signed613SYS/INF/catalog/PnP and safety collectors, create-new/no-reparse
 path admission, confirmed owned ETW lifecycle and matching decode/archive
 readback. The README explicitly lists these gaps; a tested orchestration
 contract is not a complete native runner or any S0-S5 acceptance result.
+
+The later [real read-boundary preparation](2026-11-08-removal-read-boundaries.md)
+adds separately pinned finite subprocess and actual preflight collector
+definitions, with42parent-verified host checks per PowerShell interpreter.
+It does not run remote/native collectors or alter this frozen controller;
+whole-collector deadlines, session/principal/task binding and trace integration
+remain explicit gaps before native approval.
