@@ -41,7 +41,7 @@ pub(crate) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
         .child(
             div()
                 .min_w_0()
-                .max_w(px(190.))
+                .flex_1()
                 .text_size(px(12.))
                 .text_color(theme::TEXT)
                 .child(value.into()),
@@ -66,7 +66,7 @@ pub(crate) fn detail_editable(
         .child(
             editable_value(id, text, editing, input, on_start, px(12.), TextAlign::Left)
                 .min_w_0()
-                .max_w(px(190.))
+                .flex_1()
                 .text_color(theme::TEXT),
         )
 }
