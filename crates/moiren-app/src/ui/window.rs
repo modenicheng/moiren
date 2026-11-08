@@ -174,8 +174,12 @@ pub struct StudioShell {
     selection_drag: Option<graph::SelectionDrag>,
     graph_focus: FocusHandle,
     connection_drag: Option<graph::ConnectionDrag>,
-    /// Node whose detail window is open (design 18 B4).
-    detail_node: Option<moiren_core::graph::NodeId>,
+    /// The open canvas context menu, over a node or the background.
+    context_menu: Option<graph::ContextMenu>,
+    /// A right press on the canvas awaiting its release: within the drag
+    /// threshold the release opens the context menu, beyond it the stroke
+    /// was a pan.
+    right_press: Option<(f32, f32)>,
     /// Active card-knob value drag: node, control, press y, press value.
     knob_drag: Option<(
         moiren_core::graph::NodeId,
@@ -420,7 +424,8 @@ impl StudioShell {
             selection_drag: None,
             graph_focus: cx.focus_handle(),
             connection_drag: None,
-            detail_node: None,
+            context_menu: None,
+            right_press: None,
             knob_drag: None,
             pending_node_spawn: None,
             node_search,
@@ -891,8 +896,8 @@ impl Render for StudioShell {
                 }
             })
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
-            .when(self.detail_node.is_some(), |v| {
-                v.child(graph::detail_overlay(self, window, cx))
+            .when(self.context_menu.is_some(), |v| {
+                v.child(graph::context_menu_overlay(self, window, cx))
             })
             .when(self.binding_menu.is_some(), |v| {
                 v.child(graph::binding_menu_overlay(self, window, cx))

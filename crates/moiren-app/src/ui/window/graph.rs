@@ -2,9 +2,10 @@ use rust_i18n::t;
 
 use super::*;
 
+mod arrange;
 mod binding_menu;
 mod compressor;
-mod detail;
+mod context_menu;
 mod headline;
 mod interactions;
 mod library;
@@ -13,7 +14,7 @@ pub(in crate::ui::window) use binding_menu::{
 };
 pub(super) use compressor::CompressorControls;
 mod node_inspector;
-pub(in crate::ui::window) use detail::overlay as detail_overlay;
+pub(in crate::ui::window) use context_menu::overlay as context_menu_overlay;
 pub(super) mod page;
 pub(super) use library::PendingNodeSpawn;
 pub(in crate::ui::window) use library::{library, library_rail};
@@ -49,6 +50,21 @@ pub(super) struct SelectionDrag {
     base: std::collections::BTreeSet<moiren_core::graph::NodeId>,
     moved: bool,
     hits: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+}
+
+/// The canvas context menu: over a node (identity actions plus the tint
+/// palette) or over the background (arrange). `at` is the window-space
+/// release point the menu anchors to.
+#[derive(Clone, Copy, PartialEq)]
+pub(in crate::ui::window) enum ContextMenu {
+    Node {
+        node: moiren_core::graph::NodeId,
+        at: (f32, f32),
+        color_open: bool,
+    },
+    Background {
+        at: (f32, f32),
+    },
 }
 
 impl StudioShell {
@@ -138,10 +154,12 @@ impl StudioShell {
         self.knob_drag = None;
         // Keyboard focus stays on the canvas while the page's popovers are
         // open, so Escape lands here: it dismisses them too. The session
-        // popover rides along — it can be open on any page, and on the
-        // graph page this is the Escape path that reaches it.
+        // popover and the context menu ride along — they can be open on
+        // any page, and on the graph page this is the Escape path that
+        // reaches them.
         let dismissed = self.binding_menu.take().is_some()
-            | self.detail_node.take().is_some()
+            | std::mem::take(&mut self.context_menu).is_some()
+            | std::mem::take(&mut self.right_press).is_some()
             | std::mem::take(&mut self.project_menu);
         if cancelled {
             self.sync_drag_demand();
@@ -155,6 +173,72 @@ impl StudioShell {
         self.selected_nodes.clear();
         self.selected_node = None;
         self.selected_route = None;
+    }
+
+    /// The "arrange" action: re-lays the whole graph into DAG layers, writes
+    /// the presentation position table (like a card drag, not an undo step),
+    /// and fits the camera to the result. Fit mode re-fits on its own; an
+    /// adjusted camera is fitted once here so the arranged graph lands in
+    /// view.
+    pub(in crate::ui::window) fn arrange_graph(&mut self, cx: &mut Context<Self>) {
+        let world = {
+            let state = self.state.read(cx);
+            pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &self.node_positions)
+        };
+        let sizes: arrange::CardSizes = world
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let id = node.node_id?;
+                let card = pages::graph_canvas::NodeLayout::new(node).card;
+                Some((id, (card.size.width, card.size.height)))
+            })
+            .collect();
+        let snapshot = &self.state.read(cx).snapshot;
+        let arranged = arrange::arrange(&snapshot.graph.graph, &sizes);
+        let bbox = arrange::bounds(&arranged, &sizes);
+        for node in arranged {
+            self.node_positions.insert(node.node_id, node.position);
+        }
+        if let Some((width, height)) = self.canvas_size {
+            self.camera.fit(size(px(width), px(height)), bbox);
+        }
+        cx.notify();
+    }
+
+    /// Single selection over a node, clearing routes and the rest of the
+    /// band — the context menu's identity actions act on this node alone.
+    pub(in crate::ui::window) fn select_single_node(&mut self, node: moiren_core::graph::NodeId) {
+        self.selected_nodes.clear();
+        self.selected_nodes.insert(node);
+        self.selected_node = Some(node);
+        self.selected_route = None;
+    }
+
+    /// Enters the inspector's inline rename for `node`, seeded with the
+    /// label it shows today and focused so typing replaces it immediately.
+    pub(in crate::ui::window) fn begin_node_rename(
+        &mut self,
+        node: moiren_core::graph::NodeId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let initial = {
+            let state = self.state.read(cx);
+            state
+                .snapshot
+                .graph
+                .node(node)
+                .map(crate::ui::presentation::display_label)
+        };
+        self.node_name_editing = Some(node);
+        if let Some(initial) = initial {
+            self.node_name
+                .update(cx, |input, cx| input.set_value(initial, window, cx));
+        }
+        let input = self.node_name.clone();
+        let handle = input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
     }
 
     fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {

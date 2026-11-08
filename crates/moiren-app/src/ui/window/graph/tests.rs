@@ -2860,3 +2860,174 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     view.update(cx, |shell, _| assert!(shell.binding_menu.is_none()));
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn right_click_opens_the_node_context_menu_and_delete_removes_the_node(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{Modifiers, MouseButton};
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let node = add_node(&view, cx, NodeKind::Gain);
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|n| n.node_id == Some(node))
+        .expect("projected card");
+    let at = node_position(&frame, index);
+    // Right press + release within the drag threshold opens the menu.
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    render(cx);
+    cx.update(|window, _| assert!(window.find("context-menu").visible()));
+    // Delete removes the node and closes the menu.
+    cx.update(|window, cx| window.click("context-menu-delete", cx));
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.node(node).is_none()
+        })
+    });
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn context_menu_actions_open_the_inspector_rename_and_tint(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton};
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let node = add_node(&view, cx, NodeKind::Eq);
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|n| n.node_id == Some(node))
+        .expect("projected card");
+    let at = node_position(&frame, index);
+    let right_click = |cx: &mut VisualTestContext| {
+        cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+        render(cx);
+    };
+    // 详情 selects the node and opens the inspector.
+    right_click(cx);
+    cx.update(|window, cx| window.click("context-menu-inspector", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert!(shell.inspector_open);
+        assert_eq!(shell.selected_node, Some(node));
+        assert!(shell.context_menu.is_none());
+    });
+    // 重命名 enters the inline editor seeded with the label.
+    right_click(cx);
+    cx.update(|window, cx| window.click("context-menu-rename", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.node_name_editing, Some(node));
+    });
+    // 调色 swaps the menu into the tint row; picking applies the tint.
+    right_click(cx);
+    cx.update(|window, cx| window.click("context-menu-color", cx));
+    render(cx);
+    cx.update(|window, _| assert!(window.find("node-tint-0").visible()));
+    cx.update(|window, cx| window.click("node-tint-0", cx));
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .and_then(|entry| entry.tint)
+                == Some(0)
+        })
+    });
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn background_right_click_arranges_and_the_three_dot_opens_the_same_menu(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{Modifiers, MouseButton};
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let node = add_node(&view, cx, NodeKind::Gain);
+    // Park the node far off-axis so arrange has somewhere to move it.
+    view.update(cx, |shell, cx| {
+        shell.node_positions.insert(node, (600., 400.));
+        cx.notify();
+    });
+    render(cx);
+    // The three-dot glyph opens the same menu as a right click.
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|n| n.node_id == Some(node))
+        .expect("projected card");
+    let card = frame.nodes[index].card;
+    let dot = frame.bounds.origin
+        + point(
+            px(card.origin.x + card.size.width - 14.),
+            px(card.origin.y + 14.),
+        );
+    cx.simulate_mouse_down(dot, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(dot, MouseButton::Left, Modifiers::default());
+    render(cx);
+    cx.update(|window, _| assert!(window.find("context-menu").visible()));
+    view.update(cx, |shell, _| assert!(shell.context_menu.is_some()));
+    // The occluding menu page closes on any outside press, so the next
+    // background right-click starts from a closed menu.
+    cx.simulate_keystrokes("escape");
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    // A background right-click offers arrange, which moves the parked node
+    // and closes the menu. The fit camera pulls the parked card into view,
+    // so the background press goes to the canvas's lower-left corner, away
+    // from every fitted card.
+    let far = point(px(350.), px(900.));
+    cx.simulate_mouse_down(far, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(far, MouseButton::Right, Modifiers::default());
+    render(cx);
+    cx.update(|window, cx| window.click("context-menu-arrange", cx));
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, _| {
+            shell.node_positions.get(&node).copied() != Some((600., 400.))
+        })
+    });
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn escape_closes_the_context_menu(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let frame = canvas_frame(&view, cx);
+    let at = node_position(&frame, 0);
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    render(cx);
+    cx.update(|window, _| assert!(window.find("context-menu").visible()));
+    cx.simulate_keystrokes("escape");
+    view.update(cx, |shell, _| assert!(shell.context_menu.is_none()));
+    render(cx);
+    cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
+    finish_service(runtime);
+}

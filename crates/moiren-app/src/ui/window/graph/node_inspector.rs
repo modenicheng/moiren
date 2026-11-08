@@ -172,21 +172,17 @@ pub(in crate::ui::window) fn inspector(
         .child(detail(&t!("Channels"), node.channels().to_string()));
     // The headline visualization (design 18 B4) leads the kind-specific
     // sections: the EQ's draggable control point and the dynamics family's
-    // transfer curve render here — the same editor the detail overlay shows.
+    // transfer curve render here.
     view = match node.kind() {
         NodeKind::Eq => view.child(headline::eq_section(
             id,
             entry,
             cx,
-            headline::HeadlineSizing::Fixed(headline::EQ_INSPECTOR_HEIGHT),
+            headline::EQ_INSPECTOR_HEIGHT,
         )),
-        NodeKind::Compressor | NodeKind::Gate | NodeKind::Limiter => {
-            view.child(headline::dynamics_section(
-                node.kind(),
-                entry,
-                headline::HeadlineSizing::Fixed(headline::DYNAMICS_INSPECTOR_HEIGHT),
-            ))
-        }
+        NodeKind::Compressor | NodeKind::Gate | NodeKind::Limiter => view.child(
+            headline::dynamics_section(node.kind(), entry, headline::DYNAMICS_INSPECTOR_HEIGHT),
+        ),
         _ => view,
     };
     view = view

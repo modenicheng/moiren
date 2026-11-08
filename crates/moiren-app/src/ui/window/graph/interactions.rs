@@ -134,6 +134,23 @@ pub(super) fn background_move(
                         shell.hovered_node = hovered;
                         cx.notify();
                     }
+                    // A right press released within the drag threshold opens
+                    // the context menu over the node under the cursor, or
+                    // the background menu over the canvas or a wire; a
+                    // longer stroke was a pan.
+                    if let Some(pressed) = shell.right_press.take()
+                        && (x - pressed.0).hypot(y - pressed.1) <= 3.
+                    {
+                        shell.context_menu = Some(match hovered {
+                            Some(node) => ContextMenu::Node {
+                                node,
+                                at: (x, y),
+                                color_open: false,
+                            },
+                            None => ContextMenu::Background { at: (x, y) },
+                        });
+                        cx.notify();
+                    }
                     let clicked = shell
                         .background_click
                         .take()
@@ -255,10 +272,14 @@ pub(super) fn background_down(
                         });
                     }
                     // Right and middle button (and the hand tool): pan grab.
+                    // The right press also arms the context menu: released
+                    // within the drag threshold it opens the menu, beyond it
+                    // the stroke was a pan.
                     _ => {
                         shell.pan_grab = Some(anchor);
                         shell.background_click = None;
                         shell.selection_drag = None;
+                        shell.right_press = (event.button == MouseButton::Right).then_some(anchor);
                     }
                 }
                 shell.sync_drag_demand();
@@ -642,11 +663,15 @@ pub(super) fn expand(
             let Some(node_id) = resolve_node(&nodes, &id) else {
                 return;
             };
-            shell.selected_nodes.clear();
-            shell.selected_nodes.insert(node_id);
-            shell.selected_node = Some(node_id);
-            shell.selected_route = None;
-            shell.detail_node = Some(node_id);
+            // The card's three-dot glyph opens the same node context menu a
+            // right click does, anchored at the click.
+            let pos = window.mouse_position();
+            shell.select_single_node(node_id);
+            shell.context_menu = Some(ContextMenu::Node {
+                node: node_id,
+                at: (f32::from(pos.x), f32::from(pos.y)),
+                color_open: false,
+            });
             cx.notify();
         })
     })
