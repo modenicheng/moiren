@@ -34,9 +34,11 @@ fn section(
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
                             if title == "INPUTS" {
-                                shell.mixer.inputs_collapsed = !shell.mixer.inputs_collapsed;
+                                shell.mixer.presentation.inputs_collapsed =
+                                    !shell.mixer.presentation.inputs_collapsed;
                             } else {
-                                shell.mixer.sends_collapsed = !shell.mixer.sends_collapsed;
+                                shell.mixer.presentation.sends_collapsed =
+                                    !shell.mixer.presentation.sends_collapsed;
                             }
                             cx.notify();
                         })
@@ -81,11 +83,11 @@ pub(super) fn inputs(
         format!("inputs-{:?}", entry.id),
         "INPUTS",
         if shell.compact { 64. } else { 88. },
-        shell.mixer.inputs_collapsed,
+        shell.mixer.presentation.inputs_collapsed,
         cx,
     );
-    if !shell.mixer.inputs_collapsed {
-        let scrolls = &shell.mixer.row_scrolls[&entry.id];
+    if !shell.mixer.presentation.inputs_collapsed {
+        let scrolls = &shell.mixer.presentation.row_scrolls[&entry.id];
         let this = cx.entity();
         let mut rows = div()
             .id(SharedString::from(format!("input-rows-{:?}", entry.id)))
@@ -221,11 +223,11 @@ pub(super) fn sends(
         format!("sends-{id:?}"),
         "SENDS",
         if shell.compact { 80. } else { 116. },
-        shell.mixer.sends_collapsed,
+        shell.mixer.presentation.sends_collapsed,
         cx,
     );
-    if !shell.mixer.sends_collapsed {
-        let scrolls = &shell.mixer.row_scrolls[&id];
+    if !shell.mixer.presentation.sends_collapsed {
+        let scrolls = &shell.mixer.presentation.row_scrolls[&id];
         let this = cx.entity();
         let mut rows = div()
             .id(SharedString::from(format!("send-rows-{id:?}")))
@@ -284,7 +286,7 @@ pub(super) fn sends(
                             (edge.src_port(), edge.dst_port()),
                         )),
                 );
-            if shell.mixer.editing_send == Some(edge_id) {
+            if shell.mixer.presentation.editing_send == Some(edge_id) {
                 // The editor takes the label's box (32px, right-aligned mono
                 // 9px text) with the shared underline-only chrome, so the row
                 // neither grows nor shifts the text when it opens.
@@ -295,7 +297,7 @@ pub(super) fn sends(
                         .w(px(32.))
                         .font_family(theme::FONT_MONO)
                         .child(underline_editor(
-                            &shell.mixer.send_inputs[&edge_id],
+                            &shell.mixer.presentation.send_inputs[&edge_id],
                             px(9.),
                             TextAlign::Right,
                         )),
@@ -316,9 +318,11 @@ pub(super) fn sends(
                             move |event, window, cx| {
                                 if event.click_count() == 2 {
                                     this.update(cx, |shell, cx| {
-                                        if let Some(input) = shell.mixer.send_inputs.get(&edge_id) {
+                                        if let Some(input) =
+                                            shell.mixer.presentation.send_inputs.get(&edge_id)
+                                        {
                                             input.read(cx).focus_handle(cx).focus(window, cx);
-                                            shell.mixer.editing_send = Some(edge_id);
+                                            shell.mixer.presentation.editing_send = Some(edge_id);
                                             cx.notify();
                                         }
                                     });
@@ -342,8 +346,8 @@ pub(super) fn sends(
                     div()
                         .id(SharedString::from(format!("send-track-{edge_id:?}")))
                         .child(hslider(
-                            &shell.mixer.sends[&edge_id].state,
-                            &shell.mixer.sends[&edge_id].behavior,
+                            &shell.mixer.presentation.sends[&edge_id].state,
+                            &shell.mixer.presentation.sends[&edge_id].behavior,
                             cx,
                         )),
                 ),

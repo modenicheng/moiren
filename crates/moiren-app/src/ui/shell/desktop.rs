@@ -57,7 +57,7 @@ impl PresentationSnapshot {
             page: shell.presentation.page,
             camera: shell.camera,
             node_positions: std::mem::take(&mut shell.node_positions),
-            mixer_order: shell.mixer.order.clone(),
+            mixer_order: shell.mixer.presentation.order.clone(),
             pending_node_spawn: shell.pending_node_spawn.take(),
             selected_node: shell.selected_node.take(),
             selected_route: shell.selected_route,
@@ -78,7 +78,7 @@ impl PresentationSnapshot {
         shell.presentation.page = self.page;
         shell.camera = self.camera;
         shell.node_positions = self.node_positions;
-        shell.mixer.order = self.mixer_order;
+        shell.mixer.presentation.order = self.mixer_order;
         shell.pending_node_spawn = self.pending_node_spawn;
         shell.inspector.node_name_editing = None;
         shell.selected_node = self.selected_node;

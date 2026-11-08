@@ -211,7 +211,7 @@ pub(crate) fn balance(
     }
     let value = entry.mixer.balance.clamp(-1., 1.);
     let position = ((value as f32) + 1.) * 0.5;
-    let editing = shell.mixer.editing_balance == Some(id);
+    let editing = shell.mixer.presentation.editing_balance == Some(id);
     let track_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
     let this = cx.entity();
     let drag_this = this.clone();
@@ -323,7 +323,7 @@ pub(crate) fn balance(
                 SharedString::from(format!("balance-label-{id:?}")),
                 balance_text(value),
                 editing,
-                &shell.mixer.balance_inputs[&id],
+                &shell.mixer.presentation.balance_inputs[&id],
                 start_value_edit(
                     cx.entity(),
                     EditableValueFamily::Balance,

@@ -61,11 +61,11 @@ impl CachedPanel for InspectorPanel {
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
             node_name_editing: shell.inspector.node_name_editing,
-            editing_value: shell.mixer.editing_value,
-            editing_balance: shell.mixer.editing_balance,
-            editing_node_gain: shell.mixer.editing_node_gain,
-            editing_node_pan: shell.mixer.editing_node_pan,
-            editing_send: shell.mixer.editing_send,
+            editing_value: shell.mixer.presentation.editing_value,
+            editing_balance: shell.mixer.presentation.editing_balance,
+            editing_node_gain: shell.mixer.presentation.editing_node_gain,
+            editing_node_pan: shell.mixer.presentation.editing_node_pan,
+            editing_send: shell.mixer.presentation.editing_send,
             compact: shell.compact,
             preferences: shell.preferences.values.clone(),
             inspector_scroll: shell.inspector.scroll.offset().y,
@@ -112,6 +112,7 @@ impl CachedPanel for InspectorPanel {
             sliders.extend(
                 shell
                     .mixer
+                    .presentation
                     .inspector_faders
                     .values()
                     .map(|slot| slot.state.clone()),
