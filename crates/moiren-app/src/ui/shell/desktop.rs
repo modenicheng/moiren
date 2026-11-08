@@ -418,8 +418,49 @@ impl Desktop {
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {
-        let changed = self.state.update(cx, |state, _| state.poll());
+        // A minimized main window has nothing to repaint: while iconic the
+        // poll keeps absorbing snapshot changes silently and skips cx.notify,
+        // so an idle-but-running session leaves the frame pipeline unarmed
+        // instead of waking the main thread per repaint request. One notify
+        // on restore repaints everything absorbed in the meantime. The tray
+        // flyout is its own window and keeps its own notify path below.
+        let iconic = self.window.as_ref().is_some_and(|handle| {
+            handle
+                .update(cx, |_, window, _| native::window_is_iconic(window))
+                .unwrap_or(false)
+        });
+        let restored = self.main_window_minimized && !iconic;
+        self.main_window_minimized = iconic;
+        // The shared pump tick owns the state drain, project-load finish,
+        // autosave, meter pump, and the shell's notify decision.
+        let changed = if let Some(shell) = self.shell.clone() {
+            let ticked = shell.update(cx, |shell, cx| {
+                shell.pump_tick(
+                    cx,
+                    RepaintTerms {
+                        force: restored,
+                        mute: iconic,
+                    },
+                )
+            });
+            // A shell that died outside the release path leaves the state
+            // undrained; fall back to the bare drain so the tray below
+            // still sees the latest snapshot.
+            match ticked {
+                Ok(changed) => changed,
+                Err(_) => self.state.update(cx, |state, _| state.poll()),
+            }
+        } else {
+            // Tray-only ticks (window closed to the tray) have no shell to
+            // pump; the state still needs draining for tray status and
+            // actions.
+            self.state.update(cx, |state, _| state.poll())
+        };
         if self.state.read(cx).snapshot.phase == SessionPhase::Exited {
+            // The pump tick already requested the quit when it drained the
+            // exit (and requesting it again is harmless); either way the
+            // desktop's tick ends before the tray, window-state, and flyout
+            // work — nothing of it outlives the session.
             cx.quit();
             return;
         }
@@ -450,29 +491,8 @@ impl Desktop {
             tray.set_session_active(self.state.read(cx).snapshot.phase == SessionPhase::Running);
         }
         self.dismiss_flyout_on_focus_loss(cx);
-        // A minimized main window has nothing to repaint: while iconic the
-        // poll keeps absorbing snapshot changes silently and skips cx.notify,
-        // so an idle-but-running session leaves the frame pipeline unarmed
-        // instead of waking the main thread per repaint request. One notify
-        // on restore repaints everything absorbed in the meantime. The tray
-        // flyout is its own window and keeps its own notify path below.
-        let iconic = self.window.as_ref().is_some_and(|handle| {
-            handle
-                .update(cx, |_, window, _| native::window_is_iconic(window))
-                .unwrap_or(false)
-        });
-        let restored = self.main_window_minimized && !iconic;
-        self.main_window_minimized = iconic;
         if let Some(shell) = self.shell.clone() {
-            let saved = shell.update(cx, |shell, cx| {
-                shell.finish_project_load(cx);
-                shell.poll_autosave(cx);
-                let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
-                if (changed || meters_changed || restored) && !iconic {
-                    cx.notify();
-                }
-                shell.window_state.clone()
-            });
+            let saved = shell.update(cx, |shell, _| shell.window_state.clone());
             if let Ok(saved) = saved {
                 self.saved = saved;
             }

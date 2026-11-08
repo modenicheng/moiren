@@ -135,6 +135,18 @@ pub(crate) struct PressTracker {
     pub(crate) last: Option<(u64, Instant)>,
 }
 
+/// The caller's stake in one [`StudioShell::pump_tick`] notify decision. The
+/// tick always notifies when the drained state or the meter observations
+/// changed; `force` adds an unconditional reason to repaint (the desktop
+/// repaints a window restored from minimized), and `mute` absorbs the notify
+/// entirely (an iconic window must not wake the frame pipeline). The
+/// headless twin passes the default: no extra reason, never muted.
+#[derive(Default)]
+pub(crate) struct RepaintTerms {
+    pub(crate) force: bool,
+    pub(crate) mute: bool,
+}
+
 /// The metering infrastructure (design 20 §4): the legacy I/O
 /// subscription table, the demand sets the pages' canvases register, the
 /// frame-demand arbiter, and the observation-node pair the pump keeps.
@@ -522,19 +534,7 @@ impl StudioShell {
                 // Stop polling once the shell view is gone (window closed).
                 if this
                     .update(cx, |shell, cx| {
-                        let changed = shell.state.update(cx, |state, cx| {
-                            let changed = state.poll();
-                            if state.snapshot.phase == SessionPhase::Exited {
-                                cx.quit();
-                            }
-                            changed
-                        });
-                        shell.finish_project_load(cx);
-                        shell.poll_autosave(cx);
-                        let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
-                        if changed || meters_changed {
-                            cx.notify();
-                        }
+                        shell.pump_tick(cx, RepaintTerms::default());
                     })
                     .is_err()
                 {
@@ -543,6 +543,36 @@ impl StudioShell {
             }
         })
         .detach();
+    }
+
+    /// One control-side pump tick: the per-tick sequence the desktop poll
+    /// (`desktop::Desktop::poll`) and the headless twin [`Self::spawn_poll`]
+    /// share, defined once so the two loops cannot drift apart again.
+    /// Drains the session state — quitting the app once it reaches
+    /// [`SessionPhase::Exited`] — then finishes a pending project load,
+    /// advances recovery autosave, and pumps the meter observations while no
+    /// animation frames are wanted, notifying the shell when something
+    /// display-bearing changed. Returns whether the drained state reported
+    /// changes, so callers with their own windows (the desktop's tray
+    /// flyout) can piggyback a notify on it.
+    ///
+    /// `repaint` folds the caller's own terms into the notify decision; see
+    /// [`RepaintTerms`].
+    fn pump_tick(&mut self, cx: &mut Context<Self>, repaint: RepaintTerms) -> bool {
+        let changed = self.state.update(cx, |state, cx| {
+            let changed = state.poll();
+            if state.snapshot.phase == SessionPhase::Exited {
+                cx.quit();
+            }
+            changed
+        });
+        self.finish_project_load(cx);
+        self.poll_autosave(cx);
+        let meters_changed = !self.frames_wanted(cx) && self.pump_meters(cx);
+        if (changed || meters_changed || repaint.force) && !repaint.mute {
+            cx.notify();
+        }
+        changed
     }
 
     /// Whether the window may animate right now: visible, presented, settings
