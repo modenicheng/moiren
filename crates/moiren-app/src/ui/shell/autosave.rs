@@ -49,10 +49,15 @@ impl AutosaveStamp {
             revision: state.snapshot.graph.candidate_revision,
             processing: state.snapshot.audio_settings.processing,
             session: state.candidate_config(),
-            camera: (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
+            camera: (
+                shell.graph_view.camera.pan_x,
+                shell.graph_view.camera.pan_y,
+                shell.graph_view.camera.zoom,
+            ),
             workspace: StudioShell::workspace_document(shell.presentation.page),
             mixer_order: shell.mixer.presentation.order.clone(),
             node_positions: shell
+                .graph_view
                 .node_positions
                 .iter()
                 .map(|(id, position)| (*id, *position))
@@ -92,12 +97,17 @@ impl StudioShell {
             && self.autosave.stamp.processing == state.snapshot.audio_settings.processing
             && self.autosave.stamp.session == state.candidate_config()
             && self.autosave.stamp.camera
-                == (self.camera.pan_x, self.camera.pan_y, self.camera.zoom)
+                == (
+                    self.graph_view.camera.pan_x,
+                    self.graph_view.camera.pan_y,
+                    self.graph_view.camera.zoom,
+                )
             && self.autosave.stamp.workspace
                 == StudioShell::workspace_document(self.presentation.page)
             && self.autosave.stamp.mixer_order == self.mixer.presentation.order
-            && self.node_positions.len() == self.autosave.stamp.node_positions.len()
+            && self.graph_view.node_positions.len() == self.autosave.stamp.node_positions.len()
             && self
+                .graph_view
                 .node_positions
                 .iter()
                 .all(|(id, position)| self.autosave.stamp.node_positions.get(id) == Some(position))

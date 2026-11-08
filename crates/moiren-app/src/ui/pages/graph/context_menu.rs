@@ -19,7 +19,7 @@ pub(crate) fn overlay(
     window: &Window,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
-    let Some(menu) = shell.context_menu else {
+    let Some(menu) = shell.graph_view.context_menu else {
         return div().into_any_element();
     };
     let this = cx.entity();
@@ -82,7 +82,7 @@ pub(crate) fn overlay(
             move |event, _window, cx| {
                 if event.keystroke.key.as_str() == "escape" {
                     close.update(cx, |shell, cx| {
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                     cx.stop_propagation();
@@ -93,7 +93,7 @@ pub(crate) fn overlay(
         // own subtree — so every press here closes it.
         .on_any_mouse_down(move |_, _, cx| {
             close.update(cx, |shell, cx| {
-                shell.context_menu = None;
+                shell.graph_view.context_menu = None;
                 cx.notify();
             });
         })
@@ -132,7 +132,7 @@ fn action_rows(this: Entity<StudioShell>, node: moiren_core::graph::NodeId) -> V
                         shell.state.update(cx, |state, _| {
                             state.dispatch(AppRequest::EditGraph(GraphEdit::RemoveNode(node)))
                         });
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -147,7 +147,7 @@ fn action_rows(this: Entity<StudioShell>, node: moiren_core::graph::NodeId) -> V
                     this.update(cx, |shell, cx| {
                         shell.select_single_node(node);
                         shell.open_inspector();
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -162,7 +162,7 @@ fn action_rows(this: Entity<StudioShell>, node: moiren_core::graph::NodeId) -> V
                         shell.select_single_node(node);
                         shell.open_inspector();
                         shell.begin_node_rename(node, window, cx);
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -225,7 +225,7 @@ fn color_row(
                                 tint: None,
                             }))
                         });
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -252,7 +252,7 @@ fn color_row(
                                     tint: Some(index),
                                 }))
                             });
-                            shell.context_menu = None;
+                            shell.graph_view.context_menu = None;
                             cx.notify();
                         });
                     }
@@ -274,7 +274,7 @@ fn arrange_row(this: Entity<StudioShell>) -> Vec<AnyElement> {
             .on_click(move |_, _, cx| {
                 this.update(cx, |shell, cx| {
                     shell.arrange_graph(cx);
-                    shell.context_menu = None;
+                    shell.graph_view.context_menu = None;
                     cx.notify();
                 });
             })

@@ -312,7 +312,7 @@ impl StudioShell {
         // Strings stored in component state never re-read the locale on
         // re-render; the search placeholder must follow the switch like the
         // render-time t! calls do.
-        self.node_search.update(cx, |search, cx| {
+        self.graph_view.node_search.update(cx, |search, cx| {
             search.set_placeholder(t!("Search nodes"), window, cx);
         });
         // The untitled name is presentational, so it follows the locale too;

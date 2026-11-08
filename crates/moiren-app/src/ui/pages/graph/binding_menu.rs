@@ -32,7 +32,7 @@ const MAX_HEIGHT: f32 = 340.;
 /// Drops a menu whose card no longer exists (deleted or undone away) so
 /// the occluding layer never outlives its anchor.
 pub(crate) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
-    if let Some(menu) = shell.binding_menu
+    if let Some(menu) = shell.graph_view.binding_menu
         && shell
             .state
             .read(cx)
@@ -41,7 +41,7 @@ pub(crate) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
             .node(menu.node)
             .is_none()
     {
-        shell.binding_menu = None;
+        shell.graph_view.binding_menu = None;
     }
 }
 
@@ -194,7 +194,7 @@ pub(crate) fn overlay(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let this = cx.entity();
-    let Some(menu) = shell.binding_menu else {
+    let Some(menu) = shell.graph_view.binding_menu else {
         return div().into_any_element();
     };
     let Some(items) = items(&shell.state.read(cx).snapshot, menu.node) else {
@@ -233,7 +233,7 @@ pub(crate) fn overlay(
                             shell
                                 .state
                                 .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
-                            shell.binding_menu = None;
+                            shell.graph_view.binding_menu = None;
                         }
                         // The list re-renders from the refreshed catalog;
                         // the menu stays open for the pick.
@@ -255,7 +255,7 @@ pub(crate) fn overlay(
         .on_key_down(move |event, _window, cx| {
             if event.keystroke.key.as_str() == "escape" {
                 close.update(cx, |shell, cx| {
-                    shell.binding_menu = None;
+                    shell.graph_view.binding_menu = None;
                     cx.notify();
                 });
                 cx.stop_propagation();
@@ -271,7 +271,7 @@ pub(crate) fn overlay(
                     && event.position.y <= px(top + height);
                 if !inside {
                     this.update(cx, |shell, cx| {
-                        shell.binding_menu = None;
+                        shell.graph_view.binding_menu = None;
                         cx.notify();
                     });
                 }
@@ -311,12 +311,12 @@ pub(crate) fn overlay(
                                 .flex_col()
                                 .gap(px(2.))
                                 .p(px(MENU_PAD))
-                                .track_scroll(&shell.binding_menu_scroll)
+                                .track_scroll(&shell.graph_view.binding_menu_scroll)
                                 .overflow_y_scroll()
                                 .children(rows),
                         )
                         .child(overlay_scrollbar(
-                            &shell.binding_menu_scroll,
+                            &shell.graph_view.binding_menu_scroll,
                             "scrollbar-binding-menu",
                             ScrollbarAxis::Vertical,
                         )),

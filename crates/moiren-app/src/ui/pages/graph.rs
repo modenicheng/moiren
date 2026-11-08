@@ -196,8 +196,8 @@ impl StudioShell {
         // popover and the context menu ride along — they can be open on
         // any page, and on the graph page this is the Escape path that
         // reaches them.
-        let dismissed = self.binding_menu.take().is_some()
-            | std::mem::take(&mut self.context_menu).is_some()
+        let dismissed = self.graph_view.binding_menu.take().is_some()
+            | std::mem::take(&mut self.graph_view.context_menu).is_some()
             | std::mem::take(&mut self.graph_gestures.right_press).is_some()
             | std::mem::take(&mut self.chrome.project_menu);
         if cancelled {
@@ -224,7 +224,7 @@ impl StudioShell {
             let state = self.state.read(cx);
             crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
                 &state.snapshot,
-                &self.node_positions,
+                &self.graph_view.node_positions,
             )
         };
         let sizes: arrange::CardSizes = world
@@ -240,10 +240,14 @@ impl StudioShell {
         let arranged = arrange::arrange(&snapshot.graph.graph, &sizes);
         let bbox = arrange::bounds(&arranged, &sizes);
         for node in arranged {
-            self.node_positions.insert(node.node_id, node.position);
+            self.graph_view
+                .node_positions
+                .insert(node.node_id, node.position);
         }
-        if let Some((width, height)) = self.canvas_size {
-            self.camera.fit(size(px(width), px(height)), bbox);
+        if let Some((width, height)) = self.graph_view.canvas_size {
+            self.graph_view
+                .camera
+                .fit(size(px(width), px(height)), bbox);
         }
         cx.notify();
     }
@@ -346,7 +350,7 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
     // cache being invalidated or the world being re-projected.
     let mut world = crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
         &state.snapshot,
-        &shell.node_positions,
+        &shell.graph_view.node_positions,
     );
     // The drag's snap guides ride the world so the canvas paint layer, a
     // shell-free closure, can draw them above the grid.
@@ -365,7 +369,7 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         world.wires.retain(|wire| wire.dst_port != destination);
     }
     let world = std::sync::Arc::new(world);
-    let camera = shell.camera;
+    let camera = shell.graph_view.camera;
     // The canvas view identifies nodes by their Debug id string; this is the
     // single NodeId -> canvas-id conversion on the render path.
     let selected_ids: Vec<String> = shell
@@ -396,7 +400,7 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         &selected_ids,
         selected_wire.as_deref(),
         crate::ui::pages::graph::graph_canvas_view::CanvasCallbacks {
-            focus: shell.graph_focus.clone(),
+            focus: shell.graph_view.focus.clone(),
             connection: shell.graph_gestures.connection_drag.map(|drag| {
                 (
                     drag.port,
@@ -427,8 +431,8 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         },
         // Shared with the meter frame: its overlay repaints bars at this
         // frame's geometry between cache rebuilds.
-        shell.graph_canvas_frame.clone(),
-        &shell.graph_overlays,
+        shell.graph_view.canvas_frame.clone(),
+        &shell.graph_view.overlays,
     );
 
     div()
@@ -480,7 +484,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         .border_color(theme::BORDER)
         // The meter frame paints around this rect (it is a later sibling of
         // the cached panel, so live bars would otherwise cover the HUD).
-        .child(shell.graph_overlays.probe("toolbar"));
+        .child(shell.graph_view.overlays.probe("toolbar"));
     for (id, name, icon, hand) in [
         ("tool-select", t!("Select"), ActionIcon::Cursor, false),
         ("tool-hand", t!("Hand"), ActionIcon::HandMove, true),
@@ -524,7 +528,9 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                 let this = this.clone();
                 move |_, _, cx: &mut App| {
                     this.update(cx, |s, cx| {
-                        s.camera.zoom_around_center(s.canvas_size, factor);
+                        s.graph_view
+                            .camera
+                            .zoom_around_center(s.graph_view.canvas_size, factor);
                         cx.notify();
                     })
                 }
@@ -543,7 +549,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
             .justify_center()
             .child(label(format!(
                 "{}%",
-                (shell.camera.zoom * 100.).round() as i32
+                (shell.graph_view.camera.zoom * 100.).round() as i32
             ))),
     );
     view = view.child(zoom_step(
@@ -556,7 +562,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         let this = this.clone();
         move |_, _, cx| {
             this.update(cx, |s, cx| {
-                s.camera.adjusted = false;
+                s.graph_view.camera.adjusted = false;
                 cx.notify();
             })
         }

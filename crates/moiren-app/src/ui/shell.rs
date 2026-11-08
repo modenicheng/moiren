@@ -156,14 +156,11 @@ pub struct StudioShell {
     pub(crate) test_page: Option<Entity<PageCell>>,
     pub(crate) presentation: WindowPresentation,
     pub(crate) graph_gestures: graph::GraphInteractionState,
-    pub(crate) camera: Camera,
-    pub(crate) node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+    pub(crate) graph_view: graph::page::GraphViewState,
     /// Multi-selection on the graph canvas; `selected_node` is the primary
     /// (last-clicked) member that drives the inspector.
     /// Active rubber-band drag; see [`graph::SelectionDrag`].
-    pub(crate) graph_focus: FocusHandle,
     /// The open canvas context menu, over a node or the background.
-    pub(crate) context_menu: Option<graph::ContextMenu>,
     /// A right press on the canvas awaiting its release: within the drag
     /// threshold the release opens the context menu, beyond it the stroke
     /// was a pan.
@@ -174,8 +171,6 @@ pub struct StudioShell {
     /// free path by undoing it, so a snapped card lets go once the cursor
     /// leaves the threshold. Zero outside a drag.
     /// Active card-knob value drag: node, control, press y, press value.
-    pub(crate) pending_node_spawn: Option<graph::PendingNodeSpawn>,
-    pub(crate) node_search: Entity<component::input::InputState>,
     pub(crate) matrix: matrix::MatrixPageState,
     /// The inspector column and node library's shell-owned state groups
     /// (design 20 §4). Cached panels' scroll offsets ride the panel keys,
@@ -183,7 +178,6 @@ pub struct StudioShell {
     /// changes.
     pub(crate) inspector: sidebar::InspectorState,
     pub(crate) library: sidebar::LibraryState,
-    pub(crate) binding_menu_scroll: ScrollHandle,
     /// The dock pane's own scroll: docked strips key their cached paint on
     /// this offset, so a dock scroll rebuilds them instead of leaving the
     /// main row's stale coordinates on screen.
@@ -193,29 +187,22 @@ pub struct StudioShell {
     /// Lives on the shell because its scope is the window, not the mixer.
     #[cfg(feature = "gpui-test")]
     pub(crate) trace: std::cell::RefCell<performance::MeterTrace>,
-    pub(crate) graph_meter_frame: Entity<graph::page::GraphMeterLayer>,
-    pub(crate) graph_controls: Entity<graph::page::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
-    pub(crate) graph_canvas_frame: pages::graph::graph_canvas_view::PreparedFrame,
     /// Window rects of the graph page's HUD overlays (editing toolbar,
     /// overview, library handle), registered by the cached panel's probes
     /// and carved out of the meter frame's paint so live bars stay under
     /// them.
-    pub(crate) graph_overlays: pages::graph::graph_canvas::OverlayRects,
     /// The meter frame's copy of the spectrum curve it is painting: the
     /// subscription table cannot stay borrowed across the paint, and a
     /// per-frame allocation would be a wakeup cost of its own.
-    pub(crate) spectrum_scratch: Vec<f32>,
     /// The canvas card under the pointer, tracked on idle moves for the
     /// fault tooltip the meter frame paints; never part of a panel key.
-    pub(crate) hovered_node: Option<moiren_core::graph::NodeId>,
     /// The mixer strip under the pointer, tracked by the strip's hover
     /// listener for the fault banner the meter frame paints; the graph
     /// field's twin, likewise never part of a panel key.
     /// The endpoint menu hanging off a source/sink card's binding chip.
-    pub(crate) binding_menu: Option<graph::BindingMenu>,
     /// The fault detail popover hanging off a faulted object's "!" marker
     /// (graph badge, mixer strip badge, status bar summary).
     pub(crate) meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
@@ -230,7 +217,6 @@ pub struct StudioShell {
         moiren_core::graph::NodeId,
         moiren_core::graph::NodeId,
     )>,
-    pub(crate) canvas_size: Option<(f32, f32)>,
     /// Screen-space anchor of an active pan drag (window coordinates).
     /// Left background clicks deselect only on release; a pan keeps selection.
     /// Last selectable-element press (target hash + time) for double-click
@@ -395,14 +381,25 @@ impl StudioShell {
             test_page: None,
             presentation: WindowPresentation::default(),
             graph_gestures: graph::GraphInteractionState::default(),
-            camera: Camera::default(),
-            node_positions: Default::default(),
-            graph_focus: cx.focus_handle(),
-            context_menu: None,
-            pending_node_spawn: None,
-            node_search,
+            graph_view: graph::page::GraphViewState {
+                camera: Camera::default(),
+                node_positions: Default::default(),
+                focus: cx.focus_handle(),
+                context_menu: None,
+                binding_menu: None,
+                binding_menu_scroll: ScrollHandle::new(),
+                pending_node_spawn: None,
+                node_search,
+                controls: graph_controls,
+                meter_frame: graph_meter_frame,
+                canvas_frame: graph_canvas_frame,
+                overlays: Default::default(),
+                canvas_size: None,
+                hovered_node: None,
+                spectrum_scratch: Vec::new(),
+            },
+            selected_nodes: Default::default(),
             matrix: matrix::MatrixPageState::default(),
-            binding_menu_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPageState {
                 presentation: mixer::MixerPresentation::default(),
                 geometry: mixer_geometry,
@@ -413,13 +410,6 @@ impl StudioShell {
             },
             #[cfg(feature = "gpui-test")]
             trace: Default::default(),
-            graph_meter_frame,
-            graph_controls,
-            graph_canvas_frame,
-            graph_overlays: Default::default(),
-            spectrum_scratch: Vec::new(),
-            hovered_node: None,
-            binding_menu: None,
             meter_points: Default::default(),
             frame_demand: Default::default(),
             inspector: sidebar::InspectorState {
@@ -438,7 +428,6 @@ impl StudioShell {
                 rail_panel: library_rail_panel,
             },
             observation_nodes: None,
-            canvas_size: None,
             desktop,
             window_state: desktop::capture_window_state(window, Page::Graph),
             #[cfg(windows)]
@@ -859,10 +848,10 @@ impl Render for StudioShell {
             .when(self.chrome.project_menu, |v| {
                 v.child(project::menu(self, cx))
             })
-            .when(self.context_menu.is_some(), |v| {
+            .when(self.graph_view.context_menu.is_some(), |v| {
                 v.child(graph::context_menu_overlay(self, window, cx))
             })
-            .when(self.binding_menu.is_some(), |v| {
+            .when(self.graph_view.binding_menu.is_some(), |v| {
                 v.child(graph::binding_menu_overlay(self, window, cx))
             })
             .when(self.settings.menu.is_some(), |v| {
@@ -916,7 +905,7 @@ impl StudioShell {
     /// search plus every family of [`Self::text_input_entities`] keep typing
     /// shortcuts (and their undo) for themselves.
     fn typing_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
-        self.node_search.read(cx).focus_handle(cx) == *focused
+        self.graph_view.node_search.read(cx).focus_handle(cx) == *focused
             || self
                 .text_input_entities()
                 .iter()
@@ -1008,14 +997,14 @@ impl StudioShell {
     fn keep_graph_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open
             || self.presentation.page != Page::Graph
-            || self.graph_focus.contains_focused(window, cx)
+            || self.graph_view.focus.contains_focused(window, cx)
         {
             return;
         }
         let focused = window.focused(cx);
         let text_input_focused = focused.is_some_and(|focused| self.typing_focus(&focused, cx));
         if !text_input_focused {
-            window.focus(&self.graph_focus, cx);
+            window.focus(&self.graph_view.focus, cx);
         }
     }
 
