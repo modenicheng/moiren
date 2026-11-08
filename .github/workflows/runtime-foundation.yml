@@ -129,7 +129,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $engines = @("$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe", "$PSHOME\pwsh.exe")
           foreach ($engine in $engines) {
-            foreach ($test in @('test-finite-tool.ps1', 'test-task-boundary.ps1', 'test-task-retirement.ps1', 'test-trace-boundary.ps1', 'test-trace-finite.ps1', 'test-trace-query.ps1', 'test-trace-readback.ps1', 'test-trace-native.ps1', 'test-trace-session.ps1', 'test-trace-composition.ps1', 'test-probe-boundary.ps1', 'test-worker-boundary.ps1', 'test-collector-boundary.ps1', 'test-worker-entry.ps1')) {
+            foreach ($test in @('test-finite-tool.ps1', 'test-task-boundary.ps1', 'test-task-retirement.ps1', 'test-trace-boundary.ps1', 'test-trace-finite.ps1', 'test-trace-query.ps1', 'test-trace-readback.ps1', 'test-trace-native.ps1', 'test-trace-session.ps1', 'test-trace-composition.ps1', 'test-trace-decode.ps1', 'test-finish-session.ps1', 'test-probe-boundary.ps1', 'test-worker-boundary.ps1', 'test-collector-boundary.ps1', 'test-worker-entry.ps1')) {
               & $engine -NoLogo -NoProfile -NonInteractive -File "scripts/vad-removal/$test"
               if ($LASTEXITCODE -ne 0) { throw "$test failed under $engine ($LASTEXITCODE)." }
             }

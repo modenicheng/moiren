@@ -31,6 +31,21 @@ changing an approval boolean is not authorization.
 - `trace-session.ps1` composes the owner/query/readback. The collector refreshes
   the exact live session immediately before probe admission. Invalid readback
   blocks admission but does not prevent cleanup of an independently owned trace.
+- `trace-decode.ps1` requires the original stopped trace and terminal managed
+  task/probe, pins the closed ETL, 613 package/TMF/PDB and actual managed release
+  manifest, and retains original finite children before observation. It runs
+  the existing offline reader, preserves refusal/raw unknown loss, and writes
+  a create-new, flushed and hash-readback receipt. Default tool launch refuses.
+- `finish-session.ps1` orders fresh task/worker/probe terminal, one exact STOP,
+  post-STOP decode attachment, original child settlement, verified evidence and
+  guarded task retirement. The caller obtains closed-file pins only after the
+  `AwaitingDecodePins` state, then attaches a decode object before tool use.
+  Failed/time-limited tools are observed through their original owners without
+  relaunch. Fully drained failure/refusal may permit task retirement, never
+  qualification. Missing/mutated evidence or unresolved tools prevent deletion.
+  A separately flushed/hash-readback final result pins confirmed retirement
+  and original task XML. Post-delete persistence failure retains the outcome
+  without repeating deletion or declaring finish complete.
 
 `WorkerTerminal` proves only observed scheduler/worker exit. The managed path
 now also binds the live probe independently before admission, retains that
@@ -71,6 +86,8 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-trace-native.ps1
 .\test-trace-session.ps1
 .\test-trace-composition.ps1
+.\test-trace-decode.ps1
+.\test-finish-session.ps1
 .\test-probe-boundary.ps1
 .\test-worker-boundary.ps1
 .\test-collector-boundary.ps1
@@ -107,7 +124,12 @@ exclude competing owners rather than claim this observation prevents stealing.
 
 Remaining integration includes fresh post-reboot provenance, reviewed actual
 collector/privileged trace/Limited worker dispatch, bounded target collection,
-closed-ETL decode/report/archive association and safe authorized task cleanup.
+actual closed-ETL decode/report collection and authorized task cleanup. The
+software finish composition connects these retained boundaries, but does not
+approve native dispatch, prove tracefmt output-file growth hard-bounded, or
+provide restart/crash recovery. `finish-evidence.json` explicitly precedes task
+deletion; `finish-result.json` pins its hash and the retired original task XML
+only after confirmed retirement. Neither file asserts native qualification.
 Managed process tests use harmless fixture entries, not native audio. Scheduled
 registration/dispatch and trace launch remain disabled. A same-user writable
 receipt directory is correlation, not a hostile-process security boundary.

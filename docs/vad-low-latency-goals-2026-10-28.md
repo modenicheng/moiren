@@ -231,6 +231,20 @@ and all original native gates stay open. Identity0098c69's exact CI42452098679
 later completes20/20successful jobs and its original watcher exits0; newly
 published26cd706 has a separate still-running CI42454664245.
 
+The later [managed removal finish](validation/2026-11-08-managed-removal-finish.md)
+connects original terminal task/worker/probe ownership, one owned STOP,
+post-STOP closed-file pins, retained decoder children, immutable receipt pins,
+verified evidence before retirement and a separately persisted retirement result.
+Input/output/receipt or full-argv changes refuse cleanup; unresolved children
+continue through their exact owners without relaunch. All16preparation suites
+pass213checks per PowerShell interpreter, including17decode and19finish checks;
+the offline reader separately passes29. Default native/tool/cleanup guards
+remain closed; this is not a remote acquisition, removal repair or S0-S5 pass.
+Exact predecessor26cd706's CI42454664245 now completes20/20successful jobs and
+its original watcher36444 exits0; the new delta does not inherit that result.
+The user-owned reboot and unchanged installed613provenance remain prerequisites
+for later native work, not blockers for this local implementation.
+
 The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
 recomputes both channels at all six retained onsets. Identity1 has non-silent
 quarters but quarter4 correlation0.67284 fails the unchanged0.7 gate. This

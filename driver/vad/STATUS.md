@@ -67,6 +67,16 @@ raw final-name checks and installed613are unchanged.
 
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
+The later [managed removal finish](../../docs/validation/2026-11-08-managed-removal-finish.md)
+connects original terminal ownership, one exact STOP, closed-file decode,
+retained finite-child settlement, verified pre-retirement evidence and a
+separate persisted retirement result. All16preparation suites pass213checks
+per PowerShell interpreter; the offline reader passes29. Original receipt,
+input/output and full-argv mutation regressions refuse cleanup. Native guards
+remain closed and installed613is unchanged. Exact predecessor26cd706's
+CI42454664245 finishes20/20successfully; this source delta needs its own CI.
+No remote operation, OBS copy/launch, driver/device action or reboot follows.
+
 The later [managed probe admission](../../docs/validation/2026-11-08-managed-removal-admission.md)
 connects the actual worker action and independently retained probe to a bounded
 pre-audio Rust receipt gate. Host-only process chains and755example tests
