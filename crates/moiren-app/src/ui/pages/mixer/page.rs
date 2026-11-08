@@ -497,6 +497,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .h_full()
         .flex()
         .track_scroll(&shell.mixer.scroll)
+        .restrict_scroll_to_axis()
         .overflow_x_scroll()
         .overflow_y_scroll()
         .on_scroll_wheel(notify_owner(cx.entity()));
@@ -509,6 +510,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .border_l_1()
         .border_color(theme::BORDER_STRONG)
         .track_scroll(&shell.mixer.dock_scroll)
+        .restrict_scroll_to_axis()
         .overflow_x_scroll()
         .overflow_y_scroll()
         .on_scroll_wheel(notify_owner(cx.entity()));

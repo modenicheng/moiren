@@ -217,6 +217,7 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .gap(px(12.))
         .overflow_y_scroll()
         .track_scroll(&shell.devices.exports_scroll)
+        .restrict_scroll_to_axis()
         .on_scroll_wheel(notify_owner(cx.entity()))
         .child(heading(t!("Virtual exports")))
         .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))

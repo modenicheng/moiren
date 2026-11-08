@@ -178,6 +178,7 @@ mod tests {
                             .flex_col()
                             .overflow_y_scroll()
                             .track_scroll(&self.handle)
+                            .restrict_scroll_to_axis()
                             .children((0..self.rows).map(|ix| {
                                 div()
                                     .id(SharedString::from(format!("spike-row-{ix}")))

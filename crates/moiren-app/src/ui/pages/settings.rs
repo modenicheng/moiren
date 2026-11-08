@@ -266,6 +266,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                         .flex_1()
                                         .min_h_0()
                                         .track_scroll(&shell.settings.scroll)
+                                        .restrict_scroll_to_axis()
                                         .overflow_y_scroll()
                                         .on_scroll_wheel(notify_owner(this.clone()))
                                         .px(px(16.))

@@ -216,6 +216,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         .h_full()
                         .px(px(12.))
                         .track_scroll(&shell.library.scroll)
+                        .restrict_scroll_to_axis()
                         .overflow_y_scroll()
                         .on_scroll_wheel(notify_owner(cx.entity()))
                         .child(items)
@@ -260,6 +261,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
         .gap(px(2.))
         .py(px(10.))
         .track_scroll(&shell.library.rail_scroll)
+        .restrict_scroll_to_axis()
         .overflow_y_scroll()
         .on_scroll_wheel(notify_owner(this.clone()));
     for template in NodeTemplate::ALL {

@@ -97,6 +97,7 @@ pub(super) fn inputs(
             .h_full()
             .px(px(8.))
             .track_scroll(&scrolls.input)
+            .restrict_scroll_to_axis()
             .overflow_y_scroll()
             .on_scroll_wheel(move |_, _, cx| this.update(cx, |_, cx| cx.notify()));
         let mut count = 0;
@@ -238,6 +239,7 @@ pub(super) fn sends(
             .h_full()
             .px(px(8.))
             .track_scroll(&scrolls.send)
+            .restrict_scroll_to_axis()
             .overflow_y_scroll()
             .on_scroll_wheel(move |_, _, cx| this.update(cx, |_, cx| cx.notify()));
         let mut count = 0;

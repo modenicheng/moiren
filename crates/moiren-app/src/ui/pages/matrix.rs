@@ -270,6 +270,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                                 .h_full()
                                                 .overflow_scroll()
                                                 .track_scroll(&shell.matrix.scroll)
+                                                .restrict_scroll_to_axis()
                                                 .on_scroll_wheel(move |_, _, cx| {
                                                     this.update(cx, |_, cx| cx.notify())
                                                 })

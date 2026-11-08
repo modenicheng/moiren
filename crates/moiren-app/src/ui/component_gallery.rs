@@ -370,6 +370,7 @@ impl Render for ComponentGallery {
                             .h_full()
                             .overflow_scroll()
                             .track_scroll(&self.scroll)
+                            .restrict_scroll_to_axis()
                             .p(px(16.))
                             .child(
                                 (match self.group {
