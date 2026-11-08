@@ -91,6 +91,16 @@ fn scrollbar_styles() -> impl FnOnce(ScrollbarStyles) -> ScrollbarStyles {
 /// `w_full().h_full()`. The bar hides itself while the content fits, so a
 /// container with both axes enabled can carry a both-axis overlay and only
 /// ever show the axis that actually overflows.
+/// The wheel-notification closure every scroll container that feeds a
+/// cached panel carries: scrolling must notify the owning view so the
+/// panel's key (which carries the offset) can diff. One line replaces the
+/// four-line `let this = ...; move |...| ...` block at every mount site.
+pub fn notify_owner<T: 'static>(
+    owner: Entity<T>,
+) -> impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| owner.update(cx, |_, cx| cx.notify())
+}
+
 pub fn overlay_scrollbar(
     handle: &ScrollHandle,
     id: impl Into<ElementId>,

@@ -2,7 +2,7 @@ use super::*;
 use crate::ui::presentation::{output_name, source_name};
 use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
 use crate::ui::state::SourceMode;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
 use controls::*;
 use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
@@ -183,10 +183,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .min_w_0()
         .track_scroll(&shell.devices.device_list_scroll)
         .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
+        .on_scroll_wheel(notify_owner(cx.entity()));
     match shell.devices.device_tab {
         DeviceTab::Exports => {
             list = exports::list(shell, cx);

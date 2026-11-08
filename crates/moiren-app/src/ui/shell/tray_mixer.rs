@@ -31,7 +31,7 @@ use crate::ui::presentation::db_text;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::widgets::fader::fader;
 use crate::ui::widgets::meters::paint_meter_fill;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
 use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{NodeId, NodeKind};
 
@@ -224,10 +224,7 @@ impl CachedPanel for TrayPanel {
             .flex()
             .track_scroll(&owner.strips_scroll)
             .overflow_x_scroll()
-            .on_scroll_wheel({
-                let this = cx.entity();
-                move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-            });
+            .on_scroll_wheel(notify_owner(cx.entity()));
         for id in ids {
             let (Ok(node), Some(entry)) = (graph.graph.get_node(id), graph.node(id)) else {
                 continue;

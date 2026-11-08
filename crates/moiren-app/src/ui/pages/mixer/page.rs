@@ -10,7 +10,7 @@ use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::shell::hot::{HotLayerView, HotSurface};
 use crate::ui::shell::panel::{CachedPanel, PanelHost};
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
 use gpui_kit::base::ScrollbarAxis;
 use std::collections::{BTreeMap, HashMap};
 
@@ -499,10 +499,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .track_scroll(&shell.mixer.scroll)
         .overflow_x_scroll()
         .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
+        .on_scroll_wheel(notify_owner(cx.entity()));
     let mut dock = div().flex().flex_none().min_w_full().h_full().justify_end();
     let dock_container = div()
         .id("mixer-dock")
@@ -514,10 +511,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .track_scroll(&shell.mixer.dock_scroll)
         .overflow_x_scroll()
         .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
+        .on_scroll_wheel(notify_owner(cx.entity()));
     for id in &shell.mixer.presentation.order {
         let Ok(node) = graph.graph.get_node(*id) else {
             continue;

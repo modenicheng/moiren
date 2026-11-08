@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::shell::settings::{Direction, Editor};
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
 use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
 
@@ -181,10 +181,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         .h_full()
                         .track_scroll(&shell.devices.device_override_scroll)
                         .overflow_y_scroll()
-                        .on_scroll_wheel({
-                            let this = cx.entity();
-                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-                        })
+                        .on_scroll_wheel(notify_owner(cx.entity()))
                         .p(px(16.))
                         .child(content)
                         .gpui_test_observe(),
