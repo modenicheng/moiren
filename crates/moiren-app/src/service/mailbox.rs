@@ -38,6 +38,10 @@ impl AppHandle {
             return Err(DispatchError::Exiting);
         }
         match &request {
+            AppRequest::CreateExport { name, channels, .. } => {
+                super::exports::validate_export_name_channels(name, *channels)
+                    .map_err(|_| DispatchError::InvalidConfig)?;
+            }
             AppRequest::LoadProject(document) => document
                 .validate()
                 .map_err(|_| DispatchError::InvalidConfig)?,

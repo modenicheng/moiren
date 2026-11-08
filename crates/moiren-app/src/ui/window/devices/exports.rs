@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+use crate::service::append_export as create_export;
 
 pub(in crate::ui::window) struct ExportControls {
     name: Entity<component::input::InputState>,
@@ -65,26 +67,6 @@ enum IntentEdit {
     Channels(usize),
     Enabled(bool),
     Remove,
-}
-
-fn create_export(
-    graph: &GraphSnapshot,
-    endpoint_id: VirtualEndpointId,
-    direction: ExportDirection,
-    name: &str,
-    channels: usize,
-) -> Result<Vec<ExportIntent>, String> {
-    let mut exports = graph.exports.clone();
-    exports.push(ExportIntent {
-        endpoint_id,
-        direction,
-        name: name.into(),
-        channels,
-        enabled: true,
-        binding: None,
-    });
-    validate_exports(&exports, &graph.graph)?;
-    Ok(exports)
 }
 
 fn edit_export(
@@ -330,20 +312,25 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                     )
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
-                            // Use GPUI's public UUID type; persist its ordered bytes, never a native token.
-                            let id = VirtualEndpointId::from_bytes(
-                                *gpui_kit::accesskit::Uuid::new_v4().as_bytes(),
-                            );
-                            let name = shell.export_controls.name.read(cx).value();
-                            let graph = &shell.state.read(cx).snapshot.graph;
-                            let result = create_export(
-                                graph,
-                                id,
-                                shell.export_controls.direction,
+                            let name = shell.export_controls.name.read(cx).value().to_string();
+                            let validation = crate::service::validate_export_name_channels(
                                 &name,
                                 shell.export_controls.channels,
                             );
-                            shell.dispatch_exports(result, cx);
+                            let request = AppRequest::CreateExport {
+                                direction: shell.export_controls.direction,
+                                name,
+                                channels: shell.export_controls.channels,
+                            };
+                            shell.state.update(cx, |state, _| {
+                                if !state.pending_request {
+                                    match validation {
+                                        Ok(()) => state.dispatch(request),
+                                        Err(error) => state.dispatch_error = Some(error),
+                                    }
+                                }
+                            });
+                            cx.notify();
                         });
                     }),
             ),

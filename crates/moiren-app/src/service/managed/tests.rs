@@ -3,6 +3,9 @@ use crate::service::test_backend::{FakeBackend, State};
 use moiren_core::graph::NodeKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "fresh_export_tests.rs"]
+mod fresh_export_tests;
+
 #[cfg(windows)]
 #[path = "measured_tests.rs"]
 mod measured_tests;

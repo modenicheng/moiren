@@ -24,6 +24,7 @@ pub struct ExportView {
 
 pub(super) struct EndpointRecord {
     pub spec: ExportSpec,
+    publication_mode: Option<super::super::PublicationMode>,
     pub snapshot: Option<super::super::EndpointSnapshot>,
     pub removing: bool,
     // The driver revokes before the ACX call. A queried Removing state cannot
@@ -49,6 +50,21 @@ impl EndpointRecord {
 }
 
 pub(super) trait EndpointControl {
+    /// Non-creating capability negotiation; failure owns no endpoint.
+    fn preflight_identity(&mut self) -> Result<(), BackendError> {
+        Err(BackendError::Unsupported(
+            "immutable publication identity is unavailable".into(),
+        ))
+    }
+    fn create_identity(
+        &mut self,
+        _spec: &ExportSpec,
+        _mode: super::super::PublicationMode,
+    ) -> Result<Option<super::super::EndpointSnapshot>, BackendError> {
+        Err(BackendError::Unsupported(
+            "immutable publication identity is unavailable".into(),
+        ))
+    }
     /// None is a validated no-resource deferral, never an uncertain IO failure.
     fn create(
         &mut self,
@@ -70,6 +86,27 @@ pub(super) trait EndpointControl {
 }
 
 impl EndpointControl for ControlClient {
+    fn preflight_identity(&mut self) -> Result<(), BackendError> {
+        self.require_publication_identity().map_err(client_error)
+    }
+    fn create_identity(
+        &mut self,
+        spec: &ExportSpec,
+        mode: super::super::PublicationMode,
+    ) -> Result<Option<super::super::EndpointSnapshot>, BackendError> {
+        match self.create_identity(
+            StableEndpointId::from_virtual_endpoint_id(spec.id),
+            spec.intent,
+            spec.channels,
+            &spec.name,
+            spec.allow_default,
+            mode,
+        ) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(ClientError::CreateDeferred) => Ok(None),
+            Err(error) => Err(client_error(error)),
+        }
+    }
     fn create(
         &mut self,
         spec: &ExportSpec,
@@ -143,28 +180,74 @@ impl<C: EndpointControl> Lifecycle<C> {
     }
 
     pub fn create(&mut self, spec: ExportSpec) -> Result<(), BackendError> {
+        self.create_with_mode(spec, None)
+    }
+
+    pub fn create_identity(
+        &mut self,
+        spec: ExportSpec,
+        mode: super::super::PublicationMode,
+    ) -> Result<(), BackendError> {
+        self.create_with_mode(spec, Some(mode))
+    }
+
+    fn create_with_mode(
+        &mut self,
+        spec: ExportSpec,
+        mode: Option<super::super::PublicationMode>,
+    ) -> Result<(), BackendError> {
         // A local encoding failure never dispatched CREATE and must not strand
         // an unknown ownership record. Once IO starts, failures stay tracked.
-        super::super::create_request(
-            StableEndpointId::from_virtual_endpoint_id(spec.id),
-            spec.intent,
-            spec.channels,
-            &spec.name,
-            spec.allow_default,
-        )
-        .map_err(|error| client_error(error.into()))?;
-        if let Some(record) = self.endpoints.get(&spec.id)
+        if let Some(mode) = mode {
+            super::super::create_identity_request(
+                StableEndpointId::from_virtual_endpoint_id(spec.id),
+                spec.intent,
+                spec.channels,
+                &spec.name,
+                spec.allow_default,
+                mode,
+            )
+            .map_err(|error| client_error(error.into()))?;
+        } else {
+            super::super::create_request(
+                StableEndpointId::from_virtual_endpoint_id(spec.id),
+                spec.intent,
+                spec.channels,
+                &spec.name,
+                spec.allow_default,
+            )
+            .map_err(|error| client_error(error.into()))?;
+        }
+        if let Some(record) = self.endpoints.get_mut(&spec.id)
             && record
                 .snapshot
                 .is_none_or(|s| s.state() != PdoState::Removed)
         {
-            return if record.spec == spec && !record.removing && record.error.is_none() {
-                Ok(())
-            } else {
-                Err(unavailable(
+            if record.spec != spec || record.removing || record.error.is_some() {
+                return Err(unavailable(
                     "export recreation requires confirmed retirement",
-                ))
-            };
+                ));
+            }
+            if record.publication_mode == mode {
+                return Ok(());
+            }
+            // The service drops the fresh token after a real prepared Present.
+            // That changes only the management decision for subsequent rename/
+            // reconciliation, never the current resource or stable identity.
+            if record.publication_mode == Some(super::super::PublicationMode::EstablishNew)
+                && mode == Some(super::super::PublicationMode::ReopenOrAdopt)
+                && record.snapshot.is_some_and(|snapshot| {
+                    snapshot.state() == PdoState::Present
+                        && snapshot.policy_prepared()
+                        && snapshot.last_status() as i32 >= 0
+                })
+            {
+                record.publication_mode = mode;
+                return Ok(());
+            }
+            return Err(unavailable(
+                "publication identity decision requires prepared presence",
+            ));
         }
         if !self.endpoints.contains_key(&spec.id)
             && self.endpoints.len() >= super::super::MAX_ENDPOINTS as usize
@@ -180,10 +263,14 @@ impl<C: EndpointControl> Lifecycle<C> {
         }
         // Publish ownership intent before CREATE. Even a timed out CREATE may
         // have reached the driver; never retry it as if no endpoint existed.
+        if mode.is_some() {
+            self.control.preflight_identity()?;
+        }
         self.endpoints.insert(
             spec.id,
             EndpointRecord {
                 spec: spec.clone(),
+                publication_mode: mode,
                 snapshot: None,
                 removing: false,
                 removal_accepted: false,
@@ -193,7 +280,10 @@ impl<C: EndpointControl> Lifecycle<C> {
                 diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
             },
         );
-        let result = self.control.create(&spec);
+        let result = match mode {
+            Some(mode) => self.control.create_identity(&spec, mode),
+            None => self.control.create(&spec),
+        };
         let record = self.endpoints.get_mut(&spec.id).expect("reserved export");
         match result {
             Ok(Some(snapshot)) => {

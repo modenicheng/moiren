@@ -176,6 +176,17 @@ Windows22/Ubuntu17host suites and WDK Analyze/INF pass. Historical derivation
 remains for compatibility; durable identity/adoption and final Windows name
 publication are still unimplemented. The remote613package is unchanged.
 
+The later [durable publication identity](validation/2026-11-08-durable-vad-publication-identity.md)
+adds an explicitly negotiated establish/reopen protocol, persistent root/child
+identity, supported unique legacy adoption and mixed-version retention. The
+ordinary application Create path now allocates and retains fresh authority;
+saved IDs and post-Removed rename recreate through reopen, with queued document
+revocation and no token in project data. Driver22/portable17, backend280,
+parent workspace/headless2,665tests(10ignored), all-target strict Clippy and
+formatting pass. This is source integration only: final mutable Windows name,
+default/settings preservation and native S4 cases remain unqualified. No
+replacement for the frozen installed613image or user reboot occurs.
+
 The [retained task/trace preparation](validation/2026-11-08-removal-task-trace-preparation.md)
 is repository source. The later
 [managed probe admission](validation/2026-11-08-managed-removal-admission.md)
@@ -185,6 +196,9 @@ not detached JSON, establish terminal ownership. Real harmless worker/probe
 chains pass under both PowerShell interpreters; all755example tests pass with
 one ignored. Actual scheduler/trace dispatch still refuses pending fresh target
 provenance and reviewed orchestration. No native acquisition or S0-S5 pass follows.
+Its exact published predecessor4573d48 CI42449989373 later finishes20/20jobs;
+the original watcher23584 exits0. Later uncommitted identity changes do not
+inherit that hosted result.
 
 The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
 recomputes both channels at all six retained onsets. Identity1 has non-silent

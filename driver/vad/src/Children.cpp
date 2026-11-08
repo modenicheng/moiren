@@ -57,7 +57,8 @@ static NTSTATUS InitializeChild(WDFDEVICE parent, const MOIREN_VAD_CREATE_REQUES
 
 _Use_decl_annotations_
 NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& request,
-    MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot)
+    MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot, uint32_t publicationMode,
+    const MOIREN_VAD_ENDPOINT_ID* installation)
 {
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     auto root = VadRoot(device);
@@ -132,6 +133,8 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
         context->Shared = shared;
         context->Id = id;
         context->Index = index;
+        context->PublicationMode = publicationMode;
+        if (installation != nullptr) { context->InstallationId = *installation; }
         RtlZeroMemory(context->PolicyInterfaces,
             sizeof(context->PolicyInterfaces));
         context->PolicyInterfaceCount = 0;

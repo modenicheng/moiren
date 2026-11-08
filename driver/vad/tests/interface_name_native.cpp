@@ -13,6 +13,11 @@ using CHAR = char;
 using PCWSTR = const wchar_t*;
 using PVOID = void*;
 #include <devpkey.h>
+#if !defined(_WIN32)
+// The portable runner supplies the SDK-independent property-key fixture.
+constexpr DEVPROPKEY DEVPKEY_DeviceInterface_ReferenceString =
+    {{0x026e516e, 0xb814, 0x414b, {0x83, 0xcd, 0x85, 0x6d, 0x6f, 0xef, 0x48, 0x22}}, 5};
+#endif
 #include "../include/moiren_vad.h"
 #include "../src/EndpointReference.h"
 
@@ -34,10 +39,19 @@ constexpr NTSTATUS STATUS_DEVICE_NOT_READY = -6;
 constexpr NTSTATUS SetFailure = -71;
 constexpr NTSTATUS ReadFailure = -72;
 constexpr NTSTATUS RegistryFailure = -73;
+constexpr NTSTATUS STATUS_OBJECT_NAME_NOT_FOUND = -74;
+constexpr NTSTATUS IdentityFailure = -75;
+constexpr NTSTATUS STATUS_NOT_FOUND = -76;
+constexpr NTSTATUS RPC_NT_UUID_LOCAL_ONLY = 1;
 constexpr ULONG LOCALE_NEUTRAL = 0;
 constexpr ULONG PLUGPLAY_PROPERTY_PERSISTENT = 1;
 constexpr ULONG KEY_CREATE_SUB_KEY = 4;
 constexpr ULONG KEY_SET_VALUE = 2;
+constexpr ULONG KEY_QUERY_VALUE = 1;
+constexpr ULONG REG_BINARY = 3;
+constexpr ULONG PLUGPLAY_REGKEY_DEVICE = 1;
+constexpr ULONG DEVICE_INTERFACE_INCLUDE_NONACTIVE = 1;
+constexpr auto WDF_NO_OBJECT_ATTRIBUTES = nullptr;
 constexpr ULONG REG_SZ = 1;
 constexpr ULONG REG_DWORD = 4;
 constexpr ULONG OBJ_CASE_INSENSITIVE = 1;
@@ -48,7 +62,7 @@ constexpr int TRACE_LEVEL_INFORMATION = 4;
 constexpr int TRACE_LEVEL_ERROR = 2;
 constexpr int VAD_PDO = 1;
 constexpr bool FALSE = false;
-// The pre-rename fixed reference; staging must no longer publish it.
+// The historical fixed reference remains a valid installed identity to adopt.
 constexpr WCHAR VadAudioReference[] = L"MoirenEndpoint";
 static_assert(sizeof(WCHAR) == 2, "exercise real Windows UTF-16 byte lengths");
 struct UNICODE_STRING {
@@ -62,6 +76,23 @@ struct Slot {
     std::uint32_t Intent = MOIREN_VAD_INTENT_PLAYBACK;
     bool AllowDefault = false;
     WCHAR Name[MOIREN_VAD_MAX_NAME_UNITS] = L"Requested interface";
+    MOIREN_VAD_ENDPOINT_ID StableId = {1, 2};
+};
+// Retained OS devnode storage is independent of any runtime Child/context.
+struct IdentityStorage {
+    unsigned char RootRecord[64] = {};
+    ULONG RootBytes = 0, RootType = REG_BINARY;
+    bool RootPresent = false;
+    unsigned char Record[512] = {};
+    ULONG Bytes = 0, Type = REG_BINARY;
+    bool Present = false;
+    WCHAR References[3][2][vad::EndpointReferenceUnits] = {};
+    unsigned Count[3] = {1, 1, 1};
+    IdentityStorage()
+    {
+        const WCHAR original[MOIREN_VAD_MAX_NAME_UNITS] = L"Requested interface";
+        for (auto& category : References) { vad::EndpointReference(original, category[0]); }
+    }
 };
 struct SharedState { int Lock = 0; Slot Slots[1]; };
 struct Child;
@@ -74,14 +105,19 @@ struct VAD_CHILD {
     UNICODE_STRING PolicyInterfaces[3] = {};
     ULONG PolicyInterfaceCount = 0;
     WCHAR PolicyReference[vad::EndpointReferenceUnits] = {};
+    uint32_t PublicationMode = 2; // Fixture opts into reopen/adopt explicitly.
+    MOIREN_VAD_ENDPOINT_ID InstallationId = {0x0123456789abcdefull, 0xfedcba9876543210ull};
 };
 struct Child {
     SharedState Shared;
     Work Worker{this};
     VAD_CHILD Context{&Shared, 0, &Worker};
+    IdentityStorage Devnode;
+    IdentityStorage* Store = &Devnode;
 };
 using WDFDEVICE = Child*;
 using WDFWORKITEM = Work*;
+using WDFKEY = IdentityStorage*;
 
 static void Check(bool condition, const char* message)
 {
@@ -94,6 +130,14 @@ static void Check(bool condition, const char* message)
 #define NT_ASSERT(condition) Check((condition), "kernel assertion")
 #define PAGED_CODE() Check(KeGetCurrentIrql() == PASSIVE_LEVEL, "pageable policy at passive")
 #define RtlCopyMemory std::memcpy
+static size_t RtlCompareMemory(const void* left, const void* right, size_t bytes)
+{
+    const auto a = static_cast<const unsigned char*>(left);
+    const auto b = static_cast<const unsigned char*>(right);
+    size_t same = 0;
+    while (same < bytes && a[same] == b[same]) { ++same; }
+    return same;
+}
 #define UNREFERENCED_PARAMETER(value) (void)(value)
 #define RTL_NUMBER_OF(value) (sizeof(value) / sizeof((value)[0]))
 
@@ -133,6 +177,19 @@ struct Fixture {
     ULONG EnableByDefault[3] = {};
     ULONG EnableCount = 0;
     RegistryKey Keys[3][3] = {};
+    unsigned IdentityOpens = 0, IdentityCloses = 0, IdentityWrites = 0;
+    unsigned IdentityReads = 0, IdentityFlushes = 0, Enumerated = 0, EnumerationFreed = 0;
+    unsigned FailIdentityAt = 0, IdentityOperations = 0;
+    unsigned FailEnumerationAt = 0, FailReferenceAt = 0, ReferenceReads = 0;
+    NTSTATUS EnumerationFailure = IdentityFailure;
+    unsigned AliasCalls = 0, AliasFreed = 0, FailAliasAt = 0;
+    bool CorruptIdentityReadback = false;
+    bool CorruptRootReadback = false;
+    NTSTATUS UuidStatus = STATUS_SUCCESS;
+    unsigned UuidCalls = 0;
+    bool WrongReferenceType = false, WrongReferenceBytes = false;
+    bool RequireDurableIdentity = true, IdentityDurable = false;
+    Child* DiscoveryChild = nullptr;
 } F;
 static bool SystemThread = false;
 static bool SharedLocked = false;
@@ -191,6 +248,119 @@ static void CheckDdi()
 {
     Check(SystemThread && !SharedLocked, "DDI in system worker outside Shared lock");
 }
+
+static NTSTATUS IdentityOperation()
+{
+    CheckDdi();
+    return ++F.IdentityOperations == F.FailIdentityAt ? IdentityFailure : STATUS_SUCCESS;
+}
+NTSTATUS WdfDeviceOpenRegistryKey(Child* child, ULONG keyType, ULONG access,
+    decltype(WDF_NO_OBJECT_ATTRIBUTES), WDFKEY* key)
+{
+    Check(keyType == PLUGPLAY_REGKEY_DEVICE && access == (KEY_QUERY_VALUE | KEY_SET_VALUE),
+        "identity uses this exact child hardware key with minimal value rights");
+    const auto status = IdentityOperation();
+    if (!NT_SUCCESS(status)) { return status; }
+    *key = child->Store;
+    ++F.IdentityOpens;
+    return STATUS_SUCCESS;
+}
+void WdfRegistryClose(WDFKEY)
+{ CheckDdi(); ++F.IdentityCloses; }
+NTSTATUS WdfRegistryQueryValue(WDFKEY key, const UNICODE_STRING* name, ULONG capacity,
+    void* data, ULONG* bytes, ULONG* type)
+{
+    const auto status = IdentityOperation();
+    if (!NT_SUCCESS(status)) { return status; }
+    ++F.IdentityReads;
+    if (std::wcscmp(name->Buffer, L"MoirenRootPublicationV1") == 0) {
+        if (!key->RootPresent) { return STATUS_OBJECT_NAME_NOT_FOUND; }
+        *bytes = key->RootBytes;
+        *type = key->RootType;
+        if (capacity < key->RootBytes) { return STATUS_BUFFER_TOO_SMALL; }
+        std::memcpy(data, key->RootRecord, key->RootBytes);
+        if (F.CorruptRootReadback) { static_cast<unsigned char*>(data)[0] ^= 1; }
+        return STATUS_SUCCESS;
+    }
+    if (!key->Present) { return STATUS_OBJECT_NAME_NOT_FOUND; }
+    *bytes = key->Bytes;
+    *type = key->Type;
+    if (capacity < key->Bytes) { return STATUS_BUFFER_TOO_SMALL; }
+    std::memcpy(data, key->Record, key->Bytes);
+    if (F.CorruptIdentityReadback && F.IdentityReads > 1) {
+        static_cast<unsigned char*>(data)[0] ^= 1;
+    }
+    return STATUS_SUCCESS;
+}
+NTSTATUS WdfRegistryAssignValue(WDFKEY key, const UNICODE_STRING* name, ULONG type,
+    ULONG bytes, void* data)
+{
+    const auto status = IdentityOperation();
+    if (!NT_SUCCESS(status)) { return status; }
+    if (std::wcscmp(name->Buffer, L"MoirenRootPublicationV1") == 0) {
+        Check(bytes <= sizeof(key->RootRecord), "bounded root token record");
+        std::memcpy(key->RootRecord, data, bytes);
+        key->RootBytes = bytes;
+        key->RootType = type;
+        key->RootPresent = true;
+        ++F.IdentityWrites;
+        return STATUS_SUCCESS;
+    }
+    Check(type == REG_BINARY && bytes <= sizeof(key->Record), "bounded binary identity record");
+    std::memcpy(key->Record, data, bytes);
+    key->Bytes = bytes;
+    key->Type = type;
+    key->Present = true;
+    F.IdentityDurable = false;
+    ++F.IdentityWrites;
+    return STATUS_SUCCESS;
+}
+HANDLE WdfRegistryWdmGetHandle(WDFKEY key) { return key; }
+NTSTATUS ZwFlushKey(HANDLE)
+{
+    const auto status = IdentityOperation();
+    if (NT_SUCCESS(status)) { ++F.IdentityFlushes; F.IdentityDurable = true; }
+    return status;
+}
+NTSTATUS ExUuidCreate(GUID* uuid)
+{
+    CheckDdi();
+    ++F.UuidCalls;
+    std::memset(uuid, 0x42, sizeof(*uuid));
+    return F.UuidStatus;
+}
+NTSTATUS IoGetDeviceInterfaces(const GUID* category, Child* child, ULONG flags, WCHAR** result)
+{
+    CheckDdi();
+    Check(child != nullptr && flags == DEVICE_INTERFACE_INCLUDE_NONACTIVE,
+        "enumerate exact owned PDO including inactive registrations");
+    const unsigned index = category->Data1 == 0x6994ad04 ? 0u :
+        (category->Data1 == 0xeb115ffc ? 2u : 1u);
+    F.DiscoveryChild = child;
+    if (++F.Enumerated == F.FailEnumerationAt) { return F.EnumerationFailure; }
+    auto text = static_cast<WCHAR*>(std::calloc(8, sizeof(WCHAR)));
+    Check(text != nullptr && child->Store->Count[index] <= 2, "bounded discovery fixture");
+    for (unsigned entry = 0; entry < child->Store->Count[index]; ++entry) {
+        text[entry * 3] = static_cast<WCHAR>(L'a' + index);
+        text[entry * 3 + 1] = static_cast<WCHAR>(L'0' + entry);
+    }
+    *result = text;
+    return STATUS_SUCCESS;
+}
+void ExFreePool(void* value) { CheckDdi(); ++F.EnumerationFreed; std::free(value); }
+NTSTATUS IoGetDeviceInterfaceAlias(UNICODE_STRING* link, const GUID* category,
+    UNICODE_STRING* alias)
+{
+    CheckDdi();
+    if (++F.AliasCalls == F.FailAliasAt) { return IdentityFailure; }
+    const unsigned index = category->Data1 == 0xeb115ffc ? 2u : 1u;
+    auto buffer = static_cast<WCHAR*>(std::calloc(3, sizeof(WCHAR)));
+    Check(buffer != nullptr, "owned alias allocation");
+    buffer[0] = static_cast<WCHAR>(L'a' + index);
+    buffer[1] = link->Buffer[1];
+    RtlInitUnicodeString(alias, buffer);
+    return STATUS_SUCCESS;
+}
 static unsigned LinkIndex(const UNICODE_STRING* link)
 {
     for (unsigned i = 0; i < 3; ++i) {
@@ -206,16 +376,12 @@ NTSTATUS IoRegisterDeviceInterface(Child* child, const GUID*, UNICODE_STRING* re
     UNICODE_STRING* link)
 {
     CheckDdi();
-    // Preserve historical derivation from the locked snapshot, even if the
-    // live requested name changes before any registration DDI executes.
-    WCHAR expected[vad::EndpointReferenceUnits] = {};
-    vad::EndpointReference(F.SnapshotName, expected);
-    Check(std::wcscmp(reference->Buffer, expected) == 0,
-        "reference derived from the staged locked snapshot");
+    if (F.RequireDurableIdentity) {
+        Check(F.IdentityDurable, "durable identity commit precedes every interface registration");
+    }
+    Check(reference->Buffer[0] != L'\0', "staged reference is nonempty");
     Check(reference->Buffer == child->Context.PolicyReference,
         "each category borrows the single child-owned Policy reference");
-    Check(std::wcscmp(reference->Buffer, VadAudioReference) != 0,
-        "reference is not the fixed pre-rename constant");
     if (F.Registered + 1 == F.FailRegisterAt) { return ReadFailure; }
     Check(F.Registered < 3, "only three owned categories");
     const auto index = F.Registered++;
@@ -234,6 +400,13 @@ NTSTATUS IoSetDeviceInterfaceState(UNICODE_STRING* link, bool enable)
 }
 void RtlFreeUnicodeString(UNICODE_STRING* link)
 {
+    if (link->Buffer[0] >= L'a' && link->Buffer[0] <= L'c') {
+        CheckDdi();
+        ++F.AliasFreed;
+        std::free(link->Buffer);
+        *link = {};
+        return;
+    }
     const auto index = LinkIndex(link);
     F.Live[index] = false;
     ++F.Freed;
@@ -264,6 +437,23 @@ NTSTATUS IoSetDeviceInterfacePropertyData(UNICODE_STRING* link, const DEVPROPKEY
 NTSTATUS IoGetDeviceInterfacePropertyData(UNICODE_STRING* link, const DEVPROPKEY* key,
     LCID locale, ULONG flags, ULONG capacity, void* data, ULONG* required, DEVPROPTYPE* type)
 {
+    if (key->pid == 5) {
+        CheckDdi();
+        Check(flags == 0 && locale == LOCALE_NEUTRAL && F.DiscoveryChild != nullptr,
+            "reference property getter uses reserved zero flags in the system worker");
+        if (++F.ReferenceReads == F.FailReferenceAt) { return IdentityFailure; }
+        // Only the DDI fixture decodes its synthetic opaque link identifiers.
+        const auto category = static_cast<unsigned>(link->Buffer[0] - L'a');
+        const auto entry = static_cast<unsigned>(link->Buffer[1] - L'0');
+        Check(category < 3 && entry < 2, "owned discovery link");
+        const auto reference = F.DiscoveryChild->Store->References[category][entry];
+        *required = static_cast<ULONG>((std::wcslen(reference) + 1) * sizeof(WCHAR));
+        *type = F.WrongReferenceType ? DEVPROP_TYPE_STRING_INDIRECT : DEVPROP_TYPE_STRING;
+        if (*required > capacity) { return STATUS_BUFFER_TOO_SMALL; }
+        std::memcpy(data, reference, *required);
+        if (F.WrongReferenceBytes) { --*required; }
+        return STATUS_SUCCESS;
+    }
     CheckProperty(key, locale);
     const auto index = LinkIndex(link);
     Check(flags == 0 && capacity == sizeof(F.Names[index]), "one fixed-capacity read, no retry");
@@ -343,6 +533,8 @@ void ZwClose(HANDLE)
     --F.Handles;
 }
 
+#include "../src/PublicationIdentity.h"
+#include "../src/RootPublicationIdentity.h"
 #include "interface-name-native-production.inc"
 
 static void Release(Child& child)
@@ -379,6 +571,398 @@ static void SuccessfulTypedPublication()
         Check(VadPreparePolicy(&child, intent) == STATUS_SUCCESS && F.SetCalls == 3 &&
             F.NameTraceCalls == 3,
             "already staged policy must not repeat publication or diagnostic");
+        Release(child);
+    }
+}
+
+static void AdoptedReferencePersistsAcrossRuntimeRename()
+{
+    IdentityStorage devnode;
+    for (auto& category : devnode.References) {
+        const WCHAR legacy[vad::EndpointReferenceUnits] = L"MoirenEndpoint";
+        std::memcpy(category[0], legacy, sizeof(legacy));
+    }
+    F = {};
+    Child original;
+    original.Store = &devnode;
+    Check(VadPreparePolicy(&original, 0) == STATUS_SUCCESS, "adopt unique installed reference");
+    Check(F.IdentityWrites == 1 && F.IdentityFlushes == 1 && F.IdentityReads == 2 && devnode.Present,
+        "adoption must persist, flush and read back before publication");
+    Check(F.AliasCalls == 2 && F.AliasFreed == 2,
+        "adoption verifies and frees flow/Realtime aliases of the owned Audio reference");
+    Check(std::wcscmp(original.Context.PolicyReference, L"MoirenEndpoint") == 0,
+        "preserve the short legacy reference byte-for-byte, not the requested-name hash");
+    Release(original);
+    F = {};
+    Child renamed;
+    renamed.Store = &devnode;
+    const WCHAR changed[MOIREN_VAD_MAX_NAME_UNITS] = L"New requested name after recreation";
+    std::memcpy(renamed.Shared.Slots[0].Name, changed, sizeof(changed));
+    Check(VadPreparePolicy(&renamed, 0) == STATUS_SUCCESS, "recreated PDO reads its durable identity");
+    Check(F.IdentityWrites == 0 && F.Enumerated == 0 &&
+        std::wcscmp(renamed.Context.PolicyReference, L"MoirenEndpoint") == 0,
+        "rename must reuse persisted authority without regenerating from display text");
+    Release(renamed);
+}
+
+static void AdoptionFailuresNeverPublishOrLeak()
+{
+    for (unsigned alias = 1; alias <= 2; ++alias) {
+        F = {};
+        Child child;
+        F.FailAliasAt = alias;
+        Check(VadPreparePolicy(&child, 0) == IdentityFailure && F.Registered == 0 &&
+            F.IdentityWrites == 0 && F.AliasFreed == alias - 1 &&
+            F.EnumerationFreed == F.Enumerated && F.IdentityOpens == F.IdentityCloses,
+            "missing/failed category alias cannot authorize adoption; ownership is released");
+        Release(child);
+    }
+    for (unsigned boundary = 1; boundary <= 5; ++boundary) {
+        F = {};
+        Child child;
+        F.FailIdentityAt = boundary; // open/query/write/flush/readback
+        Check(VadPreparePolicy(&child, 0) == IdentityFailure,
+            "preserve exact identity I/O failure, never treat it as absence");
+        Check(child.Context.PolicyReference[0] == L'\0' && F.Registered == 0 &&
+            F.IdentityOpens == F.IdentityCloses && F.Enumerated == F.EnumerationFreed,
+            "every identity failure closes owned storage and precedes all publication");
+        Release(child);
+    }
+    for (unsigned category = 0; category < 3; ++category) {
+        for (bool referenceRead : {false, true}) {
+            F = {};
+            Child child;
+            F.FailEnumerationAt = referenceRead ? 0 : category + 1;
+            F.FailReferenceAt = referenceRead ? category + 1 : 0;
+            Check(VadPreparePolicy(&child, 0) == IdentityFailure && F.Registered == 0,
+                "discovery/property errors propagate before any registry write/publication");
+            Check(F.IdentityWrites == 0 && F.IdentityOpens == F.IdentityCloses &&
+                F.EnumerationFreed == F.Enumerated - (referenceRead ? 0u : 1u),
+                "only successful OS enumeration allocations are released");
+            Release(child);
+        }
+    }
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        F = {};
+        Child child;
+        F.CorruptIdentityReadback = mode == 0;
+        F.WrongReferenceType = mode == 1;
+        F.WrongReferenceBytes = mode == 2;
+        Check(VadPreparePolicy(&child, 0) == STATUS_DATA_ERROR && F.Registered == 0,
+            "typed/malformed discovery and mismatched durable readback fail closed");
+        Check(F.IdentityOpens == F.IdentityCloses && F.Enumerated == F.EnumerationFreed,
+            "mismatch paths release all passive ownership");
+        Release(child);
+    }
+}
+
+static void MissingAndAmbiguousHistoryCannotMintIdentity()
+{
+    for (unsigned mode = 0; mode < 6; ++mode) {
+        F = {};
+        Child child;
+        if (mode < 3) { child.Store->Count[mode] = 0; }
+        if (mode == 3) {
+            for (auto& count : child.Store->Count) { count = 0; }
+        }
+        if (mode == 4) {
+            const WCHAR other[vad::EndpointReferenceUnits] = L"MoirenEndpoint-aaaaaaaaaaaaaaaa";
+            std::memcpy(child.Store->References[1][0], other, sizeof(other));
+        }
+        if (mode == 5) {
+            const WCHAR other[vad::EndpointReferenceUnits] = L"MoirenEndpoint-bbbbbbbbbbbbbbbb";
+            for (unsigned category = 0; category < 3; ++category) {
+                child.Store->Count[category] = 2;
+                std::memcpy(child.Store->References[category][1], other, sizeof(other));
+            }
+        }
+        Check(VadPreparePolicy(&child, 0) == STATUS_INVALID_DEVICE_STATE && F.Registered == 0 &&
+            F.IdentityWrites == 0 && !child.Store->Present,
+            "missing/partial/conflicting/multiple triples cannot mint a fresh identity");
+        Check(F.IdentityOpens == F.IdentityCloses && F.Enumerated == F.EnumerationFreed,
+            "ambiguous history retains no transient ownership");
+        Release(child);
+    }
+}
+
+static void PersistedRecordValidatesOwnershipAndSchema()
+{
+    F = {};
+    Child seed;
+    Check(VadPreparePolicy(&seed, 0) == STATUS_SUCCESS, "seed valid adoption record");
+    const auto stored = seed.Devnode;
+    Release(seed);
+    for (unsigned mode = 0; mode < 19; ++mode) {
+        F = {};
+        Child child;
+        child.Devnode = stored;
+        vad::PublicationIdentity record = {};
+        std::memcpy(&record, child.Store->Record, sizeof(record));
+        switch (mode) {
+        case 0: record.Magic ^= 1; break;
+        case 1: --record.Size; break;
+        case 2: ++record.Version; break;
+        case 3: ++record.StableId.Low; break;
+        case 4: ++record.StableId.High; break;
+        case 5: record.Intent = MOIREN_VAD_INTENT_MICROPHONE; break;
+        case 6: record.BridgePin = 0; break;
+        case 7: record.Origin = 0; break;
+        case 8: record.Reserved = 1; break;
+        case 9: record.ReferenceUnits = 0; break;
+        case 10: record.ReferenceUnits = vad::EndpointReferenceUnits + 1; break;
+        case 11: record.Reference[0] = L'\0'; break;
+        case 12: record.Reference[1] = L'\\'; break;
+        case 13: record.Reference[record.ReferenceUnits - 1] = L'X'; break;
+        case 14: child.Store->Type = REG_SZ; break;
+        case 15: --child.Store->Bytes; break;
+        case 16: ++child.Store->Bytes; break;
+        case 17: ++record.Installation.Low; break;
+        case 18: ++record.Installation.High; break;
+        }
+        std::memcpy(child.Store->Record, &record, sizeof(record));
+        const auto before = child.Devnode;
+        const auto status = VadPreparePolicy(&child, 0);
+        const auto expectedStatus = mode == 16 ? STATUS_BUFFER_TOO_SMALL :
+            (mode >= 17 ? STATUS_INVALID_DEVICE_STATE : STATUS_DATA_ERROR);
+        Check(status == expectedStatus &&
+            F.Registered == 0 && F.Enumerated == 0 && F.IdentityWrites == 0,
+            "corruption/ownership mismatch never falls back to display-name hash or history");
+        Check(std::memcmp(before.Record, child.Store->Record, sizeof(before.Record)) == 0 &&
+            F.IdentityOpens == F.IdentityCloses,
+            "corrupt identity is preserved for explicit repair, not rewritten");
+        Release(child);
+    }
+    F = {};
+    Child authoritative;
+    authoritative.Devnode = stored;
+    // Stale history must not override an already proven exact devnode record.
+    for (auto& count : authoritative.Store->Count) { count = 2; }
+    Check(VadPreparePolicy(&authoritative, 0) == STATUS_SUCCESS && F.Enumerated == 0 &&
+        F.IdentityWrites == 0 && F.IdentityFlushes == 1,
+        "valid persisted authority wins over unrelated stale historical registrations");
+    Release(authoritative);
+}
+
+static void FlushFailureRetryAndStageFailureRetainIdentity()
+{
+    for (bool failFlush : {false, true}) {
+        F = {};
+        Child child;
+        F.FailIdentityAt = failFlush ? 4 : 0;
+        F.FailSetAt = failFlush ? 0 : 2;
+        Check(VadPreparePolicy(&child, 0) == (failFlush ? IdentityFailure : SetFailure),
+            "first failure remains explicit");
+        Check(child.Store->Present && child.Context.PolicyReference[0] == L'\0',
+            "durable reservation survives failed staging/flush while runtime reference is invalid");
+        const auto stored = child.Devnode;
+        Release(child);
+        F = {};
+        Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS && F.IdentityWrites == 0 &&
+            F.IdentityFlushes == 1 && F.Enumerated == 0,
+            "retry validates and durably flushes existing reservation before publishing");
+        Check(std::memcmp(stored.Record, child.Store->Record, sizeof(stored.Record)) == 0,
+            "retry never rotates a partially published identity");
+        Release(child);
+    }
+}
+
+static void ExplicitFreshAuthorityCreatesAndRetainsNewIdentity()
+{
+    F = {};
+    Child child;
+    for (auto& count : child.Store->Count) { count = 0; }
+    child.Context.PublicationMode = 1; // Explicit negotiated EstablishNew.
+    Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS && F.IdentityWrites == 1 &&
+        F.IdentityFlushes >= 1 && F.Registered == 3,
+        "negotiated EstablishNew enables first publication without an external provisioner");
+    Check(std::wcscmp(child.Context.PolicyReference,
+        L"MoirenEndpoint-fedcba98765432100123456789abcdef-00000000000000020000000000000001-p") == 0,
+        "fresh reference keeps full installation/StableId bits plus direction, not a name hash");
+    WCHAR retained[vad::EndpointReferenceUnits] = {};
+    std::memcpy(retained, child.Context.PolicyReference, sizeof(retained));
+    const auto stored = child.Devnode;
+    Release(child);
+    F = {};
+    Child renamed;
+    renamed.Devnode = stored;
+    const WCHAR changed[MOIREN_VAD_MAX_NAME_UNITS] = L"Fresh endpoint renamed later";
+    std::memcpy(renamed.Shared.Slots[0].Name, changed, sizeof(changed));
+    Check(VadPreparePolicy(&renamed, 0) == STATUS_SUCCESS && F.IdentityWrites == 0 &&
+        std::wcscmp(renamed.Context.PolicyReference, retained) == 0,
+        "fresh identity becomes immutable durable authority across recreation/name changes");
+    Release(renamed);
+}
+
+static void LegacyCreateDoesNotRequireIdentityProvisioning()
+{
+    F = {};
+    F.RequireDurableIdentity = false;
+    Child child;
+    child.Context.PublicationMode = 0;
+    for (auto& count : child.Store->Count) { count = 0; }
+    Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS && F.Registered == 3 &&
+        F.IdentityWrites == 0 && F.Enumerated == 0,
+        "legacy v2 CREATE keeps working without any identity/fresh provisioning");
+    WCHAR expected[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(child.Shared.Slots[0].Name, expected);
+    Check(std::wcscmp(expected, child.Context.PolicyReference) == 0,
+        "legacy compatibility retains exactly the locked-name reference");
+    Release(child);
+}
+
+static void LegacyRecreationCannotRotateCommittedIdentity()
+{
+    for (bool fresh : {false, true}) {
+        F = {};
+        Child original;
+        if (fresh) {
+            original.Context.PublicationMode = MOIREN_VAD_IDENTITY_ESTABLISH_NEW;
+            for (auto& count : original.Store->Count) { count = 0; }
+        }
+        Check(VadPreparePolicy(&original, 0) == STATUS_SUCCESS, "seed negotiated exact identity");
+        WCHAR retained[vad::EndpointReferenceUnits] = {};
+        std::memcpy(retained, original.Context.PolicyReference, sizeof(retained));
+        const auto stored = original.Devnode;
+        Release(original);
+        for (bool corrupt : {false, true}) {
+            F = {};
+            Child legacy;
+            legacy.Devnode = stored;
+            legacy.Context.PublicationMode = 0;
+            const WCHAR renamed[MOIREN_VAD_MAX_NAME_UNITS] = L"Changed through old v2 client";
+            std::memcpy(legacy.Shared.Slots[0].Name, renamed, sizeof(renamed));
+            if (corrupt) { legacy.Devnode.Record[0] ^= 1; }
+            const auto status = VadPreparePolicy(&legacy, 0);
+            Check(status == (corrupt ? STATUS_DATA_ERROR : STATUS_SUCCESS) &&
+                F.IdentityWrites == 0 && F.Enumerated == 0,
+                "legacy downgrade must read committed identity, never replace or adopt history");
+            Check(corrupt ? F.Registered == 0 && legacy.Context.PolicyReference[0] == L'\0' :
+                F.Registered == 3 && std::wcscmp(retained, legacy.Context.PolicyReference) == 0,
+                "mixed-version recreation cannot publish another endpoint or bypass corrupt state");
+            Release(legacy);
+        }
+    }
+}
+
+static void RootTokenIsDurableAndNeverRotatesOnRetry()
+{
+    F = {};
+    Child root;
+    MOIREN_VAD_ENDPOINT_ID first = {};
+    SystemThread = true;
+    Check(vad::ResolveRootPublicationIdentity(&root, first) == STATUS_SUCCESS,
+        "root token is created by the actual management operation");
+    SystemThread = false;
+    Check(first.Low != 0 && first.High != 0 && F.UuidCalls == 1 &&
+        F.IdentityWrites == 1 && F.IdentityReads == 2 && F.IdentityFlushes == 1 &&
+        F.IdentityOpens == F.IdentityCloses, "root is durably flushed/read back with local key ownership");
+    auto stored = root.Devnode;
+    for (bool corrupt : {false, true}) {
+        F = {};
+        Child recreated;
+        recreated.Devnode = stored;
+        F.CorruptRootReadback = corrupt;
+        MOIREN_VAD_ENDPOINT_ID token = {};
+        SystemThread = true;
+        const auto status = vad::ResolveRootPublicationIdentity(&recreated, token);
+        SystemThread = false;
+        Check(status == (corrupt ? STATUS_DATA_ERROR : STATUS_SUCCESS) && F.UuidCalls == 0 &&
+            F.IdentityWrites == 0 && F.IdentityOpens == F.IdentityCloses,
+            "valid root is reused; corrupt state never authorizes minting a replacement");
+        Check(corrupt ? token.Low == 0 && token.High == 0 :
+            token.Low == first.Low && token.High == first.High, "no failed root authority escapes");
+    }
+    for (unsigned boundary = 1; boundary <= 5; ++boundary) {
+        F = {};
+        Child failed;
+        F.FailIdentityAt = boundary;
+        MOIREN_VAD_ENDPOINT_ID token = {};
+        SystemThread = true;
+        const auto status = vad::ResolveRootPublicationIdentity(&failed, token);
+        SystemThread = false;
+        Check(status == IdentityFailure && token.Low == 0 && token.High == 0 &&
+            F.IdentityOpens == F.IdentityCloses, "root I/O failure is not freshness and leaks no authority");
+        if (failed.Devnode.RootPresent) {
+            const auto retained = failed.Devnode;
+            F = {};
+            SystemThread = true;
+            Check(vad::ResolveRootPublicationIdentity(&failed, token) == STATUS_SUCCESS,
+                "retry finishes the exact reserved root token");
+            SystemThread = false;
+            Check(F.UuidCalls == 0 && F.IdentityWrites == 0 &&
+                std::memcmp(retained.RootRecord, failed.Devnode.RootRecord, sizeof(retained.RootRecord)) == 0,
+                "failed flush/readback never rotates reserved root identity");
+        }
+    }
+    F = {};
+    F.UuidStatus = IdentityFailure;
+    Child failed;
+    MOIREN_VAD_ENDPOINT_ID token = {};
+    SystemThread = true;
+    Check(vad::ResolveRootPublicationIdentity(&failed, token) == IdentityFailure &&
+        F.IdentityWrites == 0, "UUID failure propagates without reserving guessed bytes");
+    SystemThread = false;
+}
+
+static void FreshReservationRetryKeepsExactReference()
+{
+    for (unsigned boundary : {4u, 5u}) { // child write succeeded; flush/readback fails
+        F = {};
+        Child child;
+        child.Context.PublicationMode = MOIREN_VAD_IDENTITY_ESTABLISH_NEW;
+        for (auto& count : child.Store->Count) { count = 0; }
+        F.FailIdentityAt = boundary;
+        Check(VadPreparePolicy(&child, 0) == IdentityFailure && child.Store->Present &&
+            F.Registered == 0 && child.Context.PolicyReference[0] == L'\0',
+            "failed fresh commit cannot publish or discard its reserved identity");
+        const auto reserved = child.Devnode;
+        Release(child);
+        F = {};
+        Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS && F.IdentityWrites == 0 &&
+            F.Enumerated == 0 && F.IdentityFlushes == 1 &&
+            std::memcmp(reserved.Record, child.Store->Record, sizeof(reserved.Record)) == 0,
+            "EstablishNew retry reuses the exact durable reservation, never allocates another");
+        Release(child);
+    }
+    for (NTSTATUS uuidStatus : {RPC_NT_UUID_LOCAL_ONLY, IdentityFailure}) {
+        F = {};
+        F.UuidStatus = uuidStatus;
+        Child root;
+        MOIREN_VAD_ENDPOINT_ID token = {};
+        SystemThread = true;
+        const auto status = vad::ResolveRootPublicationIdentity(&root, token);
+        SystemThread = false;
+        Check(uuidStatus == RPC_NT_UUID_LOCAL_ONLY ?
+            status == STATUS_SUCCESS && F.IdentityWrites == 1 && token.Low != 0 :
+            status == IdentityFailure && F.IdentityWrites == 0 && token.Low == 0,
+            "supported machine-local UUID succeeds; generation failure never becomes fresh authority");
+    }
+}
+
+static void ExplicitFreshNeverReplacesInstalledIdentityOrMasksDiscoveryFailure()
+{
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        F = {};
+        Child child;
+        if (mode >= 2) {
+            Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS, "seed exact adopted record");
+            Release(child);
+            F = {};
+        }
+        child.Context.PublicationMode = MOIREN_VAD_IDENTITY_ESTABLISH_NEW;
+        if (mode == 1) {
+            for (auto& count : child.Store->Count) { count = 0; }
+            F.FailEnumerationAt = 1;
+            F.EnumerationFailure = STATUS_NOT_FOUND;
+        }
+        if (mode == 3) { ++child.Context.InstallationId.High; }
+        const auto before = child.Devnode;
+        const auto status = VadPreparePolicy(&child, 0);
+        Check(status == (mode == 1 ? STATUS_NOT_FOUND : STATUS_INVALID_DEVICE_STATE) &&
+            F.Registered == 0 && F.IdentityWrites == 0 && child.Context.PolicyReference[0] == L'\0',
+            "EstablishNew rejects legacy identity and all discovery errors, even NOT_FOUND");
+        Check(std::memcmp(before.Record, child.Store->Record, sizeof(before.Record)) == 0,
+            "conflict never overwrites installed settings authority");
         Release(child);
     }
 }
@@ -565,7 +1149,7 @@ static void EndpointReferenceDerivation()
     WCHAR other[vad::EndpointReferenceUnits] = {};
     vad::EndpointReference(renamed, other);
     Check(std::wcscmp(reference, other) != 0,
-        "a rename derives a fresh endpoint identity");
+        "historical derivation changes with display text and must not drive adopted identity");
     const WCHAR empty[MOIREN_VAD_MAX_NAME_UNITS] = {};
     WCHAR fromEmpty[vad::EndpointReferenceUnits] = {};
     vad::EndpointReference(empty, fromEmpty);
@@ -576,6 +1160,17 @@ static void EndpointReferenceDerivation()
 #ifndef VAD_PUBLICATION_REFERENCE_TEST
 int main()
 {
+    FreshReservationRetryKeepsExactReference();
+    LegacyRecreationCannotRotateCommittedIdentity();
+    ExplicitFreshNeverReplacesInstalledIdentityOrMasksDiscoveryFailure();
+    RootTokenIsDurableAndNeverRotatesOnRetry();
+    LegacyCreateDoesNotRequireIdentityProvisioning();
+    ExplicitFreshAuthorityCreatesAndRetainsNewIdentity();
+    AdoptedReferencePersistsAcrossRuntimeRename();
+    AdoptionFailuresNeverPublishOrLeak();
+    MissingAndAmbiguousHistoryCannotMintIdentity();
+    PersistedRecordValidatesOwnershipAndSchema();
+    FlushFailureRetryAndStageFailureRetainIdentity();
     TerminalPolicyMatchesVirtualFunctionAndDefaultPreference();
     EndpointReferenceDerivation();
     SuccessfulTypedPublication();

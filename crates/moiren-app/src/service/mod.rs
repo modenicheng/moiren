@@ -232,6 +232,7 @@ impl ServiceContext {
             self.graph.replace(candidate.graph, candidate.nodes)?;
         }
         self.audio_settings = audio;
+        self.exports.clear_new_identities();
         self.measured_process = None;
         self.loaded_project = Some(Arc::new(document));
         Ok(())
@@ -340,6 +341,18 @@ impl ServiceDriver for CoreDriver {
     }
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, r: AppRequest) {
         match r {
+            AppRequest::CreateExport {
+                direction,
+                name,
+                channels,
+            } => {
+                if let Err(error) =
+                    c.exports
+                        .allocate_export(&mut c.graph, direction, name, channels)
+                {
+                    c.graph.record_error(error);
+                }
+            }
             AppRequest::LoadProject(document) => {
                 if let Err(error) = c.load_project(document) {
                     c.graph.record_error(error);
@@ -385,11 +398,10 @@ impl ServiceDriver for CoreDriver {
             AppRequest::RedoGraph => {
                 c.graph.redo();
             }
-            AppRequest::ReplaceGraph { graph, nodes } => {
-                if let Err(error) = c.graph.replace(graph, nodes) {
-                    c.graph.record_error(error);
-                }
-            }
+            AppRequest::ReplaceGraph { graph, nodes } => match c.graph.replace(graph, nodes) {
+                Ok(()) => c.exports.clear_new_identities(),
+                Err(error) => c.graph.record_error(error),
+            },
             AppRequest::ApplyGraph => {
                 c.graph
                     .record_error("No native audio backend is configured");

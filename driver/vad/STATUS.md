@@ -46,6 +46,16 @@ Analyze/INF pass. This enabling source change retains the historical name hash;
 durable adoption, final Windows name and native S4 acceptance remain open. No
 new package is installed or substituted for the frozen613diagnostic image.
 
+The later [durable publication identity checkpoint](../../docs/validation/2026-11-08-durable-vad-publication-identity.md)
+implements explicit fresh establishment versus existing-ID reopen/adoption,
+flushed installation/child identity and committed-reference reuse by v2 callers.
+The ordinary application Create path carries transient allocation authority;
+loaded projects and later rename recreation cannot invent it. Driver22 and
+portable17suites, backend280VAD tests, parent2,665workspace/headless tests
+(10ignored), strict all-target Clippy and formatting pass. This is not final
+mutable Windows name publication, settings/default-role retention, native S4,
+or an installed package. The frozen613reboot/removal diagnostic is unchanged.
+
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
 The later [managed probe admission](../../docs/validation/2026-11-08-managed-removal-admission.md)

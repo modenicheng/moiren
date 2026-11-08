@@ -9,6 +9,10 @@ mod create_reply;
 pub(crate) use create_reply::{CreateReply, decode_create_reply};
 #[cfg(test)]
 mod abi_conformance;
+mod publication_identity;
+pub use publication_identity::{
+    IdentityCapabilities, PublicationMode, create_identity_request, identity_capabilities_request,
+};
 
 pub const ABI_VERSION: u32 = 2;
 pub const MAX_ENDPOINTS: u32 = 64;
@@ -21,6 +25,9 @@ pub const MAX_PCM_BYTES: usize = MAX_PACKET_FRAMES as usize * 2 * 4;
 pub const CAPABILITIES_SIZE: usize = 64;
 pub const SNAPSHOT_SIZE: usize = 128;
 pub const CREATE_SIZE: usize = 168;
+pub const CREATE_IDENTITY_SIZE: usize = 176;
+pub const IDENTITY_VERSION: u32 = 1;
+pub const IDENTITY_CAPABILITIES_SIZE: usize = 16;
 pub const ENDPOINT_REQUEST_SIZE: usize = 32;
 pub const GATE_REQUEST_SIZE: usize = 48;
 pub const PCM_HEADER_SIZE: usize = 80;
@@ -30,6 +37,7 @@ pub const CAP_AUDIO: u32 = 4;
 pub const CAP_STREAMS: u32 = 8;
 pub const CAP_PCM: u32 = 16;
 pub const CAP_CREATE_DEFERRED: u32 = 32;
+pub const CAP_PUBLICATION_IDENTITY: u32 = 64;
 pub const FORMAT_PCM16: u32 = 1;
 pub const FORMAT_FLOAT32: u32 = 2;
 const AUDIO_FLAGS: u32 = CAP_RAW_PDO | CAP_POLICY_STAGED | CAP_AUDIO | CAP_STREAMS;
@@ -40,6 +48,8 @@ const INTENT_MASK: u32 = 6;
 
 pub const IOCTL_CAPABILITIES: u32 = 0x0022_e000;
 pub const IOCTL_CREATE: u32 = 0x0022_e004;
+pub const IOCTL_CREATE_IDENTITY: u32 = 0x0022_e01c;
+pub const IOCTL_IDENTITY_CAPABILITIES: u32 = 0x0022_e020;
 pub const IOCTL_QUERY: u32 = 0x0022_e008;
 pub const IOCTL_REMOVE: u32 = 0x0022_e00c;
 pub const IOCTL_SET_GATE: u32 = 0x0022_e010;

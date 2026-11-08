@@ -6,6 +6,7 @@
 // Instantiate the SDK property key in this translation unit, not a private GUID.
 #include <initguid.h>
 #include <devpkey.h>
+#include "PublicationIdentity.h"
 #include "Policy.tmh"
 
 VAD_PAGE static EVT_WDF_WORKITEM PreparePolicy;
@@ -32,7 +33,8 @@ static const GUID RealtimeCategory =
     {0xeb115ffc, 0x10c8, 0x4964, {0x83, 0x1d, 0x6d, 0xcb, 0x02, 0xe6, 0xf2, 0x3f}};
 
 static void SnapshotPolicy(VAD_CHILD* context, uint32_t* intent,
-    ULONG* neverDefault, WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS])
+    ULONG* neverDefault, WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS],
+    MOIREN_VAD_ENDPOINT_ID* stableId)
 {
     KIRQL irql;
     KeAcquireSpinLock(&context->Shared->Lock, &irql);
@@ -40,6 +42,7 @@ static void SnapshotPolicy(VAD_CHILD* context, uint32_t* intent,
     *intent = slot.Intent;
     *neverDefault = slot.AllowDefault ? 0u : 0x307u;
     RtlCopyMemory(name, slot.Name, sizeof(name));
+    *stableId = slot.StableId;
     KeReleaseSpinLock(&context->Shared->Lock, irql);
 }
 
@@ -227,7 +230,8 @@ static void PreparePolicy(WDFWORKITEM work)
     uint32_t intent = 0;
     ULONG neverDefault = 0;
     WCHAR name[MOIREN_VAD_MAX_NAME_UNITS];
-    SnapshotPolicy(context, &intent, &neverDefault, name);
+    MOIREN_VAD_ENDPOINT_ID stableId = {};
+    SnapshotPolicy(context, &intent, &neverDefault, name, &stableId);
     const auto& terminal = vad::EndpointTerminalPolicy(intent);
     const bool capture = intent == MOIREN_VAD_INTENT_MICROPHONE;
     const GUID* categories[] = {
@@ -240,12 +244,31 @@ static void PreparePolicy(WDFWORKITEM work)
             STATUS_SUCCESS : STATUS_INVALID_DEVICE_STATE;
         return;
     }
-    // Preserve historical derivation for compatibility, without claiming
-    // immutable identity/adoption. This worker alone derives the child-owned
-    // reference from the same locked snapshot as the staged properties. No
-    // audio/RT callback derives it; ACX may consume it only after successful
-    // staging and the passive worker flush, never under Shared->Lock.
-    vad::EndpointReference(name, context->PolicyReference);
+    if (vad::InterfaceNameBytes(name) == 0) {
+        context->PolicyStatus = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // v2 is compatibility-only. Only negotiated CREATE_IDENTITY opts into
+    // immutable resolution; legacy new CREATE must not require provisioning.
+    NTSTATUS resolved = STATUS_SUCCESS;
+    if (context->PublicationMode == 0) {
+        bool committed = false;
+        resolved = vad::ReadCommittedPublicationReference(child, stableId, intent,
+            context->PolicyReference, committed);
+        if (NT_SUCCESS(resolved) && !committed) {
+            vad::EndpointReference(name, context->PolicyReference);
+        }
+    } else {
+        // InstallationId/mode are child-owned values set before enumeration.
+        // No root handle, Admin acquisition or caller-thread I/O escapes here.
+        resolved = vad::ResolvePublicationReference(child, stableId, intent,
+            categories, context->PublicationMode, context->InstallationId,
+            context->PolicyReference);
+    }
+    if (!NT_SUCCESS(resolved)) {
+        context->PolicyStatus = resolved;
+        return;
+    }
     for (const GUID* category : categories) {
         NTSTATUS status = StageInterface(child, *category, terminal.Association,
             sizeof(terminal.Association), neverDefault, terminal.EnableByDefault, name,

@@ -112,6 +112,7 @@ fn created_reply(
 pub struct ControlClient {
     io: ControlHandle,
     capabilities: Capabilities,
+    identity_capabilities: Option<super::IdentityCapabilities>,
 }
 
 impl ControlClient {
@@ -125,6 +126,7 @@ impl ControlClient {
         Ok(Self {
             io,
             capabilities: Capabilities::decode(&bytes)?,
+            identity_capabilities: None,
         })
     }
     pub const fn capabilities(&self) -> Capabilities {
@@ -138,6 +140,7 @@ impl ControlClient {
         Self {
             io: self.io.duplicate(),
             capabilities: self.capabilities,
+            identity_capabilities: self.identity_capabilities,
         }
     }
 
@@ -160,6 +163,81 @@ impl ControlClient {
             deadline_after(REQUEST_TIMEOUT)?,
         )?;
         created_reply(&bytes, self.capabilities, id, intent, channels)
+    }
+
+    /// Establish the identity allocated by this control-side producer. Retain
+    /// `identity` across retries; an uncertain IO result never allocates a new ID.
+    pub fn establish(
+        &mut self,
+        identity: &super::NewEndpointIdentity,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.create_identity(
+            identity.stable_id(),
+            intent,
+            channels,
+            name,
+            allow_default,
+            super::PublicationMode::EstablishNew,
+        )
+    }
+
+    /// Project-loaded and renamed identities must reopen/adopt, never establish
+    /// from absent state. Unsupported capability is explicit, not v2 fallback.
+    pub fn reopen(
+        &mut self,
+        id: StableEndpointId,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.create_identity(
+            id,
+            intent,
+            channels,
+            name,
+            allow_default,
+            super::PublicationMode::ReopenOrAdopt,
+        )
+    }
+
+    pub(super) fn create_identity(
+        &mut self,
+        id: StableEndpointId,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+        mode: super::PublicationMode,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.capabilities.validate_create(intent, channels)?;
+        let request =
+            super::create_identity_request(id, intent, channels, name, allow_default, mode)?;
+        self.require_publication_identity()?;
+        let bytes = self.io.exchange::<SNAPSHOT_SIZE>(
+            super::IOCTL_CREATE_IDENTITY,
+            &request,
+            deadline_after(REQUEST_TIMEOUT)?,
+        )?;
+        created_reply(&bytes, self.capabilities, id, intent, channels)
+    }
+
+    pub(super) fn require_publication_identity(&mut self) -> Result<(), ClientError> {
+        if self.identity_capabilities.is_some() {
+            return Ok(());
+        }
+        self.capabilities.require_audio()?;
+        let bytes = self.io.exchange::<{ super::IDENTITY_CAPABILITIES_SIZE }>(
+            super::IOCTL_IDENTITY_CAPABILITIES,
+            &super::identity_capabilities_request(),
+            deadline_after(REQUEST_TIMEOUT)?,
+        )?;
+        self.identity_capabilities = Some(super::IdentityCapabilities::decode(&bytes)?);
+        Ok(())
     }
 
     /// Wait for asynchronous preparation with one deadline, including CREATE.

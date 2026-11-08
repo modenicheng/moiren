@@ -15,6 +15,7 @@ pub(crate) type DriverStamp = [u64; 5];
 pub(crate) struct Dispatch {
     pub action: ExportAction,
     pub expected: Option<DriverStamp>,
+    pub new_identity: Option<Arc<FreshExportIdentity>>,
 }
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) struct Work {
@@ -26,6 +27,8 @@ pub(crate) struct Work {
 }
 pub(crate) struct NativeObservation {
     pub intent: ExportIntent,
+    /// Fresh policy publication, independent of PCM transport readiness.
+    pub publication_prepared: bool,
     pub snapshot: Option<DriverStamp>,
     /// Set only by the native adapter for a fresh, closed Removed snapshot.
     #[cfg(feature = "vad-integration-probe")]
@@ -190,6 +193,16 @@ impl Runtime {
         let mut errors = batch.errors;
         for native in batch.observations {
             let id = native.intent.endpoint_id;
+            let publication_prepared = native.publication_prepared
+                && native.resource == ExportResourceState::Present
+                && native.error.is_none()
+                && native
+                    .snapshot
+                    .is_some_and(|stamp| stamp[..3].iter().all(|v| *v != 0));
+            #[cfg(windows)]
+            let publication_prepared = publication_prepared
+                && native.diagnostic_provenance
+                    == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh;
             #[cfg(feature = "vad-integration-probe")]
             let accepted_result = native.error.is_none();
             #[cfg(feature = "vad-integration-probe")]
@@ -344,6 +357,9 @@ impl Runtime {
             }) {
                 errors.push(error);
             } else {
+                if publication_prepared && let Some(identity) = service.new_identities.remove(&id) {
+                    identity.revoke();
+                }
                 if let Some(name) = windows_name {
                     service.windows_names.insert(id, name);
                 }
@@ -447,6 +463,11 @@ impl Runtime {
                 };
                 Dispatch {
                     expected: self.stamps.get(&id).copied(),
+                    new_identity: matches!(action, ExportAction::Create { .. })
+                        .then(|| service.new_identities.get(&id))
+                        .flatten()
+                        .filter(|identity| identity.valid_for(id))
+                        .cloned(),
                     action,
                 }
             })
@@ -559,16 +580,31 @@ impl Adapter for WindowsAdapter {
                     };
                     Channels::try_from(intent.channels as u32)
                         .map_err(|e| e.to_string())
-                        .and_then(|channels| {
-                            self.0
-                                .create_export(
+                        .and_then(|channels| match dispatch.new_identity {
+                            Some(identity) if identity.valid_for(intent.endpoint_id) => self
+                                .0
+                                .establish_export(
+                                    identity.native(),
+                                    direction,
+                                    channels,
+                                    &intent.name,
+                                    allow_default,
+                                )
+                                .map_err(|error| error.to_string()),
+                            Some(_) => Err(
+                                "fresh export allocation was revoked or differs from its endpoint"
+                                    .into(),
+                            ),
+                            None => self
+                                .0
+                                .reopen_export(
                                     intent.endpoint_id,
                                     direction,
                                     channels,
                                     &intent.name,
                                     allow_default,
                                 )
-                                .map_err(|e| e.to_string())
+                                .map_err(|error| error.to_string()),
                         })
                 }
                 ExportAction::SetGate { endpoint_id, open } => dispatch
@@ -649,6 +685,9 @@ impl From<moiren_windows_audio::vad::VadExportObservation> for NativeObservation
             _ => ExportResourceState::Creating,
         };
         Self {
+            publication_prepared: view
+                .snapshot
+                .is_some_and(|snapshot| snapshot.policy_prepared()),
             intent: ExportIntent {
                 endpoint_id: view.endpoint_id,
                 name: view.spec_name,

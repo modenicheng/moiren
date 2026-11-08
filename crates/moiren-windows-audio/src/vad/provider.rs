@@ -283,6 +283,70 @@ impl WindowsVadProvider {
             })
     }
 
+    /// Opt-in establishment takes the fresh-allocation token, not an ID parsed
+    /// from a project. Keep the token on failure; never regenerate to retry IO.
+    pub fn establish_export(
+        &self,
+        identity: &super::NewEndpointIdentity,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+    ) -> Result<(), BackendError> {
+        self.create_export_identity(
+            identity.endpoint_id(),
+            intent,
+            channels,
+            name,
+            allow_default,
+            super::PublicationMode::EstablishNew,
+        )
+    }
+
+    /// Existing/project-loaded IDs and rename recreations never authorize a
+    /// fresh machine identity, even when driver storage is absent.
+    pub fn reopen_export(
+        &self,
+        id: VirtualEndpointId,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+    ) -> Result<(), BackendError> {
+        self.create_export_identity(
+            id,
+            intent,
+            channels,
+            name,
+            allow_default,
+            super::PublicationMode::ReopenOrAdopt,
+        )
+    }
+
+    fn create_export_identity(
+        &self,
+        id: VirtualEndpointId,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+        mode: super::PublicationMode,
+    ) -> Result<(), BackendError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .create_identity(
+                ExportSpec {
+                    id,
+                    intent,
+                    channels,
+                    name: name.into(),
+                    allow_default,
+                },
+                mode,
+            )
+    }
+
     /// Poll actual driver state, retaining uncertain/removing records. Call
     /// only from the lifecycle worker, never the service pump or Engine render.
     pub fn export_observations(&self) -> Vec<VadExportObservation> {

@@ -3,8 +3,10 @@
 #include "../include/moiren_vad.h"
 
 namespace vad {
-// "MoirenEndpoint-" + 16 hex digits + NUL.
-inline constexpr uint32_t EndpointReferenceUnits = 32;
+// Bounded legacy references and full installation/StableId/direction references.
+// Historical derivation below still emits 31 characters; never truncate an
+// adopted identity to make room for a new format.
+inline constexpr uint32_t EndpointReferenceUnits = 96;
 
 // Current implementation hashes mutable display text into the interface and
 // ACX circuit reference. That reference is an input to Windows endpoint
@@ -13,7 +15,8 @@ inline constexpr uint32_t EndpointReferenceUnits = 32;
 // requested name, with explicit adoption of existing references; simply
 // switching installed endpoints to a new constant would also change identity.
 // See docs/validation/2026-11-08-vad-name-identity-contract.md. The hash below
-// remains the historical derivation until publication/migration is implemented.
+// remains the v2 compatibility path; negotiated CREATE_IDENTITY resolves a
+// persisted/adopted reference independently of mutable display text instead.
 inline void EndpointReference(const wchar_t (&name)[MOIREN_VAD_MAX_NAME_UNITS],
     wchar_t (&reference)[EndpointReferenceUnits])
 {

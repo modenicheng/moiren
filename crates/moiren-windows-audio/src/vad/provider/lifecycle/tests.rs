@@ -135,6 +135,8 @@ fn snapshot_native_with_status(
 struct Fake {
     current: EndpointSnapshot,
     creates: Vec<ExportSpec>,
+    identity_modes: Vec<super::super::super::PublicationMode>,
+    identity_capable: bool,
     gates: Vec<bool>,
     remove_calls: usize,
     fail_create: bool,
@@ -153,6 +155,8 @@ impl Default for Fake {
         Self {
             current: snapshot(PdoState::Present, 3, 5, false),
             creates: Vec::new(),
+            identity_modes: Vec::new(),
+            identity_capable: true,
             gates: Vec::new(),
             remove_calls: 0,
             fail_create: false,
@@ -169,6 +173,27 @@ impl Default for Fake {
     }
 }
 impl EndpointControl for Fake {
+    fn preflight_identity(&mut self) -> Result<(), BackendError> {
+        if self.identity_capable {
+            Ok(())
+        } else {
+            Err(BackendError::Unsupported(
+                "identity capability unavailable".into(),
+            ))
+        }
+    }
+    fn create_identity(
+        &mut self,
+        spec: &ExportSpec,
+        mode: super::super::super::PublicationMode,
+    ) -> Result<Option<EndpointSnapshot>, BackendError> {
+        assert!(
+            self.identity_capable,
+            "missing capability must fail before CREATE dispatch"
+        );
+        self.identity_modes.push(mode);
+        self.create(spec)
+    }
     fn create(&mut self, spec: &ExportSpec) -> Result<Option<EndpointSnapshot>, BackendError> {
         self.creates.push(spec.clone());
         if self.defer_create {
@@ -260,6 +285,138 @@ impl EndpointControl for Fake {
         );
         Ok(self.current)
     }
+}
+
+#[test]
+fn explicit_identity_mode_is_preserved_through_real_lifecycle_dispatch() {
+    use crate::vad::PublicationMode;
+    for mode in [
+        PublicationMode::EstablishNew,
+        PublicationMode::ReopenOrAdopt,
+    ] {
+        let mut lifecycle = Lifecycle::new(Fake {
+            creating: true,
+            ..Fake::default()
+        });
+        lifecycle.create_identity(spec(), mode).unwrap();
+        assert_eq!(lifecycle.control.identity_modes, [mode]);
+        assert_eq!(lifecycle.control.creates, [spec()]);
+        lifecycle.create_identity(spec(), mode).unwrap();
+        assert_eq!(lifecycle.control.identity_modes, [mode]);
+        let other = match mode {
+            PublicationMode::EstablishNew => PublicationMode::ReopenOrAdopt,
+            PublicationMode::ReopenOrAdopt => PublicationMode::EstablishNew,
+        };
+        assert!(lifecycle.create_identity(spec(), other).is_err());
+        assert!(lifecycle.create(spec()).is_err());
+    }
+    let mut legacy = Lifecycle::new(Fake::default());
+    legacy.create(spec()).unwrap();
+    assert!(legacy.control.identity_modes.is_empty());
+    assert!(
+        legacy
+            .create_identity(spec(), PublicationMode::ReopenOrAdopt)
+            .is_err()
+    );
+}
+
+#[test]
+fn identity_preflight_failure_never_strands_unknown_ownership() {
+    use crate::vad::PublicationMode;
+    let mut lifecycle = Lifecycle::new(Fake {
+        identity_capable: false,
+        ..Fake::default()
+    });
+    assert!(
+        lifecycle
+            .create_identity(spec(), PublicationMode::ReopenOrAdopt)
+            .is_err()
+    );
+    assert!(lifecycle.endpoints.is_empty());
+    assert!(lifecycle.control.creates.is_empty());
+    assert!(lifecycle.control.identity_modes.is_empty());
+    lifecycle.create(spec()).unwrap(); // Failure is not uncertain CREATE ownership.
+
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    let mut invalid = spec();
+    invalid.id = VirtualEndpointId::from_bytes([0; 16]);
+    assert!(
+        lifecycle
+            .create_identity(invalid, PublicationMode::EstablishNew)
+            .is_err()
+    );
+    assert!(lifecycle.endpoints.is_empty());
+    assert!(lifecycle.control.identity_modes.is_empty());
+}
+
+#[test]
+fn prepared_establishment_can_transition_to_reopen_for_reconciliation_and_rename() {
+    use crate::vad::PublicationMode;
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    lifecycle
+        .create_identity(spec(), PublicationMode::EstablishNew)
+        .unwrap();
+    lifecycle
+        .create_identity(spec(), PublicationMode::ReopenOrAdopt)
+        .unwrap();
+    assert_eq!(
+        lifecycle.control.identity_modes,
+        [PublicationMode::EstablishNew]
+    );
+    assert_eq!(
+        lifecycle.endpoints[&id()].publication_mode,
+        Some(PublicationMode::ReopenOrAdopt)
+    );
+    assert!(
+        lifecycle
+            .create_identity(spec(), PublicationMode::EstablishNew)
+            .is_err()
+    );
+
+    // The app retires a token only after a prepared Present. A failed or still
+    // Creating resource never authorizes changing an uncertain create decision.
+    for unprepared in [
+        snapshot_native(
+            PdoState::Creating,
+            0,
+            0,
+            false,
+            11,
+            (StreamState::Closed, false, false),
+        ),
+        snapshot_native(
+            PdoState::Present,
+            3,
+            5,
+            false,
+            11,
+            (StreamState::Running, false, false),
+        ),
+    ] {
+        lifecycle.endpoints.get_mut(&id()).unwrap().publication_mode =
+            Some(PublicationMode::EstablishNew);
+        lifecycle.endpoints.get_mut(&id()).unwrap().snapshot = Some(unprepared);
+        assert!(
+            lifecycle
+                .create_identity(spec(), PublicationMode::ReopenOrAdopt)
+                .is_err()
+        );
+    }
+    lifecycle.endpoints.get_mut(&id()).unwrap().snapshot =
+        Some(snapshot(PdoState::Removed, 3, 5, false));
+    let mut renamed = spec();
+    renamed.name = "Renamed with original stable ID".into();
+    lifecycle
+        .create_identity(renamed.clone(), PublicationMode::ReopenOrAdopt)
+        .unwrap();
+    assert_eq!(
+        lifecycle.control.identity_modes,
+        [
+            PublicationMode::EstablishNew,
+            PublicationMode::ReopenOrAdopt
+        ]
+    );
+    assert_eq!(lifecycle.control.creates.last(), Some(&renamed));
 }
 fn prepared(lifecycle: &mut Lifecycle<Fake>, admission: Arc<Admission>) -> Arc<SessionState> {
     let session = Arc::new(SessionState::new(admission));

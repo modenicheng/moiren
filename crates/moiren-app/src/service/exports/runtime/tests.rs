@@ -20,6 +20,7 @@ pub(crate) struct FakeAdapter {
     pub hold_open: AtomicBool,
     pub open_entered: AtomicBool,
     pub calls: Mutex<Vec<(String, Option<u64>, String)>>,
+    pub creations: Mutex<Vec<(VirtualEndpointId, Option<Arc<FreshExportIdentity>>)>>,
     records: Mutex<BTreeMap<VirtualEndpointId, Record>>,
 }
 struct Record {
@@ -41,6 +42,7 @@ impl Default for FakeAdapter {
             hold_open: AtomicBool::new(false),
             open_entered: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
+            creations: Mutex::new(Vec::new()),
             records: Mutex::new(BTreeMap::new()),
         }
     }
@@ -92,6 +94,18 @@ impl Adapter for FakeAdapter {
                     mut intent,
                     allow_default,
                 } => {
+                    if dispatch
+                        .new_identity
+                        .as_ref()
+                        .is_some_and(|identity| !identity.valid_for(intent.endpoint_id))
+                    {
+                        errors.push("fresh allocation revoked".into());
+                        continue;
+                    }
+                    self.creations
+                        .lock()
+                        .unwrap()
+                        .push((intent.endpoint_id, dispatch.new_identity));
                     let old = records.get(&intent.endpoint_id);
                     assert!(old.is_none_or(|r| r.resource == ExportResourceState::Absent));
                     let generation = old.map_or(1, |r| r.stamp[2] + 1);
@@ -165,6 +179,7 @@ impl Adapter for FakeAdapter {
         let observations = records
             .values()
             .map(|record| NativeObservation {
+                publication_prepared: true,
                 intent: record.intent.clone(),
                 snapshot: (!self.uncertain_create.load(Ordering::Acquire)).then_some(record.stamp),
                 #[cfg(feature = "vad-integration-probe")]
@@ -458,6 +473,7 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                 &mut service,
                 Ok(Batch {
                     observations: vec![NativeObservation {
+                        publication_prepared: true,
                         intent: intent.clone(),
                         snapshot: Some([1, 7, 1, 0, 5]),
                         #[cfg(feature = "vad-integration-probe")]
@@ -522,6 +538,7 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
         &mut service,
         Ok(Batch {
             observations: vec![NativeObservation {
+                publication_prepared: true,
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
                 #[cfg(feature = "vad-integration-probe")]
@@ -576,6 +593,7 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
         &mut service,
         Ok(Batch {
             observations: vec![NativeObservation {
+                publication_prepared: true,
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
                 #[cfg(feature = "vad-integration-probe")]
@@ -627,6 +645,7 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
             &mut service,
             Ok(Batch {
                 observations: vec![NativeObservation {
+                    publication_prepared: true,
                     intent: intent.clone(),
                     snapshot: Some([value as u64, 7, value as u64, 3, 5]),
                     #[cfg(feature = "vad-integration-probe")]
@@ -669,6 +688,7 @@ fn windows_identity_projection_requires_current_healthy_native_identity() {
     ] {
         let batch = Batch {
             observations: vec![NativeObservation {
+                publication_prepared: true,
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 0, 5]),
                 windows_name: Some(WindowsEndpointNameObservation {
@@ -758,6 +778,7 @@ fn windows_identity_projection_requires_current_healthy_native_identity() {
 #[cfg(windows)]
 fn adapter_for_name_test(intent: &ExportIntent) -> NativeObservation {
     NativeObservation {
+        publication_prepared: true,
         intent: intent.clone(),
         snapshot: Some([1, 7, 1, 0, 5]),
         windows_name: Some(WindowsEndpointNameObservation {
@@ -788,6 +809,7 @@ mod native_stamp {
     fn observed(intent: &ExportIntent, snapshot: Option<DriverStamp>) -> Batch {
         Batch {
             observations: vec![NativeObservation {
+                publication_prepared: true,
                 intent: intent.clone(),
                 snapshot,
                 #[cfg(feature = "vad-integration-probe")]

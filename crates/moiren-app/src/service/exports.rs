@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 mod diagnostics;
 #[cfg(windows)]
 pub use diagnostics::ExportDiagnostics;
+mod identity;
 mod reconcile;
+pub(crate) use identity::FreshExportIdentity;
 pub(crate) mod runtime;
 pub use reconcile::*;
 #[cfg(test)]
@@ -76,6 +78,26 @@ pub(crate) fn validate_export_name_channels(name: &str, channels: usize) -> Resu
     Ok(())
 }
 
+pub(crate) fn append_export(
+    graph: &crate::service::GraphSnapshot,
+    endpoint_id: VirtualEndpointId,
+    direction: ExportDirection,
+    name: &str,
+    channels: usize,
+) -> Result<Vec<ExportIntent>, String> {
+    let mut exports = graph.exports.clone();
+    exports.push(ExportIntent {
+        endpoint_id,
+        direction,
+        name: name.into(),
+        channels,
+        enabled: true,
+        binding: None,
+    });
+    validate_exports(&exports, &graph.graph)?;
+    Ok(exports)
+}
+
 pub fn validate_exports(exports: &[ExportIntent], graph: &LogicalGraph) -> Result<(), String> {
     if exports.len() > MAX_EXPORTS {
         return Err("at most 64 virtual exports are supported".into());
@@ -118,6 +140,7 @@ pub fn validate_export_authorizations(values: &[ExportAuthorization]) -> Result<
 
 #[derive(Default)]
 pub struct ExportService {
+    pub(super) new_identities: BTreeMap<VirtualEndpointId, std::sync::Arc<FreshExportIdentity>>,
     pub(super) available: bool,
     pub(super) authorizations: BTreeMap<VirtualEndpointId, bool>,
     pub(super) observations: BTreeMap<VirtualEndpointId, ExportObservation>,

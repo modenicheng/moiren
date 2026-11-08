@@ -12,6 +12,22 @@ impl ServiceDriver for ManagedDriver {
         #[cfg(not(windows))]
         let _ = &pool;
         match request {
+            AppRequest::CreateExport {
+                direction,
+                name,
+                channels,
+            } => {
+                match c
+                    .exports
+                    .allocate_export(&mut c.graph, direction, name, channels)
+                {
+                    Ok(()) if self.owner.is_some() => {
+                        self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
+                    }
+                    Ok(()) => {}
+                    Err(error) => c.graph.record_error(error),
+                }
+            }
             AppRequest::ApplyWindowedProcessBridge { request, policy } => {
                 #[cfg(windows)]
                 if let Err(error) = self.begin_windowed_process(c, pool, request, policy) {
@@ -133,6 +149,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
+                    c.exports.clear_new_identities();
                     c.measured_process = None;
                     self.exports_runtime.revoke();
                     self.document = self

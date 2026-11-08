@@ -82,6 +82,12 @@ pub enum DispatchError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
     LoadProject(crate::project::ProjectDocument),
+    /// Allocate in the service; project IDs and edits never grant fresh authority.
+    CreateExport {
+        direction: super::ExportDirection,
+        name: String,
+        channels: usize,
+    },
     SetExportAuthorizations(Vec<super::ExportAuthorization>),
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),

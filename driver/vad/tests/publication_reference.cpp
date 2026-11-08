@@ -87,6 +87,8 @@ static void Reset(Child& child)
     Audio.Intent = child.Shared.Slots[0].Intent;
 }
 
+#include "identity_control.inc"
+
 static void PolicyReferenceSurvivesNameChangeBeforeCircuit()
 {
     for (auto intent : {MOIREN_VAD_INTENT_PLAYBACK, MOIREN_VAD_INTENT_MICROPHONE}) {
@@ -117,6 +119,41 @@ static void PolicyReferenceSurvivesNameChangeBeforeCircuit()
     }
 }
 
+static void RecreatedChildUsesAdoptedReferenceInAcx()
+{
+    for (auto intent : {MOIREN_VAD_INTENT_PLAYBACK, MOIREN_VAD_INTENT_MICROPHONE}) {
+        IdentityStorage devnode;
+        const WCHAR legacy[vad::EndpointReferenceUnits] = L"MoirenEndpoint";
+        for (auto& category : devnode.References) {
+            std::memcpy(category[0], legacy, sizeof(legacy));
+        }
+        Child original;
+        original.Store = &devnode;
+        original.Shared.Slots[0].Intent = intent;
+        Reset(original);
+        Check(Prepare(&original, nullptr, nullptr) == STATUS_SUCCESS &&
+            std::wcscmp(C.Reference, legacy) == 0 && F.IdentityWrites == 1,
+            "actual Prepare adopts, persists and publishes the original short reference into ACX");
+        Release(original);
+        Child renamed;
+        renamed.Store = &devnode;
+        renamed.Shared.Slots[0].Intent = intent;
+        const WCHAR changed[MOIREN_VAD_MAX_NAME_UNITS] = L"Renamed after runtime destruction";
+        std::memcpy(renamed.Shared.Slots[0].Name, changed, sizeof(changed));
+        Reset(renamed);
+        Check(Prepare(&renamed, nullptr, nullptr) == STATUS_SUCCESS && F.IdentityWrites == 0 &&
+            F.Enumerated == 0 && C.Reference == renamed.Context.PolicyReference &&
+            std::wcscmp(C.Reference, legacy) == 0 && F.IdentityDurable && C.Added == 1,
+            "new runtime and new name keep the exact persisted interface/ACX identity");
+        for (unsigned category = 0; category < 3; ++category) {
+            Check(F.References[category] == C.Reference &&
+                std::wcscmp(F.Names[category], changed) == 0,
+                "all three categories publish mutable names using the retained exact ACX reference");
+        }
+        Release(renamed);
+    }
+}
+
 static void PolicyFailureNeverBuildsOrAddsCircuit()
 {
     for (unsigned category = 1; category <= 3; ++category) {
@@ -144,6 +181,19 @@ static void PolicyFailureNeverBuildsOrAddsCircuit()
 
 int main()
 {
+    FreshReservationRetryKeepsExactReference();
+    LegacyRecreationCannotRotateCommittedIdentity();
+    ActualControlNegotiatesAndSelectsPublicationMode();
+    ActualControlRejectsMalformedIdentityBeforeStorageOrChild();
+    ExplicitFreshNeverReplacesInstalledIdentityOrMasksDiscoveryFailure();
+    RootTokenIsDurableAndNeverRotatesOnRetry();
+    LegacyCreateDoesNotRequireIdentityProvisioning();
+    ExplicitFreshAuthorityCreatesAndRetainsNewIdentity();
+    AdoptedReferencePersistsAcrossRuntimeRename();
+    AdoptionFailuresNeverPublishOrLeak();
+    MissingAndAmbiguousHistoryCannotMintIdentity();
+    PersistedRecordValidatesOwnershipAndSchema();
+    FlushFailureRetryAndStageFailureRetainIdentity();
     TerminalPolicyMatchesVirtualFunctionAndDefaultPreference();
     EndpointReferenceDerivation();
     SuccessfulTypedPublication();
@@ -155,5 +205,6 @@ int main()
     DisabledTraceDoesNotChoosePolicyOutcome();
     PolicyReferenceSurvivesNameChangeBeforeCircuit();
     PolicyFailureNeverBuildsOrAddsCircuit();
+    RecreatedChildUsesAdoptedReferenceInAcx();
     std::puts("PASS: composed production Policy/Prepare/BuildCircuit reference authority and fail-closed gate");
 }

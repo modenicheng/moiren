@@ -25,6 +25,10 @@ mod discovery;
 mod pcm;
 #[cfg(windows)]
 mod provider;
+#[cfg(windows)]
+mod publication_identity;
+#[cfg(windows)]
+pub use publication_identity::NewEndpointIdentity;
 
 #[cfg(windows)]
 pub use client::{ClientError, ControlClient};
@@ -63,6 +67,11 @@ pub use protocol::{
     MAX_STREAMS_PER_PIN, PCM_HEADER_SIZE, PcmPacketStamp, PcmShape, PdoState, ProtocolError,
     REQUEST_SLOTS, RuntimePdoToken, SAMPLE_RATE, SNAPSHOT_SIZE, SampleFormat, StableEndpointId,
     StreamState, capabilities_request, create_request, endpoint_request, gate_request,
+};
+pub use protocol::{
+    CAP_PUBLICATION_IDENTITY, CREATE_IDENTITY_SIZE, IDENTITY_CAPABILITIES_SIZE, IDENTITY_VERSION,
+    IOCTL_CREATE_IDENTITY, IOCTL_IDENTITY_CAPABILITIES, IdentityCapabilities, PublicationMode,
+    create_identity_request, identity_capabilities_request,
 };
 
 #[cfg(test)]

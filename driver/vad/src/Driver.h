@@ -71,10 +71,14 @@ struct VAD_CHILD {
     UNICODE_STRING PolicyInterfaces[3];
     ULONG PolicyInterfaceCount;
     // Child-owned runtime publication reference, not durable adoption state.
-    // Only the passive policy worker derives it from its locked slot snapshot;
-    // all staged categories and ACX consume this same storage. PnP serialization
+    // Negotiated identity requests resolve/adopt and persist independently of
+    // display text; v2 CREATE retains its historical locked-name derivation.
+    // All staged categories and ACX consume this same storage. PnP serialization
     // and the worker flush order publication before circuit construction.
     WCHAR PolicyReference[vad::EndpointReferenceUnits];
+    // Immutable pre-enumeration request values, not borrowed root ownership.
+    uint32_t PublicationMode; // Zero is legacy v2 compatibility, never fresh.
+    MOIREN_VAD_ENDPOINT_ID InstallationId;
 };
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VAD_CHILD, VadChild)
 
@@ -97,7 +101,8 @@ void VadSharedRelease(VAD_SHARED* shared);
 // Caller holds Admin, never Shared->Lock, across PnP/registry DDIs.
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS VadCreateChild(WDFDEVICE root, const MOIREN_VAD_CREATE_REQUEST& request,
-    MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot);
+    MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot, uint32_t publicationMode = 0,
+    const MOIREN_VAD_ENDPOINT_ID* installation = nullptr);
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS VadRemoveChild(WDFDEVICE root, uint64_t id,
     MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot);

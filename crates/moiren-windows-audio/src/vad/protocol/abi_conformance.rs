@@ -66,6 +66,19 @@ fn scalar_constants_match_header() {
     let header = defines();
     let cases = [
         ("MOIREN_VAD_ABI_VERSION", ABI_VERSION as u64),
+        ("MOIREN_VAD_IDENTITY_VERSION", IDENTITY_VERSION as u64),
+        (
+            "MOIREN_VAD_IDENTITY_ESTABLISH_NEW",
+            PublicationMode::EstablishNew as u64,
+        ),
+        (
+            "MOIREN_VAD_IDENTITY_REOPEN_OR_ADOPT",
+            PublicationMode::ReopenOrAdopt as u64,
+        ),
+        (
+            "MOIREN_VAD_CAP_PUBLICATION_IDENTITY",
+            CAP_PUBLICATION_IDENTITY as u64,
+        ),
         ("MOIREN_VAD_MAX_ENDPOINTS", MAX_ENDPOINTS as u64),
         ("MOIREN_VAD_MAX_STREAMS_PER_PIN", MAX_STREAMS_PER_PIN as u64),
         ("MOIREN_VAD_SAMPLE_RATE", SAMPLE_RATE as u64),
@@ -105,6 +118,11 @@ fn ioctl_codes_match_header() {
     let cases = [
         ("IOCTL_MOIREN_VAD_CAPABILITIES", IOCTL_CAPABILITIES),
         ("IOCTL_MOIREN_VAD_CREATE", IOCTL_CREATE),
+        ("IOCTL_MOIREN_VAD_CREATE_IDENTITY", IOCTL_CREATE_IDENTITY),
+        (
+            "IOCTL_MOIREN_VAD_IDENTITY_CAPABILITIES",
+            IOCTL_IDENTITY_CAPABILITIES,
+        ),
         ("IOCTL_MOIREN_VAD_QUERY", IOCTL_QUERY),
         ("IOCTL_MOIREN_VAD_REMOVE", IOCTL_REMOVE),
         ("IOCTL_MOIREN_VAD_SET_GATE", IOCTL_SET_GATE),
@@ -127,6 +145,11 @@ fn wire_struct_sizes_match_header() {
         ("MOIREN_VAD_CAPABILITIES", CAPABILITIES_SIZE),
         ("MOIREN_VAD_ENDPOINT_SNAPSHOT", SNAPSHOT_SIZE),
         ("MOIREN_VAD_CREATE_REQUEST", CREATE_SIZE),
+        ("MOIREN_VAD_CREATE_IDENTITY_REQUEST", CREATE_IDENTITY_SIZE),
+        (
+            "MOIREN_VAD_IDENTITY_CAPABILITIES",
+            IDENTITY_CAPABILITIES_SIZE,
+        ),
         ("MOIREN_VAD_ENDPOINT_REQUEST", ENDPOINT_REQUEST_SIZE),
         ("MOIREN_VAD_GATE_REQUEST", GATE_REQUEST_SIZE),
         ("MOIREN_VAD_PCM_HEADER", PCM_HEADER_SIZE),

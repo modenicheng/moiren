@@ -36,3 +36,10 @@ for relative, functions in (
         r"\s*\([^;{}]*\)\s*\{") for name in functions)
     parts.append(module.extract(source.read_text(encoding="utf-8"), source.as_posix(), patterns))
 (output / "publication-reference-production.inc").write_text("\n".join(parts), encoding="utf-8")
+
+source = root / "src/Control.cpp"
+patterns = (("Dispatch", r"static\s+NTSTATUS\s+Dispatch\s*\([^;{}]*\)\s*\{"),)
+(output / "identity-control-production.inc").write_text(
+    module.extract(source.read_text(encoding="utf-8"), source.as_posix(), patterns),
+    encoding="utf-8",
+)

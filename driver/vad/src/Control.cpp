@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "Driver.h"
+#include "RootPublicationIdentity.h"
 #include "Control.tmh"
 
 VAD_PAGE static EVT_WDF_WORKITEM ControlWork;
@@ -542,7 +543,9 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
     size_t expected;
     switch (code) {
     case IOCTL_MOIREN_VAD_CAPABILITIES: expected = sizeof(MOIREN_VAD_HEADER); break;
+    case IOCTL_MOIREN_VAD_IDENTITY_CAPABILITIES: expected = sizeof(MOIREN_VAD_HEADER); break;
     case IOCTL_MOIREN_VAD_CREATE: expected = sizeof(MOIREN_VAD_CREATE_REQUEST); break;
+    case IOCTL_MOIREN_VAD_CREATE_IDENTITY: expected = sizeof(MOIREN_VAD_CREATE_IDENTITY_REQUEST); break;
     case IOCTL_MOIREN_VAD_QUERY:
     case IOCTL_MOIREN_VAD_REMOVE: expected = sizeof(MOIREN_VAD_ENDPOINT_REQUEST); break;
     case IOCTL_MOIREN_VAD_SET_GATE: expected = sizeof(MOIREN_VAD_GATE_REQUEST); break;
@@ -558,19 +561,33 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
     union {
         MOIREN_VAD_HEADER Header;
         MOIREN_VAD_CREATE_REQUEST Create;
+        MOIREN_VAD_CREATE_IDENTITY_REQUEST Identity;
         MOIREN_VAD_ENDPOINT_REQUEST Endpoint;
         MOIREN_VAD_GATE_REQUEST Gate;
     } local = {};
     RtlCopyMemory(&local, input, expected);
-    if (local.Header.Size != expected || local.Header.Version != MOIREN_VAD_ABI_VERSION) {
+    const auto version = (code == IOCTL_MOIREN_VAD_CREATE_IDENTITY ||
+        code == IOCTL_MOIREN_VAD_IDENTITY_CAPABILITIES) ?
+        MOIREN_VAD_IDENTITY_VERSION : MOIREN_VAD_ABI_VERSION;
+    if (local.Header.Size != expected || local.Header.Version != version) {
         return STATUS_REVISION_MISMATCH;
     }
     void* output = nullptr;
     const auto outputSize = code == IOCTL_MOIREN_VAD_CAPABILITIES ?
-        sizeof(MOIREN_VAD_CAPABILITIES) : sizeof(MOIREN_VAD_ENDPOINT_SNAPSHOT);
+        sizeof(MOIREN_VAD_CAPABILITIES) :
+        (code == IOCTL_MOIREN_VAD_IDENTITY_CAPABILITIES ?
+            sizeof(MOIREN_VAD_IDENTITY_CAPABILITIES) : sizeof(MOIREN_VAD_ENDPOINT_SNAPSHOT));
     status = WdfRequestRetrieveOutputBuffer(request, outputSize, &output, nullptr);
     if (!NT_SUCCESS(status)) { return status; }
     auto shared = root->Shared;
+    if (code == IOCTL_MOIREN_VAD_IDENTITY_CAPABILITIES) {
+        const MOIREN_VAD_IDENTITY_CAPABILITIES capabilities = {
+            sizeof(MOIREN_VAD_IDENTITY_CAPABILITIES), MOIREN_VAD_IDENTITY_VERSION,
+            MOIREN_VAD_CAP_PUBLICATION_IDENTITY, 0};
+        RtlCopyMemory(output, &capabilities, sizeof(capabilities));
+        *information = sizeof(capabilities);
+        return STATUS_SUCCESS;
+    }
     if (code == IOCTL_MOIREN_VAD_CAPABILITIES) {
         const MOIREN_VAD_CAPABILITIES capabilities = {
             sizeof(MOIREN_VAD_CAPABILITIES), MOIREN_VAD_ABI_VERSION,
@@ -586,7 +603,7 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
         return STATUS_SUCCESS;
     }
     MOIREN_VAD_ENDPOINT_SNAPSHOT snapshot = {};
-    if (code == IOCTL_MOIREN_VAD_CREATE) {
+    if (code == IOCTL_MOIREN_VAD_CREATE || code == IOCTL_MOIREN_VAD_CREATE_IDENTITY) {
         const auto& create = local.Create;
         bool terminated = false;
         for (const auto unit : create.Name) {
@@ -598,7 +615,26 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
             create.Name[0] == 0 || !terminated) {
             return STATUS_INVALID_PARAMETER;
         }
-        status = VadCreateChild(device, create, &snapshot);
+        uint32_t mode = 0;
+        MOIREN_VAD_ENDPOINT_ID installation = {};
+        if (code == IOCTL_MOIREN_VAD_CREATE_IDENTITY) {
+            mode = local.Identity.Mode;
+            if ((mode != MOIREN_VAD_IDENTITY_ESTABLISH_NEW &&
+                mode != MOIREN_VAD_IDENTITY_REOPEN_OR_ADOPT) ||
+                local.Identity.Reserved1 != 0 ||
+                (create.StableId.High == 0 && create.StableId.Low == 0)) {
+                return STATUS_INVALID_PARAMETER;
+            }
+            status = vad::ResolveRootPublicationIdentity(device, installation);
+            if (!NT_SUCCESS(status)) { return status; }
+        }
+        // Internal normalized request uses the unchanged v2 fields; the mode
+        // and root token travel separately, never through Reserved or text.
+        auto normalized = create;
+        normalized.Size = sizeof(normalized);
+        normalized.Version = MOIREN_VAD_ABI_VERSION;
+        status = VadCreateChild(device, normalized, &snapshot, mode,
+            mode == 0 ? nullptr : &installation);
     } else {
         if (local.Endpoint.SessionEpoch != root->Session ||
             local.Endpoint.EndpointId == 0 ||
