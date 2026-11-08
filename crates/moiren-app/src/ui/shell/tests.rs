@@ -57,8 +57,8 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
         weak.update(cx, |shell, _| {
             shell.presentation.page = pages::Page::Mixer;
             shell.camera.pan_x = 84.0;
-            shell.sidebar_open = true;
-            shell.inspector_open = true;
+            shell.chrome.sidebar_open = true;
+            shell.chrome.inspector_open = true;
             shell.devices.device_tab = super::devices::DeviceTab::Inputs;
             shell.devices.selected_device = Some("selected-input".into());
             shell.node_positions.insert(test_node, (12.0, 34.0));
@@ -98,7 +98,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
                 assert_eq!(shell.node_positions.get(&test_node), Some(&(12.0, 34.0)));
                 assert_eq!(shell.project_io.name, "Keep candidate");
                 assert!(
-                    shell.sidebar_open && shell.inspector_open,
+                    shell.chrome.sidebar_open && shell.chrome.inspector_open,
                     "reopen must preserve manually opened compact drawers"
                 );
                 assert!(matches!(
@@ -325,7 +325,7 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
         );
         let wire = &world.wires[0];
         point(
-            px(if shell.sidebar_open {
+            px(if shell.chrome.sidebar_open {
                 theme::LIBRARY_WIDTH
             } else {
                 crate::ui::theme::LIBRARY_RAIL_WIDTH
@@ -343,8 +343,8 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
         assert!(window.find("disconnect-route").visible());
     });
     view.update(cx, |shell, cx| {
-        assert!(shell.selected_route.is_some());
-        assert!(shell.selected_node.is_none());
+        assert!(shell.selection.route.is_some());
+        assert!(shell.selection.node.is_none());
         assert_eq!(
             shell.state.read(cx).snapshot.graph.graph.edges().len(),
             3,
@@ -392,7 +392,7 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
         shell.camera.pan_y = 87.;
         shell.camera.zoom = 0.89;
         shell.camera.adjusted = true;
-        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[1].id());
+        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[1].id());
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -424,7 +424,7 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
                 "Tab remains inside the page"
             );
             assert_eq!(shell.state.read(cx).snapshot.graph.graph.nodes().len(), 4);
-            assert!(shell.selected_node.is_some());
+            assert!(shell.selection.node.is_some());
             assert_eq!(
                 (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
                 (123., 87., 0.89)
@@ -548,7 +548,7 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
     });
     cx.run_until_parked();
     view.update(cx, |shell, _| {
-        assert_eq!(shell.density, super::Density::Compact);
+        assert_eq!(shell.chrome.density, super::Density::Compact);
         assert!(!shell.settings.editor.global.dirty());
         assert!(shell.settings.editor.global.error.is_none());
     });
@@ -1117,7 +1117,7 @@ fn ctrl_z_in_a_mixer_send_editor_leaves_the_graph_journal_alone(cx: &mut gpui_ki
     });
     view.update(cx, |shell, cx| {
         shell.presentation.page = pages::Page::Mixer;
-        shell.inspector_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -1180,8 +1180,8 @@ fn graph_inspector_value_editor_keeps_focus_across_root_renders(cx: &mut gpui_ki
     });
     view.update(cx, |shell, cx| {
         shell.presentation.page = pages::Page::Graph;
-        shell.inspector_open = true;
-        shell.selected_node = Some(gain);
+        shell.chrome.inspector_open = true;
+        shell.selection.node = Some(gain);
         cx.notify();
     });
     settle_panels(cx);
@@ -1265,8 +1265,8 @@ fn ctrl_z_in_an_inspector_value_editor_leaves_the_graph_journal_alone(
     });
     view.update(cx, |shell, cx| {
         shell.presentation.page = pages::Page::Graph;
-        shell.inspector_open = true;
-        shell.selected_node = Some(gain);
+        shell.chrome.inspector_open = true;
+        shell.selection.node = Some(gain);
         cx.notify();
     });
     settle_panels(cx);
@@ -1337,8 +1337,8 @@ fn inspector_panel_rebuilds_when_a_nested_editor_moves(cx: &mut gpui_kit::TestAp
     });
     view.update(cx, |shell, cx| {
         shell.presentation.page = pages::Page::Graph;
-        shell.inspector_open = true;
-        shell.selected_node = Some(gain);
+        shell.chrome.inspector_open = true;
+        shell.selection.node = Some(gain);
         cx.notify();
     });
     settle_panels(cx);
@@ -1408,8 +1408,8 @@ fn inspector_hot_layer_paints_the_registered_meter_tracks(cx: &mut gpui_kit::Tes
     });
     view.update(cx, |shell, cx| {
         shell.presentation.page = pages::Page::Graph;
-        shell.inspector_open = true;
-        shell.selected_node = Some(gain);
+        shell.chrome.inspector_open = true;
+        shell.selection.node = Some(gain);
         cx.notify();
     });
     settle_panels(cx);
@@ -1511,7 +1511,7 @@ fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::
         window.render_frame(cx);
         // Nothing is selected: the graph inspector shows its empty state.
         view.update(cx, |shell, _| {
-            assert!(shell.selected_node.is_none() && shell.selected_route.is_none());
+            assert!(shell.selection.node.is_none() && shell.selection.route.is_none());
         });
         assert!(window.find("inspector-empty").visible());
         // The placeholder illustration rides in a soft tile above the label.
@@ -1719,6 +1719,7 @@ fn statusbar_summarizes_unlocated_errors_and_opens_the_fault_popover(
     });
     assert!(
         view.read_with(cx, |shell, _| shell
+            .chrome
             .fault_popover
             .is_some_and(|popover| popover.node.is_none())),
         "the summary click opens the graph-wide fault popover"

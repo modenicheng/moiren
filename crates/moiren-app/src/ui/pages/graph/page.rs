@@ -51,15 +51,15 @@ impl ControlsKey {
             positions: shell.node_positions.clone(),
             camera: shell.camera,
             canvas: shell.canvas_size,
-            selected_nodes: shell.selected_nodes.iter().copied().collect(),
-            selected_route: shell.selected_route,
+            selected_nodes: shell.selection.nodes.iter().copied().collect(),
+            selected_route: shell.selection.route,
             connection: shell
                 .graph_gestures
                 .connection_drag
                 .map(|drag| (drag.port, drag.cursor, drag.detached)),
             hand_tool: shell.graph_gestures.hand_tool,
-            sidebar_open: shell.sidebar_open,
-            compact: shell.compact,
+            sidebar_open: shell.chrome.sidebar_open,
+            compact: shell.chrome.compact,
             preferences: shell.preferences.values.clone(),
         }
     }

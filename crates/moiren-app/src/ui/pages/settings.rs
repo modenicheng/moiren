@@ -63,7 +63,7 @@ impl CachedPanel for SettingsPanel {
             section: settings.section,
             global: settings.global.clone(),
             meters: shell.preferences.values.meters,
-            density: shell.density,
+            density: shell.chrome.density,
             restore_last_project: shell.preferences.values.restore_last_project,
             pending_request: state.pending_request,
             project_message: shell.project_io.message.clone(),
@@ -141,7 +141,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .icon(icon)
                         .full_width()
                         .justify_start()
-                        .density(shell.density)
+                        .density(shell.chrome.density)
                         .variant(if selected {
                             ButtonVariant::Secondary
                         } else {
@@ -524,7 +524,7 @@ fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     pref_choices(
                         shell,
                         "density",
-                        shell.density,
+                        shell.chrome.density,
                         [
                             (Density::Comfortable, t!("Comfortable").into()),
                             (Density::Compact, t!("Compact").into()),

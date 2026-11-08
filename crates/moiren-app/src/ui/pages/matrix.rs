@@ -42,7 +42,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .iter()
         .flat_map(|n| n.inputs().iter().enumerate().map(move |(i, p)| (n, i, p)))
         .collect();
-    let row_height = if shell.density == Density::Compact {
+    let row_height = if shell.chrome.density == Density::Compact {
         36.
     } else {
         48.
@@ -125,7 +125,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             let edge = route_index
                 .get(&(src, dst))
                 .and_then(|index| graph.edges().get(*index));
-            let selected = shell.selected_route == Some((src, dst));
+            let selected = shell.selection.route == Some((src, dst));
             let forbidden = source.id() == destination.id();
             let value = edge
                 .map(|e| {
@@ -170,7 +170,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .child(value)
                     .on_click(move |_, _, cx| {
                         this.update(cx, |s, cx| {
-                            s.selected_route = Some((src, dst));
+                            s.selection.route = Some((src, dst));
                             // Single click selects the cell; a double click
                             // also opens the inspector.
                             if s.element_double_clicked(StudioShell::element_key(
@@ -300,7 +300,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     let snapshot = &state.snapshot.graph;
     let mut view =
         panel("matrix-inspector", &shell.inspector.scroll).child(heading(t!("Connection")));
-    if let Some((source, destination)) = shell.selected_route {
+    if let Some((source, destination)) = shell.selection.route {
         if let Some((src, dst, channels)) = find_nodes(snapshot, source, destination) {
             view = view
                 .child(detail(&t!("From"), src))
@@ -398,7 +398,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 view.child(button("show-in-graph", t!("Show in Graph")).on_click(
                     move |_, _, cx| {
                         this.update(cx, |s, cx| {
-                            s.selected_node = None;
+                            s.selection.node = None;
                             s.set_page(Page::Graph, cx);
                             s.open_inspector();
                         })

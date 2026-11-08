@@ -187,7 +187,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         cx.background_executor().timer(Duration::from_millis(200)).await;
                         shell.update(cx, |shell, cx| {
                             shell.set_page(Page::Mixer, cx);
-                            shell.inspector_open = false;
+                            shell.chrome.inspector_open = false;
                             cx.notify();
                         });
                         // Exclude resize and inspector spring settling from steady-state
@@ -244,7 +244,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .await;
                     for page in [Page::Graph, Page::Mixer, Page::Matrix, Page::Devices] {
                         shell.update(cx, |s, cx| {
-                            s.density = if name == "compact" {
+                            s.chrome.density = if name == "compact" {
                                 Density::Compact
                             } else {
                                 Density::Comfortable
@@ -318,8 +318,8 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
-                    shell.sidebar_open = false;
-                    shell.inspector_open = false;
+                    shell.chrome.sidebar_open = false;
+                    shell.chrome.inspector_open = false;
                     let order = shell
                         .state
                         .read(cx)
@@ -491,8 +491,8 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell.update(cx, |shell, cx| {
                         shell.set_page(page, cx);
                         shell.camera = Camera::default();
-                        shell.sidebar_open = page == Page::Graph;
-                        shell.inspector_open = true;
+                        shell.chrome.sidebar_open = page == Page::Graph;
+                        shell.chrome.inspector_open = true;
                         let gain = shell
                             .state
                             .read(cx)
@@ -503,12 +503,12 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             .iter()
                             .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
                             .map(|node| node.id());
-                        shell.selected_node = gain;
-                        shell.selected_route = None;
+                        shell.selection.node = gain;
+                        shell.selection.route = None;
                         if name == "connection-inspector" {
-                            shell.selected_node = None;
+                            shell.selection.node = None;
                             let state = shell.state.read(cx);
-                            shell.selected_route = state.snapshot.graph.graph.edges().first()
+                            shell.selection.route = state.snapshot.graph.graph.edges().first()
                                 .map(|edge| (edge.src_port(), edge.dst_port()));
                         }
                         cx.notify();
@@ -532,9 +532,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 shell.update(cx, |shell, cx| {
                     shell.state.update(cx, |state, _| state.poll());
                     shell.set_page(Page::Graph, cx);
-                    shell.inspector_open = true;
-                    shell.sidebar_open = true;
-                    shell.selected_node = shell
+                    shell.chrome.inspector_open = true;
+                    shell.chrome.sidebar_open = true;
+                    shell.selection.node = shell
                         .state
                         .read(cx)
                         .snapshot
@@ -544,7 +544,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .iter()
                         .find(|node| node.kind() == moiren_core::graph::NodeKind::Compressor)
                         .map(|node| node.id());
-                    if let Some(key) = shell.selected_node {
+                    if let Some(key) = shell.selection.node {
                         shell.node_positions.insert(key, (480., 370.));
                     }
                     shell.camera = Camera::default();
@@ -586,10 +586,10 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
-                    shell.sidebar_open = false;
-                    shell.inspector_open = false;
-                    shell.selected_route = None;
-                    shell.selected_node = None;
+                    shell.chrome.sidebar_open = false;
+                    shell.chrome.inspector_open = false;
+                    shell.selection.route = None;
+                    shell.selection.node = None;
                     shell.camera = Camera {
                         pan_x: 24.,
                         pan_y: 64.,

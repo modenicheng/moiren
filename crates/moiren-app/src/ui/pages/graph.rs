@@ -46,6 +46,16 @@ pub(crate) struct GraphInteractionState {
     pub(crate) hand_tool: bool,
 }
 
+/// The workspace selection (design 20 §4): the multi-selection set, its
+/// primary (last-clicked) member that drives the inspector, and the route
+/// pick the matrix/inspectors target.
+#[derive(Default)]
+pub(crate) struct Selection {
+    pub(crate) node: Option<moiren_core::graph::NodeId>,
+    pub(crate) nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    pub(crate) route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
+}
+
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 
@@ -125,20 +135,21 @@ impl StudioShell {
         } else {
             drag.hits.clone()
         };
-        if self.selected_nodes == selection {
+        if self.selection.nodes == selection {
             return false;
         }
-        self.selected_nodes = selection;
-        if self.selected_nodes.len() == 1 {
-            self.selected_node = self.selected_nodes.iter().next().copied();
+        self.selection.nodes = selection;
+        if self.selection.nodes.len() == 1 {
+            self.selection.node = self.selection.nodes.iter().next().copied();
         } else if self
-            .selected_node
-            .is_none_or(|id| !self.selected_nodes.contains(&id))
+            .selection
+            .node
+            .is_none_or(|id| !self.selection.nodes.contains(&id))
         {
-            self.selected_node = None;
+            self.selection.node = None;
         }
-        if !self.selected_nodes.is_empty() {
-            self.selected_route = None;
+        if !self.selection.nodes.is_empty() {
+            self.selection.route = None;
         }
         true
     }
@@ -188,7 +199,7 @@ impl StudioShell {
         let dismissed = self.binding_menu.take().is_some()
             | std::mem::take(&mut self.context_menu).is_some()
             | std::mem::take(&mut self.graph_gestures.right_press).is_some()
-            | std::mem::take(&mut self.project_menu);
+            | std::mem::take(&mut self.chrome.project_menu);
         if cancelled {
             self.sync_drag_demand();
         }
@@ -198,9 +209,9 @@ impl StudioShell {
     }
 
     pub(crate) fn clear_canvas_selection(&mut self) {
-        self.selected_nodes.clear();
-        self.selected_node = None;
-        self.selected_route = None;
+        self.selection.nodes.clear();
+        self.selection.node = None;
+        self.selection.route = None;
     }
 
     /// The "arrange" action: re-lays the whole graph into DAG layers, writes
@@ -240,10 +251,10 @@ impl StudioShell {
     /// Single selection over a node, clearing routes and the rest of the
     /// band — the context menu's identity actions act on this node alone.
     pub(crate) fn select_single_node(&mut self, node: moiren_core::graph::NodeId) {
-        self.selected_nodes.clear();
-        self.selected_nodes.insert(node);
-        self.selected_node = Some(node);
-        self.selected_route = None;
+        self.selection.nodes.clear();
+        self.selection.nodes.insert(node);
+        self.selection.node = Some(node);
+        self.selection.route = None;
     }
 
     /// Enters the inspector's inline rename for `node`, seeded with the
@@ -276,11 +287,11 @@ impl StudioShell {
     pub(crate) fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
         // The primary selection may have been set from outside the canvas
         // (mixer strip, library locator); it always deletes with the band.
-        if let Some(id) = self.selected_node {
-            self.selected_nodes.insert(id);
+        if let Some(id) = self.selection.node {
+            self.selection.nodes.insert(id);
         }
         let mut removed = false;
-        for id in self.selected_nodes.iter().copied().collect::<Vec<_>>() {
+        for id in self.selection.nodes.iter().copied().collect::<Vec<_>>() {
             let removed_here = self.state.update(cx, |state, _| {
                 state
                     .try_dispatch(AppRequest::EditGraph(
@@ -293,7 +304,7 @@ impl StudioShell {
         if !removed {
             let edge_id = {
                 let graph = &self.state.read(cx).snapshot.graph.graph;
-                self.selected_route.and_then(|ports| {
+                self.selection.route.and_then(|ports| {
                     graph
                         .edges()
                         .iter()
@@ -310,12 +321,12 @@ impl StudioShell {
                         .is_ok()
                 })
             {
-                self.selected_route = None;
+                self.selection.route = None;
             }
         } else {
-            self.selected_nodes.clear();
-            self.selected_node = None;
-            self.selected_route = None;
+            self.selection.nodes.clear();
+            self.selection.node = None;
+            self.selection.route = None;
         }
         self.graph_gestures.connection_drag = None;
         self.graph_gestures.node_drag = None;
@@ -358,11 +369,12 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
     // The canvas view identifies nodes by their Debug id string; this is the
     // single NodeId -> canvas-id conversion on the render path.
     let selected_ids: Vec<String> = shell
-        .selected_nodes
+        .selection
+        .nodes
         .iter()
         .map(|id| format!("{id:?}"))
         .collect();
-    let selected_wire = shell.selected_route.and_then(|ports| {
+    let selected_wire = shell.selection.route.and_then(|ports| {
         state
             .snapshot
             .graph

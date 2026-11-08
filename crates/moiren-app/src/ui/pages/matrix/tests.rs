@@ -74,9 +74,9 @@ fn assert_headers_align_with_body(cx: &mut VisualTestContext) {
 fn open_matrix_page(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Matrix;
-        shell.inspector_open = false;
+        shell.chrome.inspector_open = false;
         shell.preferences.values.density = crate::project::UiDensity::Comfortable;
-        shell.density = Density::Comfortable;
+        shell.chrome.density = Density::Comfortable;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -206,7 +206,7 @@ fn matrix_rows_follow_density_on_a_plain_notification(cx: &mut TestAppContext) {
     // density move together.
     view.update(cx, |shell, cx| {
         shell.preferences.values.density = crate::project::UiDensity::Compact;
-        shell.density = Density::Compact;
+        shell.chrome.density = Density::Compact;
         cx.notify();
     });
     frame(cx);

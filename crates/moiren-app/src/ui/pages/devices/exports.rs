@@ -472,7 +472,7 @@ fn export_row(
                     }),
                 );
         }
-        let selected = binding_candidate(graph, id, shell.selected_node);
+        let selected = binding_candidate(graph, id, shell.selection.node);
         let enabled = !desired.enabled;
         let this = cx.entity();
         let bind = cx.entity();
@@ -513,7 +513,7 @@ fn export_row(
                             let selected = binding_candidate(
                                 &shell.state.read(cx).snapshot.graph,
                                 id,
-                                shell.selected_node,
+                                shell.selection.node,
                             );
                             if let Some(node) = selected {
                                 shell.submit_export_binding(id, Some(node), cx);

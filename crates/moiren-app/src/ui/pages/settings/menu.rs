@@ -126,7 +126,7 @@ pub(crate) fn menu_overlay(
     let items = menu_items(shell, &menu);
     let this = cx.entity();
     let viewport = window.viewport_size();
-    let item = ControlSize::Small.metrics(shell.density).height;
+    let item = ControlSize::Small.metrics(shell.chrome.density).height;
     let height = (items.len() as f32 * (item + ITEM_GAP) - ITEM_GAP + MENU_PADDING * 2.)
         .min(f32::from(viewport.height) - 48.)
         .max(item * 3. + MENU_PADDING * 2.);

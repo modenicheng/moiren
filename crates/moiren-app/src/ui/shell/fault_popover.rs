@@ -30,7 +30,7 @@ const MAX_HEIGHT: f32 = 320.;
 /// successful edit, or the faulted node was deleted) so the occluding layer
 /// never outlives its reason.
 pub(crate) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
-    let Some(popover) = shell.fault_popover else {
+    let Some(popover) = shell.chrome.fault_popover else {
         return;
     };
     let state = shell.state.read(cx);
@@ -39,7 +39,7 @@ pub(crate) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
         None => has_unlocated(state),
     };
     if !alive {
-        shell.fault_popover = None;
+        shell.chrome.fault_popover = None;
     }
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn overlay(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let this = cx.entity();
-    let Some(popover) = shell.fault_popover else {
+    let Some(popover) = shell.chrome.fault_popover else {
         return div().into_any_element();
     };
     let state = shell.state.read(cx);
@@ -166,7 +166,7 @@ pub(crate) fn overlay(
         .on_key_down(move |event, _window, cx| {
             if event.keystroke.key.as_str() == "escape" {
                 close.update(cx, |shell, cx| {
-                    shell.fault_popover = None;
+                    shell.chrome.fault_popover = None;
                     cx.notify();
                 });
                 cx.stop_propagation();
@@ -182,7 +182,7 @@ pub(crate) fn overlay(
                     && event.position.y <= px(top + height);
                 if !inside {
                     this.update(cx, |shell, cx| {
-                        shell.fault_popover = None;
+                        shell.chrome.fault_popover = None;
                         cx.notify();
                     });
                 }
