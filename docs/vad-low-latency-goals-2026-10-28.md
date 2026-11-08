@@ -187,6 +187,15 @@ formatting pass. This is source integration only: final mutable Windows name,
 default/settings preservation and native S4 cases remain unqualified. No
 replacement for the frozen installed613image or user reboot occurs.
 
+The later [child PDO name publication](validation/2026-11-08-child-pdo-name-publication.md)
+sets and strictly reads back the locked requested name on the exact child PDO
+inside PrepareHardware's flushed system worker, including the three-interface
+cache path. Production-composed tests refuse ACX allocation/addition after
+12failure modes on initial/cached policy; Windows22/Ubuntu17and WDK Analyze/INF
+pass. Durable reference/categories/ACX and raw final-MMDevice checks stay
+unchanged. This supported metadata prerequisite is not proven final MMDevice
+name propagation or native S4; installed613and user-owned reboot are untouched.
+
 The [retained task/trace preparation](validation/2026-11-08-removal-task-trace-preparation.md)
 is repository source. The later
 [managed probe admission](validation/2026-11-08-managed-removal-admission.md)
@@ -210,6 +219,17 @@ This closes the disconnected readback/owner integration gap, not native removal
 diagnosis. Actual dispatch remains guarded pending combined fresh post-reboot
 provenance, bounded orchestration, closed-ETL decode/archive and cleanup. No
 test-machine reboot, new EXE tree, OBS run or acceptance-gate change occurs.
+
+The later [managed task retirement](validation/2026-11-08-managed-task-retirement.md)
+recomputes current original worker/probe/task terminal ownership, binds this
+run's stopped trace, archives/hash-verifies original task XML and permits one
+exact guarded retirement without retry. All14preparation suites pass177checks
+per PowerShell interpreter; separate real harmless/cross-language checks pass.
+A fresh managed release is built/pinned locally at26cd706, not deployed or run.
+Actual scheduler cleanup remains guarded; combined post-reboot orchestration
+and all original native gates stay open. Identity0098c69's exact CI42452098679
+later completes20/20successful jobs and its original watcher exits0; newly
+published26cd706 has a separate still-running CI42454664245.
 
 The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
 recomputes both channels at all six retained onsets. Identity1 has non-silent

@@ -11,6 +11,9 @@ changing an approval boolean is not authorization.
 - `task-boundary.ps1` retains scheduler registration intent before mutation,
   one RunEx instance and the first worker Process. It independently checks
   image, command line, creation, session and limited token through that handle.
+  Exact task retirement archives and hash-verifies original XML first, requires
+  fresh stopped trace and task/worker/probe ownership, and never retries an
+  ambiguous delete. Its real scheduler cleanup guard remains closed.
 - `trace-boundary.ps1` retains exact finite tool owners, validates inventory,
   preserves ambiguous create/stop failures and raw unknown loss. A successful
   exact create is not independent post-create session readback. This historical
@@ -50,8 +53,9 @@ still does not mean native audio success or latency qualification.
   then observes worker/probe and orders independent admission.
 - The Rust probe's opt-in `managed-removal` prefix opens exact controller and
   worker handles and waits at most 15 seconds for the matching receipt before
-  entering logging/audio CLI. Ordinary CLI commands are unchanged. A new release
-  build/pin is required; the frozen historical probe is not relabelled.
+  entering logging/audio CLI. Ordinary CLI commands are unchanged. A new managed
+  release is built/pinned locally at26cd706, not deployed or run; the frozen
+  historical probe is not relabelled. Combined target admission is still required.
 
 Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 
@@ -59,6 +63,7 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-finite-tool.ps1
 .\test-task-boundary.ps1
 .\test-task-process.ps1
+.\test-task-retirement.ps1
 .\test-trace-boundary.ps1
 .\test-trace-finite.ps1
 .\test-trace-query.ps1

@@ -103,3 +103,27 @@ function Observe-RemovalManagedSession {
     } catch {$Session.Error='Managed observation/admission failed/unknown: '+$_.Exception.Message;$r.Error=$Session.Error}
     return $r
 }
+
+function Complete-RemovalManagedTaskCleanup {
+    param([Parameter(Mandatory=$true,Position=0)]$Session)
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval
+    $trace=$Session.TraceSession
+    if($null -eq $trace -or $null -eq $Session.TraceReadback -or $null -eq $trace.Readback -or
+        -not[object]::ReferenceEquals($Session.TraceReadback,$trace.Readback) -or
+        -not[object]::ReferenceEquals($trace.Readback.Trace,$trace.NativeOwner) -or
+        $trace.StopAttempted -isnot [bool] -or -not$trace.StopAttempted -or
+        $trace.NativeOwner.TraceOwned -isnot [bool] -or -not$trace.NativeOwner.TraceOwned -or
+        $trace.NativeOwner.TraceStopped -isnot [bool] -or -not$trace.NativeOwner.TraceStopped -or
+        $null -eq $trace.StoppedReceipt -or -not[object]::ReferenceEquals($trace.StoppedReceipt,$trace.NativeOwner.StopReceipt) -or
+        -not[object]::ReferenceEquals($trace.StoppedReceipt.Owner,$trace.NativeOwner) -or
+        $trace.StoppedReceipt.Operation -cne 'Stop' -or $trace.StoppedReceipt.StoppedConfirmed -isnot [bool] -or
+        -not$trace.StoppedReceipt.StoppedConfirmed){throw 'Exact confirmed stopped trace required before task retirement.'}
+    # Recompute terminal ownership through current scheduler/worker/probe reads;
+    # a cached Session.Terminal flag cannot authorize deletion of a live task.
+    $state=Get-RemovalTaskObservation $Session.TaskOwner
+    $terminal=Complete-RemovalProbeTerminal $Session.TaskOwner $state $Session.ProbeOwner $Session.LastResult
+    if($terminal.Terminal -isnot [bool] -or -not$terminal.Terminal -or $terminal.NeedsObservation -or
+        $terminal.Owners -isnot [Array] -or $terminal.Owners.Count -ne 0){throw 'Original worker/probe/task not independently terminal.'}
+    $Session.Terminal=$terminal
+    Remove-RemovalOwnedTask $Session.TaskOwner
+}

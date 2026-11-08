@@ -10,8 +10,8 @@ function Assert-RemovalTaskHost {
 }
 
 function Assert-RemovalTaskNativeApproval {
-    # This preparation has no reviewed worker/probe handshake yet. Mock tests
-    # explicitly replace this guard; a boolean on Spec cannot authorize native work.
+    # The handshake exists, but combined fresh-target orchestration is not yet
+    # approved. A boolean on Spec cannot authorize native scheduler operations.
     throw 'Task preparation is not approved for native registration or launch.'
 }
 
@@ -81,7 +81,9 @@ function New-RemovalTaskOwner {
         DispatchAttempted=$false;RunningTask=$null;InstanceGuid=$null;WorkerProcess=$null;WorkerReceipt=$null
         WorkerPid=$null;WorkerCreationUtcTicks=$null
         WorkerBindingKnown=$false;WorkerBindingError=$null;LastObservation=$null
-        DispatchUtc=$null;Error=$null;TerminalObserved=$false;Closed=$false}
+        DispatchUtc=$null;Error=$null;TerminalObserved=$false;Closed=$false
+        RetirementAttempted=$false;Retired=$false;RetirementError=$null
+        RetiredXmlPath=$null;RetiredXmlSha256=$null}
 }
 
 function New-RemovalTaskScheduler {
@@ -299,9 +301,8 @@ function Test-RemovalTaskTerminal($Owner,$State,$WorkerResult) {
         $WorkerResult.WorkerExitCode -ne $State.LastTaskResult){return $r}
     $Owner.WorkerProcess.Refresh()
     if(-not $Owner.WorkerProcess.HasExited -or $Owner.WorkerProcess.ExitCode -ne $WorkerResult.WorkerExitCode){return $r}
-    # This boundary proves only task/worker exit. The actual native child owner
-    # handshake is still missing, so never promote its detached reported exit
-    # to full diagnostic Terminal/no-owners (the controller's admission gate).
+    # This boundary proves task/worker exit only. CompleteRemovalProbeTerminal
+    # separately checks the retained child; detached reported exit is not enough.
     $r.WorkerTerminal=$true;$r.WorkerNeedsObservation=$false
     $r.ReportedProbeExitCode=$WorkerResult.ProbeExitCode
     return $r
@@ -319,4 +320,54 @@ function Observe-RemovalRetainedWorker($Owner) {
         }
     } catch {$r.Error='Retained worker observation unavailable.'}
     return $r
+}
+
+function Assert-RemovalTaskCleanupApproval {
+    throw 'Exact task retirement awaits reviewed combined target orchestration; no scheduler deletion.'
+}
+
+function Remove-RemovalOwnedTask {
+    param([Parameter(Mandatory=$true,Position=0)]$Owner)
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost;Assert-RemovalTaskCleanupApproval
+    if($Owner.RetirementAttempted -or $Owner.Retired -or -not$Owner.RegistrationKnown -or
+        -not$Owner.DispatchAttempted -or -not$Owner.WorkerBindingKnown -or $Owner.WorkerBindingError -or
+        $null -eq $Owner.WorkerProcess -or $null -eq $Owner.Folder){throw 'No unused exact terminal task retirement authority.'}
+    $state=$Owner.LastObservation
+    if($null -eq $state -or $state.Error -or $state.LastRunKnown -isnot [bool] -or -not$state.LastRunKnown -or
+        $state.State -notin @(1,3) -or $state.Instances -ne 0 -or $state.LastTaskResult -notin @(0,1)){
+        throw 'Fresh exact terminal scheduler observation required.'
+    }
+    $Owner.WorkerProcess.Refresh()
+    if(-not$Owner.WorkerProcess.HasExited -or $Owner.WorkerProcess.ExitCode -ne $state.LastTaskResult){throw 'Original worker remains live/unknown.'}
+    Assert-RemovalTaskDefinition $Owner.Spec $Owner.RegisteredTask
+    $task=$Owner.Folder.GetTask($Owner.Spec.Name)
+    Assert-RemovalTaskDefinition $Owner.Spec $task
+    if($task.Xml -cne $Owner.RegisteredXml -or $Owner.RegisteredTask.Xml -cne $Owner.RegisteredXml -or
+        $task.State -notin @(1,3) -or $task.GetInstances(0).Count -ne 0 -or $task.LastTaskResult -ne $state.LastTaskResult){
+        throw 'Exact task changed/busy before retirement.'
+    }
+    $path=Join-Path $Owner.Spec.RunDirectory 'retired-task.xml';Assert-RemovalTaskPath $path
+    $bytes=([Text.UTF8Encoding]::new($false,$true)).GetBytes($Owner.RegisteredXml)
+    if($bytes.Length -eq 0 -or $bytes.Length -gt 1048576){throw 'Bounded original task XML required.'}
+    $file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try {$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try {$expected=([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','')}finally{$sha.Dispose()}
+    $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    if((Get-Item -LiteralPath $path).Length -ne $bytes.Length -or $actual -cne $expected){throw 'Archived task XML readback differs.'}
+    $Owner.RetiredXmlPath=$path;$Owner.RetiredXmlSha256=$actual
+    # Retain delete intent before the COM call can commit. Unknown return is
+    # never retried; keep this original folder/task/XML for later observation.
+    $Owner.RetirementAttempted=$true
+    try {
+        $Owner.Folder.DeleteTask($Owner.Spec.Name,0)
+        $absent=$false
+        try {$null=$Owner.Folder.GetTask($Owner.Spec.Name)}catch {
+            $errorValue=$_.Exception
+            while($null -ne $errorValue.InnerException){$errorValue=$errorValue.InnerException}
+            if($errorValue -is [Runtime.InteropServices.COMException] -and $errorValue.HResult -eq -2147024894){$absent=$true}else{throw}
+        }
+        if(-not$absent){throw 'Task still exists after delete; retain original owner, never retry.'}
+        $Owner.Retired=$true
+    } catch {$Owner.RetirementError='Task retirement failed/unknown: '+$_.Exception.Message;throw}
 }
