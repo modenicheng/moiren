@@ -87,6 +87,18 @@ mod tests;
 
 pub(crate) use crate::ui::pages::graph::node_catalog::kind_tint as node_kind_color;
 
+/// The strip subtitle shared by the mixer page and the tray flyout
+/// (issue #121): `"{number} · {kind} · {channels} ch"` with the kind's
+/// display title from the catalog registry instead of its debug format.
+/// Plain English today; the kind titles are runtime i18n table keys per
+/// design 21 §4.
+pub(crate) fn strip_subtitle(number: usize, kind: NodeKind, channels: usize) -> String {
+    format!(
+        "{number} · {} · {channels} ch",
+        crate::ui::pages::graph::node_catalog::kind_title(kind)
+    )
+}
+
 /// The strip's cached control stack: everything below the live routing
 /// sections, keyed by `StripKey`. Between key changes this subtree replays
 /// its paint while the meter hot layer paints the live bars above it; the
@@ -160,8 +172,7 @@ fn strip_body(
                 .when(faulted, |row| row.child(strip_fault_badge(id, cx))),
         )
         .child(
-            label(format!(
-                "{} · {kind:?} · {channels} ch",
+            label(strip_subtitle(
                 shell
                     .mixer
                     .presentation
@@ -169,7 +180,9 @@ fn strip_body(
                     .iter()
                     .position(|node| *node == id)
                     .unwrap_or(0)
-                    + 1
+                    + 1,
+                kind,
+                channels,
             ))
             .text_size(px(9.)),
         )

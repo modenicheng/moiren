@@ -165,7 +165,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 .border_b_1()
                 .border_color(theme::BORDER)
                 .child(name_control)
-                .child(label(format!("{:?}", node.kind()))),
+                .child(label(node_catalog::kind_title(node.kind()))),
         )
         .child(detail(&t!("Channels"), node.channels().to_string()));
     // The headline visualization (design 18 B4) leads the kind-specific
@@ -231,129 +231,52 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .exports
             .iter()
             .find(|export| export.enabled && export.binding == Some(id));
-        view =
-            view.child(heading(t!("Source")))
-                .child(label(
-                    bound_export
-                        .map(|export| export.name.clone())
-                        .or_else(|| {
-                            entry.source.as_ref().map(|source| {
-                                crate::ui::presentation::source_name(snapshot, source)
-                            })
-                        })
-                        .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
-                ))
-                .child(
-                    button("unbind-node-source", t!("Clear binding"))
-                        .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
-                )
-                .child(
-                    button("bind-node-tone", t!("Tone generator · 440 Hz")).on_click(edit(
-                        cx.entity(),
-                        GraphEdit::BindSource {
-                            node: id,
-                            source: InputSelection::Tone { frequency_hz: 440. },
-                        },
-                    )),
-                );
-        if let Some(InputSelection::Tone { frequency_hz }) = entry.source {
-            view = view
-                .child(detail(&t!("Frequency"), format!("{frequency_hz:.1} Hz")))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(4.))
-                        .child(button("tone-down", "−10 Hz").on_click(edit(
-                            cx.entity(),
-                            GraphEdit::BindSource {
-                                node: id,
-                                source: InputSelection::Tone {
-                                    frequency_hz: (frequency_hz - 10.).max(1.),
+        view = view.child(heading(t!("Source"))).child(label(
+            bound_export
+                .map(|export| export.name.clone())
+                .or_else(|| {
+                    entry
+                        .source
+                        .as_ref()
+                        .map(|source| crate::ui::presentation::source_name(snapshot, source))
+                })
+                .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
+        ));
+        // The one shared choice list (issue #119): the same ordered entries
+        // the chip menu offers, rendered as this panel's pick buttons.
+        for choice in binding_choices::source_choices(snapshot, entry) {
+            let is_tone = matches!(choice.target, binding_choices::BindingTarget::Tone { .. });
+            view = view.child(binding_choice_button(cx.entity(), choice));
+            // The bound tone's frequency editor rides directly under the
+            // tone choice that selected it.
+            if is_tone && let Some(InputSelection::Tone { frequency_hz }) = entry.source {
+                view = view
+                    .child(detail(&t!("Frequency"), format!("{frequency_hz:.1} Hz")))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .child(button("tone-down", "−10 Hz").on_click(edit(
+                                cx.entity(),
+                                GraphEdit::BindSource {
+                                    node: id,
+                                    source: InputSelection::Tone {
+                                        frequency_hz: (frequency_hz - 10.).max(1.),
+                                    },
                                 },
-                            },
-                        )))
-                        .child(button("tone-up", "+10 Hz").on_click(edit(
-                            cx.entity(),
-                            GraphEdit::BindSource {
-                                node: id,
-                                source: InputSelection::Tone {
-                                    frequency_hz: (frequency_hz + 10.).min(23999.),
+                            )))
+                            .child(button("tone-up", "+10 Hz").on_click(edit(
+                                cx.entity(),
+                                GraphEdit::BindSource {
+                                    node: id,
+                                    source: InputSelection::Tone {
+                                        frequency_hz: (frequency_hz + 10.).min(23999.),
+                                    },
                                 },
-                            },
-                        ))),
-                );
+                            ))),
+                    );
+            }
         }
-        for row in crate::ui::state::input_rows(
-            &snapshot.catalog,
-            moiren_engine::audio_config::AudioBackend::Wasapi,
-        ) {
-            view = view.child(
-                button(
-                    SharedString::from(format!("bind-input-{}", row.endpoint_id)),
-                    row.name.clone(),
-                )
-                .variant(ButtonVariant::Ghost)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindSource {
-                        node: id,
-                        source: InputSelection::Physical {
-                            endpoint_id: row.endpoint_id.clone(),
-                        },
-                    },
-                )),
-            );
-        }
-        for export in snapshot.graph.exports.iter().filter(|export| {
-            export.enabled && export.direction == crate::service::ExportDirection::Playback
-        }) {
-            view = view.child(
-                button(
-                    SharedString::from(format!("bind-playback-export-{}", export.endpoint_id)),
-                    export.name.clone(),
-                )
-                .variant(ButtonVariant::Ghost)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindExport {
-                        endpoint_id: export.endpoint_id,
-                        node: Some(id),
-                    },
-                )),
-            );
-        }
-        for row in &snapshot.catalog.processes {
-            view = view.child(
-                button(
-                    SharedString::from(format!("bind-process-{}", row.pid)),
-                    row.name.clone(),
-                )
-                .variant(ButtonVariant::Ghost)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindSource {
-                        node: id,
-                        source: InputSelection::Process {
-                            pid: row.pid,
-                            creation_time_100ns: row.creation_time_100ns,
-                        },
-                    },
-                )),
-            );
-        }
-        view = view.child(
-            button("refresh-node-resources", t!("Refresh sources")).on_click({
-                let this = cx.entity();
-                move |_, _, cx| {
-                    this.update(cx, |shell, cx| {
-                        shell
-                            .state
-                            .update(cx, |state, _| state.dispatch(AppRequest::RefreshCatalog));
-                        cx.notify();
-                    })
-                }
-            }),
-        );
     }
     if node.kind() == NodeKind::Sink {
         let bound_export = snapshot
@@ -372,46 +295,9 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 })
                 .unwrap_or_else(|| t!("Not bound · choose an output").into()),
         ));
-        view = view.child(
-            button("unbind-node-output", t!("Clear binding"))
-                .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
-        );
-        for row in crate::ui::state::output_rows(
-            &snapshot.catalog,
-            moiren_engine::audio_config::AudioBackend::Wasapi,
-        ) {
-            view = view.child(
-                button(
-                    SharedString::from(format!("bind-output-{}", row.endpoint_id)),
-                    row.name.clone(),
-                )
-                .variant(ButtonVariant::Ghost)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindOutput {
-                        node: id,
-                        endpoint_id: row.endpoint_id.clone(),
-                    },
-                )),
-            );
-        }
-        for export in snapshot.graph.exports.iter().filter(|export| {
-            export.enabled && export.direction == crate::service::ExportDirection::Microphone
-        }) {
-            view = view.child(
-                button(
-                    SharedString::from(format!("bind-microphone-export-{}", export.endpoint_id)),
-                    export.name.clone(),
-                )
-                .variant(ButtonVariant::Ghost)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::BindExport {
-                        endpoint_id: export.endpoint_id,
-                        node: Some(id),
-                    },
-                )),
-            );
+        // The shared sink choice list, same as the chip menu (issue #119).
+        for choice in binding_choices::sink_choices(snapshot, entry) {
+            view = view.child(binding_choice_button(cx.entity(), choice));
         }
     }
     if node.kind() == NodeKind::Gain {
@@ -586,6 +472,36 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     )
     .gpui_test_observe()
     .into_any_element()
+}
+
+/// One shared-list choice rendered as the inspector's pick button
+/// (issue #119): the same entry the chip menu offers, under this panel's
+/// element-id namespace.
+fn binding_choice_button(
+    this: Entity<StudioShell>,
+    choice: binding_choices::BindingChoice,
+) -> impl IntoElement {
+    button(choice.target.key(), choice.label)
+        .variant(ButtonVariant::Ghost)
+        .on_click(move |_, _, cx| {
+            this.update(cx, |shell, cx| {
+                match choice.action.clone() {
+                    binding_choices::BindingAction::Edit(edit) => {
+                        shell
+                            .state
+                            .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
+                    }
+                    // The refresh keeps the section mounted: the list
+                    // re-renders from the refreshed catalog.
+                    binding_choices::BindingAction::Refresh => {
+                        shell
+                            .state
+                            .update(cx, |state, _| state.dispatch(AppRequest::RefreshCatalog));
+                    }
+                }
+                cx.notify();
+            })
+        })
 }
 
 fn node_observation(
