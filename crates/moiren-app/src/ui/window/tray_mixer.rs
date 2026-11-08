@@ -369,14 +369,9 @@ fn strip(
                         .text_size(px(theme::TEXT_SM))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::TEXT)
-                        // The main mixer's display name: an export binding,
-                        // the bound input device or output endpoint — never
-                        // the bare default label ("Input"/"Output").
-                        .child(crate::ui::presentation::display_label(
-                            &flyout.state.read(cx).snapshot,
-                            entry,
-                            kind,
-                        )),
+                        // The tray strip shows the node's own label; the
+                        // binding lives on the node card's chip, not here.
+                        .child(crate::ui::presentation::display_label(entry)),
                 )
                 .child(label(format!("{kind:?}"))),
         )

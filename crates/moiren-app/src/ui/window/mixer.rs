@@ -149,11 +149,7 @@ fn strip_body(
                         .font_weight(FontWeight::SEMIBOLD)
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(crate::ui::presentation::display_label(
-                            &shell.state.read(cx).snapshot,
-                            entry,
-                            kind,
-                        )),
+                        .child(crate::ui::presentation::display_label(entry)),
                 )
                 .when(faulted, |row| row.child(strip_fault_badge(id, cx))),
         )

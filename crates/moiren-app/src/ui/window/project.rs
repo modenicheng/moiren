@@ -4,9 +4,18 @@ use crate::project::{ProjectDocument, WorkspaceDocument};
 use controls::*;
 use rust_i18n::t;
 
-pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+/// The session popover: an occluding shell-root overlay (same dismissal
+/// chrome as the settings menu and the detail window) with the project
+/// identity, the save/open actions, and the recent-projects quick switch.
+/// The popover claims presses inside itself by stopping propagation, so
+/// the overlay's outside handler closes it without any bounds math.
+pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
+    let this = cx.entity();
+    let close = this.clone();
     let save_pending = shell.project_busy || shell.state.read(cx).pending_request;
-    div()
+    let current = shell.project_path.clone();
+    let recents = shell.preferences.recent_projects.clone();
+    let mut popover = div()
         .id("project-popover")
         .absolute()
         .top(px(44.))
@@ -21,6 +30,10 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
         .border_color(theme::BORDER)
         .rounded(px(theme::RADIUS_MD))
         .occlude()
+        .gpui_test_observe()
+        // Claim the press: the overlay root behind must not see it, or an
+        // inside click would close the menu that owns it.
+        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
         .child(heading(shell.project_name.clone()))
         .child(label(
             shell
@@ -33,7 +46,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
             button("open-project", t!("Open project…"))
                 .disabled(shell.project_busy)
                 .on_click({
-                    let this = cx.entity();
+                    let this = this.clone();
                     move |_, _, cx| this.update(cx, |s, cx| s.open_project(cx))
                 }),
         )
@@ -41,7 +54,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
             button("save-project", t!("Save project"))
                 .disabled(save_pending)
                 .on_click({
-                    let this = cx.entity();
+                    let this = this.clone();
                     move |_, _, cx| this.update(cx, |s, cx| s.save_project(false, cx))
                 }),
         )
@@ -49,14 +62,72 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
             button("save-project-as", t!("Save project as…"))
                 .disabled(save_pending)
                 .on_click({
-                    let this = cx.entity();
+                    let this = this.clone();
                     move |_, _, cx| this.update(cx, |s, cx| s.save_project(true, cx))
                 }),
-        )
+        );
+    if !recents.is_empty() {
+        popover = popover.child(label(t!("Recent projects")));
+        for (index, path) in recents.iter().enumerate() {
+            let name = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let is_current = current.as_ref() == Some(path);
+            popover = popover.child(
+                button(SharedString::from(format!("recent-project-{index}")), name)
+                    .full_width()
+                    .justify_start()
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(save_pending || is_current)
+                    .on_click({
+                        let this = this.clone();
+                        let path = path.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |s, cx| s.open_recent_project(path.clone(), cx))
+                        }
+                    }),
+            );
+        }
+    }
+    let popover = popover
         .when_some(shell.project_message.clone(), |v, message| {
             v.child(label(message))
         })
-        .child(label(t!("Opening a project keeps audio stopped.")))
+        .child(label(t!("Opening a project keeps audio stopped.")));
+    div()
+        .id("project-menu-page")
+        .absolute()
+        .inset_0()
+        .size_full()
+        .occlude()
+        .on_key_down({
+            let close = close.clone();
+            move |event, _window, cx| {
+                if event.keystroke.key.as_str() == "escape" {
+                    close.update(cx, |shell, cx| {
+                        shell.project_menu = false;
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                }
+            }
+        })
+        // Reached only by presses outside the popover — the popover claims
+        // its own subtree — so every press here closes the menu.
+        .on_any_mouse_down(move |_, _, cx| {
+            close.update(cx, |shell, cx| {
+                shell.project_menu = false;
+                cx.notify();
+            });
+        })
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_move(|_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .child(popover)
+        .into_any_element()
 }
 
 #[cfg(all(test, feature = "gpui-test"))]
@@ -322,6 +393,57 @@ mod tests {
         let _ = std::fs::remove_file(&autosave_file);
         finish_service(runtime);
     }
+
+    #[gpui_kit::test]
+    fn project_menu_lists_recents_and_closes_on_outside_press_and_escape(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{
+            Modifiers, MouseButton, VisualTestContext, point, px, size, test::TestWindowExt,
+        };
+
+        fn render(cx: &mut VisualTestContext) {
+            cx.update(|window, cx| window.render_frame(cx));
+        }
+
+        let (view, cx, runtime) = test_shell(cx);
+        cx.update(|window, _| window.resize(size(px(1200.), px(800.))));
+        view.update(cx, |shell, cx| {
+            // Seeded preferences, no disk round trip: the menu lists the
+            // quick-switch targets it was given.
+            shell.preferences.recent_projects = vec![
+                std::path::PathBuf::from("Z:/sets/live.moiren.json"),
+                std::path::PathBuf::from("Z:/sets/rehearsal.moiren.json"),
+            ];
+            shell.project_menu = true;
+            cx.notify();
+        });
+        render(cx);
+        cx.update(|window, _| {
+            assert!(window.find("project-popover").visible());
+            assert!(window.find("recent-project-0").visible());
+            assert!(window.find("recent-project-1").visible());
+        });
+        // A press on the workspace far from the popover closes the menu.
+        let outside = point(px(1000.), px(700.));
+        cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+        view.update(cx, |shell, _| assert!(!shell.project_menu));
+        render(cx);
+        cx.update(|window, _| assert!(window.try_find("project-popover").is_none()));
+        // Reopened, Escape closes it too.
+        view.update(cx, |shell, cx| {
+            shell.project_menu = true;
+            cx.notify();
+        });
+        render(cx);
+        cx.update(|window, _| assert!(window.find("project-popover").visible()));
+        cx.simulate_keystrokes("escape");
+        view.update(cx, |shell, _| assert!(!shell.project_menu));
+        render(cx);
+        cx.update(|window, _| assert!(window.try_find("project-popover").is_none()));
+        finish_service(runtime);
+    }
 }
 
 impl StudioShell {
@@ -478,6 +600,25 @@ impl StudioShell {
                 });
                 return;
             };
+            let _ = this.update(cx, |s, cx| s.spawn_project_load(path, cx));
+        })
+        .detach();
+    }
+
+    /// Opens a project straight from the session menu's quick switch: the
+    /// same load path as the file-dialog prompt, minus the prompt.
+    pub(super) fn open_recent_project(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.project_menu = false;
+        self.spawn_project_load(path, cx);
+    }
+
+    /// The one background load-and-stage path, shared by the file-dialog
+    /// prompt and the recent-projects quick switch. Parsing runs off the
+    /// UI thread; staging hands the document to the service.
+    fn spawn_project_load(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.project_busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
             let target = path.clone();
             let result = cx
                 .background_executor()
@@ -547,13 +688,19 @@ impl StudioShell {
     }
 
     /// The project file the working state came from becomes the restore
-    /// target: preferences remember it (for `restore_last_project`), and the
+    /// target and the top of the quick-switch list: preferences remember it
+    /// (for `restore_last_project` and the session menu's recents), and the
     /// autosave fingerprint restarts because the state is already on disk.
     fn remember_project_file(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.project_path.clone()
-            && self.preferences.last_project_path.as_ref() != Some(&path)
-        {
-            self.preferences.last_project_path = Some(path);
+        let mut changed = false;
+        if let Some(path) = self.project_path.clone() {
+            if self.preferences.last_project_path.as_ref() != Some(&path) {
+                self.preferences.last_project_path = Some(path.clone());
+                changed = true;
+            }
+            changed |= self.preferences.remember_recent_project(path);
+        }
+        if changed {
             self.save_preferences_quiet(cx);
         }
         self.autosave_stamp = autosave::AutosaveStamp::capture(self, cx);

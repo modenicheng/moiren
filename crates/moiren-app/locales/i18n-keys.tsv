@@ -291,6 +291,7 @@ Select an intersection to inspect or change a direct connection.	-	空态说明
  · input %{index}	index=index+1	追加到节点名后的后缀，format! 原文 " · input {}"
 Not saved to disk	-	项目菜单路径占位
 Open project…	-	菜单按钮
+Recent projects	-	项目菜单快速切换分组标题
 Save project	-	菜单按钮
 Save project as…	-	菜单按钮
 Opening a project keeps audio stopped.	-	菜单说明
