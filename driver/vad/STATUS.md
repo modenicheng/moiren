@@ -40,6 +40,13 @@ corrected here; no publication/migration implementation or S4 pass is claimed.
 
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
+The later [managed collection preparation](../../docs/validation/2026-11-08-removal-collector-worker.md)
+adds finite observation with retained inner tool owners;15local tests pass on
+each PowerShell interpreter. It is not hard cancellation/process isolation,
+actual target provenance, task/trace integration or native approval. Exact
+pushed-head3f88d89CI42440346496 completes20/20jobs successfully at11:30;
+this is software CI, not a613removal repair or full S0-S5 pass.
+
 The [deployment and offline-reader receipt](../../docs/validation/2026-11-08-vad-removal-stage-deployment.md)
 records one guarded installation of signed613 (`23807f3`). ValidateOnly
 passes, but the real install returns3010 at00:10 on November8. The terminal

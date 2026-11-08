@@ -72,3 +72,9 @@ Original29draft/cache file hashes verify unchanged at11:08. The native613
 removal result, actual repair, final Windows naming plus identity/settings
 preservation, matched waveform, ordinary desktop and sustained/calibrated
 latency acceptance remain open. PR26 remains Draft/open.
+
+The later [managed collector owner](2026-11-08-removal-collector-worker.md)
+adds finite observation around the whole collector while retaining exact inner
+Process references. It is not process isolation or hard cancellation, and does
+not close task/session/trace/native-admission gaps. Its15tests per interpreter
+are separate from the42checks above; no target execution follows.
