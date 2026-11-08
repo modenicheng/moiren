@@ -1182,7 +1182,10 @@ mod tests {
             snapshot.signal_topics.monitor_output.stats().attempts >= before_pause + 2
         });
         backend_state.pause_audio.store(true, Ordering::Relaxed);
-        wait_until(Duration::from_secs(3), || {
+        // The stall clock starts at the feed's last delivery, not at this
+        // store: on a loaded runner a publication can still land just after
+        // the pause, so a fixed sleep underestimates the wait. Bound it.
+        wait_until(STALE_AFTER + Duration::from_secs(3), || {
             let woke = meters.update_points(&snapshot, true, true);
             if meters.input_status != MeterStatus::Stale
                 || meters.output_status != MeterStatus::Stale
