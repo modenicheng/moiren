@@ -37,7 +37,8 @@ function New-RemovalTaskSpec {
         [Parameter(Mandatory=$true)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$WorkerSha256,
         [Parameter(Mandatory=$true)][string]$RunDirectory,
         [Parameter(Mandatory=$true)][ValidateRange(1,65535)][int]$SessionId,
-        [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{32}$')][string]$Nonce)
+        [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{32}$')][string]$Nonce,
+        [ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$RunSpecSha256)
     foreach($path in @($WorkerPath,$RunDirectory)){Assert-RemovalTaskPath $path}
     if([IO.Path]::GetDirectoryName($WorkerPath) -cne $RunDirectory -or -not(Test-Path -LiteralPath $WorkerPath -PathType Leaf) -or
         (Get-FileHash -LiteralPath $WorkerPath -Algorithm SHA256).Hash -ine $WorkerSha256){throw 'Pinned worker must reside in exact run directory.'}
@@ -47,6 +48,7 @@ function New-RemovalTaskSpec {
     $argv=@('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-File',$WorkerPath,
         '-TaskPath',('\'+$name),'-Nonce',$Nonce,'-ExpectedSessionId',[string]$SessionId,
         '-RunDirectory',$RunDirectory,'-WorkerSha256',$WorkerSha256)
+    if($RunSpecSha256){$argv+=@('-RunSpecSha256',$RunSpecSha256.ToUpperInvariant())}
     # Validated task paths contain neither quotes nor trailing separators.
     $line=($argv|ForEach-Object{'"'+$_+'"'}) -join ' '
     [pscustomobject]@{Name=$name;Path=('\'+$name);Sid='S-1-5-21-3080296863-1242338503-1346362208-1001'
@@ -302,5 +304,19 @@ function Test-RemovalTaskTerminal($Owner,$State,$WorkerResult) {
     # to full diagnostic Terminal/no-owners (the controller's admission gate).
     $r.WorkerTerminal=$true;$r.WorkerNeedsObservation=$false
     $r.ReportedProbeExitCode=$WorkerResult.ProbeExitCode
+    return $r
+}
+
+function Observe-RemovalRetainedWorker($Owner) {
+    $r=[ordered]@{ExitKnown=$false;ExitCode=$null;NeedsObservation=$true;Error=$null;NativePassed=$false}
+    if($null -eq $Owner.WorkerProcess){return $r}
+    try {
+        # Also observe a failed initial binding through its retained Process.
+        # This proves liveness only, never retroactive admission or native pass.
+        $Owner.WorkerProcess.Refresh()
+        if($Owner.WorkerProcess.HasExited){
+            $r.ExitKnown=$true;$r.ExitCode=[int]$Owner.WorkerProcess.ExitCode;$r.NeedsObservation=$false
+        }
+    } catch {$r.Error='Retained worker observation unavailable.'}
     return $r
 }

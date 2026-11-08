@@ -15,9 +15,29 @@ changing an approval boolean is not authorization.
   preserves ambiguous create/stop failures and raw unknown loss. A successful
   exact create is not independent post-create session readback.
 
-`WorkerTerminal` proves only observed scheduler/worker exit. Full `Terminal`
-and `ProbeOwnershipVerified` remain false until actual native-child ownership
-is wired; a worker's JSON probe exit is only `ReportedProbeExitCode`.
+`WorkerTerminal` proves only observed scheduler/worker exit. The managed path
+now also binds the live probe independently before admission, retains that
+original Process, and observes its natural exit. `Complete-RemovalProbeTerminal`
+checks the actual task owner/current observation internally and compares the
+child's independently observed exit with the worker result; detached JSON or
+a caller-supplied boolean cannot establish full `Terminal`. Terminal ownership
+still does not mean native audio success or latency qualification.
+
+- `probe-boundary.ps1` builds exact `managed-removal` arguments, verifies the
+  real child handle/creation/parent/session/token/image/hash/command line and
+  publishes a bounded create-new admission only after binding.
+- `worker-boundary.ps1` owns the child and jointly capped stdout/stderr through
+  natural exit and observed drains. Its separate 120-second observation budget
+  does not change the eight-second acquisition or 20-second Removed gate. A
+  timeout writes one pending receipt and retains the same worker/child; it is
+  not kill, restart or cleanup permission.
+- `worker.ps1` is the pinned actual task action. `collector-boundary.ps1` stages
+  only five small scripts and a pinned configuration, never another EXE tree,
+  then observes worker/probe and orders independent admission.
+- The Rust probe's opt-in `managed-removal` prefix opens exact controller and
+  worker handles and waits at most 15 seconds for the matching receipt before
+  entering logging/audio CLI. Ordinary CLI commands are unchanged. A new release
+  build/pin is required; the frozen historical probe is not relabelled.
 
 Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 
@@ -27,6 +47,11 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-task-process.ps1
 .\test-trace-boundary.ps1
 .\test-trace-finite.ps1
+.\test-probe-boundary.ps1
+.\test-worker-boundary.ps1
+.\test-collector-boundary.ps1
+.\test-worker-process.ps1
+.\test-worker-entry.ps1
 ```
 
 The task scheduler and target identity are mocked. Real children only output,
@@ -35,15 +60,28 @@ operated. `test-task-process.ps1` requires a non-elevated Windows host process
 in an existing nonzero session; it verifies real child token/CIM/command line
 and natural exit, not actual scheduler behavior. Other device/security/task
 boundaries remain mocked. Generated test outputs are ignored, not sources.
+`test-worker-entry.ps1` exercises the actual production entry's pinned bounded
+loader and rejection paths on a non-target host. It also verifies retention on
+unexpected entry failure with a synthetic owner; no real native launch occurs.
+For actual cross-language receipt exchange, build the example **test** executable
+with `cargo test --locked -p moiren-windows-audio --example e2e_latency_probe
+--no-run --message-format=json`, then run `test-managed-protocol.ps1` with its
+exact `-TestExecutable` and `-ExpectedSha256`. It selects one exact Rust test
+fixture whose admitted closure only writes `cli-stub-only`; it never invokes
+the audio CLI. It must not receive a release/native executable instead.
 
 `finite-tool.ps1` is pinned by trace SHA256 to the reviewed predecessor. Its
 synchronous file/hash/dispatch calls are not hard-bounded. COM/CIM/property
 reads are not hard cancellation or crash recovery. Retain unresolved owners.
 
-Remaining integration includes fresh post-reboot provenance, independently
-bound collector/privileged trace/Limited worker, worker-to-probe admission and
-lifetime handshake, bounded create-new receipts, independently confirmed ETW
+Remaining integration includes fresh post-reboot provenance, reviewed actual
+collector/privileged trace/Limited worker dispatch, independently confirmed ETW
 identity/provider/output, raw loss/decode/archive and safe authorized cleanup.
+Managed process tests use harmless fixture entries, not native audio. Scheduled
+registration/dispatch and trace launch remain disabled. A same-user writable
+receipt directory is correlation, not a hostile-process security boundary.
+Worker/controller crashes after admission still require observation of the
+original surviving owner; this is not durable crash recovery or task deletion.
 This preparation's default stop also refuses; it must not be adopted as a
 running native trace's cleanup authorization policy.
 

@@ -48,6 +48,14 @@ new package is installed or substituted for the frozen613diagnostic image.
 
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
+The later [managed probe admission](../../docs/validation/2026-11-08-managed-removal-admission.md)
+connects the actual worker action and independently retained probe to a bounded
+pre-audio Rust receipt gate. Host-only process chains and755example tests
+(one ignored) pass; actual task/trace dispatch remains disabled. Neither this
+software integration nor terminal process ownership is613native removal
+qualification. The frozen installed package is unchanged and user reboot
+confirmation is still required before remote native work.
+
 The later [task/trace preparation](../../docs/validation/2026-11-08-removal-task-trace-preparation.md)
 is retained in `scripts/vad-removal/`. Parent checks59per PowerShell interpreter
 pass without real scheduler/native tools; new Windows CI wiring covers55

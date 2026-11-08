@@ -177,11 +177,14 @@ remains for compatibility; durable identity/adoption and final Windows name
 publication are still unimplemented. The remote613package is unchanged.
 
 The [retained task/trace preparation](validation/2026-11-08-removal-task-trace-preparation.md)
-is now repository source with59host-only checks per PowerShell interpreter.
-Unknown registration/dispatch keeps ownership, a real worker is bound by its
-retained handle/token/session/command line, and garbage inventory cannot prove
-trace absence. Full probe ownership/native admission remains unwired and real
-launchers explicitly refuse; no new native acquisition or S0-S5 pass follows.
+is repository source. The later
+[managed probe admission](validation/2026-11-08-managed-removal-admission.md)
+connects the actual worker action to the independently retained probe and an
+opt-in pre-audio Rust gate. Both process handles and matching natural exits,
+not detached JSON, establish terminal ownership. Real harmless worker/probe
+chains pass under both PowerShell interpreters; all755example tests pass with
+one ignored. Actual scheduler/trace dispatch still refuses pending fresh target
+provenance and reviewed orchestration. No native acquisition or S0-S5 pass follows.
 
 The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
 recomputes both channels at all six retained onsets. Identity1 has non-silent

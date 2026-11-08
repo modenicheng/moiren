@@ -7,6 +7,8 @@ mod controlled_load;
 mod indexed_pcm;
 #[path = "e2e_latency_probe/live.rs"]
 mod live;
+#[path = "e2e_latency_probe/managed_removal.rs"]
+mod managed_removal;
 #[path = "e2e_latency_probe/measurement.rs"]
 mod measurement;
 #[cfg(any(windows, test))]
@@ -49,7 +51,9 @@ fn main() {
 fn run_cli(arguments: Vec<String>) -> i32 {
     // Keep the handle through CLI teardown (including owner joins), then drop
     // it before main exits the process.
-    let result = probe_logging::initialize().and_then(|_logger| cli::run(arguments));
+    let result = managed_removal::run(arguments, |arguments| {
+        probe_logging::initialize().and_then(|_logger| cli::run(arguments))
+    });
     match result {
         Ok(code) => code,
         Err(error) => {

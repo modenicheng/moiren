@@ -113,6 +113,10 @@ Case 'spec-binds-observed-session-nonce-argument-and-exact-worker' {
  $s=Spec;Check ($s.SessionId-eq2-and$s.Path-ceq('\'+$s.Name)-and$s.Sid-ceq'S-1-5-21-3080296863-1242338503-1346362208-1001') 'Wrong identity'
  Check ($s.Arguments.Contains($s.Nonce)-and$s.Arguments.Contains($s.WorkerPath)-and-not$s.ReviewedForNative) 'Missing exact nonce/entry or false approval'
 }
+Case 'managed-worker-spec-pins-run-configuration-in-exact-task-commandline' {
+ $s=New-RemovalTaskSpec -WorkerPath $worker -WorkerSha256 (Get-FileHash -LiteralPath $worker).Hash -RunDirectory $root -SessionId 2 -Nonce ([Guid]::NewGuid().ToString('N')) -RunSpecSha256 ('B'*64)
+ Check ($s.Arguments.Contains('"-RunSpecSha256" "'+('B'*64)+'"')) 'Run configuration hash absent from task action'
+}
 Case 'definition-check-rejects-extra-actions-triggers-or-highest-token' {
  foreach($mode in @('action','trigger','privilege','session')){
   $s=Spec;$t=FakeTask $s
@@ -202,6 +206,13 @@ Case 'terminal-result-requires-known-probe-exit-and-no-owners' {
  $worker.Owners=@();$worker.ProbeExitKnown=$false;$r=Test-RemovalTaskTerminal $o $state $worker;Check (-not$r.WorkerTerminal) 'Unknown reported probe accepted'
  $worker.ProbeExitKnown=$true;$worker.WorkerExitCode=$true
  $r=Test-RemovalTaskTerminal $o $state $worker;Check (-not$r.WorkerTerminal) 'Boolean worker exit code accepted as integer'
+}
+Case 'retained-worker-liveness-does-not-require-a-final-json-receipt' {
+ $s=Spec;$o=Owner $s (FakeTask $s);Start-RemovalTaskOnce $o;$r=WorkerReceipt $s;BindFakeWorker $o $r
+ $live=Observe-RemovalRetainedWorker $o
+ Check (-not$live.ExitKnown-and$live.NeedsObservation) 'Live worker treated as exited'
+ $script:mockWorker.HasExited=$true;$done=Observe-RemovalRetainedWorker $o
+ Check ($done.ExitKnown-and$done.ExitCode-eq1-and-not$done.NeedsObservation-and-not$done.NativePassed) 'Actual worker exit requires detached result'
 }
 $checks|ConvertTo-Json -Depth 6
 $failed=@($checks|Where-Object{-not$_.passed}).Count

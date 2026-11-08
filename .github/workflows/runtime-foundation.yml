@@ -129,13 +129,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $engines = @("$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe", "$PSHOME\pwsh.exe")
           foreach ($engine in $engines) {
-            foreach ($test in @('test-finite-tool.ps1', 'test-task-boundary.ps1', 'test-trace-boundary.ps1', 'test-trace-finite.ps1')) {
+            foreach ($test in @('test-finite-tool.ps1', 'test-task-boundary.ps1', 'test-trace-boundary.ps1', 'test-trace-finite.ps1', 'test-probe-boundary.ps1', 'test-worker-boundary.ps1', 'test-collector-boundary.ps1', 'test-worker-entry.ps1')) {
               & $engine -NoLogo -NoProfile -NonInteractive -File "scripts/vad-removal/$test"
               if ($LASTEXITCODE -ne 0) { throw "$test failed under $engine ($LASTEXITCODE)." }
             }
           }
           # The real worker-token check requires a nonzero interactive session;
-          # run test-task-process.ps1 explicitly on the non-elevated dev host.
+          # run test-task-process.ps1 and test-worker-process.ps1 explicitly on
+          # the non-elevated dev host. Neither enters native audio or scheduler.
       - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
       # cargo -p takes one package per flag, so expand the list first.
       # No separate `cargo check` pass: `cargo test` compiles the same targets
