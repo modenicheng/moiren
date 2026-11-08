@@ -95,6 +95,10 @@ The user subsequently confirms reboot. Live read-only collection verifies
 boot2026-11-08T13:26:07.5Zand the expected613Running/OK/problem0SYS/PnP binding.
 Full fresh tool/signature/safety admission and actual manifest remain open;
 this basic metadata observation starts no audio, task, trace or desktop input.
+Release42dbdd5fand fixed-main merge847e2ee6are now committed locally. The app
+subtree matches the independently tested snapshot; scripts/driver remain
+unchanged through that merge. Publication and exact new-head CI are still
+separate gates, not covered by the olddc8b1270CI result.
 
 The user requires one reused OBS installation rather than copied executable
 trees for each experiment. Reuse the existing dedicated test installation at

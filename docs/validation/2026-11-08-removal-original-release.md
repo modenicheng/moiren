@@ -175,6 +175,18 @@ and after, returns CODE_CLEAR/0findings, and retains the earlier findings.
 It checks both repaired P2paths, actual Init/CWT composition and independent
 cleanup. It neither runs a new fixture nor grants native approval.
 
+## Verified Integration Checkpoint
+
+The repaired release is committed as42dbdd5f. Merge847e2ee6then combines the
+reviewed fixed-main timing snapshotc714f833without touching scripts, driver or
+other crates. The application subtree matches the independently tested tree
+34d499dfe60f3308ec0d7f5a18d6dffb08e64312. The source/evidence archive contains
+591read-back members and is1309339bytes, SHA256
+0190B6B22DEB77D02C53C4887EC521D4D1E22AFC0D8D6386D5BC50C78010ABFE.
+The original29draft/cache pins remain unchanged. Publication and resulting
+exact-head CI are separate from these local results; PR26remains Draft and
+there is no merge to main.
+
 ## Remaining Boundary
 
 The user confirms reboot during this continuation. The live read-only receipt

@@ -65,8 +65,8 @@ the remaining executable handoff locally. Native work still awaits the user.
   Retain the PS5outer-runner interruption separately; its37logs are not a
   full matrix verdict. Original corrected owner88480exits0:88suites,
   1070checks,0failures and no source drift.
-- [x] Archive exact source/log/terminal evidence, update canonical status and
-  publish only a meaningful verified checkpoint. Do not reopen obsolete runners.
+- [x] Archive exact source/log/terminal evidence and update canonical status.
+  Do not reopen obsolete runners.
 
 ## Task 4: Fixed Main Timing Snapshot
 
@@ -75,9 +75,11 @@ the remaining executable handoff locally. Native work still awaits the user.
 - [x] Run each actual headless test once, with1pass/0fail each, plus fmt and
   strict scoped Clippy. Archive all13members and independently read each back.
 - [x] Commit the reviewed isolated integration as c714f833; keep it frozen.
-- [ ] After committing the verified release, merge c714f833into the feature
+- [x] After committing the verified release, merge c714f833into the feature
   integration branch and verify the tested app tree and unchanged script/driver
-  pins. Publish normally; keep PR26Draft and observe exact new-head CI.
+  pins. Release42dbdd5fand merge847e2ee6are local verified commits.
+- [ ] Publish the combined checkpoint normally; keep PR26Draft and observe
+  exact new-head CI. Prior dc8b1270green does not cover the combined head.
 
 ## Completion Boundary
 
