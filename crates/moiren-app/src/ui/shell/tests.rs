@@ -1411,7 +1411,7 @@ fn inspector_hot_layer_paints_the_registered_meter_tracks(cx: &mut gpui_kit::Tes
     // the frame and the fresh subtree's canvases re-registered their tracks;
     // the live hot layer paints them on every rendered frame after that.
     let (registered, painted) = view.update(cx, |shell, cx| {
-        let meters = shell.inspector_meter_layer.read(cx).surface();
+        let meters = shell.inspector.meter_layer.read(cx).surface();
         let meters = meters.borrow();
         (meters.registered_tracks(), meters.painted_tracks())
     });

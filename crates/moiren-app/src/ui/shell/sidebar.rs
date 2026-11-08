@@ -60,7 +60,7 @@ impl CachedPanel for InspectorPanel {
             page: shell.presentation.page,
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
-            node_name_editing: shell.node_name_editing,
+            node_name_editing: shell.inspector.node_name_editing,
             editing_value: shell.mixer.editing_value,
             editing_balance: shell.mixer.editing_balance,
             editing_node_gain: shell.mixer.editing_node_gain,
@@ -68,7 +68,7 @@ impl CachedPanel for InspectorPanel {
             editing_send: shell.mixer.editing_send,
             compact: shell.compact,
             preferences: shell.preferences.values.clone(),
-            inspector_scroll: shell.inspector_scroll.offset().y,
+            inspector_scroll: shell.inspector.scroll.offset().y,
             override_scroll: shell.devices.device_override_scroll.offset().y,
         }
     }
@@ -89,7 +89,7 @@ impl CachedPanel for InspectorPanel {
     fn on_rebuild(&self, shell: &mut Self::Owner) {
         // The inspector's canvases register their meter tracks during this
         // same layout pass; stale placements must not survive a rebuild.
-        shell.inspector_meters.reset();
+        shell.inspector.meters.reset();
     }
 
     fn observe_nested(
@@ -118,6 +118,7 @@ impl CachedPanel for InspectorPanel {
             );
             sliders.extend(
                 shell
+                    .inspector
                     .compressor
                     .sliders
                     .values()
@@ -148,13 +149,14 @@ fn inspector_panel_for(shell: &StudioShell, _window: &Window) -> AnyElement {
         .size_full()
         .child(
             shell
-                .inspector_panel
+                .inspector
+                .panel
                 .clone()
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
         )
         .child(overlay_scrollbar(
-            &shell.inspector_scroll,
+            &shell.inspector.scroll,
             "scrollbar-inspector-panel",
             ScrollbarAxis::Vertical,
         ))
@@ -190,8 +192,8 @@ fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
         pending_spawn: shell.pending_node_spawn.is_some(),
         compact: shell.compact,
         preferences: shell.preferences.values.clone(),
-        scroll: shell.library_scroll.offset().y,
-        rail_scroll: shell.library_rail_scroll.offset().y,
+        scroll: shell.library.scroll.offset().y,
+        rail_scroll: shell.library.rail_scroll.offset().y,
     }
 }
 
@@ -395,7 +397,7 @@ pub(super) fn inspector_host(
             theme::INSPECTOR_WIDTH,
             inspector_panel_for(shell, window),
         ))
-        .child(shell.inspector_meter_layer.clone())
+        .child(shell.inspector.meter_layer.clone())
         .child(edge_handle(
             "inspector-toggle",
             shell.inspector_open,
@@ -408,6 +410,30 @@ pub(super) fn inspector_host(
 /// Left-hand node-library host for the graph page. The icon rail is the
 /// collapsed form: it grows in from zero only while the detail sleeve is
 /// closed, so the two springs swap one for the other in the same motion.
+/// The inspector column's shell-owned state (design 20 §4): the rename
+/// editor's input entity and target, the compressor parameter controls,
+/// the meter-track frame and its hot layer, the panel's scroll, and the
+/// cached InspectorPanel host.
+pub(crate) struct InspectorState {
+    pub(crate) node_name: Entity<component::input::InputState>,
+    /// Node whose label is being edited inline in the inspector.
+    pub(crate) node_name_editing: Option<moiren_core::graph::NodeId>,
+    pub(crate) compressor: crate::ui::pages::graph::CompressorControls,
+    pub(crate) meters: InspectorMeterFrame,
+    pub(crate) meter_layer: Entity<InspectorMeterLayer>,
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) panel: Entity<InspectorPanelHost>,
+}
+
+/// The node library's shell-owned state (design 20 §4): both hosts' scroll
+/// containers and their cached panel hosts.
+pub(crate) struct LibraryState {
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) rail_scroll: ScrollHandle,
+    pub(crate) panel: Entity<LibraryPanelHost>,
+    pub(crate) rail_panel: Entity<LibraryRailPanelHost>,
+}
+
 pub(crate) fn library_host(
     shell: &StudioShell,
     _window: &Window,
@@ -430,13 +456,14 @@ pub(crate) fn library_host(
                     .size_full()
                     .child(
                         shell
-                            .library_rail_panel
+                            .library
+                            .rail_panel
                             .clone()
                             .cached(StyleRefinement::default().size_full())
                             .into_any_element(),
                     )
                     .child(overlay_scrollbar(
-                        &shell.library_rail_scroll,
+                        &shell.library.rail_scroll,
                         "scrollbar-library-rail",
                         ScrollbarAxis::Vertical,
                     ))
@@ -454,13 +481,14 @@ pub(crate) fn library_host(
                     .size_full()
                     .child(
                         shell
-                            .library_panel
+                            .library
+                            .panel
                             .clone()
                             .cached(StyleRefinement::default().size_full())
                             .into_any_element(),
                     )
                     .child(overlay_scrollbar(
-                        &shell.library_scroll,
+                        &shell.library.scroll,
                         "scrollbar-node-library",
                         ScrollbarAxis::Vertical,
                     ))

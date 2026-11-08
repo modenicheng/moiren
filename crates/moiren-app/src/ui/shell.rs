@@ -184,19 +184,15 @@ pub struct StudioShell {
     )>,
     pub(crate) pending_node_spawn: Option<graph::PendingNodeSpawn>,
     pub(crate) node_search: Entity<component::input::InputState>,
-    pub(crate) node_name: Entity<component::input::InputState>,
-    /// Node whose label is being edited inline in the inspector.
-    pub(crate) node_name_editing: Option<moiren_core::graph::NodeId>,
     pub(crate) hand_tool: bool,
     pub(crate) matrix: matrix::MatrixPageState,
     pub(crate) mixer_scroll: ScrollHandle,
-    /// The shared inspector panel's scroll (graph/matrix/device inspectors
-    /// are mutually exclusive), plus the other cached panels' scroll
-    /// containers: their offsets ride the panel keys, since a cached panel
-    /// replays baked paint coordinates until its key changes.
-    pub(crate) inspector_scroll: ScrollHandle,
-    pub(crate) library_scroll: ScrollHandle,
-    pub(crate) library_rail_scroll: ScrollHandle,
+    /// The inspector column and node library's shell-owned state groups
+    /// (design 20 §4). Cached panels' scroll offsets ride the panel keys,
+    /// since a cached panel replays baked paint coordinates until its key
+    /// changes.
+    pub(crate) inspector: sidebar::InspectorState,
+    pub(crate) library: sidebar::LibraryState,
     pub(crate) binding_menu_scroll: ScrollHandle,
     /// The dock pane's own scroll: docked strips key their cached paint on
     /// this offset, so a dock scroll rebuilds them instead of leaving the
@@ -239,7 +235,6 @@ pub struct StudioShell {
     /// The fault detail popover hanging off a faulted object's "!" marker
     /// (graph badge, mixer strip badge, status bar summary).
     pub(crate) fault_popover: Option<fault_popover::FaultPopover>,
-    pub(crate) compressor: graph::CompressorControls,
     pub(crate) meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
     /// H): sources register while active, and the control-side poll is the
@@ -247,11 +242,6 @@ pub struct StudioShell {
     pub(crate) frame_demand: hot::FrameDemand,
     /// Where the inspector's meter tracks sit; registered by the inspector's
     /// canvases each frame and read by the sidebar hot layer.
-    pub(crate) inspector_meters: sidebar::InspectorMeterFrame,
-    pub(crate) inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
-    pub(crate) inspector_panel: Entity<sidebar::InspectorPanelHost>,
-    pub(crate) library_panel: Entity<sidebar::LibraryPanelHost>,
-    pub(crate) library_rail_panel: Entity<sidebar::LibraryRailPanelHost>,
     pub(crate) observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
@@ -433,14 +423,9 @@ impl StudioShell {
             knob_drag: None,
             pending_node_spawn: None,
             node_search,
-            node_name,
-            node_name_editing: None,
             hand_tool: false,
             matrix: matrix::MatrixPageState::default(),
             mixer_scroll: ScrollHandle::new(),
-            inspector_scroll: ScrollHandle::new(),
-            library_scroll: ScrollHandle::new(),
-            library_rail_scroll: ScrollHandle::new(),
             binding_menu_scroll: ScrollHandle::new(),
             dock_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
@@ -459,14 +444,23 @@ impl StudioShell {
             hovered_strip: None,
             binding_menu: None,
             fault_popover: None,
-            compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             frame_demand: Default::default(),
-            inspector_meters,
-            inspector_meter_layer,
-            inspector_panel,
-            library_panel,
-            library_rail_panel,
+            inspector: sidebar::InspectorState {
+                node_name,
+                node_name_editing: None,
+                compressor: graph::CompressorControls::default(),
+                meters: inspector_meters,
+                meter_layer: inspector_meter_layer,
+                scroll: ScrollHandle::new(),
+                panel: inspector_panel,
+            },
+            library: sidebar::LibraryState {
+                scroll: ScrollHandle::new(),
+                rail_scroll: ScrollHandle::new(),
+                panel: library_panel,
+                rail_panel: library_rail_panel,
+            },
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
@@ -962,9 +956,9 @@ impl StudioShell {
     /// so a new editor family cannot land in one enumeration site and miss
     /// the other (the shared root cause of audit SD-1/SD-2).
     pub(crate) fn text_input_entities(&self) -> Vec<Entity<component::input::InputState>> {
-        let mut inputs = vec![self.node_name.clone()];
+        let mut inputs = vec![self.inspector.node_name.clone()];
         inputs.extend(self.mixer.text_input_entities().cloned());
-        inputs.extend(self.compressor.inputs.values().cloned());
+        inputs.extend(self.inspector.compressor.inputs.values().cloned());
         inputs.extend(self.devices.export_controls.input_entities());
         inputs
     }
@@ -982,7 +976,7 @@ impl StudioShell {
             .values()
             .chain(self.mixer.sends.values())
             .chain(self.mixer.inspector_faders.values())
-            .chain(self.compressor.sliders.values())
+            .chain(self.inspector.compressor.sliders.values())
     }
 
     /// Cancels every in-flight slider drag so a journal step cannot be

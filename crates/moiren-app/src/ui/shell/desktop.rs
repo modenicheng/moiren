@@ -80,7 +80,7 @@ impl PresentationSnapshot {
         shell.node_positions = self.node_positions;
         shell.mixer.order = self.mixer_order;
         shell.pending_node_spawn = self.pending_node_spawn;
-        shell.node_name_editing = None;
+        shell.inspector.node_name_editing = None;
         shell.selected_node = self.selected_node;
         shell.selected_route = self.selected_route;
         shell.sidebar_open = self.sidebar_open;

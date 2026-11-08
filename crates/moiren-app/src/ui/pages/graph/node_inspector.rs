@@ -53,7 +53,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .iter()
         .find(|node| shell.selected_node == Some(node.id()));
     let mut view =
-        panel("graph-inspector", &shell.inspector_scroll).child(heading(t!("Inspector")));
+        panel("graph-inspector", &shell.inspector.scroll).child(heading(t!("Inspector")));
     let Some(node) = selected else {
         let view = view
             .child(
@@ -89,12 +89,12 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     .gpui_test_observe(),
             )
             .gpui_test_observe();
-        return panel_host("graph-inspector", &shell.inspector_scroll, view).into_any_element();
+        return panel_host("graph-inspector", &shell.inspector.scroll, view).into_any_element();
     };
     let id = node.id();
     let entry = snapshot.graph.node(id).expect("service node metadata");
     let display = crate::ui::presentation::display_label(entry);
-    let editing = shell.node_name_editing == Some(id);
+    let editing = shell.inspector.node_name_editing == Some(id);
     // One inline name control: a plain heading until clicked, then the editor
     // in the same place. There is no separate rename row.
     let name_control: AnyElement = if editing {
@@ -104,7 +104,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .items_center()
             .gap(px(4.))
             .child(
-                component::input::Input::new(&shell.node_name)
+                component::input::Input::new(&shell.inspector.node_name)
                     .id("node-name")
                     .bg(theme::SURFACE_3)
                     .text_color(theme::TEXT)
@@ -143,13 +143,14 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 let initial = display.clone();
                 move |_, window, cx| {
                     this.update(cx, |shell, cx| {
-                        shell.node_name_editing = Some(id);
+                        shell.inspector.node_name_editing = Some(id);
                         shell
+                            .inspector
                             .node_name
                             .update(cx, |input, cx| input.set_value(initial.clone(), window, cx));
                         cx.notify();
                     });
-                    let input = this.read(cx).node_name.clone();
+                    let input = this.read(cx).inspector.node_name.clone();
                     let handle = input.read(cx).focus_handle(cx);
                     window.focus(&handle, cx);
                 }
@@ -530,14 +531,16 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         parameter.display(entry.compressor.value(parameter)),
                     ))
                     .child(
-                        component::input::Input::new(&shell.compressor.inputs[&(id, parameter)])
-                            .id(format!("compressor-input-{}", parameter.id().0))
-                            .bg(theme::SURFACE_3)
-                            .text_color(theme::TEXT)
-                            .border_color(theme::BORDER),
+                        component::input::Input::new(
+                            &shell.inspector.compressor.inputs[&(id, parameter)],
+                        )
+                        .id(format!("compressor-input-{}", parameter.id().0))
+                        .bg(theme::SURFACE_3)
+                        .text_color(theme::TEXT)
+                        .border_color(theme::BORDER),
                     )
                     .child({
-                        let slot = &shell.compressor.sliders[&(id, parameter)];
+                        let slot = &shell.inspector.compressor.sliders[&(id, parameter)];
                         hslider(&slot.state, &slot.behavior, cx)
                     })
                     .gpui_test_observe(),
@@ -643,7 +646,7 @@ fn node_observation(
         }
         view = view.child(readings);
     }
-    panel_host("graph-inspector", &shell.inspector_scroll, view).into_any_element()
+    panel_host("graph-inspector", &shell.inspector.scroll, view).into_any_element()
 }
 
 fn builtin_controls(
@@ -1272,10 +1275,10 @@ impl StudioShell {
     /// longer selected, drop selection members the graph no longer has, and
     /// keep the primary selection inside the canvas multi-selection.
     pub(crate) fn sync_node_name(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.node_name_editing
+        if let Some(id) = self.inspector.node_name_editing
             && self.selected_node != Some(id)
         {
-            self.node_name_editing = None;
+            self.inspector.node_name_editing = None;
         }
         let graph = self.state.read(cx).snapshot.graph.clone();
         self.selected_nodes.retain(|id| graph.node(*id).is_some());
@@ -1291,10 +1294,10 @@ impl StudioShell {
     /// Commits the inline name edit: dispatches SetLabel unless the value is
     /// empty (treated as cancel). Enter, ✓ and focus loss land here.
     pub(crate) fn confirm_node_rename(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.node_name_editing.take() else {
+        let Some(id) = self.inspector.node_name_editing.take() else {
             return;
         };
-        let label = self.node_name.read(cx).value().trim().to_string();
+        let label = self.inspector.node_name.read(cx).value().trim().to_string();
         if !label.is_empty() {
             self.state.update(cx, |state, _| {
                 state.dispatch(AppRequest::EditGraph(GraphEdit::SetLabel {
@@ -1308,7 +1311,7 @@ impl StudioShell {
 
     /// Discards the inline name edit without touching the stored label.
     pub(crate) fn cancel_node_rename(&mut self, cx: &mut Context<Self>) {
-        if self.node_name_editing.take().is_some() {
+        if self.inspector.node_name_editing.take().is_some() {
             cx.notify();
         }
     }
@@ -1323,7 +1326,7 @@ fn inspector_meter_track(
     id: moiren_core::graph::NodeId,
     channels: usize,
 ) -> impl IntoElement {
-    let geometry = shell.inspector_meters.clone();
+    let geometry = shell.inspector.meters.clone();
     // Clicking the meter resets the clip latch, like every meter surface.
     div()
         .id(SharedString::from(format!("inspector-meter-{id:?}")))
