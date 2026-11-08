@@ -135,11 +135,28 @@ pub(crate) struct PressTracker {
     pub(crate) last: Option<(u64, Instant)>,
 }
 
+/// The metering infrastructure (design 20 §4): the legacy I/O
+/// subscription table, the demand sets the pages' canvases register, the
+/// frame-demand arbiter, and the observation-node pair the pump keeps.
+pub(crate) struct MeteringInfra {
+    pub(crate) meters: MeterSubscriptions,
+    pub(crate) node_meter_points:
+        std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
+    pub(crate) meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
+    pub(crate) frame_demand: hot::FrameDemand,
+    pub(crate) observation_nodes: Option<(
+        crate::service::SessionGeneration,
+        moiren_core::graph::NodeId,
+        moiren_core::graph::NodeId,
+    )>,
+}
+
 pub struct StudioShell {
     pub(crate) state: Entity<UiState>,
     pub(crate) chrome: chrome::ShellChrome,
     pub(crate) selection: graph::Selection,
     pub(crate) press: PressTracker,
+    pub(crate) metering: MeteringInfra,
     pub(crate) settings_open: bool,
     pub(crate) settings: settings::SettingsPageState,
     /// Live preference values plus the quiet-save machinery (design 20 §4).
@@ -148,9 +165,6 @@ pub struct StudioShell {
     /// was last saved from, and the in-flight debounce/write machinery.
     pub(crate) autosave: autosave::Autosave,
     pub(crate) devices: devices::DevicesPageState,
-    pub(crate) meters: MeterSubscriptions,
-    pub(crate) node_meter_points:
-        std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
     pub(crate) project_io: project::ProjectIo,
     #[cfg(feature = "gpui-test")]
     pub(crate) test_page: Option<Entity<PageCell>>,
@@ -205,18 +219,11 @@ pub struct StudioShell {
     /// The endpoint menu hanging off a source/sink card's binding chip.
     /// The fault detail popover hanging off a faulted object's "!" marker
     /// (graph badge, mixer strip badge, status bar summary).
-    pub(crate) meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
     /// H): sources register while active, and the control-side poll is the
     /// complement.
-    pub(crate) frame_demand: hot::FrameDemand,
     /// Where the inspector's meter tracks sit; registered by the inspector's
     /// canvases each frame and read by the sidebar hot layer.
-    pub(crate) observation_nodes: Option<(
-        crate::service::SessionGeneration,
-        moiren_core::graph::NodeId,
-        moiren_core::graph::NodeId,
-    )>,
     /// Screen-space anchor of an active pan drag (window coordinates).
     /// Left background clicks deselect only on release; a pan keeps selection.
     /// Last selectable-element press (target hash + time) for double-click
@@ -329,6 +336,13 @@ impl StudioShell {
         });
         let mut shell = Self {
             state,
+            metering: MeteringInfra {
+                meters,
+                node_meter_points: Default::default(),
+                meter_points: Default::default(),
+                frame_demand: Default::default(),
+                observation_nodes: None,
+            },
             chrome: chrome::ShellChrome {
                 project_menu: false,
                 sidebar_open: true,
@@ -368,8 +382,6 @@ impl StudioShell {
                 exports_scroll: ScrollHandle::new(),
                 panel: devices_panel,
             },
-            meters,
-            node_meter_points: Default::default(),
             project_io: project::ProjectIo {
                 path: None,
                 name: t!("Untitled session").into(),
@@ -409,8 +421,6 @@ impl StudioShell {
             },
             #[cfg(feature = "gpui-test")]
             trace: Default::default(),
-            meter_points: Default::default(),
-            frame_demand: Default::default(),
             inspector: sidebar::InspectorState {
                 node_name,
                 node_name_editing: None,
@@ -426,7 +436,6 @@ impl StudioShell {
                 panel: library_panel,
                 rail_panel: library_rail_panel,
             },
-            observation_nodes: None,
             desktop,
             window_state: desktop::capture_window_state(window, Page::Graph),
             #[cfg(windows)]
@@ -461,7 +470,10 @@ impl StudioShell {
             shell.presentation.visible = visibility.is_visible();
             shell.presentation.minimized = !visibility.is_visible();
             if !visibility.is_visible() {
-                shell.meters.update(&shell.state.read(cx).snapshot, false);
+                shell
+                    .metering
+                    .meters
+                    .update(&shell.state.read(cx).snapshot, false);
             }
             cx.notify();
         })
@@ -560,7 +572,7 @@ impl StudioShell {
         // the mouse-up) must not starve the control-side poll, which is the
         // only meter pump the pages without hot layers have.
         (self.drag_active() && self.presentation.page == Page::Graph)
-            || (self.frames_eligible(cx) && self.frame_demand.any())
+            || (self.frames_eligible(cx) && self.metering.frame_demand.any())
     }
 
     /// Whether a graph canvas gesture is in flight (rubber band, pan, node
@@ -579,7 +591,9 @@ impl StudioShell {
     /// rest.
     pub(crate) fn meters_in_motion(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
-        !self.meters.at_rest() || !state.node_meters.at_rest() || !state.node_spectra.at_rest()
+        !self.metering.meters.at_rest()
+            || !state.node_meters.at_rest()
+            || !state.node_spectra.at_rest()
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -597,7 +611,7 @@ impl StudioShell {
         // blank out mid-drag, or the readings freeze at the publication
         // cadence.
         let visible = self.frames_eligible(cx) || self.drag_active();
-        let points = self.meter_points.get();
+        let points = self.metering.meter_points.get();
         // The legacy monitor meters only display where the strip has no node
         // level topic: a managed strip's meter comes from NodeMeters, and
         // the pre-fader capture tap carries signal even when the fader is
@@ -605,7 +619,7 @@ impl StudioShell {
         // page's frame loop armed forever — the Graph page mounts no such
         // probes and stands down, the Mixer page burned a core.
         let (input_shown, output_shown) = self.legacy_meters_shown(cx, points);
-        let meter_changed = self.meters.update_points(
+        let meter_changed = self.metering.meters.update_points(
             &self.state.read(cx).snapshot,
             visible && input_shown,
             visible && output_shown,
@@ -614,7 +628,8 @@ impl StudioShell {
         // Re-derive the arbiter's meter demand from the fresh ballistics: the
         // loop continues while anything moves, and the control-side poll
         // takes over the moment everything rests.
-        self.frame_demand
+        self.metering
+            .frame_demand
             .set(hot::METER_MOTION, self.meters_in_motion(cx));
         self.sync_drag_demand();
         meter_changed || node_meter_changed
@@ -625,7 +640,9 @@ impl StudioShell {
     /// mouse-down handlers must arm the loop immediately, not at the next
     /// control poll.
     pub(crate) fn sync_drag_demand(&mut self) {
-        self.frame_demand.set(hot::DRAG, self.drag_active());
+        self.metering
+            .frame_demand
+            .set(hot::DRAG, self.drag_active());
     }
 
     /// Whether the legacy input/output monitor meters actually display: their
@@ -641,7 +658,7 @@ impl StudioShell {
                 .node_levels
                 .contains_key(&id)
         };
-        match self.observation_nodes {
+        match self.metering.observation_nodes {
             Some((_, source, sink)) => (points.0 && !managed(source), points.1 && !managed(sink)),
             None => (false, false),
         }
@@ -668,7 +685,9 @@ impl StudioShell {
             self.window_state = desktop::capture_window_state(window, self.presentation.page);
         }
         self.presentation.hide_to_tray();
-        self.meters.update(&self.state.read(cx).snapshot, false);
+        self.metering
+            .meters
+            .update(&self.state.read(cx).snapshot, false);
         self.update_node_meters(false, cx);
         if let Some(desktop) = self.desktop.clone() {
             let _ = desktop.update(cx, |desktop, cx| desktop.prepare_close(self, cx));
@@ -785,11 +804,13 @@ impl Render for StudioShell {
         // frame would unsubscribe meters that remain visible; other pages
         // hold no meter demand of their own.
         if !matches!(self.presentation.page, Page::Graph | Page::Mixer) {
-            self.meter_points.set((false, false));
-            self.node_meter_points.borrow_mut().clear();
+            self.metering.meter_points.set((false, false));
+            self.metering.node_meter_points.borrow_mut().clear();
         }
         if !visible {
-            self.meters.update(&self.state.read(cx).snapshot, false);
+            self.metering
+                .meters
+                .update(&self.state.read(cx).snapshot, false);
             self.update_node_meters(false, cx);
         }
         div()
@@ -1009,14 +1030,15 @@ impl StudioShell {
 
     pub(crate) fn refresh_observation_nodes(&mut self, cx: &App) {
         use moiren_core::graph::NodeKind;
-        let before = self.observation_nodes;
+        let before = self.metering.observation_nodes;
         let snapshot = &self.state.read(cx).snapshot;
         if snapshot.phase != SessionPhase::Running
             || self
+                .metering
                 .observation_nodes
                 .is_some_and(|(generation, _, _)| generation != snapshot.generation)
         {
-            self.observation_nodes = None;
+            self.metering.observation_nodes = None;
         }
         let graph = &snapshot.graph;
         if snapshot.phase == SessionPhase::Running {
@@ -1026,16 +1048,16 @@ impl StudioShell {
             let sink = graph
                 .node_of_kind(NodeKind::Sink)
                 .map(|(node, _)| node.id());
-            self.observation_nodes = source
+            self.metering.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));
         }
-        if before != self.observation_nodes {
+        if before != self.metering.observation_nodes {
             // The probe flags belonged to the previous owners' canvases,
             // which mount only while eligible. The new owners re-register on
             // their rebuild in this same layout pass — eligibility rides in
             // their strip keys — so clearing here leaves no stale window.
-            self.meter_points.set((false, false));
+            self.metering.meter_points.set((false, false));
         }
     }
 }

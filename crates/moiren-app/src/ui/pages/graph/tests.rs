@@ -914,7 +914,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
         shell.selection.node = Some(node);
-        shell.node_meter_points.borrow_mut().clear();
+        shell.metering.node_meter_points.borrow_mut().clear();
         // Frame-driven pumping may already have created the subscription
         // for the canvas-visible node, so the change flag is not stable
         // here; the selected node must end up demanded either way.
@@ -929,7 +929,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
     wait_until(Duration::from_secs(2), || topic.business_subscribers() != 0);
     view.update(cx, |shell, cx| {
         shell.selection.node = None;
-        shell.node_meter_points.borrow_mut().clear();
+        shell.metering.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
         assert!(shell.state.read(cx).node_meters.levels(node).is_none());
     });
@@ -998,7 +998,7 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
         shell.selection.node = Some(node);
         shell.chrome.inspector_open = true;
         shell.presentation.page = pages::Page::Graph;
-        shell.node_meter_points.borrow_mut().clear();
+        shell.metering.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
     });
     wait_until(Duration::from_secs(3), || topic.business_subscribers() != 0);
@@ -1007,7 +1007,7 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     // release there instead of riding the selection forever (SD-9).
     view.update(cx, |shell, cx| {
         shell.presentation.page = pages::Page::Matrix;
-        shell.node_meter_points.borrow_mut().clear();
+        shell.metering.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
     });
     // Drive open-gate pumps while waiting: the grace must expire because no
@@ -1022,7 +1022,7 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     // selection's demand with it.
     view.update(cx, |shell, cx| {
         shell.presentation.page = pages::Page::Graph;
-        shell.node_meter_points.borrow_mut().clear();
+        shell.metering.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
     });
     wait_until(Duration::from_secs(3), || topic.business_subscribers() != 0);
@@ -1995,7 +1995,7 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
     }
     let after = view.read_with(cx, |shell, _| {
         assert!(
-            shell.node_meter_points.borrow().contains(&node),
+            shell.metering.node_meter_points.borrow().contains(&node),
             "graph meter demand must survive animation-only frames"
         );
         let trace = shell.trace.borrow();
@@ -2470,7 +2470,7 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
     });
     render(cx);
     view.read_with(cx, |shell, _| {
-        let points = shell.node_meter_points.borrow();
+        let points = shell.metering.node_meter_points.borrow();
         assert!(points.contains(&near), "on-screen node stays demanded");
         assert!(
             !points.contains(&far),

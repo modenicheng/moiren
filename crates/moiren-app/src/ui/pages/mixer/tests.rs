@@ -447,7 +447,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     let after = view.read_with(cx, |shell, _| {
         let trace = shell.trace.borrow();
         assert!(
-            shell.node_meter_points.borrow().contains(&node),
+            shell.metering.node_meter_points.borrow().contains(&node),
             "cached meter demand must survive"
         );
         (trace.strip_renders, trace.meter_paints)
@@ -641,7 +641,7 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
         });
     }
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.meter_points.get()),
+        view.read_with(cx, |shell, _| shell.metering.meter_points.get()),
         (false, false)
     );
     view.update(cx, |shell, cx| {
@@ -653,7 +653,7 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.meter_points.get()),
+        view.read_with(cx, |shell, _| shell.metering.meter_points.get()),
         (true, true)
     );
     finish_service(runtime);
@@ -1328,7 +1328,7 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
     crate::ui::shell::test_harness::settle_panels(cx);
     view.update(cx, |shell, cx| {
         assert!(
-            shell.meter_points.get().0,
+            shell.metering.meter_points.get().0,
             "the source strip's capture probe must be mounted on the page"
         );
         assert!(
@@ -1360,11 +1360,11 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
     });
     view.read_with(cx, |shell, cx| {
         assert!(
-            shell.meter_points.get().0,
+            shell.metering.meter_points.get().0,
             "the probe must stay mounted while the page is at rest"
         );
         assert!(
-            !shell.meters.input_subscribed(),
+            !shell.metering.meters.input_subscribed(),
             "the capture tap stayed subscribed for a display the node topic covers"
         );
         assert!(
@@ -1518,6 +1518,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
     assert_eq!(after.left(), before.left() - px(160.));
     assert!(
         !view.read_with(cx, |shell, _| shell
+            .metering
             .node_meter_points
             .borrow()
             .contains(&node)),
@@ -1602,7 +1603,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
         view.read_with(cx, |shell, cx| {
             let surface = shell.mixer.frame.read(cx).surface();
             let surface = surface.borrow();
-            shell.node_meter_points.borrow().iter().all(|&id| {
+            shell.metering.node_meter_points.borrow().iter().all(|&id| {
                 shell
                     .state
                     .read(cx)

@@ -224,7 +224,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         let snapshot = &state.snapshot;
                         eprintln!("Native capture: phase={:?}, live={}, visible={}, nodes={}", snapshot.phase,
                             snapshot.graph.nodes.iter().filter(|node| state.node_meters.channel_levels(node.id).is_some()).count(),
-                            shell.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
+                            shell.metering.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
                     });
                     if std::env::var_os("MOIREN_CAPTURE_STATES").is_some() {
                         mixer_states::capture(window, &shell, &directory, &capture, cx)
@@ -271,7 +271,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                                 eprintln!(
                                     "Native mixer meters: {live}/{} live, {} visible, {} topics, phase {:?}",
                                     snapshot.graph.nodes.len(),
-                                    shell.node_meter_points.borrow().len(),
+                                    shell.metering.node_meter_points.borrow().len(),
                                     snapshot.signal_topics.node_levels.len(),
                                     snapshot.phase,
                                 );
