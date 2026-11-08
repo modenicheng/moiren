@@ -17,6 +17,14 @@ use controls::*;
 use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{PortId, SendParams};
 
+/// The Matrix page's shell-owned state (design 20 §4): today only the
+/// grid's scroll handle; gesture and selection state join their groups in
+/// later PRs as the domain grows.
+#[derive(Default)]
+pub(crate) struct MatrixPageState {
+    pub(crate) scroll: ScrollHandle,
+}
+
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 
@@ -47,7 +55,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     // followed (the rebound the clamped read exists to kill). A wheel event
     // that lands mid-frame can still skew the pair for one frame; the body
     // always wins the next notification.
-    let offset = clamped_offset(&shell.matrix_scroll, size(px(width), px(height)));
+    let offset = clamped_offset(&shell.matrix.scroll, size(px(width), px(height)));
     let name = |id| {
         snapshot
             .node(id)
@@ -261,7 +269,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                                 .w_full()
                                                 .h_full()
                                                 .overflow_scroll()
-                                                .track_scroll(&shell.matrix_scroll)
+                                                .track_scroll(&shell.matrix.scroll)
                                                 .on_scroll_wheel(move |_, _, cx| {
                                                     this.update(cx, |_, cx| cx.notify())
                                                 })
@@ -269,7 +277,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                                 .gpui_test_observe(),
                                         )
                                         .child(overlay_scrollbar(
-                                            &shell.matrix_scroll,
+                                            &shell.matrix.scroll,
                                             "scrollbar-matrix-grid",
                                             ScrollbarAxis::Both,
                                         )),
