@@ -3,6 +3,7 @@ use rust_i18n::t;
 use super::*;
 
 mod arrange;
+pub(crate) mod binding_choices;
 mod binding_menu;
 mod compressor;
 mod context_menu;

@@ -2925,6 +2925,152 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     finish_service(runtime);
 }
 
+/// Reads one surface's rendered choices — the buttons under the surface's
+/// element-id namespace — as (top, label) pairs so the sequence can be
+/// compared both by list order and by layout order.
+fn rendered_choices(
+    window: &gpui_kit::Window,
+    expected: &[super::binding_choices::BindingChoice],
+    namespace: &dyn Fn(&super::binding_choices::BindingTarget) -> gpui_kit::SharedString,
+) -> Vec<(f32, String)> {
+    expected
+        .iter()
+        .map(|choice| {
+            let found = window
+                .try_find(namespace(&choice.target))
+                .unwrap_or_else(|| panic!("missing choice {}", choice.target.key()));
+            (
+                f32::from(found.bounds().origin.y),
+                found.label().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[gpui_kit::test]
+fn binding_menu_and_inspector_list_the_same_source_choices(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    // Issue #119: the chip dropdown and the inspector's Source section
+    // must render the one shared ordered choice list. This pins the two
+    // rendered surfaces together — same choices, same labels, same visual
+    // order — so a future drift fails here instead of in front of a user.
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    let source = view.update(cx, |shell, cx| {
+        let snapshot = &shell.state.read(cx).snapshot;
+        let id = snapshot
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.id)
+            .find(|id| {
+                snapshot
+                    .graph
+                    .graph
+                    .get_node(*id)
+                    .is_ok_and(|node| node.kind() == NodeKind::Source)
+            })
+            .expect("default rig has a source");
+        shell.selection.node = Some(id);
+        shell.chrome.inspector_open = true;
+        shell.chrome.sidebar_open = false;
+        cx.notify();
+        id
+    });
+    settle_panels(cx);
+    // Hang the chip menu off a fabricated anchor rect: this test targets
+    // list parity, not chip hit-testing (covered above).
+    view.update(cx, |shell, cx| {
+        shell.graph_view.binding_menu = Some(super::BindingMenu {
+            node: source,
+            anchor: Bounds::new(point(px(200.), px(160.)), size(px(24.), px(12.))),
+        });
+        cx.notify();
+    });
+    render(cx);
+    let assert_parity = |cx: &mut VisualTestContext| {
+        let expected = view.read_with(cx, |shell, cx| {
+            let snapshot = &shell.state.read(cx).snapshot;
+            let entry = snapshot.graph.node(source).expect("source entry");
+            super::binding_choices::source_choices(snapshot, entry)
+        });
+        assert!(!expected.is_empty());
+        cx.update(|window, _| {
+            let menu = rendered_choices(window, &expected, &|target| {
+                gpui_kit::SharedString::from(format!("chip-{}", target.key()))
+            });
+            let inspector = rendered_choices(window, &expected, &|target| target.key());
+            let labels = |rows: &[(f32, String)]| {
+                rows.iter()
+                    .map(|(_, label)| label.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                labels(&menu),
+                labels(&inspector),
+                "menu and inspector lists differ"
+            );
+            for ((_, rendered), choice) in menu.iter().zip(expected.iter()) {
+                assert_eq!(rendered, &choice.label);
+            }
+            // Both surfaces lay the entries out top-to-bottom in list
+            // order; sorting by layout position reproduces the sequence.
+            let assert_layout_order = |surface: &str, rows: &[(f32, String)]| {
+                let mut by_layout = rows.to_vec();
+                by_layout.sort_by_key(|(top, _)| top.to_bits());
+                assert_eq!(
+                    by_layout.iter().map(|(_, label)| label).collect::<Vec<_>>(),
+                    rows.iter().map(|(_, label)| label).collect::<Vec<_>>(),
+                    "{surface} renders the choices out of order"
+                );
+            };
+            assert_layout_order("menu", &menu);
+            assert_layout_order("inspector", &inspector);
+        });
+        expected
+    };
+    // The default rig binds its source to the tone generator, so the
+    // picker leads with the matching Clear entry and closes with refresh.
+    let expected = assert_parity(cx);
+    assert_eq!(
+        expected.first().map(|choice| choice.label.as_str()),
+        Some("Clear binding")
+    );
+    assert!(
+        expected
+            .iter()
+            .any(|choice| choice.label == "Tone generator · 440 Hz")
+    );
+    assert_eq!(
+        expected.last().map(|choice| choice.label.as_str()),
+        Some("Refresh sources")
+    );
+    // Clearing the binding shrinks both lists the same way: the Clear
+    // entry disappears and the tone generator leads.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::ClearBinding(source),
+            ));
+        });
+    });
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .node(source)
+            .is_some_and(|entry| entry.source.is_none())
+    });
+    let expected = assert_parity(cx);
+    assert_eq!(
+        expected.first().map(|choice| choice.label.as_str()),
+        Some("Tone generator · 440 Hz")
+    );
+    assert_eq!(
+        expected.last().map(|choice| choice.label.as_str()),
+        Some("Refresh sources")
+    );
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn right_click_opens_the_node_context_menu_and_delete_removes_the_node(
     cx: &mut gpui_kit::TestAppContext,

@@ -39,6 +39,38 @@ pub(crate) fn kind_tint(kind: NodeKind) -> Hsla {
     }
 }
 
+/// Human display title for a kind (issue #121): the inspector's subtitle
+/// and the mixer/tray strip subtitles show this instead of the debug
+/// format. Wording follows the catalog template titles where a template
+/// exists ("Parametric EQ", "Mix bus", ...); kinds without a template of
+/// their own get a plain name — Source and Sink each cover several
+/// templates, and Plugin has none.
+///
+/// Plain English today, like the template titles: per design 21 §4 these
+/// strings are runtime i18n table keys, so later translation swaps the
+/// lookup here without touching the call sites.
+pub(crate) fn kind_title(kind: NodeKind) -> &'static str {
+    use moiren_core::graph::NodeKind::*;
+    match kind {
+        Source => "Input",
+        Sink => "Output",
+        Gain => "Gain",
+        Pan => "Balance",
+        Eq => "Parametric EQ",
+        Compressor => "Compressor",
+        Gate => "Gate",
+        Limiter => "Limiter",
+        Delay => "Delay",
+        ChannelMapper => "Channel mapper",
+        Recorder => "Recorder",
+        Meter => "Level meter",
+        SpectrumAnalyzer => "Spectrum analyzer",
+        Rack => "Processor rack",
+        Bus => "Mix bus",
+        Plugin => "Plugin",
+    }
+}
+
 /// The card icon for a kind; a Source's icon follows its live input
 /// selection (physical mic, application loopback, or the tone generator).
 pub(crate) fn kind_icon(

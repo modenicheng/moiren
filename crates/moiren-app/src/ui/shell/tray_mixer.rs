@@ -21,7 +21,8 @@ use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::mixer::{
-    SliderSlot, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click, sync_faders,
+    SliderSlot, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click, strip_subtitle,
+    sync_faders,
 };
 use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
@@ -225,11 +226,18 @@ impl CachedPanel for TrayPanel {
             .track_scroll(&owner.strips_scroll)
             .overflow_x_scroll()
             .on_scroll_wheel(notify_owner(cx.entity()));
-        for id in ids {
+        for (index, id) in ids.into_iter().enumerate() {
             let (Ok(node), Some(entry)) = (graph.graph.get_node(id), graph.node(id)) else {
                 continue;
             };
-            strips = strips.child(strip(owner, entry, node.kind(), cx));
+            strips = strips.child(strip(
+                owner,
+                entry,
+                index + 1,
+                node.kind(),
+                node.channels(),
+                cx,
+            ));
         }
 
         div()
@@ -334,7 +342,9 @@ fn open_button(cx: &Context<TrayMixer>) -> impl IntoElement {
 fn strip(
     flyout: &TrayMixer,
     entry: &GraphNodeState,
+    number: usize,
     kind: NodeKind,
+    channels: usize,
     cx: &Context<TrayMixer>,
 ) -> impl IntoElement {
     let id = entry.id;
@@ -370,7 +380,7 @@ fn strip(
                         // binding lives on the node card's chip, not here.
                         .child(crate::ui::presentation::display_label(entry)),
                 )
-                .child(label(format!("{kind:?}"))),
+                .child(label(strip_subtitle(number, kind, channels))),
         )
         .child(
             div()
