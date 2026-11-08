@@ -63,7 +63,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             shell.devices.selected_device = Some("selected-input".into());
             shell.node_positions.insert(test_node, (12.0, 34.0));
             shell.project_io.name = "Keep candidate".into();
-            shell.mixer.order.reverse();
+            shell.mixer.presentation.order.reverse();
         })
         .unwrap();
         window
@@ -1124,7 +1124,9 @@ fn ctrl_z_in_a_mixer_send_editor_leaves_the_graph_journal_alone(cx: &mut gpui_ki
     let handle = view.update(cx, |shell, cx| {
         use gpui_kit::Focusable;
         let edge = shell.state.read(cx).snapshot.graph.graph.edges()[0].id();
-        shell.mixer.send_inputs[&edge].read(cx).focus_handle(cx)
+        shell.mixer.presentation.send_inputs[&edge]
+            .read(cx)
+            .focus_handle(cx)
     });
     cx.update(|window, cx| window.focus(&handle, cx));
     // The send-gain editor is a text field: typing_focus must claim it so
@@ -1191,10 +1193,12 @@ fn graph_inspector_value_editor_keeps_focus_across_root_renders(cx: &mut gpui_ki
         window.render_frame(cx);
         window.render_frame(cx);
     });
-    let input = view.update(cx, |shell, _| shell.mixer.balance_inputs[&gain].clone());
+    let input = view.update(cx, |shell, _| {
+        shell.mixer.presentation.balance_inputs[&gain].clone()
+    });
     view.update(cx, |shell, _| {
         assert_eq!(
-            shell.mixer.editing_balance,
+            shell.mixer.presentation.editing_balance,
             Some(gain),
             "the editor must stay open instead of blur-committing the prefill"
         );
@@ -1275,8 +1279,10 @@ fn ctrl_z_in_an_inspector_value_editor_leaves_the_graph_journal_alone(
     });
     let handle = view.update(cx, |shell, cx| {
         use gpui_kit::Focusable;
-        let handle = shell.mixer.balance_inputs[&gain].read(cx).focus_handle(cx);
-        assert_eq!(shell.mixer.editing_balance, Some(gain));
+        let handle = shell.mixer.presentation.balance_inputs[&gain]
+            .read(cx)
+            .focus_handle(cx);
+        assert_eq!(shell.mixer.presentation.editing_balance, Some(gain));
         handle
     });
     // The inspector value editor is a text field: typing_focus must claim it
@@ -1348,11 +1354,11 @@ fn inspector_panel_rebuilds_when_a_nested_editor_moves(cx: &mut gpui_kit::TestAp
     });
     let input = view.update(cx, |shell, _| {
         assert_eq!(
-            shell.mixer.editing_balance,
+            shell.mixer.presentation.editing_balance,
             Some(gain),
             "the editor must be open for the keystroke to be nested"
         );
-        shell.mixer.balance_inputs[&gain].clone()
+        shell.mixer.presentation.balance_inputs[&gain].clone()
     });
     let before = view.read_with(cx, |shell, _| shell.trace.borrow().inspector_renders);
     // One keystroke's worth of editor movement: notifies the InputState and
@@ -1468,6 +1474,7 @@ fn graph_page_readout_editors_keep_focus_and_their_undo(cx: &mut gpui_kit::TestA
         use gpui_kit::Focusable;
         shell
             .mixer
+            .presentation
             .text_input_entities()
             .map(|input| input.read(cx).focus_handle(cx))
             .collect::<Vec<_>>()
@@ -1645,7 +1652,7 @@ fn statusbar_summarizes_unlocated_errors_and_opens_the_fault_popover(
     });
 
     // A located fault goes to its node, never to the status bar.
-    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let target = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     view.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
             let mut snapshot = (*state.snapshot).clone();

@@ -51,7 +51,7 @@ impl AutosaveStamp {
             session: state.candidate_config(),
             camera: (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
             workspace: StudioShell::workspace_document(shell.presentation.page),
-            mixer_order: shell.mixer.order.clone(),
+            mixer_order: shell.mixer.presentation.order.clone(),
             node_positions: shell
                 .node_positions
                 .iter()
@@ -95,7 +95,7 @@ impl StudioShell {
                 == (self.camera.pan_x, self.camera.pan_y, self.camera.zoom)
             && self.autosave.stamp.workspace
                 == StudioShell::workspace_document(self.presentation.page)
-            && self.autosave.stamp.mixer_order == self.mixer.order
+            && self.autosave.stamp.mixer_order == self.mixer.presentation.order
             && self.node_positions.len() == self.autosave.stamp.node_positions.len()
             && self
                 .node_positions

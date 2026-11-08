@@ -491,6 +491,7 @@ impl StudioShell {
         document.layout.zoom = self.camera.zoom;
         document.layout.mixer_order = self
             .mixer
+            .presentation
             .order
             .iter()
             .filter_map(|id| {
@@ -754,10 +755,10 @@ impl StudioShell {
         self.pending_node_spawn = None;
         self.inspector.node_name_editing = None;
         self.inspector.compressor = graph::CompressorControls::default();
-        self.mixer.order.clear();
+        self.mixer.presentation.order.clear();
         if let Some(graph) = &document.graph {
             let restored = graph.to_graph()?;
-            self.mixer.order = document
+            self.mixer.presentation.order = document
                 .layout
                 .mixer_order
                 .iter()

@@ -106,6 +106,19 @@ pub(crate) fn node_kind_color(kind: NodeKind) -> Hsla {
 /// content — the levels row pinned at its minimum height, the title
 /// floating mid-strip, and per-strip widths following each label's text
 /// length (see the chrome status bar for the same rule).
+/// The Mixer page's shell-owned state (design 20 §4): the presentation
+/// model (strip order, slider slots, editor families), the page's layout
+/// geometry and meter layer, both scroll containers, and the hovered
+/// strip the fault banner tracks.
+pub(crate) struct MixerPageState {
+    pub(crate) presentation: MixerPresentation,
+    pub(crate) geometry: page::Geometry,
+    pub(crate) frame: Entity<page::MixerMeterLayer>,
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) dock_scroll: ScrollHandle,
+    pub(crate) hovered_strip: Option<moiren_core::graph::NodeId>,
+}
+
 fn strip_body(
     shell: &StudioShell,
     entry: &GraphNodeState,
@@ -158,6 +171,7 @@ fn strip_body(
                 "{} · {kind:?} · {channels} ch",
                 shell
                     .mixer
+                    .presentation
                     .order
                     .iter()
                     .position(|node| *node == id)
@@ -198,12 +212,12 @@ fn strip_body(
         .child(strip_controls::balance(shell, entry, channels, cx))
         .child(node_controls(shell, entry, channels, cx))
         .child({
-            let editing = shell.mixer.editing_value == Some(id);
+            let editing = shell.mixer.presentation.editing_value == Some(id);
             editable_value(
                 SharedString::from(format!("strip-readout-{id:?}")),
                 db_text(entry.mixer.gain),
                 editing,
-                &shell.mixer.value_inputs[&id],
+                &shell.mixer.presentation.value_inputs[&id],
                 start_value_edit(cx.entity(), EditableValueFamily::Fader, id, move |graph| {
                     graph
                         .node(id)
@@ -242,8 +256,8 @@ fn strip_body(
                 .child(meter(shell, entry, kind, channels, cx))
                 .child(ruler())
                 .child(fader(
-                    &shell.mixer.faders[&id].state,
-                    &shell.mixer.faders[&id].behavior,
+                    &shell.mixer.presentation.faders[&id].state,
+                    &shell.mixer.presentation.faders[&id].behavior,
                     cx,
                 ))
                 .gpui_test_observe(),

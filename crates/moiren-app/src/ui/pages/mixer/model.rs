@@ -420,20 +420,20 @@ impl EditableValueFamily {
     ) {
         match self {
             Self::Fader => (
-                &mut shell.mixer.editing_value,
-                &mut shell.mixer.value_inputs,
+                &mut shell.mixer.presentation.editing_value,
+                &mut shell.mixer.presentation.value_inputs,
             ),
             Self::Balance => (
-                &mut shell.mixer.editing_balance,
-                &mut shell.mixer.balance_inputs,
+                &mut shell.mixer.presentation.editing_balance,
+                &mut shell.mixer.presentation.balance_inputs,
             ),
             Self::NodeGain => (
-                &mut shell.mixer.editing_node_gain,
-                &mut shell.mixer.node_gain_inputs,
+                &mut shell.mixer.presentation.editing_node_gain,
+                &mut shell.mixer.presentation.node_gain_inputs,
             ),
             Self::NodePan => (
-                &mut shell.mixer.editing_node_pan,
-                &mut shell.mixer.node_pan_inputs,
+                &mut shell.mixer.presentation.editing_node_pan,
+                &mut shell.mixer.presentation.node_pan_inputs,
             ),
         }
     }
@@ -560,10 +560,10 @@ fn sync_value_inputs<K: Ord + Clone + 'static>(
 /// from the live snapshot like the slider path, so a vanished node skips.
 /// The input subscription that calls these notifies afterwards.
 fn commit_mixer_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_value != Some(*id) {
+    if shell.mixer.presentation.editing_value != Some(*id) {
         return;
     }
-    shell.mixer.editing_value = None;
+    shell.mixer.presentation.editing_value = None;
     if let Some(gain) = parse_gain_db(text) {
         shell.state.update(cx, |state, _| {
             state.edit_mixer(*id, |state| state.gain = gain)
@@ -573,10 +573,10 @@ fn commit_mixer_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut 
 
 /// Enter/blur commit for the balance label editors.
 fn commit_mixer_balance(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_balance != Some(*id) {
+    if shell.mixer.presentation.editing_balance != Some(*id) {
         return;
     }
-    shell.mixer.editing_balance = None;
+    shell.mixer.presentation.editing_balance = None;
     if let Some(balance) = parse_balance(text) {
         shell.state.update(cx, |state, _| {
             state.edit_mixer(*id, |state| state.balance = balance);
@@ -586,10 +586,10 @@ fn commit_mixer_balance(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &m
 
 /// Enter/blur commit for the Gain node's "Requested" dB field.
 fn commit_node_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_node_gain != Some(*id) {
+    if shell.mixer.presentation.editing_node_gain != Some(*id) {
         return;
     }
-    shell.mixer.editing_node_gain = None;
+    shell.mixer.presentation.editing_node_gain = None;
     if let Some(gain) = parse_gain_db(text) {
         shell.state.update(cx, |state, _| {
             if state.snapshot.graph.node(*id).is_some() {
@@ -604,10 +604,10 @@ fn commit_node_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut A
 
 /// Enter/blur commit for the Pan node's position field.
 fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_node_pan != Some(*id) {
+    if shell.mixer.presentation.editing_node_pan != Some(*id) {
         return;
     }
-    shell.mixer.editing_node_pan = None;
+    shell.mixer.presentation.editing_node_pan = None;
     if let Some(pan) = parse_pan(text) {
         shell.state.update(cx, |state, _| {
             if state.snapshot.graph.node(*id).is_some() {
@@ -622,10 +622,10 @@ fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut Ap
 /// like every fader readout, so the send and fader entries accept the same
 /// silence spellings and domain.
 fn commit_send_gain(shell: &mut StudioShell, id: &EdgeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_send != Some(*id) {
+    if shell.mixer.presentation.editing_send != Some(*id) {
         return;
     }
-    shell.mixer.editing_send = None;
+    shell.mixer.presentation.editing_send = None;
     if let Some(gain) = parse_gain_db(text) {
         shell.state.update(cx, |state, _| {
             if let Ok(edge) = state.snapshot.graph.graph.get_edge(*id) {
@@ -671,13 +671,13 @@ pub(crate) fn commit_active_editor(shell: &mut StudioShell, cx: &mut App) -> boo
     }
     // The send family is EdgeId-keyed, so it stays explicit rather than
     // joining the NodeId-keyed loop above.
-    if let Some(id) = shell.mixer.editing_send {
+    if let Some(id) = shell.mixer.presentation.editing_send {
         active = true;
-        if let Some(input) = shell.mixer.send_inputs.get(&id) {
+        if let Some(input) = shell.mixer.presentation.send_inputs.get(&id) {
             let text = input.read(cx).value().to_string();
             commit_send_gain(shell, &id, &text, cx);
         } else {
-            shell.mixer.editing_send = None;
+            shell.mixer.presentation.editing_send = None;
         }
     }
     active
@@ -861,25 +861,34 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
 impl StudioShell {
     pub(crate) fn sync_mixer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let revision = self.state.read(cx).snapshot.graph.candidate_revision;
-        if self.mixer.synced_revision == Some(revision) {
+        if self.mixer.presentation.synced_revision == Some(revision) {
             return;
         }
-        self.mixer.synced_revision = Some(revision);
+        self.mixer.presentation.synced_revision = Some(revision);
         let graph = self.state.read(cx).snapshot.graph.clone();
-        self.mixer.order.retain(|id| graph.node(*id).is_some());
-        self.mixer.faders.retain(|id, _| graph.node(*id).is_some());
         self.mixer
+            .presentation
+            .order
+            .retain(|id| graph.node(*id).is_some());
+        self.mixer
+            .presentation
+            .faders
+            .retain(|id, _| graph.node(*id).is_some());
+        self.mixer
+            .presentation
             .sends
             .retain(|id, _| graph.graph.get_edge(*id).is_ok());
         self.mixer
+            .presentation
             .send_inputs
             .retain(|id, _| graph.graph.get_edge(*id).is_ok());
         if self
             .mixer
+            .presentation
             .editing_send
             .is_some_and(|id| graph.graph.get_edge(id).is_err())
         {
-            self.mixer.editing_send = None;
+            self.mixer.presentation.editing_send = None;
         }
         // The click-to-type editor families drop their vanished members like
         // the send inputs; balance only exists for stereo nodes and the Gain
@@ -888,83 +897,96 @@ impl StudioShell {
         let channels_of = |id: NodeId| graph.graph.get_node(id).ok().map(|node| node.channels());
         let kind_of = |id: NodeId| graph.kind_of(id);
         self.mixer
+            .presentation
             .value_inputs
             .retain(|id, _| graph.node(*id).is_some());
         self.mixer
+            .presentation
             .balance_inputs
             .retain(|id, _| graph.node(*id).is_some() && channels_of(*id) == Some(2));
         self.mixer
+            .presentation
             .node_gain_inputs
             .retain(|id, _| graph.node(*id).is_some() && kind_of(*id) == Some(NodeKind::Gain));
         self.mixer
+            .presentation
             .node_pan_inputs
             .retain(|id, _| graph.node(*id).is_some() && kind_of(*id) == Some(NodeKind::Pan));
         if self
             .mixer
+            .presentation
             .editing_value
             .is_some_and(|id| graph.node(id).is_none())
         {
-            self.mixer.editing_value = None;
+            self.mixer.presentation.editing_value = None;
         }
         if self
             .mixer
+            .presentation
             .editing_balance
             .is_some_and(|id| graph.node(id).is_none() || channels_of(id) != Some(2))
         {
-            self.mixer.editing_balance = None;
+            self.mixer.presentation.editing_balance = None;
         }
         if self
             .mixer
+            .presentation
             .editing_node_gain
             .is_some_and(|id| kind_of(id) != Some(NodeKind::Gain))
         {
-            self.mixer.editing_node_gain = None;
+            self.mixer.presentation.editing_node_gain = None;
         }
         if self
             .mixer
+            .presentation
             .editing_node_pan
             .is_some_and(|id| kind_of(id) != Some(NodeKind::Pan))
         {
-            self.mixer.editing_node_pan = None;
+            self.mixer.presentation.editing_node_pan = None;
         }
         for node in &graph.nodes {
-            if !self.mixer.order.contains(&node.id) {
-                self.mixer.order.push(node.id);
+            if !self.mixer.presentation.order.contains(&node.id) {
+                self.mixer.presentation.order.push(node.id);
             }
         }
         // One cached strip panel per node; the page splices them as siblings.
         // Created after the slider maps are synced so the panel's nested
         // observers find their entities on the first rebuild.
-        self.mixer.strips.retain(|id, _| graph.node(*id).is_some());
         self.mixer
+            .presentation
+            .strips
+            .retain(|id, _| graph.node(*id).is_some());
+        self.mixer
+            .presentation
             .row_scrolls
             .retain(|id, _| graph.node(*id).is_some());
         for node in &graph.nodes {
             let id = node.id;
-            self.mixer.strips.entry(id).or_insert_with(|| {
+            self.mixer.presentation.strips.entry(id).or_insert_with(|| {
                 let panel = super::page::StripPanel { id };
                 let shell = cx.entity();
                 cx.new(|child_cx| super::page::StripPanelHost::new(panel, shell, child_cx))
             });
-            self.mixer.row_scrolls.entry(id).or_default();
+            self.mixer.presentation.row_scrolls.entry(id).or_default();
         }
         sync_faders(
             window,
             cx,
             &self.state,
-            &mut self.mixer.faders,
+            &mut self.mixer.presentation.faders,
             fader_rows(&graph),
         );
         // The inspector's fader row mirrors the snapshot through its own
         // slots; the strip's slots stay untouched by the inspector's drags.
         self.mixer
+            .presentation
             .inspector_faders
             .retain(|id, _| graph.node(*id).is_some());
         sync_faders(
             window,
             cx,
             &self.state,
-            &mut self.mixer.inspector_faders,
+            &mut self.mixer.presentation.inspector_faders,
             fader_rows(&graph),
         );
         // The send family rides the same editor sync as the NodeId-keyed
@@ -972,8 +994,8 @@ impl StudioShell {
         sync_value_inputs(
             window,
             cx,
-            &mut self.mixer.send_inputs,
-            self.mixer.editing_send.as_ref(),
+            &mut self.mixer.presentation.send_inputs,
+            self.mixer.presentation.editing_send.as_ref(),
             graph
                 .graph
                 .edges()
@@ -1005,15 +1027,21 @@ impl StudioShell {
                 )
             })
             .collect();
-        sync_sliders(window, cx, &self.state, &mut self.mixer.sends, sends);
+        sync_sliders(
+            window,
+            cx,
+            &self.state,
+            &mut self.mixer.presentation.sends,
+            sends,
+        );
         // Click-to-type editors, one family per value kind. Their text is
         // the raw editable form ("−6", "R 25") rather than the styled
         // readout, and stands down for the member being edited.
         sync_value_inputs(
             window,
             cx,
-            &mut self.mixer.value_inputs,
-            self.mixer.editing_value.as_ref(),
+            &mut self.mixer.presentation.value_inputs,
+            self.mixer.presentation.editing_value.as_ref(),
             graph
                 .nodes
                 .iter()
@@ -1024,8 +1052,8 @@ impl StudioShell {
         sync_value_inputs(
             window,
             cx,
-            &mut self.mixer.balance_inputs,
-            self.mixer.editing_balance.as_ref(),
+            &mut self.mixer.presentation.balance_inputs,
+            self.mixer.presentation.editing_balance.as_ref(),
             graph
                 .nodes
                 .iter()
@@ -1037,8 +1065,8 @@ impl StudioShell {
         sync_value_inputs(
             window,
             cx,
-            &mut self.mixer.node_gain_inputs,
-            self.mixer.editing_node_gain.as_ref(),
+            &mut self.mixer.presentation.node_gain_inputs,
+            self.mixer.presentation.editing_node_gain.as_ref(),
             graph
                 .nodes
                 .iter()
@@ -1050,8 +1078,8 @@ impl StudioShell {
         sync_value_inputs(
             window,
             cx,
-            &mut self.mixer.node_pan_inputs,
-            self.mixer.editing_node_pan.as_ref(),
+            &mut self.mixer.presentation.node_pan_inputs,
+            self.mixer.presentation.editing_node_pan.as_ref(),
             graph
                 .nodes
                 .iter()

@@ -186,7 +186,6 @@ pub struct StudioShell {
     pub(crate) node_search: Entity<component::input::InputState>,
     pub(crate) hand_tool: bool,
     pub(crate) matrix: matrix::MatrixPageState,
-    pub(crate) mixer_scroll: ScrollHandle,
     /// The inspector column and node library's shell-owned state groups
     /// (design 20 §4). Cached panels' scroll offsets ride the panel keys,
     /// since a cached panel replays baked paint coordinates until its key
@@ -197,17 +196,14 @@ pub struct StudioShell {
     /// The dock pane's own scroll: docked strips key their cached paint on
     /// this offset, so a dock scroll rebuilds them instead of leaving the
     /// main row's stale coordinates on screen.
-    pub(crate) dock_scroll: ScrollHandle,
-    pub(crate) mixer: mixer::MixerPresentation,
+    pub(crate) mixer: mixer::MixerPageState,
     /// Render/frame instrumentation for the whole window (shell, chrome,
     /// every page), written by ui_capture and the gpui-test assertions.
     /// Lives on the shell because its scope is the window, not the mixer.
     #[cfg(feature = "gpui-test")]
     pub(crate) trace: std::cell::RefCell<performance::MeterTrace>,
-    pub(crate) mixer_geometry: mixer::page::Geometry,
     pub(crate) toolbar_chrome: Entity<chrome::ToolbarChrome>,
     pub(crate) status_chrome: Entity<chrome::StatusbarChrome>,
-    pub(crate) mixer_frame: Entity<mixer::page::MixerMeterLayer>,
     pub(crate) graph_meter_frame: Entity<graph::page::GraphMeterLayer>,
     pub(crate) graph_controls: Entity<graph::page::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
@@ -229,7 +225,6 @@ pub struct StudioShell {
     /// The mixer strip under the pointer, tracked by the strip's hover
     /// listener for the fault banner the meter frame paints; the graph
     /// field's twin, likewise never part of a panel key.
-    pub(crate) hovered_strip: Option<moiren_core::graph::NodeId>,
     /// The endpoint menu hanging off a source/sink card's binding chip.
     pub(crate) binding_menu: Option<graph::BindingMenu>,
     /// The fault detail popover hanging off a faulted object's "!" marker
@@ -425,23 +420,25 @@ impl StudioShell {
             node_search,
             hand_tool: false,
             matrix: matrix::MatrixPageState::default(),
-            mixer_scroll: ScrollHandle::new(),
             binding_menu_scroll: ScrollHandle::new(),
-            dock_scroll: ScrollHandle::new(),
-            mixer: mixer::MixerPresentation::default(),
+            mixer: mixer::MixerPageState {
+                presentation: mixer::MixerPresentation::default(),
+                geometry: mixer_geometry,
+                frame: mixer_frame,
+                scroll: ScrollHandle::new(),
+                dock_scroll: ScrollHandle::new(),
+                hovered_strip: None,
+            },
             #[cfg(feature = "gpui-test")]
             trace: Default::default(),
-            mixer_geometry,
             toolbar_chrome,
             status_chrome,
-            mixer_frame,
             graph_meter_frame,
             graph_controls,
             graph_canvas_frame,
             graph_overlays: Default::default(),
             spectrum_scratch: Vec::new(),
             hovered_node: None,
-            hovered_strip: None,
             binding_menu: None,
             fault_popover: None,
             meter_points: Default::default(),
@@ -957,7 +954,7 @@ impl StudioShell {
     /// the other (the shared root cause of audit SD-1/SD-2).
     pub(crate) fn text_input_entities(&self) -> Vec<Entity<component::input::InputState>> {
         let mut inputs = vec![self.inspector.node_name.clone()];
-        inputs.extend(self.mixer.text_input_entities().cloned());
+        inputs.extend(self.mixer.presentation.text_input_entities().cloned());
         inputs.extend(self.inspector.compressor.inputs.values().cloned());
         inputs.extend(self.devices.export_controls.input_entities());
         inputs
@@ -972,10 +969,11 @@ impl StudioShell {
     /// single-walk rule as [`Self::text_input_entities`].
     fn slider_slots(&self) -> impl Iterator<Item = &mixer::SliderSlot> {
         self.mixer
+            .presentation
             .faders
             .values()
-            .chain(self.mixer.sends.values())
-            .chain(self.mixer.inspector_faders.values())
+            .chain(self.mixer.presentation.sends.values())
+            .chain(self.mixer.presentation.inspector_faders.values())
             .chain(self.inspector.compressor.sliders.values())
     }
 

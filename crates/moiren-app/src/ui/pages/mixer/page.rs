@@ -142,16 +142,17 @@ impl StripPanel {
             compact: shell.compact,
             position: shell
                 .mixer
+                .presentation
                 .order
                 .iter()
                 .position(|node| *node == id)
                 .unwrap_or(0),
-            editing_value: shell.mixer.editing_value == Some(id),
-            editing_balance: shell.mixer.editing_balance == Some(id),
+            editing_value: shell.mixer.presentation.editing_value == Some(id),
+            editing_balance: shell.mixer.presentation.editing_balance == Some(id),
             scroll: if docked {
-                shell.dock_scroll.offset()
+                shell.mixer.dock_scroll.offset()
             } else {
-                shell.mixer_scroll.offset()
+                shell.mixer.scroll.offset()
             },
             meters: shell.preferences.values.meters,
             faulted: graph.node_faulted(id),
@@ -226,10 +227,10 @@ impl CachedPanel for StripPanel {
         // here would wipe the registrations of siblings that are not
         // rebuilding. This strip's own stale placements are removed so the
         // canvases re-register fresh during this same layout pass.
-        if shell.mixer_geometry.read().is_none() {
-            shell.mixer_geometry.reset();
+        if shell.mixer.geometry.read().is_none() {
+            shell.mixer.geometry.reset();
         }
-        shell.mixer_geometry.update(|geometry| {
+        shell.mixer.geometry.update(|geometry| {
             geometry.tracks.remove(&self.id);
             geometry.readouts.remove(&self.id);
             geometry.banners.remove(&self.id);
@@ -250,13 +251,13 @@ impl CachedPanel for StripPanel {
         let (sliders, inputs) = shell.read_with(cx, |shell, _| {
             let mut sliders = Vec::new();
             let mut inputs = Vec::new();
-            if let Some(slot) = shell.mixer.faders.get(&self.id) {
+            if let Some(slot) = shell.mixer.presentation.faders.get(&self.id) {
                 sliders.push(slot.state.clone());
             }
-            if let Some(input) = shell.mixer.value_inputs.get(&self.id) {
+            if let Some(input) = shell.mixer.presentation.value_inputs.get(&self.id) {
                 inputs.push(input.clone());
             }
-            if let Some(input) = shell.mixer.balance_inputs.get(&self.id) {
+            if let Some(input) = shell.mixer.presentation.balance_inputs.get(&self.id) {
                 inputs.push(input.clone());
             }
             (sliders, inputs)
@@ -391,8 +392,8 @@ fn strip_column(
                     // graph's `hovered_node` twin: one notified frame per
                     // change, never a panel key.
                     let next = hovered.then_some(id);
-                    if shell.hovered_strip != next {
-                        shell.hovered_strip = next;
+                    if shell.mixer.hovered_strip != next {
+                        shell.mixer.hovered_strip = next;
                         cx.notify();
                     }
                 })
@@ -407,7 +408,7 @@ fn strip_column(
                         .is_ok_and(|node| matches!(node.kind(), NodeKind::Bus | NodeKind::Sink))
                 };
                 if docked(*dragged) == docked(id) {
-                    model::reorder(&mut shell.mixer.order, *dragged, id);
+                    model::reorder(&mut shell.mixer.presentation.order, *dragged, id);
                 }
                 cx.notify();
             })
@@ -415,7 +416,7 @@ fn strip_column(
         .child({
             // The fault banner's anchor: the whole strip's window rect,
             // registered for the meter frame the same way meter tracks are.
-            let geometry = shell.mixer_geometry.clone();
+            let geometry = shell.mixer.geometry.clone();
             canvas(
                 move |bounds, _window, _| {
                     geometry.update(|geometry| {
@@ -490,7 +491,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .w_full()
         .h_full()
         .flex()
-        .track_scroll(&shell.mixer_scroll)
+        .track_scroll(&shell.mixer.scroll)
         .overflow_x_scroll()
         .overflow_y_scroll()
         .on_scroll_wheel({
@@ -505,21 +506,21 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .flex()
         .border_l_1()
         .border_color(theme::BORDER_STRONG)
-        .track_scroll(&shell.dock_scroll)
+        .track_scroll(&shell.mixer.dock_scroll)
         .overflow_x_scroll()
         .overflow_y_scroll()
         .on_scroll_wheel({
             let this = cx.entity();
             move |_, _, cx| this.update(cx, |_, cx| cx.notify())
         });
-    for id in &shell.mixer.order {
+    for id in &shell.mixer.presentation.order {
         let Ok(node) = graph.graph.get_node(*id) else {
             continue;
         };
         let Some(entry) = graph.node(*id) else {
             continue;
         };
-        let Some(host) = shell.mixer.strips.get(id) else {
+        let Some(host) = shell.mixer.presentation.strips.get(id) else {
             continue;
         };
         let column = strip_column(shell, *id, entry, node.kind(), host, cx);
@@ -536,7 +537,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .min_h_0()
         .child(channels_area.gpui_test_observe())
         .child(overlay_scrollbar(
-            &shell.mixer_scroll,
+            &shell.mixer.scroll,
             "scrollbar-mixer-strips",
             ScrollbarAxis::Both,
         ));
@@ -545,7 +546,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .size_full()
         .child(dock_container.child(dock).gpui_test_observe())
         .child(overlay_scrollbar(
-            &shell.dock_scroll,
+            &shell.mixer.dock_scroll,
             "scrollbar-mixer-dock",
             ScrollbarAxis::Horizontal,
         ));
@@ -561,7 +562,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .relative()
         .flex_none()
         .min_h_0()
-        .w(px(shell.mixer.dock_width))
+        .w(px(shell.mixer.presentation.dock_width))
         .max_w(relative(MixerPresentation::DOCK_MAX_FRACTION))
         .child(dock_host)
         .child(
@@ -588,7 +589,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         f32::from(row.size.width) * MixerPresentation::DOCK_MAX_FRACTION,
                     );
                     resize_shell.update(cx, |shell, cx| {
-                        shell.mixer.dock_width = width;
+                        shell.mixer.presentation.dock_width = width;
                         cx.notify();
                     });
                 })
@@ -620,7 +621,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                 .child(channels)
                 .child(dock_pane),
         )
-        .child(shell.mixer_frame.clone())
+        .child(shell.mixer.frame.clone())
         .gpui_test_observe()
         .into_any_element()
 }
@@ -631,7 +632,7 @@ pub(crate) fn track(
     channels: usize,
     legacy_input: Option<bool>,
 ) -> Div {
-    let geometry = shell.mixer_geometry.clone();
+    let geometry = shell.mixer.geometry.clone();
     div()
         .h_full()
         .flex_none()
@@ -662,7 +663,7 @@ pub(crate) fn track(
 }
 
 pub(crate) fn readout(shell: &StudioShell, id: NodeId) -> impl IntoElement {
-    let geometry = shell.mixer_geometry.clone();
+    let geometry = shell.mixer.geometry.clone();
     canvas(
         move |bounds, window, _| {
             geometry.update(|geometry| {
@@ -932,7 +933,7 @@ fn paint_mixer_meter_frame(
     // against the hot layer's own bounds. Like the graph page's tooltip it
     // lives on the shell outside every panel key: one notified frame per
     // hover change paints it, and it stands until the next change repaints.
-    if let Some(id) = shell.hovered_strip
+    if let Some(id) = shell.mixer.hovered_strip
         && let Some(bounds) = frame.banners.get(&id)
     {
         let faults: Vec<crate::ui::pages::graph::graph_canvas::CardFault> = {

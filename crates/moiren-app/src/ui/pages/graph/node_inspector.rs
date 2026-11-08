@@ -189,8 +189,8 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             &t!("Fader"),
             SharedString::from(format!("inspector-fader-{id:?}")),
             db_text(entry.mixer.gain),
-            shell.mixer.editing_value == Some(id),
-            &shell.mixer.value_inputs[&id],
+            shell.mixer.presentation.editing_value == Some(id),
+            &shell.mixer.presentation.value_inputs[&id],
             start_value_edit(cx.entity(), EditableValueFamily::Fader, id, move |graph| {
                 graph
                     .node(id)
@@ -199,8 +199,8 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             }),
         ))
         .child(hslider(
-            &shell.mixer.inspector_faders[&id].state,
-            &shell.mixer.inspector_faders[&id].behavior,
+            &shell.mixer.presentation.inspector_faders[&id].state,
+            &shell.mixer.presentation.inspector_faders[&id].behavior,
             cx,
         ))
         // Live bars are the sidebar hot surface's job; this painting-free
@@ -421,8 +421,8 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 &t!("Requested"),
                 SharedString::from(format!("inspector-node-gain-{id:?}")),
                 db_text(entry.gain),
-                shell.mixer.editing_node_gain == Some(id),
-                &shell.mixer.node_gain_inputs[&id],
+                shell.mixer.presentation.editing_node_gain == Some(id),
+                &shell.mixer.presentation.node_gain_inputs[&id],
                 start_value_edit(
                     cx.entity(),
                     EditableValueFamily::NodeGain,
@@ -476,8 +476,8 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 &t!("Balance"),
                 SharedString::from(format!("inspector-node-pan-{id:?}")),
                 format!("{:+.2}", entry.pan),
-                shell.mixer.editing_node_pan == Some(id),
-                &shell.mixer.node_pan_inputs[&id],
+                shell.mixer.presentation.editing_node_pan == Some(id),
+                &shell.mixer.presentation.node_pan_inputs[&id],
                 start_value_edit(
                     cx.entity(),
                     EditableValueFamily::NodePan,
