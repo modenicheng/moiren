@@ -16,10 +16,6 @@ pub const WINDOW_BG: Hsla = controls::CANVAS;
 pub const SURFACE: Hsla = controls::PANEL;
 pub const SURFACE_3: Hsla = controls::RAISED;
 pub const SURFACE_4: Hsla = hsla(0.571429, 0.142857, 0.192157, 1.0); // hover / pressed control
-pub const OVERLAY_SCRIM: Hsla = Hsla {
-    a: 0.58,
-    ..WINDOW_BG
-};
 /// Neutral value-region fill for slider and fader tracks. Signal cyan stays
 /// reserved for meters and status, so a lit track never reads as audio.
 pub const TRACK_FILL: Hsla = hsla(0.597222, 0.151899, 0.309804, 1.0);

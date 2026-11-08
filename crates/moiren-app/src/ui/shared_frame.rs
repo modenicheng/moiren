@@ -18,7 +18,7 @@ enum Slot<F> {
 /// surfaces reset it on rebuild and mutate it from each registering canvas
 /// ([`SharedFrame::reset`]/[`SharedFrame::update`]). Readers clone the
 /// current `Rc`, so painting never borrows the cell across a yield point.
-pub(in crate::ui) struct SharedFrame<F>(Rc<RefCell<Slot<F>>>);
+pub(crate) struct SharedFrame<F>(Rc<RefCell<Slot<F>>>);
 
 impl<F> Default for SharedFrame<F> {
     fn default() -> Self {
@@ -34,12 +34,12 @@ impl<F> Clone for SharedFrame<F> {
 
 impl<F> SharedFrame<F> {
     /// Publish a freshly built frame (single-writer surfaces).
-    pub(in crate::ui) fn publish(&self, frame: Rc<F>) {
+    pub(crate) fn publish(&self, frame: Rc<F>) {
         *self.0.borrow_mut() = Slot::Current(frame);
     }
 
     /// The frame the sibling cached panel last painted with.
-    pub(in crate::ui) fn read(&self) -> Option<Rc<F>> {
+    pub(crate) fn read(&self) -> Option<Rc<F>> {
         match &*self.0.borrow() {
             Slot::Empty => None,
             Slot::Current(frame) => Some(Rc::clone(frame)),
@@ -50,14 +50,14 @@ impl<F> SharedFrame<F> {
 impl<F: Default + Clone> SharedFrame<F> {
     /// Start a rebuild from a blank frame (accumulating surfaces). Each
     /// registering canvas then extends it with [`SharedFrame::update`].
-    pub(in crate::ui) fn reset(&self) {
+    pub(crate) fn reset(&self) {
         self.publish(Rc::new(F::default()));
     }
 
     /// Mutate the current frame in place. If a reader still holds the frame
     /// the previous paint ran against, the mutation applies to a fresh copy
     /// instead of the shared one.
-    pub(in crate::ui) fn update(&self, f: impl FnOnce(&mut F)) {
+    pub(crate) fn update(&self, f: impl FnOnce(&mut F)) {
         let mut slot = self.0.borrow_mut();
         match &mut *slot {
             Slot::Empty => {}

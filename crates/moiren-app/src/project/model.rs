@@ -413,6 +413,10 @@ pub enum Appearance {
     System,
 }
 
+/// The session menu's quick-switch list stays a list: at most this many
+/// recently opened project files are remembered.
+pub const RECENT_PROJECT_LIMIT: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppPreferences {
@@ -429,6 +433,9 @@ pub struct AppPreferences {
     pub transport_latency: crate::service::TransportLatencySettings,
     pub restore_last_project: bool,
     pub last_project_path: Option<std::path::PathBuf>,
+    /// Recently opened project files, most recent first, for the session
+    /// menu's quick switch.
+    pub recent_projects: Vec<std::path::PathBuf>,
 }
 
 impl Default for AppPreferences {
@@ -445,6 +452,7 @@ impl Default for AppPreferences {
             transport_latency: crate::service::TransportLatencySettings::default(),
             restore_last_project: false,
             last_project_path: None,
+            recent_projects: Vec::new(),
         }
     }
 }
@@ -487,7 +495,35 @@ impl AppPreferences {
                 "must be a nonempty path without NUL",
             ));
         }
+        if self.recent_projects.len() > RECENT_PROJECT_LIMIT {
+            return Err(PersistenceError::invalid(
+                "recent_projects",
+                "must hold at most RECENT_PROJECT_LIMIT entries",
+            ));
+        }
+        for path in &self.recent_projects {
+            if path.as_os_str().is_empty() || path.to_string_lossy().contains('\0') {
+                return Err(PersistenceError::invalid(
+                    "recent_projects",
+                    "entries must be nonempty paths without NUL",
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// Front-inserts the path into the quick-switch list, dropping earlier
+    /// duplicates and capping the length. Returns whether the list changed,
+    /// so callers skip the preference write when the file was already the
+    /// most recent.
+    pub fn remember_recent_project(&mut self, path: std::path::PathBuf) -> bool {
+        if self.recent_projects.first() == Some(&path) {
+            return false;
+        }
+        self.recent_projects.retain(|recent| recent != &path);
+        self.recent_projects.insert(0, path);
+        self.recent_projects.truncate(RECENT_PROJECT_LIMIT);
+        true
     }
 }
 

@@ -492,39 +492,12 @@ pub fn output_name(snapshot: &AppSnapshot, id: &str) -> String {
         .unwrap_or_else(|| t!("Unavailable output").into())
 }
 
-/// Presentation label for a node. While a Source/Sink still carries its
-/// default label (never renamed), it follows the bound input/output device
-/// name; renaming it once pins the custom name.
-pub fn display_label(
-    snapshot: &AppSnapshot,
-    entry: &crate::service::GraphNodeState,
-    kind: moiren_core::graph::NodeKind,
-) -> String {
-    use moiren_core::graph::NodeKind;
-    if entry.label != crate::service::default_label(kind) {
-        return entry.label.clone();
-    }
-    if let Some(export) = snapshot
-        .graph
-        .exports
-        .iter()
-        .find(|export| export.enabled && export.binding == Some(entry.id))
-    {
-        return export.name.clone();
-    }
-    match kind {
-        NodeKind::Source => entry
-            .source
-            .as_ref()
-            .map(|source| source_name(snapshot, source))
-            .unwrap_or_else(|| entry.label.clone()),
-        NodeKind::Sink => entry
-            .output_endpoint_id
-            .as_ref()
-            .map(|endpoint| output_name(snapshot, endpoint))
-            .unwrap_or_else(|| entry.label.clone()),
-        _ => entry.label.clone(),
-    }
+/// Presentation label for a node: exactly the node's own label. The old
+/// default-label substitution (an export's name, the bound device name) is
+/// gone — the node card surfaces its binding as a chip, so repeating the
+/// binding as the name read as a duplicate. What the node is, it shows.
+pub fn display_label(entry: &crate::service::GraphNodeState) -> String {
+    entry.label.clone()
 }
 
 pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {

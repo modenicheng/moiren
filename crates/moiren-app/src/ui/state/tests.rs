@@ -516,6 +516,43 @@ fn service_resource_binding_changes_update_the_shared_session_projection() {
 }
 
 #[test]
+fn display_label_shows_the_node_label_even_when_a_device_is_bound() {
+    let runtime = spawn_service();
+    let handle = runtime.handle();
+    let mut state = UiState::new(handle.clone(), initial_projection(&handle));
+    let source = state
+        .snapshot
+        .graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Source)
+        .unwrap()
+        .id();
+    state.dispatch(AppRequest::EditGraph(
+        crate::service::GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Physical {
+                endpoint_id: "wasapi-input".into(),
+            },
+        },
+    ));
+    wait_until(std::time::Duration::from_secs(2), || {
+        state.poll();
+        !state.pending_request
+    });
+    // The old presentation followed the bound device name while the label
+    // was the default; the card's binding chip carries that information
+    // now, so the label shows what the node is, bare.
+    let entry = state.snapshot.graph.node(source).unwrap();
+    assert_eq!(
+        crate::ui::presentation::display_label(entry),
+        crate::service::default_label(NodeKind::Source)
+    );
+    finish_service(runtime);
+}
+
+#[test]
 fn unavailable_resources_remain_in_saved_candidate_configuration() {
     let runtime = spawn_service();
     let handle = runtime.handle();
