@@ -56,7 +56,7 @@ impl CachedPanel for SettingsPanel {
     type Key = SettingsKey;
 
     fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
-        let settings = &shell.settings;
+        let settings = &shell.settings.editor;
         let state = shell.state.read(cx);
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
@@ -67,7 +67,7 @@ impl CachedPanel for SettingsPanel {
             restore_last_project: shell.preferences.restore_last_project,
             pending_request: state.pending_request,
             project_message: shell.project_message.clone(),
-            scroll: shell.settings_scroll.offset().y,
+            scroll: shell.settings.scroll.offset().y,
         }
     }
 
@@ -83,11 +83,23 @@ impl CachedPanel for SettingsPanel {
 
 /// The settings page's cached splice; mounted in place of the workspace
 /// while settings are open (the shell's own `.when`).
+/// The Settings page's shell-owned state (design 20 §4): the draft editor,
+/// the open value menu, the page's scroll container, and the cached
+/// SettingsPanel host. `settings_open` itself stays on the shell until the
+/// chrome group's WorkspaceView lands.
+pub(crate) struct SettingsPageState {
+    pub(crate) editor: SettingsEditor,
+    pub(crate) menu: Option<ValueMenu>,
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) panel: Entity<SettingsPanelHost>,
+}
+
 pub(crate) fn mount(shell: &StudioShell, _window: &Window) -> AnyElement {
     // The cached wrapper is laid out as a root; it fills the workspace row
     // exactly the way the pages it replaces do.
     shell
-        .settings_panel
+        .settings
+        .panel
         .clone()
         .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
         .into_any_element()
@@ -119,7 +131,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         ),
     ] {
         let this = this.clone();
-        let selected = shell.settings.section == section;
+        let selected = shell.settings.editor.section == section;
         nav = nav.child(
             div()
                 .id(SharedString::from(format!("{id}-row")))
@@ -137,8 +149,8 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         })
                         .on_click(move |_, _, cx| {
                             this.update(cx, |shell, cx| {
-                                shell.settings.section = section;
-                                shell.settings_menu = None;
+                                shell.settings.editor.section = section;
+                                shell.settings.menu = None;
                                 cx.notify();
                             })
                         }),
@@ -157,7 +169,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                 }),
         );
     }
-    let content = match shell.settings.section {
+    let content = match shell.settings.editor.section {
         Section::Audio => audio(shell, cx).into_any_element(),
         Section::Interface => interface(shell, cx).into_any_element(),
         Section::Diagnostics => diagnostics(shell, cx).into_any_element(),
@@ -177,13 +189,13 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                 .size_full()
                 .flex()
                 .min_h_0()
-                .track_focus(&shell.settings.focus)
+                .track_focus(&shell.settings.editor.focus)
                 .on_key_down(move |event, window, cx| {
                     if event.keystroke.key == "escape" {
                         escape.update(cx, |shell, cx| {
                             // Escape peels one layer: an open value menu
                             // first, the page itself second.
-                            if shell.settings_menu.take().is_none() {
+                            if shell.settings.menu.take().is_none() {
                                 shell.close_settings(window, cx);
                             } else {
                                 cx.notify();
@@ -192,7 +204,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                     }
                     cx.stop_propagation();
                 })
-                .focus_trap("settings-focus-trap", &shell.settings.focus)
+                .focus_trap("settings-focus-trap", &shell.settings.editor.focus)
                 .child(
                     div()
                         .id("settings-rail")
@@ -253,7 +265,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                         .id("settings-scroll")
                                         .flex_1()
                                         .min_h_0()
-                                        .track_scroll(&shell.settings_scroll)
+                                        .track_scroll(&shell.settings.scroll)
                                         .overflow_y_scroll()
                                         .on_scroll_wheel({
                                             let this = this.clone();
@@ -279,12 +291,12 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                         .gpui_test_observe(),
                                 )
                                 .child(overlay_scrollbar(
-                                    &shell.settings_scroll,
+                                    &shell.settings.scroll,
                                     "scrollbar-settings-scroll",
                                     ScrollbarAxis::Vertical,
                                 )),
                         )
-                        .when(shell.settings.section == Section::Audio, |column| {
+                        .when(shell.settings.editor.section == Section::Audio, |column| {
                             column.child(footer(shell, Editor::Global, cx))
                         }),
                 )
@@ -331,7 +343,7 @@ fn group(title: impl Into<SharedString>, body: impl IntoElement) -> Div {
 }
 
 fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
-    let draft = &shell.settings.global;
+    let draft = &shell.settings.editor.global;
     let config = &draft.audio;
     let overrides_this = cx.entity();
     div()
@@ -449,7 +461,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     shell,
                     Editor::Global,
                     "latency",
-                    shell.settings.global.profile,
+                    shell.settings.editor.global.profile,
                     [
                         AudioLatencyProfile::Compatible,
                         AudioLatencyProfile::Balanced,
@@ -459,7 +471,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     |draft, profile| draft.profile = profile,
                     cx,
                 ))
-                .child(label(t!(shell.settings.global.profile.description())))
+                .child(label(t!(shell.settings.editor.global.profile.description())))
                 .child(div().h(px(1.)).bg(theme::HAIRLINE))
                 .child(row(
                     &t!("Device overrides"),

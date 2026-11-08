@@ -40,7 +40,7 @@ struct MenuItem {
 }
 
 fn menu_items(shell: &StudioShell, menu: &ValueMenu) -> Vec<MenuItem> {
-    let draft = shell.settings.draft(menu.editor);
+    let draft = shell.settings.editor.draft(menu.editor);
     let mut items = Vec::new();
     match menu.field {
         ValueField::ProcessingBlock => {
@@ -120,7 +120,7 @@ pub(crate) fn menu_overlay(
     window: &Window,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
-    let Some(menu) = shell.settings_menu.clone() else {
+    let Some(menu) = shell.settings.menu.clone() else {
         return div().into_any_element();
     };
     let items = menu_items(shell, &menu);
@@ -176,12 +176,12 @@ pub(crate) fn menu_overlay(
             })
             .on_click(move |_, _, cx| {
                 this.update(cx, |shell, cx| {
-                    let draft = shell.settings.draft_mut(menu.editor);
+                    let draft = shell.settings.editor.draft_mut(menu.editor);
                     if draft.pending.is_none() {
                         apply(draft);
                         draft.changed();
                     }
-                    shell.settings_menu = None;
+                    shell.settings.menu = None;
                     cx.notify();
                 });
             }),
@@ -201,7 +201,7 @@ pub(crate) fn menu_overlay(
                 && event.position.y <= top + px(height);
             if !inside {
                 dismiss.update(cx, |shell, cx| {
-                    shell.settings_menu = None;
+                    shell.settings.menu = None;
                     cx.notify();
                 });
             }

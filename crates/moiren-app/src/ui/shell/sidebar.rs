@@ -58,8 +58,8 @@ impl CachedPanel for InspectorPanel {
             selected_node: shell.selected_node,
             selected_route: shell.selected_route,
             page: shell.presentation.page,
-            device_tab: shell.device_tab,
-            selected_device: shell.selected_device.clone(),
+            device_tab: shell.devices.device_tab,
+            selected_device: shell.devices.selected_device.clone(),
             node_name_editing: shell.node_name_editing,
             editing_value: shell.mixer.editing_value,
             editing_balance: shell.mixer.editing_balance,
@@ -69,7 +69,7 @@ impl CachedPanel for InspectorPanel {
             compact: shell.compact,
             preferences: shell.preferences.clone(),
             inspector_scroll: shell.inspector_scroll.offset().y,
-            override_scroll: shell.device_override_scroll.offset().y,
+            override_scroll: shell.devices.device_override_scroll.offset().y,
         }
     }
 

@@ -292,7 +292,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             .map(|row| row.endpoint_id.clone());
                         if let Some(id) = id {
                             s.inspect_device(id.clone(), cx);
-                            settings::device_stream_mut(&mut s.settings.device.audio, settings::Direction::Output, &id);
+                            settings::device_stream_mut(&mut s.settings.editor.device.audio, settings::Direction::Output, &id);
                         }
                     });
                     cx.background_executor().timer(Duration::from_millis(100)).await;
@@ -309,7 +309,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         ("settings-diagnostics", settings::Section::Diagnostics),
                     ] {
                         shell.update(cx, |s, cx| {
-                            s.settings.section = section;
+                            s.settings.editor.section = section;
                             cx.notify();
                         });
                         cx.background_executor().timer(Duration::from_millis(100)).await;

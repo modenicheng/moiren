@@ -74,13 +74,13 @@ impl CachedPanel for DevicesPanel {
     fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
-            device_tab: shell.device_tab,
-            selected_device: shell.selected_device.clone(),
+            device_tab: shell.devices.device_tab,
+            selected_device: shell.devices.selected_device.clone(),
             // The export list scrolls inside the cached page; the offset
             // rides in the key so wheel steps rebuild it (the mixer's
             // precedent for scrollable containers under a cached panel).
-            exports_scroll: shell.exports_scroll.offset(),
-            device_list_scroll: shell.device_list_scroll.offset().y,
+            exports_scroll: shell.devices.exports_scroll.offset(),
+            device_list_scroll: shell.devices.device_list_scroll.offset().y,
         }
     }
 
@@ -100,7 +100,9 @@ impl CachedPanel for DevicesPanel {
     ) -> Vec<Subscription> {
         // The export drafts' inputs are model entities nested in this cached
         // tree; typing must re-render through explicit observers.
-        let inputs = owner.read_with(cx, |shell, _| shell.export_controls.input_entities());
+        let inputs = owner.read_with(cx, |shell, _| {
+            shell.devices.export_controls.input_entities()
+        });
         inputs
             .into_iter()
             .map(|input| cx.observe(&input, |host, _, cx| host.notify_nested(cx)))
@@ -113,16 +115,30 @@ impl CachedPanel for DevicesPanel {
 /// tracked offset between frames (the scroll-under-cache hazard in design
 /// 17) — until that has a framework-level answer, the tab keeps the
 /// rebuild-every-notify behavior it always had.
+/// The Devices page's shell-owned state (design 20 §4): the active tab and
+/// its selection, the export editor drafts, the page's scroll containers,
+/// and the cached DevicesPanel host.
+pub(crate) struct DevicesPageState {
+    pub(crate) device_tab: DeviceTab,
+    pub(crate) selected_device: Option<String>,
+    pub(crate) export_controls: ExportControls,
+    pub(crate) device_list_scroll: ScrollHandle,
+    pub(crate) device_override_scroll: ScrollHandle,
+    pub(crate) exports_scroll: ScrollHandle,
+    pub(crate) panel: Entity<DevicesPanelHost>,
+}
+
 pub(crate) fn mount(
     shell: &StudioShell,
     _window: &Window,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
-    if shell.device_tab == DeviceTab::Exports {
+    if shell.devices.device_tab == DeviceTab::Exports {
         return page(shell, cx);
     }
     shell
-        .devices_panel
+        .devices
+        .panel
         .clone()
         .cached(StyleRefinement::default().flex_1().min_w_0().min_h_0())
         .into_any_element()
@@ -144,7 +160,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         let this = cx.entity();
         tabs = tabs.child(
             button(id, title)
-                .variant(if shell.device_tab == tab {
+                .variant(if shell.devices.device_tab == tab {
                     ButtonVariant::Primary
                 } else {
                     ButtonVariant::Ghost
@@ -152,8 +168,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .disabled(asio && tab == DeviceTab::Applications)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |s, cx| {
-                        s.device_tab = tab;
-                        s.selected_device = None;
+                        s.devices.device_tab = tab;
+                        s.devices.selected_device = None;
                         cx.notify();
                     })
                 }),
@@ -165,18 +181,18 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .flex_col()
         .flex_1()
         .min_w_0()
-        .track_scroll(&shell.device_list_scroll)
+        .track_scroll(&shell.devices.device_list_scroll)
         .overflow_y_scroll()
         .on_scroll_wheel({
             let this = cx.entity();
             move |_, _, cx| this.update(cx, |_, cx| cx.notify())
         });
-    match shell.device_tab {
+    match shell.devices.device_tab {
         DeviceTab::Exports => {
             list = exports::list(shell, cx);
         }
         DeviceTab::Inputs | DeviceTab::Outputs => {
-            let input = shell.device_tab == DeviceTab::Inputs;
+            let input = shell.devices.device_tab == DeviceTab::Inputs;
             let available = crate::ui::state::device_rows(
                 catalog,
                 &snapshot.exports,
@@ -190,9 +206,9 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             };
             let mut rows = available.clone();
             let saved = if input {
-                &shell.settings.device.audio.input_overrides
+                &shell.settings.editor.device.audio.input_overrides
             } else {
-                &shell.settings.device.audio.output_overrides
+                &shell.settings.editor.device.audio.output_overrides
             };
             for id in saved.keys() {
                 if !catalog.vad_endpoints.values().any(|owned| owned == id)
@@ -217,7 +233,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 let present = available
                     .iter()
                     .any(|entry| entry.endpoint_id == row.endpoint_id);
-                let inspected = shell.selected_device.as_ref() == Some(&row.endpoint_id);
+                let inspected = shell.devices.selected_device.as_ref() == Some(&row.endpoint_id);
                 let vad_export = snapshot.exports.iter().find(|status| {
                     status.intent.direction == direction
                         && status
@@ -532,14 +548,14 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .flex_1()
                         .min_w_0()
                         .child(list.gpui_test_observe())
-                        .child(match shell.device_tab {
+                        .child(match shell.devices.device_tab {
                             DeviceTab::Exports => overlay_scrollbar(
-                                &shell.exports_scroll,
+                                &shell.devices.exports_scroll,
                                 "scrollbar-virtual-export-list",
                                 ScrollbarAxis::Vertical,
                             ),
                             _ => overlay_scrollbar(
-                                &shell.device_list_scroll,
+                                &shell.devices.device_list_scroll,
                                 "scrollbar-device-list",
                                 ScrollbarAxis::Vertical,
                             ),
@@ -553,8 +569,10 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
 /// Session-resource summary for the global inspector; a configured device on
 /// the input/output tabs swaps in the override editor instead.
 pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    if matches!(shell.device_tab, DeviceTab::Inputs | DeviceTab::Outputs)
-        && shell.selected_device.is_some()
+    if matches!(
+        shell.devices.device_tab,
+        DeviceTab::Inputs | DeviceTab::Outputs
+    ) && shell.devices.selected_device.is_some()
     {
         return div()
             .id("device-override-host")

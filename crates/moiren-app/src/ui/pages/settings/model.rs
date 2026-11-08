@@ -324,20 +324,20 @@ impl StudioShell {
     }
 
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.settings.global.dirty() && self.settings.global.pending.is_none() {
-            self.settings.global = self.current_settings_draft(cx);
+        if !self.settings.editor.global.dirty() && self.settings.editor.global.pending.is_none() {
+            self.settings.editor.global = self.current_settings_draft(cx);
         }
-        self.settings.previous_focus = window.focused(cx);
+        self.settings.editor.previous_focus = window.focused(cx);
         self.settings_open = true;
         self.project_menu = false;
-        window.focus(&self.settings.focus, cx);
+        window.focus(&self.settings.editor.focus, cx);
         cx.notify();
     }
 
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings_open = false;
-        self.settings_menu = None;
-        if let Some(focus) = self.settings.previous_focus.take() {
+        self.settings.menu = None;
+        if let Some(focus) = self.settings.editor.previous_focus.take() {
             window.focus(&focus, cx);
         } else {
             window.blur(cx);
@@ -348,8 +348,8 @@ impl StudioShell {
     pub(crate) fn keep_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The modal is a sibling of the retained workspace. Moving focus also
         // removes graph Delete/Escape handlers from the keyboard dispatch path.
-        if self.settings_open && !self.settings.focus.contains_focused(window, cx) {
-            window.focus(&self.settings.focus, cx);
+        if self.settings_open && !self.settings.editor.focus.contains_focused(window, cx) {
+            window.focus(&self.settings.editor.focus, cx);
         }
     }
 
@@ -359,10 +359,10 @@ impl StudioShell {
     }
 
     pub(crate) fn inspect_device(&mut self, id: String, cx: &mut Context<Self>) {
-        if !self.settings.device.dirty() && self.settings.device.pending.is_none() {
-            self.settings.device = self.current_settings_draft(cx);
+        if !self.settings.editor.device.dirty() && self.settings.editor.device.pending.is_none() {
+            self.settings.editor.device = self.current_settings_draft(cx);
         }
-        self.selected_device = Some(id);
+        self.devices.selected_device = Some(id);
         // Configure is an explicit request for the override editor.
         self.open_inspector();
         cx.notify();

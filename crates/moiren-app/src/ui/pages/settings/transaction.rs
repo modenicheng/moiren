@@ -10,10 +10,10 @@ impl StudioShell {
         restart: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.settings.busy() {
+        if self.settings.editor.busy() {
             return;
         }
-        let draft = self.settings.draft_mut(editor);
+        let draft = self.settings.editor.draft_mut(editor);
         draft.changed();
         if self.preferences_path.is_none() {
             draft.error = Some(
@@ -70,7 +70,7 @@ impl StudioShell {
 
     pub(crate) fn finish_settings_save(&mut self, cx: &mut Context<Self>) {
         for editor in [Editor::Global, Editor::Device] {
-            let draft = self.settings.draft(editor);
+            let draft = self.settings.editor.draft(editor);
             let Some(pending) = draft.pending.clone() else {
                 continue;
             };
@@ -132,7 +132,7 @@ impl StudioShell {
                 let result = self
                     .state
                     .update(cx, |state, _| state.try_dispatch(request));
-                let draft = self.settings.draft_mut(editor);
+                let draft = self.settings.editor.draft_mut(editor);
                 match result {
                     Ok(request) => {
                         draft.pending = Some(Pending {
@@ -158,12 +158,12 @@ impl StudioShell {
                 }
             }
             if let Some(error) = error {
-                let draft = self.settings.draft_mut(editor);
+                let draft = self.settings.editor.draft_mut(editor);
                 draft.error = Some(error);
                 draft.message = None;
                 draft.pending = None;
             } else if complete {
-                let draft = self.settings.draft_mut(editor);
+                let draft = self.settings.editor.draft_mut(editor);
                 draft.audio = pending.submitted.audio;
                 draft.profile = pending.submitted.profile;
                 self.preferences.audio = draft.audio.clone();
@@ -173,7 +173,7 @@ impl StudioShell {
                     draft.message = Some(t!("Audio restarted with the saved settings.").into());
                 }
                 self.save_preferences(cx);
-                self.settings.save_revision = Some((self.preference_save_revision, editor));
+                self.settings.editor.save_revision = Some((self.preference_save_revision, editor));
             }
         }
     }

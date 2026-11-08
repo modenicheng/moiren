@@ -5,16 +5,20 @@ use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
 
 pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    let input = shell.device_tab == DeviceTab::Inputs;
+    let input = shell.devices.device_tab == DeviceTab::Inputs;
     let direction = if input {
         Direction::Input
     } else {
         Direction::Output
     };
-    let id = shell.selected_device.as_deref().expect("inspected device");
+    let id = shell
+        .devices
+        .selected_device
+        .as_deref()
+        .expect("inspected device");
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
-    let draft = &shell.settings.device;
+    let draft = &shell.settings.editor.device;
     let overrides = if input {
         &draft.audio.input_overrides
     } else {
@@ -71,10 +75,10 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .gap(px(6.))
             .child(
                 button("device-use-defaults", t!("Use defaults"))
-                    .disabled(shell.settings.busy() || !custom)
+                    .disabled(shell.settings.editor.busy() || !custom)
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
-                            let draft = &mut shell.settings.device;
+                            let draft = &mut shell.settings.editor.device;
                             if input {
                                 draft.audio.input_overrides.remove(&defaults_id);
                             } else {
@@ -92,17 +96,17 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     } else {
                         ButtonVariant::Secondary
                     })
-                    .disabled(shell.settings.busy() || custom)
+                    .disabled(shell.settings.editor.busy() || custom)
                     .on_click({
                         let this = cx.entity();
                         move |_, _, cx| {
                             this.update(cx, |shell, cx| {
                                 settings::device_stream_mut(
-                                    &mut shell.settings.device.audio,
+                                    &mut shell.settings.editor.device.audio,
                                     direction,
                                     &override_id,
                                 );
-                                shell.settings.device.changed();
+                                shell.settings.editor.device.changed();
                                 cx.notify();
                             })
                         }
@@ -175,7 +179,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         .id("device-override-scroll")
                         .w_full()
                         .h_full()
-                        .track_scroll(&shell.device_override_scroll)
+                        .track_scroll(&shell.devices.device_override_scroll)
                         .overflow_y_scroll()
                         .on_scroll_wheel({
                             let this = cx.entity();
@@ -186,7 +190,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         .gpui_test_observe(),
                 )
                 .child(overlay_scrollbar(
-                    &shell.device_override_scroll,
+                    &shell.devices.device_override_scroll,
                     "scrollbar-device-override-scroll",
                     ScrollbarAxis::Vertical,
                 )),

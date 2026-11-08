@@ -324,7 +324,7 @@ mod headless {
             shell.preferences_path = None;
             shell.preferences.export_authorizations.clear();
             shell.presentation.page = pages::Page::Devices;
-            shell.device_tab = devices::DeviceTab::Exports;
+            shell.devices.device_tab = devices::DeviceTab::Exports;
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -396,6 +396,7 @@ mod headless {
         view.update(cx, |shell, cx| {
             assert!(
                 shell
+                    .devices
                     .export_controls
                     .name
                     .read(cx)
@@ -423,7 +424,7 @@ mod headless {
             shell.preferences_path = None;
             shell.preferences.export_authorizations.clear();
             shell.presentation.page = pages::Page::Devices;
-            shell.device_tab = devices::DeviceTab::Exports;
+            shell.devices.device_tab = devices::DeviceTab::Exports;
             shell.inspector_open = false;
             shell.sidebar_open = false;
             cx.notify();
@@ -538,7 +539,7 @@ mod headless {
         });
         cx.update(|window, cx| {
             view.update(cx, |shell, cx| {
-                shell.export_controls.names[&id]
+                shell.devices.export_controls.names[&id]
                     .input
                     .update(cx, |input, cx| {
                         input.set_value("Renamed Playback", window, cx)
@@ -581,6 +582,7 @@ mod headless {
             window.render_frame(cx);
             view.update(cx, |shell, cx| {
                 shell
+                    .devices
                     .export_controls
                     .name
                     .update(cx, |input, cx| input.set_value("My Microphone", window, cx));
@@ -614,7 +616,7 @@ mod headless {
         view.update(cx, |shell, cx| {
             shell.preferences_path = None;
             shell.presentation.page = pages::Page::Devices;
-            shell.device_tab = devices::DeviceTab::Exports;
+            shell.devices.device_tab = devices::DeviceTab::Exports;
             shell.inspector_open = false;
             shell.sidebar_open = false;
             cx.notify();
@@ -623,6 +625,7 @@ mod headless {
             window.resize(size(px(1440.), px(1600.)));
             view.update(cx, |shell, cx| {
                 shell
+                    .devices
                     .export_controls
                     .name
                     .update(cx, |input, cx| input.set_value("  ", window, cx))
@@ -645,6 +648,7 @@ mod headless {
                         .contains("UTF-16")
                 );
                 shell
+                    .devices
                     .export_controls
                     .name
                     .update(cx, |input, cx| input.set_value("Valid", window, cx));
@@ -656,7 +660,7 @@ mod headless {
         let id = candidate(&view, cx).exports[0].endpoint_id;
         cx.update(|window, cx| {
             view.update(cx, |shell, cx| {
-                shell.export_controls.names[&id]
+                shell.devices.export_controls.names[&id]
                     .input
                     .update(cx, |input, cx| input.set_value("\t", window, cx))
             });
@@ -667,7 +671,7 @@ mod headless {
         });
         view.update(cx, |shell, cx| {
             assert_eq!(
-                shell.export_controls.names[&id]
+                shell.devices.export_controls.names[&id]
                     .input
                     .read(cx)
                     .value()
