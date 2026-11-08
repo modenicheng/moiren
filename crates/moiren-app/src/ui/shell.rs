@@ -151,40 +151,28 @@ pub struct StudioShell {
     #[cfg(feature = "gpui-test")]
     pub(crate) test_page: Option<Entity<PageCell>>,
     pub(crate) presentation: WindowPresentation,
+    pub(crate) graph_gestures: graph::GraphInteractionState,
     pub(crate) camera: Camera,
     pub(crate) node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
-    pub(crate) node_drag: Option<(moiren_core::graph::NodeId, f32, f32)>,
     /// Multi-selection on the graph canvas; `selected_node` is the primary
     /// (last-clicked) member that drives the inspector.
     pub(crate) selected_nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
     /// Active rubber-band drag; see [`graph::SelectionDrag`].
-    pub(crate) selection_drag: Option<graph::SelectionDrag>,
     pub(crate) graph_focus: FocusHandle,
-    pub(crate) connection_drag: Option<graph::ConnectionDrag>,
     /// The open canvas context menu, over a node or the background.
     pub(crate) context_menu: Option<graph::ContextMenu>,
     /// A right press on the canvas awaiting its release: within the drag
     /// threshold the release opens the context menu, beyond it the stroke
     /// was a pan.
-    pub(crate) right_press: Option<(f32, f32)>,
     /// Snap alignment guides for the in-flight card drag; painted by the
     /// canvas layer, cleared when the gesture ends.
-    pub(crate) drag_guides: Option<pages::graph::graph_canvas::DragGuides>,
     /// The snap offset the in-flight card drag has baked into
     /// `node_positions` so far; the threshold measures against the drag's
     /// free path by undoing it, so a snapped card lets go once the cursor
     /// leaves the threshold. Zero outside a drag.
-    pub(crate) node_drag_snap: (f32, f32),
     /// Active card-knob value drag: node, control, press y, press value.
-    pub(crate) knob_drag: Option<(
-        moiren_core::graph::NodeId,
-        pages::graph::graph_canvas::KnobControl,
-        f32,
-        f64,
-    )>,
     pub(crate) pending_node_spawn: Option<graph::PendingNodeSpawn>,
     pub(crate) node_search: Entity<component::input::InputState>,
-    pub(crate) hand_tool: bool,
     pub(crate) matrix: matrix::MatrixPageState,
     /// The inspector column and node library's shell-owned state groups
     /// (design 20 §4). Cached panels' scroll offsets ride the panel keys,
@@ -245,9 +233,7 @@ pub struct StudioShell {
     pub(crate) canvas_size: Option<(f32, f32)>,
     pub(crate) selected_node: Option<moiren_core::graph::NodeId>,
     /// Screen-space anchor of an active pan drag (window coordinates).
-    pub(crate) pan_grab: Option<(f32, f32)>,
     /// Left background clicks deselect only on release; a pan keeps selection.
-    pub(crate) background_click: Option<(f32, f32)>,
     /// Last selectable-element press (target hash + time) for double-click
     /// detection: single clicks select, double clicks also open the inspector.
     pub(crate) last_element_press: Option<(u64, Instant)>,
@@ -404,21 +390,14 @@ impl StudioShell {
             #[cfg(feature = "gpui-test")]
             test_page: None,
             presentation: WindowPresentation::default(),
+            graph_gestures: graph::GraphInteractionState::default(),
             camera: Camera::default(),
             node_positions: Default::default(),
-            node_drag: None,
             selected_nodes: Default::default(),
-            selection_drag: None,
             graph_focus: cx.focus_handle(),
-            connection_drag: None,
             context_menu: None,
-            right_press: None,
-            drag_guides: None,
-            node_drag_snap: (0., 0.),
-            knob_drag: None,
             pending_node_spawn: None,
             node_search,
-            hand_tool: false,
             matrix: matrix::MatrixPageState::default(),
             binding_menu_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPageState {
@@ -461,8 +440,6 @@ impl StudioShell {
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
-            pan_grab: None,
-            background_click: None,
             last_element_press: None,
             desktop,
             window_state: desktop::capture_window_state(window, Page::Graph),
@@ -603,11 +580,11 @@ impl StudioShell {
     /// Whether a graph canvas gesture is in flight (rubber band, pan, node
     /// or connection drag).
     pub(crate) fn drag_active(&self) -> bool {
-        self.selection_drag.is_some()
-            || self.pan_grab.is_some()
-            || self.node_drag.is_some()
-            || self.connection_drag.is_some()
-            || self.knob_drag.is_some()
+        self.graph_gestures.selection_drag.is_some()
+            || self.graph_gestures.pan_grab.is_some()
+            || self.graph_gestures.node_drag.is_some()
+            || self.graph_gestures.connection_drag.is_some()
+            || self.graph_gestures.knob_drag.is_some()
     }
 
     /// Whether any observed meter still moves: decaying ballistics, a held

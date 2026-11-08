@@ -77,8 +77,8 @@ pub(super) fn select_node(
             }
             let pos = window.mouse_position();
             shell.camera.adjusted = true;
-            shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
-            shell.node_drag_snap = (0., 0.);
+            shell.graph_gestures.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
+            shell.graph_gestures.node_drag_snap = (0., 0.);
             shell.sync_drag_demand();
             // Single click selects; a double click on the same node also
             // opens the inspector.
@@ -108,11 +108,11 @@ pub(super) fn background_move(
                     Some(MouseButton::Left | MouseButton::Middle | MouseButton::Right)
                 );
                 if !held {
-                    shell.pan_grab = None;
-                    shell.node_drag = None;
-                    shell.node_drag_snap = (0., 0.);
-                    shell.knob_drag = None;
-                    shell.drag_guides = None;
+                    shell.graph_gestures.pan_grab = None;
+                    shell.graph_gestures.node_drag = None;
+                    shell.graph_gestures.node_drag_snap = (0., 0.);
+                    shell.graph_gestures.knob_drag = None;
+                    shell.graph_gestures.drag_guides = None;
                     // Hover for the fault tooltip: tracked here, painted by
                     // the meter frame, so a change costs one frame and never
                     // a page rebuild. Anything on a card counts, port dots
@@ -143,7 +143,7 @@ pub(super) fn background_move(
                     // the context menu over the node under the cursor, or
                     // the background menu over the canvas or a wire; a
                     // longer stroke was a pan.
-                    if let Some(pressed) = shell.right_press.take()
+                    if let Some(pressed) = shell.graph_gestures.right_press.take()
                         && (x - pressed.0).hypot(y - pressed.1) <= 3.
                     {
                         shell.context_menu = Some(match hovered {
@@ -153,10 +153,11 @@ pub(super) fn background_move(
                         cx.notify();
                     }
                     let clicked = shell
+                        .graph_gestures
                         .background_click
                         .take()
                         .is_some_and(|(bx, by)| (x - bx).hypot(y - by) <= 3.);
-                    if let Some(drag) = shell.selection_drag.take() {
+                    if let Some(drag) = shell.graph_gestures.selection_drag.take() {
                         // A plain background click clears the selection; a
                         // rubber band already applied its live selection.
                         if !drag.moved && clicked {
@@ -167,13 +168,13 @@ pub(super) fn background_move(
                         shell.clear_canvas_selection();
                         cx.notify();
                     }
-                    if shell.connection_drag.take().is_some() {
+                    if shell.graph_gestures.connection_drag.take().is_some() {
                         cx.notify();
                     }
                     shell.sync_drag_demand();
                     return;
                 }
-                if let Some((id, control, start_y, start_value)) = shell.knob_drag {
+                if let Some((id, control, start_y, start_value)) = shell.graph_gestures.knob_drag {
                     // Vertical drag on the dial; up increases. The value
                     // math is anchored to the press so mid-drag camera or
                     // concurrent edits cannot feedback-loop the knob.
@@ -193,11 +194,11 @@ pub(super) fn background_move(
                         cx.notify();
                     }
                 }
-                if let Some(drag) = shell.selection_drag.as_mut() {
+                if let Some(drag) = shell.graph_gestures.selection_drag.as_mut() {
                     drag.current = (x, y);
                     if !drag.moved && (x - drag.anchor.0).hypot(y - drag.anchor.1) > 3. {
                         drag.moved = true;
-                        shell.background_click = None;
+                        shell.graph_gestures.background_click = None;
                     }
                     // Apply the live selection here, in the event phase: the
                     // cached page rebuilds on this notify, and a notify raised
@@ -219,7 +220,7 @@ pub(super) fn background_move(
                         }
                     }
                 }
-                if let Some((id, gx, gy)) = shell.node_drag {
+                if let Some((id, gx, gy)) = shell.graph_gestures.node_drag {
                     shell.camera.adjusted = true;
                     let raw = shell.camera.canvas_delta_to_world((x - gx, y - gy));
                     // Alignment snapping (item F): the dragged selection's
@@ -231,10 +232,10 @@ pub(super) fn background_move(
                     // re-match the same target every sub-threshold move and
                     // pin the card forever. Alt bypasses it and releases a
                     // baked one.
-                    let baked = shell.node_drag_snap;
-                    shell.node_drag_snap = (0., 0.);
+                    let baked = shell.graph_gestures.node_drag_snap;
+                    shell.graph_gestures.node_drag_snap = (0., 0.);
                     if window.modifiers().alt {
-                        shell.drag_guides = None;
+                        shell.graph_gestures.drag_guides = None;
                     } else if let Some(frame) = shell.graph_canvas_frame.read() {
                         let (snapped, guides) = snap_delta(
                             &frame,
@@ -243,15 +244,15 @@ pub(super) fn background_move(
                             baked,
                             raw,
                         );
-                        shell.node_drag_snap = snapped;
-                        shell.drag_guides = Some(guides);
+                        shell.graph_gestures.node_drag_snap = snapped;
+                        shell.graph_gestures.drag_guides = Some(guides);
                     }
                     // The stored positions bake in the previous offset: this
                     // frame's move lands them on the new one, or releases
                     // them back onto the free path when the snap lets go.
                     let applied = (
-                        raw.0 + shell.node_drag_snap.0 - baked.0,
-                        raw.1 + shell.node_drag_snap.1 - baked.1,
+                        raw.0 + shell.graph_gestures.node_drag_snap.0 - baked.0,
+                        raw.1 + shell.graph_gestures.node_drag_snap.1 - baked.1,
                     );
                     let selection: Vec<_> = shell.selected_nodes.iter().copied().collect();
                     for id in selection {
@@ -260,14 +261,14 @@ pub(super) fn background_move(
                             pos.1 += applied.1;
                         }
                     }
-                    shell.node_drag = Some((id, x, y));
+                    shell.graph_gestures.node_drag = Some((id, x, y));
                     cx.notify();
                 }
-                if let Some((gx, gy)) = shell.pan_grab {
+                if let Some((gx, gy)) = shell.graph_gestures.pan_grab {
                     shell.camera.pan_by(x - gx, y - gy);
-                    shell.node_drag = None;
-                    shell.node_drag_snap = (0., 0.);
-                    shell.pan_grab = Some((x, y));
+                    shell.graph_gestures.node_drag = None;
+                    shell.graph_gestures.node_drag_snap = (0., 0.);
+                    shell.graph_gestures.pan_grab = Some((x, y));
                     shell.sync_drag_demand();
                     cx.notify();
                 }
@@ -292,10 +293,10 @@ pub(super) fn background_down(
                 match event.button {
                     // Left on the background: plain click clears the selection
                     // on release; dragging past the threshold rubber-bands.
-                    MouseButton::Left if !shell.hand_tool => {
-                        shell.background_click = Some(anchor);
+                    MouseButton::Left if !shell.graph_gestures.hand_tool => {
+                        shell.graph_gestures.background_click = Some(anchor);
                         let modifiers = window.modifiers();
-                        shell.selection_drag = Some(SelectionDrag {
+                        shell.graph_gestures.selection_drag = Some(SelectionDrag {
                             anchor,
                             current: anchor,
                             additive: modifiers.control || modifiers.shift,
@@ -309,10 +310,11 @@ pub(super) fn background_down(
                     // within the drag threshold it opens the menu, beyond it
                     // the stroke was a pan.
                     _ => {
-                        shell.pan_grab = Some(anchor);
-                        shell.background_click = None;
-                        shell.selection_drag = None;
-                        shell.right_press = (event.button == MouseButton::Right).then_some(anchor);
+                        shell.graph_gestures.pan_grab = Some(anchor);
+                        shell.graph_gestures.background_click = None;
+                        shell.graph_gestures.selection_drag = None;
+                        shell.graph_gestures.right_press =
+                            (event.button == MouseButton::Right).then_some(anchor);
                     }
                 }
                 shell.sync_drag_demand();
@@ -571,7 +573,7 @@ pub(super) fn port_down(
                         }
                     })
                     .unwrap_or(port);
-                shell.connection_drag = Some(ConnectionDrag {
+                shell.graph_gestures.connection_drag = Some(ConnectionDrag {
                     port,
                     cursor,
                     detached: picked,
@@ -586,7 +588,7 @@ pub(super) fn connection_move(this: &Entity<StudioShell>) -> Rc<WindowAppCallbac
     let this = this.clone();
     Rc::new(move |cursor, _, cx| {
         this.update(cx, |shell, cx| {
-            if let Some(drag) = &mut shell.connection_drag {
+            if let Some(drag) = &mut shell.graph_gestures.connection_drag {
                 drag.cursor = cursor;
                 cx.notify();
             }
@@ -601,7 +603,7 @@ pub(super) fn port_up(
     Rc::new(move |candidate, _, cx| {
         this.update(cx, |shell, cx| {
             use crate::ui::pages::graph::graph_canvas::{CandidateStatus, PortDirection};
-            let Some(drag) = shell.connection_drag.take() else {
+            let Some(drag) = shell.graph_gestures.connection_drag.take() else {
                 return;
             };
             if let Some(picked) = drag.detached {
@@ -713,7 +715,7 @@ pub(super) fn knob_down(
                         .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
                 }
             } else {
-                shell.knob_drag = Some((node_id, control, y, current));
+                shell.graph_gestures.knob_drag = Some((node_id, control, y, current));
                 shell.sync_drag_demand();
             }
             cx.notify();

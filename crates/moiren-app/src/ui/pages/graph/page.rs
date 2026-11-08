@@ -54,9 +54,10 @@ impl ControlsKey {
             selected_nodes: shell.selected_nodes.iter().copied().collect(),
             selected_route: shell.selected_route,
             connection: shell
+                .graph_gestures
                 .connection_drag
                 .map(|drag| (drag.port, drag.cursor, drag.detached)),
-            hand_tool: shell.hand_tool,
+            hand_tool: shell.graph_gestures.hand_tool,
             sidebar_open: shell.sidebar_open,
             compact: shell.compact,
             preferences: shell.preferences.values.clone(),
@@ -230,7 +231,7 @@ fn paint_box_select_band(
     window: &mut Window,
     _cx: &mut Context<StudioShell>,
 ) {
-    let Some(drag) = shell.selection_drag.as_ref() else {
+    let Some(drag) = shell.graph_gestures.selection_drag.as_ref() else {
         return;
     };
     let (anchor, current) = (drag.anchor, drag.current);
@@ -264,7 +265,7 @@ fn paint_graph_meter_frame(
     // line must stay above them. A box select does NOT rebuild per move —
     // the hot layer owns the bars for the gesture's whole duration,
     // painting them under the band that follows this call.
-    if shell.connection_drag.is_some() {
+    if shell.graph_gestures.connection_drag.is_some() {
         return;
     }
     // The HUD overlays (editing toolbar, overview, library handle) live in

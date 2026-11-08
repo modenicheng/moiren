@@ -197,7 +197,7 @@ mod tests {
             // A pan grab in flight when the load lands: the rubber-band
             // trigger is a drag running while the async load completes and
             // `apply_project_presentation` switches pages.
-            shell.pan_grab = Some((100., 100.));
+            shell.graph_gestures.pan_grab = Some((100., 100.));
             shell.sync_drag_demand();
             assert!(shell.drag_active());
             assert!(
@@ -219,7 +219,7 @@ mod tests {
                 "the load must have applied"
             );
             assert!(
-                shell.pan_grab.is_none() && !shell.drag_active(),
+                shell.graph_gestures.pan_grab.is_none() && !shell.drag_active(),
                 "the project apply path must cancel the in-flight gesture"
             );
             assert!(

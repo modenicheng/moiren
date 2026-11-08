@@ -350,11 +350,11 @@ fn graph_connection_cycle_drop_on_node_body_is_rejected(cx: &mut gpui_kit::TestA
     cx.simulate_mouse_move(body, Some(MouseButton::Left), Modifiers::default());
     render(cx);
     view.update(cx, |shell, _| {
-        assert!(shell.connection_drag.is_some());
+        assert!(shell.graph_gestures.connection_drag.is_some());
     });
     cx.simulate_mouse_up(body, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, cx| {
-        assert!(shell.connection_drag.is_none());
+        assert!(shell.graph_gestures.connection_drag.is_none());
         assert!(!shell.state.read(cx).pending_request);
         assert_eq!(shell.state.read(cx).snapshot.graph.graph.edges().len(), 3);
     });
@@ -561,12 +561,14 @@ fn graph_port_drag_cancel_and_invalid_targets_preserve_topology(cx: &mut gpui_ki
         frame.bounds.origin - point(px(10.), px(10.)),
     ] {
         cx.simulate_mouse_down(output, MouseButton::Left, Modifiers::default());
-        view.update(cx, |shell, _| assert!(shell.connection_drag.is_some()));
+        view.update(cx, |shell, _| {
+            assert!(shell.graph_gestures.connection_drag.is_some())
+        });
         cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
         render(cx);
         cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         view.update(cx, |shell, cx| {
-            assert!(shell.connection_drag.is_none());
+            assert!(shell.graph_gestures.connection_drag.is_none());
             assert!(!shell.state.read(cx).pending_request);
             assert_eq!(shell.state.read(cx).snapshot.graph.graph.edges().len(), 3);
         });
@@ -580,7 +582,7 @@ fn graph_port_drag_cancel_and_invalid_targets_preserve_topology(cx: &mut gpui_ki
         Modifiers::default(),
     );
     view.update(cx, |shell, cx| {
-        assert!(shell.connection_drag.is_none());
+        assert!(shell.graph_gestures.connection_drag.is_none());
         assert!(!shell.state.read(cx).pending_request);
     });
     finish_service(runtime);
@@ -1182,7 +1184,10 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
         previous = (frames, paints);
     }
     view.read_with(cx, |shell, _| {
-        assert!(shell.selection_drag.is_some(), "the gesture must be held");
+        assert!(
+            shell.graph_gestures.selection_drag.is_some(),
+            "the gesture must be held"
+        );
     });
     assert!(
         painted_rounds >= 5,
@@ -1219,7 +1224,7 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
     }
     view.read_with(cx, |shell, cx| {
         assert!(
-            shell.selection_drag.is_some(),
+            shell.graph_gestures.selection_drag.is_some(),
             "the gesture must still hold"
         );
         assert!(
@@ -1334,7 +1339,9 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
     });
     // Release: the loop stands down again.
     cx.simulate_mouse_up(finish, MouseButton::Left, Modifiers::default());
-    view.update(cx, |shell, _| assert!(shell.selection_drag.is_none()));
+    view.update(cx, |shell, _| {
+        assert!(shell.graph_gestures.selection_drag.is_none())
+    });
     for _ in 0..6 {
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -1411,7 +1418,7 @@ fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit
     cx.simulate_mouse_down(anchor, MouseButton::Middle, Modifiers::default());
     view.read_with(cx, |shell, cx| {
         assert!(
-            shell.pan_grab.is_some(),
+            shell.graph_gestures.pan_grab.is_some(),
             "the middle press must arm a pan grab"
         );
         assert!(shell.drag_active());
@@ -1426,13 +1433,13 @@ fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit
     view.update(cx, |shell, cx| shell.set_page(pages::Page::Matrix, cx));
     view.read_with(cx, |shell, cx| {
         assert!(
-            shell.pan_grab.is_none(),
+            shell.graph_gestures.pan_grab.is_none(),
             "the pan grab must not survive the page switch"
         );
-        assert!(shell.selection_drag.is_none());
-        assert!(shell.node_drag.is_none());
-        assert!(shell.connection_drag.is_none());
-        assert!(shell.background_click.is_none());
+        assert!(shell.graph_gestures.selection_drag.is_none());
+        assert!(shell.graph_gestures.node_drag.is_none());
+        assert!(shell.graph_gestures.connection_drag.is_none());
+        assert!(shell.graph_gestures.background_click.is_none());
         assert!(!shell.drag_active());
         assert!(
             !shell.frames_wanted(cx),
@@ -1441,7 +1448,9 @@ fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit
     });
     // Defense in depth: a grab that dodged every lifecycle hook must not
     // starve the control-side poll, the only meter pump the Matrix page has.
-    view.update(cx, |shell, _| shell.pan_grab = Some((100., 100.)));
+    view.update(cx, |shell, _| {
+        shell.graph_gestures.pan_grab = Some((100., 100.))
+    });
     view.read_with(cx, |shell, cx| {
         assert!(shell.drag_active());
         assert!(
@@ -1461,9 +1470,9 @@ fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit
     // path, and no rubber band state can resurface with it.
     view.update(cx, |shell, cx| shell.set_page(pages::Page::Graph, cx));
     view.read_with(cx, |shell, _| {
-        assert!(shell.pan_grab.is_none());
+        assert!(shell.graph_gestures.pan_grab.is_none());
         assert!(
-            shell.selection_drag.is_none(),
+            shell.graph_gestures.selection_drag.is_none(),
             "no rubber band may survive the round trip"
         );
     });
@@ -1485,7 +1494,9 @@ fn window_deactivation_cancels_canvas_gestures(cx: &mut gpui_kit::TestAppContext
     let frame = canvas_frame(&view, cx);
     let anchor = node_position(&frame, 0) - point(px(120.), px(60.));
     cx.simulate_mouse_down(anchor, MouseButton::Middle, Modifiers::default());
-    view.read_with(cx, |shell, _| assert!(shell.pan_grab.is_some()));
+    view.read_with(cx, |shell, _| {
+        assert!(shell.graph_gestures.pan_grab.is_some())
+    });
     // The test platform only tracks a foreground window after an explicit
     // activation; make this window active before blurring it.
     cx.update(|window, _| window.activate_window());
@@ -1495,7 +1506,7 @@ fn window_deactivation_cancels_canvas_gestures(cx: &mut gpui_kit::TestAppContext
     cx.deactivate_window();
     view.read_with(cx, |shell, _| {
         assert!(
-            shell.pan_grab.is_none() && !shell.drag_active(),
+            shell.graph_gestures.pan_grab.is_none() && !shell.drag_active(),
             "deactivation must cancel the in-flight pan grab"
         );
     });
@@ -1539,7 +1550,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     );
     view.update(cx, |shell, _| {
         assert_eq!(shell.selected_node, Some(id));
-        assert!(shell.node_drag.is_none());
+        assert!(shell.graph_gestures.node_drag.is_none());
         assert_eq!(shell.camera, frame.camera);
     });
     cx.update(|window, cx| window.click("tool-hand", cx));
@@ -1560,7 +1571,9 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     let middle_panned = canvas_frame(&view, cx);
     assert_close(middle_panned.camera.pan_x, panned.camera.pan_x + 18.);
     assert_close(middle_panned.camera.pan_y, panned.camera.pan_y - 12.);
-    view.update(cx, |shell, _| assert!(shell.pan_grab.is_none()));
+    view.update(cx, |shell, _| {
+        assert!(shell.graph_gestures.pan_grab.is_none())
+    });
     cx.update(|window, cx| {
         window.click("tool-select", cx);
         window.click("zoom-fit", cx);
@@ -1717,7 +1730,7 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                     shell.selected_route = wire_selected.then_some(route);
                     shell.inspector_open = inspector_open;
                     shell.sidebar_open = false;
-                    shell.hand_tool = mode >= 2;
+                    shell.graph_gestures.hand_tool = mode >= 2;
                     shell.camera = Camera {
                         pan_x: 60.,
                         pan_y: 80.,
@@ -1753,7 +1766,7 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                     assert_eq!(shell.inspector_open, inspector_open);
                     assert_close(shell.camera.pan_x, 88.);
                     assert_close(shell.camera.pan_y, 98.);
-                    assert!(shell.pan_grab.is_none());
+                    assert!(shell.graph_gestures.pan_grab.is_none());
                 });
             }
         }
@@ -2659,7 +2672,11 @@ fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it
     let pan_input = position(&frame, frame.nodes[index_of(&frame, pan.0)].inputs[0]);
     cx.simulate_mouse_down(gain_input, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| {
-        let drag = shell.connection_drag.as_ref().expect("drag started");
+        let drag = shell
+            .graph_gestures
+            .connection_drag
+            .as_ref()
+            .expect("drag started");
         assert_eq!(drag.port.direction, PortDirection::Output);
         assert_eq!(drag.port.id, source.2.unwrap());
         assert_eq!(
@@ -2683,7 +2700,9 @@ fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it
     cx.simulate_mouse_up(pan_input, MouseButton::Left, Modifiers::default());
     wait_for_graph(&view, cx, |graph| graph.graph.edges().len() == 2);
     assert_eq!(edges(&view, cx), vec![(source.0, pan.0), (pan.0, sink.0)]);
-    view.update(cx, |shell, _| assert!(shell.connection_drag.is_none()));
+    view.update(cx, |shell, _| {
+        assert!(shell.graph_gestures.connection_drag.is_none())
+    });
 
     // Drop: picking pan -> sink up off sink and letting go over empty
     // canvas disconnects it.
@@ -2708,7 +2727,7 @@ fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it
     render(cx);
     cx.simulate_mouse_up(pan_input, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, cx| {
-        assert!(shell.connection_drag.is_none());
+        assert!(shell.graph_gestures.connection_drag.is_none());
         assert!(!shell.state.read(cx).pending_request);
     });
     assert_eq!(edges(&view, cx), vec![(source.0, pan.0)]);
@@ -2724,6 +2743,7 @@ fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it
     cx.simulate_mouse_down(gain_input, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| {
         let drag = shell
+            .graph_gestures
             .connection_drag
             .as_ref()
             .expect("reverse drag started");
@@ -2841,7 +2861,7 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     view.update(cx, |shell, _| {
         assert_eq!(shell.binding_menu.map(|menu| menu.node), Some(sink));
         assert_eq!(shell.selected_node, Some(sink));
-        assert!(shell.node_drag.is_none());
+        assert!(shell.graph_gestures.node_drag.is_none());
     });
     render(cx);
     cx.update(|window, _| assert!(window.find("binding-menu").visible()));
@@ -3110,6 +3130,7 @@ fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
     let (anchor, zoom) = view.read_with(cx, |shell, _| {
         (
             shell
+                .graph_gestures
                 .node_drag
                 .map(|(_, x, y)| (x, y))
                 .expect("card drag armed"),
@@ -3120,7 +3141,10 @@ fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
     cx.simulate_mouse_move(drop, Some(MouseButton::Left), Modifiers::default());
     render(cx);
     view.update(cx, |shell, _| {
-        let guides = shell.drag_guides.expect("aligned drag paints guides");
+        let guides = shell
+            .graph_gestures
+            .drag_guides
+            .expect("aligned drag paints guides");
         assert!(
             guides.x.is_some() && guides.y.is_some(),
             "guides={guides:?}"
@@ -3129,7 +3153,7 @@ fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
     cx.simulate_mouse_up(drop, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| {
         // Guides clear with the gesture; both axes snapped exactly.
-        assert!(shell.drag_guides.is_none());
+        assert!(shell.graph_gestures.drag_guides.is_none());
         let dx = shell.node_positions[&second].0 - shell.node_positions[&first].0;
         let dy = shell.node_positions[&second].1;
         assert!(
@@ -3189,6 +3213,7 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
     let (anchor, zoom) = view.read_with(cx, |shell, _| {
         (
             shell
+                .graph_gestures
                 .node_drag
                 .map(|(_, x, y)| (x, y))
                 .expect("card drag armed"),
@@ -3206,7 +3231,10 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
         cx.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::default());
         if step == 4 {
             view.update(cx, |shell, _| {
-                let guides = shell.drag_guides.expect("still within the threshold");
+                let guides = shell
+                    .graph_gestures
+                    .drag_guides
+                    .expect("still within the threshold");
                 assert!(guides.x.is_some(), "guides={guides:?}");
                 let left = shell.node_positions[&second].0;
                 assert!(
@@ -3221,9 +3249,13 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
         // free path sits 8 screen px past the alignment, beyond the 6 px
         // threshold — the snap released and the card follows the cursor.
         assert!(
-            shell.drag_guides.and_then(|guides| guides.x).is_none(),
+            shell
+                .graph_gestures
+                .drag_guides
+                .and_then(|guides| guides.x)
+                .is_none(),
             "guides={:?}",
-            shell.drag_guides
+            shell.graph_gestures.drag_guides
         );
         let left = shell.node_positions[&second].0;
         let expected = first_right + (12. - 4.) / zoom;
