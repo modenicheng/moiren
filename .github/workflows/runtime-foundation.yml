@@ -72,6 +72,14 @@ jobs:
         run: python3 scripts/tests/vad-removal-stages.tests.py
       - name: Test dedicated OBS path reuse and configuration ownership
         run: python3 scripts/tests/obs-reuse.tests.py
+      - name: Test fixed-path OBS acquisition setup and graceful cleanup
+        run: python3 -B scripts/tests/obs-acquisition.tests.py
+      - name: Test bounded OBS recording transition ownership
+        run: python3 -B scripts/tests/obs-recording.tests.py
+      - name: Test fixed-path OBS capture session integration
+        run: python3 -B scripts/tests/obs-capture-session.tests.py
+      - name: Test authenticated bounded OBS websocket protocol
+        run: python3 -B scripts/tests/obs-websocket.tests.py
       - name: Test offline indexed model interval spacing
         run: python3 scripts/tests/vad-indexed-spacing.tests.py
       - name: Test independent SRC scalar archive readback

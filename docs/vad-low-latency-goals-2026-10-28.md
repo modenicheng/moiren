@@ -54,6 +54,14 @@ observable launch at that fixed path. Its26file/mocked-boundary tests and actual
 read-only check do not substitute for wiring the next native acquisition or
 for recording/quality acceptance. Historical copying runners stay retired.
 
+The [composed OBS capture session](validation/2026-11-08-obs-capture-session.md)
+now connects fixed-path setup, authenticated bounded RPC, recording transition
+ownership and graceful teardown. Its121file/mocked-boundary tests include the
+actual JSON client with fake wire/process boundaries; uncertain Start/Stop
+replies retain ownership rather than authorize a next route. This is software
+integration, not a native OBS recording or accepted matched acquisition. A
+separately pinned post-reboot native runner remains necessary.
+
 The user performs any required system reboot. The agent must explain the
 observed reason and stop disruptive/native follow-up until the user has
 rebooted; this is not authorization for automatic reboot or retry. Driver

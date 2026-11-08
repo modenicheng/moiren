@@ -25,6 +25,13 @@ recording acceptance or proof that a future acquisition is wired to the helper.
 The completed30-copy cleanup is retained separately. No native/audio work
 follows the still-unverified613reboot transition.
 
+The [composed capture boundary](../../docs/validation/2026-11-08-obs-capture-session.md)
+adds authenticated deadline-bounded RPC and recording ownership to the fixed
+OBS installation.121file/mocked-boundary tests pass, including actual-client
+lost Start/Stop reply refusals through fake wire/process boundaries. No native
+OBS recording or driver test follows; the future native runner still requires
+fresh post-reboot provenance and external-owner admission.
+
 The [name/identity audit](../../docs/validation/2026-11-08-vad-name-identity-contract.md)
 confirms that the current display-name-derived interface/circuit reference
 conflicts with Windows identity/settings preservation. Existing tests require
