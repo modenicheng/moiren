@@ -93,9 +93,17 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-collector-boundary.ps1
 .\test-worker-process.ps1
 .\test-worker-entry.ps1
+.\test-readonly-preflight.ps1
+.\test-preflight-collector.ps1
+.\test-read-wrapper.ps1
+.\test-collector-worker.ps1
+.\test-preflight-session.ps1
+.\test-session-identity.ps1
+.\test-target-readiness.ps1
+.\test-preflight-entry.ps1
 ```
 
-The task scheduler and target identity are mocked. Real children only output,
+The task scheduler, device APIs and target identity are mocked. Real children only output,
 wait and exit. No logman/tracelog, ETW, audio, OBS, remote target or driver is
 operated. `test-task-process.ps1` requires a non-elevated Windows host process
 in an existing nonzero session; it verifies real child token/CIM/command line
@@ -137,6 +145,45 @@ Worker/controller crashes after admission still require observation of the
 original surviving owner; this is not durable crash recovery or task deletion.
 This preparation's default stop also refuses; it must not be adopted as a
 running native trace's cleanup authorization policy.
+
+## Read-only target readiness
+
+`invoke-preflight.ps1 -EvidenceDirectory <new-directory> -UserRebootConfirmed`
+is the actual read-only target entry. Do not invoke it remotely until the user
+has confirmed their reboot. Missing confirmation or wrong host/SID refuses
+before imports, process discovery, device collection or evidence creation.
+This entry neither launches audio/OBS/ETW nor registers/deletes tasks, changes
+drivers/settings, contacts another machine or reboots.
+
+`target-readiness.ps1` retains both an actual `preflight-session.ps1` collector
+and `session-identity.ps1` user-session owner. The collector's controller
+session can be zero; its value is never replaced with a guessed desktop
+session. The separate user owner reads the exact Windows Explorer process
+handle/image/token, requires the observed target SID, nonzero session and
+Limited token, and rereads the same retained process rather than reopening a
+PID. Multiple candidate sessions require `-WorkerSessionId <observed-id>`;
+no Explorer/access-denied/unknown identity refuses instead of inventing
+session1. This discovery does not need an unlocked desktop and is not proof
+that a future worker can access audio. Actual worker/probe binding remains
+the final authority; no WTSQueryUserToken/SeTcb assumption is introduced.
+
+Readiness requires fresh post-install boot plus corroborating typed uptime,
+frozen613 file/INF/signature/catalog/PnP provenance, complete empty native
+owners/pending tasks/raw children, explicit external owners, all six default
+roles, render volume/mute and security observations. Original finite children
+and runspace remain owned after failure/timeout through natural exit/drains;
+no retry/kill or acceptance of late completion follows. The create-new flushed
+and readback-hashed target receipt links the original preflight receipt to
+the separately observed worker identity. Every assertion revalidates both
+retained owners and evidence. `NativeApproved`, `Qualified` and
+`AudioAccessProven` stay false.
+
+An alternate collector in host tests is explicitly `InjectedCollectorSource`.
+Hashing repository source at construction pins this run, not a released
+source package or native authorization. The future combined diagnostic must
+require its reviewed repository release/source pins, exclusive ownership,
+privileged trace controller, Limited worker, finish/decode, safety-after
+audit and archive transfer. This readiness entry is not that full runner.
 
 Full S0-S5 acceptance is unchanged. Use the separate standalone remote target
 directly; no VM or blanket desktop-unlock prerequisite. The user owns reboot.

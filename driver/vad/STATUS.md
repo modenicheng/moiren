@@ -67,6 +67,16 @@ raw final-name checks and installed613are unchanged.
 
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
+The later [read-only target readiness](../../docs/validation/2026-11-08-removal-target-readiness.md)
+connects the actual entry to one retained collector runspace and separately
+retained process-handle-based Limited user-session discovery. Actual controller
+session0 is not relabelled as the observed worker session; no unlock or
+WTSQueryUserToken assumption is made. Fresh boot/package/safety observations
+and original readback-hashed receipt pins govern readiness only. Native
+scheduler/trace/decode/task-deletion guards stay closed. This is host-only
+software integration, not current target access or a removal/naming/latency
+pass. The user has not confirmed reboot; installed613 remains unchanged.
+
 The later [managed removal finish](../../docs/validation/2026-11-08-managed-removal-finish.md)
 connects original terminal ownership, one exact STOP, closed-file decode,
 retained finite-child settlement, verified pre-retirement evidence and a

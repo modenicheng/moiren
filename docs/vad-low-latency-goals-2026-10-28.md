@@ -245,6 +245,17 @@ its original watcher36444 exits0; the new delta does not inherit that result.
 The user-owned reboot and unchanged installed613provenance remain prerequisites
 for later native work, not blockers for this local implementation.
 
+The later [read-only target readiness](validation/2026-11-08-removal-target-readiness.md)
+connects the actual entry, retained collector runspace/finite children and
+original process-handle-based Limited user-session discovery. Controller
+session0 remains distinct from the observed nonzero worker session. Create-new
+readback-hashed receipts bind both observations; source/owner/receipt repinning
+refuses, and timeout preserves original work without retry or late acceptance.
+The Windows CI matrix now includes24preparation suites. This read-only entry
+does not authorize scheduler/trace/audio/decoder/cleanup dispatch or establish
+target access, desktop input, removal repair or an S0-S5 pass. The full combined
+native runner and user-confirmed reboot/fresh provenance remain required.
+
 The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
 recomputes both channels at all six retained onsets. Identity1 has non-silent
 quarters but quarter4 correlation0.67284 fails the unchanged0.7 gate. This
