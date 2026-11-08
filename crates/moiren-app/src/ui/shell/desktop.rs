@@ -58,21 +58,12 @@ impl PresentationSnapshot {
             camera: shell.graph_view.camera,
             node_positions: std::mem::take(&mut shell.graph_view.node_positions),
             mixer_order: shell.mixer.presentation.order.clone(),
-<<<<<<< HEAD
-            pending_node_spawn: shell.pending_node_spawn.take(),
+            pending_node_spawn: shell.graph_view.pending_node_spawn.take(),
             selected_node: shell.selection.node.take(),
             selected_route: shell.selection.route,
             sidebar_open: shell.chrome.sidebar_open,
             inspector_open: shell.chrome.inspector_open,
             compact: shell.chrome.compact,
-=======
-            pending_node_spawn: shell.graph_view.pending_node_spawn.take(),
-            selected_node: shell.selected_node.take(),
-            selected_route: shell.selected_route,
-            sidebar_open: shell.sidebar_open,
-            inspector_open: shell.inspector_open,
-            compact: shell.compact,
->>>>>>> 9bb57f3c (refactor(ui): group the graph page view and panel state)
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.take(),
             project_path: shell.project_io.path.take(),

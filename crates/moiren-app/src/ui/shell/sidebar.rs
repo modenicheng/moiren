@@ -189,15 +189,9 @@ pub(crate) struct LibraryKey {
 fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
     LibraryKey {
         snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
-<<<<<<< HEAD
         selected_node: shell.selection.node,
-        pending_spawn: shell.pending_node_spawn.is_some(),
-        compact: shell.chrome.compact,
-=======
-        selected_node: shell.selected_node,
         pending_spawn: shell.graph_view.pending_node_spawn.is_some(),
-        compact: shell.compact,
->>>>>>> 9bb57f3c (refactor(ui): group the graph page view and panel state)
+        compact: shell.chrome.compact,
         preferences: shell.preferences.values.clone(),
         scroll: shell.library.scroll.offset().y,
         rail_scroll: shell.library.rail_scroll.offset().y,

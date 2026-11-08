@@ -48,9 +48,9 @@ impl ControlsKey {
             generation: snapshot.generation,
             phase: snapshot.phase,
             desired: snapshot.desired.clone(),
-            positions: shell.node_positions.clone(),
-            camera: shell.camera,
-            canvas: shell.canvas_size,
+            positions: shell.graph_view.node_positions.clone(),
+            camera: shell.graph_view.camera,
+            canvas: shell.graph_view.canvas_size,
             selected_nodes: shell.selection.nodes.iter().copied().collect(),
             selected_route: shell.selection.route,
             connection: shell
@@ -103,14 +103,39 @@ impl CachedPanel for GraphPanel {
         // The library's search input is a model entity nested in this cached
         // tree; its notifications cannot invalidate the cached ancestor by
         // themselves, so typing must re-render through an explicit observer.
-        let search = shell.read_with(cx, |shell, _| shell.node_search.clone());
+        let search = shell.read_with(cx, |shell, _| shell.graph_view.node_search.clone());
         vec![cx.observe(&search, |host, _, cx| host.notify_nested(cx))]
     }
 }
 
+/// The graph page's projection and panel state (design 20 §4): the
+/// camera and node position table, the canvas focus handle, the context
+/// menu and binding menu (with its scroll), the library search input and
+/// pending spawn, the projected frame shared with the meter layer, HUD
+/// overlay rects, the canvas size, the hovered card, the spectrum paint
+/// scratch, and the cached GraphPanel host.
+pub(crate) struct GraphViewState {
+    pub(crate) camera: Camera,
+    pub(crate) node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+    pub(crate) focus: FocusHandle,
+    pub(crate) context_menu: Option<super::ContextMenu>,
+    pub(crate) binding_menu: Option<super::BindingMenu>,
+    pub(crate) binding_menu_scroll: ScrollHandle,
+    pub(crate) pending_node_spawn: Option<super::PendingNodeSpawn>,
+    pub(crate) node_search: Entity<component::input::InputState>,
+    pub(crate) controls: Entity<GraphPanelHost>,
+    pub(crate) meter_frame: Entity<GraphMeterLayer>,
+    pub(crate) canvas_frame: crate::ui::pages::graph::graph_canvas_view::PreparedFrame,
+    pub(crate) overlays: crate::ui::pages::graph::graph_canvas::OverlayRects,
+    pub(crate) canvas_size: Option<(f32, f32)>,
+    pub(crate) hovered_node: Option<moiren_core::graph::NodeId>,
+    pub(crate) spectrum_scratch: Vec<f32>,
+}
+
 pub(crate) fn mount(shell: &StudioShell, _window: &Window) -> AnyElement {
     let controls = shell
-        .graph_controls
+        .graph_view
+        .controls
         .clone()
         .cached(StyleRefinement::default().size_full())
         .into_any_element();
@@ -124,7 +149,7 @@ pub(crate) fn mount(shell: &StudioShell, _window: &Window) -> AnyElement {
         // The meter frame follows the page content: painting-free, hitbox
         // free, and the only part of the page that renders on an
         // animation-only frame.
-        .child(shell.graph_meter_frame.clone())
+        .child(shell.graph_view.meter_frame.clone())
         .into_any_element()
 }
 
@@ -203,7 +228,7 @@ fn paint_fault_tooltip(
     window: &mut Window,
     cx: &mut Context<StudioShell>,
 ) {
-    let Some(id) = shell.hovered_node else {
+    let Some(id) = shell.graph_view.hovered_node else {
         return;
     };
     let Some(index) = frame
@@ -271,7 +296,7 @@ fn paint_graph_meter_frame(
     // The HUD overlays (editing toolbar, overview, library handle) live in
     // the cached panel beneath this layer: carve their rects out of every
     // card's mask so live bars never paint over them.
-    let overlays = shell.graph_overlays.rects();
+    let overlays = shell.graph_view.overlays.rects();
     window.with_content_mask(
         Some(ContentMask {
             bounds: frame.bounds,
@@ -318,9 +343,12 @@ fn paint_graph_meter_frame(
                 let axis = if layout.spectrum.is_some() {
                     let state = shell.state.read(cx);
                     let curve = state.node_spectra.curve(id);
-                    shell.spectrum_scratch.clear();
+                    shell.graph_view.spectrum_scratch.clear();
                     if let Some(curve) = curve {
-                        shell.spectrum_scratch.extend_from_slice(curve.points);
+                        shell
+                            .graph_view
+                            .spectrum_scratch
+                            .extend_from_slice(curve.points);
                     }
                     curve.map(|curve| (curve.lo_hz, curve.hi_hz))
                 } else {
@@ -335,7 +363,7 @@ fn paint_graph_meter_frame(
                         if layout.spectrum.is_some() {
                             let curve =
                                 axis.map(|(lo_hz, hi_hz)| crate::ui::monitoring::SpectrumCurve {
-                                    points: &shell.spectrum_scratch,
+                                    points: &shell.graph_view.spectrum_scratch,
                                     lo_hz,
                                     hi_hz,
                                 });

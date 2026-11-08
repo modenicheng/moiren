@@ -56,15 +56,9 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
         let test_node = state.read(cx).snapshot.graph.graph.nodes()[0].id();
         weak.update(cx, |shell, _| {
             shell.presentation.page = pages::Page::Mixer;
-<<<<<<< HEAD
-            shell.camera.pan_x = 84.0;
+            shell.graph_view.camera.pan_x = 84.0;
             shell.chrome.sidebar_open = true;
             shell.chrome.inspector_open = true;
-=======
-            shell.graph_view.camera.pan_x = 84.0;
-            shell.sidebar_open = true;
-            shell.inspector_open = true;
->>>>>>> 9bb57f3c (refactor(ui): group the graph page view and panel state)
             shell.devices.device_tab = super::devices::DeviceTab::Inputs;
             shell.devices.selected_device = Some("selected-input".into());
             shell
@@ -403,19 +397,11 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
         window.render_frame(cx);
     });
     view.update(cx, |shell, cx| {
-<<<<<<< HEAD
-        shell.camera.pan_x = 123.;
-        shell.camera.pan_y = 87.;
-        shell.camera.zoom = 0.89;
-        shell.camera.adjusted = true;
-        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[1].id());
-=======
         shell.graph_view.camera.pan_x = 123.;
         shell.graph_view.camera.pan_y = 87.;
         shell.graph_view.camera.zoom = 0.89;
         shell.graph_view.camera.adjusted = true;
-        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[1].id());
->>>>>>> 9bb57f3c (refactor(ui): group the graph page view and panel state)
+        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[1].id());
     });
     cx.update(|window, cx| {
         window.render_frame(cx);

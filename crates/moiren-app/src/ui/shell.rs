@@ -398,7 +398,6 @@ impl StudioShell {
                 hovered_node: None,
                 spectrum_scratch: Vec::new(),
             },
-            selected_nodes: Default::default(),
             matrix: matrix::MatrixPageState::default(),
             mixer: mixer::MixerPageState {
                 presentation: mixer::MixerPresentation::default(),

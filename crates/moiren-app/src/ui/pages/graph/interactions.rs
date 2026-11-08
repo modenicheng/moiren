@@ -18,7 +18,7 @@ pub(super) fn zoom(this: &Entity<StudioShell>) -> Rc<ZoomFn> {
         move |(factor, anchor): (f32, Point<Pixels>), _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
                 let anchor = (f32::from(anchor.x), f32::from(anchor.y));
-                shell.camera.zoom_by(factor, anchor);
+                shell.graph_view.camera.zoom_by(factor, anchor);
                 cx.notify();
             });
         },
@@ -72,11 +72,15 @@ pub(super) fn select_node(
                     .find(|node| node.node_id == Some(selected))
                     .map(|node| (node.x, node.y))
                 {
-                    shell.node_positions.entry(selected).or_insert(projected);
+                    shell
+                        .graph_view
+                        .node_positions
+                        .entry(selected)
+                        .or_insert(projected);
                 }
             }
             let pos = window.mouse_position();
-            shell.camera.adjusted = true;
+            shell.graph_view.camera.adjusted = true;
             shell.graph_gestures.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
             shell.graph_gestures.node_drag_snap = (0., 0.);
             shell.sync_drag_demand();
@@ -117,7 +121,7 @@ pub(super) fn background_move(
                     // the meter frame, so a change costs one frame and never
                     // a page rebuild. Anything on a card counts, port dots
                     // included.
-                    let hovered = shell.graph_canvas_frame.read().and_then(|frame| {
+                    let hovered = shell.graph_view.canvas_frame.read().and_then(|frame| {
                         use crate::ui::pages::graph::graph_canvas::HitTarget;
                         let id = match frame.hit_test((x, y))? {
                             HitTarget::Node(id)
@@ -135,8 +139,8 @@ pub(super) fn background_move(
                             .find(|node| node.id == id)
                             .and_then(|node| node.node_id)
                     });
-                    if shell.hovered_node != hovered {
-                        shell.hovered_node = hovered;
+                    if shell.graph_view.hovered_node != hovered {
+                        shell.graph_view.hovered_node = hovered;
                         cx.notify();
                     }
                     // A right press released within the drag threshold opens
@@ -146,7 +150,7 @@ pub(super) fn background_move(
                     if let Some(pressed) = shell.graph_gestures.right_press.take()
                         && (x - pressed.0).hypot(y - pressed.1) <= 3.
                     {
-                        shell.context_menu = Some(match hovered {
+                        shell.graph_view.context_menu = Some(match hovered {
                             Some(node) => ContextMenu::Node { node, at: (x, y) },
                             None => ContextMenu::Background { at: (x, y) },
                         });
@@ -205,7 +209,7 @@ pub(super) fn background_move(
                     // from the hot layer's paint would never reach it.
                     let (moved, anchor, current, additive) =
                         (drag.moved, drag.anchor, drag.current, drag.additive);
-                    let frame = shell.graph_canvas_frame.read();
+                    let frame = shell.graph_view.canvas_frame.read();
                     if moved && let Some(frame) = frame {
                         let a = frame.local_position(anchor);
                         let b = frame.local_position(current);
@@ -221,8 +225,11 @@ pub(super) fn background_move(
                     }
                 }
                 if let Some((id, gx, gy)) = shell.graph_gestures.node_drag {
-                    shell.camera.adjusted = true;
-                    let raw = shell.camera.canvas_delta_to_world((x - gx, y - gy));
+                    shell.graph_view.camera.adjusted = true;
+                    let raw = shell
+                        .graph_view
+                        .camera
+                        .canvas_delta_to_world((x - gx, y - gy));
                     // Alignment snapping (item F): the dragged selection's
                     // bounding box seeks the other cards' edges and the
                     // horizontal axis within 6 screen px. The threshold
@@ -236,11 +243,11 @@ pub(super) fn background_move(
                     shell.graph_gestures.node_drag_snap = (0., 0.);
                     if window.modifiers().alt {
                         shell.graph_gestures.drag_guides = None;
-                    } else if let Some(frame) = shell.graph_canvas_frame.read() {
+                    } else if let Some(frame) = shell.graph_view.canvas_frame.read() {
                         let (snapped, guides) = snap_delta(
                             &frame,
                             &shell.selection.nodes,
-                            &shell.node_positions,
+                            &shell.graph_view.node_positions,
                             baked,
                             raw,
                         );
@@ -256,7 +263,7 @@ pub(super) fn background_move(
                     );
                     let selection: Vec<_> = shell.selection.nodes.iter().copied().collect();
                     for id in selection {
-                        if let Some(pos) = shell.node_positions.get_mut(&id) {
+                        if let Some(pos) = shell.graph_view.node_positions.get_mut(&id) {
                             pos.0 += applied.0;
                             pos.1 += applied.1;
                         }
@@ -265,7 +272,7 @@ pub(super) fn background_move(
                     cx.notify();
                 }
                 if let Some((gx, gy)) = shell.graph_gestures.pan_grab {
-                    shell.camera.pan_by(x - gx, y - gy);
+                    shell.graph_view.camera.pan_by(x - gx, y - gy);
                     shell.graph_gestures.node_drag = None;
                     shell.graph_gestures.node_drag_snap = (0., 0.);
                     shell.graph_gestures.pan_grab = Some((x, y));
@@ -329,7 +336,7 @@ pub(super) fn scroll_pan(this: &Entity<StudioShell>) -> WindowAppFn<(f32, f32)> 
     Box::new(
         move |(dx, dy): (f32, f32), _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
-                shell.camera.pan_by(dx, dy);
+                shell.graph_view.camera.pan_by(dx, dy);
                 cx.notify();
             });
         },
@@ -376,11 +383,11 @@ pub(super) fn camera_fit(
                 );
                 drop(points);
                 let canvas_size = Some((f32::from(canvas.width), f32::from(canvas.height)));
-                let changed = shell.canvas_size != canvas_size
-                    || (!shell.camera.adjusted && shell.camera != *fitted);
-                shell.canvas_size = canvas_size;
-                if !shell.camera.adjusted {
-                    shell.camera = *fitted;
+                let changed = shell.graph_view.canvas_size != canvas_size
+                    || (!shell.graph_view.camera.adjusted && shell.graph_view.camera != *fitted);
+                shell.graph_view.canvas_size = canvas_size;
+                if !shell.graph_view.camera.adjusted {
+                    shell.graph_view.camera = *fitted;
                 }
                 if changed {
                     cx.notify();
@@ -527,10 +534,11 @@ pub(super) fn port_down(
         this.update(cx, |shell, cx| {
             if !shell.begin_pointer_session(window) {
                 use crate::ui::pages::graph::graph_canvas::PortDirection;
-                shell.camera.adjusted = true;
+                shell.graph_view.camera.adjusted = true;
                 for node in &nodes.nodes {
                     if let Some(node_id) = node.node_id {
                         shell
+                            .graph_view
                             .node_positions
                             .entry(node_id)
                             .or_insert((node.x, node.y));
@@ -743,7 +751,7 @@ pub(super) fn chip(
             shell.selection.nodes.insert(node_id);
             shell.selection.node = Some(node_id);
             shell.selection.route = None;
-            shell.binding_menu = Some(BindingMenu {
+            shell.graph_view.binding_menu = Some(BindingMenu {
                 node: node_id,
                 anchor,
             });
@@ -833,7 +841,7 @@ pub(super) fn expand(
             // right click does, anchored at the click.
             let pos = window.mouse_position();
             shell.select_single_node(node_id);
-            shell.context_menu = Some(ContextMenu::Node {
+            shell.graph_view.context_menu = Some(ContextMenu::Node {
                 node: node_id,
                 at: (f32::from(pos.x), f32::from(pos.y)),
             });
