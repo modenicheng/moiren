@@ -207,7 +207,7 @@ pub struct StudioShell {
     /// Node whose label is being edited inline in the inspector.
     pub(crate) node_name_editing: Option<moiren_core::graph::NodeId>,
     pub(crate) hand_tool: bool,
-    pub(crate) matrix_scroll: ScrollHandle,
+    pub(crate) matrix: matrix::MatrixPageState,
     pub(crate) mixer_scroll: ScrollHandle,
     /// The shared inspector panel's scroll (graph/matrix/device inspectors
     /// are mutually exclusive), plus the other cached panels' scroll
@@ -448,7 +448,7 @@ impl StudioShell {
             node_name,
             node_name_editing: None,
             hand_tool: false,
-            matrix_scroll: ScrollHandle::new(),
+            matrix: matrix::MatrixPageState::default(),
             mixer_scroll: ScrollHandle::new(),
             inspector_scroll: ScrollHandle::new(),
             library_scroll: ScrollHandle::new(),
