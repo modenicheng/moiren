@@ -758,12 +758,15 @@ pub use test_harness::{settle_panels, shell_with_state, test_shell};
 pub(crate) mod tests;
 pub(crate) mod tray_mixer;
 
-impl Render for StudioShell {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(feature = "gpui-test")]
-        {
-            self.trace.borrow_mut().shell_renders += 1;
-        }
+impl StudioShell {
+    /// Render-time reconciliation passes (design 20 §5, PR10): one entry
+    /// point for the per-frame sync hooks that reconcile nested model
+    /// entities (settings save completion, mixer/compressor/editor
+    /// controls, the binding menu, the fault popover, focus keeping) with
+    /// shell state before the tree is built. The order is load-bearing —
+    /// each pass may read what an earlier one wrote — and is preserved
+    /// verbatim from the pre-aggregation render.
+    fn sync_presentation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
@@ -774,6 +777,16 @@ impl Render for StudioShell {
         self.sync_export_controls(window, cx);
         self.sync_mixer_controls(window, cx);
         self.sync_compressor_controls(window, cx);
+    }
+}
+
+impl Render for StudioShell {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "gpui-test")]
+        {
+            self.trace.borrow_mut().shell_renders += 1;
+        }
+        self.sync_presentation(window, cx);
         // An iconic window never presents, but the platform vsync thread
         // still re-invalidates it every tick and such frames render
         // unconditionally, so a minimized window would otherwise keep paying
