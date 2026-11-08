@@ -1177,11 +1177,12 @@ mod tests {
         // A delivery stall is a status change: it must wake exactly once,
         // then stay quiet while the stall persists.
         backend_state.pause_audio.store(true, Ordering::Relaxed);
-        std::thread::sleep(STALE_AFTER + Duration::from_millis(200));
-        assert!(
-            meters.update_points(&snapshot, true, true),
-            "the transition to Stale must wake"
-        );
+        // The stall clock starts at the feed's last delivery, not at this
+        // store: on a loaded runner a publication can still land just after
+        // the pause, so a fixed sleep underestimates the wait. Bound it.
+        wait_until(STALE_AFTER + Duration::from_secs(3), || {
+            meters.update_points(&snapshot, true, true)
+        });
         assert!(
             !meters.update_points(&snapshot, true, true),
             "a persisted stall without new publications must not keep waking"
