@@ -75,7 +75,7 @@ fn open_matrix_page(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Matrix;
         shell.inspector_open = false;
-        shell.preferences.density = crate::project::UiDensity::Comfortable;
+        shell.preferences.values.density = crate::project::UiDensity::Comfortable;
         shell.density = Density::Comfortable;
         cx.notify();
     });
@@ -205,7 +205,7 @@ fn matrix_rows_follow_density_on_a_plain_notification(cx: &mut TestAppContext) {
     // Mirrors the settings transaction: preferences.density and the theme
     // density move together.
     view.update(cx, |shell, cx| {
-        shell.preferences.density = crate::project::UiDensity::Compact;
+        shell.preferences.values.density = crate::project::UiDensity::Compact;
         shell.density = Density::Compact;
         cx.notify();
     });

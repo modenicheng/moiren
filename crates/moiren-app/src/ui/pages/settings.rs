@@ -62,11 +62,11 @@ impl CachedPanel for SettingsPanel {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
             section: settings.section,
             global: settings.global.clone(),
-            meters: shell.preferences.meters,
+            meters: shell.preferences.values.meters,
             density: shell.density,
-            restore_last_project: shell.preferences.restore_last_project,
+            restore_last_project: shell.preferences.values.restore_last_project,
             pending_request: state.pending_request,
-            project_message: shell.project_message.clone(),
+            project_message: shell.project_io.message.clone(),
             scroll: shell.settings.scroll.offset().y,
         }
     }
@@ -498,7 +498,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
 
 fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let this = cx.entity();
-    let meters = shell.preferences.meters;
+    let meters = shell.preferences.values.meters;
     div()
         .flex()
         .flex_col()
@@ -512,7 +512,7 @@ fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     pref_choices(
                         shell,
                         "language",
-                        shell.preferences.language,
+                        shell.preferences.values.language,
                         crate::i18n::UiLanguage::ALL
                             .map(|language| (language, language.title().to_owned())),
                         |shell, language, window, cx| shell.set_language(language, window, cx),
@@ -536,7 +536,7 @@ fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 row(
                     &t!("Restore last project at launch"),
                     component::switch::Switch::new("settings-restore-project")
-                        .checked(shell.preferences.restore_last_project)
+                        .checked(shell.preferences.values.restore_last_project)
                         .on_click({
                             let this = this.clone();
                             move |checked, _, cx| {
@@ -696,7 +696,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                             .gpui_test_observe(),
                     )
                 })
-                .when_some(shell.project_message.clone(), |view, text| {
+                .when_some(shell.project_io.message.clone(), |view, text| {
                     view.child(label(text))
                 }),
         ))

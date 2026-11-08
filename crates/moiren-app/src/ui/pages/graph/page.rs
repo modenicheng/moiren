@@ -59,7 +59,7 @@ impl ControlsKey {
             hand_tool: shell.hand_tool,
             sidebar_open: shell.sidebar_open,
             compact: shell.compact,
-            preferences: shell.preferences.clone(),
+            preferences: shell.preferences.values.clone(),
         }
     }
 }

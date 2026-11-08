@@ -303,11 +303,11 @@ impl StudioShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.preferences.language == language {
+        if self.preferences.values.language == language {
             return;
         }
         crate::i18n::apply(language);
-        self.preferences.language = language;
+        self.preferences.values.language = language;
         self.save_preferences(cx);
         // Strings stored in component state never re-read the locale on
         // re-render; the search placeholder must follow the switch like the
@@ -317,8 +317,11 @@ impl StudioShell {
         });
         // The untitled name is presentational, so it follows the locale too;
         // a loaded document's name is user data and stays as authored.
-        if self.project_path.is_none() && !self.project_busy && self.pending_project.is_none() {
-            self.project_name = t!("Untitled session").into();
+        if self.project_io.path.is_none()
+            && !self.project_io.busy
+            && self.project_io.pending.is_none()
+        {
+            self.project_io.name = t!("Untitled session").into();
         }
         cx.notify();
     }
@@ -376,7 +379,7 @@ impl StudioShell {
             return;
         }
         self.density = density;
-        self.preferences.density = if density == Density::Compact {
+        self.preferences.values.density = if density == Density::Compact {
             crate::project::UiDensity::Compact
         } else {
             crate::project::UiDensity::Comfortable
@@ -390,10 +393,10 @@ impl StudioShell {
         falloff: crate::project::MeterFalloff,
         cx: &mut Context<Self>,
     ) {
-        if self.preferences.meters.falloff == falloff {
+        if self.preferences.values.meters.falloff == falloff {
             return;
         }
-        self.preferences.meters.falloff = falloff;
+        self.preferences.values.meters.falloff = falloff;
         self.save_preferences_quiet(cx);
         cx.notify();
     }
@@ -403,19 +406,19 @@ impl StudioShell {
         peak_hold: crate::project::PeakHold,
         cx: &mut Context<Self>,
     ) {
-        if self.preferences.meters.peak_hold == peak_hold {
+        if self.preferences.values.meters.peak_hold == peak_hold {
             return;
         }
-        self.preferences.meters.peak_hold = peak_hold;
+        self.preferences.values.meters.peak_hold = peak_hold;
         self.save_preferences_quiet(cx);
         cx.notify();
     }
 
     pub(crate) fn set_restore_last_project(&mut self, restore: bool, cx: &mut Context<Self>) {
-        if self.preferences.restore_last_project == restore {
+        if self.preferences.values.restore_last_project == restore {
             return;
         }
-        self.preferences.restore_last_project = restore;
+        self.preferences.values.restore_last_project = restore;
         self.save_preferences_quiet(cx);
         cx.notify();
     }
