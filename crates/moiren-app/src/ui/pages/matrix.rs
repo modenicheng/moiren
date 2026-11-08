@@ -12,7 +12,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::GraphEdit;
 use crate::ui::presentation::{db_text, step_db};
-use crate::ui::widgets::overlay_scrollbar::{clamped_offset, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{clamped_offset, notify_owner, scroll_region};
 use controls::*;
 use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{PortId, SendParams};
@@ -252,36 +252,23 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         .gpui_test_observe(),
                                 )
                                 .child(
-                                    // The bar overlay is a sibling of the
-                                    // scroll container, never a child: the
-                                    // container translates its children by
-                                    // the offset at prepaint, so an overlay
-                                    // inside it would drift away with the
-                                    // content. The outer sizing lives on the
-                                    // relative wrapper.
-                                    div()
-                                        .relative()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .id("matrix-grid")
-                                                .w_full()
-                                                .h_full()
-                                                .overflow_scroll()
-                                                .track_scroll(&shell.matrix.scroll)
-                                                .restrict_scroll_to_axis()
-                                                .on_scroll_wheel(move |_, _, cx| {
-                                                    this.update(cx, |_, cx| cx.notify())
-                                                })
-                                                .child(grid)
-                                                .gpui_test_observe(),
-                                        )
-                                        .child(overlay_scrollbar(
-                                            &shell.matrix.scroll,
-                                            "scrollbar-matrix-grid",
-                                            ScrollbarAxis::Both,
-                                        )),
+                                    scroll_region(
+                                        "scrollbar-matrix-grid",
+                                        &shell.matrix.scroll,
+                                        ScrollbarAxis::Both,
+                                        div()
+                                            .id("matrix-grid")
+                                            .w_full()
+                                            .h_full()
+                                            .overflow_scroll()
+                                            .track_scroll(&shell.matrix.scroll)
+                                            .restrict_scroll_to_axis()
+                                            .on_scroll_wheel(notify_owner(this))
+                                            .child(grid)
+                                            .gpui_test_observe(),
+                                    )
+                                    .flex_1()
+                                    .min_w_0(),
                                 ),
                         )
                         .child(div().flex_none().p(px(12.)).child(label(t!(

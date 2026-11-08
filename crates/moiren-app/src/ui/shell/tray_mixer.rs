@@ -32,7 +32,7 @@ use crate::ui::presentation::db_text;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::widgets::fader::fader;
 use crate::ui::widgets::meters::paint_meter_fill;
-use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{NodeId, NodeKind};
 
@@ -274,22 +274,16 @@ impl CachedPanel for TrayPanel {
                     .child(label(t!("No strips · open Moiren to build a graph")))
                     .into_any_element()
             } else {
-                // The bar overlay is a sibling of the scroll container,
-                // never a child: the container translates its children by
-                // the offset at prepaint, so an overlay inside it would
-                // drift away with the strips.
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .child(strips)
-                    .child(overlay_scrollbar(
-                        &owner.strips_scroll,
-                        "scrollbar-tray-mixer-strips",
-                        ScrollbarAxis::Horizontal,
-                    ))
-                    .into_any_element()
+                scroll_region(
+                    "scrollbar-tray-mixer-strips",
+                    &owner.strips_scroll,
+                    ScrollbarAxis::Horizontal,
+                    strips,
+                )
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .into_any_element()
             })
             .into_any_element()
     }
