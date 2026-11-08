@@ -56,7 +56,7 @@ for recording/quality acceptance. Historical copying runners stay retired.
 
 The [composed OBS capture session](validation/2026-11-08-obs-capture-session.md)
 now connects fixed-path setup, authenticated bounded RPC, recording transition
-ownership and graceful teardown. Its121file/mocked-boundary tests include the
+ownership and graceful teardown. Its129file/mocked-boundary tests include the
 actual JSON client with fake wire/process boundaries; uncertain Start/Stop
 replies retain ownership rather than authorize a next route. This is software
 integration, not a native OBS recording or accepted matched acquisition. A

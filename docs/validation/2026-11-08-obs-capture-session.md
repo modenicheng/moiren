@@ -60,11 +60,11 @@ Fresh file/mocked-boundary suites pass:
 | Suite | Tests |
 | --- | ---: |
 | Existing fixed-path reuse | 26 |
-| Setup and normal-close boundary | 33 |
-| Authenticated bounded websocket | 36 |
+| Setup and normal-close boundary | 34 |
+| Authenticated bounded websocket | 42 |
 | Recording transition ownership | 14 |
-| Composed capture session | 12 |
-| Total | 121 |
+| Composed capture session | 13 |
+| Total | 129 |
 
 Recording and capture-session suites retain failing missing-implementation
 checks before implementation and passing final runs. Composed tests exercise
@@ -81,10 +81,22 @@ An additional Ubuntu24.04/WSL run reproduces a test-only path comparison failure
 the default session stores an absolute path while PosixPath treats the literal
 Windows canonical path as relative. Comparing its absolute form repairs the
 assertion without changing production target guards or the Windows install
-path. All121cases now run with120passing and one Windows-only reparse test
-skipped; the Windows suite passes121with no skips. The failing and passing Linux
-runs and a fresh33-test Windows setup suite are retained separately. No portable
+path. All129cases now run with128passing and one Windows-only reparse test
+skipped; the Windows suite passes129with no skips. The failing and passing Linux
+runs and a fresh34-test Windows setup suite are retained separately. No portable
 file test launches an audio device, OBS or a driver.
+
+Independent review identifies a real failed-handshake cleanup leak: a connector
+whose socket close also fails would drop that unreturned owner, and the setup
+boundary would make140connection attempts. A focused assertion reproduces the
+140-versus1violation before repair. Structured `cleanup_owner` now retains exact
+failed close operations; setup adopts that owner and refuses readiness retry.
+Default dial cleanup similarly retains failed raw/socket shutdown operations.
+Successful cleanup operations are not repeated. A composed real-client test
+then exposes an early normal-close-attempt flag; it is now consumed only after
+socket cleanup succeeds, so explicit retained-socket cleanup may precede the
+one actual normal-close attempt. Errors remain sticky and the session fails.
+All final Windows/Ubuntu suites cover this repair; no live socket is opened.
 
 The actual target's existing websocket-client1.7.0 source is read back without
 importing it or opening a socket; five source files total45831bytes. Its supplied

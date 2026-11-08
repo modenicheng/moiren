@@ -4,6 +4,8 @@
 No import-time I/O. websocket-client is imported only by the default dialer.
 Injected dialers must return an owned send/recv/settimeout/close socket, enforce
 the supplied dial deadline and clean up anything they raise before returning.
+Failed cleanup must instead return its exact owner on ObsWebSocketError so the
+caller can retain it, abort readiness and explicitly retry cleanup, never dial.
 The default dialer owns its raw TCP socket even when HTTP upgrade fails. Its
 wire wrapper bounds partial I/O/control-frame loops, not just completed JSON.
 No request retry/reconnect, recording lifecycle or acquisition acceptance here.
@@ -26,9 +28,27 @@ MAX_IO_OPERATIONS = 4096
 
 
 class ObsWebSocketError(RuntimeError):
-    def __init__(self, message, *, status_code=None):
+    def __init__(self, message, *, status_code=None, cleanup_owner=None):
         super().__init__(message)
         self.status_code = status_code
+        self.cleanup_owner = cleanup_owner
+
+
+class _PendingCleanup:
+    """Retain exact bound close operations until each has returned successfully."""
+    def __init__(self, operations=()):
+        self.operations = list(operations)
+
+    def close(self):
+        pending = []
+        for operation in self.operations:
+            try:
+                operation()
+            except BaseException:
+                pending.append(operation)
+        self.operations = pending
+        if pending:
+            raise ObsWebSocketError('OBS socket cleanup failed', cleanup_owner=self) from None
 
 
 def _timeout(value):
@@ -99,6 +119,7 @@ class WireSocket:
 class _Transport:
     def __init__(self, websocket, wire):
         self.websocket, self.wire = websocket, wire
+        self.cleanup = _PendingCleanup((websocket.shutdown, wire.close))
 
     def settimeout(self, seconds):
         self.wire.begin(seconds)
@@ -111,23 +132,23 @@ class _Transport:
         return self.websocket.recv()
 
     def close(self):
-        try:
-            # shutdown closes immediately; close() may wait for a peer handshake.
-            self.websocket.shutdown()
-        finally:
-            self.wire.close()
+        # shutdown closes immediately; close() may wait for a peer handshake.
+        self.cleanup.close()
 
 
 def _dial(seconds, clock):
     raw = websocket = None
+    cleanup = _PendingCleanup()
     end = clock() + seconds
     try:
         import websocket as library
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        cleanup.operations.append(raw.close)
         wire = WireSocket(raw, clock=clock)
         wire.begin(_remaining(end, clock))
         wire.connect(('127.0.0.1', 4471))
         websocket = library.WebSocket(enable_multithread=False, skip_utf8_validation=False)
+        cleanup.operations.insert(0, websocket.shutdown)
         websocket.connect(URL, socket=wire, timeout=_remaining(end, clock),
                           subprotocols=['obswebsocket.json'], redirect_limit=0)
         status = websocket.getstatus()
@@ -137,18 +158,11 @@ def _dial(seconds, clock):
         _remaining(end, clock)
         return _Transport(websocket, wire)
     except BaseException:
-        failed = False
-        if websocket is not None:
-            try:
-                websocket.shutdown()
-            except BaseException:
-                failed = True
-        if raw is not None:
-            try:
-                raw.close()
-            except BaseException:
-                failed = True
-        raise ObsWebSocketError('OBS dial cleanup failed' if failed else 'OBS dial failed') from None
+        try:
+            cleanup.close()
+        except ObsWebSocketError:
+            raise ObsWebSocketError('OBS dial cleanup failed', cleanup_owner=cleanup) from None
+        raise ObsWebSocketError('OBS dial failed') from None
 
 
 def _unique(pairs):
@@ -307,8 +321,8 @@ class WebSocketClient:
         if not self.closed:
             try:
                 self.owner.close()
-            except Exception:
-                raise ObsWebSocketError('OBS socket cleanup failed') from None
+            except BaseException:
+                raise ObsWebSocketError('OBS socket cleanup failed', cleanup_owner=self) from None
             self.closed = True
 
 
@@ -326,10 +340,7 @@ def connect(password, *, timeout, dial=None, clock=time.monotonic):
         if dial is None:
             owner = _dial(_remaining(end, clock), clock)
         else:
-            try:
-                owner = dial(URL, timeout=_remaining(end, clock))
-            except Exception:
-                raise ObsWebSocketError('OBS dial failed') from None
+            owner = dial(URL, timeout=_remaining(end, clock))
         client = WebSocketClient(owner, clock)
         op, hello = client._recv(end)
         auth = hello.get('authentication')
@@ -351,13 +362,13 @@ def connect(password, *, timeout, dial=None, clock=time.monotonic):
         _remaining(end, clock)
         return client
     except BaseException as error:
-        failed = False
+        cleanup_owner = error.cleanup_owner if isinstance(error, ObsWebSocketError) else None
         if owner is not None:
             try:
                 owner.close()
             except BaseException:
-                failed = True
-        message = str(error) if isinstance(error, ObsWebSocketError) else 'OBS handshake failed'
-        if failed:
-            message = 'OBS handshake cleanup failed'
-        raise ObsWebSocketError(message) from None
+                cleanup_owner = owner
+        # Do not stringify even a structured injected error: its message may
+        # contain credentials. A failed dial already attempted cleanup once.
+        message = 'OBS handshake cleanup failed' if cleanup_owner is not None else 'OBS handshake failed'
+        raise ObsWebSocketError(message, cleanup_owner=cleanup_owner) from None

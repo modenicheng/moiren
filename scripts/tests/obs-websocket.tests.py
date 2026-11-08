@@ -246,6 +246,42 @@ class ProtocolTests(unittest.TestCase):
         self.assert_sanitized(caught.exception)
         self.assertIn('cleanup', str(caught.exception))
 
+    def test_errors_without_pending_cleanup_expose_none(self):
+        error = M.ObsWebSocketError('safe error')
+        self.assertTrue(hasattr(error, 'cleanup_owner'))
+        self.assertIsNone(error.cleanup_owner)
+        self.sock.messages = deque(['malformed'])
+        with self.assertRaises(M.ObsWebSocketError) as caught:
+            self.connect()
+        self.assertIsNone(caught.exception.cleanup_owner)
+
+    def test_failed_handshake_close_returns_exact_owner_for_explicit_retry(self):
+        self.sock.messages = deque(['malformed'])
+        self.sock.close_error = RuntimeError(PASSWORD + SALT)
+        with self.assertRaises(M.ObsWebSocketError) as caught:
+            self.connect()
+        owner = getattr(caught.exception, 'cleanup_owner', None)
+        self.assertIs(owner, self.sock)
+        self.assert_sanitized(caught.exception)
+        self.assertEqual(self.sock.close_calls, 1)
+        self.sock.close_error = None
+        owner.close()
+        self.assertEqual(self.sock.close_calls, 2)
+        self.assertEqual(len(self.dials), 1)
+
+    def test_injected_dial_cleanup_owner_survives_without_implicit_retry_or_secret_text(self):
+        def dial(_url, *, timeout):
+            error = M.ObsWebSocketError(PASSWORD + SALT)
+            error.cleanup_owner = self.sock
+            raise error
+        with self.assertRaises(M.ObsWebSocketError) as caught:
+            M.connect(PASSWORD, timeout=5, dial=dial, clock=self.clock)
+        self.assertIs(getattr(caught.exception, 'cleanup_owner', None), self.sock)
+        self.assert_sanitized(caught.exception)
+        self.assertEqual(self.sock.close_calls, 0)
+        self.sock.close()
+        self.assertEqual(self.sock.close_calls, 1)
+
     def test_request_schema_response_and_unique_ids(self):
         client = self.connect()
         self.sock.messages.extend([response(responseData={'version': '5'}),
@@ -394,6 +430,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(M.ObsWebSocketError) as caught:
             client.close()
         self.assert_sanitized(caught.exception)
+        self.assertIs(getattr(caught.exception, 'cleanup_owner', None), client)
         self.sock.close_error = None
         client.close()
         self.assertEqual(self.sock.close_calls, 2)
@@ -415,6 +452,8 @@ class RawSocket:
         self.timeouts, self.sent = [], []
         self.closed = False
         self.connect_error = None
+        self.close_error = None
+        self.close_calls = 0
 
     def settimeout(self, seconds):
         self.timeout = seconds
@@ -436,6 +475,9 @@ class RawSocket:
         return min(len(data), 16)
 
     def close(self):
+        self.close_calls += 1
+        if self.close_error:
+            raise self.close_error
         self.closed = True
 
 
@@ -483,6 +525,72 @@ class NativeBoundaryTests(unittest.TestCase):
                 M.connect(PASSWORD, timeout=5, clock=self.clock)
         self.assertNotIn(PASSWORD, str(caught.exception))
         self.assertTrue(self.raw.closed)
+
+    def test_default_dial_raw_cleanup_owner_propagates_through_connect(self):
+        self.raw.connect_error = RuntimeError(PASSWORD)
+        self.raw.close_error = RuntimeError(SALT)
+        fake = types.SimpleNamespace(WebSocket=mock.Mock())
+        with mock.patch.dict(sys.modules, {'websocket': fake}), \
+                mock.patch.object(M.socket, 'socket', return_value=self.raw) as factory:
+            with self.assertRaises(M.ObsWebSocketError) as caught:
+                M.connect(PASSWORD, timeout=5, clock=self.clock)
+        owner = getattr(caught.exception, 'cleanup_owner', None)
+        self.assertIsNotNone(owner)
+        self.assertEqual(self.raw.close_calls, 1)
+        self.assertNotIn(PASSWORD, ''.join(traceback.format_exception(caught.exception)))
+        self.assertNotIn(SALT, ''.join(traceback.format_exception(caught.exception)))
+        self.raw.close_error = None
+        owner.close()
+        owner.close()
+        self.assertEqual(self.raw.close_calls, 2)
+        self.assertTrue(self.raw.closed)
+        factory.assert_called_once()
+        fake.WebSocket.assert_not_called()
+
+    def test_default_dial_retries_only_pending_exact_shutdown_and_raw_close(self):
+        for ws_fails, raw_fails in ((True, False), (False, True), (True, True)):
+            with self.subTest(ws_fails=ws_fails, raw_fails=raw_fails):
+                self.setUp()
+                ws = mock.Mock()
+                ws.connect.side_effect = RuntimeError(PASSWORD)
+                ws.shutdown.side_effect = RuntimeError(SALT) if ws_fails else None
+                self.raw.close_error = RuntimeError(CHALLENGE) if raw_fails else None
+                fake = types.SimpleNamespace(WebSocket=mock.Mock(return_value=ws))
+                with mock.patch.dict(sys.modules, {'websocket': fake}), \
+                        mock.patch.object(M.socket, 'socket', return_value=self.raw):
+                    with self.assertRaises(M.ObsWebSocketError) as caught:
+                        M.connect(PASSWORD, timeout=5, clock=self.clock)
+                owner = getattr(caught.exception, 'cleanup_owner', None)
+                self.assertIsNotNone(owner)
+                self.assertEqual(ws.shutdown.call_count, 1)
+                self.assertEqual(self.raw.close_calls, 1)
+                with self.assertRaises(M.ObsWebSocketError) as retry:
+                    owner.close()
+                self.assertIs(retry.exception.cleanup_owner, owner)
+                text = ''.join(traceback.format_exception(retry.exception))
+                for secret in (PASSWORD, SALT, CHALLENGE):
+                    self.assertNotIn(secret, text)
+                ws.shutdown.side_effect = self.raw.close_error = None
+                owner.close()
+                owner.close()
+                self.assertEqual(ws.shutdown.call_count, 3 if ws_fails else 1)
+                self.assertEqual(self.raw.close_calls, 3 if raw_fails else 1)
+                ws.connect.assert_called_once()
+
+    def test_returned_transport_cleanup_does_not_replay_completed_shutdown(self):
+        ws = mock.Mock()
+        transport = M._Transport(ws, M.WireSocket(self.raw, clock=self.clock))
+        client = M.WebSocketClient(transport, self.clock)
+        self.raw.close_error = RuntimeError(PASSWORD)
+        with self.assertRaises(M.ObsWebSocketError) as caught:
+            client.close()
+        self.assertIs(getattr(caught.exception, 'cleanup_owner', None), client)
+        ws.shutdown.assert_called_once()
+        self.raw.close_error = None
+        client.close()
+        client.close()
+        ws.shutdown.assert_called_once()
+        self.assertEqual(self.raw.close_calls, 2)
 
     def test_default_dial_uses_owned_tcp_socket_and_no_redirect_proxy(self):
         owner = self

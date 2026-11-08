@@ -231,6 +231,32 @@ class CaptureSessionTests(unittest.TestCase):
         self.assertIsNotNone(self.fixture.reuse.lease)
         self.assertFalse((self.fixture.run / 'obs-capture-session.json').exists())
 
+    def test_real_handshake_cleanup_failure_keeps_owner_until_explicit_finish(self):
+        protocol = load('capture_failed_handshake_fixture', SCRIPTS / 'tests/obs-websocket.tests.py')
+        owner = protocol.Socket(self.fixture.clock, ['malformed'])
+        owner.close_error = RuntimeError('synthetic close failure')
+        attempts = []
+        def dial(url, *, timeout):
+            attempts.append(url)
+            return owner
+        self.fixture.adapter.connect = lambda password, *, timeout: protocol.M.connect(
+            password, timeout=timeout, dial=dial, clock=self.fixture.clock)
+        with self.assertRaises(RuntimeError):
+            self.session.start()
+        self.assertIs(self.session.client, owner)
+        self.assertEqual(len(attempts), 1)
+        self.assertIsNone(self.session.recording)
+        with self.assertRaises(RuntimeError):
+            self.session.finish()
+        self.assertNotIn('window.close', self.fixture.events)
+        self.assertIsNotNone(self.fixture.reuse.lease)
+        owner.close_error = None
+        result = self.session.finish()
+        self.assertFalse(result['capture_lifecycle_complete'])
+        self.assertEqual(len(attempts), 1)
+        self.assertIsNone(self.fixture.reuse.lease)
+        self.assertEqual(self.fixture.events.count('window.close'), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

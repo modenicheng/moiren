@@ -306,6 +306,29 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(len(self.case.launches), 1)
 
+    def test_failed_connector_cleanup_retains_exact_socket_and_does_not_retry(self):
+        class UnclosedHandshake(RuntimeError):
+            pass
+        owner = Client(self)
+        error = UnclosedHandshake('sanitized handshake cleanup failure')
+        error.cleanup_owner = owner
+        calls = []
+        def connect(password, *, timeout):
+            calls.append(timeout)
+            raise error
+        self.adapter = self.make_adapter(connect)
+        with self.assertRaises(RuntimeError):
+            self.adapter.open()
+        self.assertEqual(len(calls), 1)
+        self.assertIs(self.adapter.client, owner)
+        self.assertIsNotNone(self.reuse.lease)
+        self.assertFalse(owner.closed)
+        result = self.adapter.finish(recording_inactive=True)
+        self.assertTrue(owner.closed)
+        self.assertFalse(result['boundary_complete'])
+        self.assertLess(self.events.index('socket.close'), self.events.index('window.close'))
+        self.assertIsNone(self.reuse.lease)
+
     def test_uncertain_spawn_keeps_lease_and_never_retries(self):
         self.launch_error = True
         with self.assertRaisesRegex(RuntimeError, 'uncertain spawn'):

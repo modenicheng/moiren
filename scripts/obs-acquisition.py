@@ -4,7 +4,8 @@
 Retain this object on the case BEFORE calling open(), including on exceptions.
 connect(password, timeout=seconds) must authenticate and return a client whose
 req(kind, data=None, timeout=seconds) honors a whole-request deadline. Failed
-connections own disposal of any socket they did not return. Client.close() and
+connections dispose unreturned sockets, or raise with cleanup_owner retaining
+the exact close-capable owner for the case's failure cleanup. Client.close() and
 close_window(exact_process) must be bounded by the enclosing case watchdog;
 close_window only requests normal close, while case.join performs the join.
 
@@ -84,7 +85,13 @@ class ObsAcquisition:
                 self._budget(end, 'readiness')
                 self._alive()
                 return
-            except Exception:
+            except Exception as error:
+                pending = getattr(error, 'cleanup_owner', None)
+                if pending is not None:
+                    # A handshake whose cleanup failed is not a retryable
+                    # connection refusal. Keep its exact socket before escape.
+                    self.client = pending
+                    raise
                 # A failed connection/GetVersion may be retried; input mutation
                 # never is. A socket-close failure escapes and retains its owner.
                 self._close_socket()
@@ -152,8 +159,10 @@ class ObsAcquisition:
             if live and self.close_attempted:
                 raise RuntimeError('OBS normal close already attempted; owner still live')
             if not self.close_attempted:
-                self.close_attempted = True
                 self._close_socket()
+                # A failed socket cleanup has not sent WM_CLOSE. Retrying only
+                # that retained socket may precede the one normal-close attempt.
+                self.close_attempted = True
                 if live:
                     self.close_window(self.process)
                     code = self.case.join(self.process, JOIN_SECONDS)

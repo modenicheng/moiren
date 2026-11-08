@@ -27,7 +27,7 @@ follows the still-unverified613reboot transition.
 
 The [composed capture boundary](../../docs/validation/2026-11-08-obs-capture-session.md)
 adds authenticated deadline-bounded RPC and recording ownership to the fixed
-OBS installation.121file/mocked-boundary tests pass, including actual-client
+OBS installation.129file/mocked-boundary tests pass, including actual-client
 lost Start/Stop reply refusals through fake wire/process boundaries. No native
 OBS recording or driver test follows; the future native runner still requires
 fresh post-reboot provenance and external-owner admission.

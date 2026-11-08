@@ -66,3 +66,21 @@ not a post-install reboot. No automatic reboot/native retry follows. Package613
 still awaits the user's reboot and a fresh driver/provenance check. S1-S5
 native waveform, lifecycle, naming, desktop and sustained/calibrated gates
 remain open. The original goal is not complete.
+
+## Current-main optimized outputs
+
+The later fixed-OBS work leaves Rust sources identical to `0908e33`. A fresh
+`cargo build --locked --release -p moiren-app -p moiren-windows-audio --example
+e2e_latency_probe --bin moiren-app` completes exit0 in3m05s. Evidence is under
+`D:\coding\moiren-evidence\20261108-102500-obs-acquisition`, in
+`integration-release-build.log` and `integration-release-pins.json`:
+
+- `target/release/moiren-app.exe`:35500032bytes, SHA256
+  `B18C502EF44D3FA261D558896150DDEA66DCD0C5B3F737B423E831BE2C601F3B`.
+- `target/release/examples/e2e_latency_probe.exe`:8153600bytes, SHA256
+  `AD2B0C33FA8CD1B48B2237A9E56887927BD2F6D3FD3A3218DEEBE92A4EDE1B2A`.
+
+Neither binary is launched, deployed or copied into another application tree.
+These are build-output pins, not immutable archived binaries or target results;
+verify them again before any later use. Historical source/binary receipts remain
+unchanged. Software build success does not complete the native acceptance gates.
