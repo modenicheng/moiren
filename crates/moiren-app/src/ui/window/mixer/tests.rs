@@ -2897,7 +2897,65 @@ fn mixer_fault_rebuilds_only_its_strip_and_the_badge_opens_the_popover(cx: &mut 
 
 /// Hover feeds the meter frame's fault banner through the shell's
 /// `hovered_strip`, never a panel key: hovering a strip tracks it, leaving
-/// clears it, and neither rebuilds a strip panel.
+/// The strip's cached body must fill the strip instead of hugging its
+/// content: the levels row takes every pixel the routing sections leave
+/// over and the title stays pinned to the strip's bottom edge. Regression
+/// guard for the cached body's root sizing — a cached view lays its content
+/// out as a layout root where `flex_1` has no parent to grow against, so
+/// the body's root must claim definite extents (see `strip_body`).
+#[gpui_kit::test]
+fn mixer_strip_body_fills_the_strip_and_pins_the_title_to_its_bottom(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    crate::ui::window::test_harness::settle_panels(cx);
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    cx.update(|window, _| {
+        let strip = window
+            .find(SharedString::from(format!("strip-{id:?}")))
+            .bounds();
+        let levels = window
+            .find(SharedString::from(format!("strip-levels-{id:?}")))
+            .bounds();
+        let header = window
+            .find(SharedString::from(format!("strip-header-{id:?}")))
+            .bounds();
+        let track = window
+            .find(SharedString::from(format!("balance-track-{id:?}")))
+            .bounds();
+        let inputs = window
+            .find(SharedString::from(format!("inputs-{id:?}")))
+            .bounds();
+        // The title rides the strip's bottom border; the levels row owns
+        // everything between it and the fixed control stack.
+        assert!(
+            (f32::from(header.bottom() - strip.bottom())).abs() <= 1.,
+            "title must stay pinned to the strip bottom (header {header:?}, strip {strip:?})",
+        );
+        assert!(
+            f32::from(levels.size.height) > f32::from(strip.size.height) * 0.4,
+            "levels row must adapt to the leftover height (levels {levels:?}, strip {strip:?})",
+        );
+        assert!((f32::from(levels.bottom() + px(32.) - header.top())).abs() <= 1.);
+        // The body fills the width too: the centered balance track spans the
+        // strip's inner width instead of hugging its content.
+        assert!(
+            (f32::from(track.size.width - (strip.size.width - px(18.)))).abs() <= 2.,
+            "balance track must span the strip's inner width (track {track:?}, strip {strip:?})",
+        );
+        assert!(
+            inputs.bottom() < track.top(),
+            "routing sections sit above the balance track"
+        );
+    });
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn mixer_strip_hover_tracks_the_strip_for_the_fault_banner(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);

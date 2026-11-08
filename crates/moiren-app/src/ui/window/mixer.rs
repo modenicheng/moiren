@@ -99,6 +99,13 @@ pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
 /// its paint while the meter hot layer paints the live bars above it; the
 /// routing rows and the strip selection live outside on the page's live
 /// column exactly because they change or scroll at display rate.
+///
+/// The root carries its sizing as definite extents (`w_full().h_full()`),
+/// never `flex_1`: a cached view lays its content out as a layout root,
+/// where grow has no parent to grow against and the body would hug its
+/// content — the levels row pinned at its minimum height, the title
+/// floating mid-strip, and per-strip widths following each label's text
+/// length (see the chrome status bar for the same rule).
 fn strip_body(
     shell: &StudioShell,
     entry: &GraphNodeState,
@@ -188,7 +195,8 @@ fn strip_body(
     div()
         .flex()
         .flex_col()
-        .flex_1()
+        .w_full()
+        .h_full()
         .min_w_0()
         .min_h_0()
         .child(strip_controls::balance(shell, entry, channels, cx))
