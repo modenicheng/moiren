@@ -18,11 +18,13 @@ use crate::ui::theme;
 
 mod nodes;
 
-type WindowAppFn<Argument> = Box<dyn Fn(Argument, &mut Window, &mut App)>;
-type WindowAppCallback<Argument> = dyn Fn(Argument, &mut Window, &mut App);
-type CameraFitFn = dyn Fn(&Camera, Size<Pixels>, &mut Window, &mut App);
-type SelectFn = dyn Fn(&str, &mut Window, &mut App);
-type ZoomFn = dyn Fn((f32, Point<Pixels>), &mut Window, &mut App);
+// The callback aliases ride `pub(in crate::ui)` so the window-side page
+// builders can name them when they construct [`CanvasCallbacks`] fields.
+pub(in crate::ui) type WindowAppFn<Argument> = Box<dyn Fn(Argument, &mut Window, &mut App)>;
+pub(in crate::ui) type WindowAppCallback<Argument> = dyn Fn(Argument, &mut Window, &mut App);
+pub(in crate::ui) type CameraFitFn = dyn Fn(&Camera, Size<Pixels>, &mut Window, &mut App);
+pub(in crate::ui) type SelectFn = dyn Fn(&str, &mut Window, &mut App);
+pub(in crate::ui) type ZoomFn = dyn Fn((f32, Point<Pixels>), &mut Window, &mut App);
 
 /// One node's live meter reading: display ballistics plus the latched clip
 /// state, read at paint time so meter motion repaints without re-projecting
