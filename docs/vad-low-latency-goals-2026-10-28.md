@@ -197,8 +197,19 @@ chains pass under both PowerShell interpreters; all755example tests pass with
 one ignored. Actual scheduler/trace dispatch still refuses pending fresh target
 provenance and reviewed orchestration. No native acquisition or S0-S5 pass follows.
 Its exact published predecessor4573d48 CI42449989373 later finishes20/20jobs;
-the original watcher23584 exits0. Later uncommitted identity changes do not
-inherit that hosted result.
+the original watcher23584 exits0. Later identity changes do not inherit that
+hosted result.
+
+The later [owned ETW session](validation/2026-11-08-owned-etw-removal-session.md)
+composes retained StartTrace ownership, actual classic-WPP session/provider
+readback, fresh query before managed probe admission and immutable one-shot
+final STOP receipts. Its five new suites and existing CI preparation suites
+pass168checks per PowerShell interpreter with native API delegates replaced;
+the full composition exercises actual owner, Marshal buffers and policy.
+This closes the disconnected readback/owner integration gap, not native removal
+diagnosis. Actual dispatch remains guarded pending combined fresh post-reboot
+provenance, bounded orchestration, closed-ETL decode/archive and cleanup. No
+test-machine reboot, new EXE tree, OBS run or acceptance-gate change occurs.
 
 The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
 recomputes both channels at all six retained onsets. Identity1 has non-silent

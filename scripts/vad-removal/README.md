@@ -13,7 +13,21 @@ changing an approval boolean is not authorization.
   image, command line, creation, session and limited token through that handle.
 - `trace-boundary.ps1` retains exact finite tool owners, validates inventory,
   preserves ambiguous create/stop failures and raw unknown loss. A successful
-  exact create is not independent post-create session readback.
+  exact create is not independent post-create session readback. This historical
+  command boundary remains guarded; it is not the new session's ownership proof.
+- `trace-native.ps1` retains the successful StartTrace handle/GUID, one provider
+  enable and one exact pre-STOP query/STOP. Returned final counters are copied
+  into a read-only receipt; MORE_DATA means stopped with unknown final counters,
+  and ACTIVE_CONNECTIONS means pending with the original owner retained.
+- `trace-query.ps1` queries that retained session, enumerates the classic WPP
+  provider, queries its full-width ULONG LoggerId and rechecks the original
+  session. Missing, replaced, truncated or errored results never prove zero loss.
+- `trace-readback.ps1` binds admission and monotonic counters to those actual
+  snapshots. Final loss needs the original successful STOP receipt, not a
+  pre-STOP query or an equal-looking replacement object.
+- `trace-session.ps1` composes the owner/query/readback. The collector refreshes
+  the exact live session immediately before probe admission. Invalid readback
+  blocks admission but does not prevent cleanup of an independently owned trace.
 
 `WorkerTerminal` proves only observed scheduler/worker exit. The managed path
 now also binds the live probe independently before admission, retains that
@@ -47,6 +61,11 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-task-process.ps1
 .\test-trace-boundary.ps1
 .\test-trace-finite.ps1
+.\test-trace-query.ps1
+.\test-trace-readback.ps1
+.\test-trace-native.ps1
+.\test-trace-session.ps1
+.\test-trace-composition.ps1
 .\test-probe-boundary.ps1
 .\test-worker-boundary.ps1
 .\test-collector-boundary.ps1
@@ -74,9 +93,16 @@ the audio CLI. It must not receive a release/native executable instead.
 synchronous file/hash/dispatch calls are not hard-bounded. COM/CIM/property
 reads are not hard cancellation or crash recovery. Retain unresolved owners.
 
+The five trace suites run the production C# layouts, allocation/parsing and
+retained-owner composition with only native API delegates replaced. They do
+not create a real ETW session. Real native start/enable/query/STOP dispatch in
+the native owner remains unconditionally guarded. Provider-idle enumeration is
+not an atomic reservation against another controller; combined admission must
+exclude competing owners rather than claim this observation prevents stealing.
+
 Remaining integration includes fresh post-reboot provenance, reviewed actual
-collector/privileged trace/Limited worker dispatch, independently confirmed ETW
-identity/provider/output, raw loss/decode/archive and safe authorized cleanup.
+collector/privileged trace/Limited worker dispatch, bounded target collection,
+closed-ETL decode/report/archive association and safe authorized task cleanup.
 Managed process tests use harmless fixture entries, not native audio. Scheduled
 registration/dispatch and trace launch remain disabled. A same-user writable
 receipt directory is correlation, not a hostile-process security boundary.

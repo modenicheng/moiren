@@ -1,6 +1,18 @@
 #requires -Version 5.1
 Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'probe-boundary.ps1')
+. (Join-Path $PSScriptRoot 'trace-session.ps1')
+
+function Assert-RemovalManagedTraceAdmission($Session) {
+    if($null -eq $Session.TraceSession -or $null -eq $Session.TraceReadback -or
+        -not[object]::ReferenceEquals($Session.TraceReadback,$Session.TraceSession.Readback)){
+        throw 'Collector needs the exact retained trace session, not detached readback flags.'
+    }
+    Refresh-RemovalTraceSession $Session.TraceSession
+    if(-not(Test-RemovalTraceCaptureAdmission $Session.TraceReadback)){
+        throw 'Probe admission requires the exact live owned trace readback.'
+    }
+}
 
 function New-RemovalManagedSession {
     [CmdletBinding()]
@@ -10,7 +22,8 @@ function New-RemovalManagedSession {
         [Parameter(Mandatory=$true)][string[]]$ProbeArguments,
         [Parameter(Mandatory=$true)][ValidateRange(1,65535)][int]$SessionId,
         [Parameter(Mandatory=$true)][ValidatePattern('^S-1-5-21-[0-9-]+$')][string]$Sid,
-        [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{32}$')][string]$Nonce)
+        [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{32}$')][string]$Nonce,
+        $TraceSession=$null)
     Assert-RemovalTaskPath $RunDirectory;Assert-RemovalTaskPath $SourceDirectory;Assert-FiniteToolPath $Executable $true
     if($Sid -cne 'S-1-5-21-3080296863-1242338503-1346362208-1001'){throw 'Wrong limited target principal.'}
     if(Test-Path -LiteralPath $RunDirectory){throw 'Create-new managed run directory required.'}
@@ -41,7 +54,9 @@ function New-RemovalManagedSession {
         -RunDirectory $RunDirectory -SessionId $SessionId -Nonce $Nonce -RunSpecSha256 (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
     [pscustomobject]@{RunDirectory=$RunDirectory;Config=$config;ControllerPid=$controller.Id
         ControllerCreationUtcTicks=$controller.StartTime.ToUniversalTime().Ticks;TaskOwner=(New-RemovalTaskOwner -Spec $task)
-        ProbeOwner=$null;Error=$null;Terminal=$null;LastResult=$null}
+        ProbeOwner=$null;TraceSession=$TraceSession
+        TraceReadback=$(if($null -ne $TraceSession){$TraceSession.Readback}else{$null})
+        Error=$null;Terminal=$null;LastResult=$null}
 }
 
 function Observe-RemovalManagedSession {
@@ -71,6 +86,7 @@ function Observe-RemovalManagedSession {
             Attach-RemovalProbeProcess $Session.ProbeOwner (Read-RemovalJsonBounded $readyPath)
         }
         if(-not $Session.Error -and $null -ne $Session.ProbeOwner -and $Session.ProbeOwner.BindingKnown -and -not $Session.ProbeOwner.AdmissionAttempted){
+            Assert-RemovalManagedTraceAdmission $Session
             Admit-RemovalProbe $Session.ProbeOwner
         }
         # Process liveness never depends on successful worker JSON publication.
