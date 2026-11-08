@@ -42,7 +42,6 @@ pub(crate) struct Autosave {
     pub(crate) write: Option<std::sync::Arc<std::sync::Mutex<AutosaveWriteCompletion>>>,
 }
 
-
 impl AutosaveStamp {
     pub(super) fn capture(shell: &StudioShell, cx: &App) -> Self {
         let state = shell.state.read(cx);

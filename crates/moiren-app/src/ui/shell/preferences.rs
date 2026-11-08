@@ -11,4 +11,3 @@ pub(crate) struct PreferenceStore {
     pub(crate) save_revision: u64,
     pub(crate) quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
-
