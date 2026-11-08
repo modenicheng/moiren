@@ -194,7 +194,7 @@ fn owned_vad_rows_bind_in_opposite_app_directions_without_starting_audio(
     while mailbox.try_request().is_some() {}
     for (input, (endpoint_id, direction, name)) in [true, false].into_iter().zip(endpoints) {
         view.update(cx, |shell, cx| {
-            shell.preferences_path = None;
+            shell.preferences.path = None;
             shell.presentation.page = crate::ui::pages::Page::Devices;
             shell.devices.device_tab = if input {
                 super::DeviceTab::Inputs

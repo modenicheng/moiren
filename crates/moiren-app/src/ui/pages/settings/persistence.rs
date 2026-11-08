@@ -22,25 +22,26 @@ impl StudioShell {
     }
 
     pub(crate) fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
-        let Some(path) = self.preferences_path.clone() else {
+        let Some(path) = self.preferences.path.clone() else {
             if report {
-                self.project_message =
+                self.project_io.message =
                     Some(t!("User configuration directory is unavailable").into());
             }
             return;
         };
-        let previous = self.preference_save.take();
-        let preferences = self.preferences.clone();
-        self.preference_save_revision = self
-            .preference_save_revision
+        let previous = self.preferences.save.take();
+        let preferences = self.preferences.values.clone();
+        self.preferences.save_revision = self
+            .preferences
+            .save_revision
             .checked_add(1)
             .expect("preference save revision exhausted");
-        let revision = self.preference_save_revision;
+        let revision = self.preferences.save_revision;
         let completion =
             std::sync::Arc::new(std::sync::Mutex::new(PreferenceWriteCompletion::default()));
         let publish = completion.clone();
         let executor = cx.background_executor().clone();
-        self.preference_save = Some(executor.spawn(async move {
+        self.preferences.save = Some(executor.spawn(async move {
             if let Some(previous) = previous {
                 previous.await;
             }
@@ -60,7 +61,7 @@ impl StudioShell {
         }));
         // Presentation watches completion independently. Shutdown only owns the
         // background chain and can finish it after foreground tasks stop running.
-        let quitting = self.preferences_quitting.clone();
+        let quitting = self.preferences.quitting.clone();
         cx.spawn(async move |this, cx| {
             let result = std::future::poll_fn(move |cx| {
                 let mut completion = completion.lock().unwrap_or_else(|p| p.into_inner());
@@ -76,7 +77,7 @@ impl StudioShell {
                 return;
             }
             let _ = this.update(cx, |shell, cx| {
-                if shell.preference_save_revision == revision {
+                if shell.preferences.save_revision == revision {
                     if report
                         && let Err(error) = &result
                         && let Some((saved_revision, editor)) = shell.settings.editor.save_revision
@@ -89,7 +90,7 @@ impl StudioShell {
                         draft.message = None;
                     }
                     if report {
-                        shell.project_message = Some(
+                        shell.project_io.message = Some(
                             result
                                 .map(|_| t!("Preferences saved").into())
                                 .unwrap_or_else(|error| {
@@ -104,7 +105,7 @@ impl StudioShell {
         })
         .detach();
         if report {
-            self.project_message = Some(t!("Preferences save queued").into());
+            self.project_io.message = Some(t!("Preferences save queued").into());
         }
     }
 }

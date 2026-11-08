@@ -12,9 +12,9 @@ use rust_i18n::t;
 pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let this = cx.entity();
     let close = this.clone();
-    let save_pending = shell.project_busy || shell.state.read(cx).pending_request;
-    let current = shell.project_path.clone();
-    let recents = shell.preferences.recent_projects.clone();
+    let save_pending = shell.project_io.busy || shell.state.read(cx).pending_request;
+    let current = shell.project_io.path.clone();
+    let recents = shell.preferences.values.recent_projects.clone();
     let mut popover = div()
         .id("project-popover")
         .absolute()
@@ -34,17 +34,18 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         // Claim the press: the overlay root behind must not see it, or an
         // inside click would close the menu that owns it.
         .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-        .child(heading(shell.project_name.clone()))
+        .child(heading(shell.project_io.name.clone()))
         .child(label(
             shell
-                .project_path
+                .project_io
+                .path
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| t!("Not saved to disk").into()),
         ))
         .child(
             button("open-project", t!("Open project…"))
-                .disabled(shell.project_busy)
+                .disabled(shell.project_io.busy)
                 .on_click({
                     let this = this.clone();
                     move |_, _, cx| this.update(cx, |s, cx| s.open_project(cx))
@@ -91,7 +92,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         }
     }
     let popover = popover
-        .when_some(shell.project_message.clone(), |v, message| {
+        .when_some(shell.project_io.message.clone(), |v, message| {
             v.child(label(message))
         })
         .child(label(t!("Opening a project keeps audio stopped.")));
@@ -166,21 +167,21 @@ mod tests {
             shell
                 .stage_project(document, "Sparse.moiren.json".into(), cx)
                 .unwrap();
-            assert_eq!(shell.project_name, "Untitled session");
-            assert!(shell.pending_project.is_some());
+            assert_eq!(shell.project_io.name, "Untitled session");
+            assert!(shell.project_io.pending.is_some());
         });
         wait_until(Duration::from_secs(2), || {
             view.update(cx, |shell, cx| {
                 shell.state.update(cx, |state, _| state.poll());
                 shell.finish_project_load(cx);
-                shell.pending_project.is_none()
+                shell.project_io.pending.is_none()
             })
         });
         view.update(cx, |shell, cx| {
-            assert_eq!(shell.project_name, "Sparse template");
+            assert_eq!(shell.project_io.name, "Sparse template");
             let source = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
             assert_eq!(shell.node_positions.get(&source), Some(&(-80., 120.)));
-            assert!(!shell.project_busy);
+            assert!(!shell.project_io.busy);
             assert!(shell.state.read(cx).selection.output_id.is_none());
         });
         finish_service(runtime);
@@ -209,11 +210,14 @@ mod tests {
             view.update(cx, |shell, cx| {
                 shell.state.update(cx, |state, _| state.poll());
                 shell.finish_project_load(cx);
-                shell.pending_project.is_none()
+                shell.project_io.pending.is_none()
             })
         });
         view.update(cx, |shell, cx| {
-            assert_eq!(shell.project_name, "Loaded", "the load must have applied");
+            assert_eq!(
+                shell.project_io.name, "Loaded",
+                "the load must have applied"
+            );
             assert!(
                 shell.pan_grab.is_none() && !shell.drag_active(),
                 "the project apply path must cancel the in-flight gesture"
@@ -243,9 +247,9 @@ mod tests {
                     .stage_project(document, "Rejected.moiren.json".into(), cx)
                     .is_err()
             );
-            assert_eq!(shell.project_name, "Untitled session");
+            assert_eq!(shell.project_io.name, "Untitled session");
             assert_eq!(shell.node_positions.get(&original), Some(&(10., 20.)));
-            assert!(shell.pending_project.is_none());
+            assert!(shell.project_io.pending.is_none());
         });
     }
 
@@ -309,7 +313,7 @@ mod tests {
                 .as_nanos(),
         ));
         view.update(cx, |shell, _| {
-            shell.autosave_path = Some(autosave_file.clone());
+            shell.autosave.path = Some(autosave_file.clone());
         });
         let renamed = view.update(cx, |shell, cx| {
             let id = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
@@ -338,14 +342,14 @@ mod tests {
         view.update(cx, |shell, cx| {
             shell.poll_autosave(cx);
             assert!(
-                shell.autosave_timer.is_some(),
+                shell.autosave.timer.is_some(),
                 "a settled graph change must arm the debounce"
             );
             // The test executor does not run the debounce timer, so run its
             // settle step directly; the poll loops drive the timer in
             // production.
-            shell.autosave_timer = None;
-            shell.autosave_deadline = None;
+            shell.autosave.timer = None;
+            shell.autosave.deadline = None;
             shell.autosave_write_now(cx);
         });
         // The test executor runs spawned work only when driven.
@@ -375,7 +379,7 @@ mod tests {
                 .as_nanos(),
         ));
         view.update(cx, |shell, _| {
-            shell.autosave_path = Some(autosave_file.clone());
+            shell.autosave.path = Some(autosave_file.clone());
         });
         let mut flush = None;
         view.update(cx, |shell, cx| {
@@ -411,7 +415,7 @@ mod tests {
         view.update(cx, |shell, cx| {
             // Seeded preferences, no disk round trip: the menu lists the
             // quick-switch targets it was given.
-            shell.preferences.recent_projects = vec![
+            shell.preferences.values.recent_projects = vec![
                 std::path::PathBuf::from("Z:/sets/live.moiren.json"),
                 std::path::PathBuf::from("Z:/sets/rehearsal.moiren.json"),
             ];
@@ -446,6 +450,21 @@ mod tests {
     }
 }
 
+/// The ProjectIo group of StudioShell state (design 20 §4): the open
+/// project's file identity and status line, and the in-flight load staged
+/// while the service confirms.
+pub(crate) struct ProjectIo {
+    pub(crate) path: Option<std::path::PathBuf>,
+    pub(crate) name: String,
+    pub(crate) message: Option<String>,
+    pub(crate) busy: bool,
+    pub(crate) pending: Option<(
+        crate::service::RequestId,
+        crate::project::ProjectDocument,
+        std::path::PathBuf,
+    )>,
+}
+
 impl StudioShell {
     /// Presentation page as its persisted form, shared by the document
     /// builder and the autosave fingerprint.
@@ -464,7 +483,7 @@ impl StudioShell {
     ) -> Result<ProjectDocument, crate::project::PersistenceError> {
         let state = self.state.read(cx);
         let mut document =
-            ProjectDocument::from_graph(self.project_name.clone(), &state.snapshot.graph)?;
+            ProjectDocument::from_graph(self.project_io.name.clone(), &state.snapshot.graph)?;
         document.session = state.candidate_config().as_ref().map(Into::into);
         document.processing = Some(state.snapshot.audio_settings.processing);
         document.layout.camera_x = self.camera.pan_x;
@@ -502,19 +521,19 @@ impl StudioShell {
         let document = match self.project_document(cx) {
             Ok(document) => document,
             Err(error) => {
-                self.project_message = Some(error.to_string());
+                self.project_io.message = Some(error.to_string());
                 cx.notify();
                 return;
             }
         };
-        let known = self.project_path.clone().filter(|_| !save_as);
+        let known = self.project_io.path.clone().filter(|_| !save_as);
         let prompt = known.is_none().then(|| {
             cx.prompt_for_new_path(
                 &std::env::current_dir().unwrap_or_default(),
                 Some("Session.moiren.json"),
             )
         });
-        self.project_busy = true;
+        self.project_io.busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let path = if let Some(path) = known {
@@ -529,8 +548,8 @@ impl StudioShell {
                         )
                         .to_string();
                         let _ = this.update(cx, |s, cx| {
-                            s.project_busy = false;
-                            s.project_message = Some(message);
+                            s.project_io.busy = false;
+                            s.project_io.message = Some(message);
                             cx.notify();
                         });
                         return;
@@ -539,7 +558,7 @@ impl StudioShell {
             };
             let Some(path) = path else {
                 let _ = this.update(cx, |s, cx| {
-                    s.project_busy = false;
+                    s.project_io.busy = false;
                     cx.notify();
                 });
                 return;
@@ -550,14 +569,14 @@ impl StudioShell {
                 .spawn(async move { crate::project::save_project(&target, &document) })
                 .await;
             let _ = this.update(cx, |s, cx| {
-                s.project_busy = false;
+                s.project_io.busy = false;
                 match result {
                     Ok(()) => {
-                        s.project_path = Some(path);
-                        s.project_message = Some(t!("Project saved").into());
+                        s.project_io.path = Some(path);
+                        s.project_io.message = Some(t!("Project saved").into());
                         s.remember_project_file(cx);
                     }
-                    Err(error) => s.project_message = Some(error.to_string()),
+                    Err(error) => s.project_io.message = Some(error.to_string()),
                 }
                 cx.notify();
             });
@@ -572,7 +591,7 @@ impl StudioShell {
             multiple: false,
             prompt: Some(t!("Open Moiren project").into()),
         });
-        self.project_busy = true;
+        self.project_io.busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let path = match prompt.await {
@@ -580,8 +599,8 @@ impl StudioShell {
                 Ok(Ok(None)) => None,
                 other => {
                     let _ = this.update(cx, |s, cx| {
-                        s.project_busy = false;
-                        s.project_message = Some(
+                        s.project_io.busy = false;
+                        s.project_io.message = Some(
                             t!(
                                 "Could not open file dialog: %{error}",
                                 error = format!("{other:?}")
@@ -595,7 +614,7 @@ impl StudioShell {
             };
             let Some(path) = path else {
                 let _ = this.update(cx, |s, cx| {
-                    s.project_busy = false;
+                    s.project_io.busy = false;
                     cx.notify();
                 });
                 return;
@@ -616,7 +635,7 @@ impl StudioShell {
     /// prompt and the recent-projects quick switch. Parsing runs off the
     /// UI thread; staging hands the document to the service.
     fn spawn_project_load(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        self.project_busy = true;
+        self.project_io.busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let target = path.clone();
@@ -625,13 +644,13 @@ impl StudioShell {
                 .spawn(async move { crate::project::load_project(&target) })
                 .await;
             let _ = this.update(cx, |s, cx| {
-                s.project_busy = false;
+                s.project_io.busy = false;
                 match result {
                     Ok(document) => match s.stage_project(document, path, cx) {
                         Ok(()) => {}
-                        Err(error) => s.project_message = Some(error.to_string()),
+                        Err(error) => s.project_io.message = Some(error.to_string()),
                     },
-                    Err(error) => s.project_message = Some(error.to_string()),
+                    Err(error) => s.project_io.message = Some(error.to_string()),
                 }
                 cx.notify();
             });
@@ -655,33 +674,33 @@ impl StudioShell {
                 field: "service request".into(),
                 reason: format!("{error:?}"),
             })?;
-        self.project_busy = true;
-        self.project_message = Some(t!("Project load requested").into());
-        self.pending_project = Some((request, document, path));
+        self.project_io.busy = true;
+        self.project_io.message = Some(t!("Project load requested").into());
+        self.project_io.pending = Some((request, document, path));
         Ok(())
     }
 
     pub(super) fn finish_project_load(&mut self, cx: &mut Context<Self>) {
-        let Some((request, _, _)) = &self.pending_project else {
+        let Some((request, _, _)) = &self.project_io.pending else {
             return;
         };
         let snapshot = self.state.read(cx).snapshot.clone();
         if snapshot.consumed_request_id < *request {
             return;
         }
-        let (_, document, path) = self.pending_project.take().expect("pending project");
-        self.project_busy = false;
+        let (_, document, path) = self.project_io.pending.take().expect("pending project");
+        self.project_io.busy = false;
         if let Some(error) = &snapshot.graph.last_error {
-            self.project_message =
+            self.project_io.message =
                 Some(t!("Project was not loaded: %{error}", error = error).to_string());
         } else {
             match self.apply_project_presentation(&document, cx) {
                 Ok(()) => {
-                    self.project_path = Some(path);
-                    self.project_message = Some(t!("Project opened").into());
+                    self.project_io.path = Some(path);
+                    self.project_io.message = Some(t!("Project opened").into());
                     self.remember_project_file(cx);
                 }
-                Err(error) => self.project_message = Some(error.to_string()),
+                Err(error) => self.project_io.message = Some(error.to_string()),
             }
         }
         cx.notify();
@@ -693,17 +712,17 @@ impl StudioShell {
     /// autosave fingerprint restarts because the state is already on disk.
     fn remember_project_file(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
-        if let Some(path) = self.project_path.clone() {
-            if self.preferences.last_project_path.as_ref() != Some(&path) {
-                self.preferences.last_project_path = Some(path.clone());
+        if let Some(path) = self.project_io.path.clone() {
+            if self.preferences.values.last_project_path.as_ref() != Some(&path) {
+                self.preferences.values.last_project_path = Some(path.clone());
                 changed = true;
             }
-            changed |= self.preferences.remember_recent_project(path);
+            changed |= self.preferences.values.remember_recent_project(path);
         }
         if changed {
             self.save_preferences_quiet(cx);
         }
-        self.autosave_stamp = autosave::AutosaveStamp::capture(self, cx);
+        self.autosave.stamp = autosave::AutosaveStamp::capture(self, cx);
     }
 
     pub(crate) fn apply_project_presentation(
@@ -758,7 +777,7 @@ impl StudioShell {
             self.state
                 .update(cx, |state, _| state.restore_graph_candidate());
         }
-        self.project_name = document.name.clone();
+        self.project_io.name = document.name.clone();
         self.camera = Camera {
             pan_x: document.layout.camera_x,
             pan_y: document.layout.camera_y,

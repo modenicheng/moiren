@@ -153,7 +153,7 @@ impl StripPanel {
             } else {
                 shell.mixer_scroll.offset()
             },
-            meters: shell.preferences.meters,
+            meters: shell.preferences.values.meters,
             faulted: graph.node_faulted(id),
         }
     }

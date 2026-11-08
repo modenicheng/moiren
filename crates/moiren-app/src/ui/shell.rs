@@ -137,33 +137,17 @@ pub struct StudioShell {
     pub(crate) inspector_open: bool,
     pub(crate) compact: bool,
     pub(crate) density: Density,
-    pub(crate) preferences: crate::project::AppPreferences,
-    pub(crate) preferences_path: Option<std::path::PathBuf>,
-    pub(crate) preference_save: Option<Task<()>>,
-    pub(crate) preference_save_revision: u64,
-    pub(crate) preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Live preference values plus the quiet-save machinery (design 20 §4).
+    pub(crate) preferences: preferences::PreferenceStore,
     /// Recovery autosave: where the working document is written, the state it
     /// was last saved from, and the in-flight debounce/write machinery.
-    pub(crate) autosave_path: Option<std::path::PathBuf>,
-    pub(crate) autosave_stamp: autosave::AutosaveStamp,
-    pub(crate) autosave_deadline: Option<Instant>,
-    pub(crate) autosave_timer: Option<Task<()>>,
-    pub(crate) autosave_write:
-        Option<std::sync::Arc<std::sync::Mutex<autosave::AutosaveWriteCompletion>>>,
+    pub(crate) autosave: autosave::Autosave,
     pub(crate) devices: devices::DevicesPageState,
     pub(crate) selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     pub(crate) meters: MeterSubscriptions,
     pub(crate) node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
-    pub(crate) project_path: Option<std::path::PathBuf>,
-    pub(crate) project_name: String,
-    pub(crate) project_message: Option<String>,
-    pub(crate) project_busy: bool,
-    pub(crate) pending_project: Option<(
-        crate::service::RequestId,
-        crate::project::ProjectDocument,
-        std::path::PathBuf,
-    )>,
+    pub(crate) project_io: project::ProjectIo,
     #[cfg(feature = "gpui-test")]
     pub(crate) test_page: Option<Entity<PageCell>>,
     pub(crate) presentation: WindowPresentation,
@@ -402,16 +386,17 @@ impl StudioShell {
             inspector_open: true,
             compact: false,
             density,
-            preferences,
-            preferences_path: crate::project::preferences_path().ok(),
-            preference_save: None,
-            preference_save_revision: 0,
-            preferences_quitting: Default::default(),
-            autosave_path: crate::project::autosave_path().ok(),
-            autosave_stamp: autosave::AutosaveStamp::default(),
-            autosave_deadline: None,
-            autosave_timer: None,
-            autosave_write: None,
+            preferences: preferences::PreferenceStore {
+                values: preferences,
+                path: crate::project::preferences_path().ok(),
+                save: None,
+                save_revision: 0,
+                quitting: Default::default(),
+            },
+            autosave: autosave::Autosave {
+                path: crate::project::autosave_path().ok(),
+                ..Default::default()
+            },
             devices: devices::DevicesPageState {
                 device_tab: devices::DeviceTab::Outputs,
                 selected_device: None,
@@ -424,11 +409,13 @@ impl StudioShell {
             selected_route: None,
             meters,
             node_meter_points: Default::default(),
-            project_path: None,
-            project_name: t!("Untitled session").into(),
-            project_message: None,
-            project_busy: false,
-            pending_project: None,
+            project_io: project::ProjectIo {
+                path: None,
+                name: t!("Untitled session").into(),
+                message: None,
+                busy: false,
+                pending: None,
+            },
             #[cfg(feature = "gpui-test")]
             test_page: None,
             presentation: WindowPresentation::default(),
@@ -497,13 +484,13 @@ impl StudioShell {
             .update(cx, |state, _| state.startup_project.take());
         if let Some(document) = restored {
             if let Err(error) = shell.apply_project_presentation(&document, cx) {
-                shell.project_message = Some(error.to_string());
+                shell.project_io.message = Some(error.to_string());
             }
-            shell.project_path = shell.preferences.last_project_path.clone();
+            shell.project_io.path = shell.preferences.values.last_project_path.clone();
         }
         // The restored startup state is already on disk (autosave or project);
         // the first edit, not the launch, owns the first autosave write.
-        shell.autosave_stamp = autosave::AutosaveStamp::capture(&shell, cx);
+        shell.autosave.stamp = autosave::AutosaveStamp::capture(&shell, cx);
         cx.observe_window_bounds(window, |shell, window, _| {
             if shell.presentation.visible {
                 shell.window_state = desktop::capture_window_state(window, shell.presentation.page);
@@ -541,9 +528,10 @@ impl StudioShell {
         // write, and must finish after the shell entity is gone.
         cx.on_app_quit(|shell, cx| {
             shell
-                .preferences_quitting
+                .preferences
+                .quitting
                 .store(true, std::sync::atomic::Ordering::Release);
-            let pending = shell.preference_save.take();
+            let pending = shell.preferences.save.take();
             let autosave = shell.autosave_flush(cx);
             async move {
                 if let Some(pending) = pending {
@@ -762,8 +750,8 @@ pub fn shell_for_tests(
     let mut shell = StudioShell::new(state, window, cx, None);
     shell.test_page = Some(page);
     // Headless tests must never write the developer's real configuration.
-    shell.preferences_path = None;
-    shell.autosave_path = None;
+    shell.preferences.path = None;
+    shell.autosave.path = None;
     shell
 }
 
@@ -784,6 +772,7 @@ pub(crate) mod native;
 pub(crate) mod panel;
 #[cfg(feature = "gpui-test")]
 pub(crate) mod performance;
+pub(crate) mod preferences;
 pub(crate) mod project;
 pub(crate) mod sidebar;
 #[cfg(any(test, feature = "gpui-test"))]

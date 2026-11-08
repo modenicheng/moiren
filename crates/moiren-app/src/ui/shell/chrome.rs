@@ -15,7 +15,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
     // The toolbar's project label shares the status bar's truncation, at a
     // tighter limit when the window goes compact.
     let project_label = truncate_name(
-        &shell.project_name,
+        &shell.project_io.name,
         if shell.compact { 16 } else { STATUS_NAME_LIMIT },
     );
     let running = matches!(
@@ -202,7 +202,7 @@ impl CachedPanel for ToolbarPanel {
             snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
             page: shell.presentation.page,
             compact: shell.compact,
-            project_name: shell.project_name.clone(),
+            project_name: shell.project_io.name.clone(),
             pending_request: state.pending_request,
             settings_open: shell.settings_open,
         }

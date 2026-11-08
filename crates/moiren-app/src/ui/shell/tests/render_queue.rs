@@ -25,7 +25,7 @@ fn render_queue_stopped_save_preserves_independent_input_policies_and_defaults(
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("render-queue");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
@@ -108,7 +108,7 @@ fn render_queue_running_restart_waits_for_matching_active_confirmation(
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("render-queue-running");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
@@ -166,6 +166,7 @@ fn render_queue_running_restart_waits_for_matching_active_confirmation(
         assert_eq!(
             shell
                 .preferences
+                .values
                 .transport_latency
                 .render
                 .unwrap()

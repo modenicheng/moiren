@@ -632,7 +632,7 @@ fn default_control(
                 return;
             };
             let allow_default = !status.allow_default;
-            let mut authorizations = shell.preferences.export_authorizations.clone();
+            let mut authorizations = shell.preferences.values.export_authorizations.clone();
             if let Some(value) = authorizations
                 .iter_mut()
                 .find(|value| value.endpoint_id == id)
@@ -648,7 +648,7 @@ fn default_control(
                 state.try_dispatch(AppRequest::SetExportAuthorizations(authorizations.clone()))
             });
             if result.is_ok() {
-                shell.preferences.export_authorizations = authorizations;
+                shell.preferences.values.export_authorizations = authorizations;
                 shell.save_preferences(cx);
             }
             cx.notify();

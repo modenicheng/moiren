@@ -66,11 +66,11 @@ impl PresentationSnapshot {
             compact: shell.compact,
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.take(),
-            project_path: shell.project_path.take(),
-            project_name: std::mem::take(&mut shell.project_name),
-            project_message: shell.project_message.take(),
-            pending_project: shell.pending_project.take(),
-            preferences: shell.preferences.clone(),
+            project_path: shell.project_io.path.take(),
+            project_name: std::mem::take(&mut shell.project_io.name),
+            project_message: shell.project_io.message.take(),
+            pending_project: shell.project_io.pending.take(),
+            preferences: shell.preferences.values.clone(),
         }
     }
 
@@ -88,16 +88,16 @@ impl PresentationSnapshot {
         shell.compact = self.compact;
         shell.devices.device_tab = self.device_tab;
         shell.devices.selected_device = self.selected_device;
-        shell.project_path = self.project_path;
-        shell.project_name = self.project_name;
-        shell.project_message = self.project_message;
-        shell.project_busy = self.pending_project.is_some();
-        shell.pending_project = self.pending_project;
+        shell.project_io.path = self.project_path;
+        shell.project_io.name = self.project_name;
+        shell.project_io.message = self.project_message;
+        shell.project_io.busy = self.pending_project.is_some();
+        shell.project_io.pending = self.pending_project;
         shell.density = match self.preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
             crate::project::UiDensity::Comfortable => Density::Comfortable,
         };
-        shell.preferences = self.preferences;
+        shell.preferences.values = self.preferences;
     }
 }
 
@@ -223,7 +223,7 @@ impl Desktop {
                     pending.await;
                 }
             });
-            shell.update(cx, |shell, _| shell.preference_save = Some(pending));
+            shell.update(cx, |shell, _| shell.preferences.save = Some(pending));
         }
         self.window = Some(window);
         self.shell = Some(shell.downgrade());
@@ -342,13 +342,14 @@ impl Desktop {
             return;
         }
         shell
-            .preferences_quitting
+            .preferences
+            .quitting
             .store(true, std::sync::atomic::Ordering::Release);
         self.saved = shell.window_state.clone();
         self.resume = Some(PresentationSnapshot::capture(shell));
         self.window = None;
         self.shell = None;
-        if let Some(pending) = shell.preference_save.take() {
+        if let Some(pending) = shell.preferences.save.take() {
             self.preference_saves.push(pending);
         }
         self.save_window_state(cx);
