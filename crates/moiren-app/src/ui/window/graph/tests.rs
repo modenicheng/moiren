@@ -3128,3 +3128,94 @@ fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
     });
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let first = add_node(&view, cx, NodeKind::Gain);
+    let second = add_node(&view, cx, NodeKind::Eq);
+    view.update(cx, |shell, cx| {
+        shell.node_positions.insert(first, (0., 0.));
+        shell.node_positions.insert(second, (400., 300.));
+        cx.notify();
+    });
+    render(cx);
+    let (grab, raw_dx, first_right) = view.update(cx, |shell, _cx| {
+        let frame = shell.graph_canvas_frame.read().unwrap().clone();
+        let zoom = frame.camera.zoom;
+        let card = |id: moiren_core::graph::NodeId| {
+            let node = frame
+                .world
+                .nodes
+                .iter()
+                .find(|node| node.node_id == Some(id))
+                .expect("projected card");
+            pages::graph_canvas::NodeLayout::new(node).card
+        };
+        let first_card = card(first);
+        let second_card = card(second);
+        let grab_canvas = frame.camera.world_to_canvas((
+            second_card.origin.x + second_card.size.width / 2.,
+            second_card.origin.y + second_card.size.height / 2.,
+        ));
+        let grab = point(
+            px(grab_canvas.0 + f32::from(frame.bounds.origin.x)),
+            px(grab_canvas.1 + f32::from(frame.bounds.origin.y)),
+        );
+        // One move lands second's left edge 4 screen px short of first's
+        // right edge; the snap closes the gap and bakes the offset in.
+        let raw_dx =
+            (first_card.origin.x + first_card.size.width - 4. / zoom) - second_card.origin.x;
+        (grab, raw_dx, first_card.origin.x + first_card.size.width)
+    });
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+    let (anchor, zoom) = view.read_with(cx, |shell, _| {
+        (
+            shell
+                .node_drag
+                .map(|(_, x, y)| (x, y))
+                .expect("card drag armed"),
+            shell.camera.zoom,
+        )
+    });
+    let aligned = point(px(anchor.0 + raw_dx * zoom), px(anchor.1));
+    cx.simulate_mouse_move(aligned, Some(MouseButton::Left), Modifiers::default());
+    // Single-px steps away from the target: within the 6 screen px
+    // threshold the card stays pinned on the alignment, then it lets go
+    // and follows the free path again — a snapped card must not re-match
+    // the same target on every sub-threshold step.
+    for step in 1..=12u32 {
+        let at = point(px(anchor.0 + raw_dx * zoom + step as f32), px(anchor.1));
+        cx.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::default());
+        if step == 4 {
+            view.update(cx, |shell, _| {
+                let guides = shell.drag_guides.expect("still within the threshold");
+                assert!(guides.x.is_some(), "guides={guides:?}");
+                let left = shell.node_positions[&second].0;
+                assert!(
+                    (left - first_right).abs() < 0.1,
+                    "pinned on the alignment: left={left}"
+                );
+            });
+        }
+    }
+    view.update(cx, |shell, _| {
+        // Twelve 1-px steps against a target reached with a 4-px gap: the
+        // free path sits 8 screen px past the alignment, beyond the 6 px
+        // threshold — the snap released and the card follows the cursor.
+        assert!(
+            shell.drag_guides.and_then(|guides| guides.x).is_none(),
+            "guides={:?}",
+            shell.drag_guides
+        );
+        let left = shell.node_positions[&second].0;
+        let expected = first_right + (12. - 4.) / zoom;
+        assert!(
+            (left - expected).abs() < 0.5,
+            "free path: left={left} expected={expected}"
+        );
+    });
+    finish_service(runtime);
+}

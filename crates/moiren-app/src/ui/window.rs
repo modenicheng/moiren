@@ -183,6 +183,11 @@ pub struct StudioShell {
     /// Snap alignment guides for the in-flight card drag; painted by the
     /// canvas layer, cleared when the gesture ends.
     drag_guides: Option<pages::graph_canvas::DragGuides>,
+    /// The snap offset the in-flight card drag has baked into
+    /// `node_positions` so far; the threshold measures against the drag's
+    /// free path by undoing it, so a snapped card lets go once the cursor
+    /// leaves the threshold. Zero outside a drag.
+    node_drag_snap: (f32, f32),
     /// Active card-knob value drag: node, control, press y, press value.
     knob_drag: Option<(
         moiren_core::graph::NodeId,
@@ -430,6 +435,7 @@ impl StudioShell {
             context_menu: None,
             right_press: None,
             drag_guides: None,
+            node_drag_snap: (0., 0.),
             knob_drag: None,
             pending_node_spawn: None,
             node_search,

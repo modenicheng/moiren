@@ -76,6 +76,7 @@ pub(super) fn select_node(
             let pos = window.mouse_position();
             shell.camera.adjusted = true;
             shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
+            shell.node_drag_snap = (0., 0.);
             shell.sync_drag_demand();
             // Single click selects; a double click on the same node also
             // opens the inspector.
@@ -107,6 +108,7 @@ pub(super) fn background_move(
                 if !held {
                     shell.pan_grab = None;
                     shell.node_drag = None;
+                    shell.node_drag_snap = (0., 0.);
                     shell.knob_drag = None;
                     shell.drag_guides = None;
                     // Hover for the fault tooltip: tracked here, painted by
@@ -221,23 +223,43 @@ pub(super) fn background_move(
                 }
                 if let Some((id, gx, gy)) = shell.node_drag {
                     shell.camera.adjusted = true;
-                    let mut delta = shell.camera.canvas_delta_to_world((x - gx, y - gy));
+                    let raw = shell.camera.canvas_delta_to_world((x - gx, y - gy));
                     // Alignment snapping (item F): the dragged selection's
                     // bounding box seeks the other cards' edges and the
-                    // horizontal axis within 6 screen px. Alt bypasses it.
+                    // horizontal axis within 6 screen px. The threshold
+                    // reads the drag's free path: stored positions carry
+                    // the offset previous frames baked in, so it is undone
+                    // first — measuring the per-frame step instead would
+                    // re-match the same target every sub-threshold move and
+                    // pin the card forever. Alt bypasses it and releases a
+                    // baked one.
+                    let baked = shell.node_drag_snap;
+                    shell.node_drag_snap = (0., 0.);
                     if window.modifiers().alt {
                         shell.drag_guides = None;
                     } else if let Some(frame) = shell.graph_canvas_frame.read() {
-                        let (snapped, guides) =
-                            snap_delta(&frame, &shell.selected_nodes, &shell.node_positions, delta);
-                        delta = snapped;
+                        let (snapped, guides) = snap_delta(
+                            &frame,
+                            &shell.selected_nodes,
+                            &shell.node_positions,
+                            baked,
+                            raw,
+                        );
+                        shell.node_drag_snap = snapped;
                         shell.drag_guides = Some(guides);
                     }
+                    // The stored positions bake in the previous offset: this
+                    // frame's move lands them on the new one, or releases
+                    // them back onto the free path when the snap lets go.
+                    let applied = (
+                        raw.0 + shell.node_drag_snap.0 - baked.0,
+                        raw.1 + shell.node_drag_snap.1 - baked.1,
+                    );
                     let selection: Vec<_> = shell.selected_nodes.iter().copied().collect();
                     for id in selection {
                         if let Some(pos) = shell.node_positions.get_mut(&id) {
-                            pos.0 += delta.0;
-                            pos.1 += delta.1;
+                            pos.0 += applied.0;
+                            pos.1 += applied.1;
                         }
                     }
                     shell.node_drag = Some((id, x, y));
@@ -246,6 +268,7 @@ pub(super) fn background_move(
                 if let Some((gx, gy)) = shell.pan_grab {
                     shell.camera.pan_by(x - gx, y - gy);
                     shell.node_drag = None;
+                    shell.node_drag_snap = (0., 0.);
                     shell.pan_grab = Some((x, y));
                     shell.sync_drag_demand();
                     cx.notify();
@@ -382,16 +405,21 @@ const SNAP_THRESHOLD_SCREEN: f32 = 6.;
 /// selection's bounding box seeks the other cards' left/center/right and
 /// top/middle/bottom edges plus the horizontal axis, nearest candidate
 /// within the threshold wins per axis, and the aligned world coordinate
-/// comes back as the guide lines to paint.
+/// comes back as the guide lines to paint. `positions` carry the offset
+/// previous frames baked in (`baked`): the candidates are measured on the
+/// drag's free path — stored minus baked plus this frame's raw move — so a
+/// snapped card lets go once the cursor leaves the threshold. Returns the
+/// offset to bake in going forward.
 fn snap_delta(
     frame: &CanvasFrame,
     dragged: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
     positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
-    delta: (f32, f32),
+    baked: (f32, f32),
+    raw: (f32, f32),
 ) -> ((f32, f32), pages::graph_canvas::DragGuides) {
     let threshold = SNAP_THRESHOLD_SCREEN / frame.camera.zoom;
-    // The dragged selection's candidate bounding box: current positions
-    // (this frame's accumulated drag) plus the raw delta.
+    // The dragged selection's candidate bounding box: the free path's
+    // positions this frame.
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
@@ -409,13 +437,13 @@ fn snap_delta(
             continue;
         };
         let card = pages::graph_canvas::NodeLayout::new(node).card;
-        min_x = min_x.min(x + delta.0);
-        min_y = min_y.min(y + delta.1);
-        max_x = max_x.max(x + delta.0 + card.size.width);
-        max_y = max_y.max(y + delta.1 + card.size.height);
+        min_x = min_x.min(x + raw.0 - baked.0);
+        min_y = min_y.min(y + raw.1 - baked.1);
+        max_x = max_x.max(x + raw.0 - baked.0 + card.size.width);
+        max_y = max_y.max(y + raw.1 - baked.1 + card.size.height);
     }
     if min_x > max_x {
-        return (delta, pages::graph_canvas::DragGuides::default());
+        return ((0., 0.), pages::graph_canvas::DragGuides::default());
     }
     let candidate_x = [min_x, (min_x + max_x) / 2., max_x];
     let candidate_y = [min_y, (min_y + max_y) / 2., max_y];
@@ -462,17 +490,17 @@ fn snap_delta(
         }
     }
     let mut guides = pages::graph_canvas::DragGuides::default();
-    let mut delta = delta;
+    let mut snapped = (0., 0.);
     if let Some((_, offset, target)) = best_x {
-        delta.0 += offset;
+        snapped.0 = offset;
         // The guide paints on the edge the drag snapped to.
         guides.x = Some(target);
     }
     if let Some((_, offset, target)) = best_y {
-        delta.1 += offset;
+        snapped.1 = offset;
         guides.y = Some(target);
     }
-    (delta, guides)
+    (snapped, guides)
 }
 
 pub(super) fn port_down(

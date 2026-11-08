@@ -123,6 +123,7 @@ impl StudioShell {
     /// becomes a pan grab. Returns true when the hand tool consumed the event.
     fn begin_pointer_session(&mut self, window: &mut Window) -> bool {
         self.node_drag = None;
+        self.node_drag_snap = (0., 0.);
         self.pan_grab = None;
         self.background_click = None;
         self.selection_drag = None;
@@ -148,6 +149,7 @@ impl StudioShell {
         let cancelled = self.drag_active() || self.background_click.is_some();
         self.connection_drag = None;
         self.node_drag = None;
+        self.node_drag_snap = (0., 0.);
         self.drag_guides = None;
         self.pan_grab = None;
         self.background_click = None;
@@ -288,6 +290,7 @@ impl StudioShell {
         }
         self.connection_drag = None;
         self.node_drag = None;
+        self.node_drag_snap = (0., 0.);
         cx.notify();
     }
 }
