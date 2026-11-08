@@ -128,3 +128,44 @@ closure, with no intervening CREATE/slot reuse. Retain the unchanged20s direct
 Removed deadline and trace ownership/loss evidence. No unchanged Process/VAD
 pair, timeout extension, reset or default promotion is authorized by this
 diagnostic checkpoint.
+
+## Post-reboot controller preparation, not a native result
+
+The next controller contract is retained separately under
+`D:\coding\moiren-evidence\20261108-104900-removal-613-preparation`.
+`controller.ps1` defines injectable boundaries only; it has no real task,
+process, ETW, device, deployment or SSH entrypoint and is not native-approved.
+Fresh parent reruns pass34mocked checks in each of PowerShell5.1and7; the
+13members in `preparation-manifest-v2.json` verify length/SHA256. These tests
+exercise refusal/order/cleanup contracts, not the native removal failure.
+
+The contract preserves the existing stable fixture/name and source480/render336,
+target512/block64 settings for one8-second live-vad probe. The existing retained
+provider/control owner remains through source Stop/join, Engine closure and
+the unchanged20-second direct QUERY Removed deadline; no replacement CREATE
+is introduced. Matching613TMFs remain in the diagnostic package evidence.
+Current optimized probe output is8153600bytes, SHA256
+`AD2B0C33FA8CD1B48B2237A9E56887927BD2F6D3FD3A3218DEEBE92A4EDE1B2A`,
+not deployed or executed here; it must be rehashed before later admission.
+
+Preflight refuses an old boot even if a detached boolean claims otherwise.
+It requires a post-install boot, fresh zoned timestamps and typed corroborating
+uptime. The last actual WinPS5read-only query returned null for
+`Environment.TickCount64`; null is not uptime evidence. A real collector still
+needs bounded GetTickCount64 or validated boot/UTC collection. Explicit freshly
+observed empty external-owner intent is legal; the user need not launch an app
+to satisfy a test. Existing external owners require new post-reboot identity
+pins, not stale PID-only assumptions.
+
+Trace start must be confirmed owned before one worker launch. Unknown launch
+is observed through the same attempt, never repeated. Loss-query failure cannot
+skip exact owned trace stop. Unresolved/live owners keep NeedsObservation and
+cannot become an idle after-audit. Raw ETW loss remains unknown until actual
+tracelog output is retained; decoder loss0 alone remains insufficient.
+
+Before runnable approval, the still-missing real boundaries are exact
+task/principal/action/held-process binding, finite capped tool invocations,
+fresh signed613SYS/INF/catalog/PnP and safety collectors, create-new/no-reparse
+path admission, confirmed owned ETW lifecycle and matching decode/archive
+readback. The README explicitly lists these gaps; a tested orchestration
+contract is not a complete native runner or any S0-S5 acceptance result.
