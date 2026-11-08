@@ -56,12 +56,15 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
         let test_node = state.read(cx).snapshot.graph.graph.nodes()[0].id();
         weak.update(cx, |shell, _| {
             shell.presentation.page = pages::Page::Mixer;
-            shell.camera.pan_x = 84.0;
+            shell.graph_view.camera.pan_x = 84.0;
             shell.chrome.sidebar_open = true;
             shell.chrome.inspector_open = true;
             shell.devices.device_tab = super::devices::DeviceTab::Inputs;
             shell.devices.selected_device = Some("selected-input".into());
-            shell.node_positions.insert(test_node, (12.0, 34.0));
+            shell
+                .graph_view
+                .node_positions
+                .insert(test_node, (12.0, 34.0));
             shell.project_io.name = "Keep candidate".into();
             shell.mixer.presentation.order.reverse();
         })
@@ -94,8 +97,11 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             .update(cx, |shell, cx| {
                 let test_node = state.read(cx).snapshot.graph.graph.nodes()[0].id();
                 assert_eq!(shell.presentation.page, pages::Page::Mixer);
-                assert_eq!(shell.camera.pan_x, 84.0);
-                assert_eq!(shell.node_positions.get(&test_node), Some(&(12.0, 34.0)));
+                assert_eq!(shell.graph_view.camera.pan_x, 84.0);
+                assert_eq!(
+                    shell.graph_view.node_positions.get(&test_node),
+                    Some(&(12.0, 34.0))
+                );
                 assert_eq!(shell.project_io.name, "Keep candidate");
                 assert!(
                     shell.chrome.sidebar_open && shell.chrome.inspector_open,
@@ -310,18 +316,21 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
         window.render_frame(cx);
     });
     let position = view.update(cx, |shell, cx| {
-        let (width, height) = shell.canvas_size.expect("canvas has completed layout");
+        let (width, height) = shell
+            .graph_view
+            .canvas_size
+            .expect("canvas has completed layout");
         assert!(
             width > 500. && height > 300.,
             "the drawing surface must fill the workspace"
         );
         assert!(
-            shell.camera.zoom > 0.5,
+            shell.graph_view.camera.zoom > 0.5,
             "Fit must leave this four-node graph readable"
         );
         let world = pages::graph::graph_canvas::CanvasWorld::positioned(
             &shell.state.read(cx).snapshot,
-            &shell.node_positions,
+            &shell.graph_view.node_positions,
         );
         let wire = &world.wires[0];
         point(
@@ -329,9 +338,9 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
                 theme::LIBRARY_WIDTH
             } else {
                 crate::ui::theme::LIBRARY_RAIL_WIDTH
-            } + shell.camera.pan_x
-                + (wire.from.0 + wire.to.0) * 0.5 * shell.camera.zoom),
-            px(shell.camera.pan_y + wire.from.1 * shell.camera.zoom),
+            } + shell.graph_view.camera.pan_x
+                + (wire.from.0 + wire.to.0) * 0.5 * shell.graph_view.camera.zoom),
+            px(shell.graph_view.camera.pan_y + wire.from.1 * shell.graph_view.camera.zoom),
         )
     });
     cx.update(|window, cx| {
@@ -388,10 +397,10 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
         window.render_frame(cx);
     });
     view.update(cx, |shell, cx| {
-        shell.camera.pan_x = 123.;
-        shell.camera.pan_y = 87.;
-        shell.camera.zoom = 0.89;
-        shell.camera.adjusted = true;
+        shell.graph_view.camera.pan_x = 123.;
+        shell.graph_view.camera.pan_y = 87.;
+        shell.graph_view.camera.zoom = 0.89;
+        shell.graph_view.camera.adjusted = true;
         shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[1].id());
     });
     cx.update(|window, cx| {
@@ -426,7 +435,11 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
             assert_eq!(shell.state.read(cx).snapshot.graph.graph.nodes().len(), 4);
             assert!(shell.selection.node.is_some());
             assert_eq!(
-                (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
+                (
+                    shell.graph_view.camera.pan_x,
+                    shell.graph_view.camera.pan_y,
+                    shell.graph_view.camera.zoom
+                ),
                 (123., 87., 0.89)
             );
         });
@@ -438,7 +451,11 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
             assert!(!shell.settings_open);
             assert!(!shell.settings.editor.focus.contains_focused(window, cx));
             assert_eq!(
-                (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
+                (
+                    shell.graph_view.camera.pan_x,
+                    shell.graph_view.camera.pan_y,
+                    shell.graph_view.camera.zoom
+                ),
                 (123., 87., 0.89),
                 "workspace state survives the settings round trip"
             );

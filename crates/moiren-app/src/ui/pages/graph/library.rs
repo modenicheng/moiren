@@ -23,7 +23,7 @@ impl Render for NodeTemplate {
 pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     use controls::*;
     let state = shell.state.read(cx);
-    let query = shell.node_search.read(cx).value();
+    let query = shell.graph_view.node_search.read(cx).value();
     let mut items = div().id("node-library-items").flex().flex_col().gap(px(4.));
     let mut group = "";
     let mut count = 0;
@@ -36,7 +36,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             group = template.group();
             items = items.child(div().mt(px(14.)).mb(px(2.)).child(label(t!(group))));
         }
-        let enabled = template.kind().is_some() && shell.pending_node_spawn.is_none();
+        let enabled = template.kind().is_some() && shell.graph_view.pending_node_spawn.is_none();
         let this = cx.entity();
         let tint = template.tint();
         // One card per template: the tinted icon tile, title and description
@@ -192,7 +192,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .gap(px(10.))
                 .child(heading(t!("Node library")))
                 .child(
-                    component::input::Input::new(&shell.node_search)
+                    component::input::Input::new(&shell.graph_view.node_search)
                         .id("node-search")
                         .bg(theme::SURFACE_3)
                         .text_color(theme::TEXT)
@@ -269,7 +269,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
             move |_, _, cx| this.update(cx, |_, cx| cx.notify())
         });
     for template in NodeTemplate::ALL {
-        let enabled = shell.pending_node_spawn.is_none();
+        let enabled = shell.graph_view.pending_node_spawn.is_none();
         let this = this.clone();
         rail = rail.child(
             div()
@@ -330,10 +330,11 @@ impl StudioShell {
         cx: &mut Context<Self>,
     ) {
         let center = self
+            .graph_view
             .canvas_size
             .map(|(width, height)| (width / 2., height / 2.))
             .unwrap_or((320., 220.));
-        self.spawn_node(template, self.camera.canvas_to_world(center), cx);
+        self.spawn_node(template, self.graph_view.camera.canvas_to_world(center), cx);
     }
 
     pub(super) fn spawn_node(
@@ -345,7 +346,10 @@ impl StudioShell {
         let Some(kind) = template.kind() else {
             return;
         };
-        if self.pending_node_spawn.is_some() || !position.0.is_finite() || !position.1.is_finite() {
+        if self.graph_view.pending_node_spawn.is_some()
+            || !position.0.is_finite()
+            || !position.1.is_finite()
+        {
             return;
         }
         let previous = self
@@ -363,8 +367,8 @@ impl StudioShell {
                 channels: 2,
             }))
         }) {
-            self.camera.adjusted = true;
-            self.pending_node_spawn = Some(PendingNodeSpawn {
+            self.graph_view.camera.adjusted = true;
+            self.graph_view.pending_node_spawn = Some(PendingNodeSpawn {
                 request,
                 previous,
                 position,
@@ -375,7 +379,7 @@ impl StudioShell {
     }
 
     pub(crate) fn finish_node_spawn(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = &self.pending_node_spawn else {
+        let Some(pending) = &self.graph_view.pending_node_spawn else {
             return;
         };
         let snapshot = self.state.read(cx).snapshot.clone();
@@ -383,6 +387,7 @@ impl StudioShell {
             return;
         }
         let pending = self
+            .graph_view
             .pending_node_spawn
             .take()
             .expect("checked pending creation");
@@ -399,7 +404,7 @@ impl StudioShell {
             return;
         };
         let id = entry.id;
-        self.node_positions.insert(id, pending.position);
+        self.graph_view.node_positions.insert(id, pending.position);
         // The spawned node is the whole selection: anything selected before
         // must not ride along with the drag that usually follows a spawn.
         self.selection.nodes.clear();

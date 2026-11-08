@@ -335,7 +335,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             2 => (480., 35.),
                             _ => (810. + index.saturating_sub(3) as f32 * 250., 175.),
                         };
-                        shell.node_positions.insert(*id, position);
+                        shell.graph_view.node_positions.insert(*id, position);
                     }
                     cx.notify();
                 });
@@ -347,7 +347,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     ("graph-double", Some(2.)),
                 ] {
                     shell.update(cx, |shell, cx| {
-                        shell.camera = match zoom {
+                        shell.graph_view.camera = match zoom {
                             Some(zoom) => Camera {
                                 pan_x: 24.,
                                 pan_y: 64.,
@@ -371,7 +371,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 // draws synchronously, so the rebuilt panel shows the fault
                 // outline and the meter frame the tooltip in that draw.
                 shell.update(cx, |shell, cx| {
-                    shell.camera = Camera {
+                    shell.graph_view.camera = Camera {
                         pan_x: 24.,
                         pan_y: 64.,
                         zoom: 1.,
@@ -389,7 +389,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell
                         .state
                         .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
-                    shell.hovered_node = Some(id);
+                    shell.graph_view.hovered_node = Some(id);
                     cx.notify();
                 });
                 capture(cx, directory.join("graph-fault-tooltip.png"));
@@ -399,7 +399,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell
                         .state
                         .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
-                    shell.hovered_node = None;
+                    shell.graph_view.hovered_node = None;
                     cx.notify();
                 });
                 // The output card's binding chip hangs its endpoint menu off
@@ -415,7 +415,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .iter()
                         .find(|node| node.kind() == moiren_core::graph::NodeKind::Sink)
                         .map(|node| node.id());
-                    let anchor = shell.graph_canvas_frame.read().and_then(|frame| {
+                    let anchor = shell.graph_view.canvas_frame.read().and_then(|frame| {
                         let index = frame
                             .world
                             .nodes
@@ -425,13 +425,13 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         Some(frame.window_rect(chip.bounds))
                     });
                     if let (Some(node), Some(anchor)) = (sink, anchor) {
-                        shell.binding_menu = Some(graph::BindingMenu { node, anchor });
+                        shell.graph_view.binding_menu = Some(graph::BindingMenu { node, anchor });
                         cx.notify();
                     }
                 });
                 capture(cx, directory.join("graph-binding-menu.png"));
                 shell.update(cx, |shell, cx| {
-                    shell.binding_menu = None;
+                    shell.graph_view.binding_menu = None;
                     cx.notify();
                 });
                 // The spectrum analyzer's live body (design 18 B3): put an
@@ -461,7 +461,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         output_endpoint_id: None,
                         tint: None,
                     });
-                    shell.node_positions.insert(id, (420., 230.));
+                    shell.graph_view.node_positions.insert(id, (420., 230.));
                     let curve = demo_spectrum_curve();
                     shell.state.update(cx, |state, _| {
                         state.snapshot = std::sync::Arc::new(snapshot);
@@ -476,7 +476,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
                     let _ = graph.graph.remove_node(analyzer);
                     graph.nodes.retain(|node| node.id != analyzer);
-                    shell.node_positions.remove(&analyzer);
+                    shell.graph_view.node_positions.remove(&analyzer);
                     shell
                         .state
                         .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
@@ -490,7 +490,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 ] {
                     shell.update(cx, |shell, cx| {
                         shell.set_page(page, cx);
-                        shell.camera = Camera::default();
+                        shell.graph_view.camera = Camera::default();
                         shell.chrome.sidebar_open = page == Page::Graph;
                         shell.chrome.inspector_open = true;
                         let gain = shell
@@ -545,9 +545,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .find(|node| node.kind() == moiren_core::graph::NodeKind::Compressor)
                         .map(|node| node.id());
                     if let Some(key) = shell.selection.node {
-                        shell.node_positions.insert(key, (480., 370.));
+                        shell.graph_view.node_positions.insert(key, (480., 370.));
                     }
-                    shell.camera = Camera::default();
+                    shell.graph_view.camera = Camera::default();
                     cx.notify();
                 });
                 cx.background_executor()
@@ -590,7 +590,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell.chrome.inspector_open = false;
                     shell.selection.route = None;
                     shell.selection.node = None;
-                    shell.camera = Camera {
+                    shell.graph_view.camera = Camera {
                         pan_x: 24.,
                         pan_y: 64.,
                         zoom: 1.,
@@ -599,7 +599,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     let graph = &shell.state.read(cx).snapshot.graph.graph;
                     let ids = graph.nodes().iter().map(|node| node.id()).collect::<Vec<_>>();
                     for (index, id) in ids.iter().enumerate() {
-                        shell.node_positions.insert(
+                        shell.graph_view.node_positions.insert(
                             *id,
                             (40. + (index % 4) as f32 * 330., 120. + (index / 4) as f32 * 190.),
                         );

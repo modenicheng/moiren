@@ -180,7 +180,10 @@ mod tests {
         view.update(cx, |shell, cx| {
             assert_eq!(shell.project_io.name, "Sparse template");
             let source = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
-            assert_eq!(shell.node_positions.get(&source), Some(&(-80., 120.)));
+            assert_eq!(
+                shell.graph_view.node_positions.get(&source),
+                Some(&(-80., 120.))
+            );
             assert!(!shell.project_io.busy);
             assert!(shell.state.read(cx).selection.output_id.is_none());
         });
@@ -241,14 +244,17 @@ mod tests {
         finish_service(runtime);
         view.update(cx, |shell, cx| {
             let original = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
-            shell.node_positions.insert(original, (10., 20.));
+            shell.graph_view.node_positions.insert(original, (10., 20.));
             assert!(
                 shell
                     .stage_project(document, "Rejected.moiren.json".into(), cx)
                     .is_err()
             );
             assert_eq!(shell.project_io.name, "Untitled session");
-            assert_eq!(shell.node_positions.get(&original), Some(&(10., 20.)));
+            assert_eq!(
+                shell.graph_view.node_positions.get(&original),
+                Some(&(10., 20.))
+            );
             assert!(shell.project_io.pending.is_none());
         });
     }
@@ -385,7 +391,7 @@ mod tests {
         view.update(cx, |shell, cx| {
             // A presentation-only change (camera pan) still dirties the
             // document, so the quit path must flush it.
-            shell.camera.pan_x = 128.0;
+            shell.graph_view.camera.pan_x = 128.0;
             flush = shell.autosave_flush(cx);
             assert!(flush.is_some(), "a dirty document must flush on quit");
         });
@@ -486,9 +492,9 @@ impl StudioShell {
             ProjectDocument::from_graph(self.project_io.name.clone(), &state.snapshot.graph)?;
         document.session = state.candidate_config().as_ref().map(Into::into);
         document.processing = Some(state.snapshot.audio_settings.processing);
-        document.layout.camera_x = self.camera.pan_x;
-        document.layout.camera_y = self.camera.pan_y;
-        document.layout.zoom = self.camera.zoom;
+        document.layout.camera_x = self.graph_view.camera.pan_x;
+        document.layout.camera_y = self.graph_view.camera.pan_y;
+        document.layout.zoom = self.graph_view.camera.zoom;
         document.layout.mixer_order = self
             .mixer
             .presentation
@@ -507,7 +513,7 @@ impl StudioShell {
             .collect();
         document.layout.workspace = Self::workspace_document(self.presentation.page);
         for (index, node) in state.snapshot.graph.graph.nodes().iter().enumerate() {
-            if let Some(&(x, y)) = self.node_positions.get(&node.id()) {
+            if let Some(&(x, y)) = self.graph_view.node_positions.get(&node.id()) {
                 document.layout.nodes.push(crate::project::NodeLayout {
                     node_id: index as u64,
                     x,
@@ -751,8 +757,8 @@ impl StudioShell {
                     reason: format!("{error:?}"),
                 })?;
         }
-        self.node_positions.clear();
-        self.pending_node_spawn = None;
+        self.graph_view.node_positions.clear();
+        self.graph_view.pending_node_spawn = None;
         self.inspector.node_name_editing = None;
         self.inspector.compressor = graph::CompressorControls::default();
         self.mixer.presentation.order.clear();
@@ -766,7 +772,9 @@ impl StudioShell {
                 .collect();
             for position in &document.layout.nodes {
                 if let Some(id) = restored.node_ids.get(&position.node_id) {
-                    self.node_positions.insert(*id, (position.x, position.y));
+                    self.graph_view
+                        .node_positions
+                        .insert(*id, (position.x, position.y));
                 }
             }
         }
@@ -779,7 +787,7 @@ impl StudioShell {
                 .update(cx, |state, _| state.restore_graph_candidate());
         }
         self.project_io.name = document.name.clone();
-        self.camera = Camera {
+        self.graph_view.camera = Camera {
             pan_x: document.layout.camera_x,
             pan_y: document.layout.camera_y,
             zoom: document.layout.zoom,

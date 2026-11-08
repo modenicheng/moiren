@@ -25,8 +25,11 @@ fn render(cx: &mut VisualTestContext) -> Bounds<Pixels> {
 fn canvas_frame(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> CanvasFrame {
     let bounds = render(cx);
     view.update(cx, |shell, cx| {
-        let world = CanvasWorld::positioned(&shell.state.read(cx).snapshot, &shell.node_positions);
-        CanvasFrame::new(std::sync::Arc::new(world), shell.camera, bounds)
+        let world = CanvasWorld::positioned(
+            &shell.state.read(cx).snapshot,
+            &shell.graph_view.node_positions,
+        );
+        CanvasFrame::new(std::sync::Arc::new(world), shell.graph_view.camera, bounds)
     })
 }
 
@@ -109,7 +112,7 @@ fn graph_port_drag_connects_real_topology_in_both_directions(cx: &mut gpui_kit::
     view.update(cx, |shell, cx| {
         shell.chrome.sidebar_open = false;
         shell.chrome.inspector_open = false;
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 50.,
             pan_y: 90.,
             zoom: 0.89,
@@ -131,7 +134,7 @@ fn graph_port_drag_connects_real_topology_in_both_directions(cx: &mut gpui_kit::
         wait_for_graph(&view, cx, |graph| graph.graph.edges().len() == 2);
         if reverse {
             view.update(cx, |shell, cx| {
-                shell.camera.adjusted = false;
+                shell.graph_view.camera.adjusted = false;
                 cx.notify();
             });
         }
@@ -370,7 +373,7 @@ fn graph_knob_wheel_drag_and_double_click_adjust_gain_without_touching_the_camer
     view.update(cx, |shell, cx| {
         shell.chrome.sidebar_open = false;
         shell.chrome.inspector_open = false;
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 100.,
             pan_y: 80.,
             zoom: 0.89,
@@ -805,6 +808,7 @@ fn channel_mapper_inspector_edits_a_weighted_matrix_candidate(cx: &mut gpui_kit:
     cx.update(|window, cx| {
         view.update(cx, |shell, cx| {
             shell
+                .graph_view
                 .node_search
                 .update(cx, |input, cx| input.set_value("channel", window, cx));
         });
@@ -1033,7 +1037,7 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 60.,
             pan_y: 35.,
             zoom: 0.89,
@@ -1065,12 +1069,12 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
         render(cx);
         view.update(cx, |shell, cx| {
             shell.state.read(cx).snapshot.graph.nodes.len() == 5
-                && shell.pending_node_spawn.is_none()
+                && shell.graph_view.pending_node_spawn.is_none()
         })
     });
     view.update(cx, |shell, cx| {
         let key = shell.selection.node.expect("created node is selected");
-        let position = shell.node_positions[&key];
+        let position = shell.graph_view.node_positions[&key];
         assert_close(position.0, expected.0);
         assert_close(position.1, expected.1);
         assert!(shell.selection.route.is_none());
@@ -1523,7 +1527,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
         shell.chrome.sidebar_open = false;
         shell.chrome.inspector_open = false;
         shell.chrome.compact = false;
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 120.,
             pan_y: 90.,
             zoom: 0.89,
@@ -1551,7 +1555,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     view.update(cx, |shell, _| {
         assert_eq!(shell.selection.node, Some(id));
         assert!(shell.graph_gestures.node_drag.is_none());
-        assert_eq!(shell.camera, frame.camera);
+        assert_eq!(shell.graph_view.camera, frame.camera);
     });
     cx.update(|window, cx| window.click("tool-hand", cx));
     let start = node_position(&dragged, 0);
@@ -1609,10 +1613,11 @@ fn graph_rubber_band_selects_then_delete_removes_the_whole_selection(
             .unwrap();
         for (index, id) in nodes.iter().enumerate() {
             shell
+                .graph_view
                 .node_positions
                 .insert(*id, (80. + index as f32 * 230., 60.));
         }
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 0.,
             pan_y: 0.,
             zoom: 1.,
@@ -1665,7 +1670,7 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
             .topological_order()
             .unwrap();
         for (index, id) in nodes.iter().enumerate() {
-            shell.node_positions.insert(
+            shell.graph_view.node_positions.insert(
                 *id,
                 (
                     80. + index as f32 * 230.,
@@ -1673,7 +1678,7 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
                 ),
             );
         }
-        shell.camera.adjusted = false;
+        shell.graph_view.camera.adjusted = false;
         cx.notify();
     });
     settle_panels(cx);
@@ -1731,7 +1736,7 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                     shell.chrome.inspector_open = inspector_open;
                     shell.chrome.sidebar_open = false;
                     shell.graph_gestures.hand_tool = mode >= 2;
-                    shell.camera = Camera {
+                    shell.graph_view.camera = Camera {
                         pan_x: 60.,
                         pan_y: 80.,
                         zoom: 0.75,
@@ -1764,8 +1769,8 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                 view.update(cx, |shell, _| {
                     assert_eq!((shell.selection.node, shell.selection.route), selection);
                     assert_eq!(shell.chrome.inspector_open, inspector_open);
-                    assert_close(shell.camera.pan_x, 88.);
-                    assert_close(shell.camera.pan_y, 98.);
+                    assert_close(shell.graph_view.camera.pan_x, 88.);
+                    assert_close(shell.graph_view.camera.pan_y, 98.);
                     assert!(shell.graph_gestures.pan_grab.is_none());
                 });
             }
@@ -1780,7 +1785,7 @@ fn graph_scroll_pinch_and_toolbar_zoom_preserve_their_canvas_anchors(
 ) {
     let (view, cx, runtime) = test_shell(cx);
     view.update(cx, |shell, cx| {
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 100.,
             pan_y: 80.,
             zoom: 0.89,
@@ -2412,7 +2417,10 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
         shell.chrome.inspector_open = false;
         // Park the second node far from the default layout so a 1:1 camera
         // centered on the first node leaves it thousands of pixels outside.
-        shell.node_positions.insert(far, (40_000., 40_000.));
+        shell
+            .graph_view
+            .node_positions
+            .insert(far, (40_000., 40_000.));
         cx.notify();
     });
     render(cx);
@@ -2441,7 +2449,10 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
     // exercises the same rebuild path.
     let bounds = render(cx);
     let (pan_x, pan_y) = view.update(cx, |shell, cx| {
-        let world = CanvasWorld::positioned(&shell.state.read(cx).snapshot, &shell.node_positions);
+        let world = CanvasWorld::positioned(
+            &shell.state.read(cx).snapshot,
+            &shell.graph_view.node_positions,
+        );
         let card = crate::ui::pages::graph::graph_canvas::NodeLayout::new(&world.nodes[0]).card;
         (
             f32::from(bounds.size.width) / 2. - (card.origin.x + card.size.width / 2.),
@@ -2449,7 +2460,7 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
         )
     });
     view.update(cx, |shell, cx| {
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x,
             pan_y,
             zoom: 1.,
@@ -2480,7 +2491,7 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
     // Back to fit: the auto-fit camera shows every node again and both
     // subscriptions return.
     view.update(cx, |shell, cx| {
-        shell.camera.adjusted = false;
+        shell.graph_view.camera.adjusted = false;
         cx.notify();
     });
     render(cx);
@@ -2507,7 +2518,7 @@ fn graph_hud_overlays_register_their_rects_for_the_meter_frame(cx: &mut gpui_kit
     settle_panels(cx);
     let canvas = render(cx);
     let handle = cx.update(|window, _| window.find("library-toggle").bounds());
-    let rects = view.read_with(cx, |shell, _| shell.graph_overlays.rects());
+    let rects = view.read_with(cx, |shell, _| shell.graph_view.overlays.rects());
     assert_eq!(
         rects.len(),
         3,
@@ -2559,7 +2570,7 @@ fn graph_hovering_a_faulted_card_tracks_it_for_the_tooltip(cx: &mut gpui_kit::Te
     view.update(cx, |shell, cx| {
         shell.chrome.sidebar_open = false;
         shell.chrome.inspector_open = false;
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 50.,
             pan_y: 90.,
             zoom: 0.89,
@@ -2605,14 +2616,17 @@ fn graph_hovering_a_faulted_card_tracks_it_for_the_tooltip(cx: &mut gpui_kit::Te
     // paints the tooltip through the meter layer.
     cx.simulate_mouse_move(node_position(&frame, index), None, Modifiers::default());
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.hovered_node),
+        view.read_with(cx, |shell, _| shell.graph_view.hovered_node),
         Some(target)
     );
     render(cx);
     // Leaving every card clears it again.
     let empty = frame.bounds.origin + point(px(6.), frame.bounds.size.height - px(6.));
     cx.simulate_mouse_move(empty, None, Modifiers::default());
-    assert_eq!(view.read_with(cx, |shell, _| shell.hovered_node), None);
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.graph_view.hovered_node),
+        None
+    );
     finish_service(runtime);
 }
 
@@ -2690,7 +2704,11 @@ fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it
     cx.simulate_mouse_move(pan_input, Some(MouseButton::Left), Modifiers::default());
     render(cx);
     view.update(cx, |shell, _| {
-        let frame = shell.graph_canvas_frame.read().expect("canvas published");
+        let frame = shell
+            .graph_view
+            .canvas_frame
+            .read()
+            .expect("canvas published");
         assert_eq!(frame.world.wires.len(), 2, "the picked wire paints free");
         assert!(
             !frame
@@ -2824,7 +2842,7 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     view.update(cx, |shell, cx| {
         shell.chrome.sidebar_open = false;
         shell.chrome.inspector_open = false;
-        shell.camera = Camera {
+        shell.graph_view.camera = Camera {
             pan_x: 50.,
             pan_y: 90.,
             zoom: 0.89,
@@ -2862,7 +2880,10 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     // starting a card drag.
     press(cx, center);
     view.update(cx, |shell, _| {
-        assert_eq!(shell.binding_menu.map(|menu| menu.node), Some(sink));
+        assert_eq!(
+            shell.graph_view.binding_menu.map(|menu| menu.node),
+            Some(sink)
+        );
         assert_eq!(shell.selection.node, Some(sink));
         assert!(shell.graph_gestures.node_drag.is_none());
     });
@@ -2870,7 +2891,9 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     cx.update(|window, _| assert!(window.find("binding-menu").visible()));
     // Escape closes it.
     cx.simulate_keystrokes("escape");
-    view.update(cx, |shell, _| assert!(shell.binding_menu.is_none()));
+    view.update(cx, |shell, _| {
+        assert!(shell.graph_view.binding_menu.is_none())
+    });
     render(cx);
     cx.update(|window, _| assert!(window.try_find("binding-menu").is_none()));
     // Reopened, a pick binds the output and closes the menu; without any
@@ -2896,7 +2919,9 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
         let outside = frame.bounds.origin + point(px(20.), frame.bounds.size.height - px(20.));
         press(cx, outside);
     }
-    view.update(cx, |shell, _| assert!(shell.binding_menu.is_none()));
+    view.update(cx, |shell, _| {
+        assert!(shell.graph_view.binding_menu.is_none())
+    });
     finish_service(runtime);
 }
 
@@ -2962,7 +2987,7 @@ fn context_menu_actions_open_the_inspector_rename_and_tint(cx: &mut gpui_kit::Te
     view.update(cx, |shell, _| {
         assert!(shell.chrome.inspector_open);
         assert_eq!(shell.selection.node, Some(node));
-        assert!(shell.context_menu.is_none());
+        assert!(shell.graph_view.context_menu.is_none());
     });
     // 重命名 enters the inline editor seeded with the label.
     right_click(cx);
@@ -3005,7 +3030,7 @@ fn background_right_click_arranges_and_the_three_dot_opens_the_same_menu(
     let node = add_node(&view, cx, NodeKind::Gain);
     // Park the node far off-axis so arrange has somewhere to move it.
     view.update(cx, |shell, cx| {
-        shell.node_positions.insert(node, (600., 400.));
+        shell.graph_view.node_positions.insert(node, (600., 400.));
         cx.notify();
     });
     render(cx);
@@ -3027,7 +3052,9 @@ fn background_right_click_arranges_and_the_three_dot_opens_the_same_menu(
     cx.simulate_mouse_up(dot, MouseButton::Left, Modifiers::default());
     render(cx);
     cx.update(|window, _| assert!(window.find("context-menu").visible()));
-    view.update(cx, |shell, _| assert!(shell.context_menu.is_some()));
+    view.update(cx, |shell, _| {
+        assert!(shell.graph_view.context_menu.is_some())
+    });
     // The occluding menu page closes on any outside press, so the next
     // background right-click starts from a closed menu.
     cx.simulate_keystrokes("escape");
@@ -3044,7 +3071,7 @@ fn background_right_click_arranges_and_the_three_dot_opens_the_same_menu(
     cx.update(|window, cx| window.click("context-menu-arrange", cx));
     wait_until(Duration::from_secs(2), || {
         view.update(cx, |shell, _| {
-            shell.node_positions.get(&node).copied() != Some((600., 400.))
+            shell.graph_view.node_positions.get(&node).copied() != Some((600., 400.))
         })
     });
     render(cx);
@@ -3064,7 +3091,9 @@ fn escape_closes_the_context_menu(cx: &mut gpui_kit::TestAppContext) {
     render(cx);
     cx.update(|window, _| assert!(window.find("context-menu").visible()));
     cx.simulate_keystrokes("escape");
-    view.update(cx, |shell, _| assert!(shell.context_menu.is_none()));
+    view.update(cx, |shell, _| {
+        assert!(shell.graph_view.context_menu.is_none())
+    });
     render(cx);
     cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
     finish_service(runtime);
@@ -3080,15 +3109,15 @@ fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
     let first = add_node(&view, cx, NodeKind::Gain);
     let second = add_node(&view, cx, NodeKind::Eq);
     view.update(cx, |shell, cx| {
-        shell.node_positions.insert(first, (0., 0.));
-        shell.node_positions.insert(second, (400., 300.));
+        shell.graph_view.node_positions.insert(first, (0., 0.));
+        shell.graph_view.node_positions.insert(second, (400., 300.));
         cx.notify();
     });
     render(cx);
     // World-space geometry (frame.nodes are screen-projected; the snap
     // math runs in world units).
     let (grab, raw_dx, raw_dy, first_right, second_height) = view.update(cx, |shell, _cx| {
-        let frame = shell.graph_canvas_frame.read().unwrap().clone();
+        let frame = shell.graph_view.canvas_frame.read().unwrap().clone();
         let zoom = frame.camera.zoom;
         let world_card = |id: moiren_core::graph::NodeId| {
             let node = frame
@@ -3137,7 +3166,7 @@ fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
                 .node_drag
                 .map(|(_, x, y)| (x, y))
                 .expect("card drag armed"),
-            shell.camera.zoom,
+            shell.graph_view.camera.zoom,
         )
     });
     let drop = point(px(anchor.0 + raw_dx * zoom), px(anchor.1 + raw_dy * zoom));
@@ -3157,8 +3186,9 @@ fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
     view.update(cx, |shell, _| {
         // Guides clear with the gesture; both axes snapped exactly.
         assert!(shell.graph_gestures.drag_guides.is_none());
-        let dx = shell.node_positions[&second].0 - shell.node_positions[&first].0;
-        let dy = shell.node_positions[&second].1;
+        let dx =
+            shell.graph_view.node_positions[&second].0 - shell.graph_view.node_positions[&first].0;
+        let dy = shell.graph_view.node_positions[&second].1;
         assert!(
             (dx - first_right).abs() < 0.5,
             "left edge should align with first's right edge: dx={dx}"
@@ -3179,13 +3209,13 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
     let first = add_node(&view, cx, NodeKind::Gain);
     let second = add_node(&view, cx, NodeKind::Eq);
     view.update(cx, |shell, cx| {
-        shell.node_positions.insert(first, (0., 0.));
-        shell.node_positions.insert(second, (400., 300.));
+        shell.graph_view.node_positions.insert(first, (0., 0.));
+        shell.graph_view.node_positions.insert(second, (400., 300.));
         cx.notify();
     });
     render(cx);
     let (grab, raw_dx, first_right) = view.update(cx, |shell, _cx| {
-        let frame = shell.graph_canvas_frame.read().unwrap().clone();
+        let frame = shell.graph_view.canvas_frame.read().unwrap().clone();
         let zoom = frame.camera.zoom;
         let card = |id: moiren_core::graph::NodeId| {
             let node = frame
@@ -3220,7 +3250,7 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
                 .node_drag
                 .map(|(_, x, y)| (x, y))
                 .expect("card drag armed"),
-            shell.camera.zoom,
+            shell.graph_view.camera.zoom,
         )
     });
     let aligned = point(px(anchor.0 + raw_dx * zoom), px(anchor.1));
@@ -3239,7 +3269,7 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
                     .drag_guides
                     .expect("still within the threshold");
                 assert!(guides.x.is_some(), "guides={guides:?}");
-                let left = shell.node_positions[&second].0;
+                let left = shell.graph_view.node_positions[&second].0;
                 assert!(
                     (left - first_right).abs() < 0.1,
                     "pinned on the alignment: left={left}"
@@ -3260,7 +3290,7 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
             "guides={:?}",
             shell.graph_gestures.drag_guides
         );
-        let left = shell.node_positions[&second].0;
+        let left = shell.graph_view.node_positions[&second].0;
         let expected = first_right + (12. - 4.) / zoom;
         assert!(
             (left - expected).abs() < 0.5,

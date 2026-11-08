@@ -55,10 +55,10 @@ impl PresentationSnapshot {
     fn capture(shell: &mut StudioShell) -> Self {
         Self {
             page: shell.presentation.page,
-            camera: shell.camera,
-            node_positions: std::mem::take(&mut shell.node_positions),
+            camera: shell.graph_view.camera,
+            node_positions: std::mem::take(&mut shell.graph_view.node_positions),
             mixer_order: shell.mixer.presentation.order.clone(),
-            pending_node_spawn: shell.pending_node_spawn.take(),
+            pending_node_spawn: shell.graph_view.pending_node_spawn.take(),
             selected_node: shell.selection.node.take(),
             selected_route: shell.selection.route,
             sidebar_open: shell.chrome.sidebar_open,
@@ -76,10 +76,10 @@ impl PresentationSnapshot {
 
     fn restore(self, shell: &mut StudioShell) {
         shell.presentation.page = self.page;
-        shell.camera = self.camera;
-        shell.node_positions = self.node_positions;
+        shell.graph_view.camera = self.camera;
+        shell.graph_view.node_positions = self.node_positions;
         shell.mixer.presentation.order = self.mixer_order;
-        shell.pending_node_spawn = self.pending_node_spawn;
+        shell.graph_view.pending_node_spawn = self.pending_node_spawn;
         shell.inspector.node_name_editing = None;
         shell.selection.node = self.selected_node;
         shell.selection.route = self.selected_route;
