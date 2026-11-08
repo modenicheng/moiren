@@ -18,6 +18,29 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Reused tools and naming contract - 2026-11-08
 
+The later [original-controller release](../../docs/validation/2026-11-08-removal-original-release.md)
+uses the existing constructor CWT/InputJson, independently pinned strict
+manifest/ReviewedBundle and complete original source read handles. Only the
+original unused native resource context can bind after fresh admission.
+Cleanup stays separate from freshness/deadline; source closure is required
+before terminal/export, including after failed disposal. Independent review's
+collector relabeling and public-clock-reset defects are reproduced and repaired
+with constructor-bound collector source and an original monotonic deadline.
+Repaired focused PS5.1/7verification passes18suites/156checks; initial Python67
+and local reader29remain historical host results. The initial88suite matrix's
+6shared-fixture failures are retained; repaired independent review is
+CODE_CLEAR/0findings. The corrected full matrix passes88suites/1070checks,
+0failures/no drift;67Python neighbors then pass against the repaired pins. Published
+dc8b1270has exact-head run42481793726complete with
+20successful checks/jobs; main has separately
+advanced to83769f66and the PR is again conflicted. This is not native approval,
+target placement or a merge to main. All27inventory target-fresh flags remain
+false in that historical inventory. The user now confirms reboot; separate
+live read-only metadata verifies expected host/SID, boot2026-11-08T13:26:07.5Z
+and613Running/OK/problem0with matching SYS bytes/hash. Full fresh tool,
+signature/safety and actual-manifest admission and all S0-S5 acceptance remain
+outstanding; no audio/task/trace is started by the basic metadata query.
+
 The [production input/entry handoff](../../docs/validation/2026-11-08-removal-production-handoff.md)
 connects independently reviewed actual-file manifest generation, pre-import
 complete source locks, a retained bounded entry process and original child
@@ -39,7 +62,8 @@ independently pinned finalizer/dependencies, durable target ack and host ack
 readback. Real-file host composition retains `NativePassed=false` and
 `Qualified=false`; it is not an actual remote transfer, native run or cleanup
 authorization. The user reboot remains unconfirmed and installed613 unchanged.
-Actual diagnostic release remains closed and the original S0-S5 gates stay open.
+That delivery-only slice grants no diagnostic release; the later original-
+controller validation is described above. The original S0-S5 gates stay open.
 
 The [OBS helper receipt](../../docs/validation/2026-11-08-obs-reuse-helper.md)
 adds fixed-path, exclusive-lease reuse without executable copies.26focused

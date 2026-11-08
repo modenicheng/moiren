@@ -3,9 +3,11 @@
 These Windows PowerShell 5.1-compatible definitions prepare the next finite VAD
 removal diagnostic. They are **not a native-approved runnable pipeline**.
 Loading them launches no tools. Lower native/tool guards require the exact
-retained operation context; the executable release unconditionally refuses
-until actual target orchestration/archive review. Changing an approval boolean
-is not authorization.
+retained operation context. Conditional executable release additionally needs
+the original constructor lifetime, unchanged independent manifest/bundle pins,
+complete live source read locks and fresh target admission. A bare call or an
+approval boolean is not authorization. No target/native run is approved by
+loading definitions or passing host fixtures.
 
 - `finite-tool.ps1` retains exact process/handle/creation and bounded redirected
   output. Timeout retains the same owner, not kill/relaunch or success.
@@ -109,6 +111,7 @@ Run host-only checks from this directory with WindowsPowerShell 5.1 and 7:
 .\test-diagnostic-entry.ps1
 .\test-diagnostic-lifetime.ps1
 .\test-native-admission.ps1
+.\test-diagnostic-release.ps1
 .\test-native-guard-routing.ps1
 .\test-native-query-admission.ps1
 .\test-native-admission-lifetime.ps1
@@ -141,7 +144,7 @@ reads are not hard cancellation or crash recovery. Retain unresolved owners.
 The five trace suites run the production C# layouts, allocation/parsing and
 retained-owner composition with only native API delegates replaced. They do
 not create a real ETW session. Real native start/enable/query/STOP dispatch in
-the native owner remains context-guarded behind a closed release. Provider-idle enumeration is
+the native owner remains context-guarded behind original-controller release. Provider-idle enumeration is
 not an atomic reservation against another controller; combined admission must
 exclude competing owners rather than claim this observation prevents stealing.
 
@@ -213,7 +216,9 @@ wrong target host/SID before imports and requires an already elevated
 controller. It never elevates or reboots automatically. No native target run
 has been made with this entry; the lower scheduler/ETW/decode/retirement
 dispatch guards require the owner-aware context described below. Its executable
-release guard remains unconditionally closed pending target runner/archive review.
+release guard conditionally validates only the original constructor and its
+independently reviewed source bundle. It does not replace reboot confirmation,
+fresh target provenance or the original resource-specific dispatch checks.
 
 `native-admission.ps1` retains exact resource associations and once-only
 operation keys, not a Reviewed/NativeApproved flag. Birth rechecks immutable
@@ -290,8 +295,9 @@ is `LOCAL_ARCHIVE_VERIFICATION_ONLY`: it is not remote download confirmation,
 cleanup permission, native success or physical qualification. Any archive/ack
 failure preserves existing outputs and the refused result, with no retry,
 overwrite, deletion or owner relaunch. The separate delivery flow below now
-implements transfer/acknowledgment; actual target execution and release review
-remain open. The native executable release stays closed.
+implements transfer/acknowledgment. Actual target execution remains open;
+the conditional original-controller release is described below and is not
+native acceptance or permission to execute without the target prerequisites.
 
 The closed-controller tests compose actual root/FileStream/collector ownership
 with real export and local acknowledgment after injected trace-enable failure.
@@ -375,7 +381,7 @@ then locks the original manifest, all production source files and PowerShell
 executable before the first import. The complete source membership includes
 `run-manifest.ps1` and `entry-launch.ps1`; tests are not target dependencies.
 Only canonical existing target paths are consumed; this command does not stage
-or copy executables, elevate, reboot or make the closed release runnable.
+or copy executables, elevate, reboot or bypass original-controller release.
 The real diagnostic child fixes console output to UTF-8 without a BOM before
 its first JSON/error output. Host delivery still requires the original strict
 UTF-8 bytes; legacy codepages must not replace Unicode paths with question marks
@@ -403,5 +409,38 @@ CLI required inputs are `--manifest-copy`, `--expected-manifest-sha256`,
 `--remote-manifest`, `--run-directory`, `--powershell-pin` (a local pin JSON),
 `--expected-powershell-pin-sha256`, `--output-directory` and explicit
 `--user-reboot-confirmed`; optional `--worker-session-id` defaults to zero.
-The release guard still refuses native dispatch. The user has not confirmed
-the reboot; no target execution follows this host-only implementation.
+The release guard still refuses missing/replaced original authority. The user
+has now confirmed reboot and basic boot/service metadata is freshly observed;
+full actual input/tool/signature/safety admission is still required before
+target execution.
+
+## Original-controller conditional release
+
+`Assert-RemovalDiagnosticRelease($Owner)` uses the existing constructor CWT
+lifetime and original InputJson, not a new owner framework or public approval
+flag. It strictly parses the original independently SHA-pinned ManifestJson
+and uses the existing ReviewedBundle provenance validator. Original manifest,
+bundle and every required source remain held with read-only sharing, excluding
+writers and deletion. Source pin adoption, cloned roots, injected native/query
+or collector boundaries, replaced/closed writer and expired birth admission
+are refused before the original unused native context can bind.
+
+The constructor also retains the original collector field JSON and binds
+`readonly-preflight.ps1` to its immutable InputJson source row before Start
+can dispatch readiness. Admission repeats that binding; changing the public
+path/hash/source-identity together cannot replace the repository collector.
+The fixed240-second lifetime uses one original monotonic timestamp, including
+Start, release, Initialize, operation birth before/after hashing and controller
+timeout. Stopping/resetting/restarting the public observation Stopwatch cannot
+renew that budget.
+
+The controller retains those exact locks through failed admission and cleanup.
+Cleanup does not require fresh BEFORE, changed source hashes or a live birth
+deadline. Only original owner settlement, persisted result and closed writer
+can release them; export also requires verified original read-handle closure.
+Failed result persistence or source-handle closure cannot become terminal
+completion through caller-supplied Completed flags. Source lock acquisition
+is not an OS security boundary against arbitrary code in the same process.
+The focused suite uses real constructors/files/locks and a staged managed
+context, with explicit inert binary and target-metadata fixtures. No scheduler,
+ETW, driver, audio, OBS or remote operation is exercised by those tests.

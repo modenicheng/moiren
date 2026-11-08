@@ -90,6 +90,7 @@ function New-ClosedFinishFixture([string]$Mode='normal'){
         TraceSession=$f.Session;RetainedTrace=$f.Session;OriginalNativeOwner=$f.Session.NativeOwner;OriginalReadback=$f.Session.Readback
         ManagedSession=$null;RetainedManaged=$null;Finish=$null;RetainedFinish=$null;AfterAudit=$null;RetainedAfter=$null
         BeforeSettled=$true;AbortEvidencePin=$null;ResultAttempted=$false;ResultPin=$null;Completed=$false;Phase='Finish'
+        Clock=[Diagnostics.Stopwatch]::StartNew();DeadlineMilliseconds=[long]240000
         Safe=$false;TimedOut=$false;Errors=(New-Object Collections.Generic.List[string]);NativePassed=$false;Qualified=$false}
     Register-RemovalControllerLifetime $o
     Acquire-RemovalDiagnosticLease $lease;Bind-RemovalControllerLifetime $o 'Writer'

@@ -51,8 +51,9 @@ host receipt upload, durable target acknowledgment and independently verified
 ack download to a create-new completion receipt. It uses the fixed standalone
 remote address, not a VM, and never restores controller/export authority from
 JSON. Host-only real Finish/export/host/target composition is not an actual
-remote transfer or driver test. The executable release remains closed pending
-target-run review; no native/physical verdict or cleanup permission follows.
+remote transfer or driver test. That delivery slice grants no executable
+release; the later original-controller validation is tracked below. No native/
+physical verdict or cleanup permission follows.
 
 The [production handoff](validation/2026-11-08-removal-production-handoff.md)
 adds actual independently pinned layout-to-manifest generation, source locks
@@ -69,6 +70,31 @@ integration passes939headless app tests/0failures/4ignored, all-target check,
 fmt and strict scoped Clippy. Its exact tree/source/log archive is verified.
 Keep PR26Draft, publish by normal fast-forward and observe that exact new head;
 local integration is not a new CI or native verdict.
+
+The later [original-controller release](validation/2026-11-08-removal-original-release.md)
+replaces unconditional refusal with the existing original constructor lifetime,
+independent manifest/ReviewedBundle pins and complete original source read
+locks. Actual Initialize/Release/staged-Managed composition is covered by
+harmless host fixtures; source locks remain owned through failed admission
+until original settlement/result/writer closure. Interrupted source disposal
+cannot be promoted to terminal/export by public completion flags. Focused
+PS5.1/7checks initially pass128and neighboring Python tests67. Independent
+review then reproduces collector relabeling and resettable-clock defects;
+the repaired constructor source binding and monotonic deadline pass156checks
+across18focused suites. The initial88suite matrix retains6failed shared-fixture
+suites; repaired independent review is CODE_CLEAR/0findings. The corrected
+full matrix completes88suites/1070checks with0failures and no drift;67Python
+neighbors then pass against the repaired pins.
+The published
+dc8b1270exact-head CI run42481793726completes20successful checks/jobs on its
+original handle, not replaced by predecessor green. The27-row actual artifact
+inventory has zero
+fresh target verifications;19local originals and15evidence files read back.
+The local reader is explicitly selected/tested, not relabeled as deployed.
+The user subsequently confirms reboot. Live read-only collection verifies
+boot2026-11-08T13:26:07.5Zand the expected613Running/OK/problem0SYS/PnP binding.
+Full fresh tool/signature/safety admission and actual manifest remain open;
+this basic metadata observation starts no audio, task, trace or desktop input.
 
 The user requires one reused OBS installation rather than copied executable
 trees for each experiment. Reuse the existing dedicated test installation at

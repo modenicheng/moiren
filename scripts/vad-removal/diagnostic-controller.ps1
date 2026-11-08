@@ -4,6 +4,7 @@ Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'diagnostic-lease.ps1')
 . (Join-Path $PSScriptRoot 'target-readiness.ps1')
 . (Join-Path $PSScriptRoot 'run-inputs.ps1')
+. (Join-Path $PSScriptRoot 'run-manifest.ps1')
 . (Join-Path $PSScriptRoot 'safety-audit.ps1')
 . (Join-Path $PSScriptRoot 'finish-session.ps1')
 . (Join-Path $PSScriptRoot 'native-admission.ps1')
@@ -67,6 +68,20 @@ function Assert-RemovalControllerIdentity($Owner) {
 }
 
 function Assert-RemovalDiagnosticAdmission($Owner) {
+    Assert-RemovalControllerSealedIdentity $Owner
+    Assert-RemovalControllerCollectorSource $Owner
+    $lifetime=Get-RemovalControllerLifetime $Owner
+    if((ConvertTo-Json -InputObject $Owner.RetainedInputs -Depth 18 -Compress)-cne$lifetime.InputJson){
+        throw 'Original constructor diagnostic input content changed; no public repinning.'
+    }
+    if($lifetime.ReleaseAttempted-and(-not$lifetime.ReleaseGranted-or$lifetime.ReleaseError-or$lifetime.ReleaseHandlesClosed)){
+        throw 'Original release acquisition failed or closed; no new native birth.'
+    }
+    foreach($handle in $lifetime.ReleaseHandles){
+        if(-not$handle.CanRead-or$handle.CanWrite-or$handle.SafeFileHandle.IsClosed-or$handle.SafeFileHandle.IsInvalid){
+            throw 'Original source read lock is no longer live.'
+        }
+    }
     Assert-RemovalControllerIdentity $Owner
     if($Owner.Errors.Count -or $Owner.TimedOut -or $Owner.Completed){throw 'Diagnostic admission is closed.'}
     Assert-RemovalDiagnosticLease $Owner.RetainedLease
@@ -84,6 +99,8 @@ function Start-RemovalDiagnosticController {
     $Owner.StartAttempted=$true
     try {
         Assert-RemovalControllerIdentity $Owner
+        Assert-RemovalControllerCollectorSource $Owner
+        if(Test-RemovalControllerDeadlineExpired $Owner){throw 'Original finite diagnostic expired before readiness dispatch.'}
         Acquire-RemovalDiagnosticLease $Owner.RetainedLease
         Bind-RemovalControllerLifetime $Owner 'Writer'
         $null=[IO.Directory]::CreateDirectory($Owner.RunDirectory)
@@ -266,7 +283,7 @@ function Observe-RemovalDiagnosticController {
         Assert-RemovalControllerSealedIdentity $Owner
         Assert-RemovalControllerIdentity $Owner
         if(-not$Owner.StartAttempted){throw 'Diagnostic controller has not started.'}
-        if($Owner.Clock.ElapsedMilliseconds -ge $Owner.DeadlineMilliseconds){
+        if(Test-RemovalControllerDeadlineExpired $Owner){
             $Owner.TimedOut=$true;Add-RemovalControllerError $Owner 'Controller acceptance timed out; original owners remain under observation.'
         }
         if($beforePending){return Get-RemovalControllerResult $Owner}

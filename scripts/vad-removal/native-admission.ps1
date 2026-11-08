@@ -1,15 +1,61 @@
 #requires -Version 5.1
 # Admission is a retained controller/resource association, never a public bool.
-# This module does not grant the separate executable-entry release approval.
+# Conditional release belongs only to the original constructor and locked
+# independently reviewed source bundle. It is not native qualification.
 Set-StrictMode -Version 2
 if($null -eq (Get-Variable -Name RemovalOperationContexts -Scope Script -ErrorAction SilentlyContinue)){
     $script:RemovalOperationContexts=New-Object 'Runtime.CompilerServices.ConditionalWeakTable[object,object]'
 }
 
 function Assert-RemovalDiagnosticRelease {
-    # Admission is now resource-aware, but the executable remains closed until
-    # the real target runner and bounded archive/transfer receive review.
-    throw 'Diagnostic release awaits reviewed target execution and closed-run archive/transfer; no native dispatch.'
+    param($Owner)
+    $ErrorActionPreference='Stop'
+    $c=Get-RemovalControllerLifetime $Owner
+    Assert-RemovalControllerSealedIdentity $Owner
+    if($c.ReleaseAttempted){throw 'Original release already attempted; retain its locks, never reacquire.'}
+    Assert-RemovalDiagnosticAdmission $Owner
+    if(Test-RemovalControllerDeadlineExpired $Owner){throw 'Original finite diagnostic admission expired.'}
+    if(-not$Owner.StartAttempted-or-not[Object]::ReferenceEquals($Owner.Clock,$c.Clock)-or
+        $c.DeadlineMilliseconds-ne240000-or$Owner.DeadlineMilliseconds-ne240000-or
+        $c.Clock-isnot[Diagnostics.Stopwatch]-or
+        $c.Native.GetType().FullName-cne'Moiren.RemovalTraceNativeV1.Owner'-or
+        $null-ne$c.Native.Boundary-or$null-ne$c.Trace.QueryBoundary-or
+        $c.Native.StartAttempted-or$c.Trace.StartAttempted-or
+        $c.Preflight.ExecutionMode-cne'RepositoryCollector'){
+        throw 'Fresh original repository controller and unused noninjected native path required.'
+    }
+    $c.ReleaseAttempted=$true
+    try{
+        # Expected bytes/hash/text come only from the constructor snapshot.
+        # Hold every successful open even on later failure; terminal sealing,
+        # not a catch/freshness check, releases this original owner work.
+        $inputs=$c.Inputs
+        $null=Read-RemovalManifestPinnedFile $inputs.ManifestPin 1048576 $c.ReleaseHandles
+        $file=Read-RemovalDecodeFile $inputs.ManifestPin.Path 1048576 -Text
+        if($file.Sha256-ine$inputs.ExpectedSha256-or$file.Text-cne$inputs.ManifestJson-or
+            $inputs.ManifestPath-cne$inputs.ManifestPin.Path){throw 'Original independently pinned manifest content differs.'}
+        $manifest=ConvertFrom-RemovalManifestJson $file.Text
+        Assert-RemovalManifestFields $manifest @('SchemaVersion','SourcesRevision','SourceProvenance','Sources','Probe','Driver','Schedule','Tools','Symbols')
+        $sources=Copy-RemovalRunSources $manifest.Sources $inputs.SourceDirectory
+        foreach($row in $sources){
+            $pin=[pscustomobject][ordered]@{Path=$row.Path;Bytes=$row.Bytes;Sha256=$row.Sha256}
+            $null=Read-RemovalManifestPinnedFile $pin 1048576 $c.ReleaseHandles
+        }
+        $provenance=Read-RemovalManifestSourceProvenance $manifest.SourceProvenance $sources $manifest.SourcesRevision $c.ReleaseHandles
+        $c.ReleaseHandlePins=@($inputs.ManifestPin)+@($sources)+@($provenance.BundleManifestPin)
+        # All dependency hashes and current readiness are checked again while
+        # original manifest/bundle/source paths exclude both writers and delete.
+        $c.ReleaseGranted=$true
+        Assert-RemovalDiagnosticAdmission $Owner
+        if(Test-RemovalControllerDeadlineExpired $Owner){throw 'Diagnostic expired during source lock acquisition.'}
+    }catch{
+        $c.ReleaseGranted=$false;$c.ReleaseError=$_.Exception.Message
+        throw
+    }finally{
+        # Capture before Dispose: Windows PowerShell's disposed FileStream
+        # getter cannot be used later as proof that its original handle closed.
+        $c.ReleaseSafeHandles=@($c.ReleaseHandles|ForEach-Object{$_.SafeFileHandle})
+    }
 }
 
 function Get-RemovalOperationContext($Resource) {
@@ -61,7 +107,7 @@ function Assert-RemovalOperationBirth($Context) {
     Assert-RemovalOperationLifetime $Context
     $r=$Context.Root
     if(-not[Object]::ReferenceEquals($r.Clock,$Context.Clock) -or $r.DeadlineMilliseconds -ne $Context.DeadlineMilliseconds -or
-        $Context.Clock.ElapsedMilliseconds -ge $Context.DeadlineMilliseconds -or
+        (Test-RemovalControllerDeadlineExpired $r) -or
         $r.Completed -or $r.TimedOut -or $r.Errors.Count){throw 'Original finite diagnostic admission expired or closed.'}
     Assert-RemovalDiagnosticAdmission $r
     Assert-RemovalRunInputs $Context.Inputs
@@ -71,7 +117,7 @@ function Assert-RemovalOperationBirth($Context) {
     }
     # File hashing is synchronous and not a hard process deadline. Recheck
     # after it returns so expensive validation cannot authorize a late birth.
-    if($Context.Clock.ElapsedMilliseconds -ge $Context.DeadlineMilliseconds -or
+    if((Test-RemovalControllerDeadlineExpired $r) -or
         $r.Completed -or $r.TimedOut -or $r.Errors.Count){throw 'Diagnostic expired during synchronous source validation.'}
     $preflight=$r.RetainedBefore.RetainedPreflight
     if($null -ne $preflight.PSObject.Properties['SnapshotJson']){
@@ -85,11 +131,11 @@ function Assert-RemovalOperationBirth($Context) {
 
 function Initialize-RemovalNativeContext {
     param([Parameter(Mandatory=$true,Position=0)]$Owner)
-    Assert-RemovalDiagnosticRelease
+    Assert-RemovalDiagnosticRelease $Owner
     Assert-RemovalDiagnosticAdmission $Owner;Assert-RemovalRunInputs $Owner.RetainedInputs
     $m=$Owner.RetainedManaged;$n=$Owner.OriginalNativeOwner;$t=$Owner.RetainedTrace
     if(-not$Owner.StartAttempted -or $Owner.DeadlineMilliseconds -ne 240000 -or
-        $Owner.Clock -isnot [Diagnostics.Stopwatch] -or $Owner.Clock.ElapsedMilliseconds -ge 240000 -or
+        $Owner.Clock -isnot [Diagnostics.Stopwatch] -or (Test-RemovalControllerDeadlineExpired $Owner) -or
         $null -eq $m -or $null -eq $m.TaskOwner -or $null -ne $m.ProbeOwner -or
         $n.GetType().FullName -cne 'Moiren.RemovalTraceNativeV1.Owner' -or $null -ne $n.Boundary -or
         $null -ne $t.QueryBoundary -or $n.StartAttempted -or $t.StartAttempted -or

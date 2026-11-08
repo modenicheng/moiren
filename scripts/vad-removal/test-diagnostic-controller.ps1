@@ -24,6 +24,23 @@ function Event([string]$Name){$script:f.Events.Add($Name)}
 function Register-RemovalControllerLifetime($Owner){}
 function Bind-RemovalControllerLifetime($Owner){}
 function Assert-RemovalControllerSealedIdentity($Owner){}
+# TEST ONLY: this DTO orchestration fixture has no constructor CWT or real
+# source rows. Actual provenance and immutable time use test-diagnostic-release.
+function Assert-RemovalControllerCollectorSource($Owner){}
+function Test-RemovalControllerDeadlineExpired($Owner){return ($Owner.Clock.ElapsedMilliseconds-ge$Owner.DeadlineMilliseconds)}
+# TEST ONLY: all lifetime resources in this orchestration unit suite are DTO
+# mocks. Production CWT/InputJson/read-lock admission is independently exercised
+# by test-diagnostic-release; keep this suite's existing admission assertions.
+function Assert-RemovalDiagnosticAdmission($Owner){
+ Assert-RemovalControllerIdentity $Owner
+ if($Owner.Errors.Count-or$Owner.TimedOut-or$Owner.Completed){throw 'Diagnostic admission is closed.'}
+ Assert-RemovalDiagnosticLease $Owner.RetainedLease
+ Assert-RemovalRunInputs $Owner.RetainedInputs
+ Assert-RemovalTargetReadiness $Owner.RetainedBefore
+ if($Owner.RetainedBefore.RetainedPreflight.ExecutionMode-cne'RepositoryCollector'){
+  throw 'Injected collector readiness cannot authorize a real diagnostic.'
+ }
+}
 function Confirm-RemovalControllerEarlyRefusal($Owner){}
 function Test-RemovalControllerDrainOnly($Owner,[int]$ObservationMilliseconds){return $false}
 function Prepare-RemovalClosedControllerSeal($Owner){}

@@ -18,7 +18,7 @@ $ast=[Management.Automation.Language.Parser]::ParseFile($template,[ref]$tokens,[
 if($parseErrors.Count){throw 'Lifetime fixture source did not parse.'}
 $helpers=@('Check','Case','Event','Assert-RemovalTaskHost','Get-RemovalSessionExplorerPath',
     'Get-RemovalSessionProcessIds','Open-RemovalSessionProcess','Read-RemovalWorkerToken',
-    'Assert-RemovalRunInputs','Assert-RemovalDiagnosticAdmission','New-RemovalDiagnosticLease',
+    'Assert-RemovalRunInputs','Assert-RemovalDiagnosticAdmission','Assert-RemovalControllerCollectorSource','New-RemovalDiagnosticLease',
     'New-RemovalTargetReadiness','New-RemovalSafetyAudit','Write-LifetimeTraceBuffer',
     'New-LifetimeSnapshot','Write-LifetimeCollector','New-LifetimeFixture','Get-LifetimePin')
 $definitions=@($ast.EndBlock.Statements|Where-Object {$_-is[Management.Automation.Language.FunctionDefinitionAst]})

@@ -21,6 +21,15 @@ Initialize-RemovalTraceNative
 
 function Event([string]$Name){$script:fixture.Events.Add($Name)}
 function Assert-RemovalTaskHost {}
+function Assert-RemovalControllerCollectorSource($Owner){
+    # TEST ONLY injected-source lifetime fixture. Keep the original real CWT,
+    # source JSON and typed Injected label; production repository pins differ.
+    $c=Get-RemovalControllerLifetime $Owner
+    Assert-RemovalControllerSealedIdentity $Owner
+    Check ((Get-RemovalControllerCollectorJson $c.Preflight)-ceq$c.CollectorIdentityJson-and
+        $c.Preflight.SourceIdentityJson-ceq$c.CollectorSourceIdentityJson-and
+        $c.Preflight.ExecutionMode-ceq'InjectedCollectorSource') 'Original injected collector changed.'
+}
 function Get-RemovalSessionExplorerPath {'C:\Windows\explorer.exe'}
 function Get-RemovalSessionProcessIds {return @([int]41)}
 function Open-RemovalSessionProcess([int]$ProcessId){return $script:fixture.Process}
@@ -276,7 +285,11 @@ Case 'root-timeout-and-public-trace-mutation-still-drain-original-after-child' {
             $child=$collector.ToolOwners[0];$process=$child.Process;$invocation=$collector.Invocation;$leaseFile=$o.RetainedLease.RetainedFile
             $leaseHandle=$o.RetainedLease.RetainedHandle
             Check ($r.NeedsObservation-and$child.Process-is[Diagnostics.Process]-and$child.IdentityConfirmed-and$child.TimedOut-and-not$child.Closed-and-not$child.ExitedConfirmed) 'Actual .02-second timed-out child not retained.'
-            $o.DeadlineMilliseconds=[long]0
+            # TEST ONLY deterministic expiry; resetting the public observation
+            # Stopwatch must not affect the real private constructor budget.
+            $lifetime=Get-RemovalControllerLifetime $o
+            $lifetime.TimestampOrigin=[Diagnostics.Stopwatch]::GetTimestamp()-([long]241*[Diagnostics.Stopwatch]::Frequency)
+            $o.Clock.Restart()
             $r=Observe-RemovalDiagnosticController $o -ObservationMilliseconds 1
             Check ($o.TimedOut-and$r.NeedsObservation-and-not$r.Completed) 'Root timeout invented terminal ownership.'
             $o.TraceSession=[pscustomobject]@{fixture='foreign-public-trace'}

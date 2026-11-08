@@ -28,6 +28,9 @@ $null=[IO.Directory]::CreateDirectory($root)
 $script:FreshAdmissionCalls=0
 function Assert-RemovalTaskHost {}
 function Assert-RemovalDiagnosticRelease {} # TEST ONLY; every API remains synthetic.
+# TEST ONLY elapsed seam for this preexisting DTO resource unit fixture.
+# Real constructor timestamp/CWT checks are retained in test-diagnostic-release.
+function Test-RemovalControllerDeadlineExpired($Owner){return ($Owner.Clock.ElapsedMilliseconds-ge$Owner.DeadlineMilliseconds)}
 function Assert-RemovalDiagnosticAdmission($Owner){
  $script:FreshAdmissionCalls++
  if($Owner.Errors.Count-or$Owner.TimedOut-or$Owner.Completed-or-not$Owner.ReadyFixture){throw 'Fresh admission refused.'}

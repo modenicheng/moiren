@@ -12,8 +12,18 @@ function Get-RemovalSealProperty($Value,[string]$Name){
     return $null
 }
 
+function Get-RemovalControllerCollectorJson($Preflight){
+    $fields=[ordered]@{}
+    foreach($name in @('FiniteToolPath','FiniteToolSha256','CollectorPath','CollectorSha256',
+        'ExecutionMode','ObservationMode','ReadToolPinsJson')){
+        $fields[$name]=Get-RemovalSealProperty $Preflight $name
+    }
+    ConvertTo-Json -InputObject $fields -Compress
+}
+
 function Register-RemovalControllerLifetime($Owner){
     $self=[Diagnostics.Process]::GetCurrentProcess()
+    $preflight=$Owner.RetainedBefore.RetainedPreflight
     $c=[pscustomobject]@{Root=$Owner;Pid=$self.Id;Creation=$self.StartTime.ToUniversalTime().Ticks
         Directory=$Owner.OriginalDirectory;Nonce=$Owner.Nonce;ConfigJson=$Owner.ConfigJson
         Inputs=$Owner.RetainedInputs;Lease=$Owner.RetainedLease;Before=$Owner.RetainedBefore
@@ -22,7 +32,13 @@ function Register-RemovalControllerLifetime($Owner){
         BeforeCollector=$null;BeforeDispatch=$null;AfterPreflight=$null;AfterCollector=$null;Writer=$null;WriterHandle=$null
         StagedScriptPins=@();InputJson=(ConvertTo-Json -InputObject $Owner.RetainedInputs -Depth 18 -Compress)
         ResultPin=$null;ResultPinJson=$null;PreparedJson=$null;SealJson=$null;Error=$null
-        WorkerProcess=$null;ProbeProcess=$null;DrainOnly=$false;WorkerDrain=$null;ProbeDrain=$null;EarlyRefused=$false}
+        WorkerProcess=$null;ProbeProcess=$null;DrainOnly=$false;WorkerDrain=$null;ProbeDrain=$null;EarlyRefused=$false
+        Clock=$Owner.Clock;DeadlineMilliseconds=$Owner.DeadlineMilliseconds
+        TimestampOrigin=[Diagnostics.Stopwatch]::GetTimestamp()
+        CollectorIdentityJson=(Get-RemovalControllerCollectorJson $preflight)
+        CollectorSourceIdentityJson=(Get-RemovalSealProperty $preflight 'SourceIdentityJson')
+        ReleaseAttempted=$false;ReleaseGranted=$false;ReleaseError=$null;ReleaseHandlesClosed=$false
+        ReleaseHandles=(New-Object Collections.Generic.List[object]);ReleaseSafeHandles=@();ReleaseHandlePins=@()}
     $script:RemovalControllerLifetimes.Add($Owner,$c)
 }
 
@@ -32,6 +48,54 @@ function Get-RemovalControllerLifetime($Owner){
         throw 'Original constructor-retained controller required; public completion is not export authority.'
     }
     return $c
+}
+
+function Test-RemovalControllerDeadlineExpired($Owner){
+    $c=Get-RemovalControllerLifetime $Owner
+    $now=[Diagnostics.Stopwatch]::GetTimestamp()
+    if($c.TimestampOrigin-isnot[long]-or$c.TimestampOrigin-gt$now-or
+        $c.DeadlineMilliseconds-isnot[long]-or$c.DeadlineMilliseconds-ne240000){
+        throw 'Original finite controller timestamp/deadline required.'
+    }
+    # The public Stopwatch is observational. Stop/Reset/Restart cannot renew
+    # the constructor budget used by both birth gates and controller timeout.
+    return (($now-$c.TimestampOrigin)*1000.0/[Diagnostics.Stopwatch]::Frequency-ge$c.DeadlineMilliseconds)
+}
+
+function Assert-RemovalControllerCollectorSource($Owner){
+    $c=Get-RemovalControllerLifetime $Owner;Assert-RemovalClosedLifetimeIdentity $c
+    $p=$c.Preflight
+    if((Get-RemovalControllerCollectorJson $p)-cne$c.CollectorIdentityJson-or
+        (Get-RemovalSealProperty $p 'SourceIdentityJson')-cne$c.CollectorSourceIdentityJson-or
+        $c.CollectorIdentityJson-cne$c.CollectorSourceIdentityJson){
+        throw 'Original constructor collector source identity changed; no public repinning.'
+    }
+    foreach($name in @('FiniteToolPath','FiniteToolSha256','CollectorPath','CollectorSha256',
+        'ExecutionMode','ObservationMode','ReadToolPinsJson')){
+        $value=Get-RemovalSealProperty $p $name
+        if($value-isnot[string]-or-not$value){throw 'Complete original collector source identity required.'}
+    }
+    if($p.ExecutionMode-cne'RepositoryCollector'-or$p.ObservationMode-cne'Admission'){
+        throw 'Original repository admission collector source required.'
+    }
+    if((ConvertTo-Json -InputObject $c.Inputs -Depth 18 -Compress)-cne$c.InputJson){
+        throw 'Original constructor diagnostic input content changed; no collector repinning.'
+    }
+    # Derive the expected row only from the immutable constructor InputJson.
+    # Finish-only synthetic roots may omit this schema; Start/admission cannot.
+    $inputs=ConvertFrom-RemovalManifestJson $c.InputJson
+    $directory=Get-RemovalSealProperty $inputs 'SourceDirectory'
+    $pins=Get-RemovalSealProperty $inputs 'Pins'
+    $rows=@((Get-RemovalSealProperty $pins 'Sources')|Where-Object{(Get-RemovalSealProperty $_ 'Name')-ceq'readonly-preflight.ps1'})
+    if($directory-isnot[string]-or$directory-cne$PSScriptRoot-or$rows.Count-ne1){
+        throw 'Original pinned repository collector source row required.'
+    }
+    $row=$rows[0]
+    if($row.Path-cne(Join-Path $directory 'readonly-preflight.ps1')-or
+        $p.CollectorPath-cne$row.Path-or$p.CollectorSha256-ine$row.Sha256){
+        throw 'Original collector source pin differs from constructor inputs.'
+    }
+    $null=Copy-RemovalDecodePin $row 1048576
 }
 
 function Bind-RemovalControllerLifetime($Owner,[string]$Kind='Validate',$Resource=$null){
@@ -120,6 +184,32 @@ function Assert-RemovalControllerSealedIdentity($Owner){
     Assert-RemovalClosedLifetimeIdentity (Get-RemovalControllerLifetime $Owner)
 }
 
+function Close-RemovalDiagnosticReleaseHandles($Owner){
+    $c=Get-RemovalControllerLifetime $Owner;Assert-RemovalClosedLifetimeIdentity $c
+    if(-not$c.ReleaseAttempted){return}
+    if($c.ReleaseHandlesClosed){return}
+    # Only the existing settlement/result/writer seal can end these reads.
+    # Admission expiry and changed external inputs never relinquish ownership.
+    if($null-eq$c.SealJson-or$c.SealJson-cne$c.PreparedJson-or$null-eq$c.ResultPin-or
+        -not$c.Lease.Closed-or$c.Lease.Owned-or$null-eq$c.WriterHandle-or
+        -not$c.WriterHandle.IsClosed-or$c.Writer.CanWrite){
+        throw 'Original settled persisted controller and closed writer required before releasing sources.'
+    }
+    $null=Copy-RemovalDecodePin $c.ResultPin 1048576
+    foreach($handle in $c.ReleaseHandles){$handle.Dispose()}
+    $c.ReleaseHandlesClosed=$true
+}
+
+function Assert-RemovalDiagnosticReleaseHandlesClosed($c){
+    if(-not$c.ReleaseAttempted){return}
+    if(-not$c.ReleaseHandlesClosed-or$c.ReleaseSafeHandles.Count-ne$c.ReleaseHandles.Count){
+        throw 'Original source handles are not confirmed closed; no terminal/export authority.'
+    }
+    foreach($handle in $c.ReleaseSafeHandles){
+        if(-not$handle.IsClosed){throw 'Original source handle is still open; no terminal/export authority.'}
+    }
+}
+
 function Confirm-RemovalControllerEarlyRefusal($Owner){
     $c=Get-RemovalControllerLifetime $Owner;Assert-RemovalClosedLifetimeIdentity $c
     if($c.Before.StartAttempted-or$c.Native.StartAttempted-or$null-ne$c.Managed-or$c.Lease.Owned-or
@@ -157,6 +247,7 @@ function Test-RemovalControllerDrainOnly($Owner,[int]$ObservationMilliseconds){
                 -not$c.WriterHandle.IsClosed-or$c.Writer.CanWrite)){
                 throw 'Public controller completion lacks original closed-writer attestation.'
             }
+            if($Owner.Completed){Assert-RemovalDiagnosticReleaseHandlesClosed $c}
             if($Owner.Refused-and-not$c.EarlyRefused){throw 'Public controller refusal lacks known pre-acquisition attestation.'}
             return $false
         }
@@ -291,11 +382,14 @@ function Complete-RemovalClosedControllerSeal($Owner){
     if($null-eq$c.PreparedJson-or$null-ne$c.SealJson-or-not$c.Lease.Closed-or$c.Lease.Owned-or
         -not$c.WriterHandle.IsClosed-or$c.Writer.CanWrite){throw 'Original writer closure is not confirmed; no closed-run export.'}
     $c.SealJson=$c.PreparedJson
+    Close-RemovalDiagnosticReleaseHandles $Owner
+    Assert-RemovalDiagnosticReleaseHandlesClosed $c
 }
 
 function Get-RemovalClosedControllerSeal {
     param([Parameter(Mandatory=$true,Position=0)]$Controller)
     $c=Get-RemovalControllerLifetime $Controller;Assert-RemovalClosedLifetimeIdentity $c
+    Assert-RemovalDiagnosticReleaseHandlesClosed $c
     if($null-eq$c.SealJson-or-not$Controller.Completed-or$Controller.Phase-cne'Complete'-or
         -not[Object]::ReferenceEquals($Controller.ResultPin,$c.ResultPin)-or
         (ConvertTo-Json -InputObject $Controller.ResultPin -Compress)-cne$c.ResultPinJson-or

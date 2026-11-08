@@ -24,6 +24,7 @@ $ast=[Management.Automation.Language.Parser]::ParseFile($template,[ref]$tokens,[
 if($parseErrors.Count){throw 'Shared lifetime fixture did not parse.'}
 $helpers=@('Event','Assert-RemovalTaskHost','Get-RemovalSessionExplorerPath','Get-RemovalSessionProcessIds',
     'Open-RemovalSessionProcess','Read-RemovalWorkerToken','Assert-RemovalRunInputs','Assert-RemovalDiagnosticAdmission',
+    'Assert-RemovalControllerCollectorSource',
     'New-RemovalDiagnosticLease','New-RemovalTargetReadiness','New-RemovalSafetyAudit','Write-LifetimeTraceBuffer',
     'New-RemovalTraceSession','Assert-RemovalTaskNativeApproval','Assert-RemovalTraceNativeOwnerApproval',
     'New-LifetimeSnapshot','Write-LifetimeCollector','New-LifetimeFixture','Get-LifetimePin','Assert-LifetimeTrace','Close-LifetimeFixture')
