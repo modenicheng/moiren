@@ -60,3 +60,40 @@ resource, but it is not the requested final rename feature or S4 completion.
 
 Driver/native follow-up still awaits the user's reboot and fresh613 provenance.
 Source/design work on publication and migration can continue independently.
+
+## Property-provider and adoption discriminator
+
+The installed Windows SDK10.0.28000.0 defines the final property-store key
+`PKEY_Device_FriendlyName` in `um/FunctionDiscoveryKeys_devpkey.h:62` and the
+devnode key `DEVPKEY_Device_FriendlyName` in `shared/devpkey.h:54` as the same
+GUID/PID: `{A45C254E-DF1C-4EFD-8020-67D146A850E0},14`. This key equivalence
+does not establish shared storage or propagation between a raw PDO, the owned
+SWD/MMDEVAPI devnode and the MMDevice property-store provider.
+
+Microsoft documents devnode FriendlyName as writable by installation
+applications/installers through SetupDiSetDeviceProperty. That is a possible
+setter boundary, not a documented final-MMDevice update contract or evidence
+that an ordinary application should set Core Audio's basic endpoint properties.
+The next supported-publication question is whether an exact owned endpoint
+devnode update is supported and propagates to final raw MMDevice readback with
+identity/settings retained. No such write is performed by this investigation.
+
+`https://learn.microsoft.com/en-us/windows-hardware/drivers/install/devpkey-device-friendlyname`
+
+Interface FriendlyName is instead `{026E516E-B814-414B-83CD-856D6FEF4822},2`.
+The SDK also defines `DEVPKEY_DeviceInterface_ReferenceString` with PID5 under
+that interface GUID. For installed-reference discovery, IoGetDeviceInterfaces
+can narrow enumeration to the exact owned PDO and include nonactive interfaces;
+typed property reads can then retrieve reference strings without parsing opaque
+symbolic links. The DDI requires a system thread at PASSIVE_LEVEL and allocation
+cleanup. Existing policy system-worker placement supplies the correct kind of
+context, not a completed adoption implementation.
+
+`https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-iogetdeviceinterfaces`
+
+Adoption must establish one historical reference consistently across
+Audio/flow/Realtime and the connector pin ID. Multiple retained references
+cannot be resolved by enumeration order, newest timestamp or display text.
+Preserve the installed identity instead of globally switching constants or
+deleting endpoint history. This discovery path narrows implementation choices;
+neither it nor a refusal-only fallback completes the requested naming feature.
