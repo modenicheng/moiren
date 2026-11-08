@@ -34,14 +34,19 @@ pub(in crate::ui::window) fn overlay(
 
     let close = this.clone();
     let mut body = match menu {
-        ContextMenu::Node {
-            node, color_open, ..
-        } => {
-            if color_open {
-                color_row(this.clone(), node, shell, cx)
-            } else {
-                action_rows(this.clone(), node)
-            }
+        ContextMenu::Node { node, .. } => {
+            // The palette sits in the menu itself: one right click reaches
+            // the swatches, no second click to unfold them first.
+            let mut rows = color_row(this.clone(), node, shell, cx);
+            rows.push(
+                div()
+                    .h(px(1.))
+                    .w_full()
+                    .bg(theme::BORDER)
+                    .into_any_element(),
+            );
+            rows.extend(action_rows(this.clone(), node));
+            rows
         }
         ContextMenu::Background { .. } => arrange_row(this.clone()),
     };
@@ -110,30 +115,12 @@ impl ContextMenu {
     }
 }
 
-/// The identity actions over a node: tint, delete, inspector, rename —
-/// the same effects the detail window and the inspector offered, now
-/// reachable in place.
+/// The identity actions over a node: delete, inspector, rename — the same
+/// effects the detail window and the inspector offered, now reachable in
+/// place. The tint palette rides above them, straight in the menu.
 fn action_rows(this: Entity<StudioShell>, node: moiren_core::graph::NodeId) -> Vec<AnyElement> {
     use controls::*;
     vec![
-        button("context-menu-color", t!("Color"))
-            .full_width()
-            .justify_start()
-            .variant(ButtonVariant::Ghost)
-            .on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |shell, cx| {
-                        let Some(ContextMenu::Node { color_open, .. }) =
-                            shell.context_menu.as_mut()
-                        else {
-                            return;
-                        };
-                        *color_open = true;
-                        cx.notify();
-                    });
-                }
-            }),
         button("context-menu-delete", t!("Delete node"))
             .full_width()
             .justify_start()

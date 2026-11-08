@@ -60,7 +60,6 @@ pub(in crate::ui::window) enum ContextMenu {
     Node {
         node: moiren_core::graph::NodeId,
         at: (f32, f32),
-        color_open: bool,
     },
     Background {
         at: (f32, f32),

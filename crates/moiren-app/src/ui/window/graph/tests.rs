@@ -2932,10 +2932,9 @@ fn context_menu_actions_open_the_inspector_rename_and_tint(cx: &mut gpui_kit::Te
     view.update(cx, |shell, _| {
         assert_eq!(shell.node_name_editing, Some(node));
     });
-    // 调色 swaps the menu into the tint row; picking applies the tint.
+    // 调色 rides straight in the menu: the swatches are visible on open
+    // and picking one applies the tint.
     right_click(cx);
-    cx.update(|window, cx| window.click("context-menu-color", cx));
-    render(cx);
     cx.update(|window, _| assert!(window.find("node-tint-0").visible()));
     cx.update(|window, cx| window.click("node-tint-0", cx));
     wait_until(Duration::from_secs(2), || {

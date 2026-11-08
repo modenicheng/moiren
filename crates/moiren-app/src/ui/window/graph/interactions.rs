@@ -145,11 +145,7 @@ pub(super) fn background_move(
                         && (x - pressed.0).hypot(y - pressed.1) <= 3.
                     {
                         shell.context_menu = Some(match hovered {
-                            Some(node) => ContextMenu::Node {
-                                node,
-                                at: (x, y),
-                                color_open: false,
-                            },
+                            Some(node) => ContextMenu::Node { node, at: (x, y) },
                             None => ContextMenu::Background { at: (x, y) },
                         });
                         cx.notify();
@@ -810,7 +806,6 @@ pub(super) fn expand(
             shell.context_menu = Some(ContextMenu::Node {
                 node: node_id,
                 at: (f32::from(pos.x), f32::from(pos.y)),
-                color_open: false,
             });
             cx.notify();
         })
