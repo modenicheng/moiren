@@ -97,3 +97,45 @@ cannot be resolved by enumeration order, newest timestamp or display text.
 Preserve the installed identity instead of globally switching constants or
 deleting endpoint history. This discovery path narrows implementation choices;
 neither it nor a refusal-only fallback completes the requested naming feature.
+
+## Supported PDO setter and concrete source boundary
+
+A further primary-source check finds an explicit driver runtime setter: the
+Microsoft co-installer-removal guidance permits DEVPKEY_Device_FriendlyName
+during Start IRP/PrepareHardware via IoSetDevicePropertyData or WdfAssignProperty.
+This is stronger than the earlier installation-application setter hypothesis,
+but its documented object is a device/PDO. It does not establish propagation
+into an existing SWD/MMDEVAPI devnode or the final MMDevice property store.
+No property write or new kernel package follows this source check.
+
+`https://learn.microsoft.com/en-us/windows-hardware/drivers/develop/removing-coinstallers#setting-device-friendly-names`
+
+`https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-iosetdevicepropertydata`
+
+Current source review identifies the minimal ordering boundary before any
+publication: PreparePolicy's system worker resolves/adopts and durably records
+the immutable reference, before StageInterface and subsequent BuildCircuit/
+AddCircuit. Audio initialization currently computes Reference earlier than the
+policy worker; remove that independent mutable-name authority when wiring the
+shared adopted value. VAD_AUDIO_DEVICE.Reference can hold the runtime value,
+but Slot Reserve clears memory and neither it nor PolicyInterfaces is durable
+publication provenance. There is no existing persisted reference slot to reuse.
+
+The persistent record needs schema/root-installation scope/StableId/intent and
+exact adopted reference/source version; commit/readback must precede interface
+registration. An absent record is not proof of a never-published endpoint.
+Historical adoption needs complete typed Audio/flow/Realtime reference data
+plus exact MMDevice/connector association where multiple candidates exist.
+Preserve bridge pin1 and host pin0; EP\0 is a property-subkey index, not bridge
+pin1. Do not choose by time, order, requested text, or a raw symbolic-link parse.
+
+WdfDeviceOpenRegistryKey is a documented PASSIVE_LEVEL device-key access path;
+Microsoft also requires validating persistent data as untrusted. Do not open
+hardcoded Enum/DeviceClasses/Class registry paths directly or treat a project's
+portable settings/default-role authorization as this machine-local identity
+record. These constraints define implementation work, not a completed adoption
+algorithm or proof that supported final-MMDevice publication exists.
+
+`https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceopenregistrykey`
+
+`https://learn.microsoft.com/en-us/windows-hardware/drivers/install/registry-trees-and-keys`
