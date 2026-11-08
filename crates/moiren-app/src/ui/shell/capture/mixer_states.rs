@@ -47,7 +47,7 @@ pub(super) async fn capture(
         .timer(Duration::from_millis(200))
         .await;
     shell.update(cx, |shell, cx| {
-        shell.inspector_open = false;
+        shell.chrome.inspector_open = false;
         let gain = shell
             .state
             .read(cx)
@@ -67,7 +67,7 @@ pub(super) async fn capture(
             })
             .unwrap()
             .id;
-        shell.selected_node = Some(gain);
+        shell.selection.node = Some(gain);
         shell.state.update(cx, |state, _| {
             state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
                 node: gain,
@@ -124,7 +124,7 @@ pub(super) async fn capture(
     }
     let snapshot = graph.snapshot();
     shell.update(cx, |shell, cx| {
-        shell.selected_node = None;
+        shell.selection.node = None;
         shell.state.update(cx, |state, _| {
             state.dispatch(AppRequest::ReplaceGraph {
                 graph: snapshot.graph,

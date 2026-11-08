@@ -136,7 +136,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         )));
     for entry in &state.snapshot.graph.nodes {
         let id = entry.id;
-        let selected = shell.selected_node == Some(id);
+        let selected = shell.selection.node == Some(id);
         let this = cx.entity();
         // The row wrapper carries the selected fact (`aria_selected`) for
         // tests and assistive tech; the button inside keeps the `locate-` id
@@ -160,8 +160,8 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     })
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
-                            shell.selected_node = Some(id);
-                            shell.selected_route = None;
+                            shell.selection.node = Some(id);
+                            shell.selection.route = None;
                             // Locating selects; a double click also opens the
                             // inspector, matching canvas node behavior.
                             if shell.element_double_clicked(StudioShell::element_key("node", id)) {
@@ -402,10 +402,10 @@ impl StudioShell {
         self.node_positions.insert(id, pending.position);
         // The spawned node is the whole selection: anything selected before
         // must not ride along with the drag that usually follows a spawn.
-        self.selected_nodes.clear();
-        self.selected_nodes.insert(id);
-        self.selected_node = Some(id);
-        self.selected_route = None;
+        self.selection.nodes.clear();
+        self.selection.nodes.insert(id);
+        self.selection.node = Some(id);
+        self.selection.route = None;
         self.open_inspector();
         let source = match pending.template {
             NodeTemplate::Tone => Some(InputSelection::Tone { frequency_hz: 440. }),

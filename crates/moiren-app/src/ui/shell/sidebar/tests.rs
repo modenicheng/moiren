@@ -73,7 +73,7 @@ fn burn_in(
 
 fn select_first_node(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
+        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
         cx.notify();
     });
     cached_frame(cx);
@@ -283,7 +283,7 @@ fn library_panel_repaints_the_session_selection_without_a_publish(cx: &mut TestA
     let (first, second) = (nodes[0], nodes[1]);
 
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(first);
+        shell.selection.node = Some(first);
         cx.notify();
     });
     cached_frame(cx);
@@ -301,7 +301,7 @@ fn library_panel_repaints_the_session_selection_without_a_publish(cx: &mut TestA
     burn_in(&view, |cx| library_rebuilds(&view, cx), cx);
     let before = library_rebuilds(&view, cx);
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(second);
+        shell.selection.node = Some(second);
         cx.notify();
     });
     cached_frame(cx);
@@ -335,7 +335,7 @@ fn library_rail_replays_key_neutral_notifications_and_rebuilds_on_a_publish(
     let (view, cx, runtime) = test_shell(cx);
     open_graph_page(cx);
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
+        shell.chrome.sidebar_open = false;
         cx.notify();
     });
     settle_spring(cx);

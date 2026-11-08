@@ -46,26 +46,26 @@ pub(super) fn select_node(
             };
             let modifiers = window.modifiers();
             if modifiers.control || modifiers.shift {
-                if shell.selected_nodes.contains(&node_id) {
-                    shell.selected_nodes.remove(&node_id);
-                    if shell.selected_node == Some(node_id) {
-                        shell.selected_node = None;
+                if shell.selection.nodes.contains(&node_id) {
+                    shell.selection.nodes.remove(&node_id);
+                    if shell.selection.node == Some(node_id) {
+                        shell.selection.node = None;
                     }
                 } else {
-                    shell.selected_nodes.insert(node_id);
-                    shell.selected_node = Some(node_id);
+                    shell.selection.nodes.insert(node_id);
+                    shell.selection.node = Some(node_id);
                 }
-            } else if !shell.selected_nodes.contains(&node_id) {
-                shell.selected_nodes.clear();
-                shell.selected_nodes.insert(node_id);
-                shell.selected_node = Some(node_id);
+            } else if !shell.selection.nodes.contains(&node_id) {
+                shell.selection.nodes.clear();
+                shell.selection.nodes.insert(node_id);
+                shell.selection.node = Some(node_id);
             } else {
-                shell.selected_node = Some(node_id);
+                shell.selection.node = Some(node_id);
             }
-            shell.selected_route = None;
+            shell.selection.route = None;
             // Dragging moves the whole selection; seed every member so the
             // world positions survive a move of untouched nodes.
-            for selected in shell.selected_nodes.clone() {
+            for selected in shell.selection.nodes.clone() {
                 if let Some(projected) = nodes
                     .nodes
                     .iter()
@@ -239,7 +239,7 @@ pub(super) fn background_move(
                     } else if let Some(frame) = shell.graph_canvas_frame.read() {
                         let (snapped, guides) = snap_delta(
                             &frame,
-                            &shell.selected_nodes,
+                            &shell.selection.nodes,
                             &shell.node_positions,
                             baked,
                             raw,
@@ -254,7 +254,7 @@ pub(super) fn background_move(
                         raw.0 + shell.graph_gestures.node_drag_snap.0 - baked.0,
                         raw.1 + shell.graph_gestures.node_drag_snap.1 - baked.1,
                     );
-                    let selection: Vec<_> = shell.selected_nodes.iter().copied().collect();
+                    let selection: Vec<_> = shell.selection.nodes.iter().copied().collect();
                     for id in selection {
                         if let Some(pos) = shell.node_positions.get_mut(&id) {
                             pos.0 += applied.0;
@@ -300,7 +300,7 @@ pub(super) fn background_down(
                             anchor,
                             current: anchor,
                             additive: modifiers.control || modifiers.shift,
-                            base: shell.selected_nodes.clone(),
+                            base: shell.selection.nodes.clone(),
                             moved: false,
                             hits: Default::default(),
                         });
@@ -739,10 +739,10 @@ pub(super) fn chip(
             };
             // The chip selects its card like a press anywhere on it, then
             // hangs the endpoint menu off the chip.
-            shell.selected_nodes.clear();
-            shell.selected_nodes.insert(node_id);
-            shell.selected_node = Some(node_id);
-            shell.selected_route = None;
+            shell.selection.nodes.clear();
+            shell.selection.nodes.insert(node_id);
+            shell.selection.node = Some(node_id);
+            shell.selection.route = None;
             shell.binding_menu = Some(BindingMenu {
                 node: node_id,
                 anchor,
@@ -769,7 +769,7 @@ pub(super) fn badge(
             // The badge opens the fault popover on the card's fault group;
             // it selects nothing, mirroring the hover tooltip that also
             // presumes nothing.
-            shell.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
+            shell.chrome.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
                 node: Some(node_id),
                 anchor,
             });
@@ -868,7 +868,7 @@ pub(super) fn select_wire(this: &Entity<StudioShell>) -> Rc<SelectFn> {
             if shell.begin_pointer_session(window) {
                 return;
             }
-            shell.selected_route = shell
+            shell.selection.route = shell
                 .state
                 .read(cx)
                 .snapshot
@@ -878,9 +878,9 @@ pub(super) fn select_wire(this: &Entity<StudioShell>) -> Rc<SelectFn> {
                 .iter()
                 .find(|e| format!("{:?}", e.id()) == id)
                 .map(|e| (e.src_port(), e.dst_port()));
-            shell.selected_node = None;
-            shell.selected_nodes.clear();
-            if let Some(route) = shell.selected_route
+            shell.selection.node = None;
+            shell.selection.nodes.clear();
+            if let Some(route) = shell.selection.route
                 && shell.element_double_clicked(StudioShell::element_key("route", route))
             {
                 shell.open_inspector();

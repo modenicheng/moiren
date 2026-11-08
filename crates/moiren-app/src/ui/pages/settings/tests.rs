@@ -46,7 +46,7 @@ fn settings_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut T
     let before = settings_rebuilds(&view, cx);
 
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
+        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
         cx.notify();
     });
     cached_frame(cx);
@@ -115,7 +115,7 @@ fn settings_panel_repaints_section_and_density_changes_exactly_once(cx: &mut Tes
     // A density change is a key input of its own, and compact visibly
     // re-lays the section out (denser controls).
     view.update(cx, |shell, cx| {
-        shell.density = Density::Compact;
+        shell.chrome.density = Density::Compact;
         cx.notify();
     });
     cached_frame(cx);

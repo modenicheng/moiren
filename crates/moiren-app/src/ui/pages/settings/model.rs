@@ -332,7 +332,7 @@ impl StudioShell {
         }
         self.settings.editor.previous_focus = window.focused(cx);
         self.settings_open = true;
-        self.project_menu = false;
+        self.chrome.project_menu = false;
         window.focus(&self.settings.editor.focus, cx);
         cx.notify();
     }
@@ -375,10 +375,10 @@ impl StudioShell {
     /// through the quiet write chain. The interface speaks for itself — a
     /// flipped control is already in effect, so there is nothing to save.
     pub(crate) fn set_density(&mut self, density: Density, cx: &mut Context<Self>) {
-        if self.density == density {
+        if self.chrome.density == density {
             return;
         }
-        self.density = density;
+        self.chrome.density = density;
         self.preferences.values.density = if density == Density::Compact {
             crate::project::UiDensity::Compact
         } else {

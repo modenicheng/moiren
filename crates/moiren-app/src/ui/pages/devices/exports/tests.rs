@@ -425,8 +425,8 @@ mod headless {
             shell.preferences.values.export_authorizations.clear();
             shell.presentation.page = pages::Page::Devices;
             shell.devices.device_tab = devices::DeviceTab::Exports;
-            shell.inspector_open = false;
-            shell.sidebar_open = false;
+            shell.chrome.inspector_open = false;
+            shell.chrome.sidebar_open = false;
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -481,7 +481,7 @@ mod headless {
             .unwrap()
             .id();
         view.update(cx, |shell, cx| {
-            shell.selected_node = Some(sink);
+            shell.selection.node = Some(sink);
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -497,7 +497,7 @@ mod headless {
         });
         assert_eq!(candidate(&view, cx).exports[0].binding, None);
         view.update(cx, |shell, cx| {
-            shell.selected_node = Some(source);
+            shell.selection.node = Some(source);
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -617,8 +617,8 @@ mod headless {
             shell.preferences.path = None;
             shell.presentation.page = pages::Page::Devices;
             shell.devices.device_tab = devices::DeviceTab::Exports;
-            shell.inspector_open = false;
-            shell.sidebar_open = false;
+            shell.chrome.inspector_open = false;
+            shell.chrome.sidebar_open = false;
             cx.notify();
         });
         cx.update(|window, cx| {

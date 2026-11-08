@@ -107,7 +107,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             move |event, _window, cx| {
                 if event.keystroke.key.as_str() == "escape" {
                     close.update(cx, |shell, cx| {
-                        shell.project_menu = false;
+                        shell.chrome.project_menu = false;
                         cx.notify();
                     });
                     cx.stop_propagation();
@@ -118,7 +118,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         // its own subtree — so every press here closes the menu.
         .on_any_mouse_down(move |_, _, cx| {
             close.update(cx, |shell, cx| {
-                shell.project_menu = false;
+                shell.chrome.project_menu = false;
                 cx.notify();
             });
         })
@@ -419,7 +419,7 @@ mod tests {
                 std::path::PathBuf::from("Z:/sets/live.moiren.json"),
                 std::path::PathBuf::from("Z:/sets/rehearsal.moiren.json"),
             ];
-            shell.project_menu = true;
+            shell.chrome.project_menu = true;
             cx.notify();
         });
         render(cx);
@@ -432,18 +432,18 @@ mod tests {
         let outside = point(px(1000.), px(700.));
         cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
-        view.update(cx, |shell, _| assert!(!shell.project_menu));
+        view.update(cx, |shell, _| assert!(!shell.chrome.project_menu));
         render(cx);
         cx.update(|window, _| assert!(window.try_find("project-popover").is_none()));
         // Reopened, Escape closes it too.
         view.update(cx, |shell, cx| {
-            shell.project_menu = true;
+            shell.chrome.project_menu = true;
             cx.notify();
         });
         render(cx);
         cx.update(|window, _| assert!(window.find("project-popover").visible()));
         cx.simulate_keystrokes("escape");
-        view.update(cx, |shell, _| assert!(!shell.project_menu));
+        view.update(cx, |shell, _| assert!(!shell.chrome.project_menu));
         render(cx);
         cx.update(|window, _| assert!(window.try_find("project-popover").is_none()));
         finish_service(runtime);
@@ -628,7 +628,7 @@ impl StudioShell {
     /// Opens a project straight from the session menu's quick switch: the
     /// same load path as the file-dialog prompt, minus the prompt.
     pub(super) fn open_recent_project(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        self.project_menu = false;
+        self.chrome.project_menu = false;
         self.spawn_project_load(path, cx);
     }
 
@@ -794,8 +794,8 @@ impl StudioShell {
             },
             cx,
         );
-        self.selected_node = None;
-        self.selected_route = None;
+        self.selection.node = None;
+        self.selection.route = None;
         Ok(())
     }
 }

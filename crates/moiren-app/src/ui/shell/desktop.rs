@@ -59,11 +59,11 @@ impl PresentationSnapshot {
             node_positions: std::mem::take(&mut shell.node_positions),
             mixer_order: shell.mixer.presentation.order.clone(),
             pending_node_spawn: shell.pending_node_spawn.take(),
-            selected_node: shell.selected_node.take(),
-            selected_route: shell.selected_route,
-            sidebar_open: shell.sidebar_open,
-            inspector_open: shell.inspector_open,
-            compact: shell.compact,
+            selected_node: shell.selection.node.take(),
+            selected_route: shell.selection.route,
+            sidebar_open: shell.chrome.sidebar_open,
+            inspector_open: shell.chrome.inspector_open,
+            compact: shell.chrome.compact,
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.take(),
             project_path: shell.project_io.path.take(),
@@ -81,11 +81,11 @@ impl PresentationSnapshot {
         shell.mixer.presentation.order = self.mixer_order;
         shell.pending_node_spawn = self.pending_node_spawn;
         shell.inspector.node_name_editing = None;
-        shell.selected_node = self.selected_node;
-        shell.selected_route = self.selected_route;
-        shell.sidebar_open = self.sidebar_open;
-        shell.inspector_open = self.inspector_open;
-        shell.compact = self.compact;
+        shell.selection.node = self.selected_node;
+        shell.selection.route = self.selected_route;
+        shell.chrome.sidebar_open = self.sidebar_open;
+        shell.chrome.inspector_open = self.inspector_open;
+        shell.chrome.compact = self.compact;
         shell.devices.device_tab = self.device_tab;
         shell.devices.selected_device = self.selected_device;
         shell.project_io.path = self.project_path;
@@ -93,7 +93,7 @@ impl PresentationSnapshot {
         shell.project_io.message = self.project_message;
         shell.project_io.busy = self.pending_project.is_some();
         shell.project_io.pending = self.pending_project;
-        shell.density = match self.preferences.density {
+        shell.chrome.density = match self.preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
             crate::project::UiDensity::Comfortable => Density::Comfortable,
         };

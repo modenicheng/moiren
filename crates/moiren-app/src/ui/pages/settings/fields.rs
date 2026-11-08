@@ -27,7 +27,7 @@ fn segmented_group(
     for (index, (title, selected, handler)) in items.into_iter().enumerate() {
         group = group.child(
             button(SharedString::from(format!("{id}-{index}")), title)
-                .density(shell.density)
+                .density(shell.chrome.density)
                 .variant(if selected {
                     ButtonVariant::Primary
                 } else {
@@ -215,7 +215,7 @@ pub(crate) fn select_trigger(
 ) -> ActionButton {
     let this = cx.entity();
     button(SharedString::from(format!("{id}-trigger")), title)
-        .density(shell.density)
+        .density(shell.chrome.density)
         .variant(ButtonVariant::Secondary)
         .trailing_icon(ActionIcon::ChevronDown)
         .disabled(shell.settings.editor.busy())
@@ -271,7 +271,7 @@ pub(crate) fn stream_editor(
     let mut view = div()
         .flex()
         .flex_col()
-        .gap(px(if shell.density == Density::Compact {
+        .gap(px(if shell.chrome.density == Density::Compact {
             10.
         } else {
             14.

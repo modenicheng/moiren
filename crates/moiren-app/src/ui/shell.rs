@@ -128,22 +128,26 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 }
 
 /// Root view: toolbar, active page, status bar.
+/// Cross-page double-click detection (design 20 §4): the last selectable
+/// element press (target hash + time).
+#[derive(Default)]
+pub(crate) struct PressTracker {
+    pub(crate) last: Option<(u64, Instant)>,
+}
+
 pub struct StudioShell {
     pub(crate) state: Entity<UiState>,
+    pub(crate) chrome: chrome::ShellChrome,
+    pub(crate) selection: graph::Selection,
+    pub(crate) press: PressTracker,
     pub(crate) settings_open: bool,
     pub(crate) settings: settings::SettingsPageState,
-    pub(crate) project_menu: bool,
-    pub(crate) sidebar_open: bool,
-    pub(crate) inspector_open: bool,
-    pub(crate) compact: bool,
-    pub(crate) density: Density,
     /// Live preference values plus the quiet-save machinery (design 20 §4).
     pub(crate) preferences: preferences::PreferenceStore,
     /// Recovery autosave: where the working document is written, the state it
     /// was last saved from, and the in-flight debounce/write machinery.
     pub(crate) autosave: autosave::Autosave,
     pub(crate) devices: devices::DevicesPageState,
-    pub(crate) selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     pub(crate) meters: MeterSubscriptions,
     pub(crate) node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
@@ -156,7 +160,6 @@ pub struct StudioShell {
     pub(crate) node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
     /// Multi-selection on the graph canvas; `selected_node` is the primary
     /// (last-clicked) member that drives the inspector.
-    pub(crate) selected_nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
     /// Active rubber-band drag; see [`graph::SelectionDrag`].
     pub(crate) graph_focus: FocusHandle,
     /// The open canvas context menu, over a node or the background.
@@ -190,8 +193,6 @@ pub struct StudioShell {
     /// Lives on the shell because its scope is the window, not the mixer.
     #[cfg(feature = "gpui-test")]
     pub(crate) trace: std::cell::RefCell<performance::MeterTrace>,
-    pub(crate) toolbar_chrome: Entity<chrome::ToolbarChrome>,
-    pub(crate) status_chrome: Entity<chrome::StatusbarChrome>,
     pub(crate) graph_meter_frame: Entity<graph::page::GraphMeterLayer>,
     pub(crate) graph_controls: Entity<graph::page::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
@@ -217,7 +218,6 @@ pub struct StudioShell {
     pub(crate) binding_menu: Option<graph::BindingMenu>,
     /// The fault detail popover hanging off a faulted object's "!" marker
     /// (graph badge, mixer strip badge, status bar summary).
-    pub(crate) fault_popover: Option<fault_popover::FaultPopover>,
     pub(crate) meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
     /// H): sources register while active, and the control-side poll is the
@@ -231,12 +231,10 @@ pub struct StudioShell {
         moiren_core::graph::NodeId,
     )>,
     pub(crate) canvas_size: Option<(f32, f32)>,
-    pub(crate) selected_node: Option<moiren_core::graph::NodeId>,
     /// Screen-space anchor of an active pan drag (window coordinates).
     /// Left background clicks deselect only on release; a pan keeps selection.
     /// Last selectable-element press (target hash + time) for double-click
     /// detection: single clicks select, double clicks also open the inspector.
-    pub(crate) last_element_press: Option<(u64, Instant)>,
     pub(crate) desktop: Option<WeakEntity<desktop::Desktop>>,
     pub(crate) window_state: crate::project::WindowState,
     /// Precision-touchpad subclass state (Windows pointer input). Held for
@@ -345,6 +343,18 @@ impl StudioShell {
         });
         let mut shell = Self {
             state,
+            chrome: chrome::ShellChrome {
+                project_menu: false,
+                sidebar_open: true,
+                inspector_open: true,
+                compact: false,
+                density,
+                toolbar: toolbar_chrome,
+                status: status_chrome,
+                fault_popover: None,
+            },
+            selection: graph::Selection::default(),
+            press: PressTracker::default(),
             settings_open: false,
             settings: settings::SettingsPageState {
                 editor: settings,
@@ -352,11 +362,6 @@ impl StudioShell {
                 scroll: ScrollHandle::new(),
                 panel: settings_panel,
             },
-            project_menu: false,
-            sidebar_open: true,
-            inspector_open: true,
-            compact: false,
-            density,
             preferences: preferences::PreferenceStore {
                 values: preferences,
                 path: crate::project::preferences_path().ok(),
@@ -377,7 +382,6 @@ impl StudioShell {
                 exports_scroll: ScrollHandle::new(),
                 panel: devices_panel,
             },
-            selected_route: None,
             meters,
             node_meter_points: Default::default(),
             project_io: project::ProjectIo {
@@ -393,7 +397,6 @@ impl StudioShell {
             graph_gestures: graph::GraphInteractionState::default(),
             camera: Camera::default(),
             node_positions: Default::default(),
-            selected_nodes: Default::default(),
             graph_focus: cx.focus_handle(),
             context_menu: None,
             pending_node_spawn: None,
@@ -410,8 +413,6 @@ impl StudioShell {
             },
             #[cfg(feature = "gpui-test")]
             trace: Default::default(),
-            toolbar_chrome,
-            status_chrome,
             graph_meter_frame,
             graph_controls,
             graph_canvas_frame,
@@ -419,7 +420,6 @@ impl StudioShell {
             spectrum_scratch: Vec::new(),
             hovered_node: None,
             binding_menu: None,
-            fault_popover: None,
             meter_points: Default::default(),
             frame_demand: Default::default(),
             inspector: sidebar::InspectorState {
@@ -439,8 +439,6 @@ impl StudioShell {
             },
             observation_nodes: None,
             canvas_size: None,
-            selected_node: None,
-            last_element_press: None,
             desktop,
             window_state: desktop::capture_window_state(window, Page::Graph),
             #[cfg(windows)]
@@ -669,7 +667,7 @@ impl StudioShell {
         self.presentation.page = page;
         self.window_state.workspace = desktop::workspace(page);
         self.settings_open = false;
-        self.project_menu = false;
+        self.chrome.project_menu = false;
         #[cfg(feature = "gpui-test")]
         if let Some(cell) = &self.test_page {
             cell.update(cx, |cell, _| cell.page = page);
@@ -782,11 +780,11 @@ impl Render for StudioShell {
             self.presentation.page = page.read(cx).page;
         }
         let compact = f32::from(window.viewport_size().width) < 1200.;
-        if compact != self.compact {
-            self.sidebar_open = !compact;
-            self.inspector_open = !compact;
+        if compact != self.chrome.compact {
+            self.chrome.sidebar_open = !compact;
+            self.chrome.inspector_open = !compact;
         }
-        self.compact = compact;
+        self.chrome.compact = compact;
         let visible =
             window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
         // Meter pumping lives in the pages' dedicated meter-frame views
@@ -858,7 +856,9 @@ impl Render for StudioShell {
                     });
                 }
             })
-            .when(self.project_menu, |v| v.child(project::menu(self, cx)))
+            .when(self.chrome.project_menu, |v| {
+                v.child(project::menu(self, cx))
+            })
             .when(self.context_menu.is_some(), |v| {
                 v.child(graph::context_menu_overlay(self, window, cx))
             })
@@ -868,7 +868,7 @@ impl Render for StudioShell {
             .when(self.settings.menu.is_some(), |v| {
                 v.child(settings::menu_overlay(self, window, cx))
             })
-            .when(self.fault_popover.is_some(), |v| {
+            .when(self.chrome.fault_popover.is_some(), |v| {
                 v.child(fault_popover::overlay(self, window, cx))
             })
             .on_action(cx.listener(|shell, _: &actions::Undo, window, cx| {
@@ -896,19 +896,19 @@ impl StudioShell {
     /// a double-click pair with the previous press of the same element.
     pub(super) fn element_double_clicked(&mut self, key: u64) -> bool {
         let now = Instant::now();
-        let double = self.last_element_press.is_some_and(|(previous, at)| {
+        let double = self.press.last.is_some_and(|(previous, at)| {
             previous == key && now.duration_since(at) <= Duration::from_millis(400)
         });
-        self.last_element_press = Some((key, now));
+        self.press.last = Some((key, now));
         double
     }
 
     /// Expands the inspector from a double click or an explicit open action;
     /// compact widths give its space back by closing the library.
     pub(super) fn open_inspector(&mut self) {
-        self.inspector_open = true;
-        if self.compact {
-            self.sidebar_open = false;
+        self.chrome.inspector_open = true;
+        if self.chrome.compact {
+            self.chrome.sidebar_open = false;
         }
     }
 

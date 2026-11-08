@@ -139,7 +139,7 @@ impl StripPanel {
             catalog: snapshot.catalog.clone(),
             managed: snapshot.signal_topics.node_levels.contains_key(&id),
             probe,
-            compact: shell.compact,
+            compact: shell.chrome.compact,
             position: shell
                 .mixer
                 .presentation
@@ -343,7 +343,7 @@ fn strip_column(
     host: &Entity<StripPanelHost>,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
-    let selected = shell.selected_node == Some(id);
+    let selected = shell.selection.node == Some(id);
     // The shared fault projection: the live column wears the danger frame,
     // the faint red wash and the banner anchor while the strip holds a
     // fault; the "!" badge rides the cached title row off the same

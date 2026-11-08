@@ -55,8 +55,8 @@ impl CachedPanel for InspectorPanel {
         let state = shell.state.read(cx);
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
-            selected_node: shell.selected_node,
-            selected_route: shell.selected_route,
+            selected_node: shell.selection.node,
+            selected_route: shell.selection.route,
             page: shell.presentation.page,
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
@@ -66,7 +66,7 @@ impl CachedPanel for InspectorPanel {
             editing_node_gain: shell.mixer.presentation.editing_node_gain,
             editing_node_pan: shell.mixer.presentation.editing_node_pan,
             editing_send: shell.mixer.presentation.editing_send,
-            compact: shell.compact,
+            compact: shell.chrome.compact,
             preferences: shell.preferences.values.clone(),
             inspector_scroll: shell.inspector.scroll.offset().y,
             override_scroll: shell.devices.device_override_scroll.offset().y,
@@ -189,9 +189,9 @@ pub(crate) struct LibraryKey {
 fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
     LibraryKey {
         snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
-        selected_node: shell.selected_node,
+        selected_node: shell.selection.node,
         pending_spawn: shell.pending_node_spawn.is_some(),
-        compact: shell.compact,
+        compact: shell.chrome.compact,
         preferences: shell.preferences.values.clone(),
         scroll: shell.library.scroll.offset().y,
         rail_scroll: shell.library.rail_scroll.offset().y,
@@ -394,14 +394,14 @@ pub(super) fn inspector_host(
         .h_full()
         .child(panel(
             "inspector-panel-width",
-            shell.inspector_open,
+            shell.chrome.inspector_open,
             theme::INSPECTOR_WIDTH,
             inspector_panel_for(shell, window),
         ))
         .child(shell.inspector.meter_layer.clone())
         .child(edge_handle(
             "inspector-toggle",
-            shell.inspector_open,
+            shell.chrome.inspector_open,
             Side::Right,
             this,
             None,
@@ -449,7 +449,7 @@ pub(crate) fn library_host(
         .h_full()
         .child(panel(
             "library-rail-width",
-            !shell.sidebar_open,
+            !shell.chrome.sidebar_open,
             theme::LIBRARY_RAIL_WIDTH,
             deselecting(
                 div()
@@ -474,7 +474,7 @@ pub(crate) fn library_host(
         ))
         .child(panel(
             "library-panel-width",
-            shell.sidebar_open,
+            shell.chrome.sidebar_open,
             theme::LIBRARY_WIDTH,
             deselecting(
                 div()
@@ -499,7 +499,7 @@ pub(crate) fn library_host(
         ))
         .child(edge_handle(
             "library-toggle",
-            shell.sidebar_open,
+            shell.chrome.sidebar_open,
             Side::Left,
             this,
             // The handle protrudes over the canvas inside the cached panel;
@@ -533,9 +533,9 @@ fn deselecting(content: AnyElement, this: &Entity<StudioShell>) -> AnyElement {
                 return;
             }
             this.update(cx, |shell, cx| {
-                if shell.selected_node.is_some()
-                    || !shell.selected_nodes.is_empty()
-                    || shell.selected_route.is_some()
+                if shell.selection.node.is_some()
+                    || !shell.selection.nodes.is_empty()
+                    || shell.selection.route.is_some()
                 {
                     shell.clear_canvas_selection();
                     cx.notify();
@@ -626,11 +626,11 @@ fn edge_handle(
         .on_click(move |_, _, cx| {
             this.update(cx, |shell, cx| {
                 match side {
-                    Side::Left => shell.sidebar_open = !shell.sidebar_open,
+                    Side::Left => shell.chrome.sidebar_open = !shell.chrome.sidebar_open,
                     Side::Right => {
-                        shell.inspector_open = !shell.inspector_open;
-                        if shell.compact {
-                            shell.sidebar_open = false;
+                        shell.chrome.inspector_open = !shell.chrome.inspector_open;
+                        if shell.chrome.compact {
+                            shell.chrome.sidebar_open = false;
                         }
                     }
                 }
@@ -645,7 +645,7 @@ fn edge_handle(
 fn page_inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     match shell.presentation.page {
         Page::Graph => {
-            if shell.selected_node.is_none() && shell.selected_route.is_some() {
+            if shell.selection.node.is_none() && shell.selection.route.is_some() {
                 matrix::inspector(shell, cx)
             } else {
                 graph::inspector(shell, cx)

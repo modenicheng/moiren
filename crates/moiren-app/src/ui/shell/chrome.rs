@@ -16,7 +16,11 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
     // tighter limit when the window goes compact.
     let project_label = truncate_name(
         &shell.project_io.name,
-        if shell.compact { 16 } else { STATUS_NAME_LIMIT },
+        if shell.chrome.compact {
+            16
+        } else {
+            STATUS_NAME_LIMIT
+        },
     );
     let running = matches!(
         state.snapshot.phase,
@@ -73,7 +77,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         .gap(px(8.))
                         .window_control_area(WindowControlArea::Drag)
                         .child(gpui_kit::img("brand/mark.svg").size(px(24.)))
-                        .when(!shell.compact, |v| v.child(heading("Moiren"))),
+                        .when(!shell.chrome.compact, |v| v.child(heading("Moiren"))),
                 )
                 .child(
                     ActionButton::new("project-menu", project_label)
@@ -83,7 +87,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                             let this = this.clone();
                             move |_, _, cx| {
                                 this.update(cx, |shell, cx| {
-                                    shell.project_menu = !shell.project_menu;
+                                    shell.chrome.project_menu = !shell.chrome.project_menu;
                                     cx.notify();
                                 })
                             }
@@ -201,7 +205,7 @@ impl CachedPanel for ToolbarPanel {
         Self::Key {
             snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
             page: shell.presentation.page,
-            compact: shell.compact,
+            compact: shell.chrome.compact,
             project_name: shell.project_io.name.clone(),
             pending_request: state.pending_request,
             settings_open: shell.settings_open,
@@ -269,6 +273,21 @@ impl CachedPanel for StatusbarPanel {
     }
 }
 
+/// The window chrome's shell-owned state (design 20 §4): the toolbar and
+/// status panel hosts, the project-menu toggle, the side-panel visibility
+/// pair, the compact-width flag, the density preference, and the fault
+/// popover anchor.
+pub(crate) struct ShellChrome {
+    pub(crate) project_menu: bool,
+    pub(crate) sidebar_open: bool,
+    pub(crate) inspector_open: bool,
+    pub(crate) compact: bool,
+    pub(crate) density: Density,
+    pub(crate) toolbar: Entity<ToolbarChrome>,
+    pub(crate) status: Entity<StatusbarChrome>,
+    pub(crate) fault_popover: Option<fault_popover::FaultPopover>,
+}
+
 pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
     // The chrome keeps its keyed `PanelHost` render dedup (`ToolbarChrome`
     // / `StatusbarChrome` above) but is deliberately NOT `.cached()`-spliced:
@@ -283,7 +302,7 @@ pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElem
         .w_full()
         .h(px(theme::TOOLBAR_HEIGHT))
         .flex_none()
-        .child(shell.toolbar_chrome.clone())
+        .child(shell.chrome.toolbar.clone())
         .into_any_element()
 }
 
@@ -294,7 +313,7 @@ pub(super) fn status_for_page(shell: &StudioShell, _window: &Window) -> AnyEleme
         .w_full()
         .h(px(28.))
         .flex_none()
-        .child(shell.status_chrome.clone())
+        .child(shell.chrome.status.clone())
         .into_any_element()
 }
 
@@ -510,7 +529,7 @@ fn fault_summary(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEle
         .on_click(move |_, window, cx| {
             this.update(cx, |shell, cx| {
                 let position = window.mouse_position();
-                shell.fault_popover = Some(super::fault_popover::FaultPopover {
+                shell.chrome.fault_popover = Some(super::fault_popover::FaultPopover {
                     node: None,
                     anchor: Bounds {
                         origin: point(position.x, position.y - px(14.)),

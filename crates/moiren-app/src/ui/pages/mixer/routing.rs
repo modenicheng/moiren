@@ -63,9 +63,9 @@ fn select_route(
                 .iter()
                 .any(|edge| (edge.src_port(), edge.dst_port()) == ports)
             {
-                shell.selected_node = None;
-                shell.selected_route = Some(ports);
-                shell.inspector_open = true;
+                shell.selection.node = None;
+                shell.selection.route = Some(ports);
+                shell.chrome.inspector_open = true;
                 cx.notify();
             }
         })
@@ -82,7 +82,7 @@ pub(super) fn inputs(
     let mut view = section(
         format!("inputs-{:?}", entry.id),
         "INPUTS",
-        if shell.compact { 64. } else { 88. },
+        if shell.chrome.compact { 64. } else { 88. },
         shell.mixer.presentation.inputs_collapsed,
         cx,
     );
@@ -222,7 +222,7 @@ pub(super) fn sends(
     let mut view = section(
         format!("sends-{id:?}"),
         "SENDS",
-        if shell.compact { 80. } else { 116. },
+        if shell.chrome.compact { 80. } else { 116. },
         shell.mixer.presentation.sends_collapsed,
         cx,
     );

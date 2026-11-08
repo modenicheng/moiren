@@ -57,7 +57,7 @@ impl StudioShell {
             .sliders
             .retain(|(id, _), _| snapshot.node(*id).is_some());
         let Some(node) = snapshot.graph.nodes().iter().find(|node| {
-            node.kind() == NodeKind::Compressor && self.selected_node == Some(node.id())
+            node.kind() == NodeKind::Compressor && self.selection.node == Some(node.id())
         }) else {
             return;
         };

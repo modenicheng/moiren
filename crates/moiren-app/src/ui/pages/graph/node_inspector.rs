@@ -51,7 +51,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .graph
         .nodes()
         .iter()
-        .find(|node| shell.selected_node == Some(node.id()));
+        .find(|node| shell.selection.node == Some(node.id()));
     let mut view =
         panel("graph-inspector", &shell.inspector.scroll).child(heading(t!("Inspector")));
     let Some(node) = selected else {
@@ -1276,17 +1276,17 @@ impl StudioShell {
     /// keep the primary selection inside the canvas multi-selection.
     pub(crate) fn sync_node_name(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.inspector.node_name_editing
-            && self.selected_node != Some(id)
+            && self.selection.node != Some(id)
         {
             self.inspector.node_name_editing = None;
         }
         let graph = self.state.read(cx).snapshot.graph.clone();
-        self.selected_nodes.retain(|id| graph.node(*id).is_some());
-        if let Some(id) = self.selected_node {
+        self.selection.nodes.retain(|id| graph.node(*id).is_some());
+        if let Some(id) = self.selection.node {
             if graph.node(id).is_some() {
-                self.selected_nodes.insert(id);
+                self.selection.nodes.insert(id);
             } else {
-                self.selected_node = None;
+                self.selection.node = None;
             }
         }
     }

@@ -107,8 +107,8 @@ fn graph_port_drag_connects_real_topology_in_both_directions(cx: &mut gpui_kit::
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         shell.camera = Camera {
             pan_x: 50.,
             pan_y: 90.,
@@ -211,8 +211,8 @@ fn graph_port_drag_onto_occupied_input_displaces_the_old_edge(cx: &mut gpui_kit:
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     settle_panels(cx);
@@ -278,8 +278,8 @@ fn graph_connection_drop_on_node_body_connects(cx: &mut gpui_kit::TestAppContext
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     settle_panels(cx);
@@ -330,8 +330,8 @@ fn graph_connection_cycle_drop_on_node_body_is_rejected(cx: &mut gpui_kit::TestA
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     settle_panels(cx);
@@ -368,8 +368,8 @@ fn graph_knob_wheel_drag_and_double_click_adjust_gain_without_touching_the_camer
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         shell.camera = Camera {
             pan_x: 100.,
             pan_y: 80.,
@@ -491,7 +491,7 @@ fn graph_backspace_removes_selected_node_and_its_edges(cx: &mut gpui_kit::TestAp
         assert!(graph.edges().iter().all(|edge| {
             format!("{:?}", edge.src()) != node && format!("{:?}", edge.dst()) != node
         }));
-        assert!(shell.selected_node.is_none());
+        assert!(shell.selection.node.is_none());
     });
     finish_service(runtime);
 }
@@ -509,7 +509,7 @@ fn graph_delete_keeps_selection_when_the_service_cannot_queue_it(
     finish_service(runtime);
     cx.simulate_keystrokes("backspace");
     view.update(cx, |shell, cx| {
-        assert_eq!(shell.selected_node, Some(selected));
+        assert_eq!(shell.selection.node, Some(selected));
         assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), 4);
         assert!(shell.state.read(cx).dispatch_error.is_some());
     });
@@ -540,7 +540,7 @@ fn graph_backspace_in_node_name_edits_text_without_removing_node(
     cx.simulate_keystrokes("ctrl-a backspace");
     view.update(cx, |shell, cx| {
         assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), 4);
-        assert!(shell.selected_node.is_some());
+        assert!(shell.selection.node.is_some());
         assert_eq!(shell.inspector.node_name.read(cx).value().as_str(), "");
     });
     finish_service(runtime);
@@ -599,7 +599,7 @@ fn graph_delete_disconnects_selected_wire_without_removing_nodes(
     render(cx);
     view.update(cx, |shell, _| {
         assert!(
-            shell.selected_route.is_some(),
+            shell.selection.route.is_some(),
             "wire must be selected before deletion"
         );
     });
@@ -607,7 +607,7 @@ fn graph_delete_disconnects_selected_wire_without_removing_nodes(
     wait_for_graph(&view, cx, |graph| graph.graph.edges().len() == 2);
     view.update(cx, |shell, cx| {
         assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), 4);
-        assert!(shell.selected_route.is_none());
+        assert!(shell.selection.route.is_none());
     });
     finish_service(runtime);
 }
@@ -646,8 +646,8 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
         })
     });
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(id);
-        shell.inspector_open = true;
+        shell.selection.node = Some(id);
+        shell.chrome.inspector_open = true;
         cx.notify();
     });
     render(cx);
@@ -696,7 +696,7 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
             .find(|node| node.kind() == NodeKind::Gain)
             .unwrap()
             .id();
-        shell.selected_node = Some(gain);
+        shell.selection.node = Some(gain);
         cx.notify();
     });
     render(cx);
@@ -714,8 +714,8 @@ fn inspector_hosts_the_headline_visualization_for_eq_and_dynamics(
     // The EQ inspector hosts the draggable curve editor and the Q readout.
     let eq = add_node(&view, cx, NodeKind::Eq);
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(eq);
-        shell.inspector_open = true;
+        shell.selection.node = Some(eq);
+        shell.chrome.inspector_open = true;
         cx.notify();
     });
     render(cx);
@@ -726,7 +726,7 @@ fn inspector_hosts_the_headline_visualization_for_eq_and_dynamics(
     // The dynamics family hosts the static transfer curve instead.
     let compressor = add_node(&view, cx, NodeKind::Compressor);
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(compressor);
+        shell.selection.node = Some(compressor);
         cx.notify();
     });
     render(cx);
@@ -737,7 +737,7 @@ fn inspector_hosts_the_headline_visualization_for_eq_and_dynamics(
     // A node kind without a headline keeps the inspector unchanged.
     let gain = add_node(&view, cx, NodeKind::Gain);
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(gain);
+        shell.selection.node = Some(gain);
         cx.notify();
     });
     render(cx);
@@ -879,7 +879,7 @@ fn graph_inspector_reports_observation_without_candidate_boundary_copy(
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
         let id = shell.state.read(cx).snapshot.graph.graph.nodes()[1].id();
-        shell.selected_node = Some(id);
+        shell.selection.node = Some(id);
         cx.notify();
     });
     render(cx);
@@ -909,7 +909,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
     let (view, cx) = shell_with_state(cx, state);
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(node);
+        shell.selection.node = Some(node);
         shell.node_meter_points.borrow_mut().clear();
         // Frame-driven pumping may already have created the subscription
         // for the canvas-visible node, so the change flag is not stable
@@ -924,7 +924,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
     });
     wait_until(Duration::from_secs(2), || topic.business_subscribers() != 0);
     view.update(cx, |shell, cx| {
-        shell.selected_node = None;
+        shell.selection.node = None;
         shell.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
         assert!(shell.state.read(cx).node_meters.levels(node).is_none());
@@ -991,8 +991,8 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     // On the Graph page the inspector renders the selected node's meter:
     // the selection demands its level topic.
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(node);
-        shell.inspector_open = true;
+        shell.selection.node = Some(node);
+        shell.chrome.inspector_open = true;
         shell.presentation.page = pages::Page::Graph;
         shell.node_meter_points.borrow_mut().clear();
         shell.update_node_meters(true, cx);
@@ -1069,11 +1069,11 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
         })
     });
     view.update(cx, |shell, cx| {
-        let key = shell.selected_node.expect("created node is selected");
+        let key = shell.selection.node.expect("created node is selected");
         let position = shell.node_positions[&key];
         assert_close(position.0, expected.0);
         assert_close(position.1, expected.1);
-        assert!(shell.selected_route.is_none());
+        assert!(shell.selection.route.is_none());
         assert_eq!(shell.state.read(cx).snapshot.graph.active_revision, None);
     });
     cx.update(|window, _| {
@@ -1128,9 +1128,9 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
     let (view, cx) = crate::ui::shell::test_harness::shell_with_state(cx, state);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
-        shell.compact = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
+        shell.chrome.compact = false;
         cx.notify();
     });
     render(cx);
@@ -1252,9 +1252,9 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
-        shell.compact = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
+        shell.chrome.compact = false;
         cx.notify();
     });
     render(cx);
@@ -1305,7 +1305,7 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
     });
     view.update(cx, |shell, _| {
         assert!(
-            shell.selected_nodes.contains(&node),
+            shell.selection.nodes.contains(&node),
             "the band crossing the node must select it"
         );
     });
@@ -1329,7 +1329,7 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
     }
     view.read_with(cx, |shell, _| {
         assert!(
-            shell.selected_nodes.is_empty(),
+            shell.selection.nodes.is_empty(),
             "the shrunken band must deselect"
         );
         assert!(
@@ -1394,9 +1394,9 @@ fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit
     let (view, cx) = crate::ui::shell::test_harness::shell_with_state(cx, state);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
-        shell.compact = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
+        shell.chrome.compact = false;
         cx.notify();
     });
     render(cx);
@@ -1485,9 +1485,9 @@ fn window_deactivation_cancels_canvas_gestures(cx: &mut gpui_kit::TestAppContext
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
-        shell.compact = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
+        shell.chrome.compact = false;
         cx.notify();
     });
     render(cx);
@@ -1520,9 +1520,9 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
-        shell.compact = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
+        shell.chrome.compact = false;
         shell.camera = Camera {
             pan_x: 120.,
             pan_y: 90.,
@@ -1549,7 +1549,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
         frame.wires[0].points[0].0 + 89.,
     );
     view.update(cx, |shell, _| {
-        assert_eq!(shell.selected_node, Some(id));
+        assert_eq!(shell.selection.node, Some(id));
         assert!(shell.graph_gestures.node_drag.is_none());
         assert_eq!(shell.camera, frame.camera);
     });
@@ -1587,7 +1587,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     }
     let start = node_position(&fitted, 0);
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    view.update(cx, |shell, _| assert_eq!(shell.selected_node, Some(id)));
+    view.update(cx, |shell, _| assert_eq!(shell.selection.node, Some(id)));
     cx.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     finish_service(runtime);
 }
@@ -1618,8 +1618,8 @@ fn graph_rubber_band_selects_then_delete_removes_the_whole_selection(
             zoom: 1.,
             adjusted: true,
         };
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     settle_panels(cx);
@@ -1634,15 +1634,15 @@ fn graph_rubber_band_selects_then_delete_removes_the_whole_selection(
     cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| state.poll());
-        assert_eq!(shell.selected_nodes.len(), 2, "band covers two nodes");
-        assert!(shell.selected_node.is_none(), "no primary from a band");
+        assert_eq!(shell.selection.nodes.len(), 2, "band covers two nodes");
+        assert!(shell.selection.node.is_none(), "no primary from a band");
     });
     render(cx);
     cx.simulate_keystrokes("delete");
     wait_for_graph(&view, cx, |graph| graph.nodes.len() == 2);
     view.update(cx, |shell, _| {
-        assert!(shell.selected_nodes.is_empty());
-        assert!(shell.selected_node.is_none());
+        assert!(shell.selection.nodes.is_empty());
+        assert!(shell.selection.node.is_none());
     });
     finish_service(runtime);
 }
@@ -1654,8 +1654,8 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         let nodes = shell
             .state
             .read(cx)
@@ -1686,10 +1686,10 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
         let state = shell.state.read(cx);
         let edge = &state.snapshot.graph.graph.edges()[0];
         assert_eq!(
-            shell.selected_route,
+            shell.selection.route,
             Some((edge.src_port(), edge.dst_port()))
         );
-        assert!(shell.selected_node.is_none());
+        assert!(shell.selection.node.is_none());
         assert_eq!(state.snapshot.graph.graph.edges().len(), 3);
     });
     cx.update(|window, cx| {
@@ -1706,7 +1706,7 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
     wait_for_graph(&view, cx, |graph| graph.graph.edges()[0].params().gain > 1.);
     view.update(cx, |shell, cx| {
         assert_eq!(shell.state.read(cx).snapshot.graph.graph.edges().len(), 3);
-        assert!(shell.selected_route.is_some());
+        assert!(shell.selection.route.is_some());
     });
     finish_service(runtime);
 }
@@ -1725,11 +1725,11 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                     let node = graph.nodes()[1].id();
                     let edge = &graph.edges()[0];
                     let route = (edge.src_port(), edge.dst_port());
-                    shell.selected_node = (!wire_selected).then_some(node);
-                    shell.selected_nodes = shell.selected_node.into_iter().collect();
-                    shell.selected_route = wire_selected.then_some(route);
-                    shell.inspector_open = inspector_open;
-                    shell.sidebar_open = false;
+                    shell.selection.node = (!wire_selected).then_some(node);
+                    shell.selection.nodes = shell.selection.node.into_iter().collect();
+                    shell.selection.route = wire_selected.then_some(route);
+                    shell.chrome.inspector_open = inspector_open;
+                    shell.chrome.sidebar_open = false;
                     shell.graph_gestures.hand_tool = mode >= 2;
                     shell.camera = Camera {
                         pan_x: 60.,
@@ -1738,7 +1738,7 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                         adjusted: true,
                     };
                     cx.notify();
-                    (shell.selected_node, shell.selected_route)
+                    (shell.selection.node, shell.selection.route)
                 });
                 let frame = canvas_frame(&view, cx);
                 let start = match mode {
@@ -1755,15 +1755,15 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                 };
                 cx.simulate_mouse_down(start, button, Modifiers::default());
                 view.update(cx, |shell, _| {
-                    assert_eq!((shell.selected_node, shell.selected_route), selection);
-                    assert_eq!(shell.inspector_open, inspector_open);
+                    assert_eq!((shell.selection.node, shell.selection.route), selection);
+                    assert_eq!(shell.chrome.inspector_open, inspector_open);
                 });
                 let end = start + point(px(28.), px(18.));
                 cx.simulate_mouse_move(end, Some(button), Modifiers::default());
                 cx.simulate_mouse_up(end, button, Modifiers::default());
                 view.update(cx, |shell, _| {
-                    assert_eq!((shell.selected_node, shell.selected_route), selection);
-                    assert_eq!(shell.inspector_open, inspector_open);
+                    assert_eq!((shell.selection.node, shell.selection.route), selection);
+                    assert_eq!(shell.chrome.inspector_open, inspector_open);
                     assert_close(shell.camera.pan_x, 88.);
                     assert_close(shell.camera.pan_y, 98.);
                     assert!(shell.graph_gestures.pan_grab.is_none());
@@ -1878,7 +1878,10 @@ fn collapsed_library_rail_keeps_spawning_and_the_handle_stays_visible(
         window.click("library-toggle", cx);
     });
     view.update(cx, |shell, _| {
-        assert!(!shell.sidebar_open, "handle collapses the detail sleeve");
+        assert!(
+            !shell.chrome.sidebar_open,
+            "handle collapses the detail sleeve"
+        );
     });
     settle_panels(cx);
     cx.update(|window, cx| {
@@ -1898,10 +1901,10 @@ fn collapsed_library_rail_keeps_spawning_and_the_handle_stays_visible(
     wait_for_graph(&view, cx, |graph| graph.nodes.len() == baseline + 1);
     view.update(cx, |shell, _| {
         assert!(
-            shell.selected_node.is_some(),
+            shell.selection.node.is_some(),
             "the spawned node is selected"
         );
-        assert!(shell.inspector_open, "spawning opens the inspector");
+        assert!(shell.chrome.inspector_open, "spawning opens the inspector");
     });
     finish_service(runtime);
 }
@@ -2010,8 +2013,8 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
 
     // A real state change still invalidates the cached page.
     view.update(cx, |shell, cx| {
-        shell.selected_nodes.insert(node);
-        shell.selected_node = Some(node);
+        shell.selection.nodes.insert(node);
+        shell.selection.node = Some(node);
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -2405,8 +2408,8 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
     let (view, cx) = shell_with_state(cx, state);
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         // Park the second node far from the default layout so a 1:1 camera
         // centered on the first node leaves it thousands of pixels outside.
         shell.node_positions.insert(far, (40_000., 40_000.));
@@ -2497,8 +2500,8 @@ fn graph_hud_overlays_register_their_rects_for_the_meter_frame(cx: &mut gpui_kit
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     settle_panels(cx);
@@ -2554,8 +2557,8 @@ fn graph_hovering_a_faulted_card_tracks_it_for_the_tooltip(cx: &mut gpui_kit::Te
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         shell.camera = Camera {
             pan_x: 50.,
             pan_y: 90.,
@@ -2621,8 +2624,8 @@ fn graph_dragging_an_occupied_input_picks_the_wire_up_to_move_drop_or_restore_it
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     settle_panels(cx);
@@ -2774,8 +2777,8 @@ fn library_press_drops_the_canvas_selection_and_a_spawn_selects_only_itself(
             let graph = &shell.state.read(cx).snapshot.graph;
             (graph.graph.nodes()[1].id(), graph.nodes.len())
         };
-        shell.selected_nodes.insert(id);
-        shell.selected_node = Some(id);
+        shell.selection.nodes.insert(id);
+        shell.selection.node = Some(id);
         cx.notify();
         (id, baseline)
     });
@@ -2785,19 +2788,19 @@ fn library_press_drops_the_canvas_selection_and_a_spawn_selects_only_itself(
     cx.update(|window, cx| window.click("add-Gain", cx));
     view.update(cx, |shell, _| {
         assert!(
-            shell.selected_nodes.is_empty(),
+            shell.selection.nodes.is_empty(),
             "{:?}",
-            shell.selected_nodes
+            shell.selection.nodes
         );
-        assert!(shell.selected_node.is_none());
+        assert!(shell.selection.node.is_none());
     });
     wait_for_graph(&view, cx, |graph| graph.nodes.len() == baseline + 1);
     // The spawn finished on that render: the new node is the whole selection.
     view.update(cx, |shell, _| {
-        let spawned = shell.selected_node.expect("spawned node selected");
+        let spawned = shell.selection.node.expect("spawned node selected");
         assert_ne!(spawned, previous);
         assert_eq!(
-            shell.selected_nodes.iter().copied().collect::<Vec<_>>(),
+            shell.selection.nodes.iter().copied().collect::<Vec<_>>(),
             vec![spawned]
         );
     });
@@ -2808,8 +2811,8 @@ fn library_press_drops_the_canvas_selection_and_a_spawn_selects_only_itself(
     cx.simulate_mouse_down(title, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_up(title, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| {
-        assert!(shell.selected_node.is_some());
-        assert_eq!(shell.selected_nodes.len(), 1);
+        assert!(shell.selection.node.is_some());
+        assert_eq!(shell.selection.nodes.len(), 1);
     });
     finish_service(runtime);
 }
@@ -2819,8 +2822,8 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
-        shell.inspector_open = false;
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
         shell.camera = Camera {
             pan_x: 50.,
             pan_y: 90.,
@@ -2860,8 +2863,13 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     press(cx, center);
     view.update(cx, |shell, _| {
         assert_eq!(shell.binding_menu.map(|menu| menu.node), Some(sink));
+<<<<<<< HEAD
         assert_eq!(shell.selected_node, Some(sink));
         assert!(shell.graph_gestures.node_drag.is_none());
+=======
+        assert_eq!(shell.selection.node, Some(sink));
+        assert!(shell.node_drag.is_none());
+>>>>>>> b54680bd (refactor(ui): group the chrome, selection, and press state)
     });
     render(cx);
     cx.update(|window, _| assert!(window.find("binding-menu").visible()));
@@ -2957,8 +2965,8 @@ fn context_menu_actions_open_the_inspector_rename_and_tint(cx: &mut gpui_kit::Te
     cx.update(|window, cx| window.click("context-menu-inspector", cx));
     render(cx);
     view.update(cx, |shell, _| {
-        assert!(shell.inspector_open);
-        assert_eq!(shell.selected_node, Some(node));
+        assert!(shell.chrome.inspector_open);
+        assert_eq!(shell.selection.node, Some(node));
         assert!(shell.context_menu.is_none());
     });
     // 重命名 enters the inline editor seeded with the label.

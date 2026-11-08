@@ -30,9 +30,9 @@ impl StudioShell {
         // `visible` alone proves a Graph/Mixer frame gate or a graph
         // gesture, not that the current page's inspector paints the node.
         let inspector_selected = if visible
-            && self.inspector_open
+            && self.chrome.inspector_open
             && matches!(self.presentation.page, Page::Graph | Page::Mixer)
-            && let Some(selected) = self.selected_node
+            && let Some(selected) = self.selection.node
             && self
                 .state
                 .read(cx)
@@ -141,7 +141,7 @@ fn strip_body(
         .flex()
         .flex_col()
         .gap(px(2.))
-        .h(px(if shell.compact { 44. } else { 52. }))
+        .h(px(if shell.chrome.compact { 44. } else { 52. }))
         .flex_none()
         .px(px(10.))
         .justify_center()
@@ -184,7 +184,7 @@ fn strip_body(
             let this = cx.entity();
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
-                    shell.selected_node = Some(id);
+                    shell.selection.node = Some(id);
                     // Single click selects the strip; a double click also
                     // opens the inspector.
                     if shell.element_double_clicked(StudioShell::element_key("node", id)) {
@@ -297,7 +297,7 @@ fn strip_fault_badge(id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement 
                 // same hang point the graph badge uses.
                 let position = window.mouse_position();
                 let half = px(7.);
-                shell.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
+                shell.chrome.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
                     node: Some(id),
                     anchor: Bounds {
                         origin: point(position.x - half, position.y - half),

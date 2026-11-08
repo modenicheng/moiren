@@ -325,7 +325,7 @@ fn devices_panel_stays_cached_across_key_neutral_shell_notifications(
     let before = devices_rebuilds(&view, cx);
 
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
+        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
         cx.notify();
     });
     cached_frame(cx);
