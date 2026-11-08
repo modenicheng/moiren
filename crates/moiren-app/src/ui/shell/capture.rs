@@ -158,7 +158,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 |window, cx| cx.new(|cx| {
                     let mut shell = StudioShell::new(state, window, cx, None);
                     // Capture runs must not touch the developer's real files.
-                    shell.autosave_path = None;
+                    shell.autosave.path = None;
                     shell
                 }),
             )

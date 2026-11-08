@@ -91,7 +91,7 @@ fn inspector_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut 
     let before = inspector_rebuilds(&view, cx);
 
     view.update(cx, |shell, cx| {
-        shell.project_name = "Probe project".into();
+        shell.project_io.name = "Probe project".into();
         cx.notify();
     });
     cached_frame(cx);

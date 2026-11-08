@@ -321,8 +321,8 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
-            shell.preferences_path = None;
-            shell.preferences.export_authorizations.clear();
+            shell.preferences.path = None;
+            shell.preferences.values.export_authorizations.clear();
             shell.presentation.page = pages::Page::Devices;
             shell.devices.device_tab = devices::DeviceTab::Exports;
             cx.notify();
@@ -421,8 +421,8 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
-            shell.preferences_path = None;
-            shell.preferences.export_authorizations.clear();
+            shell.preferences.path = None;
+            shell.preferences.values.export_authorizations.clear();
             shell.presentation.page = pages::Page::Devices;
             shell.devices.device_tab = devices::DeviceTab::Exports;
             shell.inspector_open = false;
@@ -563,8 +563,8 @@ mod headless {
                 .any(|status| status.intent.endpoint_id == id && status.allow_default)
         });
         view.update(cx, |shell, _| {
-            assert_eq!(shell.preferences.export_authorizations.len(), 1);
-            assert!(shell.preferences.export_authorizations[0].allow_default);
+            assert_eq!(shell.preferences.values.export_authorizations.len(), 1);
+            assert!(shell.preferences.values.export_authorizations[0].allow_default);
         });
         cx.update(|window, cx| window.click(key("default"), cx));
         wait_for(&view, cx, |snapshot| {
@@ -614,7 +614,7 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
-            shell.preferences_path = None;
+            shell.preferences.path = None;
             shell.presentation.page = pages::Page::Devices;
             shell.devices.device_tab = devices::DeviceTab::Exports;
             shell.inspector_open = false;

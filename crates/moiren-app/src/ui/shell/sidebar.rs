@@ -67,7 +67,7 @@ impl CachedPanel for InspectorPanel {
             editing_node_pan: shell.mixer.editing_node_pan,
             editing_send: shell.mixer.editing_send,
             compact: shell.compact,
-            preferences: shell.preferences.clone(),
+            preferences: shell.preferences.values.clone(),
             inspector_scroll: shell.inspector_scroll.offset().y,
             override_scroll: shell.devices.device_override_scroll.offset().y,
         }
@@ -189,7 +189,7 @@ fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
         selected_node: shell.selected_node,
         pending_spawn: shell.pending_node_spawn.is_some(),
         compact: shell.compact,
-        preferences: shell.preferences.clone(),
+        preferences: shell.preferences.values.clone(),
         scroll: shell.library_scroll.offset().y,
         rail_scroll: shell.library_rail_scroll.offset().y,
     }

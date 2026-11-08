@@ -46,7 +46,7 @@ impl StudioShell {
         } else {
             None
         };
-        let preferences = self.preferences.meters;
+        let preferences = self.preferences.values.meters;
         // Only the graph card paints a spectrum body: a Mixer strip or an
         // inspector selection must not keep an analyzer's FFT demanded.
         let spectra_visible = visible && self.presentation.page == Page::Graph;
