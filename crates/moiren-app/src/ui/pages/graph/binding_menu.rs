@@ -312,6 +312,7 @@ pub(crate) fn overlay(
                                 .gap(px(2.))
                                 .p(px(MENU_PAD))
                                 .track_scroll(&shell.graph_view.binding_menu_scroll)
+                                .restrict_scroll_to_axis()
                                 .overflow_y_scroll()
                                 .children(rows),
                         )

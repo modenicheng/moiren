@@ -223,6 +223,7 @@ impl CachedPanel for TrayPanel {
             .h_full()
             .flex()
             .track_scroll(&owner.strips_scroll)
+            .restrict_scroll_to_axis()
             .overflow_x_scroll()
             .on_scroll_wheel(notify_owner(cx.entity()));
         for id in ids {

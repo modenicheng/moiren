@@ -180,6 +180,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         .w_full()
                         .h_full()
                         .track_scroll(&shell.devices.device_override_scroll)
+                        .restrict_scroll_to_axis()
                         .overflow_y_scroll()
                         .on_scroll_wheel(notify_owner(cx.entity()))
                         .p(px(16.))
