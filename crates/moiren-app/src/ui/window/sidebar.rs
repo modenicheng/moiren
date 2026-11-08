@@ -43,6 +43,9 @@ pub(in crate::ui::window) struct InspectorKey {
     /// inspector, scrolling apart from the panel itself.
     inspector_scroll: Pixels,
     override_scroll: Pixels,
+    device_draft: Option<settings::Draft>,
+    device_busy: bool,
+    device_inputs: Vec<(Entity<component::input::InputState>, SharedString)>,
 }
 
 pub(in crate::ui::window) type InspectorPanelHost = PanelHost<InspectorPanel>;
@@ -53,6 +56,12 @@ impl CachedPanel for InspectorPanel {
 
     fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         let state = shell.state.read(cx);
+        let device_editor = shell.presentation.page == Page::Devices
+            && shell.selected_device.is_some()
+            && matches!(
+                shell.device_tab,
+                devices::DeviceTab::Inputs | devices::DeviceTab::Outputs
+            );
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
             selected_node: shell.selected_node,
@@ -70,6 +79,17 @@ impl CachedPanel for InspectorPanel {
             preferences: shell.preferences.clone(),
             inspector_scroll: shell.inspector_scroll.offset().y,
             override_scroll: shell.device_override_scroll.offset().y,
+            device_draft: device_editor.then(|| shell.settings.device.clone()),
+            device_busy: device_editor && (shell.settings.busy() || state.pending_request),
+            device_inputs: if device_editor {
+                shell
+                    .settings
+                    .device_period_inputs()
+                    .map(|input| (input.clone(), input.read(cx).value()))
+                    .collect()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -123,7 +143,9 @@ impl CachedPanel for InspectorPanel {
                     .values()
                     .map(|slot| slot.state.clone()),
             );
-            (shell.text_input_entities(), sliders)
+            let mut inputs = shell.text_input_entities();
+            inputs.extend(shell.settings.device_period_inputs().cloned());
+            (inputs, sliders)
         });
         let mut subscriptions: Vec<Subscription> = inputs
             .into_iter()

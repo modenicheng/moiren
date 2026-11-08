@@ -31,6 +31,15 @@ fn parse(text: &str) -> Result<Option<u32>, String> {
 }
 
 impl SettingsEditor {
+    pub(in crate::ui::window) fn device_period_inputs(
+        &self,
+    ) -> impl Iterator<Item = &Entity<component::input::InputState>> {
+        self.period_inputs
+            .iter()
+            .filter(|(key, _)| key.0 == Editor::Device)
+            .map(|(_, entry)| &entry.input)
+    }
+
     pub(in crate::ui::window) fn period_owns_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
         self.period_inputs
             .values()
