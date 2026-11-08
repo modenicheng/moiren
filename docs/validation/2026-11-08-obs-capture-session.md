@@ -77,6 +77,15 @@ All four new suites are wired into the existing CI fmt job. CI surface-mapping
 self-tests pass58 checks; syntax, ASCII and whitespace checks pass. The original
 worktree's29draft/cache pins remain unchanged.
 
+An additional Ubuntu24.04/WSL run reproduces a test-only path comparison failure:
+the default session stores an absolute path while PosixPath treats the literal
+Windows canonical path as relative. Comparing its absolute form repairs the
+assertion without changing production target guards or the Windows install
+path. All121cases now run with120passing and one Windows-only reparse test
+skipped; the Windows suite passes121with no skips. The failing and passing Linux
+runs and a fresh33-test Windows setup suite are retained separately. No portable
+file test launches an audio device, OBS or a driver.
+
 The actual target's existing websocket-client1.7.0 source is read back without
 importing it or opening a socket; five source files total45831bytes. Its supplied
 socket, timeout, immediate shutdown and subprotocol API match the adapter.

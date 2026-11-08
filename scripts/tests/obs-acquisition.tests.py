@@ -151,7 +151,7 @@ class AcquisitionTests(unittest.TestCase):
 
     def test_default_session_keeps_canonical_target_guard(self):
         adapter = MODULE.ObsAcquisition(self.case, self.connect, self.close_window)
-        self.assertEqual(adapter.reuse.root, MODULE.REUSE.CANONICAL_ROOT)
+        self.assertEqual(adapter.reuse.root, MODULE.REUSE.CANONICAL_ROOT.absolute())
         self.assertIs(adapter.reuse.idle_check, MODULE.REUSE.windows_idle_check)
 
     def test_default_guard_refuses_host_before_any_process_or_config_operation(self):
