@@ -203,6 +203,17 @@ pub struct CanvasWorld {
     pub nodes: Vec<CanvasNode>,
     pub wires: Vec<CanvasWire>,
     pub graph_bounds: Bounds<f32>,
+    /// Snap alignment guides while a card drag is aligned, in world space:
+    /// the vertical/horizontal lines the canvas paints over the grid.
+    pub guides: Option<DragGuides>,
+}
+
+/// Snap guide lines for an in-flight card drag (item F): `x` is a vertical
+/// alignment line, `y` a horizontal one; either may be absent.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct DragGuides {
+    pub x: Option<f32>,
+    pub y: Option<f32>,
 }
 
 /// The card's informational line, shared by the canvas projection and the
@@ -637,6 +648,7 @@ impl CanvasWorld {
                 origin: graph_bounds.origin - point(8., 8.),
                 size: graph_bounds.size + size(16., 16.),
             },
+            guides: None,
         }
     }
 

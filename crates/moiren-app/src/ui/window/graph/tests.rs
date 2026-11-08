@@ -3031,3 +3031,100 @@ fn escape_closes_the_context_menu(cx: &mut gpui_kit::TestAppContext) {
     cx.update(|window, _| assert!(window.try_find("context-menu").is_none()));
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn dragging_a_card_snaps_to_a_neighbor_edge_and_the_horizontal_axis(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let first = add_node(&view, cx, NodeKind::Gain);
+    let second = add_node(&view, cx, NodeKind::Eq);
+    view.update(cx, |shell, cx| {
+        shell.node_positions.insert(first, (0., 0.));
+        shell.node_positions.insert(second, (400., 300.));
+        cx.notify();
+    });
+    render(cx);
+    // World-space geometry (frame.nodes are screen-projected; the snap
+    // math runs in world units).
+    let (grab, raw_dx, raw_dy, first_right, second_height) = view.update(cx, |shell, _cx| {
+        let frame = shell.graph_canvas_frame.read().unwrap().clone();
+        let zoom = frame.camera.zoom;
+        let world_card = |id: moiren_core::graph::NodeId| {
+            let node = frame
+                .world
+                .nodes
+                .iter()
+                .find(|node| node.node_id == Some(id))
+                .expect("projected card");
+            pages::graph_canvas::NodeLayout::new(node).card
+        };
+        let first_card = world_card(first);
+        let second_card = world_card(second);
+        let to_screen = |world: (f32, f32)| {
+            let canvas = frame.camera.world_to_canvas(world);
+            point(
+                px(canvas.0 + f32::from(frame.bounds.origin.x)),
+                px(canvas.1 + f32::from(frame.bounds.origin.y)),
+            )
+        };
+        let grab = to_screen((
+            second_card.origin.x + second_card.size.width / 2.,
+            second_card.origin.y + second_card.size.height / 2.,
+        ));
+        // The raw drop leaves second's left edge 4 screen px short of
+        // first's right edge and its middle exactly on the axis — both
+        // within the 6 screen px threshold, so snap closes both gaps.
+        let raw_dx =
+            (first_card.origin.x + first_card.size.width - 4. / zoom) - second_card.origin.x;
+        let raw_dy = -(second_card.origin.y + second_card.size.height / 2.);
+        (
+            grab,
+            raw_dx,
+            raw_dy,
+            first_card.origin.x + first_card.size.width,
+            second_card.size.height,
+        )
+    });
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+    // The press anchors the drag at the shell's recorded cursor, which may
+    // sit a hair off the frame-derived grab: read the real anchor back and
+    // drop exactly raw_dx/raw_dy (world) away from it.
+    let (anchor, zoom) = view.read_with(cx, |shell, _| {
+        (
+            shell
+                .node_drag
+                .map(|(_, x, y)| (x, y))
+                .expect("card drag armed"),
+            shell.camera.zoom,
+        )
+    });
+    let drop = point(px(anchor.0 + raw_dx * zoom), px(anchor.1 + raw_dy * zoom));
+    cx.simulate_mouse_move(drop, Some(MouseButton::Left), Modifiers::default());
+    render(cx);
+    view.update(cx, |shell, _| {
+        let guides = shell.drag_guides.expect("aligned drag paints guides");
+        assert!(
+            guides.x.is_some() && guides.y.is_some(),
+            "guides={guides:?}"
+        );
+    });
+    cx.simulate_mouse_up(drop, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, _| {
+        // Guides clear with the gesture; both axes snapped exactly.
+        assert!(shell.drag_guides.is_none());
+        let dx = shell.node_positions[&second].0 - shell.node_positions[&first].0;
+        let dy = shell.node_positions[&second].1;
+        assert!(
+            (dx - first_right).abs() < 0.5,
+            "left edge should align with first's right edge: dx={dx}"
+        );
+        assert!(
+            (dy + second_height / 2.).abs() < 0.5,
+            "middle should sit on the axis: dy={dy}"
+        );
+    });
+    finish_service(runtime);
+}

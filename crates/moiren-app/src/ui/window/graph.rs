@@ -148,6 +148,7 @@ impl StudioShell {
         let cancelled = self.drag_active() || self.background_click.is_some();
         self.connection_drag = None;
         self.node_drag = None;
+        self.drag_guides = None;
         self.pan_grab = None;
         self.background_click = None;
         self.selection_drag = None;
@@ -302,6 +303,9 @@ pub(super) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
     // cache being invalidated or the world being re-projected.
     let mut world =
         pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &shell.node_positions);
+    // The drag's snap guides ride the world so the canvas paint layer, a
+    // shell-free closure, can draw them above the grid.
+    world.guides = shell.drag_guides;
     // A wire end picked up off an input is already in flight: drop it from
     // the projection so the canvas paints the drag as a free head (no stale
     // line, an empty origin port, and no phantom Displacing/Cycles verdicts

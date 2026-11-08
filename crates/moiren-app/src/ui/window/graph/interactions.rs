@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::ui::pages::node_catalog::NodeTemplate;
-use pages::graph_canvas::CanvasWorld;
+use pages::graph_canvas::{CanvasFrame, CanvasWorld};
 use pages::graph_canvas_view::{CameraFitFn, SelectFn, WindowAppCallback, WindowAppFn, ZoomFn};
 use std::rc::Rc;
 
@@ -93,7 +93,7 @@ pub(super) fn background_move(
     let this = this.clone();
     Box::new(
         move |(position, pressed): (Point<Pixels>, Option<MouseButton>),
-              _window: &mut Window,
+              window: &mut Window,
               cx: &mut App| {
             this.update(cx, |shell, cx| {
                 let (x, y) = (f32::from(position.x), f32::from(position.y));
@@ -108,6 +108,7 @@ pub(super) fn background_move(
                     shell.pan_grab = None;
                     shell.node_drag = None;
                     shell.knob_drag = None;
+                    shell.drag_guides = None;
                     // Hover for the fault tooltip: tracked here, painted by
                     // the meter frame, so a change costs one frame and never
                     // a page rebuild. Anything on a card counts, port dots
@@ -220,7 +221,18 @@ pub(super) fn background_move(
                 }
                 if let Some((id, gx, gy)) = shell.node_drag {
                     shell.camera.adjusted = true;
-                    let delta = shell.camera.canvas_delta_to_world((x - gx, y - gy));
+                    let mut delta = shell.camera.canvas_delta_to_world((x - gx, y - gy));
+                    // Alignment snapping (item F): the dragged selection's
+                    // bounding box seeks the other cards' edges and the
+                    // horizontal axis within 6 screen px. Alt bypasses it.
+                    if window.modifiers().alt {
+                        shell.drag_guides = None;
+                    } else if let Some(frame) = shell.graph_canvas_frame.read() {
+                        let (snapped, guides) =
+                            snap_delta(&frame, &shell.selected_nodes, &shell.node_positions, delta);
+                        delta = snapped;
+                        shell.drag_guides = Some(guides);
+                    }
                     let selection: Vec<_> = shell.selected_nodes.iter().copied().collect();
                     for id in selection {
                         if let Some(pos) = shell.node_positions.get_mut(&id) {
@@ -361,6 +373,106 @@ fn resolve_node(world: &CanvasWorld, id: &str) -> Option<moiren_core::graph::Nod
         .iter()
         .find(|node| node.id == id)
         .and_then(|node| node.node_id)
+}
+
+/// The 6 screen-px snap threshold, in world units at the frame's zoom.
+const SNAP_THRESHOLD_SCREEN: f32 = 6.;
+
+/// Alignment snapping for the in-flight card drag (item F): the dragged
+/// selection's bounding box seeks the other cards' left/center/right and
+/// top/middle/bottom edges plus the horizontal axis, nearest candidate
+/// within the threshold wins per axis, and the aligned world coordinate
+/// comes back as the guide lines to paint.
+fn snap_delta(
+    frame: &CanvasFrame,
+    dragged: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+    delta: (f32, f32),
+) -> ((f32, f32), pages::graph_canvas::DragGuides) {
+    let threshold = SNAP_THRESHOLD_SCREEN / frame.camera.zoom;
+    // The dragged selection's candidate bounding box: current positions
+    // (this frame's accumulated drag) plus the raw delta.
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for id in dragged {
+        let Some(&(x, y)) = positions.get(id) else {
+            continue;
+        };
+        let Some(node) = frame
+            .world
+            .nodes
+            .iter()
+            .find(|node| node.node_id == Some(*id))
+        else {
+            continue;
+        };
+        let card = pages::graph_canvas::NodeLayout::new(node).card;
+        min_x = min_x.min(x + delta.0);
+        min_y = min_y.min(y + delta.1);
+        max_x = max_x.max(x + delta.0 + card.size.width);
+        max_y = max_y.max(y + delta.1 + card.size.height);
+    }
+    if min_x > max_x {
+        return (delta, pages::graph_canvas::DragGuides::default());
+    }
+    let candidate_x = [min_x, (min_x + max_x) / 2., max_x];
+    let candidate_y = [min_y, (min_y + max_y) / 2., max_y];
+    // (|offset|, offset, aligned world coordinate) per axis.
+    let mut best_x: Option<(f32, f32, f32)> = None;
+    let mut best_y: Option<(f32, f32, f32)> = None;
+    for node in &frame.world.nodes {
+        let Some(other) = node.node_id else {
+            continue;
+        };
+        if dragged.contains(&other) {
+            continue;
+        }
+        let card = pages::graph_canvas::NodeLayout::new(node).card;
+        for target in [
+            card.origin.x,
+            card.origin.x + card.size.width / 2.,
+            card.origin.x + card.size.width,
+        ] {
+            for &candidate in &candidate_x {
+                let offset = target - candidate;
+                if offset.abs() <= threshold
+                    && best_x.is_none_or(|(best, _, _)| offset.abs() < best)
+                {
+                    best_x = Some((offset.abs(), offset, target));
+                }
+            }
+        }
+        for target in [
+            card.origin.y,
+            card.origin.y + card.size.height / 2.,
+            card.origin.y + card.size.height,
+            // The horizontal axis is a target of its own.
+            0.,
+        ] {
+            for &candidate in &candidate_y {
+                let offset = target - candidate;
+                if offset.abs() <= threshold
+                    && best_y.is_none_or(|(best, _, _)| offset.abs() < best)
+                {
+                    best_y = Some((offset.abs(), offset, target));
+                }
+            }
+        }
+    }
+    let mut guides = pages::graph_canvas::DragGuides::default();
+    let mut delta = delta;
+    if let Some((_, offset, target)) = best_x {
+        delta.0 += offset;
+        // The guide paints on the edge the drag snapped to.
+        guides.x = Some(target);
+    }
+    if let Some((_, offset, target)) = best_y {
+        delta.1 += offset;
+        guides.y = Some(target);
+    }
+    (delta, guides)
 }
 
 pub(super) fn port_down(

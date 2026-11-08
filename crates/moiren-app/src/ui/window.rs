@@ -180,6 +180,9 @@ pub struct StudioShell {
     /// threshold the release opens the context menu, beyond it the stroke
     /// was a pan.
     right_press: Option<(f32, f32)>,
+    /// Snap alignment guides for the in-flight card drag; painted by the
+    /// canvas layer, cleared when the gesture ends.
+    drag_guides: Option<pages::graph_canvas::DragGuides>,
     /// Active card-knob value drag: node, control, press y, press value.
     knob_drag: Option<(
         moiren_core::graph::NodeId,
@@ -426,6 +429,7 @@ impl StudioShell {
             connection_drag: None,
             context_menu: None,
             right_press: None,
+            drag_guides: None,
             knob_drag: None,
             pending_node_spawn: None,
             node_search,
