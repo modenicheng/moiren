@@ -2863,13 +2863,8 @@ fn graph_binding_chip_opens_the_endpoint_menu_and_binds_from_it(cx: &mut gpui_ki
     press(cx, center);
     view.update(cx, |shell, _| {
         assert_eq!(shell.binding_menu.map(|menu| menu.node), Some(sink));
-<<<<<<< HEAD
-        assert_eq!(shell.selected_node, Some(sink));
-        assert!(shell.graph_gestures.node_drag.is_none());
-=======
         assert_eq!(shell.selection.node, Some(sink));
-        assert!(shell.node_drag.is_none());
->>>>>>> b54680bd (refactor(ui): group the chrome, selection, and press state)
+        assert!(shell.graph_gestures.node_drag.is_none());
     });
     render(cx);
     cx.update(|window, _| assert!(window.find("binding-menu").visible()));
