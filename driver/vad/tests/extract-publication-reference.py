@@ -35,6 +35,17 @@ for relative, functions in (
     patterns = tuple((name, r"(?:static\s+)?(?:NTSTATUS|void)\s+" + name +
         r"\s*\([^;{}]*\)\s*\{") for name in functions)
     parts.append(module.extract(source.read_text(encoding="utf-8"), source.as_posix(), patterns))
+parts.append("""
+// Test-only bridge to the ACX counters declared after the shared policy fixture.
+static void CheckPdoNameCircuitUnpublished()
+{
+    Check(C.Allocated == 0 && C.Added == 0 && !C.Ready &&
+        C.Failure == Audio.Device->Context.PolicyStatus,
+        "failed PDO name never allocates or publishes ACX in actual Prepare");
+    Check(VadAudioBuildCircuit(&Audio) == STATUS_INVALID_DEVICE_STATE && C.Allocated == 0,
+        "direct builder refuses failed PDO name policy before allocation");
+}
+""")
 (output / "publication-reference-production.inc").write_text("\n".join(parts), encoding="utf-8")
 
 source = root / "src/Control.cpp"

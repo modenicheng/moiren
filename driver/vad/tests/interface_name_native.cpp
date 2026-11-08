@@ -17,6 +17,8 @@ using PVOID = void*;
 // The portable runner supplies the SDK-independent property-key fixture.
 constexpr DEVPROPKEY DEVPKEY_DeviceInterface_ReferenceString =
     {{0x026e516e, 0xb814, 0x414b, {0x83, 0xcd, 0x85, 0x6d, 0x6f, 0xef, 0x48, 0x22}}, 5};
+constexpr DEVPROPKEY DEVPKEY_Device_FriendlyName =
+    {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
 #endif
 #include "../include/moiren_vad.h"
 #include "../src/EndpointReference.h"
@@ -114,6 +116,8 @@ struct Child {
     VAD_CHILD Context{&Shared, 0, &Worker};
     IdentityStorage Devnode;
     IdentityStorage* Store = &Devnode;
+    WCHAR PdoName[MOIREN_VAD_MAX_NAME_UNITS] = {};
+    ULONG PdoNameBytes = 0;
 };
 using WDFDEVICE = Child*;
 using WDFWORKITEM = Work*;
@@ -147,6 +151,13 @@ struct Fixture {
     unsigned Disabled = 0;
     unsigned SetCalls = 0;
     unsigned ReadCalls = 0;
+    unsigned PdoSetCalls = 0, PdoReadCalls = 0;
+    bool FailPdoSet = false, FailPdoRead = false;
+    DEVPROPTYPE PdoReadType = DEVPROP_TYPE_STRING;
+    int PdoReadLengthDelta = 0;
+    bool PdoDifferentName = false, PdoMissingTerminator = false, PdoOversizeRead = false;
+    bool PdoNameValidated = false;
+    Child* PolicyChild = nullptr;
     unsigned RegistryCalls = 0;
     unsigned Handles = 0;
     unsigned TraceCalls = 0;
@@ -215,6 +226,8 @@ void WdfWorkItemEnqueue(Work* work) { work->Queued = true; }
 void WdfWorkItemFlush(Work* work)
 {
     Check(work->Queued, "flush must execute queued policy");
+    F.PolicyChild = work->Parent;
+    F.PdoNameValidated = false;
     SystemThread = true;
     PreparePolicy(work);
     SystemThread = false;
@@ -247,6 +260,53 @@ void InitializeObjectAttributes(OBJECT_ATTRIBUTES* attributes, UNICODE_STRING* n
 static void CheckDdi()
 {
     Check(SystemThread && !SharedLocked, "DDI in system worker outside Shared lock");
+}
+
+static void CheckPdoNameProperty(Child* child, const DEVPROPKEY* key, LCID locale)
+{
+    CheckDdi();
+    Check(child != nullptr && child == F.PolicyChild,
+        "PDO property uses the exact child retained by the flushed policy worker");
+    Check(IsEqualGUID(key->fmtid, DEVPKEY_Device_FriendlyName.fmtid) &&
+        key->pid == DEVPKEY_Device_FriendlyName.pid && locale == LOCALE_NEUTRAL,
+        "only language-neutral child devnode FriendlyName, not interface/endpoint properties");
+}
+
+NTSTATUS IoSetDevicePropertyData(Child* child, const DEVPROPKEY* key,
+    LCID locale, ULONG flags, DEVPROPTYPE type, ULONG bytes, void* data)
+{
+    CheckPdoNameProperty(child, key, locale);
+    Check(flags == PLUGPLAY_PROPERTY_PERSISTENT && type == DEVPROP_TYPE_STRING,
+        "PDO name is a persistent plain typed string");
+    Check(bytes == (std::wcslen(F.SnapshotName) + 1) * sizeof(WCHAR) &&
+        bytes <= sizeof(child->PdoName) && std::memcmp(data, F.SnapshotName, bytes) == 0,
+        "PDO name uses the bounded locked snapshot including NUL, not the current slot");
+    ++F.PdoSetCalls;
+    if (F.FailPdoSet) { return SetFailure; }
+    std::memcpy(child->PdoName, data, bytes);
+    child->PdoNameBytes = bytes;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS IoGetDevicePropertyData(Child* child, const DEVPROPKEY* key,
+    LCID locale, ULONG flags, ULONG capacity, void* data, ULONG* required, DEVPROPTYPE* type)
+{
+    CheckPdoNameProperty(child, key, locale);
+    Check(flags == 0 && capacity == sizeof(child->PdoName),
+        "PDO getter uses reserved zero flags and one fixed-capacity buffer");
+    ++F.PdoReadCalls;
+    if (F.FailPdoRead) { return ReadFailure; }
+    if (F.PdoOversizeRead) { *required = capacity + 2; return STATUS_BUFFER_TOO_SMALL; }
+    std::memcpy(data, child->PdoName, child->PdoNameBytes);
+    *required = static_cast<ULONG>(static_cast<int>(child->PdoNameBytes) + F.PdoReadLengthDelta);
+    *type = F.PdoReadType;
+    if (F.PdoDifferentName) { static_cast<WCHAR*>(data)[0] ^= 1; }
+    if (F.PdoMissingTerminator) {
+        static_cast<WCHAR*>(data)[child->PdoNameBytes / sizeof(WCHAR) - 1] = L'X';
+    }
+    F.PdoNameValidated = *type == DEVPROP_TYPE_STRING && *required == child->PdoNameBytes &&
+        std::memcmp(data, F.SnapshotName, child->PdoNameBytes) == 0;
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS IdentityOperation()
@@ -376,6 +436,7 @@ NTSTATUS IoRegisterDeviceInterface(Child* child, const GUID*, UNICODE_STRING* re
     UNICODE_STRING* link)
 {
     CheckDdi();
+    Check(F.PdoNameValidated, "child PDO FriendlyName is verified before any interface registration");
     if (F.RequireDurableIdentity) {
         Check(F.IdentityDurable, "durable identity commit precedes every interface registration");
     }
@@ -551,8 +612,73 @@ static void Release(Child& child)
     }
 }
 
+#if defined(VAD_PUBLICATION_REFERENCE_TEST)
+// Defined by the existing composed fixture/extract after its ACX types exist.
+static void Reset(Child& child);
+static NTSTATUS Prepare(WDFDEVICE child, void* raw, void* translated);
+static void CheckPdoNameCircuitUnpublished();
+#endif
+
+static void PdoNameFailureRefusesPreparation()
+{
+    for (bool cached : {false, true}) {
+        for (unsigned mode = 0; mode < 12; ++mode) {
+            Child child;
+#if defined(VAD_PUBLICATION_REFERENCE_TEST)
+            Reset(child);
+#else
+            F = {};
+#endif
+            if (cached) {
+                Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS, "seed three-interface policy");
+            }
+            WCHAR retained[vad::EndpointReferenceUnits] = {};
+            std::memcpy(retained, child.Context.PolicyReference, sizeof(retained));
+            const auto before = child.Devnode;
+            const auto setBefore = F.PdoSetCalls, readBefore = F.PdoReadCalls;
+            const auto identityWrites = F.IdentityWrites;
+            const WCHAR changed[MOIREN_VAD_MAX_NAME_UNITS] = L"Renamed PDO \x540d\x79f0";
+            std::memcpy(child.Shared.Slots[0].Name, changed, sizeof(changed));
+            switch (mode) {
+            case 0: F.FailPdoSet = true; break;
+            case 1: F.FailPdoRead = true; break;
+            case 2: F.PdoReadType = DEVPROP_TYPE_STRING_INDIRECT; break;
+            case 3: F.PdoReadLengthDelta = -2; break;
+            case 4: F.PdoReadLengthDelta = 2; break;
+            case 5: F.PdoReadLengthDelta = -1; break;
+            case 6: F.PdoDifferentName = true; break;
+            case 7: F.PdoMissingTerminator = true; break;
+            case 8: F.PdoOversizeRead = true; break;
+            case 9: F.PdoReadLengthDelta = 200; break;
+            case 10: child.Shared.Slots[0].Name[0] = L'\0'; break;
+            case 11: for (auto& unit : child.Shared.Slots[0].Name) { unit = L'X'; } break;
+            }
+            const auto expected = mode == 0 ? SetFailure : mode == 1 ? ReadFailure :
+                mode == 8 ? STATUS_BUFFER_TOO_SMALL : mode >= 10 ? STATUS_INVALID_PARAMETER :
+                STATUS_DATA_ERROR;
+#if defined(VAD_PUBLICATION_REFERENCE_TEST)
+            const auto status = Prepare(&child, nullptr, nullptr);
+            CheckPdoNameCircuitUnpublished();
+#else
+            const auto status = VadPreparePolicy(&child, 0);
+#endif
+            Check(status == expected && child.Context.PolicyStatus == expected,
+                "initial and cached PDO-name failures refuse preparation with the original status");
+            Check(F.PdoSetCalls == setBefore + (mode >= 10 ? 0u : 1u) &&
+                F.PdoReadCalls == readBefore + (mode == 0 || mode >= 10 ? 0u : 1u),
+                "invalid names never reach DDIs; failures do not retry or read after a failed set");
+            Check(F.Registered == (cached ? 3u : 0u) && F.IdentityWrites == identityWrites &&
+                std::wcscmp(child.Context.PolicyReference, retained) == 0 &&
+                std::memcmp(&before, &child.Devnode, sizeof(before)) == 0,
+                "PDO-name failure cannot change retained publication identity or register categories");
+            Release(child);
+        }
+    }
+}
+
 static void SuccessfulTypedPublication()
 {
+    PdoNameFailureRefusesPreparation();
     for (auto intent : {MOIREN_VAD_INTENT_PLAYBACK, MOIREN_VAD_INTENT_MICROPHONE}) {
         F = {};
         Child child;
@@ -564,13 +690,22 @@ static void SuccessfulTypedPublication()
             "Policy retains its exact historical publication reference for ACX");
         Check(F.SetCalls == 3 && F.ReadCalls == 3,
             "every owned category must set and strictly read back typed FriendlyName");
+        Check(F.PdoSetCalls == 1 && F.PdoReadCalls == 1 && F.PdoNameValidated &&
+            std::wcscmp(child.PdoName, F.SnapshotName) == 0,
+            "first preparation sets and verifies this child PDO's exact requested name");
         Check(F.NameTraceCalls == 3, "one typed diagnostic per category, not per read attempt");
         Check(F.PlainNames == 3 && F.EndpointNames == 3, "ordinary and EP0 names retained");
         Check(F.Disabled == 0 && F.Freed == 0 && child.Context.PolicyInterfaceCount == 3,
             "success transfers all three disabled links to ReleasePolicy");
+        const auto before = child.Devnode;
+        const WCHAR changed[MOIREN_VAD_MAX_NAME_UNITS] = L"Changed cached PDO name";
+        std::memcpy(child.Shared.Slots[0].Name, changed, sizeof(changed));
         Check(VadPreparePolicy(&child, intent) == STATUS_SUCCESS && F.SetCalls == 3 &&
-            F.NameTraceCalls == 3,
-            "already staged policy must not repeat publication or diagnostic");
+            F.NameTraceCalls == 3 && F.PdoSetCalls == 2 && F.PdoReadCalls == 2 &&
+            std::wcscmp(child.PdoName, changed) == 0 &&
+            std::wcscmp(child.Context.PolicyReference, expected) == 0 &&
+            std::memcmp(&before, &child.Devnode, sizeof(before)) == 0,
+            "three-interface fast path restages PDO name without changing durable reference or categories");
         Release(child);
     }
 }

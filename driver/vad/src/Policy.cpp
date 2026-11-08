@@ -237,15 +237,44 @@ static void PreparePolicy(WDFWORKITEM work)
     const GUID* categories[] = {
         &AudioCategory, capture ? &CaptureCategory : &RenderCategory,
         &RealtimeCategory};
+    const ULONG nameBytes = vad::InterfaceNameBytes(name);
+    if (nameBytes == 0) {
+        context->PolicyStatus = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // The sole caller queues and flushes this worker inside PrepareHardware.
+    // Publish only this raw child's PDO name from the locked snapshot; the
+    // setter copies it, so no slot/stack storage escapes. This is not a final
+    // MMDevice rename. No property work enters audio stream or RT callbacks.
+    auto pdo = WdfDeviceWdmGetDeviceObject(child);
+    NTSTATUS nameStatus = IoSetDevicePropertyData(pdo,
+        &DEVPKEY_Device_FriendlyName, LOCALE_NEUTRAL,
+        PLUGPLAY_PROPERTY_PERSISTENT, DEVPROP_TYPE_STRING, nameBytes, name);
+    WCHAR readback[MOIREN_VAD_MAX_NAME_UNITS] = {};
+    ULONG returnedBytes = 0;
+    DEVPROPTYPE type = DEVPROP_TYPE_EMPTY;
+    if (NT_SUCCESS(nameStatus)) {
+        // Getter flags are reserved. A malformed/oversized read is a failure,
+        // not permission to allocate, retry or accept the requested text.
+        nameStatus = IoGetDevicePropertyData(pdo,
+            &DEVPKEY_Device_FriendlyName, LOCALE_NEUTRAL, 0,
+            sizeof(readback), readback, &returnedBytes, &type);
+    }
+    if (NT_SUCCESS(nameStatus) && (type != DEVPROP_TYPE_STRING ||
+        !vad::InterfaceNameMatches(name, readback, returnedBytes))) {
+        nameStatus = STATUS_DATA_ERROR;
+    }
+    if (!NT_SUCCESS(nameStatus)) {
+        context->PolicyStatus = nameStatus;
+        return;
+    }
+    // Retained interfaces do not exempt the mutable PDO name from validation.
+    // Their publication reference and registration ownership stay untouched.
     if (context->PolicyInterfaceCount != 0) {
         context->PolicyStatus = context->PolicyInterfaceCount == 3 &&
             context->PolicyReference[0] != L'\0' &&
             context->PolicyReference[RTL_NUMBER_OF(context->PolicyReference) - 1] == L'\0' ?
             STATUS_SUCCESS : STATUS_INVALID_DEVICE_STATE;
-        return;
-    }
-    if (vad::InterfaceNameBytes(name) == 0) {
-        context->PolicyStatus = STATUS_INVALID_PARAMETER;
         return;
     }
     // v2 is compatibility-only. Only negotiated CREATE_IDENTITY opts into

@@ -56,6 +56,15 @@ portable17suites, backend280VAD tests, parent2,665workspace/headless tests
 mutable Windows name publication, settings/default-role retention, native S4,
 or an installed package. The frozen613reboot/removal diagnostic is unchanged.
 
+The later [child PDO publication prerequisite](../../docs/validation/2026-11-08-child-pdo-name-publication.md)
+stages and verifies the exact child PDO FriendlyName during PrepareHardware's
+flushed passive system worker, including cached three-interface policy. Invalid
+or failed typed readback blocks subsequent ACX publication without changing the
+durable reference or categories. Driver22MSVC/17Ubuntuportable suites, WDK
+Analyze/InfVerif and parent focused composition checks pass. Final retained
+MMDevice name propagation, settings/default roles and native S4 remain open;
+raw final-name checks and installed613are unchanged.
+
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
 
 The later [managed probe admission](../../docs/validation/2026-11-08-managed-removal-admission.md)
