@@ -23,6 +23,29 @@ pub(crate) use library::PendingNodeSpawn;
 pub(crate) use library::{library, library_rail};
 pub(crate) use node_inspector::inspector;
 
+/// The graph canvas's in-flight pointer gestures (design 20 §4): node
+/// drags (with snap offset and alignment guides), the rubber-band
+/// selection, connection drags, knob drags, background pan/click state,
+/// the right-press anchor, and the hand-tool toggle.
+#[derive(Default)]
+pub(crate) struct GraphInteractionState {
+    pub(crate) node_drag: Option<(moiren_core::graph::NodeId, f32, f32)>,
+    pub(crate) selection_drag: Option<SelectionDrag>,
+    pub(crate) connection_drag: Option<ConnectionDrag>,
+    pub(crate) knob_drag: Option<(
+        moiren_core::graph::NodeId,
+        crate::ui::pages::graph::graph_canvas::KnobControl,
+        f32,
+        f64,
+    )>,
+    pub(crate) pan_grab: Option<(f32, f32)>,
+    pub(crate) background_click: Option<(f32, f32)>,
+    pub(crate) right_press: Option<(f32, f32)>,
+    pub(crate) node_drag_snap: (f32, f32),
+    pub(crate) drag_guides: Option<crate::ui::pages::graph::graph_canvas::DragGuides>,
+    pub(crate) hand_tool: bool,
+}
+
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 
@@ -90,7 +113,7 @@ impl StudioShell {
             })
             .filter_map(|node| node.node_id)
             .collect();
-        let Some(drag) = self.selection_drag.as_mut() else {
+        let Some(drag) = self.graph_gestures.selection_drag.as_mut() else {
             return false;
         };
         if !drag.moved {
@@ -124,16 +147,16 @@ impl StudioShell {
     /// in-flight drag or click first; under the hand tool the pointer instead
     /// becomes a pan grab. Returns true when the hand tool consumed the event.
     pub(crate) fn begin_pointer_session(&mut self, window: &mut Window) -> bool {
-        self.node_drag = None;
-        self.node_drag_snap = (0., 0.);
-        self.pan_grab = None;
-        self.background_click = None;
-        self.selection_drag = None;
-        self.knob_drag = None;
+        self.graph_gestures.node_drag = None;
+        self.graph_gestures.node_drag_snap = (0., 0.);
+        self.graph_gestures.pan_grab = None;
+        self.graph_gestures.background_click = None;
+        self.graph_gestures.selection_drag = None;
+        self.graph_gestures.knob_drag = None;
         self.sync_drag_demand();
-        if self.hand_tool {
+        if self.graph_gestures.hand_tool {
             let position = window.mouse_position();
-            self.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
+            self.graph_gestures.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
             self.sync_drag_demand();
             true
         } else {
@@ -148,15 +171,15 @@ impl StudioShell {
     /// stale rubber band and pin the DRAG frame demand after the user has
     /// moved on. Same effect as the canvas's Escape handler.
     pub(crate) fn cancel_active_gesture(&mut self, cx: &mut Context<Self>) {
-        let cancelled = self.drag_active() || self.background_click.is_some();
-        self.connection_drag = None;
-        self.node_drag = None;
-        self.node_drag_snap = (0., 0.);
-        self.drag_guides = None;
-        self.pan_grab = None;
-        self.background_click = None;
-        self.selection_drag = None;
-        self.knob_drag = None;
+        let cancelled = self.drag_active() || self.graph_gestures.background_click.is_some();
+        self.graph_gestures.connection_drag = None;
+        self.graph_gestures.node_drag = None;
+        self.graph_gestures.node_drag_snap = (0., 0.);
+        self.graph_gestures.drag_guides = None;
+        self.graph_gestures.pan_grab = None;
+        self.graph_gestures.background_click = None;
+        self.graph_gestures.selection_drag = None;
+        self.graph_gestures.knob_drag = None;
         // Keyboard focus stays on the canvas while the page's popovers are
         // open, so Escape lands here: it dismisses them too. The session
         // popover and the context menu ride along — they can be open on
@@ -164,7 +187,7 @@ impl StudioShell {
         // reaches them.
         let dismissed = self.binding_menu.take().is_some()
             | std::mem::take(&mut self.context_menu).is_some()
-            | std::mem::take(&mut self.right_press).is_some()
+            | std::mem::take(&mut self.graph_gestures.right_press).is_some()
             | std::mem::take(&mut self.project_menu);
         if cancelled {
             self.sync_drag_demand();
@@ -294,9 +317,9 @@ impl StudioShell {
             self.selected_node = None;
             self.selected_route = None;
         }
-        self.connection_drag = None;
-        self.node_drag = None;
-        self.node_drag_snap = (0., 0.);
+        self.graph_gestures.connection_drag = None;
+        self.graph_gestures.node_drag = None;
+        self.graph_gestures.node_drag_snap = (0., 0.);
         cx.notify();
     }
 }
@@ -316,12 +339,13 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
     );
     // The drag's snap guides ride the world so the canvas paint layer, a
     // shell-free closure, can draw them above the grid.
-    world.guides = shell.drag_guides;
+    world.guides = shell.graph_gestures.drag_guides;
     // A wire end picked up off an input is already in flight: drop it from
     // the projection so the canvas paints the drag as a free head (no stale
     // line, an empty origin port, and no phantom Displacing/Cycles verdicts
     // against the edge being moved).
     if let Some(destination) = shell
+        .graph_gestures
         .connection_drag
         .as_ref()
         .and_then(|drag| drag.detached)
@@ -361,7 +385,7 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         selected_wire.as_deref(),
         crate::ui::pages::graph::graph_canvas_view::CanvasCallbacks {
             focus: shell.graph_focus.clone(),
-            connection: shell.connection_drag.map(|drag| {
+            connection: shell.graph_gestures.connection_drag.map(|drag| {
                 (
                     drag.port,
                     drag.cursor,
@@ -455,14 +479,14 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                 .icon(icon)
                 .icon_only()
                 .tooltip(name)
-                .variant(if shell.hand_tool == hand {
+                .variant(if shell.graph_gestures.hand_tool == hand {
                     ButtonVariant::Primary
                 } else {
                     ButtonVariant::Ghost
                 })
                 .on_click(move |_, _, cx| {
                     this.update(cx, |s, cx| {
-                        s.hand_tool = hand;
+                        s.graph_gestures.hand_tool = hand;
                         cx.notify();
                     })
                 }),
