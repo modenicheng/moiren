@@ -1,11 +1,12 @@
 //! Native file prompts; parsing and filesystem writes run off the UI thread.
 use super::*;
 use crate::project::{ProjectDocument, WorkspaceDocument};
+use crate::ui::widgets::occluding_page::{claim_presses, occluding_page};
 use controls::*;
 use rust_i18n::t;
 
 /// The session popover: an occluding shell-root overlay (same dismissal
-/// chrome as the settings menu and the detail window) with the project
+/// chrome as the settings menu and the fault popover) with the project
 /// identity, the save/open actions, and the recent-projects quick switch.
 /// The popover claims presses inside itself by stopping propagation, so
 /// the overlay's outside handler closes it without any bounds math.
@@ -15,58 +16,57 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     let save_pending = shell.project_io.busy || shell.state.read(cx).pending_request;
     let current = shell.project_io.path.clone();
     let recents = shell.preferences.values.recent_projects.clone();
-    let mut popover = div()
-        .id("project-popover")
-        .absolute()
-        .top(px(44.))
-        .left(px(32.))
-        .w(px(280.))
-        .p(px(12.))
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .bg(theme::SURFACE)
-        .border_1()
-        .border_color(theme::BORDER)
-        .rounded(px(theme::RADIUS_MD))
-        .occlude()
-        .gpui_test_observe()
-        // Claim the press: the overlay root behind must not see it, or an
-        // inside click would close the menu that owns it.
-        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-        .child(heading(shell.project_io.name.clone()))
-        .child(label(
-            shell
-                .project_io
-                .path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| t!("Not saved to disk").into()),
-        ))
-        .child(
-            button("open-project", t!("Open project…"))
-                .disabled(shell.project_io.busy)
-                .on_click({
-                    let this = this.clone();
-                    move |_, _, cx| this.update(cx, |s, cx| s.open_project(cx))
-                }),
-        )
-        .child(
-            button("save-project", t!("Save project"))
-                .disabled(save_pending)
-                .on_click({
-                    let this = this.clone();
-                    move |_, _, cx| this.update(cx, |s, cx| s.save_project(false, cx))
-                }),
-        )
-        .child(
-            button("save-project-as", t!("Save project as…"))
-                .disabled(save_pending)
-                .on_click({
-                    let this = this.clone();
-                    move |_, _, cx| this.update(cx, |s, cx| s.save_project(true, cx))
-                }),
-        );
+    let mut popover = claim_presses(
+        div()
+            .id("project-popover")
+            .absolute()
+            .top(px(44.))
+            .left(px(32.))
+            .w(px(280.))
+            .p(px(12.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .bg(theme::SURFACE)
+            .border_1()
+            .border_color(theme::BORDER)
+            .rounded(px(theme::RADIUS_MD))
+            .occlude()
+            .gpui_test_observe(),
+    )
+    .child(heading(shell.project_io.name.clone()))
+    .child(label(
+        shell
+            .project_io
+            .path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| t!("Not saved to disk").into()),
+    ))
+    .child(
+        button("open-project", t!("Open project…"))
+            .disabled(shell.project_io.busy)
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx| this.update(cx, |s, cx| s.open_project(cx))
+            }),
+    )
+    .child(
+        button("save-project", t!("Save project"))
+            .disabled(save_pending)
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx| this.update(cx, |s, cx| s.save_project(false, cx))
+            }),
+    )
+    .child(
+        button("save-project-as", t!("Save project as…"))
+            .disabled(save_pending)
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx| this.update(cx, |s, cx| s.save_project(true, cx))
+            }),
+    );
     if !recents.is_empty() {
         popover = popover.child(label(t!("Recent projects")));
         for (index, path) in recents.iter().enumerate() {
@@ -96,39 +96,17 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             v.child(label(message))
         })
         .child(label(t!("Opening a project keeps audio stopped.")));
-    div()
-        .id("project-menu-page")
-        .absolute()
-        .inset_0()
-        .size_full()
-        .occlude()
-        .on_key_down({
-            let close = close.clone();
-            move |event, _window, cx| {
-                if event.keystroke.key.as_str() == "escape" {
-                    close.update(cx, |shell, cx| {
-                        shell.chrome.project_menu = false;
-                        cx.notify();
-                    });
-                    cx.stop_propagation();
-                }
-            }
-        })
-        // Reached only by presses outside the popover — the popover claims
-        // its own subtree — so every press here closes the menu.
-        .on_any_mouse_down(move |_, _, cx| {
+    occluding_page(
+        "project-menu-page",
+        true,
+        move |cx| {
             close.update(cx, |shell, cx| {
                 shell.chrome.project_menu = false;
                 cx.notify();
-            });
-        })
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(popover)
-        .into_any_element()
+            })
+        },
+        popover,
+    )
 }
 
 #[cfg(all(test, feature = "gpui-test"))]

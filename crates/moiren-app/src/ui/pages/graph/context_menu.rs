@@ -10,7 +10,9 @@ use super::*;
 use crate::service::{AppRequest, GraphEdit, NODE_TINT_COUNT};
 use crate::ui::shell::controls;
 use crate::ui::theme;
-use gpui_kit::{AnyElement, MouseButton, Window, px};
+use crate::ui::widgets::anchored_popover::clamped_left;
+use crate::ui::widgets::occluding_page::{claim_presses, occluding_page};
+use gpui_kit::{AnyElement, Window, px};
 
 const MENU_WIDTH: f32 = 176.;
 
@@ -25,12 +27,8 @@ pub(crate) fn overlay(
     let this = cx.entity();
     let viewport = window.viewport_size();
     let width = MENU_WIDTH.min(f32::from(viewport.width) - 16.);
-    let left = px(menu.at().0)
-        .min(px(f32::from(viewport.width) - width - 8.))
-        .max(px(8.));
-    let top = px(menu.at().1)
-        .min(px(f32::from(viewport.height) - 8.))
-        .max(px(8.));
+    let left = clamped_left(menu.at().0, width, viewport);
+    let top = menu.at().1.min(f32::from(viewport.height) - 8.).max(8.);
 
     let close = this.clone();
     let mut body = match menu {
@@ -50,60 +48,37 @@ pub(crate) fn overlay(
         }
         ContextMenu::Background { .. } => arrange_row(this.clone()),
     };
-    let mut list = div()
-        .id("context-menu")
-        .absolute()
-        .left(left)
-        .top(top)
-        .w(px(width))
-        .flex()
-        .flex_col()
-        .gap(px(2.))
-        .p(px(6.))
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .bg(theme::SURFACE)
-        .occlude()
-        .gpui_test_observe()
-        // Claim the press so the occluding page behind never sees it —
-        // inside clicks must not close the menu that owns them.
-        .on_any_mouse_down(|_, _, cx| cx.stop_propagation());
+    let mut list = claim_presses(
+        div()
+            .id("context-menu")
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(width))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .p(px(6.))
+            .rounded(px(theme::RADIUS_MD))
+            .border_1()
+            .border_color(theme::BORDER_STRONG)
+            .bg(theme::SURFACE)
+            .occlude()
+            .gpui_test_observe(),
+    );
     list = list.children(body.drain(..));
 
-    div()
-        .id("context-menu-page")
-        .absolute()
-        .inset_0()
-        .size_full()
-        .occlude()
-        .on_key_down({
-            let close = close.clone();
-            move |event, _window, cx| {
-                if event.keystroke.key.as_str() == "escape" {
-                    close.update(cx, |shell, cx| {
-                        shell.graph_view.context_menu = None;
-                        cx.notify();
-                    });
-                    cx.stop_propagation();
-                }
-            }
-        })
-        // Reached only by presses outside the menu — the menu claims its
-        // own subtree — so every press here closes it.
-        .on_any_mouse_down(move |_, _, cx| {
+    occluding_page(
+        "context-menu-page",
+        true,
+        move |cx| {
             close.update(cx, |shell, cx| {
                 shell.graph_view.context_menu = None;
                 cx.notify();
-            });
-        })
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(list)
-        .into_any_element()
+            })
+        },
+        list,
+    )
 }
 
 impl ContextMenu {
