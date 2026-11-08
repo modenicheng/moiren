@@ -141,6 +141,13 @@ implementation is recorded in the
 The original source audit in the next section is historical, not current
 configuration or acceptance evidence.
 
+The [November8 main integration](validation/2026-11-08-main-settings-integration.md)
+reconciles main's workspace settings with exact transport/measured admission,
+retains requested/active diagnostics, and repairs constrained scrolling and
+editor/cache regressions. Workspace/headless tests pass2,651with10ignored;
+strict all-target Clippy and formatting pass. This is software integration,
+not a native naming, waveform, latency or aggregate S0-S5 pass.
+
 The [November8 diagnostic deployment](validation/2026-11-08-vad-removal-stage-deployment.md)
 returns3010 and awaits the user's reboot. Disk/PnP613 metadata is not an
 in-memory transition or cleanup pass. Its29passing offline-reader tests
@@ -153,6 +160,12 @@ with retaining Windows endpoint identity/settings. Existing tests enforce that
 reference change and therefore do not establish S4 preservation. Separate
 immutable publication identity, installed-endpoint adoption and actual mutable
 Windows name publication; a refusal-only safeguard does not complete S4.
+
+The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
+recomputes both channels at all six retained onsets. Identity1 has non-silent
+quarters but quarter4 correlation0.67284 fails the unchanged0.7 gate. This
+explains the fixed candidate's refusal without establishing the distortion's
+cause, accepting the missing identity, or completing waveform correspondence.
 
 | Slice | Current evidence | Remaining acceptance |
 | --- | --- | --- |
