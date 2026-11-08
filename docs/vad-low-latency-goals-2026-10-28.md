@@ -45,6 +45,15 @@ transfer, native approval, removal/name repair or S0-S5 acceptance. The next
 target run still requires the user's reboot confirmation and fresh provenance;
 local implementation/verification continues without operating the test machine.
 
+The [closed-run delivery slice](validation/2026-11-08-removal-delivery.md) now
+connects original-ack-pinned bounded download, complete host ZIP verification,
+host receipt upload, durable target acknowledgment and independently verified
+ack download to a create-new completion receipt. It uses the fixed standalone
+remote address, not a VM, and never restores controller/export authority from
+JSON. Host-only real Finish/export/host/target composition is not an actual
+remote transfer or driver test. The executable release remains closed pending
+target-run review; no native/physical verdict or cleanup permission follows.
+
 The user requires one reused OBS installation rather than copied executable
 trees for each experiment. Reuse the existing dedicated test installation at
 `D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable`; do not move it to

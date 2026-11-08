@@ -18,6 +18,14 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Reused tools and naming contract - 2026-11-08
 
+The [closed-run delivery implementation](../../docs/validation/2026-11-08-removal-delivery.md)
+adds original-ack-pinned download, host member-by-member ZIP verification,
+independently pinned finalizer/dependencies, durable target ack and host ack
+readback. Real-file host composition retains `NativePassed=false` and
+`Qualified=false`; it is not an actual remote transfer, native run or cleanup
+authorization. The user reboot remains unconfirmed and installed613 unchanged.
+Actual diagnostic release remains closed and the original S0-S5 gates stay open.
+
 The [OBS helper receipt](../../docs/validation/2026-11-08-obs-reuse-helper.md)
 adds fixed-path, exclusive-lease reuse without executable copies.26focused
 tests and the final target read-only check pass; this is not OBS launch,

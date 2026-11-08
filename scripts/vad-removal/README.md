@@ -289,10 +289,62 @@ result, nonce, inventory and ZIP to `*.archive-local.json`. Its explicit meaning
 is `LOCAL_ARCHIVE_VERIFICATION_ONLY`: it is not remote download confirmation,
 cleanup permission, native success or physical qualification. Any archive/ack
 failure preserves existing outputs and the refused result, with no retry,
-overwrite, deletion or owner relaunch. Remote transfer/acknowledgment and actual
-target runner review remain missing; the native executable release stays closed.
+overwrite, deletion or owner relaunch. The separate delivery flow below now
+implements transfer/acknowledgment; actual target execution and release review
+remain open. The native executable release stays closed.
 
 The closed-controller tests compose actual root/FileStream/collector ownership
 with real export and local acknowledgment after injected trace-enable failure.
 Exporter-only tests use a synthetic seal getter, and entry-tail tests replace
 export IO. These distinct test boundaries must not be presented as native runs.
+
+## Closed-run delivery and acknowledgment
+
+`../vad-delivery.py` consumes an independently supplied original local-ack SHA256,
+one canonical `D:\MoirenTest\...` run and a create-new host evidence directory.
+It downloads exactly the original local ack, inventory sidecar and ZIP, in that
+order. Ack identity/schema/false flags are checked before another download;
+inventory bytes are checked before downloading the archive. Target pin paths
+are metadata only on the host, never paths to reopen or extract.
+
+The host verifies archive length/SHA256 and every exact member, including empty
+files/directories, with the original depth/member/size caps. The embedded
+inventory must equal the independently pinned sidecar; inventory membership
+excludes itself, so the verifier adds exactly that self entry from its raw bytes.
+Nonce, exact result JSON and result/input/manifest provenance must agree. Named
+source pins retain their original `Name` field. Unknown classes, executable
+images, duplicate/case-colliding paths, links, malformed/duplicate-key JSON,
+changed bytes or promoted flags refuse rather than truncate.
+
+`vad-delivery-transport.py` uses only strict-host-key, batch-mode SSH to the
+standalone `moiren-lan` target. It streams raw binary stdout into an exclusively
+created host file; it does not use overwrite-capable scp, extraction, resume or
+automatic retry. One retained process and its original stdout/stderr/input
+owners settle even after deadline, cap or write failure. The executable drains
+an exposed pending transport owner before rethrowing that sticky failure. A
+failed phase never starts the next download/finalization phase.
+
+The host emits `host-delivery.json` with meaning
+`HOST_ARCHIVE_DELIVERY_VERIFIED`. Finalization creates the exact target sibling
+`*.delivery-host.json`, verifies its readback and calls `delivery-finalize.ps1`
+only after independently checking that script and its `closed-export.ps1` and
+`finite-tool.ps1` dependencies while retaining their read handles. The target
+rechecks the original run/result/local ack/inventory/ZIP chain and emits a
+create-new `*.archive-delivered.json`. It restores no private controller/export
+CWT and does not reopen old collectors, source tools or external clients.
+
+The host then downloads that exact returned target ack, verifies all original
+pins and the exact uploaded host receipt JSON, and persists
+`delivery-complete.json`. The historical local ack remains `Transferred=false`;
+host/delivered receipts use `Transferred=true`, with `NativePassed=false`,
+`Qualified=false`, and no cleanup authorization. This flow can include bounded
+PCM/WAV/ETL evidence, so it is not a metadata-only transfer.
+
+The CLI requires `--run-directory`, `--expected-local-ack-sha256`, a new absolute
+`--output-directory`, `--finalizer-path`, `--expected-finalizer-sha256` and explicit
+`--user-reboot-confirmed`. The independently supplied finalizer SHA must also
+match reviewed local source; dependency pins derive from its exact local files.
+No confirmation means refusal before target access or output creation. No
+remote delivery is claimed by host-only tests. See the
+[delivery receipt](../../docs/validation/2026-11-08-removal-delivery.md) for the
+actual test boundaries and outstanding native/cleanup gates.

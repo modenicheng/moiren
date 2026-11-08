@@ -70,6 +70,10 @@ jobs:
         run: python3 scripts/tests/vad-capture-qpc.tests.py
       - name: Test offline VAD removal stage evidence association
         run: python3 scripts/tests/vad-removal-stages.tests.py
+      - name: Test closed-run host delivery and retained binary transport
+        run: |
+          python3 -B scripts/tests/vad-delivery.tests.py
+          python3 -B scripts/tests/vad-delivery-transport.tests.py
       - name: Test dedicated OBS path reuse and configuration ownership
         run: python3 scripts/tests/obs-reuse.tests.py
       - name: Test fixed-path OBS acquisition setup and graceful cleanup
@@ -141,7 +145,8 @@ jobs:
             'test-diagnostic-controller.ps1', 'test-diagnostic-entry.ps1', 'test-diagnostic-lifetime.ps1',
             'test-native-admission.ps1', 'test-native-guard-routing.ps1', 'test-native-query-admission.ps1',
             'test-native-admission-lifetime.ps1', 'test-closed-controller.ps1',
-            'test-closed-export.ps1', 'test-closed-entry.ps1', 'test-closed-finish.ps1'
+            'test-closed-export.ps1', 'test-closed-entry.ps1', 'test-closed-finish.ps1',
+            'test-delivery-finalize.ps1', 'test-delivery-composition.ps1'
           )
           foreach ($engine in $engines) {
             foreach ($test in $tests) {
