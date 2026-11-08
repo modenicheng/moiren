@@ -76,7 +76,7 @@ fn transport_exact_running_restart_retains_requested_until_exact_active_confirma
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("exact-restart");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     open(cx);
     reveal(cx, "process-policy-1");
     cx.update(|window, cx| window.click("process-policy-1", cx));
@@ -179,7 +179,7 @@ fn transport_exact_vad_nonpreset_save_reads_current_text_without_a_render_frame(
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("exact-vad-stopped");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     open(cx);
     reveal(cx, "vad-policy-1");
     cx.update(|window, cx| window.click("vad-policy-1", cx));
@@ -233,7 +233,7 @@ fn transport_exact_all_invalid_fields_and_relationships_refuse_previous_valid_va
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("exact-process-invalid");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     open(cx);
     reveal(cx, "process-policy-1");
     cx.update(|window, cx| window.click("process-policy-1", cx));
@@ -298,7 +298,7 @@ fn transport_exact_policy_reset_and_discard_drop_invalid_hidden_fields(
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("exact-reset");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     open(cx);
     reveal(cx, "vad-policy-1");
     cx.update(|window, cx| window.click("vad-policy-1", cx));

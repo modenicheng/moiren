@@ -68,7 +68,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             shell.devices.device_tab = super::devices::DeviceTab::Inputs;
             shell.devices.selected_device = Some("selected-input".into());
             shell.node_positions.insert(test_node, (12.0, 34.0));
-            shell.project_name = "Keep candidate".into();
+            shell.project_io.name = "Keep candidate".into();
             shell.mixer.order.reverse();
         })
         .unwrap();
@@ -102,7 +102,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
                 assert_eq!(shell.presentation.page, pages::Page::Mixer);
                 assert_eq!(shell.camera.pan_x, 84.0);
                 assert_eq!(shell.node_positions.get(&test_node), Some(&(12.0, 34.0)));
-                assert_eq!(shell.project_name, "Keep candidate");
+                assert_eq!(shell.project_io.name, "Keep candidate");
                 assert!(
                     shell.sidebar_open && shell.inspector_open,
                     "reopen must preserve manually opened compact drawers"
@@ -159,8 +159,8 @@ fn closed_window_keeps_preference_writes_until_application_shutdown(
     cx.update(|cx| {
         let weak = desktop.read(cx).shell.clone().unwrap();
         weak.update(cx, |shell, cx| {
-            shell.preferences_path = Some(path.clone());
-            shell.preference_save = Some(cx.background_executor().spawn(async move {
+            shell.preferences.path = Some(path.clone());
+            shell.preferences.save = Some(cx.background_executor().spawn(async move {
                 std::future::poll_fn(move |cx| {
                     let mut state = blocked.lock().unwrap();
                     if state.0 {
@@ -172,9 +172,9 @@ fn closed_window_keeps_preference_writes_until_application_shutdown(
                 })
                 .await;
             }));
-            shell.preferences.density = crate::project::UiDensity::Compact;
+            shell.preferences.values.density = crate::project::UiDensity::Compact;
             shell.save_preferences(cx);
-            shell.preferences.density = crate::project::UiDensity::Comfortable;
+            shell.preferences.values.density = crate::project::UiDensity::Comfortable;
             shell.save_preferences(cx);
         })
         .unwrap();
@@ -234,11 +234,11 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
     let gate = Arc::new(Mutex::new((false, None::<Waker>)));
     let blocked = gate.clone();
     view.update(cx, |shell, cx| {
-        shell.preferences = project::AppPreferences::default();
-        shell.preferences_path = Some(path.clone());
+        shell.preferences.values = project::AppPreferences::default();
+        shell.preferences.path = Some(path.clone());
         // A parked predecessor deterministically delays the first actual save
         // without blocking the UI executor or relying on filesystem speed.
-        shell.preference_save = Some(cx.background_executor().spawn(async move {
+        shell.preferences.save = Some(cx.background_executor().spawn(async move {
             std::future::poll_fn(move |cx| {
                 let mut state = blocked.lock().unwrap();
                 if state.0 {
@@ -253,20 +253,20 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
         cx.notify();
     });
     view.update(cx, |shell, cx| {
-        shell.preferences.latency_profile = AudioLatencyProfile::Balanced;
+        shell.preferences.values.latency_profile = AudioLatencyProfile::Balanced;
         shell.save_preferences(cx);
-        shell.preferences.latency_profile = AudioLatencyProfile::Low;
+        shell.preferences.values.latency_profile = AudioLatencyProfile::Low;
         shell.save_preferences(cx);
     });
     cx.run_until_parked();
     let quitting = view.update(cx, |shell, _| {
         assert_eq!(
-            shell.preferences.latency_profile,
+            shell.preferences.values.latency_profile,
             AudioLatencyProfile::Low,
             "both profile clicks were accepted before shutdown"
         );
-        assert!(shell.preference_save.is_some());
-        shell.preferences_quitting.clone()
+        assert!(shell.preferences.save.is_some());
+        shell.preferences.quitting.clone()
     });
     assert!(gate.lock().unwrap().1.is_some(), "save chain is parked");
     assert_eq!(
@@ -477,8 +477,8 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("draft");
     view.update(cx, |shell, cx| {
-        shell.preferences = crate::project::AppPreferences::default();
-        shell.preferences_path = Some(path.clone());
+        shell.preferences.values = crate::project::AppPreferences::default();
+        shell.preferences.path = Some(path.clone());
         cx.notify();
     });
     cx.update(|window, cx| {
@@ -519,7 +519,10 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
                 .sample_rate,
             48_000
         );
-        assert_eq!(shell.preferences.audio.processing.sample_rate, 48_000);
+        assert_eq!(
+            shell.preferences.values.audio.processing.sample_rate,
+            48_000
+        );
         assert!(!shell.state.read(cx).pending_request);
     });
     assert!(!path.exists());
@@ -541,7 +544,10 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         );
         assert_eq!(state.snapshot.audio_settings.processing.block_frames, 4096);
         assert!(!shell.settings.editor.global.dirty());
-        assert_eq!(shell.project_message.as_deref(), Some("Preferences saved"));
+        assert_eq!(
+            shell.project_io.message.as_deref(),
+            Some("Preferences saved")
+        );
     });
     assert_eq!(
         crate::project::load_preferences_at(&path)
@@ -605,8 +611,8 @@ fn meter_preferences_apply_immediately_from_the_interface_page(cx: &mut gpui_kit
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("meters");
     view.update(cx, |shell, cx| {
-        shell.preferences = crate::project::AppPreferences::default();
-        shell.preferences_path = Some(path.clone());
+        shell.preferences.values = crate::project::AppPreferences::default();
+        shell.preferences.path = Some(path.clone());
         cx.notify();
     });
     cx.update(|window, cx| {
@@ -621,8 +627,11 @@ fn meter_preferences_apply_immediately_from_the_interface_page(cx: &mut gpui_kit
     });
     cx.run_until_parked();
     view.update(cx, |shell, _| {
-        assert_eq!(shell.preferences.meters.falloff, MeterFalloff::Moderate);
-        assert_eq!(shell.preferences.meters.peak_hold, PeakHold::Off);
+        assert_eq!(
+            shell.preferences.values.meters.falloff,
+            MeterFalloff::Moderate
+        );
+        assert_eq!(shell.preferences.values.meters.peak_hold, PeakHold::Off);
         assert!(!shell.settings.editor.global.dirty());
     });
     let saved = crate::project::load_preferences_at(&path).unwrap();
@@ -639,8 +648,8 @@ fn restore_last_project_switch_applies_immediately(cx: &mut gpui_kit::TestAppCon
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("restore");
     view.update(cx, |shell, cx| {
-        shell.preferences = crate::project::AppPreferences::default();
-        shell.preferences_path = Some(path.clone());
+        shell.preferences.values = crate::project::AppPreferences::default();
+        shell.preferences.path = Some(path.clone());
         cx.notify();
     });
     cx.update(|window, cx| {
@@ -653,7 +662,7 @@ fn restore_last_project_switch_applies_immediately(cx: &mut gpui_kit::TestAppCon
     });
     cx.run_until_parked();
     view.update(cx, |shell, _| {
-        assert!(shell.preferences.restore_last_project);
+        assert!(shell.preferences.values.restore_last_project);
     });
     assert!(
         crate::project::load_preferences_at(&path)
@@ -682,7 +691,7 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
     let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("device");
     view.update(cx, |shell, cx| {
-        shell.preferences_path = Some(path.clone());
+        shell.preferences.path = Some(path.clone());
         shell.set_page(pages::Page::Devices, cx);
     });
     let before = view.update(cx, |shell, cx| {
@@ -916,7 +925,7 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("restart");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(900.)));
         window.render_frame(cx);
@@ -985,7 +994,10 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
                 .sample_rate,
             48_000
         );
-        assert_eq!(shell.preferences.audio.processing.sample_rate, 96_000);
+        assert_eq!(
+            shell.preferences.values.audio.processing.sample_rate,
+            96_000
+        );
     });
     confirm.store(true, Ordering::Release);
     settle_settings(&view, cx);
@@ -1031,7 +1043,10 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
                 .sample_rate,
             44_100
         );
-        assert_eq!(shell.preferences.audio.processing.sample_rate, 44_100);
+        assert_eq!(
+            shell.preferences.values.audio.processing.sample_rate,
+            44_100
+        );
     });
     assert_eq!(
         crate::project::load_preferences_at(&path)
@@ -1076,7 +1091,7 @@ fn vad_recovery_cap_click_save_and_restart_wait_for_active_confirmation(
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("vad-recovery-cap");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(900.)));
         window.render_frame(cx);
@@ -1185,7 +1200,11 @@ fn vad_recovery_cap_click_save_and_restart_wait_for_active_confirmation(
             None
         );
         assert_eq!(
-            shell.preferences.transport_latency.vad_recovery_cap_periods,
+            shell
+                .preferences
+                .values
+                .transport_latency
+                .vad_recovery_cap_periods,
             Some(1)
         );
     });
@@ -1245,10 +1264,10 @@ fn rejected_transport_restart_keeps_draft_and_saved_preferences_unchanged(
     let path = settings_test_path("transport-rejection");
     crate::project::save_preferences_at(&path, &crate::project::AppPreferences::default()).unwrap();
     view.update(cx, |shell, cx| {
-        shell.preferences = crate::project::AppPreferences::default();
+        shell.preferences.values = crate::project::AppPreferences::default();
         shell.settings.editor.global = shell.current_settings_draft(cx);
         shell.settings.editor.device = shell.current_settings_draft(cx);
-        shell.preferences_path = Some(path.clone());
+        shell.preferences.path = Some(path.clone());
     });
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(900.)));
@@ -1301,7 +1320,10 @@ fn rejected_transport_restart_keeps_draft_and_saved_preferences_unchanged(
         assert_eq!(state.snapshot.phase, crate::service::SessionPhase::Failed);
         assert_eq!(state.snapshot.active_transport_latency, None);
         assert_eq!(state.snapshot.transport_latency, draft.transport);
-        assert_eq!(shell.preferences.transport_latency, Default::default());
+        assert_eq!(
+            shell.preferences.values.transport_latency,
+            Default::default()
+        );
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -1893,8 +1915,8 @@ fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
                 cx.new(|cx| {
                     let mut shell = super::StudioShell::new(state, window, cx, None);
                     shell.test_page = Some(page);
-                    shell.preferences_path = None;
-                    shell.autosave_path = None;
+                    shell.preferences.path = None;
+                    shell.autosave.path = None;
                     shell
                 })
             },

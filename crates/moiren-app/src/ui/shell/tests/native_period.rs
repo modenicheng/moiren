@@ -29,7 +29,7 @@ fn shared_native_period_text_save_preserves_exact_request_without_starting_audio
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("shared-period");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.activate_window();
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
@@ -92,7 +92,7 @@ fn shared_native_period_invalid_text_blocks_save_and_discard_restores_default(
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("invalid-shared-period");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
@@ -177,7 +177,7 @@ fn shared_native_period_device_input_keeps_focus_and_reset_drops_invalid_text(
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("device-shared-period");
     view.update(cx, |shell, cx| {
-        shell.preferences_path = Some(path.clone());
+        shell.preferences.path = Some(path.clone());
         shell.set_page(pages::Page::Devices, cx);
         shell.inspect_device("output-a".into(), cx);
     });

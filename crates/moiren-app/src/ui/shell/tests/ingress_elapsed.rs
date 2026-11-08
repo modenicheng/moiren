@@ -35,7 +35,7 @@ fn ingress_elapsed_click_stopped_save_persists_without_starting_audio(
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("ingress-stopped");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(900.)));
         window.render_frame(cx);
@@ -115,7 +115,7 @@ fn ingress_elapsed_click_restart_keeps_requested_and_active_distinct_until_confi
     let state = cx.new(|_| UiState::new(handle, snapshot));
     let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("ingress-running");
-    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    view.update(cx, |shell, _| shell.preferences.path = Some(path.clone()));
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(900.)));
         window.render_frame(cx);
@@ -167,6 +167,7 @@ fn ingress_elapsed_click_restart_keeps_requested_and_active_distinct_until_confi
         assert_eq!(
             shell
                 .preferences
+                .values
                 .transport_latency
                 .process_max_ingress_elapsed_100ns,
             Some(100_000)

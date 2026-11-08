@@ -27,7 +27,7 @@ impl StudioShell {
         }
         let draft = self.settings.editor.draft_mut(editor);
         draft.changed();
-        if self.preferences_path.is_none() {
+        if self.preferences.path.is_none() {
             draft.error = Some(
                 t!("User configuration directory is unavailable. Your draft is retained.").into(),
             );
@@ -206,15 +206,15 @@ impl StudioShell {
                 draft.audio = pending.submitted.audio;
                 draft.profile = pending.submitted.profile;
                 draft.transport = pending.submitted.transport;
-                self.preferences.audio = draft.audio.clone();
-                self.preferences.latency_profile = draft.profile;
-                self.preferences.transport_latency = draft.transport;
+                self.preferences.values.audio = draft.audio.clone();
+                self.preferences.values.latency_profile = draft.profile;
+                self.preferences.values.transport_latency = draft.transport;
                 draft.committed();
                 if matches!(pending.stage, Stage::Restart) {
                     draft.message = Some(t!("Audio restarted with the saved settings.").into());
                 }
                 self.save_preferences(cx);
-                self.settings.editor.save_revision = Some((self.preference_save_revision, editor));
+                self.settings.editor.save_revision = Some((self.preferences.save_revision, editor));
             }
         }
     }
