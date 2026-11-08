@@ -38,9 +38,6 @@ _version: 2
 "Tone generator · %{hz} Hz":
   en: Tone generator · %{hz} Hz
   zh-CN: 测试音发生器 · %{hz} Hz
-"Apply graph":
-  en: Apply graph
-  zh-CN: 应用图
 "Mono":
   en: Mono
   zh-CN: 单声道
@@ -287,27 +284,6 @@ _version: 2
 "Active audio clocks":
   en: Active audio clocks
   zh-CN: 活动音频时钟
-"Input sample rate":
-  en: Input sample rate
-  zh-CN: 输入采样率
-"Output sample rate":
-  en: Output sample rate
-  zh-CN: 输出采样率
-"Clock correction":
-  en: Clock correction
-  zh-CN: 时钟校正
-"Input buffer fill":
-  en: Input buffer fill
-  zh-CN: 输入缓冲填充
-"Processed":
-  en: Processed
-  zh-CN: 已处理
-"Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.":
-  en: Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.
-  zh-CN: 时钟校正与缓冲存量来自活动监视器。缓冲填充量不等于端到端延迟。
-"No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.":
-  en: No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.
-  zh-CN: 没有活动的监视器时钟观测。启动物理输入或应用会话以查看时钟适配。
 "Session resources":
   en: Session resources
   zh-CN: 会话资源
@@ -383,18 +359,9 @@ _version: 2
 "Virtual exports":
   en: Virtual exports
   zh-CN: 虚拟导出
-"Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
-  en: Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
-  zh-CN: 在此编辑项目意图，然后应用图以请求激活。端点存在并不代表音频正在流动。停止后端点仍保留，但闸门关闭。
-"Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.":
-  en: "Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export."
-  zh-CN: 将选中的通道数匹配的图 IO 绑定：播放使用源节点；麦克风使用输出节点。一个 IO 只能属于一个导出。
 "Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.":
   en: Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.
   zh-CN: 默认资格仅是本机上的许可，不会保存到项目中。关闭时既阻止 Windows 自动选择默认，也阻止用户手动设为默认。开启只表示允许成为默认，并不会设置 Windows 默认设备。
-"Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.":
-  en: Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.
-  zh-CN: 更改声道数、名称或默认资格会安全退役并重建端点。再次应用即可恢复；更改声道数前请先解绑不兼容的图 IO。
 "No virtual exports yet. Create one above; it starts unbound.":
   en: No virtual exports yet. Create one above; it starts unbound.
   zh-CN: 还没有虚拟导出。在上方创建一个；初始为未绑定状态。
@@ -473,6 +440,9 @@ _version: 2
 "Bind":
   en: Bind
   zh-CN: 绑定
+"Bound":
+  en: Bound
+  zh-CN: 已绑定
 "Bind selected IO":
   en: Bind selected IO
   zh-CN: 绑定选中的 IO
@@ -524,9 +494,6 @@ _version: 2
 "Select a node to inspect its properties.":
   en: Select a node to inspect its properties.
   zh-CN: 选择一个节点以查看其属性。
-"Name":
-  en: Name
-  zh-CN: 名称
 "Channel strip":
   en: Channel strip
   zh-CN: 通道条
@@ -608,9 +575,6 @@ _version: 2
 "rename":
   en: rename
   zh-CN: 重命名
-"Waiting for Apply graph":
-  en: Waiting for Apply graph
-  zh-CN: 等待应用图
 "Unavailable for this node":
   en: Unavailable for this node
   zh-CN: 此节点不可用
@@ -620,9 +584,6 @@ _version: 2
 "Status":
   en: Status
   zh-CN: 状态
-"The candidate graph is not the confirmed runtime. Apply graph to observe this node.":
-  en: The candidate graph is not the confirmed runtime. Apply graph to observe this node.
-  zh-CN: 候选图尚未成为确认的运行图。应用图以观测此节点。
 "This node has no managed level topic in the current service projection.":
   en: This node has no managed level topic in the current service projection.
   zh-CN: 当前服务投影中此节点没有受管电平主题。
@@ -632,9 +593,6 @@ _version: 2
 "RMS %{index}":
   en: "RMS %{index}"
   zh-CN: "RMS %{index}"
-"Candidate graph · audio owner unchanged":
-  en: Candidate graph · audio owner unchanged
-  zh-CN: 候选图 · 音频所有者未变化
 "Parametric EQ":
   en: Parametric EQ
   zh-CN: 参量均衡器
@@ -812,9 +770,6 @@ _version: 2
 "%{source} to %{destination}: %{value}":
   en: "%{source} to %{destination}: %{value}"
   zh-CN: "%{source} 至 %{destination}：%{value}"
-"Routing matrix":
-  en: Routing matrix
-  zh-CN: 路由矩阵
 "Outputs → Inputs":
   en: Outputs → Inputs
   zh-CN: 输出 → 输入
@@ -923,42 +878,12 @@ _version: 2
 "Mixer":
   en: Mixer
   zh-CN: 调音台
-"Drag headers to reorder · drag dividers to resize":
-  en: Drag headers to reorder · drag dividers to resize
-  zh-CN: 拖动标题排序 · 拖动分隔条调整宽度
 "SENDS":
   en: SENDS
   zh-CN: 发送
-"PRE":
-  en: PRE
-  zh-CN: 推子前
-"POST":
-  en: POST
-  zh-CN: 推子后
-"No sends · connect in Graph":
-  en: No sends · connect in Graph
-  zh-CN: 无发送 · 请在图中连接
-"MONO":
-  en: MONO
-  zh-CN: 单声道
-"SWAP":
-  en: SWAP
-  zh-CN: 交换
-"L ONLY":
-  en: L ONLY
-  zh-CN: 仅左声道
-"R ONLY":
-  en: R ONLY
-  zh-CN: 仅右声道
-"CH %{channel} ONLY":
-  en: "CH %{channel} ONLY"
-  zh-CN: "仅第 %{channel} 声道"
 "Move channel":
   en: Move channel
   zh-CN: 移动通道
-"Pending":
-  en: Pending
-  zh-CN: 待应用
 "No strips · open Moiren to build a graph":
   en: No strips · open Moiren to build a graph
   zh-CN: 没有通道条 · 打开 Moiren 搭建图
@@ -1100,6 +1025,9 @@ _version: 2
 "Meter subscription: %{error}":
   en: "Meter subscription: %{error}"
   zh-CN: "电平表订阅：%{error}"
+"Spectrum subscription: %{error}":
+  en: "Spectrum subscription: %{error}"
+  zh-CN: "频谱订阅：%{error}"
 "Idle":
   en: Idle
   zh-CN: 空闲
@@ -1121,18 +1049,6 @@ _version: 2
 "Exited":
   en: Exited
   zh-CN: 已退出
-"Explicit stream buffers control professional audio latency":
-  en: Explicit stream buffers control professional audio latency
-  zh-CN: 显式流缓冲控制专业音频延迟
-"Active profile matches selection":
-  en: Active profile matches selection
-  zh-CN: 活动策略与所选一致
-"Pending: apply graph or start again to use selected profile":
-  en: "Pending: apply graph or start again to use selected profile"
-  zh-CN: 待生效：应用图或重新启动后使用所选策略
-"Selected profile applies on next Apply / Start":
-  en: Selected profile applies on next Apply / Start
-  zh-CN: 所选策略将在下次应用 / 启动时生效
 "Master output":
   en: Master output
   zh-CN: 主输出
@@ -1172,66 +1088,6 @@ _version: 2
 "Unavailable (not measured round-trip latency)":
   en: Unavailable (not measured round-trip latency)
   zh-CN: 不可用（未测量往返延迟）
-"Application input":
-  en: Application input
-  zh-CN: 应用输入
-"Virtual playback":
-  en: Virtual playback
-  zh-CN: 虚拟播放
-"Virtual microphone":
-  en: Virtual microphone
-  zh-CN: 虚拟麦克风
-"%{prefix}: actual timing":
-  en: "%{prefix}: actual timing"
-  zh-CN: "%{prefix}：实际时序"
-"period unknown":
-  en: period unknown
-  zh-CN: 周期未知
-"%{rate} Hz; %{period}; capacity %{capacity} frames":
-  en: "%{rate} Hz; %{period}; capacity %{capacity} frames"
-  zh-CN: "%{rate} Hz；%{period}；容量 %{capacity} 帧"
-"Virtual capture; no hardware period":
-  en: Virtual capture; no hardware period
-  zh-CN: 虚拟采集；无硬件周期
-"%{prefix}: period request":
-  en: "%{prefix}: period request"
-  zh-CN: "%{prefix}：周期请求"
-"%{ms} ms requested":
-  en: "%{ms} ms requested"
-  zh-CN: "已请求 %{ms} ms"
-"Device default requested":
-  en: Device default requested
-  zh-CN: 已请求设备默认值
-"%{prefix}: initialization":
-  en: "%{prefix}: initialization"
-  zh-CN: "%{prefix}：初始化"
-"%{prefix}: render queue":
-  en: "%{prefix}: render queue"
-  zh-CN: "%{prefix}：渲染队列"
-"Target %{target} / capacity %{capacity} frames":
-  en: "Target %{target} / capacity %{capacity} frames"
-  zh-CN: "目标 %{target} / 容量 %{capacity} 帧"
-"%{prefix}: bridge queue":
-  en: "%{prefix}: bridge queue"
-  zh-CN: "%{prefix}：桥接队列"
-"Prime %{prime} / capacity %{capacity} frames":
-  en: "Prime %{prime} / capacity %{capacity} frames"
-  zh-CN: "预填充 %{prime} / 容量 %{capacity} 帧"
-"Stream %{index}":
-  en: "Stream %{index}"
-  zh-CN: "流 %{index}"
-"Unmapped stream":
-  en: Unmapped stream
-  zh-CN: 未映射的流
-"%{prefix}: live queue / clock":
-  en: "%{prefix}: live queue / clock"
-  zh-CN: "%{prefix}：实时队列 / 时钟"
-"%{prefix}: faults / recovery":
-  en: "%{prefix}: faults / recovery"
-  zh-CN: "%{prefix}：故障 / 恢复"
-"Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}":
-  en: "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}"
-  zh-CN: "欠载 %{underrun} / 丢弃 %{dropped} 帧；复位 %{resets} / 积压恢复 %{recoveries}"
 "Applying changes...":
   en: Applying changes...
   zh-CN: 正在应用更改…
@@ -1404,9 +1260,6 @@ _version: 2
   en: Off
   zh-CN: 关闭
 
-"Selected profile activates on the next audio start":
-  en: Selected profile activates on the next audio start
-  zh-CN: 所选延迟档位将在下次音频启动时生效
 "Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
   en: Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
   zh-CN: 端点存在不代表音频正在流动。停止后端点保留但闸门关闭。
@@ -1422,9 +1275,6 @@ _version: 2
 "Error: %{cause}":
   en: "Error: %{cause}"
   zh-CN: "错误：%{cause}"
-"Channel: %{location}":
-  en: "Channel: %{location}"
-  zh-CN: "通道：%{location}"
 "Hint: %{hint}":
   en: "Hint: %{hint}"
   zh-CN: "提示：%{hint}"
@@ -1542,15 +1392,9 @@ _version: 2
 "No native audio backend is configured":
   en: "No native audio backend is configured"
   zh-CN: "未配置原生音频驱动"
-"The live parameter queue is busy; the candidate value is kept — retry or apply the graph later":
-  en: "The live parameter queue is busy; the candidate value is kept — retry or apply the graph later"
-  zh-CN: "实时参数队列繁忙；候选值已保留，可稍后重试或应用图"
 "The live parameter queue is busy; the candidate value is kept":
   en: "The live parameter queue is busy; the candidate value is kept"
   zh-CN: "实时参数队列繁忙；候选值已保留"
-"Apply the loaded project candidate before editing its live parameters":
-  en: "Apply the loaded project candidate before editing its live parameters"
-  zh-CN: "请先应用载入的候选项目，再调整该项目的实时参数"
 "The apply request identity space is exhausted":
   en: "The apply request identity space is exhausted"
   zh-CN: "应用请求身份空间已耗尽"
