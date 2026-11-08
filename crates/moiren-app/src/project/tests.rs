@@ -856,6 +856,35 @@ fn load_rejects_corrupt_future_invalid_and_oversized_documents() {
 }
 
 #[test]
+fn remember_recent_project_front_inserts_deduplicates_and_caps() {
+    let mut preferences = AppPreferences::default();
+    assert!(preferences.recent_projects.is_empty());
+    assert!(preferences.remember_recent_project(PathBuf::from("a.moiren")));
+    assert!(preferences.remember_recent_project(PathBuf::from("b.moiren")));
+    assert_eq!(
+        preferences.recent_projects,
+        [PathBuf::from("b.moiren"), PathBuf::from("a.moiren"),]
+    );
+    // Reopening pulls the file back to the front, and a repeat of the most
+    // recent entry changes nothing (no idle preference writes).
+    assert!(preferences.remember_recent_project(PathBuf::from("a.moiren")));
+    assert_eq!(
+        preferences.recent_projects,
+        [PathBuf::from("a.moiren"), PathBuf::from("b.moiren"),]
+    );
+    assert!(!preferences.remember_recent_project(PathBuf::from("a.moiren")));
+    // The list caps so the quick-switch menu stays a menu.
+    for index in 0..(RECENT_PROJECT_LIMIT as u32 + 2) {
+        preferences.remember_recent_project(PathBuf::from(format!("{index}.moiren")));
+    }
+    assert_eq!(preferences.recent_projects.len(), RECENT_PROJECT_LIMIT);
+    assert_eq!(
+        preferences.recent_projects[0],
+        PathBuf::from(format!("{}.moiren", RECENT_PROJECT_LIMIT as u32 + 1))
+    );
+}
+
+#[test]
 fn preferences_persist_density_and_missing_file_uses_defaults() {
     let directory = TestDirectory::new();
     let path = directory.file("settings/preferences.json");

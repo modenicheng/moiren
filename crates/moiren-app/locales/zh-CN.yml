@@ -929,6 +929,12 @@ _version: 2
 "Open project…":
   en: Open project…
   zh-CN: 打开项目…
+"Arrange":
+  en: Arrange
+  zh-CN: 整理
+"Recent projects":
+  en: Recent projects
+  zh-CN: 最近打开
 "Save project":
   en: Save project
   zh-CN: 保存项目
