@@ -348,3 +348,60 @@ No confirmation means refusal before target access or output creation. No
 remote delivery is claimed by host-only tests. See the
 [delivery receipt](../../docs/validation/2026-11-08-removal-delivery.md) for the
 actual test boundaries and outstanding native/cleanup gates.
+
+## Production Input And Entry Handoff
+
+`run-manifest.ps1::New-RemovalRunManifest -LayoutPath <reviewed-layout.json>
+-ExpectedLayoutSha256 <independent-sha> -ManifestPath <new-file.json>` creates
+the actual input manifest without launching any tool. The typed layout contains
+`SchemaVersion`, `SourcesRevision`, `SourceProvenance`, `SourceDirectory`, the
+complete `Sources`, original `Probe`, `Driver`, `Schedule`, `Tools` and `Symbols`.
+All file rows carry independent `Path`/`Bytes`/`Sha256` pins; source and signed
+package rows also carry `Name`. No current-file hash is adopted as a substitute
+for the reviewed layout or the frozen original binary pins.
+
+`SourceProvenance` explicitly uses `SourceKind=ReviewedBundle`, `BaseCommit`,
+`BundleIdentity`, `SourcesRevisionMeaning=ReviewedBundleBaseCommit` and an
+independent `BundleManifestPin`. That bundle identifies every source by exact
+name/length/hash. The base commit is not a claim that locally reviewed additions
+already exist in an exact Git tree. The builder holds original inputs, validates
+with `Read-RemovalRunPins`, publishes create-new, flushes, reads back and invokes
+the production `New-RemovalRunInputs` validator. It neither signs nor deploys.
+
+`../vad-diagnostic.py` connects a locally retained independently SHA-pinned copy
+of that target manifest to one remote entry attempt and the existing delivery.
+Its bootstrap verifies the exact target host/SID and already-elevated token,
+then locks the original manifest, all production source files and PowerShell
+executable before the first import. The complete source membership includes
+`run-manifest.ps1` and `entry-launch.ps1`; tests are not target dependencies.
+Only canonical existing target paths are consumed; this command does not stage
+or copy executables, elevate, reboot or make the closed release runnable.
+The real diagnostic child fixes console output to UTF-8 without a BOM before
+its first JSON/error output. Host delivery still requires the original strict
+UTF-8 bytes; legacy codepages must not replace Unicode paths with question marks
+or be repaired by permissive decoding.
+
+`entry-launch.ps1` retains one exact Process and bounded original stdout/stderr
+copies until natural exit. Known predispatch channel setup can resume on the
+same pipe; ambiguous CopyToAsync dispatch is not repeated. The outer envelope
+is 600 seconds, while the native controller remains 240 seconds and direct
+Removed remains 20 seconds. Deadline/cap/observation failures stay sticky and
+continue draining the original owner, so 600 seconds is not a kill deadline.
+Ordinary delivery transport retains its separate 120-second default.
+
+The entry persists sibling `*.entry-intent.json`, `*.entry-stdout.log`,
+`*.entry-stderr.log` and `*.entry-terminal.json`. Its local-ack pin must match
+the original child's entire strict JSON stdout and unchanged original run,
+result, inventory and archive. A closed exit 1 can deliver failed evidence;
+exit 0 without a valid original acknowledgment cannot. The host independently
+downloads and verifies the terminal and both log pins before passing that
+original acknowledgment hash to `deliver_run`. It persists
+`handoff-complete.json` only after the original target delivery acknowledgment
+has returned. `NativePassed`, `Qualified` and `CleanupAuthorized` stay false.
+
+CLI required inputs are `--manifest-copy`, `--expected-manifest-sha256`,
+`--remote-manifest`, `--run-directory`, `--powershell-pin` (a local pin JSON),
+`--expected-powershell-pin-sha256`, `--output-directory` and explicit
+`--user-reboot-confirmed`; optional `--worker-session-id` defaults to zero.
+The release guard still refuses native dispatch. The user has not confirmed
+the reboot; no target execution follows this host-only implementation.

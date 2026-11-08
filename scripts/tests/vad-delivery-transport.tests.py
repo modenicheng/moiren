@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -158,6 +159,40 @@ class TransportTests(unittest.TestCase):
                 self.download()
         self.assertEqual(raised.exception.owner.exit_code, 7)
         self.assertEqual(self.destination.read_bytes(), b'partial')
+
+    def test_outer_entry_deadline_is_per_owner_without_changing_delivery_default(self):
+        p = Process(b'closed output')
+        with mock.patch.object(M.subprocess, 'Popen', self.factory(p)):
+            result = M._run('Write-Output original', self.destination, 1000,
+                            self.log, {'Operation': 'DiagnosticEntry'}, b'',
+                            M._pin_stream, timeout_seconds=600.0)
+        self.assertEqual(result['Bytes'], len(b'closed output'))
+        intent = json.loads(Path(str(self.log) + '.intent.json').read_bytes())
+        self.assertEqual(intent['DeadlineSeconds'], 600.0)
+        self.assertEqual(M.TIMEOUT_SECONDS, 120.0)
+
+    def test_invalid_outer_deadlines_refuse_before_attempt_files(self):
+        for seconds in (False, 0, -1, 601, math.inf, math.nan, '600'):
+            with self.subTest(seconds=seconds), self.assertRaises(M.DeliveryTransportError):
+                M._run('unused', self.destination, 1000, self.log,
+                        {'Operation': 'DiagnosticEntry'}, b'', M._pin_stream,
+                        timeout_seconds=seconds)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_owner_deadline_is_frozen_and_diagnostic_does_not_relax_native_gates(self):
+        owner = M._Owner(M._Output(io.BytesIO(), 1), M._Output(io.BytesIO(), 1),
+                         io.BytesIO(), io.BytesIO(), 600.0)
+        owner.started = 0.0
+        with mock.patch.object(M.time, 'monotonic', return_value=121.0), \
+                mock.patch.object(M, 'TIMEOUT_SECONDS', 1.0):
+            owner._deadline()
+        self.assertFalse(owner.timed_out)
+        with mock.patch.object(M.time, 'monotonic', return_value=601.0):
+            owner._deadline()
+        self.assertTrue(owner.timed_out)
+        self.assertIn('deadline', owner.errors)
+        controller = SOURCE.with_name('vad-removal') / 'diagnostic-controller.ps1'
+        self.assertIn('DeadlineMilliseconds=[long]240000', controller.read_text())
 
     def test_transient_pump_read_failure_drains_original_pipe_and_stays_failed(self):
         class Flaky(io.BytesIO):

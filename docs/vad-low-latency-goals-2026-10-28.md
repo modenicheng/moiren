@@ -54,6 +54,17 @@ JSON. Host-only real Finish/export/host/target composition is not an actual
 remote transfer or driver test. The executable release remains closed pending
 target-run review; no native/physical verdict or cleanup permission follows.
 
+The [production handoff](validation/2026-11-08-removal-production-handoff.md)
+adds actual independently pinned layout-to-manifest generation, source locks
+before target imports, one retained entry process and original terminal/log/
+local-ack pins feeding the existing delivery pipeline. Closed exit1 evidence
+is delivered without native-success promotion. The independently reviewed
+source bundle names its base commit honestly rather than claiming an exact
+uncommitted Git tree. Host-only software/harmless-child composition does not
+perform a remote acquisition or open the native release. Current PR26 conflicts
+with main, so predecessor CI success does not cover the latest published head;
+separate isolated main integration is in progress without touching old drafts.
+
 The user requires one reused OBS installation rather than copied executable
 trees for each experiment. Reuse the existing dedicated test installation at
 `D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable`; do not move it to

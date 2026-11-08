@@ -202,7 +202,7 @@ class _Output:
 
 
 class _Owner:
-    def __init__(self, stdout, stderr, receipt, intent):
+    def __init__(self, stdout, stderr, receipt, intent, timeout_seconds=None):
         self.process = None
         self.launch_attempted = False
         self.exited_confirmed = False
@@ -223,6 +223,7 @@ class _Owner:
         self.validate = None
         self.saved = False
         self.closed = False
+        self._timeout_seconds = TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
 
     @property
     def success(self):
@@ -234,7 +235,7 @@ class _Owner:
             self.errors.add(category)
 
     def _deadline(self):
-        if self.started is not None and time.monotonic() - self.started >= TIMEOUT_SECONDS:
+        if self.started is not None and time.monotonic() - self.started >= self._timeout_seconds:
             self.timed_out = True
             self.fail('deadline')
 
@@ -394,6 +395,7 @@ class _Owner:
         value = {'SchemaVersion': 1, 'Target': TARGET, 'Pid': getattr(self.process, 'pid', None),
                  'LaunchAttempted': self.launch_attempted, 'ExitedConfirmed': self.exited_confirmed,
                  'ExitCode': self.exit_code, 'TimedOut': self.timed_out,
+                 'DeadlineSeconds': self._timeout_seconds,
                  'StdoutBytes': self.stdout.seen, 'StderrBytes': self.stderr.seen,
                  'PumpStartStates': self.pump_start_states,
                  'Errors': sorted(self.errors), 'NativePassed': False, 'Qualified': False}
@@ -446,7 +448,10 @@ def _pin_stream(path, stream):
     return {'Path': str(path), 'Bytes': count, 'Sha256': digest.hexdigest().upper()}
 
 
-def _run(script, output, cap, log_prefix, intent, payload, validator):
+def _run(script, output, cap, log_prefix, intent, payload, validator, *, timeout_seconds=None):
+    timeout_seconds = TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+    if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 600:
+        _reject('Finite typed outer deadline must be in (0, 600] seconds')
     output, prefix = _local_path(output), _local_path(log_prefix)
     paths = [output, Path(str(prefix) + '.stderr.log'), Path(str(prefix) + '.intent.json'),
              Path(str(prefix) + '.transport.json')]
@@ -464,11 +469,11 @@ def _run(script, output, cap, log_prefix, intent, payload, validator):
             _check_path(path)
             streams.append(_new_file(path))
         stdout, stderr, intent_file, receipt = streams
-        owner = _Owner(_Output(stdout, cap), _Output(stderr, STDERR_CAP), receipt, intent_file)
+        owner = _Owner(_Output(stdout, cap), _Output(stderr, STDERR_CAP), receipt, intent_file, timeout_seconds)
         owner.validate = lambda: validator(output, stdout)
         _write_all(intent_file, _encoded(dict(intent, SchemaVersion=1, Target=TARGET,
                    Host=HOST, Sid=SID, Phase='BeforePopen', LaunchAttempted=False, StdoutCap=cap,
-                   StderrCap=STDERR_CAP, DeadlineSeconds=TIMEOUT_SECONDS,
+                   StderrCap=STDERR_CAP, DeadlineSeconds=owner._timeout_seconds,
                    StartedUtc=datetime.datetime.now(datetime.timezone.utc).isoformat())))
         _durable(intent_file)
         encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')

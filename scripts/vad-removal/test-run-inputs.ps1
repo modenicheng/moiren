@@ -36,11 +36,7 @@ function New-InputFixture([switch]$Running,[uint32]$StopStatus=0){
  $f=New-Fixture -LeaveTraceRunning:$Running -StopStatus $StopStatus
  $source=Join-Path $f.Root 'sources';$null=[IO.Directory]::CreateDirectory($source)
  $sources=@()
- foreach($name in @('closed-export.ps1','collector-boundary.ps1','collector-worker.ps1','controller-seal.ps1','delivery-finalize.ps1','diagnostic-controller.ps1','diagnostic-lease.ps1',
-  'finish-session.ps1','finite-tool.ps1','invoke-diagnostic.ps1','invoke-preflight.ps1','native-admission.ps1','preflight-session.ps1',
-  'probe-boundary.ps1','readonly-preflight.ps1','run-inputs.ps1','safety-audit.ps1','session-identity.ps1',
-  'target-readiness.ps1','task-boundary.ps1','trace-boundary.ps1','trace-decode.ps1','trace-native.ps1',
-  'trace-query.ps1','trace-readback.ps1','trace-session.ps1','worker-boundary.ps1','worker.ps1')){
+ foreach($name in @(Get-RemovalRunSourceNames)){
   $path=Join-Path $source $name;Write-Text $path ('# pinned fixture '+$name)
   $p=Pin $path;$p.Name=$name;$sources+=,$p
  }
@@ -88,7 +84,7 @@ function Set-FixedManagedArguments($Fixture,$Owner){
 }
 Case 'manifest-and-all-real-source-files-tools-symbols-and-release-are-read-and-pinned' {
  $f=New-InputFixture;$o=Open-Inputs $f;Assert-RemovalRunInputs $o
- Check ($o.ManifestPin.Sha256-ceq$f.ManifestHash-and$o.Pins.Sources.Count-eq28-and
+ Check ($o.ManifestPin.Sha256-ceq$f.ManifestHash-and$o.Pins.Sources.Count-eq@(Get-RemovalRunSourceNames).Count-and
   $o.Pins.Probe.SourceRevision-ceq$f.Fixed.ProbeSource-and$o.Pins.Driver.Pdb.Sha256-ceq$f.Fixed.PdbSha256) 'Actual pins/source identity lost.'
  Check ($f.Calls.Count-eq0) 'Input validation launched a tool.'
 }
@@ -138,7 +134,7 @@ Case 'actual-extra-production-library-is-supported-only-when-fully-pinned-and-te
  $f=New-InputFixture;Write-Text (Join-Path $f.SourceDirectory 'test-host-only.ps1') '# excluded test'
  $path=Join-Path $f.SourceDirectory 'extra-library.ps1';Write-Text $path '# actual production dependency'
  $pin=Pin $path;$pin.Name='extra-library.ps1';$f.Manifest.Sources+=,$pin
- Save-InputManifest $f;$o=Open-Inputs $f;Check ($o.Pins.Sources.Count-eq29) 'Production dependency silently skipped.'
+ Save-InputManifest $f;$o=Open-Inputs $f;Check ($o.Pins.Sources.Count-eq(@(Get-RemovalRunSourceNames).Count+1)) 'Production dependency silently skipped.'
 }
 Case 'source-tool-schedule-symbol-and-manifest-mutation-after-construction-refuses' {
  foreach($mode in @('source','tool','schedule','tmf','manifest')){

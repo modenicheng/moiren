@@ -18,6 +18,15 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Reused tools and naming contract - 2026-11-08
 
+The [production input/entry handoff](../../docs/validation/2026-11-08-removal-production-handoff.md)
+connects independently reviewed actual-file manifest generation, pre-import
+complete source locks, a retained bounded entry process and original child
+stdout acknowledgment to host delivery. A closed diagnostic exit1 remains
+failure evidence, not native acceptance. Target execution/release review and
+the user's reboot confirmation remain outstanding; installed613, original
+probe pins and all S0-S5 acceptance gates are unchanged. The current published
+head has no CI run because PR26 is conflicted; prior green CI is not its pass.
+
 The [closed-run delivery implementation](../../docs/validation/2026-11-08-removal-delivery.md)
 adds original-ack-pinned download, host member-by-member ZIP verification,
 independently pinned finalizer/dependencies, durable target ack and host ack

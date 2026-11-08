@@ -74,6 +74,7 @@ jobs:
         run: |
           python3 -B scripts/tests/vad-delivery.tests.py
           python3 -B scripts/tests/vad-delivery-transport.tests.py
+          python3 -B scripts/tests/vad-diagnostic.tests.py
       - name: Test dedicated OBS path reuse and configuration ownership
         run: python3 scripts/tests/obs-reuse.tests.py
       - name: Test fixed-path OBS acquisition setup and graceful cleanup
@@ -146,7 +147,8 @@ jobs:
             'test-native-admission.ps1', 'test-native-guard-routing.ps1', 'test-native-query-admission.ps1',
             'test-native-admission-lifetime.ps1', 'test-closed-controller.ps1',
             'test-closed-export.ps1', 'test-closed-entry.ps1', 'test-closed-finish.ps1',
-            'test-delivery-finalize.ps1', 'test-delivery-composition.ps1'
+            'test-delivery-finalize.ps1', 'test-delivery-composition.ps1',
+            'test-run-manifest.ps1', 'test-entry-launch.ps1', 'test-diagnostic-handoff.ps1'
           )
           foreach ($engine in $engines) {
             foreach ($test in $tests) {

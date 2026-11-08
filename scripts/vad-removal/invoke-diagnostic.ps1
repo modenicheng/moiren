@@ -6,6 +6,7 @@ param([Parameter(Mandatory=$true)][string]$RunDirectory,
     [switch]$UserRebootConfirmed,[ValidateRange(0,65535)][int]$WorkerSessionId=0)
 Set-StrictMode -Version 2
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $controller=$null
 $result=$null;$exitCode=1
 try {
