@@ -8,17 +8,17 @@ use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::*;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
+use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use gpui_kit::base::ScrollbarAxis;
 
 /// The inspector panel behind a [`PanelHost`]: rebuilt only when its inputs
 /// changed — the published snapshot, the selection, the active page, the
 /// active editing session, and the graph/library mode flags.
-pub(in crate::ui::shell) struct InspectorPanel;
+pub(crate) struct InspectorPanel;
 
 #[derive(PartialEq)]
-pub(in crate::ui::shell) struct InspectorKey {
+pub(crate) struct InspectorKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     selected_node: Option<moiren_core::graph::NodeId>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
@@ -45,7 +45,7 @@ pub(in crate::ui::shell) struct InspectorKey {
     override_scroll: Pixels,
 }
 
-pub(in crate::ui::shell) type InspectorPanelHost = PanelHost<InspectorPanel>;
+pub(crate) type InspectorPanelHost = PanelHost<InspectorPanel>;
 
 impl CachedPanel for InspectorPanel {
     type Owner = StudioShell;
@@ -163,10 +163,10 @@ fn inspector_panel_for(shell: &StudioShell, _window: &Window) -> AnyElement {
 
 /// The node-library panels behind [`PanelHost`]s: the icon rail and the
 /// detail sleeve, rebuilt only when their inputs changed.
-pub(in crate::ui::shell) struct LibraryPanel;
+pub(crate) struct LibraryPanel;
 
 #[derive(PartialEq)]
-pub(in crate::ui::shell) struct LibraryKey {
+pub(crate) struct LibraryKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     // The session-node list styles each row as selected from this field
     // (graph::library), so a selection change must rebuild the list even when
@@ -195,7 +195,7 @@ fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
     }
 }
 
-pub(in crate::ui::shell) type LibraryPanelHost = PanelHost<LibraryPanel>;
+pub(crate) type LibraryPanelHost = PanelHost<LibraryPanel>;
 
 impl CachedPanel for LibraryPanel {
     type Owner = StudioShell;
@@ -225,9 +225,9 @@ impl CachedPanel for LibraryPanel {
 }
 
 /// The library's icon rail: same inputs as the detail sleeve, no search.
-pub(in crate::ui::shell) struct LibraryRailPanel;
+pub(crate) struct LibraryRailPanel;
 
-pub(in crate::ui::shell) type LibraryRailPanelHost = PanelHost<LibraryRailPanel>;
+pub(crate) type LibraryRailPanelHost = PanelHost<LibraryRailPanel>;
 
 impl CachedPanel for LibraryRailPanel {
     type Owner = StudioShell;
@@ -250,7 +250,7 @@ impl CachedPanel for LibraryRailPanel {
 /// The sidebar inspector's hot surface: live horizontal meter bars over the
 /// inspector panel, painting from the tracks the inspector's canvases
 /// register and the shared observations.
-pub(super) struct InspectorMeters {
+pub(crate) struct InspectorMeters {
     shell: WeakEntity<StudioShell>,
     geometry: SharedFrame<MeterTracks>,
     /// How many registered tracks this surface has painted. Test-visible
@@ -273,12 +273,12 @@ impl InspectorMeters {
     /// means the assembly handed this surface a frame of its own instead of
     /// the panel's: it compiles, runs, and paints nothing forever.
     #[cfg(all(test, feature = "gpui-test"))]
-    pub(in crate::ui::shell) fn registered_tracks(&self) -> usize {
+    pub(crate) fn registered_tracks(&self) -> usize {
         self.geometry.read().map_or(0, |frame| frame.iter().count())
     }
 
     #[cfg(all(test, feature = "gpui-test"))]
-    pub(in crate::ui::shell) fn painted_tracks(&self) -> usize {
+    pub(crate) fn painted_tracks(&self) -> usize {
         self.painted_tracks.get()
     }
 }
@@ -408,7 +408,7 @@ pub(super) fn inspector_host(
 /// Left-hand node-library host for the graph page. The icon rail is the
 /// collapsed form: it grows in from zero only while the detail sleeve is
 /// closed, so the two springs swap one for the other in the same motion.
-pub(super) fn library_host(
+pub(crate) fn library_host(
     shell: &StudioShell,
     _window: &Window,
     cx: &Context<StudioShell>,

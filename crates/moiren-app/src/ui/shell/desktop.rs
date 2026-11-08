@@ -5,7 +5,7 @@ pub(super) struct DesktopOwner {
 }
 impl Global for DesktopOwner {}
 
-pub(super) struct Desktop {
+pub(crate) struct Desktop {
     state: Entity<UiState>,
     tray: Option<super::super::tray::AppTray>,
     window: Option<AnyWindowHandle>,

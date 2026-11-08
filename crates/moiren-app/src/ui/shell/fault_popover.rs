@@ -17,7 +17,7 @@ use moiren_core::graph::NodeId;
 /// session and catalog diagnostics), and the rect it hangs from in window
 /// pixels.
 #[derive(Clone, Copy, PartialEq)]
-pub(in crate::ui::shell) struct FaultPopover {
+pub(crate) struct FaultPopover {
     pub node: Option<NodeId>,
     pub anchor: Bounds<Pixels>,
 }
@@ -29,7 +29,7 @@ const MAX_HEIGHT: f32 = 320.;
 /// Drops a popover whose content group vanished (faults clear on a
 /// successful edit, or the faulted node was deleted) so the occluding layer
 /// never outlives its reason.
-pub(in crate::ui::shell) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
+pub(crate) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
     let Some(popover) = shell.fault_popover else {
         return;
     };
@@ -44,7 +44,7 @@ pub(in crate::ui::shell) fn sync(shell: &mut StudioShell, cx: &Context<StudioShe
 }
 
 /// Whether the graph-wide popover still has anything to list.
-pub(in crate::ui::shell) fn has_unlocated(state: &UiState) -> bool {
+pub(crate) fn has_unlocated(state: &UiState) -> bool {
     state
         .snapshot
         .graph
@@ -58,7 +58,7 @@ pub(in crate::ui::shell) fn has_unlocated(state: &UiState) -> bool {
 
 /// The status bar's red summary: the first unlocated message, translated.
 /// Causes are English catalog keys; plain prose passes through unchanged.
-pub(in crate::ui::shell) fn unlocated_summary(state: &UiState) -> Option<String> {
+pub(crate) fn unlocated_summary(state: &UiState) -> Option<String> {
     state
         .snapshot
         .graph
@@ -76,7 +76,7 @@ pub(in crate::ui::shell) fn unlocated_summary(state: &UiState) -> Option<String>
         })
 }
 
-pub(in crate::ui::shell) fn overlay(
+pub(crate) fn overlay(
     shell: &StudioShell,
     window: &Window,
     cx: &Context<StudioShell>,

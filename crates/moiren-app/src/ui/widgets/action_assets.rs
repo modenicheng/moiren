@@ -203,7 +203,7 @@ mod tests {
     /// errors on every painted frame instead of skipping quietly.
     #[test]
     fn every_painted_node_icon_is_registered() {
-        for template in crate::ui::pages::node_catalog::NodeTemplate::ALL {
+        for template in crate::ui::pages::graph::node_catalog::NodeTemplate::ALL {
             let path = format!("icons/{}.svg", template.icon());
             assert!(
                 ActionAssets.load(&path).ok().flatten().is_some(),
@@ -242,7 +242,7 @@ mod tests {
     fn every_icon_asset_has_a_request_path() {
         use std::collections::HashSet;
 
-        use crate::ui::pages::node_catalog::NodeTemplate;
+        use crate::ui::pages::graph::node_catalog::NodeTemplate;
 
         // Icon names painted by the canvas node cards come from the `NodeKind`
         // match in ui/pages/graph_canvas.rs; keep this list in sync there.

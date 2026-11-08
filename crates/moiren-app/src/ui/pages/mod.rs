@@ -1,8 +1,15 @@
-//! Workspace identities shared by shell and persistence.
+//! The workspace pages: shared identities plus each page's module tree.
 
-pub mod graph_canvas;
-pub mod graph_canvas_view;
-pub mod node_catalog;
+pub(crate) mod devices;
+pub(crate) mod graph;
+pub(crate) mod matrix;
+pub(crate) mod mixer;
+pub(crate) mod settings;
+
+// The pages render against the shell's shared surface (gpui prelude, theme,
+// service types, StudioShell). Re-exported here so page modules keep their
+// `use super::*` glob after moving out of the shell module.
+pub(crate) use crate::ui::shell::*;
 
 /// Which workspace page is active (toolbar tabs).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -19,8 +26,8 @@ impl Page {
         match self {
             Page::Graph => "Graph",
             Page::Mixer => "Mixer",
-            Page::Matrix => "Matrix",
             Page::Devices => "Devices",
+            Page::Matrix => "Matrix",
         }
     }
 }

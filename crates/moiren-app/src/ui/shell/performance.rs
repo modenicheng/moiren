@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "ui-profiler")]
 mod platform_trace;
 #[cfg(feature = "ui-profiler")]
-pub(in crate::ui::shell) use platform_trace::PlatformTrace;
+pub(crate) use platform_trace::PlatformTrace;
 
 #[derive(Default)]
-pub(in crate::ui::shell) struct MeterTrace {
+pub(crate) struct MeterTrace {
     pub meter_paints: usize,
     pub strip_renders: usize,
     pub toolbar_renders: usize,

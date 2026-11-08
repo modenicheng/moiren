@@ -72,7 +72,7 @@ pub(super) fn preferred_size(strips: usize) -> Size<Pixels> {
     )
 }
 
-pub(super) struct TrayMixer {
+pub(crate) struct TrayMixer {
     state: Entity<UiState>,
     desktop: Option<WeakEntity<Desktop>>,
     faders: BTreeMap<NodeId, SliderSlot>,
@@ -181,7 +181,7 @@ impl Render for TrayMixer {
 }
 
 #[derive(PartialEq)]
-pub(in crate::ui::shell) struct TrayKey {
+pub(crate) struct TrayKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     /// The strip row scrolls inside the cached panel (same
     /// scroll-under-cache rationale as the main window's pages).
@@ -190,9 +190,9 @@ pub(in crate::ui::shell) struct TrayKey {
 
 /// The flyout's strip panel: faders, mute/solo, and readouts, rebuilt only
 /// when the published snapshot changes.
-pub(in crate::ui::shell) struct TrayPanel;
+pub(crate) struct TrayPanel;
 
-pub(in crate::ui::shell) type TrayPanelHost = PanelHost<TrayPanel>;
+pub(crate) type TrayPanelHost = PanelHost<TrayPanel>;
 
 impl CachedPanel for TrayPanel {
     type Owner = TrayMixer;
@@ -468,7 +468,7 @@ fn meter_track(flyout: &TrayMixer, id: NodeId) -> impl IntoElement {
 
 /// The flyout's hot surface: live bars over the cached strips, painting from
 /// the geometry the strips registered and the shared observations.
-pub(in crate::ui::shell) struct FlyoutMeters {
+pub(crate) struct FlyoutMeters {
     flyout: WeakEntity<TrayMixer>,
     geometry: SharedFrame<MeterTracks>,
     /// How many registered tracks this surface has painted. Test-visible
@@ -478,10 +478,7 @@ pub(in crate::ui::shell) struct FlyoutMeters {
 }
 
 impl FlyoutMeters {
-    pub(in crate::ui::shell) fn new(
-        flyout: WeakEntity<TrayMixer>,
-        geometry: SharedFrame<MeterTracks>,
-    ) -> Self {
+    pub(crate) fn new(flyout: WeakEntity<TrayMixer>, geometry: SharedFrame<MeterTracks>) -> Self {
         Self {
             flyout,
             geometry,
@@ -492,17 +489,17 @@ impl FlyoutMeters {
     /// Tracks the sibling panel registered for this surface. Empty means the
     /// two halves of the pipeline drifted apart and the flyout has no meters.
     #[cfg(all(test, feature = "gpui-test"))]
-    pub(in crate::ui::shell) fn registered_tracks(&self) -> usize {
+    pub(crate) fn registered_tracks(&self) -> usize {
         self.geometry.read().map_or(0, |frame| frame.iter().count())
     }
 
     #[cfg(all(test, feature = "gpui-test"))]
-    pub(in crate::ui::shell) fn painted_tracks(&self) -> usize {
+    pub(crate) fn painted_tracks(&self) -> usize {
         self.painted_tracks.get()
     }
 }
 
-pub(in crate::ui::shell) type FlyoutMeterLayer = HotLayerView<FlyoutMeters>;
+pub(crate) type FlyoutMeterLayer = HotLayerView<FlyoutMeters>;
 
 impl HotSurface for FlyoutMeters {
     type Frame = MeterTracks;

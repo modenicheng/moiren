@@ -2,21 +2,26 @@
 
 use std::time::{Duration, Instant};
 
-use gpui_kit::prelude::*;
-use gpui_kit::*;
-use rust_i18n::t;
+pub(crate) use gpui_kit::prelude::*;
+pub(crate) use gpui_kit::*;
+pub(crate) use rust_i18n::t;
 
-use super::actions;
-use super::monitoring::MeterSubscriptions;
+pub(crate) use super::actions;
+pub(crate) use super::monitoring::MeterSubscriptions;
 use super::pages::{self, Page};
-use super::state::UiState;
-use super::theme;
-use super::widgets::action_assets::ActionIcon;
-use super::widgets::action_assets::{ActionAssets, register_fonts};
-use super::widgets::actions::{ActionButton, ButtonVariant, ControlSize, Density, IconButton};
-use super::widgets::navigation::{WindowAction, WindowControlButton, WorkspaceTab};
-use crate::service::{AppHandle, AppRequest, ServiceRuntime, SessionPhase, start_service};
-use pages::graph_canvas::Camera;
+pub(crate) use super::pages::{devices, graph, matrix, mixer, settings};
+pub(crate) use super::state::UiState;
+pub(crate) use super::theme;
+pub(crate) use super::widgets::action_assets::ActionIcon;
+pub(crate) use super::widgets::action_assets::{ActionAssets, register_fonts};
+pub(crate) use super::widgets::actions::{
+    ActionButton, ButtonVariant, ControlSize, Density, IconButton,
+};
+pub(crate) use super::widgets::navigation::{WindowAction, WindowControlButton, WorkspaceTab};
+pub(crate) use crate::service::{
+    AppHandle, AppRequest, ServiceRuntime, SessionPhase, start_service,
+};
+pub(crate) use pages::graph::graph_canvas::Camera;
 
 /// Presentation survives hiding independently of the service/audio lifetime.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -124,178 +129,179 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 
 /// Root view: toolbar, active page, status bar.
 pub struct StudioShell {
-    state: Entity<UiState>,
-    settings_open: bool,
-    settings: settings::SettingsEditor,
-    settings_menu: Option<settings::ValueMenu>,
-    project_menu: bool,
-    sidebar_open: bool,
-    inspector_open: bool,
-    compact: bool,
-    density: Density,
-    preferences: crate::project::AppPreferences,
-    preferences_path: Option<std::path::PathBuf>,
-    preference_save: Option<Task<()>>,
-    preference_save_revision: u64,
-    preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) state: Entity<UiState>,
+    pub(crate) settings_open: bool,
+    pub(crate) settings: settings::SettingsEditor,
+    pub(crate) settings_menu: Option<settings::ValueMenu>,
+    pub(crate) project_menu: bool,
+    pub(crate) sidebar_open: bool,
+    pub(crate) inspector_open: bool,
+    pub(crate) compact: bool,
+    pub(crate) density: Density,
+    pub(crate) preferences: crate::project::AppPreferences,
+    pub(crate) preferences_path: Option<std::path::PathBuf>,
+    pub(crate) preference_save: Option<Task<()>>,
+    pub(crate) preference_save_revision: u64,
+    pub(crate) preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Recovery autosave: where the working document is written, the state it
     /// was last saved from, and the in-flight debounce/write machinery.
-    autosave_path: Option<std::path::PathBuf>,
-    autosave_stamp: autosave::AutosaveStamp,
-    autosave_deadline: Option<Instant>,
-    autosave_timer: Option<Task<()>>,
-    autosave_write: Option<std::sync::Arc<std::sync::Mutex<autosave::AutosaveWriteCompletion>>>,
-    device_tab: devices::DeviceTab,
-    selected_device: Option<String>,
-    export_controls: devices::ExportControls,
-    selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
-    meters: MeterSubscriptions,
-    node_meter_points:
+    pub(crate) autosave_path: Option<std::path::PathBuf>,
+    pub(crate) autosave_stamp: autosave::AutosaveStamp,
+    pub(crate) autosave_deadline: Option<Instant>,
+    pub(crate) autosave_timer: Option<Task<()>>,
+    pub(crate) autosave_write:
+        Option<std::sync::Arc<std::sync::Mutex<autosave::AutosaveWriteCompletion>>>,
+    pub(crate) device_tab: devices::DeviceTab,
+    pub(crate) selected_device: Option<String>,
+    pub(crate) export_controls: devices::ExportControls,
+    pub(crate) selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
+    pub(crate) meters: MeterSubscriptions,
+    pub(crate) node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
-    project_path: Option<std::path::PathBuf>,
-    project_name: String,
-    project_message: Option<String>,
-    project_busy: bool,
-    pending_project: Option<(
+    pub(crate) project_path: Option<std::path::PathBuf>,
+    pub(crate) project_name: String,
+    pub(crate) project_message: Option<String>,
+    pub(crate) project_busy: bool,
+    pub(crate) pending_project: Option<(
         crate::service::RequestId,
         crate::project::ProjectDocument,
         std::path::PathBuf,
     )>,
     #[cfg(feature = "gpui-test")]
-    test_page: Option<Entity<PageCell>>,
-    presentation: WindowPresentation,
-    camera: Camera,
-    node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
-    node_drag: Option<(moiren_core::graph::NodeId, f32, f32)>,
+    pub(crate) test_page: Option<Entity<PageCell>>,
+    pub(crate) presentation: WindowPresentation,
+    pub(crate) camera: Camera,
+    pub(crate) node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+    pub(crate) node_drag: Option<(moiren_core::graph::NodeId, f32, f32)>,
     /// Multi-selection on the graph canvas; `selected_node` is the primary
     /// (last-clicked) member that drives the inspector.
-    selected_nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    pub(crate) selected_nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
     /// Active rubber-band drag; see [`graph::SelectionDrag`].
-    selection_drag: Option<graph::SelectionDrag>,
-    graph_focus: FocusHandle,
-    connection_drag: Option<graph::ConnectionDrag>,
+    pub(crate) selection_drag: Option<graph::SelectionDrag>,
+    pub(crate) graph_focus: FocusHandle,
+    pub(crate) connection_drag: Option<graph::ConnectionDrag>,
     /// The open canvas context menu, over a node or the background.
-    context_menu: Option<graph::ContextMenu>,
+    pub(crate) context_menu: Option<graph::ContextMenu>,
     /// A right press on the canvas awaiting its release: within the drag
     /// threshold the release opens the context menu, beyond it the stroke
     /// was a pan.
-    right_press: Option<(f32, f32)>,
+    pub(crate) right_press: Option<(f32, f32)>,
     /// Snap alignment guides for the in-flight card drag; painted by the
     /// canvas layer, cleared when the gesture ends.
-    drag_guides: Option<pages::graph_canvas::DragGuides>,
+    pub(crate) drag_guides: Option<pages::graph::graph_canvas::DragGuides>,
     /// The snap offset the in-flight card drag has baked into
     /// `node_positions` so far; the threshold measures against the drag's
     /// free path by undoing it, so a snapped card lets go once the cursor
     /// leaves the threshold. Zero outside a drag.
-    node_drag_snap: (f32, f32),
+    pub(crate) node_drag_snap: (f32, f32),
     /// Active card-knob value drag: node, control, press y, press value.
-    knob_drag: Option<(
+    pub(crate) knob_drag: Option<(
         moiren_core::graph::NodeId,
-        pages::graph_canvas::KnobControl,
+        pages::graph::graph_canvas::KnobControl,
         f32,
         f64,
     )>,
-    pending_node_spawn: Option<graph::PendingNodeSpawn>,
-    node_search: Entity<component::input::InputState>,
-    node_name: Entity<component::input::InputState>,
+    pub(crate) pending_node_spawn: Option<graph::PendingNodeSpawn>,
+    pub(crate) node_search: Entity<component::input::InputState>,
+    pub(crate) node_name: Entity<component::input::InputState>,
     /// Node whose label is being edited inline in the inspector.
-    node_name_editing: Option<moiren_core::graph::NodeId>,
-    hand_tool: bool,
-    matrix_scroll: ScrollHandle,
-    mixer_scroll: ScrollHandle,
+    pub(crate) node_name_editing: Option<moiren_core::graph::NodeId>,
+    pub(crate) hand_tool: bool,
+    pub(crate) matrix_scroll: ScrollHandle,
+    pub(crate) mixer_scroll: ScrollHandle,
     /// The shared inspector panel's scroll (graph/matrix/device inspectors
     /// are mutually exclusive), plus the other cached panels' scroll
     /// containers: their offsets ride the panel keys, since a cached panel
     /// replays baked paint coordinates until its key changes.
-    inspector_scroll: ScrollHandle,
-    library_scroll: ScrollHandle,
-    library_rail_scroll: ScrollHandle,
-    settings_scroll: ScrollHandle,
-    device_list_scroll: ScrollHandle,
-    device_override_scroll: ScrollHandle,
-    binding_menu_scroll: ScrollHandle,
+    pub(crate) inspector_scroll: ScrollHandle,
+    pub(crate) library_scroll: ScrollHandle,
+    pub(crate) library_rail_scroll: ScrollHandle,
+    pub(crate) settings_scroll: ScrollHandle,
+    pub(crate) device_list_scroll: ScrollHandle,
+    pub(crate) device_override_scroll: ScrollHandle,
+    pub(crate) binding_menu_scroll: ScrollHandle,
     /// The dock pane's own scroll: docked strips key their cached paint on
     /// this offset, so a dock scroll rebuilds them instead of leaving the
     /// main row's stale coordinates on screen.
-    dock_scroll: ScrollHandle,
-    exports_scroll: ScrollHandle,
-    mixer: mixer::MixerPresentation,
+    pub(crate) dock_scroll: ScrollHandle,
+    pub(crate) exports_scroll: ScrollHandle,
+    pub(crate) mixer: mixer::MixerPresentation,
     /// Render/frame instrumentation for the whole window (shell, chrome,
     /// every page), written by ui_capture and the gpui-test assertions.
     /// Lives on the shell because its scope is the window, not the mixer.
     #[cfg(feature = "gpui-test")]
-    trace: std::cell::RefCell<performance::MeterTrace>,
-    mixer_geometry: mixer::page::Geometry,
-    toolbar_chrome: Entity<chrome::ToolbarChrome>,
-    status_chrome: Entity<chrome::StatusbarChrome>,
-    mixer_frame: Entity<mixer::page::MixerMeterLayer>,
-    graph_meter_frame: Entity<graph::page::GraphMeterLayer>,
-    graph_controls: Entity<graph::page::GraphPanelHost>,
+    pub(crate) trace: std::cell::RefCell<performance::MeterTrace>,
+    pub(crate) mixer_geometry: mixer::page::Geometry,
+    pub(crate) toolbar_chrome: Entity<chrome::ToolbarChrome>,
+    pub(crate) status_chrome: Entity<chrome::StatusbarChrome>,
+    pub(crate) mixer_frame: Entity<mixer::page::MixerMeterLayer>,
+    pub(crate) graph_meter_frame: Entity<graph::page::GraphMeterLayer>,
+    pub(crate) graph_controls: Entity<graph::page::GraphPanelHost>,
     /// The graph canvas's most recent projected frame, shared with the meter
     /// frame's overlay paint. Refreshed by the canvas prepaint on cache
     /// rebuilds; between them the geometry the cached canvas painted stands.
-    graph_canvas_frame: pages::graph_canvas_view::PreparedFrame,
+    pub(crate) graph_canvas_frame: pages::graph::graph_canvas_view::PreparedFrame,
     /// Window rects of the graph page's HUD overlays (editing toolbar,
     /// overview, library handle), registered by the cached panel's probes
     /// and carved out of the meter frame's paint so live bars stay under
     /// them.
-    graph_overlays: pages::graph_canvas::OverlayRects,
+    pub(crate) graph_overlays: pages::graph::graph_canvas::OverlayRects,
     /// The meter frame's copy of the spectrum curve it is painting: the
     /// subscription table cannot stay borrowed across the paint, and a
     /// per-frame allocation would be a wakeup cost of its own.
-    spectrum_scratch: Vec<f32>,
+    pub(crate) spectrum_scratch: Vec<f32>,
     /// The canvas card under the pointer, tracked on idle moves for the
     /// fault tooltip the meter frame paints; never part of a panel key.
-    hovered_node: Option<moiren_core::graph::NodeId>,
+    pub(crate) hovered_node: Option<moiren_core::graph::NodeId>,
     /// The mixer strip under the pointer, tracked by the strip's hover
     /// listener for the fault banner the meter frame paints; the graph
     /// field's twin, likewise never part of a panel key.
-    hovered_strip: Option<moiren_core::graph::NodeId>,
+    pub(crate) hovered_strip: Option<moiren_core::graph::NodeId>,
     /// The endpoint menu hanging off a source/sink card's binding chip.
-    binding_menu: Option<graph::BindingMenu>,
+    pub(crate) binding_menu: Option<graph::BindingMenu>,
     /// The fault detail popover hanging off a faulted object's "!" marker
     /// (graph badge, mixer strip badge, status bar summary).
-    fault_popover: Option<fault_popover::FaultPopover>,
-    compressor: graph::CompressorControls,
-    meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
+    pub(crate) fault_popover: Option<fault_popover::FaultPopover>,
+    pub(crate) compressor: graph::CompressorControls,
+    pub(crate) meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     /// Why this window currently needs display-rate frames (design 17 Tier
     /// H): sources register while active, and the control-side poll is the
     /// complement.
-    frame_demand: hot::FrameDemand,
+    pub(crate) frame_demand: hot::FrameDemand,
     /// Where the inspector's meter tracks sit; registered by the inspector's
     /// canvases each frame and read by the sidebar hot layer.
-    inspector_meters: sidebar::InspectorMeterFrame,
-    inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
-    devices_panel: Entity<devices::DevicesPanelHost>,
-    settings_panel: Entity<settings::SettingsPanelHost>,
-    inspector_panel: Entity<sidebar::InspectorPanelHost>,
-    library_panel: Entity<sidebar::LibraryPanelHost>,
-    library_rail_panel: Entity<sidebar::LibraryRailPanelHost>,
-    observation_nodes: Option<(
+    pub(crate) inspector_meters: sidebar::InspectorMeterFrame,
+    pub(crate) inspector_meter_layer: Entity<sidebar::InspectorMeterLayer>,
+    pub(crate) devices_panel: Entity<devices::DevicesPanelHost>,
+    pub(crate) settings_panel: Entity<settings::SettingsPanelHost>,
+    pub(crate) inspector_panel: Entity<sidebar::InspectorPanelHost>,
+    pub(crate) library_panel: Entity<sidebar::LibraryPanelHost>,
+    pub(crate) library_rail_panel: Entity<sidebar::LibraryRailPanelHost>,
+    pub(crate) observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
         moiren_core::graph::NodeId,
     )>,
-    canvas_size: Option<(f32, f32)>,
-    selected_node: Option<moiren_core::graph::NodeId>,
+    pub(crate) canvas_size: Option<(f32, f32)>,
+    pub(crate) selected_node: Option<moiren_core::graph::NodeId>,
     /// Screen-space anchor of an active pan drag (window coordinates).
-    pan_grab: Option<(f32, f32)>,
+    pub(crate) pan_grab: Option<(f32, f32)>,
     /// Left background clicks deselect only on release; a pan keeps selection.
-    background_click: Option<(f32, f32)>,
+    pub(crate) background_click: Option<(f32, f32)>,
     /// Last selectable-element press (target hash + time) for double-click
     /// detection: single clicks select, double clicks also open the inspector.
-    last_element_press: Option<(u64, Instant)>,
-    desktop: Option<WeakEntity<desktop::Desktop>>,
-    window_state: crate::project::WindowState,
+    pub(crate) last_element_press: Option<(u64, Instant)>,
+    pub(crate) desktop: Option<WeakEntity<desktop::Desktop>>,
+    pub(crate) window_state: crate::project::WindowState,
     /// Precision-touchpad subclass state (Windows pointer input). Held for
     /// its Drop: unregisters the Win32 subclass when the shell goes away.
     #[cfg(windows)]
     #[allow(dead_code)]
-    touchpad: super::touchpad::TouchpadRegistration,
+    pub(crate) touchpad: super::touchpad::TouchpadRegistration,
 }
 
 impl StudioShell {
-    fn new(
+    pub(crate) fn new(
         state: Entity<UiState>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -348,7 +354,7 @@ impl StudioShell {
         let settings = settings::SettingsEditor::new(&preferences, cx);
         let export_controls = devices::ExportControls::new(window, cx);
         let mixer_geometry = mixer::page::Geometry::default();
-        let graph_canvas_frame = pages::graph_canvas_view::PreparedFrame::default();
+        let graph_canvas_frame = pages::graph::graph_canvas_view::PreparedFrame::default();
         let shell_entity = cx.entity();
         let mixer_meters = std::rc::Rc::new(std::cell::RefCell::new(
             mixer::page::MixerMeters::new(shell_entity.downgrade(), mixer_geometry.clone()),
@@ -595,7 +601,7 @@ impl StudioShell {
     /// Page membership stands in for mounting — the Graph and Mixer pages are
     /// where meter layers exist — because leftover meter demand on a page
     /// with no hot layer must not starve the control-side poll.
-    fn frames_eligible(&self, cx: &App) -> bool {
+    pub(crate) fn frames_eligible(&self, cx: &App) -> bool {
         let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
@@ -609,7 +615,7 @@ impl StudioShell {
     /// false the vsync loop stands down and the control-side poll alone keeps
     /// the observations current, so a fully silent session costs no animation
     /// frames at all.
-    fn frames_wanted(&self, cx: &App) -> bool {
+    pub(crate) fn frames_wanted(&self, cx: &App) -> bool {
         // A graph gesture bypasses the meter eligibility gate: the canvas is
         // interactive whether or not a session runs and every meter rests.
         // Only the page that mounts the canvas may speak for a gesture,
@@ -622,7 +628,7 @@ impl StudioShell {
 
     /// Whether a graph canvas gesture is in flight (rubber band, pan, node
     /// or connection drag).
-    fn drag_active(&self) -> bool {
+    pub(crate) fn drag_active(&self) -> bool {
         self.selection_drag.is_some()
             || self.pan_grab.is_some()
             || self.node_drag.is_some()
@@ -634,7 +640,7 @@ impl StudioShell {
     /// peak marker, fresh readings above the scale bottom, or a spectrum
     /// curve still falling toward its floor all keep the display short of
     /// rest.
-    fn meters_in_motion(&self, cx: &App) -> bool {
+    pub(crate) fn meters_in_motion(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         !self.meters.at_rest() || !state.node_meters.at_rest() || !state.node_spectra.at_rest()
     }
@@ -681,7 +687,7 @@ impl StudioShell {
     /// gestures. Called from the pump and at gesture boundaries: the
     /// mouse-down handlers must arm the loop immediately, not at the next
     /// control poll.
-    pub(in crate::ui::shell) fn sync_drag_demand(&mut self) {
+    pub(crate) fn sync_drag_demand(&mut self) {
         self.frame_demand.set(hot::DRAG, self.drag_active());
     }
 
@@ -689,7 +695,7 @@ impl StudioShell {
     /// probe is mounted on screen AND the strip's node level topic is
     /// missing, so the meter paint falls back to the legacy reading. A
     /// managed strip renders from NodeMeters alone.
-    fn legacy_meters_shown(&self, cx: &App, points: (bool, bool)) -> (bool, bool) {
+    pub(crate) fn legacy_meters_shown(&self, cx: &App, points: (bool, bool)) -> (bool, bool) {
         let managed = |id: moiren_core::graph::NodeId| {
             self.state
                 .read(cx)
@@ -704,7 +710,7 @@ impl StudioShell {
         }
     }
 
-    fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
+    pub(crate) fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
         // Switching unmounts the canvas, so an in-flight gesture never sees
         // its closing mouse-up (the new page's background has no canvas
         // handlers); cancel it here or it stays armed across pages.
@@ -769,36 +775,31 @@ pub fn shell_for_tests(
 // Re-exported so the window submodules keep picking it up through `use super::*`.
 pub(crate) use crate::ui::observe::TestObserve;
 
-mod autosave;
+pub(crate) mod autosave;
 #[cfg(feature = "gpui-test")]
-mod capture;
-mod chrome;
-mod desktop;
+pub(crate) mod capture;
+pub(crate) mod chrome;
+pub(crate) mod desktop;
 #[cfg(feature = "gpui-test")]
 pub use capture::run_ui_capture;
-mod controls;
-mod devices;
-mod fault_popover;
-mod graph;
-mod hot;
-mod matrix;
-mod mixer;
-mod native;
-mod panel;
+pub(crate) mod controls;
+pub(crate) mod fault_popover;
+pub(crate) mod hot;
+pub(crate) mod native;
+pub(crate) mod panel;
 #[cfg(feature = "gpui-test")]
-mod performance;
-mod project;
-mod settings;
-mod sidebar;
+pub(crate) mod performance;
+pub(crate) mod project;
+pub(crate) mod sidebar;
 #[cfg(any(test, feature = "gpui-test"))]
-mod test_harness;
+pub(crate) mod test_harness;
 #[cfg(any(test, feature = "gpui-test"))]
 pub use test_harness::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
 #[cfg(feature = "gpui-test")]
 pub use test_harness::{settle_panels, shell_with_state, test_shell};
 #[cfg(all(test, feature = "gpui-test"))]
-mod tests;
-mod tray_mixer;
+pub(crate) mod tests;
+pub(crate) mod tray_mixer;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -876,14 +877,14 @@ impl Render for StudioShell {
                     // replaces the page + inspector column entirely, so a
                     // canvas gesture can never reach a hidden workspace.
                     .when(self.settings_open, |row| {
-                        row.child(settings::page_for(self, window))
+                        row.child(settings::mount(self, window))
                     })
                     .when(!self.settings_open, |row| {
                         row.child(match self.presentation.page {
-                            Page::Graph => graph::page::page(self, window),
+                            Page::Graph => graph::page::mount(self, window),
                             Page::Mixer => mixer::page::page(self, window, cx),
                             Page::Matrix => matrix::page(self, cx),
-                            Page::Devices => devices::page_for(self, window, cx),
+                            Page::Devices => devices::mount(self, window, cx),
                         })
                         .child(sidebar::inspector_host(self, window, cx))
                     }),
@@ -976,9 +977,7 @@ impl StudioShell {
     /// and the inspector panel's nested observers consume this single walk,
     /// so a new editor family cannot land in one enumeration site and miss
     /// the other (the shared root cause of audit SD-1/SD-2).
-    pub(in crate::ui::shell) fn text_input_entities(
-        &self,
-    ) -> Vec<Entity<component::input::InputState>> {
+    pub(crate) fn text_input_entities(&self) -> Vec<Entity<component::input::InputState>> {
         let mut inputs = vec![self.node_name.clone()];
         inputs.extend(self.mixer.text_input_entities().cloned());
         inputs.extend(self.compressor.inputs.values().cloned());
@@ -1014,7 +1013,7 @@ impl StudioShell {
 
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
     /// modal settings keep the shortcut for themselves.
-    fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {
         let can_step = {
             let state = self.state.read(cx);
             if redo {
@@ -1067,7 +1066,7 @@ impl StudioShell {
         }
     }
 
-    fn refresh_observation_nodes(&mut self, cx: &App) {
+    pub(crate) fn refresh_observation_nodes(&mut self, cx: &App) {
         use moiren_core::graph::NodeKind;
         let before = self.observation_nodes;
         let snapshot = &self.state.read(cx).snapshot;

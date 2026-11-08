@@ -19,7 +19,7 @@ pub(super) const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 /// Everything the saved document captures, fingerprinted so the poll can
 /// tell "the document would change" from meter churn that never reaches disk.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(super) struct AutosaveStamp {
+pub(crate) struct AutosaveStamp {
     revision: u64,
     processing: moiren_engine::audio_config::ProcessingSettings,
     session: Option<crate::service::SessionSpec>,
@@ -53,7 +53,7 @@ impl AutosaveStamp {
 /// Serialized hand-off between background writes and their UI-thread
 /// completion watcher, so writes chain and shutdown can await the newest.
 #[derive(Default)]
-pub(super) struct AutosaveWriteCompletion {
+pub(crate) struct AutosaveWriteCompletion {
     result: Option<Result<(), String>>,
     waiter: Option<Waker>,
 }

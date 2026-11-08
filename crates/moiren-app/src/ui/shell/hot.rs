@@ -21,22 +21,22 @@ use crate::ui::shared_frame::SharedFrame;
 /// observations current and re-arming the loop when fresh data moves a layer
 /// (#37/#40 semantics).
 #[derive(Default)]
-pub(in crate::ui::shell) struct FrameDemand {
+pub(crate) struct FrameDemand {
     sources: std::collections::BTreeSet<&'static str>,
 }
 
 /// The meter-motion demand source registered after every pump.
-pub(in crate::ui::shell) const METER_MOTION: &str = "meters";
+pub(crate) const METER_MOTION: &str = "meters";
 
 /// The graph-canvas gesture demand source: a rubber band, pan, node drag or
 /// connection drag in flight. The canvas is frame-driven — the rubber band
 /// paints and applies its hits from the canvas prepaint — so the loop must
 /// run while a gesture holds even when every meter is at rest and the
 /// session is stopped.
-pub(in crate::ui::shell) const DRAG: &str = "drags";
+pub(crate) const DRAG: &str = "drags";
 
 impl FrameDemand {
-    pub(in crate::ui::shell) fn set(&mut self, source: &'static str, active: bool) {
+    pub(crate) fn set(&mut self, source: &'static str, active: bool) {
         if active {
             self.sources.insert(source);
         } else {
@@ -44,7 +44,7 @@ impl FrameDemand {
         }
     }
 
-    pub(in crate::ui::shell) fn any(&self) -> bool {
+    pub(crate) fn any(&self) -> bool {
         !self.sources.is_empty()
     }
 }
@@ -53,7 +53,7 @@ impl FrameDemand {
 /// paints. The mechanics — the no-hitbox canvas, the pump/gate/continue
 /// skeleton, the sibling placement — live once in [`HotLayerView`]. Any
 /// window can mount one; the surface owns whatever state it projects.
-pub(in crate::ui::shell) trait HotSurface: 'static + Sized {
+pub(crate) trait HotSurface: 'static + Sized {
     /// Geometry the sibling cached panel published for this frame.
     type Frame;
 
@@ -80,19 +80,19 @@ pub(in crate::ui::shell) trait HotSurface: 'static + Sized {
 /// The host view around a [`HotSurface`]: a painting-only, hitbox-free
 /// canvas that owns the animation loop for its surface. Controls under the
 /// layer keep their pointer routing untouched.
-pub(in crate::ui::shell) struct HotLayerView<S: HotSurface> {
+pub(crate) struct HotLayerView<S: HotSurface> {
     surface: Rc<RefCell<S>>,
 }
 
 impl<S: HotSurface> HotLayerView<S> {
-    pub(in crate::ui::shell) fn new(surface: Rc<RefCell<S>>) -> Self {
+    pub(crate) fn new(surface: Rc<RefCell<S>>) -> Self {
         Self { surface }
     }
 
     /// The surface's cell, for tests that assert the pipeline between the
     /// sibling panel's registered geometry and this layer's paint.
     #[cfg(all(test, feature = "gpui-test"))]
-    pub(in crate::ui::shell) fn surface(&self) -> Rc<RefCell<S>> {
+    pub(crate) fn surface(&self) -> Rc<RefCell<S>> {
         self.surface.clone()
     }
 }
@@ -133,12 +133,12 @@ impl<S: HotSurface> Render for HotLayerView<S> {
 /// during a rebuild, read by hot layers at paint time. Shared by surfaces
 /// that paint one track set per node (flyout strips, the inspector's meter).
 #[derive(Clone, Default)]
-pub(in crate::ui::shell) struct MeterTracks(
+pub(crate) struct MeterTracks(
     std::collections::BTreeMap<moiren_core::graph::NodeId, (Bounds<Pixels>, ContentMask<Pixels>)>,
 );
 
 impl MeterTracks {
-    pub(in crate::ui::shell) fn register(
+    pub(crate) fn register(
         &mut self,
         id: moiren_core::graph::NodeId,
         bounds: Bounds<Pixels>,
@@ -147,7 +147,7 @@ impl MeterTracks {
         self.0.insert(id, (bounds, mask));
     }
 
-    pub(in crate::ui::shell) fn iter(
+    pub(crate) fn iter(
         &self,
     ) -> impl Iterator<
         Item = (

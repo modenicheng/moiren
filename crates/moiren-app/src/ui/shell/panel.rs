@@ -19,10 +19,10 @@ use super::*;
 /// between notifications; derived `PartialEq` on `Arc<T>` walks the whole
 /// value, which for a graph snapshot is the entire topology.
 #[derive(Debug)]
-pub(in crate::ui::shell) struct ArcSnapshot<T>(Arc<T>);
+pub(crate) struct ArcSnapshot<T>(Arc<T>);
 
 impl<T> ArcSnapshot<T> {
-    pub(in crate::ui::shell) fn new(arc: Arc<T>) -> Self {
+    pub(crate) fn new(arc: Arc<T>) -> Self {
         Self(arc)
     }
 }
@@ -44,10 +44,10 @@ impl<T: PartialEq> PartialEq for ArcSnapshot<T> {
 /// content, so a fresh Arc always carries a real change; pointer identity is
 /// both sound and cheaper than any compare.
 #[derive(Debug)]
-pub(in crate::ui::shell) struct PublishRef<T>(Arc<T>);
+pub(crate) struct PublishRef<T>(Arc<T>);
 
 impl<T> PublishRef<T> {
-    pub(in crate::ui::shell) fn new(arc: Arc<T>) -> Self {
+    pub(crate) fn new(arc: Arc<T>) -> Self {
         Self(arc)
     }
 }
@@ -68,12 +68,12 @@ impl<T> PartialEq for PublishRef<T> {
 /// interval (`mixer::model::FADER_DISPATCH_INTERVAL`): during a drag the
 /// service confirmations that carry the dB readouts arrive at the same pace,
 /// so the panel never rebuilds faster than its inputs actually change.
-pub(in crate::ui::shell) const NESTED_REBUILD_INTERVAL: Duration = Duration::from_millis(33);
+pub(crate) const NESTED_REBUILD_INTERVAL: Duration = Duration::from_millis(33);
 
 /// What [`NestedGate::notify`] asks the host to do with one nested-model
 /// notification (a slider drag tick, an input edit).
 #[derive(Debug, PartialEq, Eq)]
-pub(in crate::ui::shell) enum NestedAction {
+pub(crate) enum NestedAction {
     /// Rebuild the panel now: the first notification of a burst must reach
     /// the screen without waiting for the interval.
     Rebuild,
@@ -90,7 +90,7 @@ pub(in crate::ui::shell) enum NestedAction {
 /// later ones coalesce into one trailing rebuild, so a paused drag still
 /// paints its last suppressed value before release.
 #[derive(Default)]
-pub(in crate::ui::shell) struct NestedGate {
+pub(crate) struct NestedGate {
     last_rebuild: Option<Instant>,
     armed_at: Option<Instant>,
 }
@@ -135,7 +135,7 @@ impl NestedGate {
 /// per-panel decision — split a page into per-item panels when one item's
 /// inputs change far more often than the rest (a fader drag republishes the
 /// graph at the dispatch rate; only the dragged strip's content changes).
-pub(in crate::ui::shell) trait CachedPanel: 'static + Sized {
+pub(crate) trait CachedPanel: 'static + Sized {
     /// The state entity this panel projects. Most panels project the main
     /// window's [`StudioShell`]; the tray flyout projects its own root view.
     type Owner: 'static;
@@ -197,7 +197,7 @@ pub(in crate::ui::shell) trait CachedPanel: 'static + Sized {
 /// forcing live rebuilds at the splice only melted the whole window whenever
 /// a platform client probed accessibility (every alt-tab through certain
 /// setups does).
-pub(in crate::ui::shell) struct PanelHost<P: CachedPanel> {
+pub(crate) struct PanelHost<P: CachedPanel> {
     panel: P,
     owner: WeakEntity<P::Owner>,
     key: Option<P::Key>,
@@ -216,15 +216,11 @@ impl<P: CachedPanel> PanelHost<P> {
     /// How many times this panel actually rendered (a rebuild), as opposed to
     /// replaying its cached paint.
     #[cfg(all(test, feature = "gpui-test"))]
-    pub(in crate::ui::shell) fn rebuild_count(&self) -> usize {
+    pub(crate) fn rebuild_count(&self) -> usize {
         self.rebuilds
     }
 
-    pub(in crate::ui::shell) fn new(
-        panel: P,
-        owner: Entity<P::Owner>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(panel: P, owner: Entity<P::Owner>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&owner, |host, owner, cx| {
             // The key capture and the nested subscriptions run here, in the
             // notification effect — never during this view's render. Reading
@@ -263,7 +259,7 @@ impl<P: CachedPanel> PanelHost<P> {
     /// sustained drag from paying a full panel rebuild per pointer move; the
     /// first notification of a burst still rebuilds immediately, and release
     /// paths repaint through their own publishes regardless.
-    pub(in crate::ui::shell) fn notify_nested(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn notify_nested(&mut self, cx: &mut Context<Self>) {
         match self.nested_gate.notify(Instant::now()) {
             NestedAction::Rebuild => cx.notify(),
             NestedAction::Arm => {

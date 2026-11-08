@@ -181,7 +181,7 @@ pub(super) type StatusbarChrome = PanelHost<StatusbarPanel>;
 /// meter frames own the animation loops), so the key exists to keep those
 /// notifications from rebuilding the chrome.
 #[derive(PartialEq)]
-pub(in crate::ui::shell) struct ToolbarKey {
+pub(crate) struct ToolbarKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     page: Page,
     compact: bool,
@@ -190,7 +190,7 @@ pub(in crate::ui::shell) struct ToolbarKey {
     settings_open: bool,
 }
 
-pub(super) struct ToolbarPanel;
+pub(crate) struct ToolbarPanel;
 
 impl CachedPanel for ToolbarPanel {
     type Owner = StudioShell;
@@ -231,12 +231,12 @@ impl CachedPanel for ToolbarPanel {
 /// cloned only at capture time so a dispatch failure while the bar stands
 /// still rebuilds on its own notification.
 #[derive(PartialEq)]
-pub(in crate::ui::shell) struct StatusbarKey {
+pub(crate) struct StatusbarKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     dispatch_error: Option<String>,
 }
 
-pub(super) struct StatusbarPanel;
+pub(crate) struct StatusbarPanel;
 
 impl CachedPanel for StatusbarPanel {
     type Owner = StudioShell;

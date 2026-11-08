@@ -458,7 +458,7 @@ impl StudioShell {
         }
     }
 
-    pub(super) fn project_document(
+    pub(crate) fn project_document(
         &self,
         cx: &App,
     ) -> Result<ProjectDocument, crate::project::PersistenceError> {
@@ -706,7 +706,7 @@ impl StudioShell {
         self.autosave_stamp = autosave::AutosaveStamp::capture(self, cx);
     }
 
-    pub(super) fn apply_project_presentation(
+    pub(crate) fn apply_project_presentation(
         &mut self,
         document: &ProjectDocument,
         cx: &mut Context<Self>,

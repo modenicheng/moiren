@@ -5,21 +5,21 @@ use super::*;
 use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
 use gpui_kit::base::ScrollbarAxis;
 
-pub(super) fn label(text: impl Into<SharedString>) -> Div {
+pub(crate) fn label(text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(theme::TEXT_SM))
         .text_color(theme::TEXT_MUTED)
         .child(text.into())
 }
 
-pub(super) fn heading(text: impl Into<SharedString>) -> Div {
+pub(crate) fn heading(text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(theme::TEXT_LG))
         .font_weight(FontWeight::SEMIBOLD)
         .child(text.into())
 }
 
-pub(super) fn badge(text: impl Into<SharedString>, color: Hsla) -> Div {
+pub(crate) fn badge(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .flex_none()
         .px(px(6.))
@@ -31,7 +31,7 @@ pub(super) fn badge(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
-pub(super) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
+pub(crate) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
     div()
         .flex()
         .justify_between()
@@ -49,7 +49,7 @@ pub(super) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
 }
 
 /// A [`detail`] row whose value side is a click-to-type editable readout.
-pub(super) fn detail_editable(
+pub(crate) fn detail_editable(
     key: &str,
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
@@ -84,7 +84,7 @@ pub(super) fn detail_editable(
 /// window root's outside-click commit. The editor box is observed under
 /// `editable-editor` (keyed by the input state) so tests can assert the
 /// no-jump geometry.
-pub(super) fn underline_editor(
+pub(crate) fn underline_editor(
     input: &Entity<component::input::InputState>,
     text_size: Pixels,
     align: TextAlign,
@@ -126,7 +126,7 @@ pub(super) fn underline_editor(
 /// family's input subscription commits on Enter/blur. The site keeps its
 /// layout styling and `gpui_test_observe` by chaining on the returned
 /// `Stateful<Div>`.
-pub(super) fn editable_value(
+pub(crate) fn editable_value(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
     editing: bool,
@@ -161,7 +161,7 @@ pub(super) fn editable_value(
 /// renders inside the cached inspector splice: its offset rides the
 /// `InspectorKey`, since a cached panel replays baked paint coordinates
 /// until its key changes.
-pub(super) fn panel(id: &'static str, scroll: &ScrollHandle) -> Stateful<Div> {
+pub(crate) fn panel(id: &'static str, scroll: &ScrollHandle) -> Stateful<Div> {
     div()
         .id(id)
         .w_full()
@@ -179,7 +179,7 @@ pub(super) fn panel(id: &'static str, scroll: &ScrollHandle) -> Stateful<Div> {
 
 /// The inspector panel's host: the fixed-width column whose bar overlay
 /// pins outside the cached panel splice.
-pub(super) fn panel_host(
+pub(crate) fn panel_host(
     id: &'static str,
     scroll: &ScrollHandle,
     panel: impl IntoElement,
@@ -197,11 +197,11 @@ pub(super) fn panel_host(
         ))
 }
 
-pub(super) fn button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> ActionButton {
+pub(crate) fn button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> ActionButton {
     ActionButton::new(id, text).size(ControlSize::Small)
 }
 
-pub(super) fn edit(
+pub(crate) fn edit(
     this: Entity<StudioShell>,
     edit: crate::service::GraphEdit,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
@@ -215,7 +215,7 @@ pub(super) fn edit(
     }
 }
 
-pub(super) fn stereo_controls(
+pub(crate) fn stereo_controls(
     node: &crate::service::GraphNodeState,
     cx: &Context<StudioShell>,
 ) -> Div {

@@ -3,7 +3,7 @@ use gpui_kit::{App, WindowId, profiler};
 use profiler::journal::{ForegroundEvent, ForegroundJournalEntry, IntervalBoundary};
 use std::time::{Duration, Instant};
 
-pub(in crate::ui::shell) struct PlatformTrace {
+pub(crate) struct PlatformTrace {
     began: Instant,
     window_id: WindowId,
     frames: profiler::FrameTimingCollector,

@@ -316,7 +316,7 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
             shell.camera.zoom > 0.5,
             "Fit must leave this four-node graph readable"
         );
-        let world = pages::graph_canvas::CanvasWorld::positioned(
+        let world = pages::graph::graph_canvas::CanvasWorld::positioned(
             &shell.state.read(cx).snapshot,
             &shell.node_positions,
         );
