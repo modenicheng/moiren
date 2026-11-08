@@ -169,6 +169,20 @@ reference change and therefore do not establish S4 preservation. Separate
 immutable publication identity, installed-endpoint adoption and actual mutable
 Windows name publication; a refusal-only safeguard does not complete S4.
 
+The later [single policy authority](validation/2026-11-08-policy-reference-authority.md)
+removes independent audio-side name hashing: category staging and ACX consume
+one child-owned locked-snapshot reference. Production-extracted composition,
+Windows22/Ubuntu17host suites and WDK Analyze/INF pass. Historical derivation
+remains for compatibility; durable identity/adoption and final Windows name
+publication are still unimplemented. The remote613package is unchanged.
+
+The [retained task/trace preparation](validation/2026-11-08-removal-task-trace-preparation.md)
+is now repository source with59host-only checks per PowerShell interpreter.
+Unknown registration/dispatch keeps ownership, a real worker is bound by its
+retained handle/token/session/command line, and garbage inventory cannot prove
+trace absence. Full probe ownership/native admission remains unwired and real
+launchers explicitly refuse; no new native acquisition or S0-S5 pass follows.
+
 The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
 recomputes both channels at all six retained onsets. Identity1 has non-silent
 quarters but quarter4 correlation0.67284 fails the unchanged0.7 gate. This

@@ -18,11 +18,19 @@ constexpr GUID KSCATEGORY_AUDIO =
     {0xdff21ce1, 0xf70f, 0x11d0, {0xb9, 0x17, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96}};
 constexpr NTSTATUS STATUS_SUCCESS = 0;
 constexpr NTSTATUS STATUS_INSUFFICIENT_RESOURCES = -1;
+constexpr NTSTATUS STATUS_INVALID_DEVICE_STATE = -2;
 constexpr int TRACE_LEVEL_INFORMATION = 4, VAD_PDO = 1;
 constexpr ULONG VadAudioHostPin = 0, VadAudioBridgePin = 1;
 enum { AcxCircuitTypeCapture, AcxCircuitTypeRender, AcxPinTypeSource, AcxPinTypeSink,
     AcxPinCommunicationSink, AcxPinCommunicationNone, WdfExecutionLevelPassive,
     AcxConnTypeOtherDigital, AcxGeoLocNotApplicable, AcxGenLocOther, AcxPortConnIntegratedDevice };
+struct VAD_CHILD {
+    NTSTATUS PolicyStatus = STATUS_SUCCESS;
+    unsigned PolicyInterfaceCount = 3;
+    wchar_t PolicyReference[32] = L"MoirenEndpoint-0123456789abcdef";
+};
+static VAD_CHILD Child;
+VAD_CHILD* VadChild(void*) { return &Child; }
 struct VAD_AUDIO_DEVICE {
     std::uint32_t Intent;
     void* Device = nullptr;
@@ -63,6 +71,8 @@ struct {
     ULONG Ids[2] = {};
     int Types[2] = {}, Communications[2] = {}, NameCallback = 0, CircuitType = -1;
     unsigned Formats = 0, Published = 0;
+    unsigned Allocated = 0;
+    const wchar_t* Reference = nullptr;
 } F;
 static void Check(bool condition, const char* message)
 {
@@ -71,9 +81,10 @@ static void Check(bool condition, const char* message)
 template<typename... Args> void VadTrace(Args...) {}
 void RtlInitUnicodeString(UNICODE_STRING* value, const wchar_t* text) { value->Buffer = text; }
 void ACX_PIN_CONFIG_INIT_ID(ACX_PIN_CONFIG* value, ULONG id) { *value = {}; value->Id = id; }
-PACXCIRCUIT_INIT AcxCircuitInitAllocate(void*) { return &F; }
+PACXCIRCUIT_INIT AcxCircuitInitAllocate(void*) { ++F.Allocated; return &F; }
 NTSTATUS AcxCircuitInitAssignComponentUri(void*, UNICODE_STRING*) { return STATUS_SUCCESS; }
-NTSTATUS AcxCircuitInitAssignName(void*, UNICODE_STRING*) { return STATUS_SUCCESS; }
+NTSTATUS AcxCircuitInitAssignName(void*, UNICODE_STRING* name)
+{ F.Reference = name->Buffer; return STATUS_SUCCESS; }
 void AcxCircuitInitFree(void*) {}
 void AcxCircuitInitSetCircuitType(void*, int type) { F.CircuitType = type; }
 void AcxCircuitInitSetAcxCircuitPnpPowerCallbacks(void*, ACX_CIRCUIT_PNPPOWER_CALLBACKS*) {}
@@ -103,11 +114,30 @@ NTSTATUS AcxCircuitAddPins(void*, ACXPIN*, unsigned count)
 
 int main()
 {
+    for (unsigned mode = 0; mode < 5; ++mode) {
+        F = {};
+        Child = {};
+        if (mode == 0) { Child.PolicyInterfaceCount = 0; }
+        if (mode == 1) { Child.PolicyInterfaceCount = 2; }
+        if (mode == 2) { Child.PolicyStatus = STATUS_INVALID_DEVICE_STATE; }
+        if (mode == 3) { Child.PolicyReference[0] = L'\0'; }
+        if (mode == 4) {
+            for (auto& unit : Child.PolicyReference) { unit = L'X'; }
+        }
+        VAD_AUDIO_DEVICE device{};
+        Check(VadAudioBuildCircuit(&device) == STATUS_INVALID_DEVICE_STATE,
+            "missing, partial or failed policy reference blocks the actual builder");
+        Check(F.Allocated == 0 && F.Published == 0,
+            "reference refusal precedes every ACX allocation/publication");
+    }
     for (auto intent : {MOIREN_VAD_INTENT_PLAYBACK, MOIREN_VAD_INTENT_MICROPHONE}) {
         F = {};
+        Child = {};
         VAD_AUDIO_DEVICE device{};
         device.Intent = intent;
         Check(VadAudioBuildCircuit(&device) == STATUS_SUCCESS, "production circuit builds");
+        Check(F.Reference == Child.PolicyReference,
+            "ACX consumes the exact child-owned Policy reference, not a recomputed copy");
         const bool capture = intent == MOIREN_VAD_INTENT_MICROPHONE;
         const GUID expected = {capture ? 0xdff21be1u : 0xdff21ce0u, 0xf70f, 0x11d0,
             {0xb9, 0x17, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96}};

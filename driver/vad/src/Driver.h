@@ -14,14 +14,9 @@
 #include "PlaybackCopyDiagnostic.h"
 #include "NativePlaybackDiagnostic.h"
 #include "RemovalDiagnostic.h"
+#include "EndpointReference.h"
 
 extern const GUID VadControlInterface;
-
-// Published audio identity: the interface reference string and the ACX circuit
-// name are both derived from the requested endpoint name through
-// vad::EndpointReference, so they cannot drift apart. A name-derived reference
-// also makes each rename compose a fresh MMDevice endpoint instead of
-// returning to the persisted name of the previous identity.
 
 struct VAD_SHARED {
     // Root cleanup can precede the final destruction of a referenced PDO.
@@ -75,6 +70,11 @@ struct VAD_CHILD {
     // can release it without touching the root device.
     UNICODE_STRING PolicyInterfaces[3];
     ULONG PolicyInterfaceCount;
+    // Child-owned runtime publication reference, not durable adoption state.
+    // Only the passive policy worker derives it from its locked slot snapshot;
+    // all staged categories and ACX consume this same storage. PnP serialization
+    // and the worker flush order publication before circuit construction.
+    WCHAR PolicyReference[vad::EndpointReferenceUnits];
 };
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VAD_CHILD, VadChild)
 

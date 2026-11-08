@@ -52,6 +52,15 @@ static VAD_PAGE NTSTATUS SetFormat(ACXPIN pin, ACXDATAFORMAT format)
 VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
 {
     PAGED_CODE();
+    // PnP-serialized passive construction follows VadPreparePolicy's worker
+    // flush. Borrow the child's exact publication reference, not a second
+    // name-derived value. No lock, allocation or registry work enters RT.
+    const auto policy = VadChild(device->Device);
+    if (!NT_SUCCESS(policy->PolicyStatus) || policy->PolicyInterfaceCount != 3 ||
+        policy->PolicyReference[0] == L'\0' ||
+        policy->PolicyReference[RTL_NUMBER_OF(policy->PolicyReference) - 1] != L'\0') {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
     const bool capture = device->Intent == MOIREN_VAD_INTENT_MICROPHONE;
     PACXCIRCUIT_INIT init = AcxCircuitInitAllocate(device->Device);
     if (init == nullptr) {
@@ -67,7 +76,7 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
         return status;
     }
     UNICODE_STRING name;
-    RtlInitUnicodeString(&name, device->Reference);
+    RtlInitUnicodeString(&name, policy->PolicyReference);
     status = AcxCircuitInitAssignName(init, &name);
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
         "Circuit name status=%!STATUS!", status);

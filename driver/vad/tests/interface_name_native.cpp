@@ -71,8 +71,9 @@ struct VAD_CHILD {
     ULONG Index = 0;
     Work* PolicyWork;
     NTSTATUS PolicyStatus = STATUS_UNSUCCESSFUL;
-    UNICODE_STRING PolicyInterfaces[3];
+    UNICODE_STRING PolicyInterfaces[3] = {};
     ULONG PolicyInterfaceCount = 0;
+    WCHAR PolicyReference[vad::EndpointReferenceUnits] = {};
 };
 struct Child {
     SharedState Shared;
@@ -94,6 +95,7 @@ static void Check(bool condition, const char* message)
 #define PAGED_CODE() Check(KeGetCurrentIrql() == PASSIVE_LEVEL, "pageable policy at passive")
 #define RtlCopyMemory std::memcpy
 #define UNREFERENCED_PARAMETER(value) (void)(value)
+#define RTL_NUMBER_OF(value) (sizeof(value) / sizeof((value)[0]))
 
 struct Fixture {
     unsigned Registered = 0;
@@ -115,6 +117,9 @@ struct Fixture {
     bool MissingTerminator = false;
     bool OversizeRead = false;
     bool TraceEnabled = true;
+    bool ChangeNameAfterSnapshot = false;
+    WCHAR SnapshotName[MOIREN_VAD_MAX_NAME_UNITS] = {};
+    const WCHAR* References[3] = {};
     bool Live[3] = {};
     WCHAR Links[3][8] = {L"link0", L"link1", L"link2"};
     WCHAR Names[3][MOIREN_VAD_MAX_NAME_UNITS] = {};
@@ -138,7 +143,17 @@ VAD_CHILD* VadChild(WDFDEVICE child) { return &child->Context; }
 Child* WdfWorkItemGetParentObject(Work* work) { return work->Parent; }
 Child* WdfDeviceWdmGetDeviceObject(Child* child) { return child; }
 void KeAcquireSpinLock(int*, KIRQL* irql) { SharedLocked = true; *irql = PASSIVE_LEVEL; }
-void KeReleaseSpinLock(int*, KIRQL) { SharedLocked = false; }
+void KeReleaseSpinLock(int* lock, KIRQL)
+{
+    Check(SharedLocked, "snapshot holds Shared lock");
+    auto shared = reinterpret_cast<SharedState*>(lock);
+    std::memcpy(F.SnapshotName, shared->Slots[0].Name, sizeof(F.SnapshotName));
+    SharedLocked = false;
+    if (F.ChangeNameAfterSnapshot) {
+        const WCHAR changed[MOIREN_VAD_MAX_NAME_UNITS] = L"Changed after snapshot";
+        std::memcpy(shared->Slots[0].Name, changed, sizeof(changed));
+    }
+}
 void WdfWorkItemEnqueue(Work* work) { work->Queued = true; }
 void WdfWorkItemFlush(Work* work)
 {
@@ -191,18 +206,20 @@ NTSTATUS IoRegisterDeviceInterface(Child* child, const GUID*, UNICODE_STRING* re
     UNICODE_STRING* link)
 {
     CheckDdi();
-    // The registered reference must be derived from the current slot name so a
-    // rename composes a fresh endpoint identity instead of returning to the
-    // persisted name of the fixed-reference identity.
+    // Preserve historical derivation from the locked snapshot, even if the
+    // live requested name changes before any registration DDI executes.
     WCHAR expected[vad::EndpointReferenceUnits] = {};
-    vad::EndpointReference(child->Shared.Slots[0].Name, expected);
+    vad::EndpointReference(F.SnapshotName, expected);
     Check(std::wcscmp(reference->Buffer, expected) == 0,
-        "reference derived from the staged name");
+        "reference derived from the staged locked snapshot");
+    Check(reference->Buffer == child->Context.PolicyReference,
+        "each category borrows the single child-owned Policy reference");
     Check(std::wcscmp(reference->Buffer, VadAudioReference) != 0,
         "reference is not the fixed pre-rename constant");
     if (F.Registered + 1 == F.FailRegisterAt) { return ReadFailure; }
     Check(F.Registered < 3, "only three owned categories");
     const auto index = F.Registered++;
+    F.References[index] = reference->Buffer;
     F.Live[index] = true;
     RtlInitUnicodeString(link, F.Links[index]);
     return STATUS_SUCCESS;
@@ -336,6 +353,7 @@ static void Release(Child& child)
     SystemThread = false;
     Check(F.Freed == F.Registered && F.Handles == 0, "no leaked or double-freed policy resources");
     Check(child.Context.PolicyInterfaceCount == 0, "release clears ownership count");
+    Check(child.Context.PolicyReference[0] == L'\0', "release invalidates the runtime reference");
     for (const auto& link : child.Context.PolicyInterfaces) {
         Check(link.Buffer == nullptr, "released or failed context link cleared");
     }
@@ -348,6 +366,10 @@ static void SuccessfulTypedPublication()
         Child child;
         child.Shared.Slots[0].Intent = intent;
         Check(VadPreparePolicy(&child, intent) == STATUS_SUCCESS, "typed policy succeeds");
+        WCHAR expected[vad::EndpointReferenceUnits] = {};
+        vad::EndpointReference(child.Shared.Slots[0].Name, expected);
+        Check(std::wcscmp(child.Context.PolicyReference, expected) == 0,
+            "Policy retains its exact historical publication reference for ACX");
         Check(F.SetCalls == 3 && F.ReadCalls == 3,
             "every owned category must set and strictly read back typed FriendlyName");
         Check(F.NameTraceCalls == 3, "one typed diagnostic per category, not per read attempt");
@@ -358,6 +380,40 @@ static void SuccessfulTypedPublication()
             F.NameTraceCalls == 3,
             "already staged policy must not repeat publication or diagnostic");
         Release(child);
+    }
+}
+
+static void LockedSnapshotOwnsPublicationReference()
+{
+    F = {};
+    Child child;
+    F.ChangeNameAfterSnapshot = true;
+    Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS, "locked snapshot stages");
+    WCHAR expected[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(F.SnapshotName, expected);
+    Check(std::wcscmp(F.SnapshotName, child.Shared.Slots[0].Name) != 0 &&
+        std::wcscmp(child.Context.PolicyReference, expected) == 0,
+        "post-snapshot mutation cannot replace the staged publication reference");
+    for (unsigned index = 0; index < 3; ++index) {
+        Check(F.References[index] == child.Context.PolicyReference &&
+            std::wcscmp(F.Names[index], F.SnapshotName) == 0,
+            "Audio/flow/Realtime share the same reference and requested-name snapshot");
+    }
+    Check(VadPreparePolicy(&child, 0) == STATUS_SUCCESS && F.Registered == 3 &&
+        std::wcscmp(child.Context.PolicyReference, expected) == 0,
+        "retained policy does not rederive a reference from the changed live name");
+    Release(child);
+
+    for (bool unterminated : {false, true}) {
+        F = {};
+        Child missing;
+        missing.Context.PolicyInterfaceCount = 3;
+        if (unterminated) {
+            for (auto& unit : missing.Context.PolicyReference) { unit = L'X'; }
+        }
+        Check(VadPreparePolicy(&missing, 0) == STATUS_INVALID_DEVICE_STATE && F.Registered == 0,
+            "cached interface count cannot authorize an empty or unterminated reference");
+        Release(missing);
     }
 }
 
@@ -517,15 +573,19 @@ static void EndpointReferenceDerivation()
         "empty input stays bounded and never aliases another name");
 }
 
+#ifndef VAD_PUBLICATION_REFERENCE_TEST
 int main()
 {
     TerminalPolicyMatchesVirtualFunctionAndDefaultPreference();
     EndpointReferenceDerivation();
     SuccessfulTypedPublication();
+    LockedSnapshotOwnsPublicationReference();
     TypedFailureClosesPolicy();
     RejectReadbackMismatch();
     FixedNameBounds();
     ExistingFailureRollback();
     DisabledTraceDoesNotChoosePolicyOutcome();
     std::puts("PASS: production interface-name staging, strict readback, fail-closed rollback");
+    return 0;
 }
+#endif

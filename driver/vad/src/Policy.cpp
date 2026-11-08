@@ -200,6 +200,8 @@ VAD_PAGE void VadReleasePolicy(WDFDEVICE child)
 {
     PAGED_CODE();
     auto context = VadChild(child);
+    context->PolicyStatus = STATUS_DEVICE_NOT_READY;
+    context->PolicyReference[0] = L'\0';
     for (ULONG i = 0; i < context->PolicyInterfaceCount; ++i) {
         // Copy into a known-initialized local before clearing the context.
         // This also makes the ownership transfer explicit to static analysis.
@@ -232,18 +234,22 @@ static void PreparePolicy(WDFWORKITEM work)
         &AudioCategory, capture ? &CaptureCategory : &RenderCategory,
         &RealtimeCategory};
     if (context->PolicyInterfaceCount != 0) {
-        context->PolicyStatus = context->PolicyInterfaceCount == 3 ?
+        context->PolicyStatus = context->PolicyInterfaceCount == 3 &&
+            context->PolicyReference[0] != L'\0' &&
+            context->PolicyReference[RTL_NUMBER_OF(context->PolicyReference) - 1] == L'\0' ?
             STATUS_SUCCESS : STATUS_INVALID_DEVICE_STATE;
         return;
     }
-    // The name-derived reference participates in the endpoint identity the
-    // audio service composes names for; derive it once from the same locked
-    // slot snapshot the staged properties use so all three categories agree.
-    WCHAR reference[vad::EndpointReferenceUnits] = {};
-    vad::EndpointReference(name, reference);
+    // Preserve historical derivation for compatibility, without claiming
+    // immutable identity/adoption. This worker alone derives the child-owned
+    // reference from the same locked snapshot as the staged properties. No
+    // audio/RT callback derives it; ACX may consume it only after successful
+    // staging and the passive worker flush, never under Shared->Lock.
+    vad::EndpointReference(name, context->PolicyReference);
     for (const GUID* category : categories) {
         NTSTATUS status = StageInterface(child, *category, terminal.Association,
-            sizeof(terminal.Association), neverDefault, terminal.EnableByDefault, name, reference,
+            sizeof(terminal.Association), neverDefault, terminal.EnableByDefault, name,
+            context->PolicyReference,
             &context->PolicyInterfaces[context->PolicyInterfaceCount]);
         if (!NT_SUCCESS(status)) {
             VadTrace(TRACE_LEVEL_ERROR, VAD_PDO,

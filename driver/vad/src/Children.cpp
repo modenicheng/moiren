@@ -152,7 +152,7 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
         status = VadInitializePolicy(child);
         if (NT_SUCCESS(status)) {
             status = VadAudioInitialize(child, request.Intent, request.Channels,
-                request.StableId, request.Name);
+                request.StableId);
         }
         if (NT_SUCCESS(status)) {
             // ACX owns the dynamic circuit-device list. Do not also add this

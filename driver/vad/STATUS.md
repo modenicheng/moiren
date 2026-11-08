@@ -38,7 +38,23 @@ conflicts with Windows identity/settings preservation. Existing tests require
 the conflicting reference change. Only the misleading source explanation is
 corrected here; no publication/migration implementation or S4 pass is claimed.
 
+The later [single-policy-reference change](../../docs/validation/2026-11-08-policy-reference-authority.md)
+removes independent audio-side derivation. Category staging and circuit
+construction consume one child-owned snapshot reference; failed/partial policy
+cannot authorize an ACX allocation. Windows22/Ubuntu17host suites and WDK
+Analyze/INF pass. This enabling source change retains the historical name hash;
+durable adoption, final Windows name and native S4 acceptance remain open. No
+new package is installed or substituted for the frozen613diagnostic image.
+
 ## Diagnostic613 installation awaiting user reboot - 2026-11-08
+
+The later [task/trace preparation](../../docs/validation/2026-11-08-removal-task-trace-preparation.md)
+is retained in `scripts/vad-removal/`. Parent checks59per PowerShell interpreter
+pass without real scheduler/native tools; new Windows CI wiring covers55
+noninteractive checks per interpreter but has no hosted result yet. Exact
+task/worker exit is not full probe terminal. Worker/probe handshake, confirmed
+trace readback/raw loss and fresh target provenance remain open; actual launch
+guards unconditionally refuse. No user reboot confirmation has been received.
 
 The later [managed collection preparation](../../docs/validation/2026-11-08-removal-collector-worker.md)
 adds finite observation with retained inner tool owners;15local tests pass on
