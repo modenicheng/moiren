@@ -2264,6 +2264,20 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
             window.draw(cx).clear(cx);
         });
     }
+    // The measurement loop below requires the analyzer to be in motion when
+    // it starts: a fed-but-slow moment on a loaded runner can let the decay
+    // reach rest right at the boundary, and then the arbiter legitimately
+    // parks the meter frame and the per-frame repaint assertion fails
+    // without any product change. Gate on confirmed motion instead.
+    wait_until(Duration::from_secs(5), || {
+        view.read_with(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state
+                .node_spectra
+                .curve(spectrum)
+                .is_some_and(|_| !state.node_spectra.at_rest())
+        })
+    });
     let (paints_before, renders_before) = view.read_with(cx, |shell, _| {
         let trace = shell.trace.borrow();
         (trace.graph_meter_paints, trace.graph_renders)
