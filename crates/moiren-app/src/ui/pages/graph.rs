@@ -3,7 +3,7 @@ use rust_i18n::t;
 use super::*;
 
 mod arrange;
-pub(crate) mod binding_choices;
+mod binding_choices;
 mod binding_menu;
 mod compressor;
 mod context_menu;
@@ -43,11 +43,11 @@ pub(crate) struct GraphInteractionState {
         f64,
     )>,
     pub(crate) pan_grab: Option<(f32, f32)>,
-    pub(crate) background_click: Option<(f32, f32)>,
-    pub(crate) right_press: Option<(f32, f32)>,
-    pub(crate) node_drag_snap: (f32, f32),
-    pub(crate) drag_guides: Option<crate::ui::pages::graph::graph_canvas::DragGuides>,
-    pub(crate) hand_tool: bool,
+    background_click: Option<(f32, f32)>,
+    right_press: Option<(f32, f32)>,
+    node_drag_snap: (f32, f32),
+    drag_guides: Option<crate::ui::pages::graph::graph_canvas::DragGuides>,
+    hand_tool: bool,
 }
 
 /// The workspace selection (design 20 §4): the multi-selection set, its
@@ -67,7 +67,7 @@ mod tests;
 /// stays in the service until release commits, while the canvas shows the
 /// head as free and the drag pulls from the edge's source output.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DetachedEdge {
+struct DetachedEdge {
     edge: moiren_core::graph::EdgeId,
     destination: moiren_core::graph::PortId,
 }
@@ -111,7 +111,7 @@ impl StudioShell {
     /// once per frame while a box select is in flight. Returns whether the
     /// selection changed (the caller notifies once per change, not per
     /// frame).
-    pub(crate) fn apply_box_select(
+    fn apply_box_select(
         &mut self,
         rect: Bounds<f32>,
         nodes: &[crate::ui::pages::graph::graph_canvas::CanvasNode],
@@ -161,7 +161,7 @@ impl StudioShell {
     /// Shared pointer-session preamble for canvas hit targets: cancel any
     /// in-flight drag or click first; under the hand tool the pointer instead
     /// becomes a pan grab. Returns true when the hand tool consumed the event.
-    pub(crate) fn begin_pointer_session(&mut self, window: &mut Window) -> bool {
+    fn begin_pointer_session(&mut self, window: &mut Window) -> bool {
         self.graph_gestures.node_drag = None;
         self.graph_gestures.node_drag_snap = (0., 0.);
         self.graph_gestures.pan_grab = None;
@@ -223,7 +223,7 @@ impl StudioShell {
     /// and fits the camera to the result. Fit mode re-fits on its own; an
     /// adjusted camera is fitted once here so the arranged graph lands in
     /// view.
-    pub(crate) fn arrange_graph(&mut self, cx: &mut Context<Self>) {
+    fn arrange_graph(&mut self, cx: &mut Context<Self>) {
         let world = {
             let state = self.state.read(cx);
             crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
@@ -258,7 +258,7 @@ impl StudioShell {
 
     /// Single selection over a node, clearing routes and the rest of the
     /// band — the context menu's identity actions act on this node alone.
-    pub(crate) fn select_single_node(&mut self, node: moiren_core::graph::NodeId) {
+    fn select_single_node(&mut self, node: moiren_core::graph::NodeId) {
         self.selection.nodes.clear();
         self.selection.nodes.insert(node);
         self.selection.node = Some(node);
@@ -267,7 +267,7 @@ impl StudioShell {
 
     /// Enters the inspector's inline rename for `node`, seeded with the
     /// label it shows today and focused so typing replaces it immediately.
-    pub(crate) fn begin_node_rename(
+    fn begin_node_rename(
         &mut self,
         node: moiren_core::graph::NodeId,
         window: &mut Window,
@@ -292,7 +292,7 @@ impl StudioShell {
         window.focus(&handle, cx);
     }
 
-    pub(crate) fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
+    fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
         // The primary selection may have been set from outside the canvas
         // (mixer strip, library locator); it always deletes with the band.
         if let Some(id) = self.selection.node {

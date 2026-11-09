@@ -1271,7 +1271,7 @@ impl StudioShell {
     }
 
     /// Discards the inline name edit without touching the stored label.
-    pub(crate) fn cancel_node_rename(&mut self, cx: &mut Context<Self>) {
+    fn cancel_node_rename(&mut self, cx: &mut Context<Self>) {
         if self.inspector.node_name_editing.take().is_some() {
             cx.notify();
         }
