@@ -13,9 +13,11 @@ use crate::service::AppRequest;
 use crate::ui::shell::controls;
 use crate::ui::theme;
 use crate::ui::widgets::actions::ButtonVariant;
+use crate::ui::widgets::anchored_popover;
+use crate::ui::widgets::occluding_page::{claim_presses, occluding_page};
 use crate::ui::widgets::overlay_scrollbar::scroll_region;
 use gpui_kit::base::ScrollbarAxis;
-use gpui_kit::{AnyElement, Bounds, MouseButton, Pixels, Window, px};
+use gpui_kit::{AnyElement, Bounds, Pixels, Window, px};
 use moiren_core::graph::NodeId;
 
 /// An open endpoint menu: the card it binds and the chip rect it hangs
@@ -95,64 +97,28 @@ pub(crate) fn overlay(
     // Hang the menu under the chip, flipping above it when the window
     // bottom is too close, and keep it inside the window sideways.
     let viewport = window.viewport_size();
-    let (view_width, view_height) = (f32::from(viewport.width), f32::from(viewport.height));
     let width = MENU_WIDTH.max(f32::from(menu.anchor.size.width));
     let height = (choices.len() as f32 * ROW_H + 2. * MENU_PAD).min(MAX_HEIGHT);
-    let left = f32::from(menu.anchor.origin.x)
-        .min(view_width - width - 8.)
-        .max(8.);
-    let below = f32::from(menu.anchor.origin.y + menu.anchor.size.height) + 4.;
-    let top = if below + height > view_height - 8. {
-        (f32::from(menu.anchor.origin.y) - 4. - height).max(8.)
-    } else {
-        below
-    };
+    let placed = anchored_popover::under_anchor(menu.anchor, width, height, viewport);
     let rows = choices.into_iter().map(|choice| row(this.clone(), choice));
     let close = this.clone();
-    div()
-        .id("binding-menu-page")
-        .absolute()
-        .inset_0()
-        .size_full()
-        .occlude()
-        .on_key_down(move |event, _window, cx| {
-            if event.keystroke.key.as_str() == "escape" {
-                close.update(cx, |shell, cx| {
-                    shell.graph_view.binding_menu = None;
-                    cx.notify();
-                });
-                cx.stop_propagation();
-            }
-        })
-        .on_any_mouse_down({
-            let this = this.clone();
-            move |event, _window, cx| {
-                cx.stop_propagation();
-                let inside = event.position.x >= px(left)
-                    && event.position.x <= px(left + width)
-                    && event.position.y >= px(top)
-                    && event.position.y <= px(top + height);
-                if !inside {
-                    this.update(cx, |shell, cx| {
-                        shell.graph_view.binding_menu = None;
-                        cx.notify();
-                    });
-                }
-            }
-        })
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(
+    occluding_page(
+        "binding-menu-page",
+        true,
+        move |cx| {
+            close.update(cx, |shell, cx| {
+                shell.graph_view.binding_menu = None;
+                cx.notify();
+            })
+        },
+        claim_presses(
             // The menu box clips; the scrolling happens on an inner container
             // so the bar overlay can pin beside it as a sibling.
             div()
                 .id("binding-menu")
                 .absolute()
-                .left(px(left))
-                .top(px(top))
+                .left(px(placed.left))
+                .top(px(placed.top))
                 .w(px(width))
                 .max_h(px(height))
                 .flex()
@@ -182,6 +148,6 @@ pub(crate) fn overlay(
                     .max_h(px(height)),
                 )
                 .gpui_test_observe(),
-        )
-        .into_any_element()
+        ),
+    )
 }
