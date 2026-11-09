@@ -1,7 +1,7 @@
 use gpui_kit::{
     App, Axis, BorderStyle, Bounds, ContentMask, Font, FontWeight, Hsla, PaintQuad, Path,
     PathBuilder, Pixels, ShapedLine, TextAlign, TextRun, TransformationMatrix, Window, font, point,
-    px, size, transparent_black,
+    px, size,
 };
 use rust_i18n::t;
 
@@ -110,7 +110,7 @@ fn rounded(bounds: Bounds<Pixels>, color: Hsla, radius: f32, window: &mut Window
         corner_radii: radius.into(),
         background: color.into(),
         border_widths: 0f32.into(),
-        border_color: transparent_black(),
+        border_color: theme::controls::TRANSPARENT,
         border_style: BorderStyle::default(),
     });
 }
@@ -673,7 +673,7 @@ fn paint_binding_chip(
             theme::SURFACE.into()
         },
         border_widths: 0f32.into(),
-        border_color: transparent_black(),
+        border_color: theme::controls::TRANSPARENT,
         border_style: BorderStyle::default(),
     });
     let _ = window.paint_svg(
@@ -1167,7 +1167,7 @@ pub(super) fn paint_node(
     window.paint_quad(PaintQuad {
         bounds: card,
         corner_radii: radius.into(),
-        background: transparent_black().into(),
+        background: theme::controls::TRANSPARENT.into(),
         border_widths: outline_width.into(),
         border_color: outline,
         border_style: BorderStyle::default(),

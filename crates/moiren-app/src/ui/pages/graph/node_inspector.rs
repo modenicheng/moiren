@@ -102,7 +102,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .id("node-name-editor")
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(px(theme::SPACE_1))
             .child(
                 component::input::Input::new(&shell.inspector.node_name)
                     .id("node-name")
@@ -128,7 +128,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .id("node-name-display")
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(px(theme::SPACE_1_5))
             .cursor_pointer()
             .child(heading(display.clone()))
             .child(
@@ -161,7 +161,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     view = view
         .child(
             div()
-                .pb(px(12.))
+                .pb(px(theme::SPACE_3))
                 .border_b_1()
                 .border_color(theme::BORDER)
                 .child(name_control)
@@ -255,7 +255,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     .child(
                         div()
                             .flex()
-                            .gap(px(4.))
+                            .gap(px(theme::SPACE_1))
                             .child(button("tone-down", "−10 Hz").on_click(edit(
                                 cx.entity(),
                                 GraphEdit::BindSource {
@@ -324,7 +324,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .child(
                 div()
                     .flex()
-                    .gap(px(4.))
+                    .gap(px(theme::SPACE_1))
                     .child(button("node-gain-down", "−1 dB").on_click(edit(
                         cx.entity(),
                         GraphEdit::SetGain {
@@ -379,7 +379,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .child(
                 div()
                     .flex()
-                    .gap(px(4.))
+                    .gap(px(theme::SPACE_1))
                     .child(button("node-left", t!("Left")).on_click(edit(
                         cx.entity(),
                         GraphEdit::SetPan {
@@ -411,7 +411,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     .id(format!("compressor-{:?}", parameter.id()))
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(px(theme::SPACE_1))
                     .child(detail(
                         &t!(parameter.label()),
                         parameter.display(entry.compressor.value(parameter)),
@@ -567,7 +567,7 @@ fn node_observation(
         .id("node-observation")
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(heading(t!("Runtime observation")))
         .child(
             div()
@@ -613,7 +613,11 @@ fn builtin_controls(
     state: &crate::service::BuiltinState,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
-    let mut view = div().id("builtin-controls").flex().flex_col().gap(px(8.));
+    let mut view = div()
+        .id("builtin-controls")
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_2));
     match state {
         crate::service::BuiltinState::Eq(settings) => {
             let settings = *settings;
@@ -802,7 +806,7 @@ fn builtin_controls(
                             .id(format!("channel-map-matrix-row-{output}"))
                             .flex()
                             .items_center()
-                            .gap(px(4.));
+                            .gap(px(theme::SPACE_1));
                         row = row.child(label(t!("Out %{index}", index = output + 1)));
                         for input in 0..input_channels {
                             let value = matrix[output][input];
@@ -814,7 +818,7 @@ fn builtin_controls(
                                     .flex()
                                     .flex_col()
                                     .items_center()
-                                    .gap(px(2.))
+                                    .gap(px(theme::SPACE_0_5))
                                     .child(label(t!("In %{index}", index = input + 1)))
                                     .child(
                                         button(
@@ -1179,13 +1183,13 @@ fn builtin_step(
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(label(t!(label_text)))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(px(theme::SPACE_1))
                 .child(step_button(
                     format!("{key}-down"),
                     "−",

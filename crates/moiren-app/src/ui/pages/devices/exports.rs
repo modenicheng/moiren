@@ -215,7 +215,7 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .flex_col()
         .flex_1()
         .min_w_0()
-        .gap(px(12.))
+        .gap(px(theme::SPACE_3))
         .overflow_y_scroll()
         .track_scroll(&shell.devices.exports_scroll)
         .restrict_scroll_to_axis()
@@ -244,7 +244,11 @@ const DEFAULT_ELIGIBILITY_HELP: &str = "Default eligibility is permission on thi
 
 fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     let pending = shell.state.read(cx).pending_request;
-    let mut choices = div().flex().flex_wrap().items_center().gap(px(6.));
+    let mut choices = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(theme::SPACE_1_5));
     for (id, title, direction) in [
         (
             "export-create-playback",
@@ -300,8 +304,8 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         .id("export-create-panel")
         .flex()
         .flex_col()
-        .gap(px(8.))
-        .p(px(12.))
+        .gap(px(theme::SPACE_2))
+        .p(px(theme::SPACE_3))
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
         .child(heading(t!("Create export")))
@@ -317,33 +321,38 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 .border_color(theme::BORDER),
         )
         .child(
-            div().flex().flex_wrap().items_center().gap(px(8.)).child(
-                button("export-create", t!("Create export"))
-                    .variant(ButtonVariant::Primary)
-                    .disabled(
-                        pending
-                            || shell.state.read(cx).snapshot.graph.exports.len()
-                                >= crate::service::MAX_EXPORTS,
-                    )
-                    .on_click(move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            // Use GPUI's public UUID type; persist its ordered bytes, never a native token.
-                            let id = VirtualEndpointId::from_bytes(
-                                *gpui_kit::accesskit::Uuid::new_v4().as_bytes(),
-                            );
-                            let name = shell.devices.export_controls.name.read(cx).value();
-                            let graph = &shell.state.read(cx).snapshot.graph;
-                            let result = create_export(
-                                graph,
-                                id,
-                                shell.devices.export_controls.direction,
-                                &name,
-                                shell.devices.export_controls.channels,
-                            );
-                            shell.dispatch_exports(result, cx);
-                        });
-                    }),
-            ),
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(theme::SPACE_2))
+                .child(
+                    button("export-create", t!("Create export"))
+                        .variant(ButtonVariant::Primary)
+                        .disabled(
+                            pending
+                                || shell.state.read(cx).snapshot.graph.exports.len()
+                                    >= crate::service::MAX_EXPORTS,
+                        )
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |shell, cx| {
+                                // Use GPUI's public UUID type; persist its ordered bytes, never a native token.
+                                let id = VirtualEndpointId::from_bytes(
+                                    *gpui_kit::accesskit::Uuid::new_v4().as_bytes(),
+                                );
+                                let name = shell.devices.export_controls.name.read(cx).value();
+                                let graph = &shell.state.read(cx).snapshot.graph;
+                                let result = create_export(
+                                    graph,
+                                    id,
+                                    shell.devices.export_controls.direction,
+                                    &name,
+                                    shell.devices.export_controls.channels,
+                                );
+                                shell.dispatch_exports(result, cx);
+                            });
+                        }),
+                ),
         )
         .gpui_test_observe()
 }
@@ -361,8 +370,8 @@ fn export_row(
         .id(SharedString::from(format!("export-row-{id}")))
         .flex()
         .flex_col()
-        .gap(px(8.))
-        .p(px(12.))
+        .gap(px(theme::SPACE_2))
+        .p(px(theme::SPACE_3))
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
@@ -422,7 +431,7 @@ fn export_row(
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(6.))
+            .gap(px(theme::SPACE_1_5))
             .child(label(t!("Channels")));
         for (key, title, channels) in [("mono", t!("Mono"), 1), ("stereo", t!("Stereo"), 2)] {
             let this = cx.entity();
@@ -482,7 +491,7 @@ fn export_row(
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(6.))
+                .gap(px(theme::SPACE_1_5))
                 .child(
                     button(
                         SharedString::from(format!("export-toggle-{id}")),

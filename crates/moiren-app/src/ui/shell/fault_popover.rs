@@ -168,7 +168,7 @@ pub(crate) fn overlay(
                 .max_h(px(height))
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(px(theme::SPACE_1_5))
                 .p(px(PAD))
                 .rounded(px(theme::RADIUS_MD))
                 .bg(theme::SURFACE)

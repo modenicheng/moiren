@@ -57,8 +57,8 @@ pub(crate) fn overlay(
             .w(px(width))
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .p(px(6.))
+            .gap(px(theme::SPACE_0_5))
+            .p(px(theme::SPACE_1_5))
             .rounded(px(theme::RADIUS_MD))
             .border_1()
             .border_color(theme::BORDER_STRONG)
@@ -168,7 +168,7 @@ fn color_row(
         .id("context-menu-colors")
         .flex()
         .items_center()
-        .gap(px(4.));
+        .gap(px(theme::SPACE_1));
     row = row.child(
         div()
             .id("node-tint-auto")

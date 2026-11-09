@@ -451,7 +451,7 @@ fn strip_column(
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .pt(px(4.))
+                .pt(px(theme::SPACE_1))
                 .child(routing::inputs(shell, entry, cx))
                 .child(routing::sends(shell, id, cx))
                 .child(cached_body),

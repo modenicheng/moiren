@@ -76,7 +76,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex_none()
                 .w(px(112.))
                 .h_full()
-                .p(px(8.))
+                .p(px(theme::SPACE_2))
                 .bg(theme::SURFACE_3)
                 .child(label(t!(
                     "%{name} / in %{index}",
@@ -99,7 +99,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             div()
                 .flex_none()
                 .h(px(row_height))
-                .p(px(8.))
+                .p(px(theme::SPACE_2))
                 .bg(theme::SURFACE_3)
                 .child(label(t!(
                     "%{name} / out %{index}",
@@ -200,8 +200,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
-                .gap(px(12.))
-                .p(px(12.))
+                .gap(px(theme::SPACE_3))
+                .p(px(theme::SPACE_3))
                 .child(
                     div()
                         .flex()
@@ -222,7 +222,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                     div()
                                         .w(px(156.))
                                         .flex_none()
-                                        .p(px(8.))
+                                        .p(px(theme::SPACE_2))
                                         .bg(theme::SURFACE_3)
                                         .child(label(t!("Outputs → Inputs"))),
                                 )
@@ -271,7 +271,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                     .min_w_0(),
                                 ),
                         )
-                        .child(div().flex_none().p(px(12.)).child(label(t!(
+                        .child(div().flex_none().p(px(theme::SPACE_3)).child(label(t!(
                             "%{outputs} output ports · %{inputs} input ports · %{connections} direct connections",
                             outputs = outputs.len(),
                             inputs = inputs.len(),
@@ -341,7 +341,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     .child(
                         div()
                             .flex()
-                            .gap(px(6.))
+                            .gap(px(theme::SPACE_1_5))
                             // Route sends have no upper gain limit by design
                             // (SendParams deliberately accepts any finite
                             // headroom), so the +1 dB step never clamps.

@@ -46,7 +46,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     let mut content = div()
         .flex()
         .flex_col()
-        .gap(px(12.))
+        .gap(px(theme::SPACE_3))
         .child(heading(name))
         .child(label(if input {
             t!("Input configuration")
@@ -72,7 +72,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         div()
             .flex()
             .flex_wrap()
-            .gap(px(6.))
+            .gap(px(theme::SPACE_1_5))
             .child(
                 button("device-use-defaults", t!("Use defaults"))
                     .disabled(shell.settings.editor.busy() || !custom)
@@ -182,7 +182,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     .restrict_scroll_to_axis()
                     .overflow_y_scroll()
                     .on_scroll_wheel(notify_owner(cx.entity()))
-                    .p(px(16.))
+                    .p(px(theme::SPACE_4))
                     .child(content)
                     .gpui_test_observe(),
             )

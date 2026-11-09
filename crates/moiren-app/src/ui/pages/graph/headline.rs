@@ -42,7 +42,7 @@ pub(crate) fn eq_section(
         .id("eq-q-row")
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .px(px(theme::SPACE_3))
         .py(px(theme::SPACE_2))
         .child(

@@ -343,7 +343,7 @@ fn paint_connection_drag(
         window.paint_quad(PaintQuad {
             bounds: card,
             corner_radii: (theme::card::RADIUS * layout.scale).into(),
-            background: transparent_black().into(),
+            background: theme::controls::TRANSPARENT.into(),
             border_widths: theme::card::OUTLINE_W.into(),
             border_color: status_color,
             border_style: BorderStyle::default(),
@@ -458,7 +458,7 @@ fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElemen
         .bottom(px(12.))
         .right(px(12.))
         .w(px(164.))
-        .p(px(8.))
+        .p(px(theme::SPACE_2))
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::SURFACE)
         .border_1()
@@ -497,7 +497,7 @@ fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElemen
                         window.paint_quad(PaintQuad {
                             bounds: project(overview.viewport),
                             corner_radii: 0f32.into(),
-                            background: transparent_black().into(),
+                            background: theme::controls::TRANSPARENT.into(),
                             border_widths: 1f32.into(),
                             border_color: theme::TEXT_MUTED,
                             border_style: BorderStyle::default(),
