@@ -122,6 +122,68 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
     finish_service(runtime);
 }
 
+/// The compact breakpoint adaptation is enter-only (design 21 §2): crossing
+/// below [`theme::COMPACT_BREAKPOINT`] collapses the side panels, but growing
+/// back above it must leave them exactly as the compact session left them.
+/// The old transition also force-restored `sidebar_open`/`inspector_open` on
+/// exit, reopening panels the user had closed — before shrinking, or while
+/// compact — and re-clobbering both flags on every rapid crossing.
+#[gpui_kit::test]
+fn compact_breakpoint_collapses_on_enter_and_exit_leaves_panels_alone(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    // `simulate_resize` drives the real viewport-size callback the shell's
+    // breakpoint check reads; the harness `window.resize` only moves bounds.
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    view.update(cx, |shell, _| {
+        assert!(!shell.chrome.compact, "1440 sits above the breakpoint");
+        assert!(shell.chrome.sidebar_open && shell.chrome.inspector_open);
+    });
+    // Entering compact collapses both panels.
+    cx.simulate_resize(gpui_kit::size(px(1024.), px(720.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    view.update(cx, |shell, _| {
+        assert!(shell.chrome.compact, "1024 sits below the breakpoint");
+        assert!(!shell.chrome.sidebar_open && !shell.chrome.inspector_open);
+    });
+    // Leaving compact restores nothing: the panels stay closed.
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    view.update(cx, |shell, _| {
+        assert!(!shell.chrome.compact);
+        assert!(
+            !shell.chrome.sidebar_open && !shell.chrome.inspector_open,
+            "the exit transition must not force the panels open"
+        );
+    });
+    // A second entry re-applies the collapse, and a user arrangement made
+    // while compact (the rail handle re-opens the library, the inspector
+    // stays shut) survives the next exit unchanged.
+    cx.simulate_resize(gpui_kit::size(px(1024.), px(720.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    view.update(cx, |shell, _| {
+        assert!(shell.chrome.compact);
+        assert!(!shell.chrome.sidebar_open && !shell.chrome.inspector_open);
+        shell.chrome.sidebar_open = true;
+    });
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    cx.update(|window, cx| window.render_frame(cx));
+    view.update(cx, |shell, _| {
+        assert!(!shell.chrome.compact);
+        assert!(
+            shell.chrome.sidebar_open,
+            "the user-opened library stays open"
+        );
+        assert!(
+            !shell.chrome.inspector_open,
+            "the closed inspector stays closed"
+        );
+    });
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn closed_window_keeps_preference_writes_until_application_shutdown(
     cx: &mut gpui_kit::TestAppContext,
