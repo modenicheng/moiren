@@ -134,7 +134,9 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                     t!("%{prefix}: backend / mode", prefix = prefix).to_string(),
                     match stream.requested.backend {
                         AudioBackend::Asio => t!("ASIO driver (driver owns mode)").to_string(),
-                        AudioBackend::Wasapi => format!("WASAPI / {:?}", stream.requested.mode),
+                        AudioBackend::Wasapi => {
+                            format!("WASAPI / {}", t!(stream.requested.mode.title()))
+                        }
                     },
                 ));
                 rows.push((
@@ -380,6 +382,8 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
 #[cfg(test)]
 mod tests {
     use super::{db_text, db_text_bare, dbfs_text, step_db};
+    use crate::i18n::{ENGLISH, zh};
+    use moiren_engine::node::DeviceMode;
 
     #[test]
     fn db_text_reads_signed_db_and_one_infinity_for_silence() {
@@ -420,5 +424,21 @@ mod tests {
         assert_eq!(step_db(16., 1., 0., 16.), 16.);
         // Send gains have no upper limit by design.
         assert!((step_db(16., 1., 0., f64::INFINITY) - 16. * one_db).abs() < 1e-9);
+    }
+
+    /// The diagnostics "backend / mode" row paints `t!(mode.title())`; every
+    /// variant must resolve in both shipped locales, replacing the retired
+    /// `format!("WASAPI / {:?}", ..)` Debug blob.
+    #[test]
+    fn stream_mode_titles_render_in_both_locales() {
+        for (mode, zh_cn) in [
+            (DeviceMode::Shared, "共享"),
+            (DeviceMode::Exclusive, "独占"),
+        ] {
+            let title = mode.title();
+            assert!(!title.is_empty());
+            assert_eq!(rust_i18n::t!(title, locale = ENGLISH), title);
+            assert_eq!(zh(title), zh_cn, "zh-CN value for {title:?}");
+        }
     }
 }

@@ -5,9 +5,10 @@
 //!
 //! 1. Debug-format tripwire — `format!("{..:?}")` results may not reach UI
 //!    text (`t!` args, `label`/`detail`/`heading`, text-named field
-//!    assignments). Today's accepted sites live in an allowlist with
-//!    retirement notes; a site disappearing from source is fine, a new
-//!    unmatched site fails.
+//!    assignments). The migration series (#121, #154-#158 and the closeout
+//!    sweep) retired every known site and emptied its allowlist, so any hit
+//!    now fails outright; fix it with a display-name mapping (design 21 §4)
+//!    rather than re-allowlisting.
 //! 2. Two-way key ledger — every string literal passed to `t!` must exist as
 //!    a key in `locales/zh-CN.yml`, and every catalog key must be referenced
 //!    by a literal call site or listed in `DYNAMIC_KEY_EXCEPTIONS` (keys
@@ -397,58 +398,6 @@ const TEXT_FIELD_INITS: [&str; 8] = [
     "reason", "message", "error", "hint", "title", "text", "label", "note",
 ];
 
-struct DebugHit {
-    /// Path relative to `src/`, forward slashes.
-    rel: String,
-    /// The `format!(..)` call text, for failure messages.
-    call: String,
-    /// Normalized source around the call, for allowlist matching.
-    window: String,
-}
-
-/// One accepted Debug-format-into-UI-text site. Matching is by file suffix
-/// plus normalized-source substrings, never by line number, so rustfmt
-/// cannot invalidate an entry. An entry whose site disappears from source is
-/// simply dormant (the guard does not fail); remove it at your leisure.
-struct DebugTextSite {
-    /// Path suffix relative to `src/` (forward slashes).
-    file: &'static str,
-    /// Nearby content disambiguating repeated shapes within one file;
-    /// empty if `pattern` is already unique to the site.
-    near: &'static str,
-    /// Normalized-source substring pinning the exact call.
-    pattern: &'static str,
-    /// Why the flow exists today and which migration retires it.
-    remove_when: &'static str,
-}
-
-/// Known Debug-format flows into UI text. Every entry is slated to die in
-/// the key-and-parameter migration (design 21 §4) or the display-name
-/// registry (#121); add an entry only for a genuinely new site, never to
-/// silence this guard for reflowed code.
-const DEBUG_TEXT_ALLOWLIST: &[DebugTextSite] = &[
-    DebugTextSite {
-        file: "ui/state.rs",
-        near: "",
-        pattern: "dispatch_error = Some(format!(\"{error:?}\"))",
-        remove_when: "UiState.dispatch_error stores a key plus args instead of a Debug blob (design 21 §4)",
-    },
-    DebugTextSite {
-        file: "ui/presentation.rs",
-        near: "",
-        pattern: "format!(\"WASAPI / {:?}\", stream.requested.mode)",
-        remove_when: "the stream-mode display name joins the registry (design 21 §3.4, #121)",
-    },
-    // Found by this guard while writing it: the Devices page export row
-    // label Debug-formats ExportDirection straight into visible text.
-    DebugTextSite {
-        file: "ui/pages/devices/exports.rs",
-        near: "",
-        pattern: "\"{:?} / {} / {id}\"",
-        remove_when: "the export-direction display name joins the registry (#121)",
-    },
-];
-
 /// Whether a `{:?}` (or pretty `{:#?}`) spec appears in the first string
 /// literal of a `format!` call.
 fn has_debug_spec(text: &str, call: &MacroCall) -> bool {
@@ -553,7 +502,7 @@ fn debug_format_does_not_reach_ui_text() {
     let files = collect_rs_files(&ui_root);
     assert!(files.len() > 30, "ui source tree went missing");
 
-    let mut hits = Vec::new();
+    let mut leaks = Vec::new();
     let mut debug_calls = 0;
     for path in &files {
         let source = std::fs::read_to_string(path)
@@ -567,43 +516,15 @@ fn debug_format_does_not_reach_ui_text() {
             }
             debug_calls += 1;
             if is_ui_text_flow(&chars, &call) {
-                hits.push(DebugHit {
-                    rel: rel_path(&src_root, path),
-                    call: chars[call.open..=call.close].iter().collect(),
-                    window: window_around(&text, call.open, call.close),
-                });
+                leaks.push(format!(
+                    "  {} -> {}",
+                    rel_path(&src_root, path),
+                    chars[call.open..=call.close].iter().collect::<String>()
+                ));
             }
         }
     }
 
-    // One-to-one matching: each hit may consume one allowlist entry. Leftover
-    // entries mean the site disappeared from source — allowed, per the
-    // migration contract; a hit with no entry is a new leak and fails.
-    let mut consumed = vec![false; hits.len()];
-    for entry in DEBUG_TEXT_ALLOWLIST {
-        let mut matched = false;
-        for (index, hit) in hits.iter().enumerate() {
-            if consumed[index] || !hit.rel.ends_with(entry.file) {
-                continue;
-            }
-            if !entry.near.is_empty() && !hit.window.contains(entry.near) {
-                continue;
-            }
-            if hit.window.contains(entry.pattern) {
-                consumed[index] = true;
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            // Dormant, not failing: the migration the entry was waiting for
-            // has landed. Surface it so the entry gets deleted.
-            eprintln!(
-                "i18n guard: allowlist entry is now dormant (site gone), delete it: {} ({})",
-                entry.file, entry.remove_when
-            );
-        }
-    }
     // Scanner sanity: a regression that lexes nothing must fail loudly, not
     // pass vacuously. Roughly fifty Debug-format calls live under ui/,
     // most of them element-id builders; lower this floor deliberately if
@@ -613,27 +534,16 @@ fn debug_format_does_not_reach_ui_text() {
         "the Debug-format scan went blind: only {debug_calls} format! calls \
          with a Debug spec found under ui/"
     );
-    let new_leaks: Vec<String> = hits
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !consumed[*index])
-        .map(|(_, hit)| format!("  {} -> {}", hit.rel, hit.call))
-        .collect();
     assert!(
-        new_leaks.is_empty(),
-        "Debug-format text reached the UI without an allowlist entry; \
-         user-visible strings must come from t! keys (design 21 §4). New site(s):\n{}\n\
-         If this is a deliberate, temporary exception, add a DEBUG_TEXT_ALLOWLIST entry \
-         with a remove_when note.",
-        new_leaks.join("\n")
+        leaks.is_empty(),
+        "Debug-format text reached the UI; user-visible strings must come from \
+         t! keys (design 21 §4). The closeout migration emptied the allowlist, \
+         so every hit is a new leak: fix the site with a display-name registry \
+         entry (`title()` accessor + `t!` at paint, zh-CN catalog key), or — \
+         only for a truly permanent, arbitrary infra exception — reintroduce a \
+         small allowlist here with a why note. Site(s):\n{}",
+        leaks.join("\n")
     );
-}
-
-fn window_around(text: &str, open: usize, close: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let start = open.saturating_sub(400);
-    let end = (close + 400).min(chars.len());
-    chars[start..end].iter().collect()
 }
 
 // ---------------------------------------------------------------------------
