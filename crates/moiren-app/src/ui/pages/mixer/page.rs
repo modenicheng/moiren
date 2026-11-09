@@ -40,7 +40,7 @@ pub(crate) struct MeterGeometry {
     /// The strip rect the hovered fault banner hangs from. No clip rides
     /// along: the banner may reach below the scroll viewport's edge, so it
     /// clamps against the hot layer's own bounds instead.
-    pub(crate) banners: BTreeMap<NodeId, Bounds<Pixels>>,
+    banners: BTreeMap<NodeId, Bounds<Pixels>>,
 }
 
 /// Where the strip's meter tracks and readouts sit, registered by the

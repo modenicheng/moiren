@@ -516,7 +516,7 @@ fn structural_diff_nodes(before: &LogicalGraph, after: &LogicalGraph) -> Vec<Nod
 }
 
 /// The channel or route an edit names, for fault placement.
-pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubject {
+fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubject {
     let node = |node: &NodeId| GraphSubject::Node(*node);
     match edit {
         GraphEdit::SetBuiltin { node: id, .. }
@@ -581,7 +581,7 @@ fn edit_hint(error: &str) -> Option<&'static str> {
 /// rebuilds because it rewires prepared routing. `previous` is the graph
 /// before the edit. Drivers whose backend lacks the live strip mapping
 /// (the legacy fixed session chain) treat `SetMixer` as structural.
-pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &LogicalGraph) -> bool {
+fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &LogicalGraph) -> bool {
     match edit {
         GraphEdit::AddNode { .. }
         | GraphEdit::RemoveNode(_)

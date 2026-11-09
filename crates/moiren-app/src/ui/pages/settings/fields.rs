@@ -117,11 +117,7 @@ pub(crate) fn field(title: &str, value: impl IntoElement) -> Div {
 /// A [`field`] whose label carries the one note a value can't say for
 /// itself. The note is a tooltip: it answers a question the user asks by
 /// hovering, instead of a paragraph they must read past.
-pub(crate) fn field_with_note(
-    title: &str,
-    note: impl Into<SharedString>,
-    value: impl IntoElement,
-) -> Div {
+fn field_with_note(title: &str, note: impl Into<SharedString>, value: impl IntoElement) -> Div {
     let note: SharedString = note.into();
     div()
         .flex()

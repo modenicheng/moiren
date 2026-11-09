@@ -16,11 +16,7 @@ use crate::service::{
 /// exports, which are hidden from every selector. The row lists, the
 /// candidate spec, and the transport fingerprint share this one judgment so
 /// "available" cannot mean different things at different call sites.
-pub(crate) fn backend_offers_input(
-    catalog: &DeviceCatalog,
-    backend: AudioBackend,
-    endpoint_id: &str,
-) -> bool {
+fn backend_offers_input(catalog: &DeviceCatalog, backend: AudioBackend, endpoint_id: &str) -> bool {
     match backend {
         AudioBackend::Wasapi => {
             !catalog.vad_endpoints.values().any(|id| id == endpoint_id)
@@ -37,7 +33,7 @@ pub(crate) fn backend_offers_input(
 }
 
 /// The output-row half of [`backend_offers_input`].
-pub(crate) fn backend_offers_output(
+fn backend_offers_output(
     catalog: &DeviceCatalog,
     backend: AudioBackend,
     endpoint_id: &str,
