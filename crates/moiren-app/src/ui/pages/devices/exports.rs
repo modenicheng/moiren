@@ -377,8 +377,8 @@ fn export_row(
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
         .child(label(format!(
-            "{:?} / {} / {id}",
-            status.intent.direction,
+            "{} / {} / {id}",
+            t!(status.intent.direction.title()),
             if status.intent.channels == 1 {
                 t!("Mono")
             } else {
