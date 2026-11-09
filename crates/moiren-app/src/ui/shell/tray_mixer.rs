@@ -182,7 +182,7 @@ impl Render for TrayMixer {
 }
 
 #[derive(PartialEq)]
-pub(crate) struct TrayKey {
+struct TrayKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     /// The strip row scrolls inside the cached panel (same
     /// scroll-under-cache rationale as the main window's pages).
@@ -191,9 +191,9 @@ pub(crate) struct TrayKey {
 
 /// The flyout's strip panel: faders, mute/solo, and readouts, rebuilt only
 /// when the published snapshot changes.
-pub(crate) struct TrayPanel;
+struct TrayPanel;
 
-pub(crate) type TrayPanelHost = PanelHost<TrayPanel>;
+type TrayPanelHost = PanelHost<TrayPanel>;
 
 impl CachedPanel for TrayPanel {
     type Owner = TrayMixer;
@@ -472,7 +472,7 @@ fn meter_track(flyout: &TrayMixer, id: NodeId) -> impl IntoElement {
 
 /// The flyout's hot surface: live bars over the cached strips, painting from
 /// the geometry the strips registered and the shared observations.
-pub(crate) struct FlyoutMeters {
+struct FlyoutMeters {
     flyout: WeakEntity<TrayMixer>,
     geometry: SharedFrame<MeterTracks>,
     /// How many registered tracks this surface has painted. Test-visible
@@ -503,7 +503,7 @@ impl FlyoutMeters {
     }
 }
 
-pub(crate) type FlyoutMeterLayer = HotLayerView<FlyoutMeters>;
+type FlyoutMeterLayer = HotLayerView<FlyoutMeters>;
 
 impl HotSurface for FlyoutMeters {
     type Frame = MeterTracks;

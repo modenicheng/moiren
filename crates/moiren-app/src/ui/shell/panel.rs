@@ -68,12 +68,12 @@ impl<T> PartialEq for PublishRef<T> {
 /// interval (`mixer::model::FADER_DISPATCH_INTERVAL`): during a drag the
 /// service confirmations that carry the dB readouts arrive at the same pace,
 /// so the panel never rebuilds faster than its inputs actually change.
-pub(crate) const NESTED_REBUILD_INTERVAL: Duration = Duration::from_millis(33);
+const NESTED_REBUILD_INTERVAL: Duration = Duration::from_millis(33);
 
 /// What [`NestedGate::notify`] asks the host to do with one nested-model
 /// notification (a slider drag tick, an input edit).
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum NestedAction {
+enum NestedAction {
     /// Rebuild the panel now: the first notification of a burst must reach
     /// the screen without waiting for the interval.
     Rebuild,
@@ -90,7 +90,7 @@ pub(crate) enum NestedAction {
 /// later ones coalesce into one trailing rebuild, so a paused drag still
 /// paints its last suppressed value before release.
 #[derive(Default)]
-pub(crate) struct NestedGate {
+struct NestedGate {
     last_rebuild: Option<Instant>,
     armed_at: Option<Instant>,
 }
