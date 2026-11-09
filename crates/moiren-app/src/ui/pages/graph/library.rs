@@ -326,11 +326,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
 }
 
 impl StudioShell {
-    pub(crate) fn spawn_template_at_center(
-        &mut self,
-        template: NodeTemplate,
-        cx: &mut Context<Self>,
-    ) {
+    fn spawn_template_at_center(&mut self, template: NodeTemplate, cx: &mut Context<Self>) {
         let center = self
             .graph_view
             .canvas_size
