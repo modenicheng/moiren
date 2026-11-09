@@ -3,7 +3,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::AudioLatencyProfile;
 use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
-use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
 use gpui_kit::base::ScrollbarAxis;
@@ -82,11 +82,11 @@ impl CachedPanel for SettingsPanel {
 }
 
 /// The settings page's cached splice; mounted in place of the workspace
-/// while settings are open (the shell's own `.when`).
+/// while the shell's view is [`WorkspaceView::Settings`].
 /// The Settings page's shell-owned state (design 20 §4): the draft editor,
 /// the open value menu, the page's scroll container, and the cached
-/// SettingsPanel host. `settings_open` itself stays on the shell until the
-/// chrome group's WorkspaceView lands.
+/// SettingsPanel host. Which view is shown lives on the shell's
+/// presentation (`WorkspaceView`).
 pub(crate) struct SettingsPageState {
     pub(crate) editor: SettingsEditor,
     pub(crate) menu: Option<ValueMenu>,
@@ -250,49 +250,40 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .flex()
                         .flex_col()
                         .child(
-                            // The bar overlay is a sibling of the scroll
-                            // container, never a child: the container
-                            // translates its children by the offset at
-                            // prepaint, so an overlay inside it would drift
-                            // away with the content.
-                            div()
-                                .relative()
-                                .flex_1()
-                                .min_w_0()
-                                .min_h_0()
-                                .child(
-                                    div()
-                                        .id("settings-scroll")
-                                        .flex_1()
-                                        .min_h_0()
-                                        .track_scroll(&shell.settings.scroll)
-                                        .restrict_scroll_to_axis()
-                                        .overflow_y_scroll()
-                                        .on_scroll_wheel(notify_owner(this.clone()))
-                                        .px(px(16.))
-                                        .py(px(24.))
-                                        // A fixed reading measure, centered: on wide
-                                        // windows the section content holds together
-                                        // as one block instead of rows drifting
-                                        // apart across the workspace.
-                                        .child(
-                                            div().flex().justify_center().child(
-                                                div()
-                                                    .w(px(COLUMN_WIDTH))
-                                                    .max_w_full()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap(px(16.))
-                                                    .child(content),
-                                            ),
-                                        )
-                                        .gpui_test_observe(),
-                                )
-                                .child(overlay_scrollbar(
-                                    &shell.settings.scroll,
-                                    "scrollbar-settings-scroll",
-                                    ScrollbarAxis::Vertical,
-                                )),
+                            scroll_region(
+                                "scrollbar-settings-scroll",
+                                &shell.settings.scroll,
+                                ScrollbarAxis::Vertical,
+                                div()
+                                    .id("settings-scroll")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .track_scroll(&shell.settings.scroll)
+                                    .restrict_scroll_to_axis()
+                                    .overflow_y_scroll()
+                                    .on_scroll_wheel(notify_owner(this.clone()))
+                                    .px(px(16.))
+                                    .py(px(24.))
+                                    // A fixed reading measure, centered: on wide
+                                    // windows the section content holds together
+                                    // as one block instead of rows drifting
+                                    // apart across the workspace.
+                                    .child(
+                                        div().flex().justify_center().child(
+                                            div()
+                                                .w(px(COLUMN_WIDTH))
+                                                .max_w_full()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(16.))
+                                                .child(content),
+                                        ),
+                                    )
+                                    .gpui_test_observe(),
+                            )
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0(),
                         )
                         .when(shell.settings.editor.section == Section::Audio, |column| {
                             column.child(footer(shell, Editor::Global, cx))

@@ -489,7 +489,7 @@ impl StudioShell {
                     .map(|index| index as u64)
             })
             .collect();
-        document.layout.workspace = Self::workspace_document(self.presentation.page);
+        document.layout.workspace = Self::workspace_document(self.presentation.page());
         for (index, node) in state.snapshot.graph.graph.nodes().iter().enumerate() {
             if let Some(&(x, y)) = self.graph_view.node_positions.get(&node.id()) {
                 document.layout.nodes.push(crate::project::NodeLayout {

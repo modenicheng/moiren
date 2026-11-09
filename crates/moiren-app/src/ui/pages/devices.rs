@@ -2,7 +2,7 @@ use super::*;
 use crate::ui::presentation::{output_name, source_name};
 use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
 use crate::ui::state::SourceMode;
-use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use controls::*;
 use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
@@ -524,48 +524,31 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             )
         })
         .child(
-            div()
+            div().flex().flex_1().min_h_0().min_w_0().p(px(16.)).child(
+                // The wrapper mirrors the list's own flex sizing: in a
+                // real viewport the pair stretches to the padded row, in
+                // a degenerate replay layout the rows' content height
+                // keeps them visible (percentage heights would collapse
+                // to zero there). The tab decides which list and bar are
+                // mounted — stacking both bars' viewport hitboxes would
+                // deafen the list beneath them to the wheel.
+                scroll_region(
+                    match shell.devices.device_tab {
+                        DeviceTab::Exports => "scrollbar-virtual-export-list",
+                        _ => "scrollbar-device-list",
+                    },
+                    match shell.devices.device_tab {
+                        DeviceTab::Exports => &shell.devices.exports_scroll,
+                        _ => &shell.devices.device_list_scroll,
+                    },
+                    ScrollbarAxis::Vertical,
+                    list.gpui_test_observe(),
+                )
                 .flex()
+                .flex_col()
                 .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .p(px(16.))
-                // The bar overlay is a sibling of the scroll container,
-                // never a child: the container translates its children by
-                // the offset at prepaint, so an overlay inside it would
-                // drift away with the content. The tab decides which list
-                // and bar are mounted — stacking both bars' viewport
-                // hitboxes would deafen the list beneath them to the wheel.
-                .child(
-                    // The wrapper mirrors the list's own flex sizing: in a
-                    // real viewport the pair stretches to the padded row, in
-                    // a degenerate replay layout the rows' content height
-                    // keeps them visible (percentage heights would collapse
-                    // to zero there). The bar overlay is a sibling of the
-                    // scroll container, never a child: the container
-                    // translates its children by the offset at prepaint, so
-                    // an overlay inside it would drift away with the
-                    // content.
-                    div()
-                        .relative()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(list.gpui_test_observe())
-                        .child(match shell.devices.device_tab {
-                            DeviceTab::Exports => overlay_scrollbar(
-                                &shell.devices.exports_scroll,
-                                "scrollbar-virtual-export-list",
-                                ScrollbarAxis::Vertical,
-                            ),
-                            _ => overlay_scrollbar(
-                                &shell.devices.device_list_scroll,
-                                "scrollbar-device-list",
-                                ScrollbarAxis::Vertical,
-                            ),
-                        }),
-                ),
+                .min_w_0(),
+            ),
         )
         .gpui_test_observe()
         .into_any_element()

@@ -3,7 +3,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::{GraphEdit, InputSelection, RequestId};
 use crate::ui::pages::graph::node_catalog::NodeTemplate;
-use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 
 #[derive(Clone)]
@@ -200,34 +200,27 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 ),
         )
         .child(
-            // The bar overlay is a sibling of the scroll container, never a
-            // child: the container translates its children by the offset at
-            // prepaint, so an overlay inside it would drift away with the
-            // content. The container scrolls inside the cached panel, so its
-            // offset rides LibraryKey.
-            div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    div()
-                        .id("node-library-scroll")
-                        .w_full()
-                        .h_full()
-                        .px(px(12.))
-                        .track_scroll(&shell.library.scroll)
-                        .restrict_scroll_to_axis()
-                        .overflow_y_scroll()
-                        .on_scroll_wheel(notify_owner(cx.entity()))
-                        .child(items)
-                        .child(session)
-                        .gpui_test_observe(),
-                )
-                .child(overlay_scrollbar(
-                    &shell.library.scroll,
-                    "scrollbar-node-library-scroll",
-                    ScrollbarAxis::Vertical,
-                )),
+            // The container scrolls inside the cached panel, so its offset
+            // rides LibraryKey.
+            scroll_region(
+                "scrollbar-node-library-scroll",
+                &shell.library.scroll,
+                ScrollbarAxis::Vertical,
+                div()
+                    .id("node-library-scroll")
+                    .w_full()
+                    .h_full()
+                    .px(px(12.))
+                    .track_scroll(&shell.library.scroll)
+                    .restrict_scroll_to_axis()
+                    .overflow_y_scroll()
+                    .on_scroll_wheel(notify_owner(cx.entity()))
+                    .child(items)
+                    .child(session)
+                    .gpui_test_observe(),
+            )
+            .flex_1()
+            .min_h_0(),
         )
         .child(
             div()
@@ -303,20 +296,18 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
     // The rail's outer chrome (width, right border) lives on the relative
     // host so the bar overlay can pin there as the scroll container's
     // sibling; the offset rides LibraryKey inside the cached panel.
-    div()
-        .relative()
-        .flex_none()
-        .w(px(theme::LIBRARY_RAIL_WIDTH))
-        .h_full()
-        .bg(theme::SURFACE)
-        .border_r_1()
-        .border_color(theme::HAIRLINE)
-        .child(rail.gpui_test_observe())
-        .child(overlay_scrollbar(
-            &shell.library.rail_scroll,
-            "scrollbar-library-rail-scroll",
-            ScrollbarAxis::Vertical,
-        ))
+    scroll_region(
+        "scrollbar-library-rail-scroll",
+        &shell.library.rail_scroll,
+        ScrollbarAxis::Vertical,
+        rail.gpui_test_observe(),
+    )
+    .flex_none()
+    .w(px(theme::LIBRARY_RAIL_WIDTH))
+    .h_full()
+    .bg(theme::SURFACE)
+    .border_r_1()
+    .border_color(theme::HAIRLINE)
 }
 
 impl StudioShell {

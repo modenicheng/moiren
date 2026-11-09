@@ -2,7 +2,7 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::scroll_region;
 use gpui_kit::base::ScrollbarAxis;
 
 pub(crate) fn label(text: impl Into<SharedString>) -> Div {
@@ -184,17 +184,15 @@ pub(crate) fn panel_host(
     scroll: &ScrollHandle,
     panel: impl IntoElement,
 ) -> impl IntoElement {
-    div()
-        .relative()
-        .flex_none()
-        .w(px(theme::INSPECTOR_WIDTH))
-        .h_full()
-        .child(panel)
-        .child(overlay_scrollbar(
-            scroll,
-            SharedString::from(format!("scrollbar-{id}")),
-            ScrollbarAxis::Vertical,
-        ))
+    scroll_region(
+        SharedString::from(format!("scrollbar-{id}")),
+        scroll,
+        ScrollbarAxis::Vertical,
+        panel,
+    )
+    .flex_none()
+    .w(px(theme::INSPECTOR_WIDTH))
+    .h_full()
 }
 
 pub(crate) fn button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> ActionButton {
