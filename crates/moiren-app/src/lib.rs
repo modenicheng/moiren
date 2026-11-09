@@ -11,6 +11,8 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[allow(unsafe_code)]
 pub mod console;
 pub mod i18n;
+#[cfg(test)]
+mod i18n_guards;
 pub mod logging;
 pub mod project;
 pub mod service;
