@@ -1,7 +1,6 @@
-use rust_i18n::t;
-
-use super::model::{Pending, Stage, expected_active_profile};
+use super::model::{DraftFeedback, Pending, Rejection, Stage, expected_active_profile};
 use super::*;
+use crate::ui::state::UiFailure;
 
 impl StudioShell {
     pub(crate) fn save_audio_settings(
@@ -16,23 +15,21 @@ impl StudioShell {
         let draft = self.settings.editor.draft_mut(editor);
         draft.changed();
         if self.preferences.path.is_none() {
-            draft.error = Some(
-                t!("User configuration directory is unavailable. Your draft is retained.").into(),
-            );
+            draft.feedback = Some(DraftFeedback::PreferencesDirUnavailable);
             cx.notify();
             return;
         }
         let snapshot = &self.state.read(cx).snapshot;
         let submitted = match draft.submission(&snapshot.audio_settings, snapshot.latency_profile) {
             Ok(submitted) => submitted,
-            Err(error) => {
-                draft.error = Some(error);
+            Err(feedback) => {
+                draft.feedback = Some(feedback);
                 cx.notify();
                 return;
             }
         };
         if let Err(error) = submitted.audio.validate() {
-            draft.error = Some(error.to_string());
+            draft.feedback = Some(DraftFeedback::ValidateInvalid { error });
             cx.notify();
             return;
         }
@@ -53,16 +50,12 @@ impl StudioShell {
                     restart,
                     submitted,
                 });
-                draft.message = Some(t!("Saving requested settings...").into());
+                draft.feedback = Some(DraftFeedback::SavingRequested);
             }
             Err(error) => {
-                draft.error = Some(
-                    t!(
-                        "Could not save audio settings: %{error}",
-                        error = format!("{error:?}")
-                    )
-                    .to_string(),
-                )
+                draft.feedback = Some(DraftFeedback::SaveDispatchFailed {
+                    failure: UiFailure::Dispatch(error),
+                });
             }
         }
         cx.notify();
@@ -79,23 +72,36 @@ impl StudioShell {
             if snapshot.consumed_request_id < pending.request {
                 continue;
             }
-            // The draft error is a frozen string like its siblings here; the
-            // typed dispatch failure translates once, at capture time.
+            // The captured failure stays typed: `UiState.dispatch_error`
+            // whole, the service's free-form prose as diagnostic data. The
+            // footer translates whichever was stored at paint.
             let failure = state
                 .dispatch_error
                 .clone()
-                .map(|failure| crate::ui::presentation::failure_text(&failure))
-                .or_else(|| snapshot.error.clone())
-                .or_else(|| snapshot.graph.last_error.clone());
+                .map(|failure| DraftFeedback::Failure { failure })
+                .or_else(|| {
+                    snapshot
+                        .error
+                        .clone()
+                        .map(|cause| DraftFeedback::Diagnostic { cause })
+                })
+                .or_else(|| {
+                    snapshot
+                        .graph
+                        .last_error
+                        .clone()
+                        .map(|cause| DraftFeedback::Diagnostic { cause })
+                });
             let settings_match = snapshot.audio_settings == pending.submitted.audio;
             let profile_match = snapshot.latency_profile == pending.submitted.profile;
             let mut next = None;
             let mut complete = false;
-            let mut error = None;
+            let mut feedback = None;
             match pending.stage {
                 Stage::Audio | Stage::Profile if !settings_match => {
-                    error =
-                        Some(failure.unwrap_or_else(|| t!("Audio settings were rejected.").into()));
+                    feedback = Some(failure.unwrap_or(DraftFeedback::Rejected {
+                        what: Rejection::AudioSettings,
+                    }));
                 }
                 Stage::Audio if !profile_match => {
                     next = Some((
@@ -104,8 +110,9 @@ impl StudioShell {
                     ));
                 }
                 Stage::Profile if !profile_match => {
-                    error =
-                        Some(failure.unwrap_or_else(|| t!("Latency policy was rejected.").into()));
+                    feedback = Some(failure.unwrap_or(DraftFeedback::Rejected {
+                        what: Rejection::LatencyPolicy,
+                    }));
                 }
                 Stage::Audio | Stage::Profile => {
                     if pending.restart && snapshot.phase == SessionPhase::Running {
@@ -125,9 +132,11 @@ impl StudioShell {
                     {
                         complete = true;
                     } else if let Some(failure) = failure {
-                        error = Some(failure);
+                        feedback = Some(failure);
                     } else if matches!(snapshot.phase, SessionPhase::Idle | SessionPhase::Failed) {
-                        error = Some(t!("Audio did not restart. Your draft is retained.").into());
+                        feedback = Some(DraftFeedback::Rejected {
+                            what: Rejection::NoRestart,
+                        });
                     }
                 }
             }
@@ -143,27 +152,22 @@ impl StudioShell {
                             stage,
                             ..pending.clone()
                         });
-                        draft.message = Some(if matches!(stage, Stage::Restart) {
-                            t!("Restarting audio; waiting for the active session...").into()
+                        draft.feedback = Some(if matches!(stage, Stage::Restart) {
+                            DraftFeedback::RestartingAudio
                         } else {
-                            t!("Saving latency policy...").into()
+                            DraftFeedback::SavingLatencyPolicy
                         });
                     }
-                    Err(failure) => {
-                        error = Some(
-                            t!(
-                                "Could not apply audio settings: %{error}",
-                                error = format!("{failure:?}")
-                            )
-                            .to_string(),
-                        );
+                    Err(error) => {
+                        feedback = Some(DraftFeedback::ApplyDispatchFailed {
+                            failure: UiFailure::Dispatch(error),
+                        });
                     }
                 }
             }
-            if let Some(error) = error {
+            if let Some(feedback) = feedback {
                 let draft = self.settings.editor.draft_mut(editor);
-                draft.error = Some(error);
-                draft.message = None;
+                draft.feedback = Some(feedback);
                 draft.pending = None;
             } else if complete {
                 let draft = self.settings.editor.draft_mut(editor);
@@ -173,7 +177,7 @@ impl StudioShell {
                 self.preferences.values.latency_profile = draft.profile;
                 draft.committed();
                 if matches!(pending.stage, Stage::Restart) {
-                    draft.message = Some(t!("Audio restarted with the saved settings.").into());
+                    draft.feedback = Some(DraftFeedback::Restarted);
                 }
                 self.save_preferences(cx);
                 self.settings.editor.save_revision = Some((self.preferences.save_revision, editor));

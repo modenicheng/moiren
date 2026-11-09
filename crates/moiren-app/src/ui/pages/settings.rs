@@ -24,7 +24,8 @@ pub(crate) use fields::{footer, stream_editor};
 use menu::ValueField;
 pub(crate) use menu::{ValueMenu, menu_overlay};
 pub(crate) use model::{
-    Direction, Draft, Editor, Section, SettingsEditor, StreamTarget, device_stream_mut,
+    Direction, Draft, DraftFeedback, Editor, Section, SettingsEditor, StreamTarget,
+    device_stream_mut,
 };
 
 /// The settings workspace: rebuilt only when the published snapshot

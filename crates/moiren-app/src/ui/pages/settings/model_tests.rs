@@ -99,8 +99,13 @@ fn conflicting_full_device_override_is_rejected_without_losing_draft() {
             ..Default::default()
         },
     );
-    let error = device.submission(&current, device.profile).err().unwrap();
-    assert!(error.starts_with("Input override for a changed elsewhere"));
+    let feedback = device.submission(&current, device.profile).err().unwrap();
+    assert_eq!(
+        feedback,
+        DraftFeedback::DomainChanged {
+            domain: Domain::InputOverride("a".into())
+        }
+    );
     assert_eq!(device.audio.input_overrides["a"].sample_rate, Some(44_100));
     assert!(device.dirty());
     assert_eq!(current.input_overrides["a"].buffer_frames, Some(2048));
@@ -135,6 +140,58 @@ fn restart_confirmation_expects_the_saved_profile_for_every_configuration() {
     assert_eq!(
         expected_active_profile(AudioLatencyProfile::Compatible),
         Some(AudioLatencyProfile::Compatible)
+    );
+}
+
+#[test]
+fn draft_feedback_translates_at_paint_per_locale() {
+    use crate::i18n::{ENGLISH, SIMPLIFIED_CHINESE};
+    use crate::service::DispatchError;
+    use crate::ui::state::UiFailure;
+
+    // A stored status follows the locale switch: same value, two renders.
+    assert_eq!(
+        feedback_text_in(&DraftFeedback::Saved, ENGLISH),
+        "Saved. Audio settings apply on the next start."
+    );
+    assert_eq!(
+        feedback_text_in(&DraftFeedback::Saved, SIMPLIFIED_CHINESE),
+        "已保存。音频设置将在下次启动时生效。"
+    );
+    assert_eq!(
+        feedback_text_in(
+            &DraftFeedback::Rejected {
+                what: Rejection::NoRestart
+            },
+            SIMPLIFIED_CHINESE
+        ),
+        "音频未重启。草稿已保留。"
+    );
+    // The changed-elsewhere label composes at paint; the device id stays data.
+    let changed = DraftFeedback::DomainChanged {
+        domain: Domain::InputOverride("a".into()),
+    };
+    assert_eq!(
+        feedback_text_in(&changed, ENGLISH),
+        "Input override for a changed elsewhere. Your draft is retained. \
+         Discard changes to reload the saved settings."
+    );
+    assert_eq!(
+        feedback_text_in(&changed, SIMPLIFIED_CHINESE),
+        "a 的 输入覆盖配置已在其他位置更改。草稿已保留。放弃更改即可重新加载已保存的设置。"
+    );
+    // Typed dispatch failures translate at paint under the flipped locale,
+    // wrapper sentence included (the old frozen-Debug leak's replacement).
+    let failed = DraftFeedback::SaveDispatchFailed {
+        failure: UiFailure::Dispatch(DispatchError::Busy),
+    };
+    assert_eq!(
+        feedback_text_in(&failed, ENGLISH),
+        "Could not save audio settings: The audio service is busy; try again in a moment."
+    );
+    assert_eq!(
+        feedback_text_in(&failed, SIMPLIFIED_CHINESE),
+        "无法保存音频设置：音频服务繁忙，请稍后重试。"
     );
 }
 

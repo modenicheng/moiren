@@ -1,5 +1,3 @@
-use rust_i18n::t;
-
 use super::*;
 
 #[derive(Default)]
@@ -85,10 +83,9 @@ impl StudioShell {
                         && saved_revision == revision
                     {
                         let draft = shell.settings.editor.draft_mut(editor);
-                        draft.error = Some(
-                            t!("Could not save preferences: %{error}", error = error).to_string(),
-                        );
-                        draft.message = None;
+                        draft.feedback = Some(DraftFeedback::PreferencesSaveFailed {
+                            cause: error.clone(),
+                        });
                     }
                     if report {
                         shell.project_io.message = Some(match result {
