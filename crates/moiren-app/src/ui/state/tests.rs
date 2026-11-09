@@ -429,13 +429,14 @@ fn invalid_restored_audio_does_not_hide_its_error_with_latency_dispatch() {
     preferences.audio.processing.sample_rate = 192_000;
     preferences.latency_profile = crate::service::AudioLatencyProfile::Low;
     state.restore_preferences(&preferences);
-    assert!(
-        state
-            .dispatch_error
-            .as_ref()
-            .unwrap()
-            .contains("sample rate")
-    );
+    // The typed failure carries the closed AudioConfigError set whole; the
+    // old frozen string asserted only the rendered prose ("sample rate").
+    assert!(matches!(
+        state.dispatch_error,
+        Some(UiFailure::InvalidAudioSettings(
+            crate::service::AudioConfigError::InvalidSampleRate
+        ))
+    ));
     assert!(!state.pending_request);
     assert_eq!(state.max_block_frames, 256);
     assert_eq!(state.snapshot.consumed_request_id, RequestId::default());
@@ -617,4 +618,24 @@ fn running_projection_edits_candidate_nodes_instead_of_legacy_session_pair() {
     }
     assert!(state.snapshot.control.pending_gain_pan.is_none());
     finish_service(runtime);
+}
+
+#[test]
+fn dispatch_failure_text_translates_at_paint_per_locale() {
+    // failure_text reads the process locale at paint; under the default
+    // locale it renders the English key, and the explicit zh-CN lookup of
+    // the same key differs (the i18n tests' explicit-locale pattern keeps
+    // parallel tests independent of global state).
+    let failure = UiFailure::Dispatch(crate::service::DispatchError::Busy);
+    let english = crate::ui::presentation::failure_text(&failure);
+    let chinese = rust_i18n::t!(
+        "The audio service is busy; try again in a moment.",
+        locale = crate::i18n::SIMPLIFIED_CHINESE
+    )
+    .into_owned();
+    assert_eq!(english, "The audio service is busy; try again in a moment.");
+    assert_ne!(
+        english, chinese,
+        "the zh-CN catalog must translate the dispatch failure"
+    );
 }

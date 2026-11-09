@@ -1523,3 +1523,34 @@ _version: 2
 "System":
   en: System
   zh-CN: 系统
+
+"The audio service is busy; try again in a moment.":
+  en: The audio service is busy; try again in a moment.
+  zh-CN: 音频服务繁忙，请稍后重试。
+"The audio service is shutting down.":
+  en: The audio service is shutting down.
+  zh-CN: 音频服务正在关闭。
+"The audio service is disconnected.":
+  en: The audio service is disconnected.
+  zh-CN: 音频服务已断开。
+"The audio service rejected the request as invalid.":
+  en: The audio service rejected the request as invalid.
+  zh-CN: 音频服务拒绝了无效的请求。
+"Too many audio sessions have been started. Restart the application to continue.":
+  en: Too many audio sessions have been started. Restart the application to continue.
+  zh-CN: 音频会话启动次数已达上限，请重启应用程序后继续。
+"Too many pending requests. Restart the application to continue.":
+  en: Too many pending requests. Restart the application to continue.
+  zh-CN: 挂起的请求已达上限，请重启应用程序后继续。
+"sample rate must be 44.1, 48, 88.2 or 96 kHz":
+  en: sample rate must be 44.1, 48, 88.2 or 96 kHz
+  zh-CN: 采样率必须为 44.1、48、88.2 或 96 kHz
+"buffer must be 64, 128, 256, 512, 1024, 2048 or 4096 frames":
+  en: buffer must be 64, 128, 256, 512, 1024, 2048 or 4096 frames
+  zh-CN: 缓冲区必须为 64、128、256、512、1024、2048 或 4096 帧
+"device identity must contain 1 to 32768 bytes without NUL":
+  en: device identity must contain 1 to 32768 bytes without NUL
+  zh-CN: 设备标识长度必须为 1 到 32768 字节且不含 NUL
+"at most 256 device overrides can be saved per direction":
+  en: at most 256 device overrides can be saved per direction
+  zh-CN: 每个方向最多可保存 256 条设备覆盖配置
