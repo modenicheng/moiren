@@ -141,8 +141,9 @@ pub(super) fn inputs(
                     .py(px(3.))
                     .text_size(px(10.))
                     .text_color(theme::TEXT_MUTED)
-                    .overflow_hidden()
-                    .text_ellipsis()
+                    // Design 21 §2: routing rows carry node labels — one
+                    // line with an ellipsis, never a wrap.
+                    .truncate()
                     .cursor_pointer()
                     .child(t!("%{name} → in %{port}", name = name, port = port))
                     .tooltip({
@@ -274,8 +275,9 @@ pub(super) fn sends(
                         .id(SharedString::from(format!("send-target-{edge_id:?}")))
                         .flex_1()
                         .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
+                        // Design 21 §2: the send target names a node —
+                        // single line, ellipsized.
+                        .truncate()
                         .text_size(px(10.))
                         .child(
                             graph

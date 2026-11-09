@@ -31,7 +31,11 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .role(Role::TabList)
         .flex()
         .h_full()
-        .items_center();
+        .items_center()
+        // The strip participates in the toolbar's squeeze (design 21 §2):
+        // each tab holds a `min_w` floor, so the container itself must be
+        // allowed to shrink below its content for the tabs to follow.
+        .min_w_0();
     for (id, page) in [
         ("tab-graph", Page::Graph),
         ("tab-mixer", Page::Mixer),
@@ -470,7 +474,13 @@ pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> State
                     view.child(fault_summary(shell, cx))
                 })
                 .when(running || !snapshot.elapsed.is_zero(), |view| {
-                    view.child(label(crate::ui::presentation::elapsed_text(snapshot)))
+                    // Design 21 §2: the elapsed readout yields to the route
+                    // label and ellipsizes instead of pushing the bar wide.
+                    view.child(
+                        label(crate::ui::presentation::elapsed_text(snapshot))
+                            .min_w_0()
+                            .truncate(),
+                    )
                 })
                 .when_some(
                     snapshot.desired.as_ref().map(|desired| {
@@ -495,14 +505,19 @@ pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> State
                 ),
         )
         .child(
+            // Design 21 §2: the format readout participates in the bar's
+            // squeeze — the group is shrinkable (`min_w_0`, no `flex_none`)
+            // and the text ellipsizes rather than forcing the bar wide.
             div()
                 .flex()
-                .flex_none()
+                .min_w_0()
                 .items_center()
                 .gap(px(theme::SPACE_3))
                 .child(
                     div()
                         .id("statusbar-format")
+                        .min_w_0()
+                        .truncate()
                         .text_size(px(theme::TEXT_SM))
                         .text_color(theme::TEXT_MUTED)
                         .child(format_text(rate, period, settings.processing.precision))

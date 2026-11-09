@@ -78,11 +78,17 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .h_full()
                 .p(px(8.))
                 .bg(theme::SURFACE_3)
-                .child(label(t!(
-                    "%{name} / in %{index}",
-                    name = name(node.id()),
-                    index = i + 1
-                ))),
+                // Design 21 §2: header cells carry user node labels —
+                // ellipsized inside the fixed cell, never past it.
+                .child(
+                    label(t!(
+                        "%{name} / in %{index}",
+                        name = name(node.id()),
+                        index = i + 1
+                    ))
+                    .min_w_0()
+                    .truncate(),
+                ),
         );
     }
     let mut row_header = div()
@@ -101,11 +107,17 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .h(px(row_height))
                 .p(px(8.))
                 .bg(theme::SURFACE_3)
-                .child(label(t!(
-                    "%{name} / out %{index}",
-                    name = name(node.id()),
-                    index = i + 1
-                ))),
+                // Design 21 §2: header cells carry user node labels —
+                // ellipsized inside the fixed cell, never past it.
+                .child(
+                    label(t!(
+                        "%{name} / out %{index}",
+                        name = name(node.id()),
+                        index = i + 1
+                    ))
+                    .min_w_0()
+                    .truncate(),
+                ),
         );
     }
     let mut grid = div().flex().flex_col().w(px(width)).h(px(height));
@@ -167,7 +179,10 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     } else {
                         theme::TEXT_FAINT
                     })
-                    .child(value)
+                    // Design 21 §2: cell values (localized "Muted", dB
+                    // readouts) ellipsize inside the fixed cell instead of
+                    // spilling into neighbors.
+                    .child(div().min_w_0().truncate().child(value))
                     .on_click(move |_, _, cx| {
                         this.update(cx, |s, cx| {
                             s.selection.route = Some((src, dst));

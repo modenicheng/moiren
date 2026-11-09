@@ -35,7 +35,12 @@ pub const RADIUS: f32 = 4.;
 pub const ICON: f32 = 16.;
 pub const HIT_TARGET: f32 = 32.;
 pub const TOOLBAR: f32 = 44.;
+/// The workspace tab's preferred width: its flex basis at rest, so the strip
+/// keeps the approved uniform rhythm when the toolbar has room.
 pub const TAB_WIDTH: f32 = 112.;
+/// The workspace tab's shrink floor: padding (12+12) + icon (16) + gap (8)
+/// plus a two-character label remnant. Below this the tab shows icon only.
+pub const TAB_MIN_WIDTH: f32 = 72.;
 pub const WINDOW_WIDTH: f32 = 46.;
 pub const INDICATOR_SIZE: f32 = 4.;
 pub const INDICATOR_INSET: f32 = 4.;
