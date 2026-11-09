@@ -102,7 +102,7 @@ pub(crate) fn underline_editor(
                 .left_0()
                 .right_0()
                 .bottom_0()
-                .h(px(1.))
+                .h(px(theme::HAIRLINE_W))
                 .bg(theme::BORDER),
         )
         .child(

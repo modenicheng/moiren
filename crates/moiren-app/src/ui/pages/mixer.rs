@@ -314,7 +314,7 @@ fn strip_body(
                         .id(SharedString::from(format!("strip-unity-{id:?}")))
                         .absolute()
                         .top(relative(FaderScale::position(1.)))
-                        .h(px(1.))
+                        .h(px(theme::HAIRLINE_W))
                         .w_full()
                         .bg(theme::BORDER_STRONG)
                         .gpui_test_observe(),

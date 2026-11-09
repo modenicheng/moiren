@@ -515,7 +515,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
     view = view.child(
         div()
             .flex_none()
-            .w(px(1.))
+            .w(px(theme::HAIRLINE_W))
             .h(px(16.))
             .mx(px(theme::SPACE_0_5))
             .rounded_full()

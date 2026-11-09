@@ -28,10 +28,17 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .flex()
         .h_full()
         .items_center()
-        // The strip participates in the toolbar's squeeze (design 21 §2):
-        // each tab holds a `min_w` floor, so the container itself must be
-        // allowed to shrink below its content for the tabs to follow.
-        .min_w_0();
+        // The strip participates in the toolbar's squeeze (design 21 §2),
+        // but its basis must be definite: a flex container's auto basis is
+        // measured from the children's *content* (~86 px), not their flex
+        // bases (112 px), so an auto-width strip under-measures and its own
+        // line overflows, shrinking every tab to content width at rest
+        // ("Devi…"). Pin the rest width to the four bases and the floor to
+        // the four shrink minimums; a squeezed toolbar then takes the strip
+        // down to the tabs' `min_w` evenly.
+        .flex_initial()
+        .flex_basis(px(4. * crate::ui::theme::controls::TAB_WIDTH))
+        .min_w(px(4. * crate::ui::theme::controls::TAB_MIN_WIDTH));
     for (id, page) in [
         ("tab-graph", Page::Graph),
         ("tab-mixer", Page::Mixer),

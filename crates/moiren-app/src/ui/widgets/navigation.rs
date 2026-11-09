@@ -217,7 +217,7 @@ impl RenderOnce for WorkspaceTab {
                     .left_0()
                     .right_0()
                     .bottom_0()
-                    .h(px(2.))
+                    .h(px(theme::ACCENT_BAR_W))
                     .bg(t::FOCUS),
             )
         })

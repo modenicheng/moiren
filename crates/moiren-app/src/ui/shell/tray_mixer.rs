@@ -354,7 +354,7 @@ fn strip(
         .bg(theme::SURFACE)
         .border_r_1()
         .border_color(theme::BORDER)
-        .child(div().h(px(3.)).flex_none().bg(color.opacity(0.55)))
+        .child(div().h(px(3.)).flex_none().bg(theme::dim(color)))
         .child(
             div()
                 .flex()

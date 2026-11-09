@@ -278,7 +278,7 @@ fn paint_box_select_band(
         origin: point(left, top),
         size: size((a.0 - b.0).abs(), (a.1 - b.1).abs()),
     });
-    window.paint_quad(fill(screen, theme::PRIMARY.opacity(0.10)));
+    window.paint_quad(fill(screen, theme::PRIMARY.opacity(theme::ALPHA_SELECTION)));
     window.paint_quad(PaintQuad {
         bounds: screen,
         corner_radii: 2f32.into(),
