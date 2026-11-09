@@ -402,21 +402,28 @@ pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShe
                     div()
                         .id(SharedString::from(format!("{prefix}-feedback")))
                         .text_size(px(theme::TEXT_SM))
-                        .text_color(if draft.error.is_some() {
-                            theme::DANGER
-                        } else {
-                            theme::TEXT_MUTED
+                        .text_color(match draft.feedback.as_ref() {
+                            Some(feedback) if feedback.is_error() => theme::DANGER,
+                            _ => theme::TEXT_MUTED,
                         })
-                        .child(draft.error.clone().or_else(|| draft.message.clone()).unwrap_or_else(|| {
-                            if draft.dirty() {
-                                t!("Unsaved changes").into()
-                            } else if running {
-                                t!("Saved requests and active audio are shown separately in Diagnostics.")
-                                    .into()
-                            } else {
-                                t!("Audio is stopped. Save keeps it stopped.").into()
+                        // The stored status translates here with the current
+                        // locale (design 21 §4); the fallbacks are paint-time
+                        // t! calls like every other rendered string.
+                        .child(match draft.feedback.as_ref() {
+                            Some(feedback) => super::model::feedback_text(feedback),
+                            None => {
+                                if draft.dirty() {
+                                    t!("Unsaved changes").into_owned()
+                                } else if running {
+                                    t!(
+                                        "Saved requests and active audio are shown separately in Diagnostics."
+                                    )
+                                    .into_owned()
+                                } else {
+                                    t!("Audio is stopped. Save keeps it stopped.").into_owned()
+                                }
                             }
-                        }))
+                        })
                         .gpui_test_observe(),
                 )
                 .child(

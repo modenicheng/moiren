@@ -446,18 +446,6 @@ const DEBUG_TEXT_ALLOWLIST: &[DebugTextSite] = &[
         remove_when: "MeterStatus::Error stores key plus args for the spectrum subscription failure (design 21 §4)",
     },
     DebugTextSite {
-        file: "ui/pages/settings/transaction.rs",
-        near: "",
-        pattern: "\"Could not save audio settings: %{error}\"",
-        remove_when: "draft.error stores key plus args for the settings-save failure (design 21 §4)",
-    },
-    DebugTextSite {
-        file: "ui/pages/settings/transaction.rs",
-        near: "",
-        pattern: "\"Could not apply audio settings: %{error}\"",
-        remove_when: "draft.error stores key plus args for the settings-apply failure (design 21 §4)",
-    },
-    DebugTextSite {
         file: "ui/presentation.rs",
         near: "",
         pattern: "format!(\"WASAPI / {:?}\", stream.requested.mode)",
