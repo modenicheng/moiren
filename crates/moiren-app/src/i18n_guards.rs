@@ -844,7 +844,14 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 ///
 /// When one of these keys gains a literal call site, remove it here — the
 /// guard fails on stale entries on purpose.
-const DYNAMIC_KEY_EXCEPTIONS: [&str; 118] = [
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 122] = [
+    // AudioConfigError Display strings looked up at paint from the enum payload
+    // (UiFailure::InvalidAudioSettings); mirrored in tests/i18n_ledger.rs
+    // ALLOWED_RUNTIME_KEYS.
+    "sample rate must be 44.1, 48, 88.2 or 96 kHz",
+    "buffer must be 64, 128, 256, 512, 1024, 2048 or 4096 frames",
+    "device identity must contain 1 to 32768 bytes without NUL",
+    "at most 256 device overrides can be saved per direction",
     "16-bit PCM",
     "24-bit PCM",
     "32-bit PCM",
