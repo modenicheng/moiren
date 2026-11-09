@@ -434,18 +434,6 @@ const DEBUG_TEXT_ALLOWLIST: &[DebugTextSite] = &[
         remove_when: "UiState.dispatch_error stores a key plus args instead of a Debug blob (design 21 §4)",
     },
     DebugTextSite {
-        file: "ui/monitoring.rs",
-        near: "",
-        pattern: "\"Meter subscription: %{error}\"",
-        remove_when: "MeterStatus::Error stores key plus args for the meter subscription failure (design 21 §4)",
-    },
-    DebugTextSite {
-        file: "ui/monitoring/spectrum.rs",
-        near: "",
-        pattern: "\"Spectrum subscription: %{error}\"",
-        remove_when: "MeterStatus::Error stores key plus args for the spectrum subscription failure (design 21 §4)",
-    },
-    DebugTextSite {
         file: "ui/presentation.rs",
         near: "",
         pattern: "format!(\"WASAPI / {:?}\", stream.requested.mode)",
@@ -808,7 +796,7 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 ///
 /// When one of these keys gains a literal call site, remove it here — the
 /// guard fails on stale entries on purpose.
-const DYNAMIC_KEY_EXCEPTIONS: [&str; 122] = [
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 116] = [
     // AudioConfigError Display strings looked up at paint from the enum payload
     // (UiFailure::InvalidAudioSettings); mirrored in tests/i18n_ledger.rs
     // ALLOWED_RUNTIME_KEYS.
@@ -853,13 +841,11 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 122] = [
     "Faders cover −∞ to +24 dB; cycle the channel-mode button back to a valid setting",
     "Feedback",
     "Graph",
-    "Hidden",
     "Hold",
     "INPUTS",
     "Input gain",
     "Knee",
     "Linked peak dynamics",
-    "Live",
     "Low",
     "Makeup gain",
     "Managed FFT observation",
@@ -874,8 +860,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 122] = [
     "Multiple Source nodes are bound to the same application source",
     "Multiple Source nodes are bound to the same physical device",
     "No native audio backend is configured",
-    "No publisher",
-    "No recent audio window",
     "Node names cannot be empty and are limited to 256 bytes",
     "Node state count does not match the graph, or the graph exceeds 4096 nodes",
     "OBSERVATION",
@@ -903,7 +887,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 122] = [
     "SOURCES",
     "Static channel routing matrix",
     "Stereo balance, mono and swap",
-    "Stopped",
     "Test tone",
     "The Balance node's position must be a finite value in -1..1",
     "The Gain node's gain must be a finite value in 0..16",
@@ -932,7 +915,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 122] = [
     "WASAPI",
     "WASAPI capture endpoint",
     "WASAPI render endpoint",
-    "Waiting for a complete window",
     "Wet mix",
 ];
 
