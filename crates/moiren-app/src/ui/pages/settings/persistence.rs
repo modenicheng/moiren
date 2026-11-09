@@ -19,7 +19,7 @@ impl StudioShell {
         self.save_preferences_inner(cx, false);
     }
 
-    pub(crate) fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
+    fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
         let Some(path) = self.preferences.path.clone() else {
             if report {
                 self.project_io.message = Some(project::ProjectMessage::Persisted(

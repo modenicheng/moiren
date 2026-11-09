@@ -56,7 +56,7 @@ impl ExportIntent {
     }
 }
 
-pub(crate) fn validate_export_name_channels(name: &str, channels: usize) -> Result<(), String> {
+fn validate_export_name_channels(name: &str, channels: usize) -> Result<(), String> {
     if name.trim().is_empty()
         || name.encode_utf16().count() > 63
         || name.chars().any(|c| c < '\u{20}')

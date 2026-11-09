@@ -80,7 +80,7 @@ pub fn run_component_preview() {
 }
 
 #[derive(Default)]
-pub(crate) struct ComponentGallery {
+struct ComponentGallery {
     density: Density,
     group: Group,
     /// The gallery body's scroll; a plain view field — the gallery carries

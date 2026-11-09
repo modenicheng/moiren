@@ -707,7 +707,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         )
 }
 
-pub(crate) fn processing_summary(audio: &AudioSettings) -> String {
+fn processing_summary(audio: &AudioSettings) -> String {
     format!(
         "{} / {} / {} frames",
         rate_title(audio.processing.sample_rate),
