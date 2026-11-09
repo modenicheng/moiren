@@ -201,6 +201,8 @@ fn fault_row(cause: String, hint: Option<String>) -> AnyElement {
     let mut row = div()
         .flex()
         .flex_col()
+        // 1 px: hairline-tight stack — the cause and its hint read as one
+        // fault, not two lines of text.
         .gap(px(1.))
         .text_size(px(theme::TEXT_SM))
         .child(

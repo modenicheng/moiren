@@ -186,6 +186,8 @@ mod tests {
 
     impl Render for SpikeView {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // 10 px test-fixture inset: keeps the scroll area off the test
+            // window's edges; not a production surface metric.
             div().size_full().p(px(10.)).child(
                 // The load-bearing structure under test: the scroll area
                 // and the bar overlay are siblings under one relative

@@ -184,6 +184,9 @@ fn color_row(
             .when(current.is_none(), |v| {
                 v.bg(theme::SURFACE_4).child(
                     div()
+                        // 3 px margin centers the 8 px check inside the
+                        // 16 px swatch under its 1 px border (off the
+                        // spacing grid by construction).
                         .m(px(3.))
                         .size(px(8.))
                         .rounded(px(2.))

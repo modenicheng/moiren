@@ -139,6 +139,11 @@ pub(crate) fn field_with_note(
         .child(value)
 }
 
+/// The settings row's vertical inset, deliberately off the spacing grid:
+/// measured against the 1 px hairline dividers between rows ([`rows`]) so
+/// the row's label and control sit at the page's reading rhythm.
+const ROW_PAD_Y: f32 = 7.;
+
 /// A settings row: name on the left, the control that changes it on the
 /// right. Dividers between rows come from [`rows`].
 pub(crate) fn row(title: &str, control: impl IntoElement) -> Div {
@@ -148,7 +153,7 @@ pub(crate) fn row(title: &str, control: impl IntoElement) -> Div {
         .items_center()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(7.))
+        .py(px(ROW_PAD_Y))
         .child(label(title.to_owned()))
         .child(control)
 }
@@ -166,7 +171,7 @@ pub(crate) fn row_with_note(
         .items_center()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(7.))
+        .py(px(ROW_PAD_Y))
         .child(
             div()
                 .id(SharedString::from(format!("field-note-{title}")))
