@@ -476,8 +476,8 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
     use controls::*;
     let mut view = div()
         .absolute()
-        .top(px(12.))
-        .left(px(12.))
+        .top(px(theme::HUD_INSET))
+        .left(px(theme::HUD_INSET))
         .flex()
         .items_center()
         .gap(px(theme::SPACE_1))

@@ -198,7 +198,7 @@ fn strip_body(
         .flex()
         .flex_col()
         .gap(px(theme::SPACE_0_5))
-        .h(px(if shell.chrome.compact { 44. } else { 52. }))
+        .h(px(theme::compact(shell.chrome.compact, 44., 52.)))
         .flex_none()
         .px(px(10.))
         .justify_center()

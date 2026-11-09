@@ -846,7 +846,7 @@ impl Render for StudioShell {
                 WorkspaceView::Page(_) => WorkspaceView::Page(page),
             };
         }
-        let compact = f32::from(window.viewport_size().width) < 1200.;
+        let compact = f32::from(window.viewport_size().width) < theme::COMPACT_BREAKPOINT;
         if compact != self.chrome.compact {
             self.chrome.sidebar_open = !compact;
             self.chrome.inspector_open = !compact;

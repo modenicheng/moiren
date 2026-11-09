@@ -60,7 +60,9 @@ pub const SPACE_4: f32 = 16.;
 pub const SPACE_6: f32 = 24.;
 
 // --- Studio geometry (Figma v0.1.0 Graph measurements) --------------------
-pub const TOOLBAR_HEIGHT: f32 = 44.;
+/// The shell toolbar's height, aliased from the action-component tokens so
+/// the chrome and the navigation controls share one source (design 21 §1.4).
+pub use controls::TOOLBAR as TOOLBAR_HEIGHT;
 pub const LIBRARY_WIDTH: f32 = 210.;
 /// Always-visible icon rail on the library's outer edge; also its collapsed form.
 pub const LIBRARY_RAIL_WIDTH: f32 = 44.;
@@ -72,6 +74,36 @@ pub const NODE_SINK: Hsla = hsla(0.125581, 0.964126, 0.562745, 1.);
 pub const NODE_UTILITY: Hsla = TEXT_FAINT;
 pub const NODE_ANALYSIS: Hsla = SIGNAL_DEVICE;
 pub const CANVAS_GRID: f32 = 24.;
+
+// --- Chrome and window geometry (design 21 §1.3) ---------------------------
+/// The bottom status bar's height, shared by the chrome host and the bar
+/// itself so the two never drift apart.
+pub const STATUSBAR_HEIGHT: f32 = 28.;
+/// A workspace page's own toolbar strip (the Devices page's tab row).
+pub const PAGE_TOOLBAR_HEIGHT: f32 = 48.;
+/// A collapsible section's header row, which is also the section's
+/// collapsed height.
+pub const SECTION_HEADER_HEIGHT: f32 = 28.;
+/// Inset of the graph HUD overlays (editing toolbar, overview) from the
+/// canvas edges they float against.
+pub const HUD_INSET: f32 = 12.;
+/// Viewport width below which the shell switches to its compact layout.
+pub const COMPACT_BREAKPOINT: f32 = 1200.;
+/// Window floor the platform enforces on resize and restore.
+pub const WINDOW_MIN_WIDTH: f32 = 940.;
+pub const WINDOW_MIN_HEIGHT: f32 = 600.;
+/// How much of a restored window must stay on a display for it to count as
+/// still living there; anything less falls back to the primary display.
+pub const RESTORE_MIN_VISIBLE_WIDTH: f32 = 100.;
+pub const RESTORE_MIN_VISIBLE_HEIGHT: f32 = 40.;
+
+/// Resolves a compact-width value pair: `tight` below [`COMPACT_BREAKPOINT`],
+/// `roomy` above it. Generic so the chrome's text limits and the pages'
+/// pixel metrics fold through one helper instead of inline `if compact`
+/// pairs (design 21 §1.3).
+pub fn compact<T>(is_compact: bool, tight: T, roomy: T) -> T {
+    if is_compact { tight } else { roomy }
+}
 
 // Graph node card metrics (design 18): header + tint rail + per-kind
 // body + meter strip + port rails, all in world units.
@@ -155,7 +187,9 @@ pub fn node_tint(index: u8) -> Option<Hsla> {
 }
 
 // --- Radii -----------------------------------------------------------------
-pub const RADIUS_SM: f32 = 4.;
+/// The action components' base corner radius, aliased so workstation
+/// surfaces and kit components share one source (design 21 §1.4).
+pub use controls::RADIUS as RADIUS_SM;
 pub const RADIUS_MD: f32 = 6.;
 pub const RADIUS_LG: f32 = 8.;
 

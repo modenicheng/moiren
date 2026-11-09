@@ -189,7 +189,10 @@ impl Desktop {
                     appears_transparent: true,
                     ..Default::default()
                 }),
-                window_min_size: Some(size(px(940.0), px(600.0))),
+                window_min_size: Some(size(
+                    px(theme::WINDOW_MIN_WIDTH),
+                    px(theme::WINDOW_MIN_HEIGHT),
+                )),
                 // The mixer's meters must keep animating while another app is
                 // focused; gpui would otherwise cap the window at ~30 fps.
                 inactive_frame_interval: None,
@@ -556,7 +559,10 @@ fn restored_placement(
     saved: &crate::project::WindowState,
     cx: &App,
 ) -> (WindowBounds, Option<DisplayId>) {
-    let dimensions = size(px(saved.width.max(940.0)), px(saved.height.max(600.0)));
+    let dimensions = size(
+        px(saved.width.max(theme::WINDOW_MIN_WIDTH)),
+        px(saved.height.max(theme::WINDOW_MIN_HEIGHT)),
+    );
     let mut rect = Bounds {
         origin: point(px(saved.x), px(saved.y)),
         size: dimensions,
@@ -567,9 +573,11 @@ fn restored_placement(
         .find(|display| {
             let screen = display.visible_bounds();
             rect.origin.x >= screen.origin.x
-                && rect.origin.x + px(100.0) <= screen.origin.x + screen.size.width
+                && rect.origin.x + px(theme::RESTORE_MIN_VISIBLE_WIDTH)
+                    <= screen.origin.x + screen.size.width
                 && rect.origin.y >= screen.origin.y
-                && rect.origin.y + px(40.0) <= screen.origin.y + screen.size.height
+                && rect.origin.y + px(theme::RESTORE_MIN_VISIBLE_HEIGHT)
+                    <= screen.origin.y + screen.size.height
         })
         .or_else(|| displays.first());
     if let Some(display) = display {

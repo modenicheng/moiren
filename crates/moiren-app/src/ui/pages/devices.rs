@@ -485,7 +485,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             div()
                 .flex()
                 .flex_none()
-                .h(px(48.))
+                .h(px(theme::PAGE_TOOLBAR_HEIGHT))
                 .items_center()
                 .justify_between()
                 .px(px(theme::SPACE_4))
