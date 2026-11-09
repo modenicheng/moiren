@@ -293,7 +293,9 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 .flex_1()
                                 .min_w_0()
                                 .gap(px(theme::SPACE_1))
-                                .child(heading(row.name.clone())),
+                                // Design 21 §2: Windows device names are
+                                // unbounded user text — one line, ellipsized.
+                                .child(heading(row.name.clone()).min_w_0().truncate()),
                         )
                         .when(!present, |v| {
                             v.child(badge(t!("Unavailable"), theme::WARNING))
@@ -428,8 +430,12 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                             div()
                                 .flex()
                                 .flex_col()
+                                // Design 21 §2: the name column yields to the
+                                // action button and ellipsizes process names.
+                                .flex_1()
+                                .min_w_0()
                                 .gap(px(theme::SPACE_1))
-                                .child(heading(process.name.clone()))
+                                .child(heading(process.name.clone()).min_w_0().truncate())
                                 .child(label(t!(
                                     "PID %{pid} · created %{created}",
                                     pid = process.pid,

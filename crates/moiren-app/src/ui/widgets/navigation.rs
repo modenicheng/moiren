@@ -188,7 +188,15 @@ impl RenderOnce for WorkspaceTab {
         )
         .role(Role::Tab)
         .aria_selected(self.active)
-        .w(px(t::TAB_WIDTH))
+        // Elasticity (design 21 §2): the tab's width is a flex basis with a
+        // shrink floor, not a fixed extent — `styled_control`'s `flex_none`
+        // is overridden so the toolbar can reclaim space when the window
+        // narrows, while the basis keeps the approved uniform width at rest.
+        // The label wraps in a `min_w_0 + truncate` div so a squeezed tab
+        // ellipsizes instead of painting past its bounds.
+        .flex_initial()
+        .flex_basis(px(t::TAB_WIDTH))
+        .min_w(px(t::TAB_MIN_WIDTH))
         .h(px(t::TOOLBAR))
         .px(px(theme::SPACE_3))
         .gap(px(theme::SPACE_2))
@@ -201,7 +209,7 @@ impl RenderOnce for WorkspaceTab {
             FontWeight::MEDIUM
         })
         .when_some(self.icon, |s, icon| s.child(icon.element()))
-        .child(self.label)
+        .child(div().min_w_0().truncate().child(self.label))
         .when(self.active, |s| {
             s.child(
                 div()

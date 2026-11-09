@@ -217,8 +217,9 @@ fn strip_body(
                         .min_w_0()
                         .text_size(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .overflow_hidden()
-                        .text_ellipsis()
+                        // Design 21 §2: user labels truncate on one line —
+                        // ellipsis alone still wrapped long names.
+                        .truncate()
                         .child(crate::ui::presentation::display_label(entry)),
                 )
                 .when(faulted, |row| row.child(strip_fault_badge(id, cx))),
