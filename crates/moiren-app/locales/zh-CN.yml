@@ -1028,12 +1028,12 @@ _version: 2
 "No publisher":
   en: No publisher
   zh-CN: 无发布者
+"Meter subscription failed":
+  en: Meter subscription failed
+  zh-CN: 电平表订阅失败
 "Meter subscription: %{error}":
   en: "Meter subscription: %{error}"
   zh-CN: "电平表订阅：%{error}"
-"Spectrum subscription: %{error}":
-  en: "Spectrum subscription: %{error}"
-  zh-CN: "频谱订阅：%{error}"
 "Idle":
   en: Idle
   zh-CN: 空闲

@@ -101,15 +101,6 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "Test tone",
     "Physical input",
     "Application",
-    // Meter status line: `MeterStatus::label` in src/ui/monitoring.rs
-    // (`Error(String)` passes dynamic text through).
-    "Hidden",
-    "Stopped",
-    "Unavailable",
-    "Waiting for a complete window",
-    "Live",
-    "No recent audio window",
-    "No publisher",
     // Settings/backend titles: `AudioBackend`, `ProcessingPrecision`, and
     // `SampleFormat` `title()` in crates/moiren-engine/src/audio_config.rs.
     "WASAPI",
