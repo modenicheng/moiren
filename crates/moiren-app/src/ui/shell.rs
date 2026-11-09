@@ -847,9 +847,15 @@ impl Render for StudioShell {
             };
         }
         let compact = f32::from(window.viewport_size().width) < theme::COMPACT_BREAKPOINT;
-        if compact != self.chrome.compact {
-            self.chrome.sidebar_open = !compact;
-            self.chrome.inspector_open = !compact;
+        // Design 21 §2: the breakpoint adaptation is enter-only. Crossing
+        // below the breakpoint collapses the side panels; growing back above
+        // it must not force-restore them — the panels stay as the user left
+        // them (closed before shrinking, or rearranged while compact) and the
+        // user re-opens them manually. The flag itself still flips both ways,
+        // so every compact layout adaptation stays reversible.
+        if compact && !self.chrome.compact {
+            self.chrome.sidebar_open = false;
+            self.chrome.inspector_open = false;
         }
         self.chrome.compact = compact;
         let visible =

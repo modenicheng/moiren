@@ -47,6 +47,10 @@ pub(super) async fn capture(
         .timer(Duration::from_millis(200))
         .await;
     shell.update(cx, |shell, cx| {
+        // The states capture wants the roomy layout explicitly: the compact
+        // meter run before it collapsed the panels, and growing back above
+        // the breakpoint no longer force-restores them (design 21 §2).
+        shell.chrome.sidebar_open = true;
         shell.chrome.inspector_open = false;
         let gain = shell
             .state
