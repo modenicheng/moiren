@@ -14,9 +14,9 @@ use gpui_kit::{
 use moiren_core::graph::NodeId;
 
 /// EQ editor plot spans: log frequency axis and symmetric gain axis.
-pub(crate) const EQ_FREQ_MIN: f64 = 20.;
-pub(crate) const EQ_FREQ_MAX: f64 = 20_000.;
-pub(crate) const EQ_GAIN_SPAN: f64 = 24.;
+const EQ_FREQ_MIN: f64 = 20.;
+const EQ_FREQ_MAX: f64 = 20_000.;
+const EQ_GAIN_SPAN: f64 = 24.;
 
 /// Fixed heights for the scrolling inspector column; the overlay stretches.
 pub(crate) const EQ_INSPECTOR_HEIGHT: f32 = 200.;
