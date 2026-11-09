@@ -23,7 +23,7 @@ pub(crate) mod test_backend;
 mod windows;
 pub use backend::*;
 pub use exports::*;
-pub(crate) use graph::primary_node_of;
+use graph::primary_node_of;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
     GraphPreparation, GraphSnapshot, GraphSubject, MixerState, NODE_TINT_COUNT, ServiceGraph,
@@ -123,7 +123,7 @@ pub struct ServiceContext {
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
     pub control: ControlSummary,
-    pub(crate) signals: signals::SignalService,
+    signals: signals::SignalService,
     /// Whether the active session routes its levels into the tone topic
     /// instead of the physical monitor pair. The meter bridge resolves it
     /// from the running host graph and retires it with the owner.

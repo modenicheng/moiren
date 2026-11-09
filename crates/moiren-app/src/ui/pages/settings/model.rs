@@ -101,11 +101,11 @@ pub(crate) struct Pending {
     pub request: RequestId,
     pub stage: Stage,
     pub restart: bool,
-    pub submitted: Submission,
+    pub(super) submitted: Submission,
 }
 
 #[derive(Clone)]
-pub(crate) struct Submission {
+pub(super) struct Submission {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
 }

@@ -12,7 +12,7 @@ use std::borrow::Cow;
 /// owner identity is not published to the UI, so this deliberately checks only
 /// phase, generation, and the observation's own running flag.
 #[cfg(windows)]
-pub(crate) fn fresh_observation(
+fn fresh_observation(
     phase: SessionPhase,
     generation: SessionGeneration,
     status_generation: SessionGeneration,
