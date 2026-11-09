@@ -31,3 +31,40 @@ impl Page {
         }
     }
 }
+
+/// What the workspace area of the window shows: one of the tabbed pages, or
+/// the whole-workspace Settings page that replaces it. Settings carries the
+/// page to resume when it closes, so the view is one value instead of a
+/// page plus a separate open flag that every consumer must consult in
+/// tandem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceView {
+    Page(Page),
+    Settings {
+        /// The page shown again when Settings closes.
+        resume: Page,
+    },
+}
+
+impl Default for WorkspaceView {
+    fn default() -> Self {
+        WorkspaceView::Page(Page::default())
+    }
+}
+
+impl WorkspaceView {
+    /// The page the workspace is on: the shown page, or — while Settings
+    /// replaces it — the one Settings resumes to. This is the page the tab
+    /// strip, window state, and autosave fingerprint speak about.
+    pub fn page(self) -> Page {
+        match self {
+            WorkspaceView::Page(page) => page,
+            WorkspaceView::Settings { resume } => resume,
+        }
+    }
+
+    /// Whether the Settings page currently replaces the workspace.
+    pub fn is_settings(self) -> bool {
+        matches!(self, WorkspaceView::Settings { .. })
+    }
+}

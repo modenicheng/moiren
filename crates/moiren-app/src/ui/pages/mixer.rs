@@ -32,7 +32,7 @@ impl StudioShell {
         // gesture, not that the current page's inspector paints the node.
         let inspector_selected = if visible
             && self.chrome.inspector_open
-            && matches!(self.presentation.page, Page::Graph | Page::Mixer)
+            && matches!(self.presentation.page(), Page::Graph | Page::Mixer)
             && let Some(selected) = self.selection.node
             && self
                 .state
@@ -50,7 +50,7 @@ impl StudioShell {
         let preferences = self.preferences.values.meters;
         // Only the graph card paints a spectrum body: a Mixer strip or an
         // inspector selection must not keep an analyzer's FFT demanded.
-        let spectra_visible = visible && self.presentation.page == Page::Graph;
+        let spectra_visible = visible && self.presentation.page() == Page::Graph;
         // The observation readout re-keys on status transitions immediately:
         // capture the pre-poll status so a transition inside the update
         // below can be told apart from an unchanged one (issue #118).

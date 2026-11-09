@@ -10,7 +10,7 @@ use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::shell::hot::{HotLayerView, HotSurface};
 use crate::ui::shell::panel::{CachedPanel, PanelHost};
-use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 use std::collections::{BTreeMap, HashMap};
 
@@ -488,9 +488,9 @@ impl Render for DockResize {
 pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShell>) -> AnyElement {
     let graph = &shell.state.read(cx).snapshot.graph;
     // The strip rows' scrollbar overlays are siblings of their scroll
-    // containers, never children: a scroll container translates its children
-    // by the offset at prepaint, so an overlay inside it would drift away
-    // with the content. The outer sizing lives on the relative wrapper.
+    // containers, never children (see `scroll_region`); the containers are
+    // built here and wrapped below. The outer sizing lives on the relative
+    // wrapper.
     let mut channels_area = div()
         .id("mixer-strips")
         .w_full()
@@ -531,26 +531,22 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
             channels_area = channels_area.child(column);
         }
     }
-    let channels = div()
-        .relative()
-        .flex_1()
-        .min_w_0()
-        .min_h_0()
-        .child(channels_area.gpui_test_observe())
-        .child(overlay_scrollbar(
-            &shell.mixer.scroll,
-            "scrollbar-mixer-strips",
-            ScrollbarAxis::Both,
-        ));
-    let dock_host = div()
-        .relative()
-        .size_full()
-        .child(dock_container.child(dock).gpui_test_observe())
-        .child(overlay_scrollbar(
-            &shell.mixer.dock_scroll,
-            "scrollbar-mixer-dock",
-            ScrollbarAxis::Horizontal,
-        ));
+    let channels = scroll_region(
+        "scrollbar-mixer-strips",
+        &shell.mixer.scroll,
+        ScrollbarAxis::Both,
+        channels_area.gpui_test_observe(),
+    )
+    .flex_1()
+    .min_w_0()
+    .min_h_0();
+    let dock_host = scroll_region(
+        "scrollbar-mixer-dock",
+        &shell.mixer.dock_scroll,
+        ScrollbarAxis::Horizontal,
+        dock_container.child(dock).gpui_test_observe(),
+    )
+    .size_full();
     // The dock pane owns the user-resizable width (and its 55% cap) so the
     // divider border stays the pane's left edge and the grab handle can
     // straddle it without the scroll container clipping the reach; the

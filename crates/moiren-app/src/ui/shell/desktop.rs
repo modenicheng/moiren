@@ -28,6 +28,9 @@ pub(crate) struct Desktop {
 
 #[derive(Clone)]
 struct PresentationSnapshot {
+    /// The page to resume on reopen, without Settings: the settings page is
+    /// transient and never survives a hide-to-tray round trip, so the
+    /// snapshot keeps the plain page the workspace view would resume to.
     page: Page,
     camera: Camera,
     node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
@@ -54,7 +57,7 @@ struct PresentationSnapshot {
 impl PresentationSnapshot {
     fn capture(shell: &mut StudioShell) -> Self {
         Self {
-            page: shell.presentation.page,
+            page: shell.presentation.page(),
             camera: shell.graph_view.camera,
             node_positions: std::mem::take(&mut shell.graph_view.node_positions),
             mixer_order: shell.mixer.presentation.order.clone(),
@@ -75,7 +78,7 @@ impl PresentationSnapshot {
     }
 
     fn restore(self, shell: &mut StudioShell) {
-        shell.presentation.page = self.page;
+        shell.presentation.workspace = WorkspaceView::Page(self.page);
         shell.graph_view.camera = self.camera;
         shell.graph_view.node_positions = self.node_positions;
         shell.mixer.presentation.order = self.mixer_order;
@@ -123,7 +126,7 @@ impl Desktop {
                 let state = shell.update(cx, |shell, cx| {
                     window.update(cx, |_, window, _| {
                         if shell.presentation.visible {
-                            capture_window_state(window, shell.presentation.page)
+                            capture_window_state(window, shell.presentation.page())
                         } else {
                             shell.window_state.clone()
                         }
@@ -196,11 +199,11 @@ impl Desktop {
             |window, cx| {
                 cx.new(|cx| {
                     let mut shell = StudioShell::new(state, window, cx, Some(desktop));
-                    shell.presentation.page = page(saved.workspace);
+                    shell.presentation.workspace = WorkspaceView::Page(page(saved.workspace));
                     if let Some(resume) = resume {
                         resume.restore(&mut shell);
                     }
-                    shell.window_state = capture_window_state(window, shell.presentation.page);
+                    shell.window_state = capture_window_state(window, shell.presentation.page());
                     shell
                 })
             },

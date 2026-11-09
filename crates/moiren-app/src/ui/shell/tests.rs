@@ -55,7 +55,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
         let weak = desktop.read(cx).shell.clone().unwrap();
         let test_node = state.read(cx).snapshot.graph.graph.nodes()[0].id();
         weak.update(cx, |shell, _| {
-            shell.presentation.page = pages::Page::Mixer;
+            shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Mixer);
             shell.graph_view.camera.pan_x = 84.0;
             shell.chrome.sidebar_open = true;
             shell.chrome.inspector_open = true;
@@ -96,7 +96,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
         reopened
             .update(cx, |shell, cx| {
                 let test_node = state.read(cx).snapshot.graph.graph.nodes()[0].id();
-                assert_eq!(shell.presentation.page, pages::Page::Mixer);
+                assert_eq!(shell.presentation.page(), pages::Page::Mixer);
                 assert_eq!(shell.graph_view.camera.pan_x, 84.0);
                 assert_eq!(
                     shell.graph_view.node_positions.get(&test_node),
@@ -447,8 +447,8 @@ fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::
         assert!(window.try_find("settings-page").is_none());
         assert!(window.find("graph-page").visible());
         view.update(cx, |shell, cx| {
-            assert_eq!(shell.presentation.page, pages::Page::Graph);
-            assert!(!shell.settings_open);
+            assert_eq!(shell.presentation.page(), pages::Page::Graph);
+            assert!(!shell.presentation.workspace.is_settings());
             assert!(!shell.settings.editor.focus.contains_focused(window, cx));
             assert_eq!(
                 (
@@ -1133,7 +1133,7 @@ fn ctrl_z_in_a_mixer_send_editor_leaves_the_graph_journal_alone(cx: &mut gpui_ki
         window.render_frame(cx);
     });
     view.update(cx, |shell, cx| {
-        shell.presentation.page = pages::Page::Mixer;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Mixer);
         shell.chrome.inspector_open = false;
         cx.notify();
     });
@@ -1196,7 +1196,7 @@ fn graph_inspector_value_editor_keeps_focus_across_root_renders(cx: &mut gpui_ki
             .id()
     });
     view.update(cx, |shell, cx| {
-        shell.presentation.page = pages::Page::Graph;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Graph);
         shell.chrome.inspector_open = true;
         shell.selection.node = Some(gain);
         cx.notify();
@@ -1281,7 +1281,7 @@ fn ctrl_z_in_an_inspector_value_editor_leaves_the_graph_journal_alone(
             .id()
     });
     view.update(cx, |shell, cx| {
-        shell.presentation.page = pages::Page::Graph;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Graph);
         shell.chrome.inspector_open = true;
         shell.selection.node = Some(gain);
         cx.notify();
@@ -1353,7 +1353,7 @@ fn inspector_panel_rebuilds_when_a_nested_editor_moves(cx: &mut gpui_kit::TestAp
             .id()
     });
     view.update(cx, |shell, cx| {
-        shell.presentation.page = pages::Page::Graph;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Graph);
         shell.chrome.inspector_open = true;
         shell.selection.node = Some(gain);
         cx.notify();
@@ -1424,7 +1424,7 @@ fn inspector_hot_layer_paints_the_registered_meter_tracks(cx: &mut gpui_kit::Tes
             .id()
     });
     view.update(cx, |shell, cx| {
-        shell.presentation.page = pages::Page::Graph;
+        shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Graph);
         shell.chrome.inspector_open = true;
         shell.selection.node = Some(gain);
         cx.notify();

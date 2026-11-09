@@ -47,7 +47,12 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     Page::Matrix => ActionIcon::Matrix,
                     Page::Devices => ActionIcon::Devices,
                 })
-                .active(shell.presentation.page == page && !shell.settings_open)
+                // Settings shows no active tab: the page it resumes to is
+                // underneath, not shown.
+                .active(matches!(
+                    shell.presentation.workspace,
+                    WorkspaceView::Page(shown) if shown == page
+                ))
                 .on_click(move |_, _, cx| this.update(cx, |shell, cx| shell.set_page(page, cx))),
         );
     }
@@ -140,11 +145,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                             let this = this.clone();
                             move |_, window, cx| {
                                 this.update(cx, |shell, cx| {
-                                    if shell.settings_open {
-                                        shell.close_settings(window, cx);
-                                    } else {
-                                        shell.open_settings(window, cx);
-                                    }
+                                    shell.toggle_settings(window, cx);
                                 })
                             }
                         }),
@@ -187,11 +188,13 @@ pub(super) type StatusbarChrome = PanelHost<StatusbarPanel>;
 #[derive(PartialEq)]
 pub(crate) struct ToolbarKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
-    page: Page,
+    /// One field for the page the tab strip highlights and whether Settings
+    /// replaces the workspace: the former `page` + `settings_open` pair
+    /// encoded exactly this, with no extra information.
+    workspace: WorkspaceView,
     compact: bool,
     project_name: String,
     pending_request: bool,
-    settings_open: bool,
 }
 
 pub(crate) struct ToolbarPanel;
@@ -204,11 +207,10 @@ impl CachedPanel for ToolbarPanel {
         let state = shell.state.read(cx);
         Self::Key {
             snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
-            page: shell.presentation.page,
+            workspace: shell.presentation.workspace,
             compact: shell.chrome.compact,
             project_name: shell.project_io.name.clone(),
             pending_request: state.pending_request,
-            settings_open: shell.settings_open,
         }
     }
 

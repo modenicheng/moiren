@@ -2,7 +2,7 @@ mod common;
 
 use moiren_app::{
     service::*,
-    ui::{Page, WindowPresentation},
+    ui::{Page, WindowPresentation, WorkspaceView},
 };
 
 #[test]
@@ -11,7 +11,7 @@ fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
     let handle = runtime.handle();
     let mut presentation = WindowPresentation::default();
     presentation.show();
-    presentation.page = Page::Graph;
+    presentation.workspace = WorkspaceView::Page(Page::Graph);
     presentation.hide_to_tray();
     assert!(!presentation.visible);
     let mut replacement = WindowPresentation::default();

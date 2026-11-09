@@ -128,7 +128,7 @@ fn inspector_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut 
     finish_service(runtime);
 }
 
-/// `page_inspector` switches its whole content on `presentation.page`, so a
+/// `page_inspector` switches its whole content on the presentation page, so a
 /// page switch with a selection held must repaint the inspector into the new
 /// page's inspector on that notification alone.
 #[gpui_kit::test]
@@ -140,7 +140,8 @@ fn inspector_panel_follows_the_active_page_with_a_selection_held(cx: &mut TestAp
     let before = inspector_rebuilds(&view, cx);
 
     view.update(cx, |shell, cx| {
-        shell.presentation.page = crate::ui::pages::Page::Matrix;
+        shell.presentation.workspace =
+            crate::ui::pages::WorkspaceView::Page(crate::ui::pages::Page::Matrix);
         cx.notify();
     });
     cached_frame(cx);
