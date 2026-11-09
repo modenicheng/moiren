@@ -346,9 +346,9 @@ impl CanvasWorld {
                 .unwrap_or((32. + level as f32 * 330., 80. + *row as f32 * 170.));
             *row += 1;
             let channels = if logical.channels() == 2 {
-                "L/R".into()
+                t!("L/R").into_owned()
             } else {
-                format!("{} ch", logical.channels())
+                t!("%{channels} ch", channels = logical.channels()).into_owned()
             };
             let detail = detail_string(logical.kind(), state, &channels);
             let (icon, tint) = (

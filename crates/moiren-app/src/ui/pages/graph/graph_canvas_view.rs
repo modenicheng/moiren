@@ -393,7 +393,7 @@ pub(in crate::ui) fn node_drag_preview(
         detail: match template {
             NodeTemplate::Input => t!("Choose a source").to_string(),
             NodeTemplate::Output => t!("Choose an output").to_string(),
-            _ => "L/R".into(),
+            _ => t!("L/R").into_owned(),
         },
         icon: Some(icon),
         x: PREVIEW_PORT_PAD,

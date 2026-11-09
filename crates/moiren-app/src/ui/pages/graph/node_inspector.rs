@@ -439,13 +439,13 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     for (index, port) in node.inputs().iter().enumerate() {
         view = view.child(detail(
             &t!("Input %{index}", index = index + 1),
-            format!("{} ch", port.channels()),
+            t!("%{channels} ch", channels = port.channels()).into_owned(),
         ));
     }
     for (index, port) in node.outputs().iter().enumerate() {
         view = view.child(detail(
             &t!("Output %{index}", index = index + 1),
-            format!("{} ch", port.channels()),
+            t!("%{channels} ch", channels = port.channels()).into_owned(),
         ));
     }
     if node.kind() == NodeKind::Bus {

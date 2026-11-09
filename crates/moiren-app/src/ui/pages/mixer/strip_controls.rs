@@ -104,7 +104,7 @@ pub(crate) fn node_controls(
                         .h(px(metrics.height))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-mute-{id:?}")),
-                            "M",
+                            t!("M"),
                             requested.muted,
                             t!("Mute this channel"),
                             mixer_edit(
@@ -116,7 +116,7 @@ pub(crate) fn node_controls(
                         )))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-solo-{id:?}")),
-                            "S",
+                            t!("S"),
                             requested.solo,
                             t!("Solo this channel and its connected signal path"),
                             mixer_edit(
@@ -151,7 +151,7 @@ pub(crate) fn node_controls(
                         .border_color(theme::BORDER))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-dim-{id:?}")),
-                            "DIM",
+                            t!("DIM"),
                             requested.dimmed,
                             t!("Dim attenuates the post-fader signal by 12 dB"),
                             mixer_edit(state.clone(), this.clone(), id, |state| {
