@@ -201,7 +201,7 @@ impl RenderOnce for WorkspaceTab {
         .px(px(theme::SPACE_3))
         .gap(px(theme::SPACE_2))
         .font_family(t::FONT)
-        .text_size(px(12.))
+        .text_size(px(theme::TEXT_SM))
         .line_height(px(16.))
         .font_weight(if self.active {
             FontWeight::SEMIBOLD

@@ -32,7 +32,9 @@ pub const INDICATOR: Hsla = hsla(0.104167, 0.307692, 0.94902, 1.0); // #f6f3ee
 pub const TRANSPARENT: Hsla = hsla(0., 0., 0., 0.);
 pub const FONT: &str = "Inter";
 pub const RADIUS: f32 = 4.;
-pub const ICON: f32 = 16.;
+/// The approved action-component icon size, aliased from the theme's icon
+/// ladder (design 21 §1.3) so both stay one source.
+pub const ICON: f32 = super::ICON_MD;
 pub const HIT_TARGET: f32 = 32.;
 pub const TOOLBAR: f32 = 44.;
 /// The workspace tab's preferred width: its flex basis at rest, so the strip

@@ -103,7 +103,7 @@ fn section(title: &'static str) -> Div {
     div().flex().flex_col().gap(px(theme::SPACE_2)).child(
         div()
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(px(15.))
+            .text_size(px(theme::TEXT_LG))
             .child(title),
     )
 }
@@ -118,7 +118,7 @@ fn row(label: impl Into<SharedString>, samples: Vec<AnyElement>) -> Div {
             div()
                 .w(px(110.))
                 .flex_none()
-                .text_size(px(11.))
+                .text_size(px(theme::TEXT_CAPTION))
                 .text_color(t::SECONDARY)
                 .child(label.into()),
         )
@@ -140,7 +140,7 @@ fn headings() -> Div {
             .into_iter()
             .map(|label| {
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(theme::TEXT_XS))
                     .text_color(t::MUTED)
                     .child(label)
                     .into_any_element()
@@ -291,7 +291,7 @@ impl Render for ComponentGallery {
             .bg(t::CANVAS)
             .font_family(t::FONT)
             .text_color(t::TEXT)
-            .text_size(px(13.))
+            .text_size(px(theme::TEXT_MD))
             .child(
                 div()
                     .flex()
@@ -313,7 +313,7 @@ impl Render for ComponentGallery {
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(px(theme::TEXT_SM))
                                     .text_color(t::SECONDARY)
                                     .child("Navigation & Actions · Figma v0.1.2"),
                             ),

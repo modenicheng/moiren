@@ -240,7 +240,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .child(label(t!("Drag a node onto the graph")))
                 .child(
                     div()
-                        .text_size(px(10.))
+                        .text_size(px(theme::TEXT_XS))
                         .text_color(theme::TEXT_FAINT)
                         .child(t!("Or click to add at the canvas center.")),
                 ),
@@ -282,7 +282,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
                 .child(
                     component::Icon::default()
                         .path(format!("icons/{}.svg", template.icon()))
-                        .size(px(18.))
+                        .size(px(theme::ICON_LG))
                         .text_color(if enabled {
                             template.tint().opacity(0.7)
                         } else {

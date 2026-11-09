@@ -27,7 +27,7 @@ pub(crate) fn badge(text: impl Into<SharedString>, color: Hsla) -> Div {
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::soft(color))
         .text_color(color)
-        .text_size(px(11.))
+        .text_size(px(theme::TEXT_CAPTION))
         .child(text.into())
 }
 
@@ -42,7 +42,7 @@ pub(crate) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
             div()
                 .min_w_0()
                 .flex_1()
-                .text_size(px(12.))
+                .text_size(px(theme::TEXT_SM))
                 .text_color(theme::TEXT)
                 .child(value.into()),
         )

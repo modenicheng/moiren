@@ -173,7 +173,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     } else {
                         theme::WINDOW_BG
                     })
-                    .text_size(px(12.))
+                    .text_size(px(theme::TEXT_SM))
                     .text_color(if edge.is_some() {
                         theme::PRIMARY
                     } else {
