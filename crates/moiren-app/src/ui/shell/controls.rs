@@ -23,11 +23,13 @@ pub(crate) fn badge(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .flex_none()
         .px(px(theme::SPACE_1_5))
+        // 3 px: badge's vertical inset around the 11 px text, tighter than
+        // the spacing grid's steps.
         .py(px(3.))
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::soft(color))
         .text_color(color)
-        .text_size(px(11.))
+        .text_size(px(theme::TEXT_CAPTION))
         .child(text.into())
 }
 
@@ -42,7 +44,7 @@ pub(crate) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
             div()
                 .min_w_0()
                 .flex_1()
-                .text_size(px(12.))
+                .text_size(px(theme::TEXT_SM))
                 .text_color(theme::TEXT)
                 .child(value.into()),
         )
@@ -106,6 +108,9 @@ pub(crate) fn underline_editor(
         .child(
             component::input::Input::new(input)
                 .appearance(false)
+                // Explicit zero padding: the Input's own chrome is stripped
+                // so the editor sits exactly where the readout it replaced
+                // sat (see the doc comment above).
                 .px(px(0.))
                 .py(px(0.))
                 .h_auto()

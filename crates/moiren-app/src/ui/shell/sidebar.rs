@@ -644,7 +644,7 @@ fn edge_handle(
         .child(
             component::Icon::default()
                 .path(icon)
-                .size(px(14.))
+                .size(px(theme::ICON_SM))
                 .text_color(theme::PRIMARY),
         )
         .on_click(move |_, _, cx| {

@@ -85,6 +85,8 @@ pub(crate) fn node_controls(
         .flex_col()
         .flex_none()
         .px(px(theme::SPACE_2))
+        // 3 px: dense strip inset hugging the M/S/DIM group, tighter than
+        // the spacing grid's steps.
         .py(px(3.))
         .child(
             div()

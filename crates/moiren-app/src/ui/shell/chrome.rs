@@ -566,7 +566,7 @@ fn fault_summary(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEle
                 .justify_center()
                 .bg(theme::DANGER)
                 .text_color(theme::controls::ON_ACCENT)
-                .text_size(px(9.))
+                .text_size(px(theme::TEXT_TINY))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("!"),
         )

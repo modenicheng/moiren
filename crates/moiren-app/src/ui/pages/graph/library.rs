@@ -40,6 +40,8 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             group = template.group();
             items = items.child(
                 div()
+                    // 14 px: template-group label's separation from the
+                    // group above it, off the spacing grid.
                     .mt(px(14.))
                     .mb(px(theme::SPACE_0_5))
                     .child(label(t!(group))),
@@ -198,6 +200,8 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .flex_none()
                 .flex()
                 .flex_col()
+                // 10 px: the header stack's gap between the library title
+                // and its search field, off the spacing grid.
                 .gap(px(10.))
                 .child(heading(t!("Node library")))
                 .child(
@@ -240,7 +244,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .child(label(t!("Drag a node onto the graph")))
                 .child(
                     div()
-                        .text_size(px(10.))
+                        .text_size(px(theme::TEXT_XS))
                         .text_color(theme::TEXT_FAINT)
                         .child(t!("Or click to add at the canvas center.")),
                 ),
@@ -261,6 +265,8 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
         .flex_col()
         .items_center()
         .gap(px(theme::SPACE_0_5))
+        // 10 px: the collapsed rail's own vertical inset, off the spacing
+        // grid.
         .py(px(10.))
         .track_scroll(&shell.library.rail_scroll)
         .restrict_scroll_to_axis()
@@ -282,7 +288,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
                 .child(
                     component::Icon::default()
                         .path(format!("icons/{}.svg", template.icon()))
-                        .size(px(18.))
+                        .size(px(theme::ICON_LG))
                         .text_color(if enabled {
                             template.tint().opacity(0.7)
                         } else {

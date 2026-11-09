@@ -134,7 +134,10 @@ pub mod card {
     pub const OUTLINE_W: f32 = 1.5;
     pub const OUTLINE_REST_W: f32 = 1.;
     pub const ICON_SIZE: f32 = 16.;
-    pub const TITLE_SIZE: f32 = 12.;
+    /// Aliases of the theme type ladder (design 21 §1.2): the card header's
+    /// title is a body-size label and its hint is the tiny readout size, so
+    /// the canvas and the chrome track one source.
+    pub use super::{TEXT_SM as TITLE_SIZE, TEXT_TINY as HINT_SIZE};
     pub const TITLE_WIDTH: f32 = 170.;
     /// Status glyph slots at the header's right edge; the badge is the
     /// error/loading marker, the expander opens the detail window.
@@ -179,7 +182,6 @@ pub mod card {
     pub const PORT_Y: f32 = 80.;
     pub const PORT_SPACING: f32 = 18.;
     pub const PORT_BOTTOM: f32 = 14.;
-    pub const HINT_SIZE: f32 = 9.;
     /// Neutral knob pointer (same neutral as slider thumbs).
     pub const THUMB: super::Hsla = gpui_kit::hsla(0., 0., 0.85098, 1.);
 }
@@ -211,7 +213,15 @@ pub const RADIUS_LG: f32 = 8.;
 // --- Typography ------------------------------------------------------------
 pub const FONT_UI: &str = controls::FONT;
 pub const FONT_MONO: &str = "Cascadia Mono";
+/// The type-size ladder, smallest to largest (design 21 §1.2). Micro and tiny
+/// serve dense readouts (fader values, card hints); caption is the badge and
+/// tray-dial size between XS and SM. Micro has no call site yet — it anchors
+/// the ladder's floor for the first dense readout that needs it.
+#[expect(dead_code)]
+pub const TEXT_MICRO: f32 = 8.;
+pub const TEXT_TINY: f32 = 9.;
 pub const TEXT_XS: f32 = 10.;
+pub const TEXT_CAPTION: f32 = 11.;
 pub const TEXT_SM: f32 = 12.;
 pub const TEXT_MD: f32 = 13.;
 pub const TEXT_LG: f32 = 15.;
@@ -237,6 +247,19 @@ pub fn halo(color: Hsla) -> Hsla {
 pub fn dim(color: Hsla) -> Hsla {
     color.alpha(ALPHA_DIM)
 }
+
+// --- Icons -----------------------------------------------------------------
+/// The icon-size ladder (design 21 §1.3): small glyphs beside labels, the
+/// medium action-component default, larger rail glyphs, and the rare
+/// display-size icon. `controls::ICON` aliases [`ICON_MD`] so the kit action
+/// pipeline and workstation glyphs share one source.
+pub const ICON_SM: f32 = 14.;
+pub const ICON_MD: f32 = 16.;
+pub const ICON_LG: f32 = 18.;
+/// XL has no call site yet — the title-bar mark is a brand logo, not a UI
+/// icon, so it keeps its literal.
+#[expect(dead_code)]
+pub const ICON_XL: f32 = 24.;
 
 /// Soft fill for an accent (16% alpha over transparent), for chips/badges.
 pub fn soft(hsla: Hsla) -> Hsla {

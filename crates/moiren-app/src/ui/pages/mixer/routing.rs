@@ -147,8 +147,10 @@ pub(super) fn inputs(
                 div()
                     .id(SharedString::from(format!("input-{:?}", edge.id())))
                     .flex_none()
+                    // 3 px: dense routing-row inset around the 10 px row
+                    // text, off the spacing grid.
                     .py(px(3.))
-                    .text_size(px(10.))
+                    .text_size(px(theme::TEXT_XS))
                     .text_color(theme::TEXT_MUTED)
                     // Design 21 §2: routing rows carry node labels — one
                     // line with an ellipsis, never a wrap.
@@ -184,7 +186,8 @@ pub(super) fn inputs(
                 .into_owned()
             });
             rows = rows.child(
-                label(resource.unwrap_or_else(|| t!("No inputs").into_owned())).text_size(px(10.)),
+                label(resource.unwrap_or_else(|| t!("No inputs").into_owned()))
+                    .text_size(px(theme::TEXT_XS)),
             );
         }
         view = view.child(
@@ -287,7 +290,7 @@ pub(super) fn sends(
                         // Design 21 §2: the send target names a node —
                         // single line, ellipsized.
                         .truncate()
-                        .text_size(px(10.))
+                        .text_size(px(theme::TEXT_XS))
                         .child(
                             graph
                                 .node(edge.dst())
@@ -323,7 +326,7 @@ pub(super) fn sends(
                         .w(px(32.))
                         .text_right()
                         .font_family(theme::FONT_MONO)
-                        .text_size(px(9.))
+                        .text_size(px(theme::TEXT_TINY))
                         .child(value)
                         .cursor_pointer()
                         .on_click({
@@ -367,7 +370,7 @@ pub(super) fn sends(
             );
         }
         if count == 0 {
-            rows = rows.child(label(t!("No sends")).text_size(px(10.)));
+            rows = rows.child(label(t!("No sends")).text_size(px(theme::TEXT_XS)));
         }
         view = view.child(
             scroll_region(

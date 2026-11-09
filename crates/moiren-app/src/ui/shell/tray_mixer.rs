@@ -440,11 +440,13 @@ fn strip(
                 .flex()
                 .flex_none()
                 .justify_center()
+                // 10 px: the gain readout's breathing room above the
+                // flyout's bottom edge, off the spacing grid.
                 .pb(px(10.))
                 .child(
                     div()
                         .font_family(theme::FONT_MONO)
-                        .text_size(px(11.))
+                        .text_size(px(theme::TEXT_CAPTION))
                         .text_color(theme::TEXT_MUTED)
                         .child(db_text(entry.mixer.gain)),
                 )

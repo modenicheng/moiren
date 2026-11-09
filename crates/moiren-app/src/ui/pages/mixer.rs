@@ -200,6 +200,8 @@ fn strip_body(
         .gap(px(theme::SPACE_0_5))
         .h(px(theme::compact(shell.chrome.compact, 44., 52.)))
         .flex_none()
+        // 10 px: the strip title row's horizontal inset inside the strip's
+        // full bleed, off the spacing grid.
         .px(px(10.))
         .justify_center()
         .border_t_1()
@@ -215,7 +217,7 @@ fn strip_body(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(12.))
+                        .text_size(px(theme::TEXT_SM))
                         .font_weight(FontWeight::SEMIBOLD)
                         // Design 21 §2: user labels truncate on one line —
                         // ellipsis alone still wrapped long names.
@@ -237,7 +239,7 @@ fn strip_body(
                 kind,
                 channels,
             ))
-            .text_size(px(9.)),
+            .text_size(px(theme::TEXT_TINY)),
         )
         .on_click({
             let this = cx.entity();
@@ -300,7 +302,12 @@ fn strip_body(
                 .min_h(px(160.))
                 .justify_center()
                 .gap(px(theme::SPACE_1_5))
+                // 14 px: the levels area's separation from the editors
+                // above it, off the spacing grid.
                 .mt(px(14.))
+                // 32 px: clears the meter readout, which hangs up to
+                // READOUT_OFFSET_Y (28 px) below the track, plus breathing
+                // room before the title row.
                 .mb(px(32.))
                 .child(
                     div()
@@ -342,7 +349,7 @@ fn strip_fault_badge(id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement 
         .justify_center()
         .bg(theme::DANGER)
         .text_color(theme::controls::ON_ACCENT)
-        .text_size(px(9.))
+        .text_size(px(theme::TEXT_TINY))
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
         .child("!")
@@ -429,11 +436,25 @@ fn meter(
             view.child(meter_probe(shell.metering.meter_points.clone(), input))
         })
         .child(page::track(shell, entry.id, channels, eligible.then_some(input)))
-        .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
-            .absolute().bottom(px(-28.)).left(px(-10.)).w(px(48.)).h(px(12.)).line_height(px(12.))
-            .text_center().font_family(theme::FONT_MONO).text_size(px(8.)).text_color(theme::TEXT_MUTED)
-            .child(page::readout(shell, entry.id))
-            .gpui_test_observe())
+        // The readout's reserved block: the UI's one layout-grade absolute
+        // positioning (design 21 §2), styled from the READOUT_* group so the
+        // block and the hot layer's paint of the live text never drift.
+        .child(
+            div()
+                .id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
+                .absolute()
+                .bottom(px(page::READOUT_OFFSET_Y))
+                .left(px(page::READOUT_OFFSET_X))
+                .w(px(page::READOUT_WIDTH))
+                .h(px(page::READOUT_HEIGHT))
+                .line_height(px(page::READOUT_LINE_HEIGHT))
+                .text_center()
+                .font_family(theme::FONT_MONO)
+                .text_size(px(page::READOUT_TEXT_SIZE))
+                .text_color(theme::TEXT_MUTED)
+                .child(page::readout(shell, entry.id))
+                .gpui_test_observe(),
+        )
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
             t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip.").into_owned()
         ).build(window, cx))

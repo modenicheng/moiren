@@ -331,6 +331,7 @@ fn group(title: impl Into<SharedString>, body: impl IntoElement) -> Div {
         .px(px(theme::SPACE_4))
         .pt(px(theme::SPACE_3))
         .pb(px(theme::SPACE_1))
+        // 10 px: the card's title-to-rows gap, off the spacing grid.
         .gap(px(10.))
         .child(group_title(title))
         .child(body)
@@ -608,6 +609,8 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let columns = match (running, snapshot.active_audio_settings.as_ref()) {
         (true, Some(active)) => div()
             .flex()
+            // 28 px: the wide column gap of the Requested | Active
+            // comparison around its hairline divider, off the spacing grid.
             .gap(px(28.))
             .child(requested_column)
             .child(div().w(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))

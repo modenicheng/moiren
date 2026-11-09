@@ -661,6 +661,32 @@ pub(crate) fn track(
         )
 }
 
+// --- The meter readout's reserved block (design 21 §1.5) --------------------
+// The dB readout hanging under each strip's meter track is the UI's one
+// layout-grade absolute positioning (design 21 §2), and its metrics live in
+// this one group because two files consume them: the reserved block itself
+// is styled in `super::meter` (pages/mixer.rs) while the hot layer below
+// (`ReadoutShapes`, `paint_mixer_meter_frame`) shapes and paints the live
+// text at the same size and line height — one group so the block and its
+// painter cannot drift apart.
+
+/// Left edge of the block this far left of the meter's left edge, so the
+/// block's width centers the dB text under the meter track.
+pub(crate) const READOUT_OFFSET_X: f32 = -10.;
+/// Bottom edge of the block this far below the meter's bottom edge: the
+/// number hangs under the track, inside the levels row's bottom margin
+/// (see `strip_body` in pages/mixer.rs).
+pub(crate) const READOUT_OFFSET_Y: f32 = -28.;
+/// Reserved width for the widest dB text at the mono size.
+pub(crate) const READOUT_WIDTH: f32 = 48.;
+/// The block's height: exactly one line.
+pub(crate) const READOUT_HEIGHT: f32 = 12.;
+/// The single line's line height, shared by the block style and the hot
+/// layer's `ShapedLine::paint`.
+pub(crate) const READOUT_LINE_HEIGHT: f32 = 12.;
+/// The mono text size the block style and the readout shaper share.
+pub(crate) const READOUT_TEXT_SIZE: f32 = 8.;
+
 pub(crate) fn readout(shell: &StudioShell, id: NodeId) -> impl IntoElement {
     let geometry = shell.mixer.geometry.clone();
     canvas(
@@ -726,8 +752,8 @@ impl MixerMeters {
 /// hundreds, and no per-node entry survives a deleted node, so the old
 /// per-track map's unbounded growth is gone with it. The key is the text
 /// alone because every shaping parameter at the only call site (mono font,
-/// 8 px, muted color) is a constant; if the readout ever becomes styleable,
-/// those parameters must join the key.
+/// [`READOUT_TEXT_SIZE`], muted color) is a constant; if the readout ever
+/// becomes styleable, those parameters must join the key.
 #[derive(Default)]
 struct ReadoutShapes {
     lines: HashMap<String, gpui_kit::ShapedLine>,
@@ -757,7 +783,7 @@ impl ReadoutShapes {
             }
             let line = window.text_system().shape_line(
                 text.into(),
-                px(8.),
+                px(READOUT_TEXT_SIZE),
                 &[TextRun {
                     len: text.len(),
                     font: font(theme::FONT_MONO),
@@ -912,7 +938,7 @@ fn paint_mixer_meter_frame(
             };
             let _ = line.paint(
                 placement.bounds.origin,
-                px(12.),
+                px(READOUT_LINE_HEIGHT),
                 TextAlign::Center,
                 Some(placement.bounds.size.width),
                 window,
