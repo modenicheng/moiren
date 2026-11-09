@@ -18,32 +18,41 @@ fn section(
         .flex()
         .flex_col()
         .flex_none()
-        .h(px(if collapsed { 28. } else { height }))
+        .h(px(if collapsed {
+            theme::SECTION_HEADER_HEIGHT
+        } else {
+            height
+        }))
         .border_b_1()
         .border_color(theme::BORDER)
         .overflow_hidden()
         .child(
-            div().flex().items_center().h(px(28.)).flex_none().child(
-                button(SharedString::from(format!("toggle-{title}")), t!(title))
-                    .full_width()
-                    .justify_start()
-                    .square()
-                    .trailing(if collapsed { "▸" } else { "▾" })
-                    .density(Density::Compact)
-                    .variant(ButtonVariant::Ghost)
-                    .on_click(move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            if title == "INPUTS" {
-                                shell.mixer.presentation.inputs_collapsed =
-                                    !shell.mixer.presentation.inputs_collapsed;
-                            } else {
-                                shell.mixer.presentation.sends_collapsed =
-                                    !shell.mixer.presentation.sends_collapsed;
-                            }
-                            cx.notify();
-                        })
-                    }),
-            ),
+            div()
+                .flex()
+                .items_center()
+                .h(px(theme::SECTION_HEADER_HEIGHT))
+                .flex_none()
+                .child(
+                    button(SharedString::from(format!("toggle-{title}")), t!(title))
+                        .full_width()
+                        .justify_start()
+                        .square()
+                        .trailing(if collapsed { "▸" } else { "▾" })
+                        .density(Density::Compact)
+                        .variant(ButtonVariant::Ghost)
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |shell, cx| {
+                                if title == "INPUTS" {
+                                    shell.mixer.presentation.inputs_collapsed =
+                                        !shell.mixer.presentation.inputs_collapsed;
+                                } else {
+                                    shell.mixer.presentation.sends_collapsed =
+                                        !shell.mixer.presentation.sends_collapsed;
+                                }
+                                cx.notify();
+                            })
+                        }),
+                ),
         )
 }
 
@@ -82,7 +91,7 @@ pub(super) fn inputs(
     let mut view = section(
         format!("inputs-{:?}", entry.id),
         "INPUTS",
-        if shell.chrome.compact { 64. } else { 88. },
+        theme::compact(shell.chrome.compact, 64., 88.),
         shell.mixer.presentation.inputs_collapsed,
         cx,
     );
@@ -223,7 +232,7 @@ pub(super) fn sends(
     let mut view = section(
         format!("sends-{id:?}"),
         "SENDS",
-        if shell.chrome.compact { 80. } else { 116. },
+        theme::compact(shell.chrome.compact, 80., 116.),
         shell.mixer.presentation.sends_collapsed,
         cx,
     );
