@@ -147,6 +147,8 @@ pub(super) fn inputs(
                 div()
                     .id(SharedString::from(format!("input-{:?}", edge.id())))
                     .flex_none()
+                    // 3 px: dense routing-row inset around the 10 px row
+                    // text, off the spacing grid.
                     .py(px(3.))
                     .text_size(px(10.))
                     .text_color(theme::TEXT_MUTED)
