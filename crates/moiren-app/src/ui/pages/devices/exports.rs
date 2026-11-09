@@ -3,6 +3,7 @@ use crate::service::{
     ExportAuthorization, ExportDirection, ExportIntent, ExportResourceState, ExportStatus,
     GraphEdit, GraphSnapshot, validate_exports,
 };
+use crate::ui::state::UiFailure;
 use crate::ui::widgets::overlay_scrollbar::notify_owner;
 use moiren_core::graph::NodeId;
 use moiren_engine::node::VirtualEndpointId;
@@ -199,7 +200,7 @@ impl StudioShell {
                 Ok(exports) => {
                     state.dispatch(AppRequest::EditGraph(GraphEdit::SetExports(exports)))
                 }
-                Err(error) => state.dispatch_error = Some(error),
+                Err(reason) => state.dispatch_error = Some(UiFailure::ExportInvalid { reason }),
             }
         });
         cx.notify();

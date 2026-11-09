@@ -638,15 +638,13 @@ mod headless {
         assert!(candidate(&view, cx).exports.is_empty());
         cx.update(|window, cx| {
             view.update(cx, |shell, cx| {
-                assert!(
-                    shell
-                        .state
-                        .read(cx)
-                        .dispatch_error
-                        .as_ref()
-                        .unwrap()
-                        .contains("UTF-16")
-                );
+                // The typed failure carries the free-form validate_exports
+                // prose as data; the old frozen string asserted "UTF-16".
+                assert!(matches!(
+                    &shell.state.read(cx).dispatch_error,
+                    Some(crate::ui::state::UiFailure::ExportInvalid { reason })
+                        if reason.contains("UTF-16")
+                ));
                 shell
                     .devices
                     .export_controls

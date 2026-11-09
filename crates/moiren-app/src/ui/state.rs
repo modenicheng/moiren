@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 
-use rust_i18n::t;
-
 use crate::service::{
     AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, GraphPreparation,
     InputSelection, MixerState, RequestId, RunLimit, SessionPhase, SessionSpec,
@@ -280,6 +278,34 @@ struct TransportCheckFingerprint {
     resources_available: bool,
 }
 
+/// Why the last control-side attempt failed. Storage stays typed and
+/// locale-free; the one translation point is
+/// [`crate::ui::presentation::failure_text`] at paint, so a stored failure
+/// follows a locale switch without being rewritten. This replaces the old
+/// frozen `Option<String>` that mixed four states: Debug-formatted
+/// [`crate::service::DispatchError`]s, validate prose, and two write-time
+/// `t!` translations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UiFailure {
+    /// The service rejected the request outright.
+    /// [`crate::service::DispatchError`] is a closed set, stored whole —
+    /// never Debug-formatted again.
+    Dispatch(crate::service::DispatchError),
+    /// Restored audio preferences failed validation.
+    /// [`crate::service::AudioConfigError`] is a closed set, stored whole.
+    InvalidAudioSettings(crate::service::AudioConfigError),
+    /// The current selection names no usable source/output pair for start.
+    SourceUnavailable,
+    /// The candidate graph could not be prepared for start. `cause` is the
+    /// service's stable English diagnostic (a catalog key or prose); it is
+    /// kept as data and translated at paint like the graph faults.
+    GraphNotReady { cause: String },
+    /// The edited virtual exports failed validation. The producer hands
+    /// free-form prose, not a closed set, so the diagnostic string travels
+    /// as data and renders untranslated by design.
+    ExportInvalid { reason: String },
+}
+
 /// Root gpui entity: owns the service handle and the latest projected state.
 /// The text projections and the display-level stale guard live in
 /// [`crate::ui::presentation`].
@@ -296,7 +322,7 @@ pub struct UiState {
     /// visible set as the meters and feeding the graph card's live body.
     pub node_spectra: crate::ui::monitoring::NodeSpectra,
     pub pending_request: bool,
-    pub dispatch_error: Option<String>,
+    pub(crate) dispatch_error: Option<UiFailure>,
     pub source_mode: SourceMode,
     pub gain: f64,
     pub pan: f64,
@@ -415,7 +441,7 @@ impl UiState {
                 Ok(id)
             }
             Err(error) => {
-                self.dispatch_error = Some(format!("{error:?}"));
+                self.dispatch_error = Some(UiFailure::Dispatch(error.clone()));
                 Err(error)
             }
         }
@@ -424,7 +450,7 @@ impl UiState {
     /// Restore intent before the first Start; persisted profiles do not start audio.
     pub fn restore_preferences(&mut self, preferences: &crate::project::AppPreferences) {
         if let Err(error) = preferences.audio.validate() {
-            self.dispatch_error = Some(error.to_string());
+            self.dispatch_error = Some(UiFailure::InvalidAudioSettings(error));
             return;
         }
         if self
@@ -558,10 +584,14 @@ impl UiState {
 
     /// Validate the actual graph before choosing the legacy physical request.
     /// Virtual primary IO must stay in the typed graph path, even when stale
-    /// physical selectors are still present in the UI selection state.
-    fn transport_request(&self) -> Result<AppRequest, String> {
+    /// physical selectors are still present in the UI selection state. Every
+    /// failure is a typed [`UiFailure`]; the caller's diagnostics render it
+    /// through [`crate::ui::presentation::failure_text`] at paint.
+    fn transport_request(&self) -> Result<AppRequest, UiFailure> {
         let mut preparation = self.candidate_preparation();
-        let (source, output) = preparation.primary_io_nodes()?;
+        let (source, output) = preparation
+            .primary_io_nodes()
+            .map_err(|cause| UiFailure::GraphNotReady { cause })?;
         let primary_is_virtual = preparation.exports.iter().any(|export| {
             export.enabled
                 && matches!(export.binding, Some(node) if node == source || node == output)
@@ -572,18 +602,16 @@ impl UiState {
                 self.snapshot.audio_settings.processing.block_frames as usize,
             )
         } else {
-            let spec = self.candidate_spec().ok_or_else(|| {
-                t!("Choose an available source and output before starting.").to_string()
-            })?;
+            let spec = self.candidate_spec().ok_or(UiFailure::SourceUnavailable)?;
             // Start applies these selectors to primary IO in the service.
             // Validate the same candidate without editing the shared snapshot.
             let mut graph = crate::service::ServiceGraph::default();
-            graph.replace_with_exports(
-                preparation.graph,
-                preparation.nodes,
-                preparation.exports,
-            )?;
-            graph.configure_session(&spec)?;
+            graph
+                .replace_with_exports(preparation.graph, preparation.nodes, preparation.exports)
+                .map_err(|cause| UiFailure::GraphNotReady { cause })?;
+            graph
+                .configure_session(&spec)
+                .map_err(|cause| UiFailure::GraphNotReady { cause })?;
             preparation = graph.preparation();
             let block_frames = spec.max_block_frames;
             (AppRequest::Start(spec), block_frames)
@@ -594,8 +622,8 @@ impl UiState {
                 &self.snapshot.audio_settings,
                 self.snapshot.latency_profile,
             )
-            .map_err(|failure| {
-                t!("Graph is not ready: %{error}", error = failure.cause).to_string()
+            .map_err(|failure| UiFailure::GraphNotReady {
+                cause: failure.cause,
             })?;
         Ok(request)
     }

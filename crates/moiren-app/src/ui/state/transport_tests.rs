@@ -150,7 +150,10 @@ fn incomplete_virtual_graph_rejects_stale_physical_fallback() {
 
         state.toggle_transport();
         assert_eq!(mailbox.try_request(), None, "unbound graph cannot start");
-        assert!(state.dispatch_error.is_some());
+        assert!(matches!(
+            state.dispatch_error,
+            Some(UiFailure::GraphNotReady { .. })
+        ));
     }
 }
 
@@ -338,7 +341,10 @@ fn nonprimary_unbound_io_rejects_otherwise_valid_physical_start() {
 
     state.toggle_transport();
     assert_eq!(mailbox.try_request(), None);
-    assert!(state.dispatch_error.is_some());
+    assert!(matches!(
+        state.dispatch_error,
+        Some(UiFailure::GraphNotReady { .. })
+    ));
 }
 
 #[test]
