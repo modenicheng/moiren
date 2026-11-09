@@ -23,6 +23,9 @@ pub(crate) mod page;
 pub(crate) use library::PendingNodeSpawn;
 pub(crate) use library::{library, library_rail};
 pub(crate) use node_inspector::inspector;
+pub(crate) use node_inspector::{
+    OBSERVATION_SAMPLE_CADENCE, ObservationSnapshot, observation_snapshot,
+};
 
 /// The graph canvas's in-flight pointer gestures (design 20 §4): node
 /// drags (with snap offset and alignment guides), the rubber-band

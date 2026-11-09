@@ -1030,6 +1030,120 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     finish_service(runtime);
 }
 
+/// Issue #118: the inspector's runtime-observation readout renders from
+/// `node_meters`, which the metering pump updates without notifying the
+/// shell — unkeyed, the cached panel froze the texts it was built with.
+/// The pump now samples the readout into `InspectorKey` (status transitions
+/// immediately, Peak/RMS texts on a cadence), so the panel must follow the
+/// stream's status through a stall and recovery while the selection holds.
+#[gpui_kit::test]
+fn inspector_observation_readout_follows_meter_status_changes(cx: &mut gpui_kit::TestAppContext) {
+    use std::sync::atomic::Ordering;
+
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec, test_backend::FakeBackend,
+    };
+    use crate::ui::monitoring::MeterStatus;
+    use crate::ui::pages::graph::observation_snapshot;
+
+    // A real running session publishes real level windows; the constant
+    // source converges on stable texts, so the readout's wake path is the
+    // status transitions alone (stall, then recovery).
+    let backend = FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let backend_state = backend.0.clone();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    let state = cx.new(|_| UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    view.update(cx, |shell, cx| {
+        shell.selection.node = Some(node);
+        shell.chrome.inspector_open = true;
+        shell.presentation.page = pages::Page::Graph;
+        shell.metering.node_meter_points.borrow_mut().clear();
+        cx.notify();
+    });
+    render(cx);
+    // The first sample is immediate: once levels land, the snapshot rides
+    // the key and matches what a fresh build from the live table says.
+    wait_until(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.update_node_meters(true, cx);
+            let live = observation_snapshot(&shell.state.read(cx).node_meters, node);
+            !live.texts.is_empty() && shell.inspector.observation.as_ref() == Some(&live)
+        })
+    });
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.inspector.observation.as_ref().map(|s| &s.status),
+            Some(&MeterStatus::Live)
+        );
+    });
+    // The sampled snapshot rode the key and notified: fresh frames must
+    // rebuild the panel with the levels the live table now holds (the first
+    // build predates any window; the cached splice applies a re-keyed panel
+    // on the following frame, so settle before asserting).
+    settle_panels(cx);
+    cx.update(|window, _| {
+        assert!(window.find("node-observation-levels").visible());
+    });
+
+    // A delivery stall is a status change: it must re-key the panel at once
+    // (not on the text cadence) — the stored status follows the live one.
+    // (The texts keep decaying through the stall, so only the status is
+    // compared here; the stored==live glue is pinned above on the constant
+    // source.)
+    backend_state.pause_audio.store(true, Ordering::Relaxed);
+    wait_until(Duration::from_secs(10), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.update_node_meters(true, cx);
+            shell
+                .inspector
+                .observation
+                .as_ref()
+                .is_some_and(|sampled| sampled.status == MeterStatus::Stale)
+        })
+    });
+    // Recovery is a status change too, and the texts come back with it.
+    backend_state.pause_audio.store(false, Ordering::Relaxed);
+    wait_until(Duration::from_secs(5), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.update_node_meters(true, cx);
+            shell.inspector.observation.as_ref().is_some_and(|sampled| {
+                sampled.status == MeterStatus::Live && !sampled.texts.is_empty()
+            })
+        })
+    });
+
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_properties(
     cx: &mut gpui_kit::TestAppContext,

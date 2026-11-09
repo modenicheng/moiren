@@ -441,6 +441,8 @@ impl StudioShell {
                 meter_layer: inspector_meter_layer,
                 scroll: ScrollHandle::new(),
                 panel: inspector_panel,
+                observation: None,
+                observation_sampled: None,
             },
             library: sidebar::LibraryState {
                 scroll: ScrollHandle::new(),
