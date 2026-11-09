@@ -133,11 +133,11 @@ pub(crate) fn menu_overlay(
     let height = (items.len() as f32 * (item + ITEM_GAP) - ITEM_GAP + MENU_PADDING * 2.)
         .min(f32::from(viewport.height) - 48.)
         .max(item * 3. + MENU_PADDING * 2.);
-    let width = MENU_WIDTH.min(f32::from(viewport.width) - 16.);
+    let width = MENU_WIDTH.min(f32::from(viewport.width) - 2. * theme::POPOVER_VIEWPORT_MARGIN);
     let left = clamped_left(f32::from(menu.at.x), width, viewport);
     let top = f32::from(menu.at.y)
-        .min(f32::from(viewport.height) - height - 8.)
-        .max(8.);
+        .min(f32::from(viewport.height) - height - theme::POPOVER_VIEWPORT_MARGIN)
+        .max(theme::POPOVER_VIEWPORT_MARGIN);
     let dismiss = this.clone();
     let mut list = claim_presses(
         div()

@@ -185,7 +185,7 @@ pub(crate) fn rows(items: impl IntoIterator<Item = Div>) -> Div {
     let mut group = div().flex().flex_col();
     for (index, item) in items.into_iter().enumerate() {
         if index > 0 {
-            group = group.child(div().h(px(1.)).bg(theme::HAIRLINE));
+            group = group.child(div().h(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE));
         }
         group = group.child(item);
     }

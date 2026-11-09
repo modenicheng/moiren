@@ -167,7 +167,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                             .left(px(0.))
                             .top(px(6.))
                             .bottom(px(6.))
-                            .w(px(2.))
+                            .w(px(theme::ACCENT_BAR_W))
                             .rounded(px(1.))
                             .bg(theme::PRIMARY),
                     )
@@ -426,7 +426,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                                 cx,
                             )),
                     )
-                    .child(div().w(px(1.)).bg(theme::HAIRLINE))
+                    .child(div().w(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))
                     .child(
                         div()
                             .flex_1()
@@ -466,7 +466,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     cx,
                 ))
                 .child(label(t!(shell.settings.editor.global.profile.description())))
-                .child(div().h(px(1.)).bg(theme::HAIRLINE))
+                .child(div().h(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))
                 .child(row(
                     &t!("Device overrides"),
                     div()
@@ -610,7 +610,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             .flex()
             .gap(px(28.))
             .child(requested_column)
-            .child(div().w(px(1.)).bg(theme::HAIRLINE))
+            .child(div().w(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))
             .child(
                 div()
                     .flex_1()

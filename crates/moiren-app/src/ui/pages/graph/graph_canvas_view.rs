@@ -220,7 +220,7 @@ fn paint_canvas_layer(
                 }) * frame.camera.zoom)
                     .max(if selected { 1.8 } else { 0.75 });
                 if selected && let Ok(halo) = geometry.stroke(width + 5., origin) {
-                    window.paint_path(halo, theme::PRIMARY.opacity(0.28));
+                    window.paint_path(halo, theme::halo(theme::PRIMARY));
                 }
                 if let Ok(path) = geometry.stroke(width, origin) {
                     window.paint_path(
@@ -359,7 +359,7 @@ fn paint_connection_drag(
             .position(|wire| wire.dst_port == candidate.port.id)
         && let Ok(path) = frame.wires[index].stroke(3., origin)
     {
-        window.paint_path(path, theme::WINDOW_BG.opacity(0.55));
+        window.paint_path(path, theme::dim(theme::WINDOW_BG));
     }
 }
 

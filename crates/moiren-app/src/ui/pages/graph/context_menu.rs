@@ -26,9 +26,13 @@ pub(crate) fn overlay(
     };
     let this = cx.entity();
     let viewport = window.viewport_size();
-    let width = MENU_WIDTH.min(f32::from(viewport.width) - 16.);
+    let width = MENU_WIDTH.min(f32::from(viewport.width) - 2. * theme::POPOVER_VIEWPORT_MARGIN);
     let left = clamped_left(menu.at().0, width, viewport);
-    let top = menu.at().1.min(f32::from(viewport.height) - 8.).max(8.);
+    let top = menu
+        .at()
+        .1
+        .min(f32::from(viewport.height) - theme::POPOVER_VIEWPORT_MARGIN)
+        .max(theme::POPOVER_VIEWPORT_MARGIN);
 
     let close = this.clone();
     let mut body = match menu {
@@ -38,7 +42,7 @@ pub(crate) fn overlay(
             let mut rows = color_row(this.clone(), node, shell, cx);
             rows.push(
                 div()
-                    .h(px(1.))
+                    .h(px(theme::HAIRLINE_W))
                     .w_full()
                     .bg(theme::BORDER)
                     .into_any_element(),

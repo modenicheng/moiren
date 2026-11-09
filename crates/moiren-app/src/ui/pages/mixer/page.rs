@@ -459,7 +459,9 @@ fn strip_column(
         .child(
             // The kind color rides the live column: an observed element
             // inside the cached body would report stale bounds on cache-hit
-            // frames.
+            // frames. Dimmed at ALPHA_DIM — the same strength the tray
+            // strip's bar already used (design 21 §1.3 unifies the former
+            // 0.8 here).
             div()
                 .id(SharedString::from(format!("strip-color-{id:?}")))
                 .absolute()
@@ -467,7 +469,7 @@ fn strip_column(
                 .left_0()
                 .right_0()
                 .h(px(4.))
-                .bg(node_kind_color(kind).opacity(0.8))
+                .bg(theme::dim(node_kind_color(kind)))
                 .gpui_test_observe(),
         )
         .gpui_test_observe()

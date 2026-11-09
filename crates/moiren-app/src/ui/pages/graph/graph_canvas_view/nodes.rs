@@ -643,7 +643,7 @@ pub(in crate::ui) fn paint_spectrum_body(
     fill.line_to(point(px(left + width), px(floor)));
     window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
         if let Ok(path) = fill.build() {
-            window.paint_path(path, tint.opacity(0.28));
+            window.paint_path(path, theme::halo(tint));
         }
         if let Ok(path) = outline.build() {
             window.paint_path(path, tint);

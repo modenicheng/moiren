@@ -31,6 +31,15 @@ pub const GRID_LINE: Hsla = Hsla {
     ..WINDOW_BG
 };
 
+// --- Stroke widths (design 21 §1.3) -----------------------------------------
+/// A 1px rule: dividers, separators and underline strokes. (Borders drawn
+/// through gpui's semantic `.border_1()`-family methods already carry this
+/// width by construction and stay on that API — as do the 2px focus rings,
+/// which is why no FOCUS_RING_W token exists yet.)
+pub const HAIRLINE_W: f32 = 1.;
+/// The accent bar that marks an active tab or a selected row.
+pub const ACCENT_BAR_W: f32 = 2.;
+
 // --- Text ------------------------------------------------------------------
 pub const TEXT: Hsla = controls::TEXT;
 pub const TEXT_MUTED: Hsla = controls::SECONDARY;
@@ -96,6 +105,12 @@ pub const WINDOW_MIN_HEIGHT: f32 = 600.;
 /// still living there; anything less falls back to the primary display.
 pub const RESTORE_MIN_VISIBLE_WIDTH: f32 = 100.;
 pub const RESTORE_MIN_VISIBLE_HEIGHT: f32 = 40.;
+
+// --- Popover placement (design 21 §1.3) -------------------------------------
+/// Space an anchored popover keeps from the window edges on every side.
+pub const POPOVER_VIEWPORT_MARGIN: f32 = 8.;
+/// Space between the anchor's edge and a popover hung beside it.
+pub const POPOVER_ANCHOR_GAP: f32 = 4.;
 
 /// Resolves a compact-width value pair: `tight` below [`COMPACT_BREAKPOINT`],
 /// `roomy` above it. Generic so the chrome's text limits and the pages'
@@ -200,6 +215,28 @@ pub const TEXT_XS: f32 = 10.;
 pub const TEXT_SM: f32 = 12.;
 pub const TEXT_MD: f32 = 13.;
 pub const TEXT_LG: f32 = 15.;
+
+// --- Alpha system (design 21 §1.3) ------------------------------------------
+/// Selection wash over content the selection must not obscure (the canvas
+/// marquee fill).
+pub const ALPHA_SELECTION: f32 = 0.10;
+/// Halo strength for a colored wash layered behind a bright stroke (a
+/// selected wire's glow, the spectrum fill) so the stroke reads over any
+/// background.
+pub const ALPHA_HALO: f32 = 0.28;
+/// Dimmed strength for a tint that must keep its hue while clearly sitting
+/// behind the surface it marks: kind tint bars, displaced-stroke fades.
+pub const ALPHA_DIM: f32 = 0.55;
+
+/// Applies [`ALPHA_HALO`] to `color`.
+pub fn halo(color: Hsla) -> Hsla {
+    color.alpha(ALPHA_HALO)
+}
+
+/// Applies [`ALPHA_DIM`] to `color`.
+pub fn dim(color: Hsla) -> Hsla {
+    color.alpha(ALPHA_DIM)
+}
 
 /// Soft fill for an accent (16% alpha over transparent), for chips/badges.
 pub fn soft(hsla: Hsla) -> Hsla {
