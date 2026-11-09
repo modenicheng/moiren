@@ -444,7 +444,7 @@ fn strip(
                 .child(
                     div()
                         .font_family(theme::FONT_MONO)
-                        .text_size(px(11.))
+                        .text_size(px(theme::TEXT_CAPTION))
                         .text_color(theme::TEXT_MUTED)
                         .child(db_text(entry.mixer.gain)),
                 )

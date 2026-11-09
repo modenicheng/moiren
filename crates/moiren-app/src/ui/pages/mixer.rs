@@ -215,7 +215,7 @@ fn strip_body(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(12.))
+                        .text_size(px(theme::TEXT_SM))
                         .font_weight(FontWeight::SEMIBOLD)
                         // Design 21 §2: user labels truncate on one line —
                         // ellipsis alone still wrapped long names.
@@ -237,7 +237,7 @@ fn strip_body(
                 kind,
                 channels,
             ))
-            .text_size(px(9.)),
+            .text_size(px(theme::TEXT_TINY)),
         )
         .on_click({
             let this = cx.entity();
@@ -342,7 +342,7 @@ fn strip_fault_badge(id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement 
         .justify_center()
         .bg(theme::DANGER)
         .text_color(theme::controls::ON_ACCENT)
-        .text_size(px(9.))
+        .text_size(px(theme::TEXT_TINY))
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
         .child("!")
