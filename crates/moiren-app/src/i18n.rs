@@ -51,6 +51,15 @@ pub fn current() -> UiLanguage {
     }
 }
 
+/// Locale-pinned translation for tests: renders `key` under Simplified
+/// Chinese no matter which locale parallel UI tests set globally. Keys are
+/// the English source strings; the ledger guards in `i18n_guards` keep every
+/// literal key resolvable in the shipped catalog.
+#[cfg(test)]
+pub(crate) fn zh(key: &str) -> String {
+    rust_i18n::t!(key, locale = SIMPLIFIED_CHINESE).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
