@@ -8,8 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
-use rust_i18n::t;
-
 use super::*;
 
 /// How long the working document must stay unchanged before the autosave
@@ -158,7 +156,7 @@ impl StudioShell {
         let document = match self.project_document(cx) {
             Ok(document) => document,
             Err(error) => {
-                self.project_io.message = Some(error.to_string());
+                self.project_io.message = Some(project::ProjectMessage::Persisted(error.into()));
                 cx.notify();
                 return;
             }
@@ -201,7 +199,7 @@ impl StudioShell {
                     }
                     Err(error) => {
                         shell.project_io.message =
-                            Some(t!("Could not auto-save: %{error}", error = error).to_string());
+                            Some(project::ProjectMessage::AutoSaveFailed { cause: error });
                         cx.notify();
                     }
                 }

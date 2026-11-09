@@ -875,6 +875,21 @@ _version: 2
 "Project opened":
   en: Project opened
   zh-CN: 项目已打开
+"Could not %{operation} %{path}: %{source}":
+  en: "Could not %{operation} %{path}: %{source}"
+  zh-CN: "无法%{operation} %{path}：%{source}"
+"Invalid JSON in %{path}: %{source}":
+  en: "Invalid JSON in %{path}: %{source}"
+  zh-CN: "%{path} 中的 JSON 无效：%{source}"
+"Invalid %{field}: %{reason}":
+  en: "Invalid %{field}: %{reason}"
+  zh-CN: "%{field} 无效：%{reason}"
+"Unsupported %{document} document version %{version}":
+  en: "Unsupported %{document} document version %{version}"
+  zh-CN: "不支持的 %{document} 文档版本 %{version}"
+"Document %{path} exceeds the 8 MiB limit":
+  en: "Document %{path} exceeds the 8 MiB limit"
+  zh-CN: "文档 %{path} 超出 8 MiB 限制"
 "Mixer":
   en: Mixer
   zh-CN: 调音台
@@ -1028,12 +1043,12 @@ _version: 2
 "No publisher":
   en: No publisher
   zh-CN: 无发布者
+"Meter subscription failed":
+  en: Meter subscription failed
+  zh-CN: 电平表订阅失败
 "Meter subscription: %{error}":
   en: "Meter subscription: %{error}"
   zh-CN: "电平表订阅：%{error}"
-"Spectrum subscription: %{error}":
-  en: "Spectrum subscription: %{error}"
-  zh-CN: "频谱订阅：%{error}"
 "Idle":
   en: Idle
   zh-CN: 空闲

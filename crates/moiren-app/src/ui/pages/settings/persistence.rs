@@ -1,5 +1,3 @@
-use rust_i18n::t;
-
 use super::*;
 
 #[derive(Default)]
@@ -21,11 +19,12 @@ impl StudioShell {
         self.save_preferences_inner(cx, false);
     }
 
-    pub(crate) fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
+    fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
         let Some(path) = self.preferences.path.clone() else {
             if report {
-                self.project_io.message =
-                    Some(t!("User configuration directory is unavailable").into());
+                self.project_io.message = Some(project::ProjectMessage::Persisted(
+                    crate::project::PersistenceError::ConfigurationDirectoryUnavailable.into(),
+                ));
             }
             return;
         };
@@ -84,20 +83,15 @@ impl StudioShell {
                         && saved_revision == revision
                     {
                         let draft = shell.settings.editor.draft_mut(editor);
-                        draft.error = Some(
-                            t!("Could not save preferences: %{error}", error = error).to_string(),
-                        );
-                        draft.message = None;
+                        draft.feedback = Some(DraftFeedback::PreferencesSaveFailed {
+                            cause: error.clone(),
+                        });
                     }
                     if report {
-                        shell.project_io.message = Some(
-                            result
-                                .map(|_| t!("Preferences saved").into())
-                                .unwrap_or_else(|error| {
-                                    t!("Could not save preferences: %{error}", error = error)
-                                        .to_string()
-                                }),
-                        );
+                        shell.project_io.message = Some(match result {
+                            Ok(()) => project::ProjectMessage::PreferencesSaved,
+                            Err(cause) => project::ProjectMessage::PreferencesSaveFailed { cause },
+                        });
                         cx.notify();
                     }
                 }
@@ -105,7 +99,7 @@ impl StudioShell {
         })
         .detach();
         if report {
-            self.project_io.message = Some(t!("Preferences save queued").into());
+            self.project_io.message = Some(project::ProjectMessage::PreferencesSaveQueued);
         }
     }
 }

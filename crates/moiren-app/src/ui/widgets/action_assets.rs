@@ -30,7 +30,7 @@ impl ActionIcon {
     /// Every variant, so the asset regression test can enumerate all request
     /// sites instead of chasing scattered call sites.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 17] = [
+    const ALL: [Self; 17] = [
         Self::Plus,
         Self::Settings,
         Self::Graph,

@@ -80,7 +80,7 @@ pub fn run_component_preview() {
 }
 
 #[derive(Default)]
-pub(crate) struct ComponentGallery {
+struct ComponentGallery {
     density: Density,
     group: Group,
     /// The gallery body's scroll; a plain view field — the gallery carries
@@ -343,15 +343,27 @@ impl Render for ComponentGallery {
                                 }),
                             )
                             .child(
-                                ActionButton::new("density", format!("{:?}", self.density))
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                ActionButton::new(
+                                    "density",
+                                    // `t` here names theme tokens (`t::FONT`), so the
+                                    // translation macro stays fully qualified.
+                                    match self.density {
+                                        Density::Comfortable => {
+                                            rust_i18n::t!("Comfortable").into_owned()
+                                        }
+                                        Density::Compact => rust_i18n::t!("Compact").into_owned(),
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.density = if this.density == Density::Comfortable {
                                             Density::Compact
                                         } else {
                                             Density::Comfortable
                                         };
                                         cx.notify();
-                                    })),
+                                    },
+                                )),
                             ),
                     ),
             )

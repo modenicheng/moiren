@@ -496,3 +496,23 @@ fn restored_adapter_requires_fresh_engine_admission() {
     );
     assert_eq!(service.statuses(&graph.snapshot())[0].active_revision, None);
 }
+
+/// The Devices page export rows paint `t!(direction.title())`; every variant
+/// must resolve in both shipped locales, replacing the retired
+/// `format!("{direction:?}", ..)` Debug blob.
+#[test]
+fn export_direction_titles_render_in_both_locales() {
+    for (direction, zh_cn) in [
+        (ExportDirection::Playback, "播放"),
+        (ExportDirection::Microphone, "麦克风"),
+    ] {
+        let title = direction.title();
+        assert!(!title.is_empty());
+        assert_eq!(
+            rust_i18n::t!(title, locale = crate::i18n::ENGLISH),
+            title,
+            "en mirrors the key"
+        );
+        assert_eq!(crate::i18n::zh(title), zh_cn, "zh-CN value for {title:?}");
+    }
+}

@@ -137,8 +137,8 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 /// Cross-page double-click detection (design 20 §4): the last selectable
 /// element press (target hash + time).
 #[derive(Default)]
-pub(crate) struct PressTracker {
-    pub(crate) last: Option<(u64, Instant)>,
+struct PressTracker {
+    last: Option<(u64, Instant)>,
 }
 
 /// The caller's stake in one [`StudioShell::pump_tick`] notify decision. The
@@ -148,9 +148,9 @@ pub(crate) struct PressTracker {
 /// entirely (an iconic window must not wake the frame pipeline). The
 /// headless twin passes the default: no extra reason, never muted.
 #[derive(Default)]
-pub(crate) struct RepaintTerms {
-    pub(crate) force: bool,
-    pub(crate) mute: bool,
+struct RepaintTerms {
+    force: bool,
+    mute: bool,
 }
 
 /// The metering infrastructure (design 20 §4): the legacy I/O
@@ -161,7 +161,7 @@ pub(crate) struct MeteringInfra {
     pub(crate) node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
     pub(crate) meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
-    pub(crate) frame_demand: hot::FrameDemand,
+    frame_demand: hot::FrameDemand,
     pub(crate) observation_nodes: Option<(
         crate::service::SessionGeneration,
         moiren_core::graph::NodeId,
@@ -173,7 +173,7 @@ pub struct StudioShell {
     pub(crate) state: Entity<UiState>,
     pub(crate) chrome: chrome::ShellChrome,
     pub(crate) selection: graph::Selection,
-    pub(crate) press: PressTracker,
+    press: PressTracker,
     pub(crate) metering: MeteringInfra,
     pub(crate) settings: settings::SettingsPageState,
     /// Live preference values plus the quiet-save machinery (design 20 §4).
@@ -184,7 +184,7 @@ pub struct StudioShell {
     pub(crate) devices: devices::DevicesPageState,
     pub(crate) project_io: project::ProjectIo,
     #[cfg(feature = "gpui-test")]
-    pub(crate) test_page: Option<Entity<PageCell>>,
+    test_page: Option<Entity<PageCell>>,
     pub(crate) presentation: WindowPresentation,
     pub(crate) graph_gestures: graph::GraphInteractionState,
     pub(crate) graph_view: graph::page::GraphViewState,
@@ -246,7 +246,7 @@ pub struct StudioShell {
     /// Last selectable-element press (target hash + time) for double-click
     /// detection: single clicks select, double clicks also open the inspector.
     pub(crate) desktop: Option<WeakEntity<desktop::Desktop>>,
-    pub(crate) window_state: crate::project::WindowState,
+    window_state: crate::project::WindowState,
     /// Precision-touchpad subclass state (Windows pointer input). Held for
     /// its Drop: unregisters the Win32 subclass when the shell goes away.
     #[cfg(windows)]
@@ -465,7 +465,7 @@ impl StudioShell {
             .update(cx, |state, _| state.startup_project.take());
         if let Some(document) = restored {
             if let Err(error) = shell.apply_project_presentation(&document, cx) {
-                shell.project_io.message = Some(error.to_string());
+                shell.project_io.message = Some(project::ProjectMessage::Persisted(error.into()));
             }
             shell.project_io.path = shell.preferences.values.last_project_path.clone();
         }
@@ -587,7 +587,7 @@ impl StudioShell {
     /// Page membership stands in for mounting — the Graph and Mixer pages are
     /// where meter layers exist — because leftover meter demand on a page
     /// with no hot layer must not starve the control-side poll.
-    pub(crate) fn frames_eligible(&self, cx: &App) -> bool {
+    fn frames_eligible(&self, cx: &App) -> bool {
         let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
@@ -628,7 +628,7 @@ impl StudioShell {
     /// peak marker, fresh readings above the scale bottom, or a spectrum
     /// curve still falling toward its floor all keep the display short of
     /// rest.
-    pub(crate) fn meters_in_motion(&self, cx: &App) -> bool {
+    fn meters_in_motion(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         !self.metering.meters.at_rest()
             || !state.node_meters.at_rest()
@@ -688,7 +688,7 @@ impl StudioShell {
     /// probe is mounted on screen AND the strip's node level topic is
     /// missing, so the meter paint falls back to the legacy reading. A
     /// managed strip renders from NodeMeters alone.
-    pub(crate) fn legacy_meters_shown(&self, cx: &App, points: (bool, bool)) -> (bool, bool) {
+    fn legacy_meters_shown(&self, cx: &App, points: (bool, bool)) -> (bool, bool) {
         let managed = |id: moiren_core::graph::NodeId| {
             self.state
                 .read(cx)
@@ -784,7 +784,7 @@ pub(crate) mod hot;
 pub(crate) mod native;
 pub(crate) mod panel;
 #[cfg(feature = "gpui-test")]
-pub(crate) mod performance;
+mod performance;
 pub(crate) mod preferences;
 pub(crate) mod project;
 pub(crate) mod sidebar;
@@ -796,7 +796,7 @@ pub use test_harness::{finish_service, initial_projection, spawn_service, wait_f
 pub use test_harness::{settle_panels, shell_with_state, test_shell};
 #[cfg(all(test, feature = "gpui-test"))]
 pub(crate) mod tests;
-pub(crate) mod tray_mixer;
+mod tray_mixer;
 
 impl StudioShell {
     /// Render-time reconciliation passes (design 20 §5, PR10): one entry

@@ -12,7 +12,7 @@ use std::borrow::Cow;
 /// owner identity is not published to the UI, so this deliberately checks only
 /// phase, generation, and the observation's own running flag.
 #[cfg(windows)]
-pub(crate) fn fresh_observation(
+fn fresh_observation(
     phase: SessionPhase,
     generation: SessionGeneration,
     status_generation: SessionGeneration,
@@ -134,7 +134,9 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                     t!("%{prefix}: backend / mode", prefix = prefix).to_string(),
                     match stream.requested.backend {
                         AudioBackend::Asio => t!("ASIO driver (driver owns mode)").to_string(),
-                        AudioBackend::Wasapi => format!("WASAPI / {:?}", stream.requested.mode),
+                        AudioBackend::Wasapi => {
+                            format!("WASAPI / {}", t!(stream.requested.mode.title()))
+                        }
                     },
                 ));
                 rows.push((
@@ -279,29 +281,57 @@ pub fn control_feedback(snapshot: &AppSnapshot, pending_request: bool) -> String
 /// paths. Free-form producer prose ([`UiFailure::ExportInvalid`]) is
 /// diagnostic data and passes through untranslated by design.
 pub(crate) fn failure_text(failure: &UiFailure) -> String {
+    failure_text_in(failure, &rust_i18n::locale())
+}
+
+/// [`failure_text`] under an explicit locale — the locale-flip tests' seam
+/// (the settings draft feedback composes it into its own sentences), so
+/// parallel tests never touch the process-global locale.
+pub(crate) fn failure_text_in(failure: &UiFailure, locale: &str) -> String {
     match failure {
         UiFailure::Dispatch(error) => match error {
-            DispatchError::Busy => t!("The audio service is busy; try again in a moment."),
-            DispatchError::Exiting => t!("The audio service is shutting down."),
-            DispatchError::Disconnected => t!("The audio service is disconnected."),
+            DispatchError::Busy => {
+                t!(
+                    "The audio service is busy; try again in a moment.",
+                    locale = locale
+                )
+            }
+            DispatchError::Exiting => {
+                t!("The audio service is shutting down.", locale = locale)
+            }
+            DispatchError::Disconnected => {
+                t!("The audio service is disconnected.", locale = locale)
+            }
             DispatchError::InvalidConfig => {
-                t!("The audio service rejected the request as invalid.")
+                t!(
+                    "The audio service rejected the request as invalid.",
+                    locale = locale
+                )
             }
             DispatchError::GenerationExhausted => t!(
-                "Too many audio sessions have been started. Restart the application to continue."
+                "Too many audio sessions have been started. Restart the application to continue.",
+                locale = locale
             ),
-            DispatchError::RequestIdExhausted => {
-                t!("Too many pending requests. Restart the application to continue.")
-            }
+            DispatchError::RequestIdExhausted => t!(
+                "Too many pending requests. Restart the application to continue.",
+                locale = locale
+            ),
         }
         .into_owned(),
-        UiFailure::InvalidAudioSettings(error) => t!(error.to_string()).into_owned(),
-        UiFailure::SourceUnavailable => {
-            t!("Choose an available source and output before starting.").into_owned()
+        UiFailure::InvalidAudioSettings(error) => {
+            t!(error.to_string(), locale = locale).into_owned()
         }
-        UiFailure::GraphNotReady { cause } => {
-            t!("Graph is not ready: %{error}", error = t!(cause.as_str())).into_owned()
-        }
+        UiFailure::SourceUnavailable => t!(
+            "Choose an available source and output before starting.",
+            locale = locale
+        )
+        .into_owned(),
+        UiFailure::GraphNotReady { cause } => t!(
+            "Graph is not ready: %{error}",
+            locale = locale,
+            error = t!(cause.as_str(), locale = locale)
+        )
+        .into_owned(),
         UiFailure::ExportInvalid { reason } => reason.clone(),
     }
 }
@@ -352,6 +382,8 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
 #[cfg(test)]
 mod tests {
     use super::{db_text, db_text_bare, dbfs_text, step_db};
+    use crate::i18n::{ENGLISH, zh};
+    use moiren_engine::node::DeviceMode;
 
     #[test]
     fn db_text_reads_signed_db_and_one_infinity_for_silence() {
@@ -392,5 +424,21 @@ mod tests {
         assert_eq!(step_db(16., 1., 0., 16.), 16.);
         // Send gains have no upper limit by design.
         assert!((step_db(16., 1., 0., f64::INFINITY) - 16. * one_db).abs() < 1e-9);
+    }
+
+    /// The diagnostics "backend / mode" row paints `t!(mode.title())`; every
+    /// variant must resolve in both shipped locales, replacing the retired
+    /// `format!("WASAPI / {:?}", ..)` Debug blob.
+    #[test]
+    fn stream_mode_titles_render_in_both_locales() {
+        for (mode, zh_cn) in [
+            (DeviceMode::Shared, "共享"),
+            (DeviceMode::Exclusive, "独占"),
+        ] {
+            let title = mode.title();
+            assert!(!title.is_empty());
+            assert_eq!(rust_i18n::t!(title, locale = ENGLISH), title);
+            assert_eq!(zh(title), zh_cn, "zh-CN value for {title:?}");
+        }
     }
 }

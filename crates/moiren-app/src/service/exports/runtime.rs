@@ -8,13 +8,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) type DriverStamp = [u64; 5];
+type DriverStamp = [u64; 5];
 
 // Native adapters and portable fake adapters consume these work records.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) struct Dispatch {
     pub action: ExportAction,
-    pub expected: Option<DriverStamp>,
+    expected: Option<DriverStamp>,
 }
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) struct Work {
@@ -24,18 +24,18 @@ pub(crate) struct Work {
     pub drained: bool,
     pub shutdown: bool,
 }
-pub(crate) struct NativeObservation {
-    pub intent: ExportIntent,
-    pub snapshot: Option<DriverStamp>,
-    pub windows_name: Option<WindowsEndpointNameObservation>,
-    pub resource: ExportResourceState,
-    pub gate_open: bool,
-    pub allow_default: bool,
-    pub can_open: bool,
-    pub error: Option<String>,
+struct NativeObservation {
+    intent: ExportIntent,
+    snapshot: Option<DriverStamp>,
+    windows_name: Option<WindowsEndpointNameObservation>,
+    resource: ExportResourceState,
+    gate_open: bool,
+    allow_default: bool,
+    can_open: bool,
+    error: Option<String>,
 }
 pub(crate) struct Batch {
-    pub observations: Vec<NativeObservation>,
+    observations: Vec<NativeObservation>,
     pub errors: Vec<String>,
 }
 pub(crate) trait Adapter: Send + Sync {
@@ -45,7 +45,7 @@ pub(crate) trait Adapter: Send + Sync {
 }
 
 pub(crate) struct Runtime {
-    pub adapter: Option<Arc<dyn Adapter>>,
+    pub(crate) adapter: Option<Arc<dyn Adapter>>,
     in_flight: bool,
     native_empty: bool,
     shutdown_in_flight: bool,

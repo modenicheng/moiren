@@ -60,8 +60,12 @@ pub(crate) struct Draft {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
     original: (AudioSettings, AudioLatencyProfile),
-    pub error: Option<String>,
-    pub message: Option<String>,
+    /// The draft's status line payload (design 21 §4): stored typed and
+    /// locale-free, translated at paint by [`feedback_text`]. One field
+    /// serves both the failure prose and the progress notes the old
+    /// `error`/`message` string pair froze — the two never coexisted, and
+    /// error-ness is a property of the variant ([`DraftFeedback::is_error`]).
+    pub feedback: Option<DraftFeedback>,
     pub pending: Option<Pending>,
     /// Edit revision for the cached-panel keys (issues #117/#118): the
     /// Devices and Inspector panels render draft-derived content, but
@@ -83,8 +87,7 @@ impl PartialEq for Draft {
         self.audio == other.audio
             && self.profile == other.profile
             && self.original == other.original
-            && self.error == other.error
-            && self.message == other.message
+            && self.feedback == other.feedback
             && self.pending.is_some() == other.pending.is_some()
     }
 }
@@ -94,15 +97,15 @@ pub(crate) struct Pending {
     // NOTE: deliberately not `PartialEq`; the draft comparison below treats
     // any pending save as equal to any other so the panel key only rebuilds
     // on value changes (the pending stage renders through the shell's save
-    // notifications via the `message`/`error` fields instead).
+    // notifications via the `feedback` field instead).
     pub request: RequestId,
     pub stage: Stage,
     pub restart: bool,
-    pub submitted: Submission,
+    pub(super) submitted: Submission,
 }
 
 #[derive(Clone)]
-pub(crate) struct Submission {
+pub(super) struct Submission {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
 }
@@ -114,21 +117,215 @@ pub(crate) enum Stage {
     Restart,
 }
 
+/// The settings draft's status payload (design 21 §4): [`Draft`] stores what
+/// happened — typed and locale-free — and the paint sites translate it
+/// through [`feedback_text`] with the current locale, so a language switch
+/// relabels a stored status on the next repaint instead of freezing it.
+/// Closed sets (`UiFailure`, [`AudioConfigError`]) are stored whole; the
+/// device ids in [`Domain`] stay raw data; free-form service prose rides as
+/// diagnostic data inside typed variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DraftFeedback {
+    /// The settings were committed; they take effect at the next start.
+    Saved,
+    /// The save request is in flight.
+    SavingRequested,
+    /// The latency-policy request is in flight.
+    SavingLatencyPolicy,
+    /// Audio is restarting; the active session is being waited on.
+    RestartingAudio,
+    /// Audio restarted with the saved settings.
+    Restarted,
+    /// The user configuration directory is unavailable; the draft is kept.
+    PreferencesDirUnavailable,
+    /// The service accepted the request but kept its previous settings and
+    /// reported no diagnostic.
+    Rejected { what: Rejection },
+    /// The service reported a typed control-plane failure while the save was
+    /// pending (captured from `UiState.dispatch_error`); translated at paint
+    /// through `crate::ui::presentation::failure_text`.
+    Failure {
+        failure: crate::ui::state::UiFailure,
+    },
+    /// The service reported free-form diagnostic prose (`snapshot.error` /
+    /// `graph.last_error`); kept as data and rendered untranslated like the
+    /// other service diagnostics.
+    Diagnostic { cause: String },
+    /// The settings-save dispatch was declined outright; the failure is the
+    /// typed service refusal and the wrapper sentence is chosen at paint.
+    SaveDispatchFailed {
+        failure: crate::ui::state::UiFailure,
+    },
+    /// A follow-up dispatch (latency policy or restart) was declined
+    /// outright; the failure is the typed service refusal and the wrapper
+    /// sentence is chosen at paint.
+    ApplyDispatchFailed {
+        failure: crate::ui::state::UiFailure,
+    },
+    /// A value changed elsewhere while editing; `domain` names the
+    /// conflicting field and its label composes at paint.
+    DomainChanged { domain: Domain },
+    /// The submitted settings failed validation; the closed
+    /// [`AudioConfigError`] set is stored whole and translated at paint.
+    ValidateInvalid {
+        error: crate::service::AudioConfigError,
+    },
+    /// The background preferences write failed; `cause` is the persistence
+    /// prose (diagnostic data).
+    PreferencesSaveFailed { cause: String },
+}
+
+impl DraftFeedback {
+    /// Whether this status is a failure: danger-colored in the footer and
+    /// draft-keeping for `dirty` (Save/Discard stay enabled), exactly where
+    /// the old `error`/`message` field split decided it.
+    pub(crate) fn is_error(&self) -> bool {
+        !matches!(
+            self,
+            Self::Saved
+                | Self::SavingRequested
+                | Self::SavingLatencyPolicy
+                | Self::RestartingAudio
+                | Self::Restarted
+        )
+    }
+}
+
+/// Which request the service ignored without a diagnostic, or which restart
+/// outcome failed ([`Rejection::NoRestart`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rejection {
+    AudioSettings,
+    LatencyPolicy,
+    NoRestart,
+}
+
+/// The saved domain a conflicting edit touches; free of rendered labels so
+/// the footer composes its own locale's wording at paint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Domain {
+    Backend,
+    Processing,
+    LatencyPolicy,
+    InputDefaults,
+    OutputDefaults,
+    /// A device id as raw data, never a pre-rendered label.
+    InputOverride(String),
+    OutputOverride(String),
+}
+
+/// Paint-time translation of the stored status: one literal `t!` sentence
+/// per case, payloads interpolated as data, reading the process locale like
+/// every other `t!` paint site.
+pub(crate) fn feedback_text(feedback: &DraftFeedback) -> String {
+    feedback_text_in(feedback, &rust_i18n::locale())
+}
+
+/// [`feedback_text`] under an explicit locale — the locale-flip test's seam,
+/// so parallel tests never touch the process-global locale.
+pub(super) fn feedback_text_in(feedback: &DraftFeedback, locale: &str) -> String {
+    match feedback {
+        DraftFeedback::Saved => {
+            t!("Saved. Audio settings apply on the next start.", locale = locale).to_string()
+        }
+        DraftFeedback::SavingRequested => {
+            t!("Saving requested settings...", locale = locale).to_string()
+        }
+        DraftFeedback::SavingLatencyPolicy => {
+            t!("Saving latency policy...", locale = locale).to_string()
+        }
+        DraftFeedback::RestartingAudio => {
+            t!("Restarting audio; waiting for the active session...", locale = locale).to_string()
+        }
+        DraftFeedback::Restarted => {
+            t!("Audio restarted with the saved settings.", locale = locale).to_string()
+        }
+        DraftFeedback::PreferencesDirUnavailable => t!(
+            "User configuration directory is unavailable. Your draft is retained.",
+            locale = locale
+        )
+        .to_string(),
+        DraftFeedback::Rejected { what } => match what {
+            Rejection::AudioSettings => t!("Audio settings were rejected.", locale = locale),
+            Rejection::LatencyPolicy => t!("Latency policy was rejected.", locale = locale),
+            Rejection::NoRestart => t!("Audio did not restart. Your draft is retained.", locale = locale),
+        }
+        .to_string(),
+        DraftFeedback::Failure { failure } => {
+            crate::ui::presentation::failure_text_in(failure, locale)
+        }
+        DraftFeedback::Diagnostic { cause } => cause.clone(),
+        DraftFeedback::SaveDispatchFailed { failure } => t!(
+            "Could not save audio settings: %{error}",
+            locale = locale,
+            error = crate::ui::presentation::failure_text_in(failure, locale)
+        )
+        .to_string(),
+        DraftFeedback::ApplyDispatchFailed { failure } => t!(
+            "Could not apply audio settings: %{error}",
+            locale = locale,
+            error = crate::ui::presentation::failure_text_in(failure, locale)
+        )
+        .to_string(),
+        DraftFeedback::DomainChanged { domain } => t!(
+            "%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.",
+            locale = locale,
+            label = domain_label(domain, locale)
+        )
+        .to_string(),
+        DraftFeedback::ValidateInvalid { error } => t!(error.to_string(), locale = locale).to_string(),
+        DraftFeedback::PreferencesSaveFailed { cause } => t!(
+            "Could not save preferences: %{error}",
+            locale = locale,
+            error = cause
+        )
+        .to_string(),
+    }
+}
+
+/// The conflicting domain's display label, translated at paint; the override
+/// cases compose the shared "%{label} override for %{id}" shape with the
+/// device id as data.
+fn domain_label(domain: &Domain, locale: &str) -> String {
+    match domain {
+        Domain::Backend => t!("Backend", locale = locale).to_string(),
+        Domain::Processing => t!("Processing", locale = locale).to_string(),
+        Domain::LatencyPolicy => t!("Device buffer policy", locale = locale).to_string(),
+        Domain::InputDefaults => t!("Input defaults", locale = locale).to_string(),
+        Domain::OutputDefaults => t!("Output defaults", locale = locale).to_string(),
+        Domain::InputOverride(id) => t!(
+            "%{label} override for %{id}",
+            locale = locale,
+            label = t!("Input", locale = locale),
+            id = id
+        )
+        .to_string(),
+        Domain::OutputOverride(id) => t!(
+            "%{label} override for %{id}",
+            locale = locale,
+            label = t!("Output", locale = locale),
+            id = id
+        )
+        .to_string(),
+    }
+}
+
 impl Draft {
     pub fn new(audio: AudioSettings, profile: AudioLatencyProfile) -> Self {
         Self {
             original: (audio.clone(), profile),
             audio,
             profile,
-            error: None,
-            message: None,
+            feedback: None,
             pending: None,
             revision: 0,
         }
     }
 
     pub fn dirty(&self) -> bool {
-        self.error.is_some() || self.audio != self.original.0 || self.profile != self.original.1
+        self.feedback.as_ref().is_some_and(DraftFeedback::is_error)
+            || self.audio != self.original.0
+            || self.profile != self.original.1
     }
 
     /// Marks the draft user-edited. Every interactive write (segmented
@@ -137,30 +334,28 @@ impl Draft {
     /// revision bump rides the one call they already share.
     pub fn changed(&mut self) {
         self.revision += 1;
-        self.error = None;
-        self.message = None;
+        self.feedback = None;
     }
 
     pub fn committed(&mut self) {
         self.revision += 1;
         self.original = (self.audio.clone(), self.profile);
         self.pending = None;
-        self.error = None;
-        self.message = Some(t!("Saved. Audio settings apply on the next start.").into());
+        self.feedback = Some(DraftFeedback::Saved);
     }
 
     pub(super) fn submission(
         &self,
         current: &AudioSettings,
         profile: AudioLatencyProfile,
-    ) -> Result<Submission, String> {
+    ) -> Result<Submission, DraftFeedback> {
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,
             profile: merge_value(
                 self.original.1,
                 self.profile,
                 profile,
-                &t!("Device buffer policy"),
+                Domain::LatencyPolicy,
             )?,
         })
     }
@@ -170,17 +365,20 @@ pub(super) fn expected_active_profile(profile: AudioLatencyProfile) -> Option<Au
     Some(profile)
 }
 
-fn merge_value<T: PartialEq>(original: T, edited: T, current: T, label: &str) -> Result<T, String> {
+/// Merge one domain. The error carries the conflicting domain as data; the
+/// footer composes its label at paint ([`domain_label`]).
+fn merge_value<T: PartialEq>(
+    original: T,
+    edited: T,
+    current: T,
+    domain: Domain,
+) -> Result<T, DraftFeedback> {
     if edited == original {
         Ok(current)
     } else if current == original || current == edited {
         Ok(edited)
     } else {
-        Err(t!(
-            "%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.",
-            label = label
-        )
-        .to_string())
+        Err(DraftFeedback::DomainChanged { domain })
     }
 }
 
@@ -190,46 +388,46 @@ fn rebase_audio(
     original: &AudioSettings,
     edited: &AudioSettings,
     current: &AudioSettings,
-) -> Result<AudioSettings, String> {
+) -> Result<AudioSettings, DraftFeedback> {
     let mut merged = current.clone();
     merged.backend = merge_value(
         original.backend,
         edited.backend,
         current.backend,
-        &t!("Backend"),
+        Domain::Backend,
     )?;
     merged.processing = merge_value(
         original.processing,
         edited.processing,
         current.processing,
-        &t!("Processing"),
+        Domain::Processing,
     )?;
     merged.input = merge_value(
         original.input,
         edited.input,
         current.input,
-        &t!("Input defaults"),
+        Domain::InputDefaults,
     )?;
     merged.output = merge_value(
         original.output,
         edited.output,
         current.output,
-        &t!("Output defaults"),
+        Domain::OutputDefaults,
     )?;
-    for (original, edited, current, target, label) in [
+    for (original, edited, current, target, direction) in [
         (
             &original.input_overrides,
             &edited.input_overrides,
             &current.input_overrides,
             &mut merged.input_overrides,
-            "Input",
+            Direction::Input,
         ),
         (
             &original.output_overrides,
             &edited.output_overrides,
             &current.output_overrides,
             &mut merged.output_overrides,
-            "Output",
+            Direction::Output,
         ),
     ] {
         for id in original
@@ -237,12 +435,11 @@ fn rebase_audio(
             .chain(edited.keys())
             .collect::<std::collections::BTreeSet<_>>()
         {
-            let value = merge_value(
-                original.get(id),
-                edited.get(id),
-                current.get(id),
-                &t!("%{label} override for %{id}", label = t!(label), id = id),
-            )?;
+            let domain = match direction {
+                Direction::Input => Domain::InputOverride(id.clone()),
+                Direction::Output => Domain::OutputOverride(id.clone()),
+            };
+            let value = merge_value(original.get(id), edited.get(id), current.get(id), domain)?;
             if let Some(value) = value {
                 target.insert(id.clone(), *value);
             } else {

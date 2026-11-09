@@ -556,8 +556,7 @@ fn node_observation(
         .contains_key(&node.id());
     let eligible = running && managed;
     let status = if eligible {
-        let meter_status = shell.state.read(cx).node_meters.status(node.id());
-        t!(meter_status.label()).to_string()
+        shell.state.read(cx).node_meters.status(node.id()).text()
     } else if managed {
         t!("Not running").to_string()
     } else {
@@ -1272,7 +1271,7 @@ impl StudioShell {
     }
 
     /// Discards the inline name edit without touching the stored label.
-    pub(crate) fn cancel_node_rename(&mut self, cx: &mut Context<Self>) {
+    fn cancel_node_rename(&mut self, cx: &mut Context<Self>) {
         if self.inspector.node_name_editing.take().is_some() {
             cx.notify();
         }

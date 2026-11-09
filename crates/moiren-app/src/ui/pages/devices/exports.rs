@@ -60,7 +60,7 @@ fn name_input(
     input
 }
 
-pub(crate) enum IntentEdit {
+enum IntentEdit {
     Rename(String),
     Channels(usize),
     Enabled(bool),
@@ -160,7 +160,7 @@ impl StudioShell {
         }
     }
 
-    pub(crate) fn submit_export_edit(
+    fn submit_export_edit(
         &mut self,
         id: VirtualEndpointId,
         edit: IntentEdit,
@@ -170,7 +170,7 @@ impl StudioShell {
         self.dispatch_exports(result, cx);
     }
 
-    pub(crate) fn submit_export_binding(
+    fn submit_export_binding(
         &mut self,
         id: VirtualEndpointId,
         node: Option<NodeId>,
@@ -187,7 +187,7 @@ impl StudioShell {
         cx.notify();
     }
 
-    pub(crate) fn dispatch_exports(
+    fn dispatch_exports(
         &mut self,
         exports: Result<Vec<ExportIntent>, String>,
         cx: &mut Context<Self>,
@@ -377,8 +377,8 @@ fn export_row(
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
         .child(label(format!(
-            "{:?} / {} / {id}",
-            status.intent.direction,
+            "{} / {} / {id}",
+            t!(status.intent.direction.title()),
             if status.intent.channels == 1 {
                 t!("Mono")
             } else {

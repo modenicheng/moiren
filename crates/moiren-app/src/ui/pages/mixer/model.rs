@@ -20,7 +20,7 @@ pub(crate) struct MixerPresentation {
     /// wheel and thumb drags for the overlay bar; retained like the strip
     /// hosts. The input side has no list — one row per strip — so it keeps
     /// no scroll handle.
-    pub row_scrolls: BTreeMap<NodeId, RowScrolls>,
+    pub(super) row_scrolls: BTreeMap<NodeId, RowScrolls>,
     /// The inspector's channel-strip fader row gets its own slider slot per
     /// node: the kit's `SliderState` stores the pointer-mapping bounds of
     /// whichever view registered last, so the strip's vertical fader and the
@@ -81,7 +81,7 @@ pub(crate) struct InputPopover {
 /// The send list's scroll container, keyed like the strip's other per-node
 /// state.
 #[derive(Default)]
-pub(crate) struct RowScrolls {
+pub(super) struct RowScrolls {
     pub send: ScrollHandle,
 }
 
@@ -194,7 +194,7 @@ impl MixerPresentation {
     pub(crate) const STRIP_WIDTH: f32 = 160.;
     /// The dock pane's default width; the divider drag resizes it live down
     /// to one strip and up to [`Self::DOCK_MAX_FRACTION`] of the strip row.
-    pub(crate) const DOCK_WIDTH: f32 = 360.;
+    const DOCK_WIDTH: f32 = 360.;
     /// The dock pane may never exceed this fraction of the strip row. The
     /// pane's `max_w` enforces it in layout; the divider drag clamps to the
     /// same fraction so the drawn border tracks the cursor instead of
@@ -248,7 +248,7 @@ const ENTRY_MAX_DB: f64 = 24.;
 /// the text must be a finite number inside the entry domain. Out-of-range or
 /// garbage input is `None` — never clamped — so an invalid entry changes
 /// nothing.
-pub(crate) fn parse_gain_db(text: &str) -> Option<f64> {
+fn parse_gain_db(text: &str) -> Option<f64> {
     match text.trim().to_lowercase().as_str() {
         "-inf" | "−inf" | "-infinity" | "−infinity" | "-∞" | "−∞" => return Some(0.),
         _ => {}
@@ -260,13 +260,13 @@ pub(crate) fn parse_gain_db(text: &str) -> Option<f64> {
 /// Parses a balance label entry (`C`, `L 50`, `R25`, `-25`, `+100`) into the
 /// −1..=1 mixer balance. Numbers outside 0..=100 after the optional
 /// left/right sign are rejected, never clamped (e.g. "150" is `None`).
-pub(crate) fn parse_balance(text: &str) -> Option<f64> {
+fn parse_balance(text: &str) -> Option<f64> {
     parse_centered(text, true)
 }
 
 /// Parses a pan-node position entry: a bare finite number in −1..=1, or the
 /// same `C`/`L`/`R` percent grammar as [`parse_balance`].
-pub(crate) fn parse_pan(text: &str) -> Option<f64> {
+fn parse_pan(text: &str) -> Option<f64> {
     // The bare-number path also accepts the Unicode minus, so a typed raw
     // position like "−0.5" reads as a position and never as the percent
     // grammar's left-0.5%.

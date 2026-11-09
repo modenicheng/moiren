@@ -607,8 +607,9 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         assert_eq!(state.snapshot.audio_settings.processing.block_frames, 4096);
         assert!(!shell.settings.editor.global.dirty());
         assert_eq!(
-            shell.project_io.message.as_deref(),
-            Some("Preferences saved")
+            shell.project_io.message,
+            Some(crate::ui::shell::project::ProjectMessage::PreferencesSaved),
+            "the completed preferences write reports its typed outcome"
         );
     });
     assert_eq!(
@@ -629,7 +630,15 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
     view.update(cx, |shell, _| {
         assert_eq!(shell.chrome.density, super::Density::Compact);
         assert!(!shell.settings.editor.global.dirty());
-        assert!(shell.settings.editor.global.error.is_none());
+        assert!(
+            shell
+                .settings
+                .editor
+                .global
+                .feedback
+                .as_ref()
+                .is_none_or(|feedback| !feedback.is_error())
+        );
     });
     assert_eq!(
         crate::project::load_preferences_at(&path).unwrap().density,
@@ -923,6 +932,7 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use crate::service::{AppRequest, AudioLatencyProfile};
+    use crate::ui::pages::settings::DraftFeedback;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -1044,16 +1054,11 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
             shell.settings.editor.global.audio.processing.sample_rate,
             96_000
         );
-        assert!(
-            shell
-                .settings
-                .editor
-                .global
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("Device format rejected")
-        );
+        assert!(matches!(
+            shell.settings.editor.global.feedback,
+            Some(DraftFeedback::Diagnostic { ref cause })
+                if cause.contains("Device format rejected")
+        ));
         assert_eq!(
             shell
                 .state

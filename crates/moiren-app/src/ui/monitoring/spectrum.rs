@@ -11,10 +11,9 @@ use std::time::Instant;
 use moiren_core::graph::NodeId;
 use moiren_engine::spectrum::SpectrumWindow;
 use moiren_signal::{PublisherStatus, Subscriber, SubscriptionOptions, Topic, TopicLifecycle};
-use rust_i18n::t;
 
 use super::table::{SubscriptionTable, TopicSubscription};
-use super::{MeterStatus, REST_DB, STALE_AFTER};
+use super::{MeterFault, MeterStatus, REST_DB, STALE_AFTER};
 use crate::service::{AppHandle, AppSnapshot, SpectrumTopic};
 
 /// The analyzer's projection knobs, gathered as the one seam future
@@ -356,14 +355,8 @@ impl SpectrumSubscription {
             },
         ) {
             Ok(ticket) => this.ticket = Some(ticket),
-            Err(error) => {
-                this.status = MeterStatus::Error(
-                    t!(
-                        "Spectrum subscription: %{error}",
-                        error = format!("{error:?}")
-                    )
-                    .to_string(),
-                );
+            Err(_) => {
+                this.status = MeterStatus::Error(MeterFault::SubscribeFailed);
             }
         }
         this
@@ -421,10 +414,7 @@ impl SpectrumSubscription {
                     raw_changed |= self.targets.is_some();
                     self.targets = None;
                     self.points = None;
-                    self.status = MeterStatus::Error(
-                        t!("Spectrum subscription: %{error}", error = error.to_string())
-                            .to_string(),
-                    );
+                    self.status = MeterStatus::Error(MeterFault::TakeFailed(error.to_string()));
                     return raw_changed;
                 }
             }

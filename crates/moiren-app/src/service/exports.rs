@@ -27,6 +27,16 @@ impl ExportDirection {
             Self::Microphone => NodeKind::Sink,
         }
     }
+
+    /// Display-name registry entry translated at paint (`t!(direction.title())`),
+    /// mirroring `AudioLatencyProfile::title`. Debug stays for logs and plumbing;
+    /// visible text must come from these keys.
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Playback => "Playback",
+            Self::Microphone => "Microphone",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +56,7 @@ impl ExportIntent {
     }
 }
 
-pub(crate) fn validate_export_name_channels(name: &str, channels: usize) -> Result<(), String> {
+fn validate_export_name_channels(name: &str, channels: usize) -> Result<(), String> {
     if name.trim().is_empty()
         || name.encode_utf16().count() > 63
         || name.chars().any(|c| c < '\u{20}')

@@ -113,7 +113,7 @@ pub(crate) fn paint_channel_meter(
     }
 }
 
-pub(crate) fn meter_height(value: f32) -> f32 {
+fn meter_height(value: f32) -> f32 {
     if value <= 0. {
         return 0.;
     }

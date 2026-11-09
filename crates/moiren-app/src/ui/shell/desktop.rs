@@ -45,7 +45,7 @@ struct PresentationSnapshot {
     selected_device: Option<String>,
     project_path: Option<std::path::PathBuf>,
     project_name: String,
-    project_message: Option<String>,
+    project_message: Option<project::ProjectMessage>,
     pending_project: Option<(
         crate::service::RequestId,
         crate::project::ProjectDocument,
