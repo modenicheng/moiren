@@ -83,9 +83,6 @@ pub const CANVAS_GRID: f32 = 24.;
 pub const STATUSBAR_HEIGHT: f32 = 28.;
 /// A workspace page's own toolbar strip (the Devices page's tab row).
 pub const PAGE_TOOLBAR_HEIGHT: f32 = 48.;
-/// A collapsible section's header row, which is also the section's
-/// collapsed height.
-pub const SECTION_HEADER_HEIGHT: f32 = 28.;
 /// Inset of the graph HUD overlays (editing toolbar, overview) from the
 /// canvas edges they float against.
 pub const HUD_INSET: f32 = 12.;

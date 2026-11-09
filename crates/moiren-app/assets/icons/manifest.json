@@ -122,6 +122,33 @@
       "url": "https://api.iconify.design/tabler/minus.svg",
       "license": "MIT",
       "sha256": "bc58412a29619dbe4ac736b2eae0e7ddc3de4f54a2fb65ae9fcf36e688702e2f"
+    },
+    {
+      "file": "arrow-left.svg",
+      "icon": "tabler:arrow-left",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/arrow-left.svg",
+      "license": "MIT",
+      "sha256": "6159adb2ea6034fec7ba739479932a82be60c6df0b063c346eb17138efd6af3b"
+    },
+    {
+      "file": "arrow-right.svg",
+      "icon": "tabler:arrow-right",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/arrow-right.svg",
+      "license": "MIT",
+      "sha256": "359dc4700dd51ca8eb477b3cb5e326cba1b1c2d31aaf060d152f454ccae4cf36"
+    },
+    {
+      "file": "check.svg",
+      "icon": "tabler:check",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/check.svg",
+      "license": "MIT",
+      "sha256": "9c2121aef5a60a02a3bf4a6cd3c8a42d2dbc453acdad84288108c2228de9e743"
+    },
+    {
+      "file": "fader-scale.svg",
+      "icon": "custom:fader-scale",
+      "license": "MIT",
+      "note": "Drawn by hand to the Tabler 24x24 / 2px round-stroke spec for the mixer I/O redesign (docs/experiments/mixer-io-prototype); no upstream source."
     }
   ]
 }

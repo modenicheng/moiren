@@ -16,7 +16,7 @@ use crate::ui::widgets::fader::{FaderScale, fader, ruler};
 // coalesced sync/commit entry points are visible across the window.
 use model::StripDrag;
 pub(crate) use model::{
-    EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text,
+    EditableValueFamily, InputPopover, MixerPresentation, SliderEdit, SliderSlot, balance_text,
     commit_active_editor, commit_closure, fader_rows, gain_db_text, mixer_edit,
     reset_clip_on_click, start_value_edit, sync_faders, sync_slider_range,
 };

@@ -452,8 +452,7 @@ fn strip_column(
                 .flex_1()
                 .min_w_0()
                 .pt(px(theme::SPACE_1))
-                .child(routing::inputs(shell, entry, cx))
-                .child(routing::sends(shell, id, cx))
+                .child(routing::io(shell, entry, cx))
                 .child(cached_body),
         )
         .child(
@@ -487,7 +486,7 @@ impl Render for DockResize {
 
 /// The Mixer page: a light container (rebuilt per shell render) splicing the
 /// per-strip cached panels, with the meter hot layer as a sibling above them.
-pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShell>) -> AnyElement {
+pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShell>) -> AnyElement {
     let graph = &shell.state.read(cx).snapshot.graph;
     // The strip rows' scrollbar overlays are siblings of their scroll
     // containers, never children (see `scroll_region`); the containers are
@@ -621,6 +620,11 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                 .child(dock_pane),
         )
         .child(shell.mixer.frame.clone())
+        // The input dropdown hangs over the whole page (an occluding page
+        // under it dismisses on outside press), painted above the hot layer.
+        .when(shell.mixer.presentation.input_popover.is_some(), |page| {
+            page.child(routing::input_popover_overlay(shell, window, cx))
+        })
         .gpui_test_observe()
         .into_any_element()
 }

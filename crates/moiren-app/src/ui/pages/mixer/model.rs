@@ -15,10 +15,11 @@ pub(crate) struct MixerPresentation {
     /// publish during a fader drag rebuilds only the strip whose content
     /// changed. Created and retained by [`StudioShell::sync_mixer_controls`].
     pub strips: BTreeMap<NodeId, Entity<super::page::StripPanelHost>>,
-    /// The strip's routing rows' scroll containers. The INPUTS/SENDS sections
-    /// render live (outside the cached body), so these handles track their
-    /// wheel and thumb drags for the overlay bars; retained like the strip
-    /// hosts.
+    /// The strip's routing send list's scroll container. The I/O block
+    /// renders live (outside the cached body), so this handle tracks its
+    /// wheel and thumb drags for the overlay bar; retained like the strip
+    /// hosts. The input side has no list — one row per strip — so it keeps
+    /// no scroll handle.
     pub row_scrolls: BTreeMap<NodeId, RowScrolls>,
     /// The inspector's channel-strip fader row gets its own slider slot per
     /// node: the kit's `SliderState` stores the pointer-mapping bounds of
@@ -47,8 +48,21 @@ pub(crate) struct MixerPresentation {
     /// Pan-node position editors, likewise separate from the strip fader.
     pub node_pan_inputs: BTreeMap<NodeId, Entity<component::input::InputState>>,
     pub editing_node_pan: Option<NodeId>,
-    pub inputs_collapsed: bool,
     pub sends_collapsed: bool,
+    /// The one open input dropdown (checkbox multi-select) and the input row
+    /// rect it hangs from, in window pixels. `None` = every strip's dropdown
+    /// is closed; opening one strip's closes the others. Dismissed by the
+    /// occluding page (outside press / Escape), like the binding menu.
+    pub input_popover: Option<InputPopover>,
+    /// The dropdown list's scroll container (one dropdown open at a time).
+    pub input_popover_scroll: ScrollHandle,
+    /// The routing row the pointer is over, keyed by the strip and its edge
+    /// (the same edge owns a send row on its source strip and an input row
+    /// on its target strip, and they reveal independently). Drives the
+    /// hover-revealed affordances that CSS pseudo-hover cannot reach across
+    /// elements: a send row's dB readout and a single-input row's remove
+    /// button both fade in on their row's hover.
+    pub hovered_route: Option<(NodeId, EdgeId)>,
     /// The dock pane's current width, dragged on the divider from
     /// [`Self::DOCK_WIDTH`]. Session presentation state, like the collapse
     /// flags above: it is not persisted.
@@ -56,11 +70,18 @@ pub(crate) struct MixerPresentation {
     synced_revision: Option<u64>,
 }
 
-/// One strip's two routing-row scroll containers, keyed like the strip's
-/// other per-node state.
+/// The mixer strip's open input dropdown: which strip it belongs to and the
+/// strip's input-row rect it hangs from, in window pixels.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct InputPopover {
+    pub node: NodeId,
+    pub anchor: Bounds<Pixels>,
+}
+
+/// The send list's scroll container, keyed like the strip's other per-node
+/// state.
 #[derive(Default)]
 pub(crate) struct RowScrolls {
-    pub input: ScrollHandle,
     pub send: ScrollHandle,
 }
 
@@ -95,8 +116,10 @@ impl MixerPresentation {
             editing_node_gain: None,
             node_pan_inputs: BTreeMap::new(),
             editing_node_pan: None,
-            inputs_collapsed: false,
             sends_collapsed: false,
+            input_popover: None,
+            input_popover_scroll: ScrollHandle::default(),
+            hovered_route: None,
             dock_width: 0.,
             synced_revision: None,
         }
@@ -889,6 +912,25 @@ impl StudioShell {
             .is_some_and(|id| graph.graph.get_edge(id).is_err())
         {
             self.mixer.presentation.editing_send = None;
+        }
+        // The input dropdown never outlives its strip (deleted or undone
+        // away), and a hover whose edge vanished clears like the editors
+        // above — the next pointer move re-arms it.
+        if self
+            .mixer
+            .presentation
+            .input_popover
+            .is_some_and(|popover| graph.node(popover.node).is_none())
+        {
+            self.mixer.presentation.input_popover = None;
+        }
+        if self
+            .mixer
+            .presentation
+            .hovered_route
+            .is_some_and(|(_, id)| graph.graph.get_edge(id).is_err())
+        {
+            self.mixer.presentation.hovered_route = None;
         }
         // The click-to-type editor families drop their vanished members like
         // the send inputs; balance only exists for stereo nodes and the Gain
