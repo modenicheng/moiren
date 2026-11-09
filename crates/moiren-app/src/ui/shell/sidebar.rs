@@ -34,11 +34,12 @@ pub(crate) struct InspectorKey {
     /// revision (`Draft::revision`) keys them here — see `DevicesKey`'s
     /// field for why the revision stands in for the draft value.
     device_revision: u64,
-    // TODO(#118 follow-up): the node-observation readouts (`node_observation`
-    // in `graph/node_inspector.rs`) render from `node_meters`, which the
-    // metering path updates without notifying the shell — keying them needs
-    // a notify-path change, not just another key field, so they stay unkeyed
-    // here for now.
+    /// The sampled runtime-observation readout (issue #118): the metering
+    /// pump stores this on the inspector state and notifies when it
+    /// changes — a status transition immediately, the Peak/RMS texts on
+    /// the sample cadence — so the cached panel refreshes without
+    /// rebuilding at the meter frame rate.
+    observation: Option<graph::ObservationSnapshot>,
     node_name_editing: Option<moiren_core::graph::NodeId>,
     editing_value: Option<moiren_core::graph::NodeId>,
     editing_balance: Option<moiren_core::graph::NodeId>,
@@ -71,6 +72,7 @@ impl CachedPanel for InspectorPanel {
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
             device_revision: shell.settings.editor.device.revision,
+            observation: shell.inspector.observation.clone(),
             node_name_editing: shell.inspector.node_name_editing,
             editing_value: shell.mixer.presentation.editing_value,
             editing_balance: shell.mixer.presentation.editing_balance,
@@ -435,6 +437,16 @@ pub(crate) struct InspectorState {
     pub(crate) meter_layer: Entity<InspectorMeterLayer>,
     pub(crate) scroll: ScrollHandle,
     pub(crate) panel: Entity<InspectorPanelHost>,
+    /// The selected node's runtime-observation readout as last sampled by
+    /// the metering pump (issue #118): rides `InspectorKey` so the cached
+    /// panel refreshes when the metering path notifies — immediately on a
+    /// status transition, on the sampling cadence for the Peak/RMS texts.
+    pub(crate) observation: Option<graph::ObservationSnapshot>,
+    /// Which node the texts were last sampled for, and when: a different
+    /// node (selection change) samples immediately instead of waiting out
+    /// the cadence. `None` alongside a `None` observation so the next
+    /// demand samples immediately.
+    pub(crate) observation_sampled: Option<(moiren_core::graph::NodeId, std::time::Instant)>,
 }
 
 /// The node library's shell-owned state (design 20 §4): both hosts' scroll

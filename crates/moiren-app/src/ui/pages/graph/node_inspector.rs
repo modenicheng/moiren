@@ -504,6 +504,44 @@ fn binding_choice_button(
         })
 }
 
+/// The inspector's runtime-observation readout, sampled for the cache key
+/// (issue #118). The status transitions are discrete and re-key immediately;
+/// the Peak/RMS texts move with the ballistics at the meter frame rate, so
+/// they re-key on the sampling cadence instead — keying the raw display
+/// levels would rebuild the whole cached inspector panel per display frame.
+/// The snapshot stores the formatted texts because those are exactly what a
+/// viewer can see: two readings that spell the same text never wake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObservationSnapshot {
+    pub(crate) status: crate::ui::monitoring::MeterStatus,
+    pub(crate) texts: Vec<String>,
+}
+
+pub(crate) fn observation_snapshot(
+    meters: &crate::ui::monitoring::NodeMeters,
+    node: moiren_core::graph::NodeId,
+) -> ObservationSnapshot {
+    let texts = meters
+        .channel_levels(node)
+        .map(|levels| {
+            levels
+                .iter()
+                .flat_map(|level| [dbfs_text(level.marker), dbfs_text(level.rms)])
+                .collect()
+        })
+        .unwrap_or_default();
+    ObservationSnapshot {
+        status: meters.status(node),
+        texts,
+    }
+}
+
+/// How often the observation texts are re-sampled into the inspector key.
+/// Text readouts need no more than a few refreshes a second, and every
+/// re-key rebuilds the cached inspector panel.
+pub(crate) const OBSERVATION_SAMPLE_CADENCE: std::time::Duration =
+    std::time::Duration::from_millis(200);
+
 fn node_observation(
     shell: &StudioShell,
     node: &moiren_core::graph::Node,
@@ -548,7 +586,11 @@ fn node_observation(
         .then(|| shell.state.read(cx).node_meters.channel_levels(node.id()))
         .flatten()
     {
-        let mut readings = div().id("node-observation-levels").flex().flex_col();
+        let mut readings = div()
+            .id("node-observation-levels")
+            .flex()
+            .flex_col()
+            .gpui_test_observe();
         for (channel, level) in levels.iter().enumerate() {
             readings = readings
                 .child(detail(

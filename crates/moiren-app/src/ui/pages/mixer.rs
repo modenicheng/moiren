@@ -1,3 +1,4 @@
+use super::graph::{OBSERVATION_SAMPLE_CADENCE, observation_snapshot};
 use super::*;
 use crate::service::GraphNodeState;
 use crate::ui::presentation::db_text;
@@ -50,7 +51,12 @@ impl StudioShell {
         // Only the graph card paints a spectrum body: a Mixer strip or an
         // inspector selection must not keep an analyzer's FFT demanded.
         let spectra_visible = visible && self.presentation.page() == Page::Graph;
-        self.state.update(cx, |state, _| {
+        // The observation readout re-keys on status transitions immediately:
+        // capture the pre-poll status so a transition inside the update
+        // below can be told apart from an unchanged one (issue #118).
+        let observation_status_before =
+            inspector_selected.map(|node| self.state.read(cx).node_meters.status(node));
+        let changed = self.state.update(cx, |state, _| {
             state.node_meters.set_preferences(preferences);
             // Borrow the registered set straight through: the pump runs at
             // display and poll cadence, and cloning it here would allocate
@@ -78,7 +84,53 @@ impl StudioShell {
                 let spectra = state.node_spectra.update(&state.snapshot, []);
                 meters || spectra
             }
-        })
+        });
+        self.sample_inspector_observation(inspector_selected, observation_status_before, cx);
+        changed
+    }
+
+    /// Re-sample the inspector's runtime-observation readout (issue #118):
+    /// the metering path updates `node_meters` without notifying the shell,
+    /// so the cached inspector panel would freeze the texts it was built
+    /// with. A status transition re-keys immediately (discrete, rare); the
+    /// Peak/RMS texts re-key on [`OBSERVATION_SAMPLE_CADENCE`] because they
+    /// move at the meter frame rate and every re-key rebuilds the panel.
+    fn sample_inspector_observation(
+        &mut self,
+        node: Option<NodeId>,
+        status_before: Option<crate::ui::monitoring::MeterStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(node) = node else {
+            // The demand is gone (inspector closed, page switch, selection
+            // dropped, node deleted): drop the snapshot so the next demand
+            // samples immediately instead of inheriting another node's
+            // texts. No notify — nothing displays the snapshot, and the key
+            // fields that ended the demand already rebuilt the panel.
+            self.inspector.observation = None;
+            self.inspector.observation_sampled = None;
+            return;
+        };
+        let status_now = self.state.read(cx).node_meters.status(node);
+        let status_changed = status_before.is_some_and(|before| before != status_now);
+        let now = std::time::Instant::now();
+        // A first sample for this node (fresh selection) is due at once;
+        // otherwise the texts follow the cadence.
+        let due = match self.inspector.observation_sampled {
+            None => true,
+            Some((sampled_node, sampled_at)) => {
+                sampled_node != node || now.duration_since(sampled_at) >= OBSERVATION_SAMPLE_CADENCE
+            }
+        };
+        if !status_changed && !due {
+            return;
+        }
+        let snapshot = observation_snapshot(&self.state.read(cx).node_meters, node);
+        self.inspector.observation_sampled = Some((node, now));
+        if self.inspector.observation.as_ref() != Some(&snapshot) {
+            self.inspector.observation = Some(snapshot);
+            cx.notify();
+        }
     }
 }
 
