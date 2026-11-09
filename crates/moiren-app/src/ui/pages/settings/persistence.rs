@@ -24,8 +24,9 @@ impl StudioShell {
     pub(crate) fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
         let Some(path) = self.preferences.path.clone() else {
             if report {
-                self.project_io.message =
-                    Some(t!("User configuration directory is unavailable").into());
+                self.project_io.message = Some(project::ProjectMessage::Persisted(
+                    crate::project::PersistenceError::ConfigurationDirectoryUnavailable.into(),
+                ));
             }
             return;
         };
@@ -90,14 +91,10 @@ impl StudioShell {
                         draft.message = None;
                     }
                     if report {
-                        shell.project_io.message = Some(
-                            result
-                                .map(|_| t!("Preferences saved").into())
-                                .unwrap_or_else(|error| {
-                                    t!("Could not save preferences: %{error}", error = error)
-                                        .to_string()
-                                }),
-                        );
+                        shell.project_io.message = Some(match result {
+                            Ok(()) => project::ProjectMessage::PreferencesSaved,
+                            Err(cause) => project::ProjectMessage::PreferencesSaveFailed { cause },
+                        });
                         cx.notify();
                     }
                 }
@@ -105,7 +102,7 @@ impl StudioShell {
         })
         .detach();
         if report {
-            self.project_io.message = Some(t!("Preferences save queued").into());
+            self.project_io.message = Some(project::ProjectMessage::PreferencesSaveQueued);
         }
     }
 }
