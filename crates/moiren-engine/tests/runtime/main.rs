@@ -6,6 +6,9 @@ mod automation;
 mod common;
 mod graph;
 mod io;
+// Loads a native cdylib fixture; incompatible with Miri's process model.
+#[cfg(not(miri))]
+mod plugin;
 mod signals;
 mod support;
 mod swap;

@@ -74,6 +74,11 @@ pub struct PluginProcessor<S> {
     /// plugin always renders stage-to-stage with distinct buffers.
     input_stage: Vec<Vec<f32>>,
     output_stage: Vec<Vec<f32>>,
+    /// Per-call pointer tables handed to the plugin, one slot per channel.
+    /// Preallocated here so `render` rebuilds them by overwrite, never by
+    /// allocation; see the safety argument in `render`.
+    input_table: Vec<&'static [f32]>,
+    output_table: Vec<&'static mut [f32]>,
     /// Per parameter, the value last sent to the plugin; the diff drives
     /// the event list. Initialized to the reported defaults.
     last_pushed: Vec<f64>,
@@ -97,6 +102,15 @@ impl<S: ProcessingSample> PluginProcessor<S> {
         let channels = instance.descriptor().channels() as usize;
         let capacity = max_block_frames.max(1);
         let parameters = instance.parameters().to_vec();
+        let parameter_count = parameters.len();
+        // Tables start with empty (promoted, truly 'static) slices; every
+        // render overwrites all slots before the plugin reads them.
+        let mut input_table: Vec<&'static [f32]> = Vec::with_capacity(channels);
+        let mut output_table: Vec<&'static mut [f32]> = Vec::with_capacity(channels);
+        for _ in 0..channels {
+            input_table.push(&[]);
+            output_table.push(&mut []);
+        }
         Ok(Self {
             last_pushed: parameters
                 .iter()
@@ -107,7 +121,11 @@ impl<S: ProcessingSample> PluginProcessor<S> {
             channels,
             input_stage: vec![vec![0.0; capacity]; channels],
             output_stage: vec![vec![0.0; capacity]; channels],
-            events: Vec::new(),
+            input_table,
+            output_table,
+            // One event per parameter per block is the ceiling; the RT path
+            // clears and repopulates without ever growing past this.
+            events: Vec::with_capacity(parameter_count),
             _sample: std::marker::PhantomData,
         })
     }
@@ -162,19 +180,30 @@ impl<S: ProcessingSample> PluginProcessor<S> {
         if frames == 0 {
             return;
         }
-        let inputs: Vec<&[f32]> = self
-            .input_stage
-            .iter()
-            .map(|stage| &stage[..frames])
-            .collect();
-        let mut outputs: Vec<&mut [f32]> = self
-            .output_stage
+        // Rebuild the preallocated pointer tables by overwriting each slot,
+        // never by allocating. SAFETY: the tables' 'static is fictional —
+        // the slices point into the staging planes, whose buffers are
+        // allocated exactly once in `new` and never resized or moved, so
+        // the references stay valid for the processor's lifetime. Each call
+        // overwrites every slot before the plugin reads it, so no stale
+        // reference is ever used, and the plugin holds the output slices
+        // exclusively for exactly one call, during which nothing else
+        // touches the planes.
+        for (slot, stage) in self.input_table.iter_mut().zip(self.input_stage.iter()) {
+            let slice: &'static [f32] = unsafe { std::mem::transmute(&stage[..frames]) };
+            *slot = slice;
+        }
+        for (slot, stage) in self
+            .output_table
             .iter_mut()
-            .map(|stage| &mut stage[..frames])
-            .collect();
+            .zip(self.output_stage.iter_mut())
+        {
+            let slice: &'static mut [f32] = unsafe { std::mem::transmute(&mut stage[..frames]) };
+            *slot = slice;
+        }
         if self
             .instance
-            .process(&inputs, &mut outputs, &self.events)
+            .process(&self.input_table, &mut self.output_table, &self.events)
             .is_err()
         {
             for channel in &mut self.output_stage {
