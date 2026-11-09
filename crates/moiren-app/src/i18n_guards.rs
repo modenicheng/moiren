@@ -446,30 +446,6 @@ const DEBUG_TEXT_ALLOWLIST: &[DebugTextSite] = &[
         remove_when: "MeterStatus::Error stores key plus args for the spectrum subscription failure (design 21 §4)",
     },
     DebugTextSite {
-        file: "ui/shell/project.rs",
-        near: "",
-        pattern: "\"Could not open save dialog: %{error}\"",
-        remove_when: "project_io.message stores key plus args for the save-dialog failure (design 21 §4)",
-    },
-    DebugTextSite {
-        file: "ui/shell/project.rs",
-        near: "",
-        pattern: "\"Could not open file dialog: %{error}\"",
-        remove_when: "project_io.message stores key plus args for the file-dialog failure (design 21 §4)",
-    },
-    DebugTextSite {
-        file: "ui/shell/project.rs",
-        near: "AppRequest::LoadProject",
-        pattern: "reason: format!(\"{error:?}\")",
-        remove_when: "PersistenceError::Invalid carries a typed cause instead of a Debug reason (design 21 §4)",
-    },
-    DebugTextSite {
-        file: "ui/shell/project.rs",
-        near: "AppRequest::SetAudioSettings",
-        pattern: "reason: format!(\"{error:?}\")",
-        remove_when: "PersistenceError::Invalid carries a typed cause instead of a Debug reason (design 21 §4)",
-    },
-    DebugTextSite {
         file: "ui/pages/settings/transaction.rs",
         near: "",
         pattern: "\"Could not save audio settings: %{error}\"",

@@ -607,8 +607,9 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         assert_eq!(state.snapshot.audio_settings.processing.block_frames, 4096);
         assert!(!shell.settings.editor.global.dirty());
         assert_eq!(
-            shell.project_io.message.as_deref(),
-            Some("Preferences saved")
+            shell.project_io.message,
+            Some(crate::ui::shell::project::ProjectMessage::PreferencesSaved),
+            "the completed preferences write reports its typed outcome"
         );
     });
     assert_eq!(
