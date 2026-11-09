@@ -634,10 +634,10 @@ fn edge_handle(
         .flex()
         .items_center()
         .justify_center()
-        .bg(theme::SURFACE_3)
+        .bg(theme::controls::RAISED)
         .border_1()
         .border_color(theme::BORDER_STRONG)
-        .text_color(theme::PRIMARY)
+        .text_color(theme::controls::FOCUS)
         .cursor_pointer()
         .hover(|style| style.bg(theme::SURFACE_4))
         .when_some(probe, |handle, probe| handle.child(probe))
@@ -645,7 +645,7 @@ fn edge_handle(
             component::Icon::default()
                 .path(icon)
                 .size(px(theme::ICON_SM))
-                .text_color(theme::PRIMARY),
+                .text_color(theme::controls::FOCUS),
         )
         .on_click(move |_, _, cx| {
             this.update(cx, |shell, cx| {

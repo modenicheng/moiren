@@ -6,22 +6,19 @@ use gpui_kit::{Hsla, hsla};
 pub mod controls;
 
 // --- Accents ---------------------------------------------------------------
-pub const PRIMARY: Hsla = controls::FOCUS;
-
 // Capture side: input devices, application sources, live signal.
 pub const SIGNAL_DEVICE: Hsla = hsla(0.522059, 0.857143, 0.533333, 1.0);
 
 // --- Surfaces --------------------------------------------------------------
-pub const WINDOW_BG: Hsla = controls::CANVAS;
-pub const SURFACE: Hsla = controls::PANEL;
-pub const SURFACE_3: Hsla = controls::RAISED;
+pub const WINDOW_BG: Hsla = hsla(0.611111, 0.25, 0.047059, 1.0); // #090b0f
+pub const SURFACE: Hsla = hsla(0.6, 0.227273, 0.086275, 1.0); // #11151b
 pub const SURFACE_4: Hsla = hsla(0.571429, 0.142857, 0.192157, 1.0); // hover / pressed control
 /// Neutral value-region fill for slider and fader tracks. Signal cyan stays
 /// reserved for meters and status, so a lit track never reads as audio.
 pub const TRACK_FILL: Hsla = hsla(0.597222, 0.151899, 0.309804, 1.0);
 
 // --- Lines -----------------------------------------------------------------
-pub const BORDER: Hsla = controls::BORDER;
+pub const BORDER: Hsla = hsla(0.604167, 0.16, 0.196078, 1.0); // #2a303a
 pub const BORDER_STRONG: Hsla = hsla(0.562500, 0.142857, 0.219608, 1.0);
 pub const HAIRLINE: Hsla = hsla(0.560606, 0.169231, 0.127451, 1.0);
 pub const GRIP: Hsla = hsla(0.578431, 0.104294, 0.319608, 1.0);
@@ -41,14 +38,13 @@ pub const HAIRLINE_W: f32 = 1.;
 pub const ACCENT_BAR_W: f32 = 2.;
 
 // --- Text ------------------------------------------------------------------
-pub const TEXT: Hsla = controls::TEXT;
-pub const TEXT_MUTED: Hsla = controls::SECONDARY;
-pub const TEXT_FAINT: Hsla = controls::MUTED;
+pub const TEXT: Hsla = hsla(0.583333, 0.285714, 0.972549, 1.0); // #f6f8fa
+pub const TEXT_MUTED: Hsla = hsla(0.6, 0.153846, 0.745098, 1.0); // #b4bcc8
+pub const TEXT_FAINT: Hsla = hsla(0.602564, 0.127451, 0.6, 1.0); // #8c96a6
 
 // --- Semantic status -------------------------------------------------------
-pub const SUCCESS: Hsla = SIGNAL_DEVICE;
 pub const WARNING: Hsla = hsla(0.120155, 0.964126, 0.562745, 1.0);
-pub const DANGER: Hsla = controls::DANGER;
+pub const DANGER: Hsla = hsla(0.0, 0.90604, 0.707843, 1.0); // #f87171
 /// Faint red wash layered over a faulted object's own surface (graph card
 /// body, mixer strip): DANGER at low alpha so the underlying surface keeps
 /// its depth. The red border carries the strong signal; this only tints.
@@ -78,10 +74,7 @@ pub const LIBRARY_RAIL_WIDTH: f32 = 44.;
 pub const INSPECTOR_WIDTH: f32 = 280.;
 pub const NODE_WIDTH: f32 = 270.;
 pub const NODE_SOURCE: Hsla = hsla(0.439203, 0.643725, 0.515686, 1.);
-pub const NODE_DSP: Hsla = hsla(0.722741, 0.781022, 0.731373, 1.);
 pub const NODE_SINK: Hsla = hsla(0.125581, 0.964126, 0.562745, 1.);
-pub const NODE_UTILITY: Hsla = TEXT_FAINT;
-pub const NODE_ANALYSIS: Hsla = SIGNAL_DEVICE;
 pub const CANVAS_GRID: f32 = 24.;
 
 // --- Chrome and window geometry (design 21 §1.3) ---------------------------
@@ -191,10 +184,10 @@ pub mod card {
 /// can never land off-theme; category tints remain the default.
 pub fn node_tint(index: u8) -> Option<Hsla> {
     Some(match index {
-        0 => PRIMARY,
+        0 => controls::FOCUS,
         1 => SIGNAL_DEVICE,
         2 => NODE_SOURCE,
-        3 => NODE_DSP,
+        3 => controls::FOCUS,
         4 => NODE_SINK,
         5 => hsla(0.988_158, 0.703_704, 0.627_451, 1.), // pink
         6 => hsla(0.077_381, 0.825_397, 0.603_922, 1.), // orange
@@ -280,8 +273,8 @@ pub fn apply_component_tokens(cx: &mut gpui_kit::App) {
         c.primary_foreground = controls::ON_ACCENT;
         c.ring = controls::PRIMARY;
         c.accent = soft(controls::PRIMARY);
-        c.accent_foreground = controls::TEXT;
-        c.danger = controls::DANGER;
+        c.accent_foreground = TEXT;
+        c.danger = DANGER;
         c.danger_hover = controls::DANGER_HOVER;
         c.danger_active = controls::DANGER_PRESSED;
         c.danger_foreground = controls::ON_ACCENT;

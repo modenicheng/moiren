@@ -77,7 +77,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .w(px(112.))
                 .h_full()
                 .p(px(theme::SPACE_2))
-                .bg(theme::SURFACE_3)
+                .bg(theme::controls::RAISED)
                 // Design 21 §2: header cells carry user node labels —
                 // ellipsized inside the fixed cell, never past it.
                 .child(
@@ -106,7 +106,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex_none()
                 .h(px(row_height))
                 .p(px(theme::SPACE_2))
-                .bg(theme::SURFACE_3)
+                .bg(theme::controls::RAISED)
                 // Design 21 §2: header cells carry user node labels —
                 // ellipsized inside the fixed cell, never past it.
                 .child(
@@ -165,9 +165,9 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .rounded_none()
                     .border_0()
                     .bg(if selected {
-                        theme::soft(theme::PRIMARY)
+                        theme::soft(theme::controls::FOCUS)
                     } else if edge.is_some() {
-                        theme::SURFACE_3
+                        theme::controls::RAISED
                     } else if ri % 2 == 0 {
                         theme::SURFACE
                     } else {
@@ -175,7 +175,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     })
                     .text_size(px(theme::TEXT_SM))
                     .text_color(if edge.is_some() {
-                        theme::PRIMARY
+                        theme::controls::FOCUS
                     } else {
                         theme::TEXT_FAINT
                     })
@@ -238,7 +238,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         .w(px(156.))
                                         .flex_none()
                                         .p(px(theme::SPACE_2))
-                                        .bg(theme::SURFACE_3)
+                                        .bg(theme::controls::RAISED)
                                         .child(label(t!("Outputs → Inputs"))),
                                 )
                                 .child(
@@ -318,7 +318,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 let id = edge.id();
                 let params = *edge.params();
                 view = view
-                    .child(badge(t!("Connected"), theme::PRIMARY))
+                    .child(badge(t!("Connected"), theme::controls::FOCUS))
                     .child(detail(&t!("Route gain"), db_text(params.gain)))
                     .child(detail(&t!("Route balance"), format!("{:+.2}", params.pan)))
                     .child(detail(

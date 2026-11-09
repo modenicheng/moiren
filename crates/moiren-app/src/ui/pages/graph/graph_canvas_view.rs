@@ -168,7 +168,7 @@ fn paint_snap_guides(frame: &CanvasFrame, window: &mut Window) {
                     origin: point(left, 0.),
                     size: size(1., viewport.size.height),
                 }),
-                theme::PRIMARY,
+                theme::controls::FOCUS,
             ));
         }
     }
@@ -180,7 +180,7 @@ fn paint_snap_guides(frame: &CanvasFrame, window: &mut Window) {
                     origin: point(0., top),
                     size: size(viewport.size.width, 1.),
                 }),
-                theme::PRIMARY,
+                theme::controls::FOCUS,
             ));
         }
     }
@@ -220,7 +220,7 @@ fn paint_canvas_layer(
                 }) * frame.camera.zoom)
                     .max(if selected { 1.8 } else { 0.75 });
                 if selected && let Ok(halo) = geometry.stroke(width + 5., origin) {
-                    window.paint_path(halo, theme::halo(theme::PRIMARY));
+                    window.paint_path(halo, theme::halo(theme::controls::FOCUS));
                 }
                 if let Ok(path) = geometry.stroke(width, origin) {
                     window.paint_path(
@@ -228,7 +228,7 @@ fn paint_canvas_layer(
                         if selected {
                             theme::TEXT
                         } else {
-                            wire.tint.unwrap_or(theme::PRIMARY)
+                            wire.tint.unwrap_or(theme::controls::FOCUS)
                         },
                     );
                 }
@@ -297,7 +297,7 @@ fn paint_connection_drag(
     let color = match candidate.as_ref().map(|candidate| candidate.status) {
         Some(CandidateStatus::Incompatible | CandidateStatus::Cycles) => theme::DANGER,
         Some(CandidateStatus::Displacing) => theme::WARNING,
-        _ => theme::PRIMARY,
+        _ => theme::controls::FOCUS,
     };
     let origin = (
         f32::from(frame.bounds.origin.x),
@@ -317,7 +317,7 @@ fn paint_connection_drag(
         return;
     };
     let status_color = match candidate.status {
-        CandidateStatus::Valid => theme::PRIMARY,
+        CandidateStatus::Valid => theme::controls::FOCUS,
         CandidateStatus::Displacing => theme::WARNING,
         CandidateStatus::Incompatible | CandidateStatus::Cycles => theme::DANGER,
     };

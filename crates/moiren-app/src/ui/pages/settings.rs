@@ -169,7 +169,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                             .bottom(px(6.))
                             .w(px(theme::ACCENT_BAR_W))
                             .rounded(px(1.))
-                            .bg(theme::PRIMARY),
+                            .bg(theme::controls::FOCUS),
                     )
                 }),
         );
@@ -650,7 +650,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 .child(badge(
                     crate::ui::presentation::phase_text(snapshot),
                     if running {
-                        theme::SUCCESS
+                        theme::SIGNAL_DEVICE
                     } else {
                         theme::TEXT_MUTED
                     },

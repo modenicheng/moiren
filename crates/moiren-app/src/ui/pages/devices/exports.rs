@@ -316,7 +316,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         .child(
             component::input::Input::new(&shell.devices.export_controls.name)
                 .id("export-create-name")
-                .bg(theme::SURFACE_3)
+                .bg(theme::controls::RAISED)
                 .text_color(theme::TEXT)
                 .border_color(theme::BORDER),
         )
@@ -458,7 +458,7 @@ fn export_row(
                 .child(
                     component::input::Input::new(&draft.input)
                         .id(SharedString::from(format!("export-name-{id}")))
-                        .bg(theme::SURFACE_3)
+                        .bg(theme::controls::RAISED)
                         .text_color(theme::TEXT)
                         .border_color(theme::BORDER),
                 )

@@ -1108,7 +1108,7 @@ impl Render for StripDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .p(px(theme::SPACE_3))
-            .bg(theme::SURFACE_3)
+            .bg(theme::controls::RAISED)
             .text_color(theme::TEXT)
             .child(t!("Move channel"))
     }

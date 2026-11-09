@@ -150,7 +150,7 @@ impl CanvasNode {
             + theme::card::PORT_BOTTOM
     }
     pub fn tint(&self) -> Hsla {
-        self.tint.unwrap_or(theme::PRIMARY)
+        self.tint.unwrap_or(theme::controls::FOCUS)
     }
 }
 
@@ -168,7 +168,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         input_ports: Vec::new(),
         output_port: None,
         has_output: false,
-        tint: Some(theme::PRIMARY),
+        tint: Some(theme::controls::FOCUS),
         faulted: false,
         preparing: false,
         faults: Vec::new(),

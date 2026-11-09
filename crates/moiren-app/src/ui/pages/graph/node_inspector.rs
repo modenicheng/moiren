@@ -76,7 +76,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                             .items_center()
                             .justify_center()
                             .rounded(px(theme::RADIUS_LG))
-                            .bg(theme::SURFACE_3)
+                            .bg(theme::controls::RAISED)
                             .child(
                                 component::Icon::default()
                                     .path("icons/zoom-scan.svg")
@@ -106,7 +106,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .child(
                 component::input::Input::new(&shell.inspector.node_name)
                     .id("node-name")
-                    .bg(theme::SURFACE_3)
+                    .bg(theme::controls::RAISED)
                     .text_color(theme::TEXT)
                     .border_color(theme::BORDER),
             )
@@ -421,7 +421,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                             &shell.inspector.compressor.inputs[&(id, parameter)],
                         )
                         .id(format!("compressor-input-{}", parameter.id().0))
-                        .bg(theme::SURFACE_3)
+                        .bg(theme::controls::RAISED)
                         .text_color(theme::TEXT)
                         .border_color(theme::BORDER),
                     )

@@ -32,9 +32,9 @@ fn group_cell(
     } else {
         (
             theme::controls::RAISED,
-            theme::controls::TEXT,
+            theme::TEXT,
             theme::controls::RAISED,
-            theme::controls::CANVAS,
+            theme::WINDOW_BG,
         )
     };
     // Keep the ActionButton sizing contract by resolving the same metrics.

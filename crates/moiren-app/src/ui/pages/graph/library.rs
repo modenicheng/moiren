@@ -109,7 +109,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             )
             .when(enabled, |card| {
                 card.cursor_pointer()
-                    .hover(|style| style.bg(theme::SURFACE_3))
+                    .hover(|style| style.bg(theme::controls::RAISED))
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
                             shell.spawn_template_at_center(template, cx);
@@ -207,7 +207,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .child(
                     component::input::Input::new(&shell.graph_view.node_search)
                         .id("node-search")
-                        .bg(theme::SURFACE_3)
+                        .bg(theme::controls::RAISED)
                         .text_color(theme::TEXT)
                         .border_color(theme::BORDER),
                 ),
