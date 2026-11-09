@@ -1,10 +1,10 @@
 //! Pure text projections from [`AppSnapshot`]. These functions format
 //! snapshot state for display; they hold no UI state and dispatch no intent.
 
-use crate::service::{AppSnapshot, InputSelection, SessionPhase};
+use crate::service::{AppSnapshot, DispatchError, InputSelection, SessionPhase};
 #[cfg(windows)]
 use crate::service::{AudioBackend, SessionGeneration};
-use crate::ui::state::{input_rows, output_rows};
+use crate::ui::state::{UiFailure, input_rows, output_rows};
 use rust_i18n::t;
 use std::borrow::Cow;
 
@@ -269,6 +269,40 @@ pub fn control_feedback(snapshot: &AppSnapshot, pending_request: bool) -> String
         t!("No parameter changes requested").into()
     } else {
         t!("Next start · engine stopped").into()
+    }
+}
+
+/// The one paint-time translation of a stored [`UiFailure`] — the same job
+/// [`control_feedback`] does for reply codes. Storage keeps typed payloads
+/// and stable English diagnostics; the current locale is applied here, so a
+/// stored failure re-renders on a locale switch through the normal rebuild
+/// paths. Free-form producer prose ([`UiFailure::ExportInvalid`]) is
+/// diagnostic data and passes through untranslated by design.
+pub(crate) fn failure_text(failure: &UiFailure) -> String {
+    match failure {
+        UiFailure::Dispatch(error) => match error {
+            DispatchError::Busy => t!("The audio service is busy; try again in a moment."),
+            DispatchError::Exiting => t!("The audio service is shutting down."),
+            DispatchError::Disconnected => t!("The audio service is disconnected."),
+            DispatchError::InvalidConfig => {
+                t!("The audio service rejected the request as invalid.")
+            }
+            DispatchError::GenerationExhausted => t!(
+                "Too many audio sessions have been started. Restart the application to continue."
+            ),
+            DispatchError::RequestIdExhausted => {
+                t!("Too many pending requests. Restart the application to continue.")
+            }
+        }
+        .into_owned(),
+        UiFailure::InvalidAudioSettings(error) => t!(error.to_string()).into_owned(),
+        UiFailure::SourceUnavailable => {
+            t!("Choose an available source and output before starting.").into_owned()
+        }
+        UiFailure::GraphNotReady { cause } => {
+            t!("Graph is not ready: %{error}", error = t!(cause.as_str())).into_owned()
+        }
+        UiFailure::ExportInvalid { reason } => reason.clone(),
     }
 }
 

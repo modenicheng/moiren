@@ -1778,7 +1778,9 @@ fn statusbar_summarizes_unlocated_errors_and_opens_the_fault_popover(
     // on its own notification.
     view.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
-            state.dispatch_error = Some("The session rejected the request".into());
+            state.dispatch_error = Some(crate::ui::state::UiFailure::Dispatch(
+                crate::service::DispatchError::InvalidConfig,
+            ));
         });
         cx.notify();
     });

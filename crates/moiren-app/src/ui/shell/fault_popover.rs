@@ -59,7 +59,9 @@ pub(crate) fn has_unlocated(state: &UiState) -> bool {
 }
 
 /// The status bar's red summary: the first unlocated message, translated.
-/// Causes are English catalog keys; plain prose passes through unchanged.
+/// Fault causes and snapshot errors are English catalog keys — plain prose
+/// passes through unchanged; the typed dispatch failure translates through
+/// [`crate::ui::presentation::failure_text`].
 pub(crate) fn unlocated_summary(state: &UiState) -> Option<String> {
     state
         .snapshot
@@ -68,11 +70,21 @@ pub(crate) fn unlocated_summary(state: &UiState) -> Option<String> {
         .iter()
         .find(|fault| fault.subject == GraphSubject::Graph)
         .map(|fault| t!(fault.cause.as_str()).into_owned())
+        .or_else(|| unlocated_diagnostic(state))
+}
+
+/// The non-located diagnostics minus the located graph faults: the stored
+/// dispatch failure first, then the snapshot's error strings.
+fn unlocated_diagnostic(state: &UiState) -> Option<String> {
+    state
+        .dispatch_error
+        .as_ref()
+        .map(crate::ui::presentation::failure_text)
         .or_else(|| {
             state
-                .dispatch_error
+                .snapshot
+                .error
                 .as_ref()
-                .or(state.snapshot.error.as_ref())
                 .or(state.snapshot.catalog_error.as_ref())
                 .map(|error| t!(error.as_str()).into_owned())
         })
@@ -129,13 +141,8 @@ pub(crate) fn overlay(
                 .collect();
             // The non-located diagnostics, first Some wins (the error
             // strip's old precedence).
-            if let Some(error) = state
-                .dispatch_error
-                .as_ref()
-                .or(state.snapshot.error.as_ref())
-                .or(state.snapshot.catalog_error.as_ref())
-            {
-                rows.push(fault_row(t!(error.as_str()).into_owned(), None));
+            if let Some(error) = unlocated_diagnostic(state) {
+                rows.push(fault_row(error, None));
             }
             rows
         }

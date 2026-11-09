@@ -2,6 +2,7 @@ use rust_i18n::t;
 
 use super::*;
 use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
+use crate::ui::state::UiFailure;
 use controls::*;
 use std::sync::Arc;
 
@@ -242,11 +243,13 @@ impl CachedPanel for ToolbarPanel {
 /// synchronously with no publish behind it — the old error strip's key
 /// carried it for exactly this reason, and the summary inherited the job:
 /// cloned only at capture time so a dispatch failure while the bar stands
-/// still rebuilds on its own notification.
+/// still rebuilds on its own notification. The typed [`UiFailure`] keeps
+/// that property — equality on the stored meaning, strictly stronger than
+/// equality on a rendered string.
 #[derive(PartialEq)]
 pub(crate) struct StatusbarKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
-    dispatch_error: Option<String>,
+    dispatch_error: Option<UiFailure>,
 }
 
 pub(crate) struct StatusbarPanel;

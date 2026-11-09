@@ -225,6 +225,12 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "The live parameter queue is busy; the candidate value is kept",
     "The apply request identity space is exhausted",
     "No native audio backend is configured",
+    // Stored audio-settings validation failures: `UiFailure::InvalidAudioSettings`
+    // renders the `AudioConfigError` Display string in src/ui/presentation.rs.
+    "sample rate must be 44.1, 48, 88.2 or 96 kHz",
+    "buffer must be 64, 128, 256, 512, 1024, 2048 or 4096 frames",
+    "device identity must contain 1 to 32768 bytes without NUL",
+    "at most 256 device overrides can be saved per direction",
 ];
 
 fn manifest_dir() -> PathBuf {

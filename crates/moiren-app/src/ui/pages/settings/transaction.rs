@@ -79,9 +79,12 @@ impl StudioShell {
             if snapshot.consumed_request_id < pending.request {
                 continue;
             }
+            // The draft error is a frozen string like its siblings here; the
+            // typed dispatch failure translates once, at capture time.
             let failure = state
                 .dispatch_error
                 .clone()
+                .map(|failure| crate::ui::presentation::failure_text(&failure))
                 .or_else(|| snapshot.error.clone())
                 .or_else(|| snapshot.graph.last_error.clone());
             let settings_match = snapshot.audio_settings == pending.submitted.audio;
