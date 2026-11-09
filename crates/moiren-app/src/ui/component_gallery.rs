@@ -4,6 +4,7 @@ use gpui_kit::base::ScrollbarAxis;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use super::theme;
 use super::theme::controls as t;
 use super::widgets::action_assets::{ActionAssets, register_fonts};
 use super::widgets::action_style::SampleState;
@@ -99,7 +100,7 @@ enum Group {
 }
 
 fn section(title: &'static str) -> Div {
-    div().flex().flex_col().gap(px(8.)).child(
+    div().flex().flex_col().gap(px(theme::SPACE_2)).child(
         div()
             .font_weight(FontWeight::SEMIBOLD)
             .text_size(px(15.))
@@ -111,7 +112,7 @@ fn row(label: impl Into<SharedString>, samples: Vec<AnyElement>) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(px(theme::SPACE_2))
         .min_h(px(44.))
         .child(
             div()
@@ -255,7 +256,7 @@ impl Render for ComponentGallery {
         let tabs = section("Workspace Tab").child(
             div()
                 .flex()
-                .gap(px(8.))
+                .gap(px(theme::SPACE_2))
                 .child(
                     WorkspaceTab::new("tab-default", "Graph")
                         .icon(ActionIcon::Graph)
@@ -297,13 +298,13 @@ impl Render for ComponentGallery {
                     .flex_none()
                     .items_center()
                     .justify_between()
-                    .p(px(16.))
+                    .p(px(theme::SPACE_4))
                     .bg(t::PANEL)
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(px(theme::SPACE_1))
                             .child(
                                 div()
                                     .text_size(px(20.))
@@ -320,7 +321,7 @@ impl Render for ComponentGallery {
                     .child(
                         div()
                             .flex()
-                            .gap(px(8.))
+                            .gap(px(theme::SPACE_2))
                             .children(
                                 [
                                     (Group::Buttons, "Buttons"),
@@ -366,18 +367,24 @@ impl Render for ComponentGallery {
                         .overflow_scroll()
                         .track_scroll(&self.scroll)
                         .restrict_scroll_to_axis()
-                        .p(px(16.))
+                        .p(px(theme::SPACE_4))
                         .child(
                             (match self.group {
-                                Group::Buttons => {
-                                    div().flex().gap(px(24.)).child(filled).child(quiet)
-                                }
-                                Group::Icons => {
-                                    div().flex().gap(px(24.)).child(icons).child(toggles)
-                                }
-                                Group::Navigation => {
-                                    div().flex().gap(px(24.)).child(windows).child(tabs)
-                                }
+                                Group::Buttons => div()
+                                    .flex()
+                                    .gap(px(theme::SPACE_6))
+                                    .child(filled)
+                                    .child(quiet),
+                                Group::Icons => div()
+                                    .flex()
+                                    .gap(px(theme::SPACE_6))
+                                    .child(icons)
+                                    .child(toggles),
+                                Group::Navigation => div()
+                                    .flex()
+                                    .gap(px(theme::SPACE_6))
+                                    .child(windows)
+                                    .child(tabs),
                             })
                             .when(narrow, |s| s.flex_col().items_start()),
                         ),
@@ -390,8 +397,8 @@ impl Render for ComponentGallery {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(16.))
-                    .p(px(12.))
+                    .gap(px(theme::SPACE_4))
+                    .p(px(theme::SPACE_3))
                     .bg(t::PANEL)
                     .child(
                         ActionButton::new("live-action", "Apply")

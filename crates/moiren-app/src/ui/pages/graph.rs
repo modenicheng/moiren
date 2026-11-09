@@ -480,8 +480,8 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         .left(px(theme::HUD_INSET))
         .flex()
         .items_center()
-        .gap(px(4.))
-        .p(px(4.))
+        .gap(px(theme::SPACE_1))
+        .p(px(theme::SPACE_1))
         .rounded(px(theme::RADIUS_MD))
         .bg(theme::SURFACE)
         .border_1()
@@ -517,7 +517,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
             .flex_none()
             .w(px(1.))
             .h(px(16.))
-            .mx(px(2.))
+            .mx(px(theme::SPACE_0_5))
             .rounded_full()
             .bg(theme::BORDER),
     );

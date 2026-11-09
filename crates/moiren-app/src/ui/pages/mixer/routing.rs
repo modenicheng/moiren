@@ -104,7 +104,7 @@ pub(super) fn inputs(
             .flex_col()
             .w_full()
             .h_full()
-            .px(px(8.))
+            .px(px(theme::SPACE_2))
             .track_scroll(&scrolls.input)
             .restrict_scroll_to_axis()
             .overflow_y_scroll()
@@ -244,10 +244,10 @@ pub(super) fn sends(
             .id(SharedString::from(format!("send-rows-{id:?}")))
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(px(theme::SPACE_1))
             .w_full()
             .h_full()
-            .px(px(8.))
+            .px(px(theme::SPACE_2))
             .track_scroll(&scrolls.send)
             .restrict_scroll_to_axis()
             .overflow_y_scroll()
@@ -261,7 +261,7 @@ pub(super) fn sends(
             let mut row = div()
                 .flex()
                 .items_center()
-                .gap(px(2.))
+                .gap(px(theme::SPACE_0_5))
                 .child(
                     button(
                         SharedString::from(format!("send-mute-{edge_id:?}")),

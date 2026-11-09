@@ -109,7 +109,7 @@ pub(crate) fn field(title: &str, value: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(label(title.to_owned()))
         .child(value)
 }
@@ -126,7 +126,7 @@ pub(crate) fn field_with_note(
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(
             div()
                 .id(SharedString::from(format!("field-note-{title}")))
@@ -376,9 +376,9 @@ pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShe
         .flex_none()
         .flex()
         .flex_col()
-        .gap(px(8.))
-        .px(px(16.))
-        .py(px(12.))
+        .gap(px(theme::SPACE_2))
+        .px(px(theme::SPACE_4))
+        .py(px(theme::SPACE_3))
         .border_t_1()
         .border_color(theme::BORDER)
         // No fill of its own: the bar sits on whatever surface carries it
@@ -392,7 +392,7 @@ pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShe
                 .mx_auto()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(theme::SPACE_2))
                 .child(
                     div()
                         .id(SharedString::from(format!("{prefix}-feedback")))
@@ -415,7 +415,7 @@ pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShe
                         .gpui_test_observe(),
                 )
                 .child(
-                    div().flex().flex_wrap().gap(px(8.)).justify_end()
+                    div().flex().flex_wrap().gap(px(theme::SPACE_2)).justify_end()
                         .child(
                             button(SharedString::from(format!("{prefix}-discard")), t!("Discard changes"))
                                 .disabled(busy || !draft.dirty())

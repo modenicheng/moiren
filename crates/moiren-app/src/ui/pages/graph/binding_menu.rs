@@ -138,7 +138,7 @@ pub(crate) fn overlay(
                             .max_h(px(height))
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(px(theme::SPACE_0_5))
                             .p(px(MENU_PAD))
                             .track_scroll(&shell.graph_view.binding_menu_scroll)
                             .restrict_scroll_to_axis()

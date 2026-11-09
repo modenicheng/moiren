@@ -9,6 +9,7 @@ use gpui_kit::*;
 
 use super::action_assets::ActionIcon;
 use super::action_style::{Paint, SampleState, Skin, styled_control};
+use crate::ui::theme;
 use crate::ui::theme::controls as t;
 pub use t::{ControlSize, Density};
 
@@ -194,7 +195,9 @@ impl RenderOnce for ActionButton {
         .when(self.full_width, |s| s.w_full().justify_center())
         .when(self.justify_start, |s| s.justify_start())
         .when(self.square, |s| s.rounded_none())
-        .when(icon_only, |s| s.w(px(m.height)).justify_center().px(px(6.)))
+        .when(icon_only, |s| {
+            s.w(px(m.height)).justify_center().px(px(theme::SPACE_1_5))
+        })
         .when_some(self.icon, |s, icon| s.child(icon.element()))
         .when(!icon_only, |s| s.child(self.label))
         .when_some(self.trailing_icon, |s, icon| s.child(icon.element()))

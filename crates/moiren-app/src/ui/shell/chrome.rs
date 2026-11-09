@@ -79,7 +79,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(px(theme::SPACE_2))
                         .window_control_area(WindowControlArea::Drag)
                         .child(gpui_kit::img("brand/mark.svg").size(px(24.)))
                         .when(!shell.chrome.compact, |v| v.child(heading("Moiren"))),
@@ -107,7 +107,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(4.))
+                .gap(px(theme::SPACE_1))
                 .child(
                     button("transport", if running { t!("Stop") } else { t!("Start") })
                         .variant(if running {
@@ -536,7 +536,7 @@ fn fault_summary(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEle
         .min_w_0()
         .max_w(px(420.))
         .items_center()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .overflow_x_hidden()
         .cursor_pointer()
         .on_click(move |_, window, cx| {

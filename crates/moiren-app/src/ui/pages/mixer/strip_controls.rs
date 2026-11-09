@@ -84,7 +84,7 @@ pub(crate) fn node_controls(
         .flex()
         .flex_col()
         .flex_none()
-        .px(px(8.))
+        .px(px(theme::SPACE_2))
         .py(px(3.))
         .child(
             div()
@@ -227,8 +227,8 @@ pub(crate) fn balance(
         .flex_col()
         .flex_none()
         .h(px(40.))
-        .px(px(8.))
-        .gap(px(2.))
+        .px(px(theme::SPACE_2))
+        .gap(px(theme::SPACE_0_5))
         .child(
             div()
                 .id(track_id)

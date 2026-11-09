@@ -282,7 +282,7 @@ fn paint_box_select_band(
     window.paint_quad(PaintQuad {
         bounds: screen,
         corner_radii: 2f32.into(),
-        background: transparent_black().into(),
+        background: theme::controls::TRANSPARENT.into(),
         border_widths: 1f32.into(),
         border_color: theme::PRIMARY,
         border_style: BorderStyle::default(),

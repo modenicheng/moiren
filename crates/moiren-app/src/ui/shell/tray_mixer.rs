@@ -255,8 +255,8 @@ impl CachedPanel for TrayPanel {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
+                    .gap(px(theme::SPACE_2))
+                    .px(px(theme::SPACE_3))
                     .h(px(36.))
                     .border_b_1()
                     .border_color(theme::BORDER)
@@ -270,7 +270,7 @@ impl CachedPanel for TrayPanel {
                     .flex_1()
                     .items_center()
                     .justify_center()
-                    .px(px(16.))
+                    .px(px(theme::SPACE_4))
                     .child(label(t!("No strips · open Moiren to build a graph")))
                     .into_any_element()
             } else {
@@ -359,11 +359,11 @@ fn strip(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(px(theme::SPACE_0_5))
                 .flex_none()
                 .min_w_0()
-                .px(px(8.))
-                .py(px(8.))
+                .px(px(theme::SPACE_2))
+                .py(px(theme::SPACE_2))
                 .child(
                     div()
                         .min_w_0()
@@ -384,8 +384,8 @@ fn strip(
                 .flex_none()
                 .items_end()
                 .justify_center()
-                .gap(px(8.))
-                .py(px(6.))
+                .gap(px(theme::SPACE_2))
+                .py(px(theme::SPACE_1_5))
                 // The shared fader fills its container; the flyout fixes the
                 // track height the main mixer takes from the strip.
                 .child(div().h(px(196.)).flex_none().child(fader(
@@ -407,9 +407,9 @@ fn strip(
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .gap(px(4.))
-                .px(px(8.))
-                .pb(px(6.))
+                .gap(px(theme::SPACE_1))
+                .px(px(theme::SPACE_2))
+                .pb(px(theme::SPACE_1_5))
                 .child(
                     button(SharedString::from(format!("tray-strip-mute-{id:?}")), "M")
                         .variant(if entry.mixer.muted {

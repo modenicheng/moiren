@@ -109,7 +109,12 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
     let this = cx.entity();
     let escape = this.clone();
     let close = this.clone();
-    let mut nav = div().flex().flex_col().gap(px(2.)).px(px(8.)).pt(px(4.));
+    let mut nav = div()
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_0_5))
+        .px(px(theme::SPACE_2))
+        .pt(px(theme::SPACE_1));
     for (id, icon, title, section) in [
         (
             "settings-nav-audio",
@@ -213,17 +218,17 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .h_full()
                         .flex()
                         .flex_col()
-                        .gap(px(12.))
+                        .gap(px(theme::SPACE_3))
                         .border_r_1()
                         .border_color(theme::BORDER)
                         .bg(theme::WINDOW_BG)
-                        .p(px(8.))
+                        .p(px(theme::SPACE_2))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .justify_between()
-                                .px(px(4.))
+                                .px(px(theme::SPACE_1))
                                 .child(heading(t!("Settings")))
                                 .child(
                                     IconButton::new(
@@ -262,8 +267,8 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                     .restrict_scroll_to_axis()
                                     .overflow_y_scroll()
                                     .on_scroll_wheel(notify_owner(this.clone()))
-                                    .px(px(16.))
-                                    .py(px(24.))
+                                    .px(px(theme::SPACE_4))
+                                    .py(px(theme::SPACE_6))
                                     // A fixed reading measure, centered: on wide
                                     // windows the section content holds together
                                     // as one block instead of rows drifting
@@ -275,7 +280,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                                 .max_w_full()
                                                 .flex()
                                                 .flex_col()
-                                                .gap(px(16.))
+                                                .gap(px(theme::SPACE_4))
                                                 .child(content),
                                         ),
                                     )
@@ -323,9 +328,9 @@ fn card_shell() -> Div {
 /// via [`rows`]; the card bounds their measure on wide windows.
 fn group(title: impl Into<SharedString>, body: impl IntoElement) -> Div {
     card_shell()
-        .px(px(16.))
-        .pt(px(12.))
-        .pb(px(4.))
+        .px(px(theme::SPACE_4))
+        .pt(px(theme::SPACE_3))
+        .pb(px(theme::SPACE_1))
         .gap(px(10.))
         .child(group_title(title))
         .child(body)
@@ -338,7 +343,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(px(theme::SPACE_4))
         .child(heading(t!("Audio")))
         .child(group(
             t!("Processing"),
@@ -401,17 +406,17 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             ]),
         ))
         .child(
-            card_shell().p(px(16.)).child(
+            card_shell().p(px(theme::SPACE_4)).child(
                 div()
                     .flex()
-                    .gap(px(24.))
+                    .gap(px(theme::SPACE_6))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
+                            .gap(px(theme::SPACE_3))
                             .child(group_title(t!("Input defaults")))
                             .child(stream_editor(
                                 shell,
@@ -428,7 +433,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
+                            .gap(px(theme::SPACE_3))
                             .child(group_title(t!("Output defaults")))
                             .child(stream_editor(
                                 shell,
@@ -445,7 +450,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(theme::SPACE_2))
                 .child(choices(
                     shell,
                     Editor::Global,
@@ -467,7 +472,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(px(theme::SPACE_3))
                         .child(label(t!(
                             "%{input_count} input / %{output_count} output",
                             input_count = config.input_overrides.len(),
@@ -491,7 +496,7 @@ fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(px(theme::SPACE_4))
         .child(heading(t!("Interface")))
         .child(group(
             t!("General"),
@@ -632,12 +637,12 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(px(theme::SPACE_4))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(px(theme::SPACE_3))
                 .child(heading(t!("Diagnostics")))
                 .child(badge(
                     crate::ui::presentation::phase_text(snapshot),
@@ -648,10 +653,10 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     },
                 )),
         )
-        .child(card_shell().p(px(16.)).child(columns))
+        .child(card_shell().p(px(theme::SPACE_4)).child(columns))
         // The timing rows carry their own names, so the card stays untitled
         // rather than repeating one.
-        .child(card_shell().px(px(16.)).pt(px(8.)).pb(px(8.)).child(rows(
+        .child(card_shell().px(px(theme::SPACE_4)).pt(px(theme::SPACE_2)).pb(px(theme::SPACE_2)).child(rows(
             crate::ui::presentation::native_timing_rows(snapshot)
                 .into_iter()
                 .map(|(key, value)| detail(&key, value)),
@@ -661,7 +666,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(theme::SPACE_2))
                 .child(rows([detail(
                     &t!("Catalog"),
                     t!(

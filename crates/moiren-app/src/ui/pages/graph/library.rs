@@ -24,7 +24,11 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
     use controls::*;
     let state = shell.state.read(cx);
     let query = shell.graph_view.node_search.read(cx).value();
-    let mut items = div().id("node-library-items").flex().flex_col().gap(px(4.));
+    let mut items = div()
+        .id("node-library-items")
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_1));
     let mut group = "";
     let mut count = 0;
     for template in NodeTemplate::ALL
@@ -34,7 +38,12 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         count += 1;
         if group != template.group() {
             group = template.group();
-            items = items.child(div().mt(px(14.)).mb(px(2.)).child(label(t!(group))));
+            items = items.child(
+                div()
+                    .mt(px(14.))
+                    .mb(px(theme::SPACE_0_5))
+                    .child(label(t!(group))),
+            );
         }
         let enabled = template.kind().is_some() && shell.graph_view.pending_node_spawn.is_none();
         let this = cx.entity();
@@ -49,7 +58,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             .items_center()
             .gap(px(theme::SPACE_2))
             .px(px(theme::SPACE_2))
-            .py(px(6.))
+            .py(px(theme::SPACE_1_5))
             .rounded(px(theme::RADIUS_SM))
             .child(
                 div()
@@ -77,7 +86,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(px(theme::SPACE_0_5))
                     .child(
                         div()
                             .text_size(px(theme::TEXT_SM))
@@ -125,9 +134,9 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .id("session-node-list")
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .mt(px(16.))
-        .pt(px(12.))
+        .gap(px(theme::SPACE_1))
+        .mt(px(theme::SPACE_4))
+        .pt(px(theme::SPACE_3))
         .border_t_1()
         .border_color(theme::BORDER)
         .child(heading(t!(
@@ -185,7 +194,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .border_color(theme::BORDER)
         .child(
             div()
-                .p(px(12.))
+                .p(px(theme::SPACE_3))
                 .flex_none()
                 .flex()
                 .flex_col()
@@ -210,7 +219,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     .id("node-library-scroll")
                     .w_full()
                     .h_full()
-                    .px(px(12.))
+                    .px(px(theme::SPACE_3))
                     .track_scroll(&shell.library.scroll)
                     .restrict_scroll_to_axis()
                     .overflow_y_scroll()
@@ -224,7 +233,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         )
         .child(
             div()
-                .p(px(12.))
+                .p(px(theme::SPACE_3))
                 .flex_none()
                 .border_t_1()
                 .border_color(theme::BORDER)
@@ -251,7 +260,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
         .flex()
         .flex_col()
         .items_center()
-        .gap(px(2.))
+        .gap(px(theme::SPACE_0_5))
         .py(px(10.))
         .track_scroll(&shell.library.rail_scroll)
         .restrict_scroll_to_axis()

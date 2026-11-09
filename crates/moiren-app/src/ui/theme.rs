@@ -51,9 +51,13 @@ pub const DANGER_WASH: Hsla = Hsla { a: 0.12, ..DANGER };
 pub const METER_PEAK_ZONE: Hsla = hsla(0., 0., 0., 0.45);
 
 // --- Spacing scale (4pt based) ---------------------------------------------
+pub const SPACE_0_5: f32 = 2.;
+pub const SPACE_1: f32 = 4.;
+pub const SPACE_1_5: f32 = 6.;
 pub const SPACE_2: f32 = 8.;
 pub const SPACE_3: f32 = 12.;
 pub const SPACE_4: f32 = 16.;
+pub const SPACE_6: f32 = 24.;
 
 // --- Studio geometry (Figma v0.1.0 Graph measurements) --------------------
 /// The shell toolbar's height, aliased from the action-component tokens so

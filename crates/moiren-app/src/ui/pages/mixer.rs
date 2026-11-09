@@ -197,7 +197,7 @@ fn strip_body(
         .id(SharedString::from(format!("strip-header-{id:?}")))
         .flex()
         .flex_col()
-        .gap(px(2.))
+        .gap(px(theme::SPACE_0_5))
         .h(px(theme::compact(shell.chrome.compact, 44., 52.)))
         .flex_none()
         .px(px(10.))
@@ -210,7 +210,7 @@ fn strip_body(
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.))
+                .gap(px(theme::SPACE_1))
                 .child(
                     div()
                         .flex_1()
@@ -299,7 +299,7 @@ fn strip_body(
                 .flex_1()
                 .min_h(px(160.))
                 .justify_center()
-                .gap(px(6.))
+                .gap(px(theme::SPACE_1_5))
                 .mt(px(14.))
                 .mb(px(32.))
                 .child(

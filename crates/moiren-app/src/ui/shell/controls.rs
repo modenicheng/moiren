@@ -22,7 +22,7 @@ pub(crate) fn heading(text: impl Into<SharedString>) -> Div {
 pub(crate) fn badge(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .flex_none()
-        .px(px(6.))
+        .px(px(theme::SPACE_1_5))
         .py(px(3.))
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::soft(color))
@@ -36,7 +36,7 @@ pub(crate) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
         .flex()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(6.))
+        .py(px(theme::SPACE_1_5))
         .child(label(key.to_string()))
         .child(
             div()
@@ -61,7 +61,7 @@ pub(crate) fn detail_editable(
         .flex()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(6.))
+        .py(px(theme::SPACE_1_5))
         .child(label(key.to_string()))
         .child(
             editable_value(id, text, editing, input, on_start, px(12.), TextAlign::Left)
@@ -220,7 +220,7 @@ pub(crate) fn stereo_controls(
     use crate::service::GraphEdit;
     div()
         .flex()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(
             button("mix-mono", t!("Mono"))
                 .variant(if node.mono {

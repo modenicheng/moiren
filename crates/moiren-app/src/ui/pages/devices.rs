@@ -156,7 +156,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     let snapshot = &state.snapshot;
     let catalog = &snapshot.catalog;
     let asio = snapshot.audio_settings.backend == moiren_engine::audio_config::AudioBackend::Asio;
-    let mut tabs = div().flex().items_center().gap(px(6.));
+    let mut tabs = div().flex().items_center().gap(px(theme::SPACE_1_5));
     for (id, title, tab) in [
         ("devices-inputs", t!("Inputs"), DeviceTab::Inputs),
         ("devices-outputs", t!("Outputs"), DeviceTab::Outputs),
@@ -276,8 +276,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .flex()
                         .flex_wrap()
                         .items_center()
-                        .gap(px(12.))
-                        .p(px(12.))
+                        .gap(px(theme::SPACE_3))
+                        .p(px(theme::SPACE_3))
                         .rounded(px(theme::RADIUS_MD))
                         .bg(theme::SURFACE)
                         .border_1()
@@ -292,7 +292,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 .flex_col()
                                 .flex_1()
                                 .min_w_0()
-                                .gap(px(4.))
+                                .gap(px(theme::SPACE_1))
                                 // Design 21 §2: Windows device names are
                                 // unbounded user text — one line, ellipsized.
                                 .child(heading(row.name.clone()).min_w_0().truncate()),
@@ -422,8 +422,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .flex()
                         .items_center()
                         .justify_between()
-                        .gap(px(12.))
-                        .p(px(12.))
+                        .gap(px(theme::SPACE_3))
+                        .p(px(theme::SPACE_3))
                         .bg(theme::SURFACE)
                         .rounded(px(theme::RADIUS_MD))
                         .child(
@@ -434,7 +434,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 // action button and ellipsizes process names.
                                 .flex_1()
                                 .min_w_0()
-                                .gap(px(4.))
+                                .gap(px(theme::SPACE_1))
                                 .child(heading(process.name.clone()).min_w_0().truncate())
                                 .child(label(t!(
                                     "PID %{pid} · created %{created}",
@@ -494,8 +494,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .h(px(theme::PAGE_TOOLBAR_HEIGHT))
                 .items_center()
                 .justify_between()
-                .px(px(16.))
-                .gap(px(8.))
+                .px(px(theme::SPACE_4))
+                .gap(px(theme::SPACE_2))
                 .child(tabs)
                 .child(
                     button("refresh-devices", t!("Refresh devices"))
@@ -518,8 +518,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 div()
                     .id("devices-asio-error")
                     .flex_none()
-                    .px(px(16.))
-                    .py(px(8.))
+                    .px(px(theme::SPACE_4))
+                    .py(px(theme::SPACE_2))
                     .bg(theme::soft(theme::DANGER))
                     .text_color(theme::DANGER)
                     .child(t!(
@@ -530,31 +530,37 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             )
         })
         .child(
-            div().flex().flex_1().min_h_0().min_w_0().p(px(16.)).child(
-                // The wrapper mirrors the list's own flex sizing: in a
-                // real viewport the pair stretches to the padded row, in
-                // a degenerate replay layout the rows' content height
-                // keeps them visible (percentage heights would collapse
-                // to zero there). The tab decides which list and bar are
-                // mounted — stacking both bars' viewport hitboxes would
-                // deafen the list beneath them to the wheel.
-                scroll_region(
-                    match shell.devices.device_tab {
-                        DeviceTab::Exports => "scrollbar-virtual-export-list",
-                        _ => "scrollbar-device-list",
-                    },
-                    match shell.devices.device_tab {
-                        DeviceTab::Exports => &shell.devices.exports_scroll,
-                        _ => &shell.devices.device_list_scroll,
-                    },
-                    ScrollbarAxis::Vertical,
-                    list.gpui_test_observe(),
-                )
+            div()
                 .flex()
-                .flex_col()
                 .flex_1()
-                .min_w_0(),
-            ),
+                .min_h_0()
+                .min_w_0()
+                .p(px(theme::SPACE_4))
+                .child(
+                    // The wrapper mirrors the list's own flex sizing: in a
+                    // real viewport the pair stretches to the padded row, in
+                    // a degenerate replay layout the rows' content height
+                    // keeps them visible (percentage heights would collapse
+                    // to zero there). The tab decides which list and bar are
+                    // mounted — stacking both bars' viewport hitboxes would
+                    // deafen the list beneath them to the wheel.
+                    scroll_region(
+                        match shell.devices.device_tab {
+                            DeviceTab::Exports => "scrollbar-virtual-export-list",
+                            _ => "scrollbar-device-list",
+                        },
+                        match shell.devices.device_tab {
+                            DeviceTab::Exports => &shell.devices.exports_scroll,
+                            _ => &shell.devices.device_list_scroll,
+                        },
+                        ScrollbarAxis::Vertical,
+                        list.gpui_test_observe(),
+                    )
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0(),
+                ),
         )
         .gpui_test_observe()
         .into_any_element()

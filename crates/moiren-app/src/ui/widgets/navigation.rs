@@ -5,6 +5,7 @@ use gpui_kit::*;
 
 use super::action_assets::ActionIcon;
 use super::action_style::{Paint, SampleState, Skin, styled_control};
+use crate::ui::theme;
 use crate::ui::theme::controls as t;
 use rust_i18n::t;
 
@@ -197,8 +198,8 @@ impl RenderOnce for WorkspaceTab {
         .flex_basis(px(t::TAB_WIDTH))
         .min_w(px(t::TAB_MIN_WIDTH))
         .h(px(t::TOOLBAR))
-        .px(px(12.))
-        .gap(px(8.))
+        .px(px(theme::SPACE_3))
+        .gap(px(theme::SPACE_2))
         .font_family(t::FONT)
         .text_size(px(12.))
         .line_height(px(16.))
