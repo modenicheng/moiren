@@ -455,8 +455,8 @@ pub(in crate::ui) fn node_drag_preview(
 fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElement {
     div()
         .absolute()
-        .bottom(px(12.))
-        .right(px(12.))
+        .bottom(px(theme::HUD_INSET))
+        .right(px(theme::HUD_INSET))
         .w(px(164.))
         .p(px(8.))
         .rounded(px(theme::RADIUS_SM))

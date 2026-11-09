@@ -20,7 +20,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         div()
             .id("project-popover")
             .absolute()
-            .top(px(44.))
+            .top(px(theme::TOOLBAR_HEIGHT))
             .left(px(32.))
             .w(px(280.))
             .p(px(12.))

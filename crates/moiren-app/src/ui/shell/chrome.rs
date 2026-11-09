@@ -16,11 +16,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
     // tighter limit when the window goes compact.
     let project_label = truncate_name(
         &shell.project_io.name,
-        if shell.chrome.compact {
-            16
-        } else {
-            STATUS_NAME_LIMIT
-        },
+        theme::compact(shell.chrome.compact, 16, STATUS_NAME_LIMIT),
     );
     let running = matches!(
         state.snapshot.phase,
@@ -313,7 +309,7 @@ pub(super) fn status_for_page(shell: &StudioShell, _window: &Window) -> AnyEleme
     // registration every frame.
     div()
         .w_full()
-        .h(px(28.))
+        .h(px(theme::STATUSBAR_HEIGHT))
         .flex_none()
         .child(shell.chrome.status.clone())
         .into_any_element()
@@ -448,7 +444,7 @@ pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> State
         .id("engine-statusbar")
         .flex()
         .flex_none()
-        .h(px(28.))
+        .h(px(theme::STATUSBAR_HEIGHT))
         .px(px(theme::SPACE_3))
         .items_center()
         .justify_between()
