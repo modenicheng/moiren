@@ -228,7 +228,7 @@ fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     let green_top = meter_height(10f32.powf(-6. / 20.));
     let red_top = meter_height(1.);
     for (bottom, top, color) in [
-        (0., green_top, theme::SUCCESS),
+        (0., green_top, theme::SIGNAL_DEVICE),
         (green_top, red_top, theme::WARNING),
         (red_top, 1., theme::DANGER),
     ] {

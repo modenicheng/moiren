@@ -282,7 +282,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .bg(theme::SURFACE)
                         .border_1()
                         .border_color(if inspected {
-                            theme::PRIMARY
+                            theme::controls::FOCUS
                         } else {
                             theme::BORDER
                         })
@@ -301,7 +301,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                             v.child(badge(t!("Unavailable"), theme::WARNING))
                         })
                         .when(saved.contains_key(&id), |v| {
-                            v.child(badge(t!("Override"), theme::PRIMARY))
+                            v.child(badge(t!("Override"), theme::controls::FOCUS))
                         })
                         .when(default && !asio, |v| {
                             v.child(badge(t!("Default"), theme::TEXT_MUTED))
@@ -323,7 +323,9 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 }),
                             )
                         })
-                        .when(active, |v| v.child(badge(t!("Active"), theme::SUCCESS)))
+                        .when(active, |v| {
+                            v.child(badge(t!("Active"), theme::SIGNAL_DEVICE))
+                        })
                         .child(
                             button(
                                 SharedString::from(format!("choose-{id}")),
@@ -594,7 +596,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .filter(|_| snapshot.phase == SessionPhase::Running)
     {
         view = view
-            .child(badge(t!("Active session"), theme::SUCCESS))
+            .child(badge(t!("Active session"), theme::SIGNAL_DEVICE))
             .child(detail(&t!("Source"), source_name(snapshot, &active.source)))
             .child(detail(
                 &t!("Output"),

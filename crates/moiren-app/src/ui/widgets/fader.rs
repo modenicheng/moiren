@@ -328,7 +328,7 @@ pub fn fader(
                             .right(px(2.))
                             .top(px(10.))
                             .h(px(2.))
-                            .bg(theme::SURFACE_3),
+                            .bg(theme::controls::RAISED),
                     ),
             ),
     )

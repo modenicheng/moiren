@@ -59,7 +59,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             } else {
                 t!("Using global defaults")
             },
-            theme::PRIMARY,
+            theme::controls::FOCUS,
         ))
         .child(detail(
             &t!("Saved request"),

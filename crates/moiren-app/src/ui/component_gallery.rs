@@ -119,7 +119,7 @@ fn row(label: impl Into<SharedString>, samples: Vec<AnyElement>) -> Div {
                 .w(px(110.))
                 .flex_none()
                 .text_size(px(theme::TEXT_CAPTION))
-                .text_color(t::SECONDARY)
+                .text_color(theme::TEXT_MUTED)
                 .child(label.into()),
         )
         .children(samples.into_iter().map(|sample| {
@@ -141,7 +141,7 @@ fn headings() -> Div {
             .map(|label| {
                 div()
                     .text_size(px(theme::TEXT_XS))
-                    .text_color(t::MUTED)
+                    .text_color(theme::TEXT_FAINT)
                     .child(label)
                     .into_any_element()
             })
@@ -288,9 +288,9 @@ impl Render for ComponentGallery {
             .size_full()
             .flex()
             .flex_col()
-            .bg(t::CANVAS)
+            .bg(theme::WINDOW_BG)
             .font_family(t::FONT)
-            .text_color(t::TEXT)
+            .text_color(theme::TEXT)
             .text_size(px(theme::TEXT_MD))
             .child(
                 div()
@@ -299,7 +299,7 @@ impl Render for ComponentGallery {
                     .items_center()
                     .justify_between()
                     .p(px(theme::SPACE_4))
-                    .bg(t::PANEL)
+                    .bg(theme::SURFACE)
                     .child(
                         div()
                             .flex()
@@ -314,7 +314,7 @@ impl Render for ComponentGallery {
                             .child(
                                 div()
                                     .text_size(px(theme::TEXT_SM))
-                                    .text_color(t::SECONDARY)
+                                    .text_color(theme::TEXT_MUTED)
                                     .child("Navigation & Actions · Figma v0.1.2"),
                             ),
                     )
@@ -399,7 +399,7 @@ impl Render for ComponentGallery {
                     .items_center()
                     .gap(px(theme::SPACE_4))
                     .p(px(theme::SPACE_3))
-                    .bg(t::PANEL)
+                    .bg(theme::SURFACE)
                     .child(
                         ActionButton::new("live-action", "Apply")
                             .variant(ButtonVariant::Primary)
@@ -439,7 +439,7 @@ impl Render for ComponentGallery {
                                     }))
                             }),
                     )
-                    .child(div().text_color(t::SECONDARY).child(format!(
+                    .child(div().text_color(theme::TEXT_MUTED).child(format!(
                         "{} activations · selected {}",
                         self.clicks, self.selected
                     ))),

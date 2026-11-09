@@ -33,9 +33,11 @@ pub(crate) fn kind_tint(kind: NodeKind) -> Hsla {
     match kind {
         Source => theme::NODE_SOURCE,
         Sink => theme::NODE_SINK,
-        Bus | Rack | ChannelMapper => theme::NODE_UTILITY,
-        Recorder | Meter | SpectrumAnalyzer => theme::NODE_ANALYSIS,
-        _ => theme::NODE_DSP,
+        Bus | Rack | ChannelMapper => theme::TEXT_FAINT,
+        Recorder | Meter | SpectrumAnalyzer => theme::SIGNAL_DEVICE,
+        // DSP (and any future kind without a dedicated hue) wears the shared
+        // accent: `controls::FOCUS` doubles as the DSP node tint.
+        _ => theme::controls::FOCUS,
     }
 }
 
@@ -228,7 +230,7 @@ impl NodeTemplate {
     }
 
     pub fn tint(self) -> Hsla {
-        self.kind().map_or(theme::NODE_DSP, kind_tint)
+        self.kind().map_or(theme::controls::FOCUS, kind_tint)
     }
 
     pub fn matches(self, query: &str) -> bool {

@@ -194,7 +194,7 @@ fn color_row(
                         .m(px(3.))
                         .size(px(8.))
                         .rounded(px(2.))
-                        .bg(theme::PRIMARY.opacity(0.5)),
+                        .bg(theme::controls::FOCUS.opacity(0.5)),
                 )
             })
             .on_click({

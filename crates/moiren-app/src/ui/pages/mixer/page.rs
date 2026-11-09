@@ -374,7 +374,7 @@ fn strip_column(
         .h_full()
         .min_h_0()
         .bg(if selected {
-            theme::SURFACE_3
+            theme::controls::RAISED
         } else {
             theme::SURFACE
         })

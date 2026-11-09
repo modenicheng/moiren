@@ -269,7 +269,7 @@ fn paint_eq_plot(
             ),
             size: size(px(12.), px(12.)),
         },
-        theme::PRIMARY.opacity(0.3),
+        theme::controls::FOCUS.opacity(0.3),
     ));
     window.paint_quad(fill(
         Bounds {

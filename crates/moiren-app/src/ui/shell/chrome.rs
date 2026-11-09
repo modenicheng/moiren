@@ -434,7 +434,7 @@ pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> State
     let snapshot = &state.snapshot;
     let running = snapshot.phase == SessionPhase::Running;
     let color = if running {
-        theme::SUCCESS
+        theme::SIGNAL_DEVICE
     } else if snapshot.phase == SessionPhase::Failed {
         theme::DANGER
     } else {

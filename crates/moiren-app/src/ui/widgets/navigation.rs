@@ -70,18 +70,30 @@ impl WindowControlButton {
 
 impl RenderOnce for WindowControlButton {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let normal = Paint::new(t::TRANSPARENT, t::MUTED, t::TRANSPARENT);
+        let normal = Paint::new(t::TRANSPARENT, theme::TEXT_FAINT, t::TRANSPARENT);
         let close = matches!(self.action, WindowAction::Close);
         let skin = Skin {
             normal,
             hover: Paint::new(
-                if close { t::DANGER } else { t::RAISED },
-                if close { t::ON_ACCENT } else { t::MUTED },
+                if close { theme::DANGER } else { t::RAISED },
+                if close {
+                    t::ON_ACCENT
+                } else {
+                    theme::TEXT_FAINT
+                },
                 t::TRANSPARENT,
             ),
             pressed: Paint::new(
-                if close { t::CLOSE_PRESSED } else { t::CANVAS },
-                if close { t::ON_ACCENT } else { t::MUTED },
+                if close {
+                    t::CLOSE_PRESSED
+                } else {
+                    theme::WINDOW_BG
+                },
+                if close {
+                    t::ON_ACCENT
+                } else {
+                    theme::TEXT_FAINT
+                },
                 t::TRANSPARENT,
             ),
             disabled: normal,
@@ -158,7 +170,11 @@ impl RenderOnce for WorkspaceTab {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let normal = Paint::new(
             t::TRANSPARENT,
-            if self.active { t::TEXT } else { t::SECONDARY },
+            if self.active {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            },
             t::TRANSPARENT,
         );
         let skin = Skin {
@@ -168,7 +184,7 @@ impl RenderOnce for WorkspaceTab {
                 ..normal
             },
             pressed: Paint {
-                bg: t::CANVAS,
+                bg: theme::WINDOW_BG,
                 ..normal
             },
             disabled: Paint {

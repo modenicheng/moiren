@@ -1049,11 +1049,11 @@ pub(super) fn paint_node(
     } else if node.preparing {
         (theme::WARNING, theme::card::OUTLINE_REST_W)
     } else if selected {
-        (theme::PRIMARY, theme::card::OUTLINE_W)
+        (theme::controls::FOCUS, theme::card::OUTLINE_W)
     } else {
         (theme::GRIP, theme::card::OUTLINE_REST_W)
     };
-    rounded(card, theme::SURFACE_3, radius, window);
+    rounded(card, theme::controls::RAISED, radius, window);
     if node.faulted {
         // The faint red wash over the card's own surface, under the rail
         // and body that the masked paint lays on top of it.
