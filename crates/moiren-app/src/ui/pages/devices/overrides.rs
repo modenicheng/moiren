@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::shell::settings::{Direction, Editor};
-use crate::ui::widgets::overlay_scrollbar::{notify_owner, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
 
@@ -170,28 +170,24 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .border_color(theme::BORDER)
         .rounded(px(theme::RADIUS_MD))
         .child(
-            div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    div()
-                        .id("device-override-scroll")
-                        .w_full()
-                        .h_full()
-                        .track_scroll(&shell.devices.device_override_scroll)
-                        .restrict_scroll_to_axis()
-                        .overflow_y_scroll()
-                        .on_scroll_wheel(notify_owner(cx.entity()))
-                        .p(px(16.))
-                        .child(content)
-                        .gpui_test_observe(),
-                )
-                .child(overlay_scrollbar(
-                    &shell.devices.device_override_scroll,
-                    "scrollbar-device-override-scroll",
-                    ScrollbarAxis::Vertical,
-                )),
+            scroll_region(
+                "scrollbar-device-override-scroll",
+                &shell.devices.device_override_scroll,
+                ScrollbarAxis::Vertical,
+                div()
+                    .id("device-override-scroll")
+                    .w_full()
+                    .h_full()
+                    .track_scroll(&shell.devices.device_override_scroll)
+                    .restrict_scroll_to_axis()
+                    .overflow_y_scroll()
+                    .on_scroll_wheel(notify_owner(cx.entity()))
+                    .p(px(16.))
+                    .child(content)
+                    .gpui_test_observe(),
+            )
+            .flex_1()
+            .min_h_0(),
         )
         .child(settings::footer(shell, Editor::Device, cx))
         .gpui_test_observe()
