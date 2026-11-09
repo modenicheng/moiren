@@ -110,6 +110,15 @@ fn hex_to_cid(text: &str) -> Option<TUID> {
     Some(cid)
 }
 
+/// Whether an advisory lifecycle call (`setupProcessing`, `setActive`,
+/// `setProcessing`) failed. `kNotImplemented` is accepted: the VST3 SDK's
+/// own `ComponentBase`/`AudioEffect` base implementations return it for
+/// these methods, so it means "the plugin ignores this call", not failure.
+/// Real hosts (JUCE ignores the return entirely) continue processing.
+fn declined_lifecycle(result: i32) -> bool {
+    result != K_RESULT_OK && result != K_NOT_IMPLEMENTED
+}
+
 // ---------------------------------------------------------------------------
 // Host COM objects
 // ---------------------------------------------------------------------------
@@ -1057,7 +1066,7 @@ pub(crate) fn instantiate(
         sample_rate,
     };
     // SAFETY: live processor; the setup matches the host's engine config.
-    if unsafe { IAudioProcessor::setup_processing(audio, &mut setup) } != K_RESULT_OK {
+    if declined_lifecycle(unsafe { IAudioProcessor::setup_processing(audio, &mut setup) }) {
         return Err(unwind(
             audio,
             component,
@@ -1069,7 +1078,7 @@ pub(crate) fn instantiate(
     }
     // SAFETY: live component/processor.
     unsafe {
-        if IComponent::set_active(component, 1) != K_RESULT_OK {
+        if declined_lifecycle(IComponent::set_active(component, 1)) {
             return Err(unwind(
                 audio,
                 component,
@@ -1079,7 +1088,7 @@ pub(crate) fn instantiate(
                 PluginError::Init("setActive(true) failed".into()),
             ));
         }
-        if IAudioProcessor::set_processing(audio, 1) != K_RESULT_OK {
+        if declined_lifecycle(IAudioProcessor::set_processing(audio, 1)) {
             return Err(unwind(
                 audio,
                 component,
