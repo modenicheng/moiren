@@ -434,18 +434,6 @@ const DEBUG_TEXT_ALLOWLIST: &[DebugTextSite] = &[
         remove_when: "UiState.dispatch_error stores a key plus args instead of a Debug blob (design 21 §4)",
     },
     DebugTextSite {
-        file: "ui/monitoring.rs",
-        near: "",
-        pattern: "\"Meter subscription: %{error}\"",
-        remove_when: "MeterStatus::Error stores key plus args for the meter subscription failure (design 21 §4)",
-    },
-    DebugTextSite {
-        file: "ui/monitoring/spectrum.rs",
-        near: "",
-        pattern: "\"Spectrum subscription: %{error}\"",
-        remove_when: "MeterStatus::Error stores key plus args for the spectrum subscription failure (design 21 §4)",
-    },
-    DebugTextSite {
         file: "ui/shell/project.rs",
         near: "",
         pattern: "\"Could not open save dialog: %{error}\"",
