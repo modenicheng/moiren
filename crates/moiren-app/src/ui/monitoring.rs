@@ -59,6 +59,21 @@ pub struct DisplayLevel {
     pub rms: f32,
 }
 
+/// Why a meter or spectrum subscription sits in the error state. The payload
+/// is diagnostic data (a topic-infrastructure Display string), never rendered
+/// text: the sentence is chosen and translated at paint time by
+/// [`MeterStatus::text`], so a locale switch re-renders instead of freezing
+/// the wording captured when the fault happened (design 21 §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeterFault {
+    /// The subscription request was refused before reaching the topic
+    /// (mailbox busy, service exiting or disconnected).
+    SubscribeFailed,
+    /// Handing the subscriber over failed; the topic infrastructure's
+    /// Display string (topic name, cause) is kept as diagnostic data.
+    TakeFailed(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeterStatus {
     Hidden,
@@ -68,20 +83,28 @@ pub enum MeterStatus {
     Live,
     Stale,
     NoPublisher,
-    Error(String),
+    Error(MeterFault),
 }
 
 impl MeterStatus {
-    pub fn label(&self) -> &str {
+    /// Paint-time rendering of the status line: fixed states translate their
+    /// catalog keys here, and a fault renders its family sentence around the
+    /// stored diagnostic payload. The meter family owns the only text paint
+    /// path today (the graph node inspector); the spectrum family stores the
+    /// same fault type but is never rendered as text.
+    pub fn text(&self) -> String {
         match self {
-            Self::Hidden => "Hidden",
-            Self::Stopped => "Stopped",
-            Self::NotAvailable => "Unavailable",
-            Self::Waiting => "Waiting for a complete window",
-            Self::Live => "Live",
-            Self::Stale => "No recent audio window",
-            Self::NoPublisher => "No publisher",
-            Self::Error(error) => error,
+            Self::Hidden => t!("Hidden").to_string(),
+            Self::Stopped => t!("Stopped").to_string(),
+            Self::NotAvailable => t!("Unavailable").to_string(),
+            Self::Waiting => t!("Waiting for a complete window").to_string(),
+            Self::Live => t!("Live").to_string(),
+            Self::Stale => t!("No recent audio window").to_string(),
+            Self::NoPublisher => t!("No publisher").to_string(),
+            Self::Error(MeterFault::SubscribeFailed) => t!("Meter subscription failed").to_string(),
+            Self::Error(MeterFault::TakeFailed(error)) => {
+                t!("Meter subscription: %{error}", error = error).to_string()
+            }
         }
     }
 }
@@ -572,10 +595,8 @@ impl MeterSubscription {
             },
         ) {
             Ok(ticket) => this.ticket = Some(ticket),
-            Err(error) => {
-                this.status = MeterStatus::Error(
-                    t!("Meter subscription: %{error}", error = format!("{error:?}")).to_string(),
-                );
+            Err(_) => {
+                this.status = MeterStatus::Error(MeterFault::SubscribeFailed);
             }
         }
         this
@@ -612,9 +633,7 @@ impl MeterSubscription {
                     self.ticket = None;
                     raw_changed |= self.levels.is_some();
                     self.levels = None;
-                    self.status = MeterStatus::Error(
-                        t!("Meter subscription: %{error}", error = error.to_string()).to_string(),
-                    );
+                    self.status = MeterStatus::Error(MeterFault::TakeFailed(error.to_string()));
                     return MeterPoll {
                         published: false,
                         raw_changed,
@@ -766,6 +785,21 @@ mod tests {
     use super::*;
 
     const WINDOW: Duration = Duration::from_millis(4);
+
+    #[test]
+    fn meter_fault_text_translates_at_paint_per_locale() {
+        // The stored fault is data, so the sentence is chosen at paint time:
+        // pin both locale renderings explicitly, ending on the default
+        // locale so the process-global state is left as the test found it.
+        let subscribe_failed = MeterStatus::Error(MeterFault::SubscribeFailed);
+        let take_failed = MeterStatus::Error(MeterFault::TakeFailed("topic closed".into()));
+        rust_i18n::set_locale(crate::i18n::SIMPLIFIED_CHINESE);
+        assert_eq!(subscribe_failed.text(), "电平表订阅失败");
+        assert_eq!(take_failed.text(), "电平表订阅：topic closed");
+        rust_i18n::set_locale(crate::i18n::ENGLISH);
+        assert_eq!(subscribe_failed.text(), "Meter subscription failed");
+        assert_eq!(take_failed.text(), "Meter subscription: topic closed");
+    }
 
     #[test]
     fn ballistics_reach_rest_only_after_every_layer_decays_under_the_scale_bottom() {
