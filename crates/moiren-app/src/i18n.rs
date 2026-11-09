@@ -89,6 +89,16 @@ mod tests {
             rust_i18n::t!("Peak hold", locale = SIMPLIFIED_CHINESE),
             "峰值保持"
         );
+        // Strip and send-tap chrome localized through t! (PRE/POST are the
+        // pre/post-fader taps; see routing.rs).
+        assert_eq!(rust_i18n::t!("PRE", locale = SIMPLIFIED_CHINESE), "推子前");
+        assert_eq!(rust_i18n::t!("POST", locale = SIMPLIFIED_CHINESE), "推子后");
+        assert_eq!(rust_i18n::t!("ST", locale = SIMPLIFIED_CHINESE), "立体声");
+        assert_eq!(rust_i18n::t!("MONO", locale = SIMPLIFIED_CHINESE), "单声道");
+        assert_eq!(
+            rust_i18n::t!("%{channels} CH", locale = SIMPLIFIED_CHINESE, channels = 6),
+            "6 声道"
+        );
         assert_eq!(rust_i18n::t!("No sends", locale = ENGLISH), "No sends");
     }
 }

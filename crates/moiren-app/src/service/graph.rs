@@ -374,6 +374,10 @@ impl Default for ServiceGraph {
 }
 /// Default label for freshly created nodes. A Source/Sink node still carrying
 /// its default label follows the bound device name in presentation instead.
+///
+/// Ratified: labels are user-editable data, not UI chrome, so the canonical
+/// stored strings are intentionally English and are never localized — only
+/// genuinely translatable chrome goes through `t!`.
 pub fn default_label(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Source => "Input",

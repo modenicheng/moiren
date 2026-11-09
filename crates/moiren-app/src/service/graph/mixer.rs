@@ -38,15 +38,20 @@ impl MixerState {
             && self.channel_mode <= channels + 2
     }
 
+    /// The channel-mode button's compact label, translated at render time.
+    /// Only the UI thread calls this (strip render), and the stored state is
+    /// the `channel_mode` index, never this string, so switching languages
+    /// re-renders rather than freezing text. Tests read it under the default
+    /// `en` locale, whose values mirror the English source strings.
     pub fn mode_label(self, channels: usize) -> String {
         match self.channel_mode {
-            0 if channels == 2 => "ST".into(),
-            0 => format!("{channels} CH"),
-            1 => "MONO".into(),
-            mode if mode == channels + 2 => "SWAP".into(),
-            2 if channels == 2 => "L".into(),
-            3 if channels == 2 => "R".into(),
-            mode => format!("CH {} ONLY", mode - 1),
+            0 if channels == 2 => rust_i18n::t!("ST").into_owned(),
+            0 => rust_i18n::t!("%{channels} CH", channels = channels).into_owned(),
+            1 => rust_i18n::t!("MONO").into_owned(),
+            mode if mode == channels + 2 => rust_i18n::t!("SWAP").into_owned(),
+            2 if channels == 2 => rust_i18n::t!("L").into_owned(),
+            3 if channels == 2 => rust_i18n::t!("R").into_owned(),
+            mode => rust_i18n::t!("CH %{n} ONLY", n = mode - 1).into_owned(),
         }
     }
 

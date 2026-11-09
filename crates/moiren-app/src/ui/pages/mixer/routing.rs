@@ -349,7 +349,7 @@ pub(super) fn sends(
                 );
             }
             row = row.child(div().id(SharedString::from(format!("send-tap-{edge_id:?}"))).flex_none()
-                .child(button(SharedString::from(format!("send-pre-{edge_id:?}")), if pre { "PRE" } else { "POST" })
+                .child(button(SharedString::from(format!("send-pre-{edge_id:?}")), if pre { t!("PRE") } else { t!("POST") })
                     .tooltip(t!("PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim."))
                     .density(Density::Compact)
                     .square()

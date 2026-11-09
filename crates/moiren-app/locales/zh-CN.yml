@@ -977,6 +977,12 @@ _version: 2
 "Choose an output":
   en: Choose an output
   zh-CN: 选择输出
+"L/R":
+  en: L/R
+  zh-CN: 左/右
+"%{channels} ch":
+  en: "%{channels} ch"
+  zh-CN: "%{channels} 声道"
 "%{ms} ms · %{percent}% wet":
   en: "%{ms} ms · %{percent}% wet"
   zh-CN: "%{ms} ms · 湿声 %{percent}%"
@@ -1226,24 +1232,60 @@ _version: 2
 "Enable send; turning it off preserves its gain":
   en: Enable send; turning it off preserves its gain
   zh-CN: 启用发送；关闭时保留增益设置
+"PRE":
+  en: PRE
+  zh-CN: 推子前
+"POST":
+  en: POST
+  zh-CN: 推子后
 "PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim.":
   en: "PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim."
-  zh-CN: "PRE：位于声道模式、声像与静音之后，增益与 DIM 之前。POST：位于增益与 DIM 之后。"
+  zh-CN: "推子前：位于声道模式、声像与静音之后，增益与衰减之前。推子后：位于增益与衰减之后。"
 "Mute this channel":
   en: Mute this channel
   zh-CN: 静音此通道
 "Solo this channel and its connected signal path":
   en: Solo this channel and its connected signal path
   zh-CN: 独奏此通道及其相连的信号路径
+"M":
+  en: M
+  zh-CN: 静音
+"S":
+  en: S
+  zh-CN: 独奏
 "Stereo -> Mono average -> Left to both -> Right to both -> Swap":
   en: Stereo -> Mono average -> Left to both -> Right to both -> Swap
   zh-CN: 立体声 → 单声道平均 → 左声道复制到双侧 → 右声道复制到双侧 → 交换左右
 "Cycle normal, mono average, individual channels, and reverse channel order":
   en: Cycle normal, mono average, individual channels, and reverse channel order
   zh-CN: 循环切换正常、单声道平均、独立声道与反转声道顺序
+"ST":
+  en: ST
+  zh-CN: 立体声
+"MONO":
+  en: MONO
+  zh-CN: 单声道
+"SWAP":
+  en: SWAP
+  zh-CN: 交换
+"L":
+  en: L
+  zh-CN: 左
+"R":
+  en: R
+  zh-CN: 右
+"%{channels} CH":
+  en: "%{channels} CH"
+  zh-CN: "%{channels} 声道"
+"CH %{n} ONLY":
+  en: "CH %{n} ONLY"
+  zh-CN: "仅声道 %{n}"
+"DIM":
+  en: DIM
+  zh-CN: 衰减
 "Dim attenuates the post-fader signal by 12 dB":
   en: Dim attenuates the post-fader signal by 12 dB
-  zh-CN: DIM 将推子后信号衰减 12 dB
+  zh-CN: 衰减将推子后信号降低 12 dB
 "Drag to reorder channels within the same mixer section":
   en: Drag to reorder channels within the same mixer section
   zh-CN: 拖动以调整同一混音区域内的通道顺序
