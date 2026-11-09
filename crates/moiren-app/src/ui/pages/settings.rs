@@ -46,7 +46,7 @@ pub(crate) struct SettingsKey {
     density: Density,
     restore_last_project: bool,
     pending_request: bool,
-    project_message: Option<String>,
+    project_message: Option<project::ProjectMessage>,
 }
 
 pub(crate) type SettingsPanelHost = PanelHost<SettingsPanel>;
@@ -693,8 +693,8 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                             .gpui_test_observe(),
                     )
                 })
-                .when_some(shell.project_io.message.clone(), |view, text| {
-                    view.child(label(text))
+                .when_some(shell.project_io.message.clone(), |view, message| {
+                    view.child(label(project::message_text(&message)))
                 }),
         ))
         .child(

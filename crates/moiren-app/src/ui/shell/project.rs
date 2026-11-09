@@ -93,7 +93,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     }
     let popover = popover
         .when_some(shell.project_io.message.clone(), |v, message| {
-            v.child(label(message))
+            v.child(label(message_text(&message)))
         })
         .child(label(t!("Opening a project keeps audio stopped.")));
     occluding_page(
@@ -111,12 +111,56 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests {
-    use super::{Duration, ProjectDocument};
+    use super::{Duration, PersistedFailure, ProjectDocument, ProjectMessage, message_text_in};
+    use crate::i18n::{ENGLISH, SIMPLIFIED_CHINESE, zh};
     use crate::ui::UiState;
     use crate::ui::shell::test_harness::{
         finish_service, initial_projection, shell_with_state, spawn_service, test_shell, wait_until,
     };
     use gpui_kit::AppContext;
+
+    #[test]
+    fn project_message_text_flips_with_the_locale() {
+        // Static sentences relabel; en is the literal fallback.
+        assert_eq!(
+            message_text_in(&ProjectMessage::Saved, ENGLISH),
+            "Project saved"
+        );
+        assert_eq!(
+            message_text_in(&ProjectMessage::Saved, SIMPLIFIED_CHINESE),
+            zh("Project saved")
+        );
+        assert_eq!(
+            message_text_in(&ProjectMessage::LoadRequested, SIMPLIFIED_CHINESE),
+            zh("Project load requested")
+        );
+        // Interpolated payloads keep their data across the flip; only the
+        // wrapper sentence relabels.
+        let failed = ProjectMessage::NotLoaded {
+            cause: "stale revision".into(),
+        };
+        assert_eq!(
+            message_text_in(&failed, ENGLISH),
+            "Project was not loaded: stale revision"
+        );
+        assert_eq!(
+            message_text_in(&failed, SIMPLIFIED_CHINESE),
+            zh("Project was not loaded: %{error}").replace("%{error}", "stale revision")
+        );
+        // A persisted failure: the closed variant drives the sentence.
+        let too_large = ProjectMessage::Persisted(PersistedFailure::TooLarge {
+            path: std::path::PathBuf::from("Z:/sets/live.moiren.json"),
+        });
+        assert_eq!(
+            message_text_in(&too_large, ENGLISH),
+            "Document Z:/sets/live.moiren.json exceeds the 8 MiB limit"
+        );
+        assert_eq!(
+            message_text_in(&too_large, SIMPLIFIED_CHINESE),
+            zh("Document %{path} exceeds the 8 MiB limit")
+                .replace("%{path}", "Z:/sets/live.moiren.json")
+        );
+    }
 
     #[gpui_kit::test]
     fn project_presentation_waits_for_service_and_maps_sparse_document_ids(
@@ -434,13 +478,245 @@ mod tests {
     }
 }
 
+/// The project status line's typed payload (design 21 §4): [`ProjectIo`]
+/// stores what happened, and the paint sites translate it through
+/// [`message_text`]. No prose is frozen into state, so a locale switch
+/// relabels the stored event on the next repaint.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ProjectMessage {
+    Saved,
+    Opened,
+    LoadRequested,
+    /// The service declined the load; `cause` is the service's stable
+    /// cause string (`snapshot.graph.last_error`).
+    NotLoaded {
+        cause: String,
+    },
+    /// A persistence-layer failure, stored as [`PersistedFailure`] (the
+    /// cloneable mirror of the closed `PersistenceError`); the sentence is
+    /// chosen at paint by matching the variant.
+    Persisted(PersistedFailure),
+    /// The native save dialog failed to open; `detail` is the dialog
+    /// layer's Display prose (infrastructure diagnostics).
+    SaveDialogFailed {
+        detail: String,
+    },
+    /// The native open dialog failed to open; `detail` as above.
+    LoadDialogFailed {
+        detail: String,
+    },
+    /// The background autosave write failed; `cause` is the persistence prose.
+    AutoSaveFailed {
+        cause: String,
+    },
+    PreferencesSaved,
+    PreferencesSaveQueued,
+    /// The preferences write failed; `cause` is the persistence prose.
+    PreferencesSaveFailed {
+        cause: String,
+    },
+}
+
+/// The UI-side, cloneable mirror of the closed
+/// [`crate::project::PersistenceError`]: one variant each, with the
+/// `io::Error`/`serde_json::Error` sources degraded to their Display prose
+/// (diagnostic data; the sentence around it is translated at paint). The
+/// mirror exists because the status message rides `Clone`/`PartialEq`
+/// plumbing (settings key, tray snapshot) the raw errors cannot.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PersistedFailure {
+    Io {
+        operation: &'static str,
+        path: std::path::PathBuf,
+        source: String,
+    },
+    Json {
+        path: std::path::PathBuf,
+        source: String,
+    },
+    Invalid {
+        field: String,
+        reason: String,
+    },
+    UnsupportedVersion {
+        document: &'static str,
+        version: u32,
+    },
+    TooLarge {
+        path: std::path::PathBuf,
+    },
+    ConfigurationDirectoryUnavailable,
+}
+
+impl From<crate::project::PersistenceError> for PersistedFailure {
+    fn from(error: crate::project::PersistenceError) -> Self {
+        match error {
+            crate::project::PersistenceError::Io {
+                operation,
+                path,
+                source,
+            } => Self::Io {
+                operation,
+                path,
+                source: source.to_string(),
+            },
+            crate::project::PersistenceError::Json { path, source } => Self::Json {
+                path,
+                source: source.to_string(),
+            },
+            crate::project::PersistenceError::Invalid { field, reason } => {
+                Self::Invalid { field, reason }
+            }
+            crate::project::PersistenceError::UnsupportedVersion { document, version } => {
+                Self::UnsupportedVersion { document, version }
+            }
+            crate::project::PersistenceError::TooLarge { path } => Self::TooLarge { path },
+            crate::project::PersistenceError::ConfigurationDirectoryUnavailable => {
+                Self::ConfigurationDirectoryUnavailable
+            }
+        }
+    }
+}
+
+/// Paint-time translation of the stored status message: one literal `t!`
+/// sentence per case, payloads interpolated as data. Reads the process
+/// locale, exactly like the other `t!` paint sites.
+pub(crate) fn message_text(message: &ProjectMessage) -> String {
+    message_text_in(message, &rust_i18n::locale())
+}
+
+/// [`message_text`] under an explicit locale — the seam the locale-flip
+/// test uses so parallel tests never touch the process-global locale.
+fn message_text_in(message: &ProjectMessage, locale: &str) -> String {
+    match message {
+        ProjectMessage::Saved => t!("Project saved", locale = locale).to_string(),
+        ProjectMessage::Opened => t!("Project opened", locale = locale).to_string(),
+        ProjectMessage::LoadRequested => t!("Project load requested", locale = locale).to_string(),
+        ProjectMessage::NotLoaded { cause } => t!(
+            "Project was not loaded: %{error}",
+            locale = locale,
+            error = cause
+        )
+        .to_string(),
+        ProjectMessage::SaveDialogFailed { detail } => t!(
+            "Could not open save dialog: %{error}",
+            locale = locale,
+            error = detail
+        )
+        .to_string(),
+        ProjectMessage::LoadDialogFailed { detail } => t!(
+            "Could not open file dialog: %{error}",
+            locale = locale,
+            error = detail
+        )
+        .to_string(),
+        ProjectMessage::AutoSaveFailed { cause } => t!(
+            "Could not auto-save: %{error}",
+            locale = locale,
+            error = cause
+        )
+        .to_string(),
+        ProjectMessage::PreferencesSaved => t!("Preferences saved", locale = locale).to_string(),
+        ProjectMessage::PreferencesSaveQueued => {
+            t!("Preferences save queued", locale = locale).to_string()
+        }
+        ProjectMessage::PreferencesSaveFailed { cause } => t!(
+            "Could not save preferences: %{error}",
+            locale = locale,
+            error = cause
+        )
+        .to_string(),
+        ProjectMessage::Persisted(error) => persistence_error_text(error, locale),
+    }
+}
+
+/// One literal sentence per closed [`PersistedFailure`] variant; each
+/// variant's own fields ride along as interpolated diagnostic detail.
+fn persistence_error_text(error: &PersistedFailure, locale: &str) -> String {
+    match error {
+        PersistedFailure::Io {
+            operation,
+            path,
+            source,
+        } => t!(
+            "Could not %{operation} %{path}: %{source}",
+            locale = locale,
+            operation = operation,
+            path = path.display().to_string(),
+            source = source,
+        )
+        .to_string(),
+        PersistedFailure::Json { path, source } => t!(
+            "Invalid JSON in %{path}: %{source}",
+            locale = locale,
+            path = path.display().to_string(),
+            source = source,
+        )
+        .to_string(),
+        PersistedFailure::Invalid { field, reason } => t!(
+            "Invalid %{field}: %{reason}",
+            locale = locale,
+            field = field,
+            reason = reason,
+        )
+        .to_string(),
+        PersistedFailure::UnsupportedVersion { document, version } => t!(
+            "Unsupported %{document} document version %{version}",
+            locale = locale,
+            document = document,
+            version = version,
+        )
+        .to_string(),
+        PersistedFailure::TooLarge { path } => t!(
+            "Document %{path} exceeds the 8 MiB limit",
+            locale = locale,
+            path = path.display().to_string(),
+        )
+        .to_string(),
+        PersistedFailure::ConfigurationDirectoryUnavailable => t!(
+            "User configuration directory is unavailable",
+            locale = locale
+        )
+        .to_string(),
+    }
+}
+
+/// Flattens a file-dialog outcome into the chosen path or the failure
+/// prose. Both fallible layers — the dialog itself and the answer channel —
+/// carry Display errors, so the payload never needs a Debug blob.
+fn dialog_outcome<T>(
+    outcome: Result<Result<Option<T>, anyhow::Error>, impl std::fmt::Display>,
+) -> Result<Option<T>, String> {
+    match outcome {
+        Ok(Ok(path)) => Ok(path),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Short cause prose for the closed [`crate::service::DispatchError`] set.
+/// These ride inside `PersistedFailure::Invalid` as diagnostic detail
+/// (data); the sentence around them is translated at paint. The Debug blob
+/// they replace said even less than these one-liners.
+fn dispatch_error_cause(error: crate::service::DispatchError) -> &'static str {
+    use crate::service::DispatchError as E;
+    match error {
+        E::Busy => "the service is busy",
+        E::Exiting => "the service is exiting",
+        E::Disconnected => "the service is disconnected",
+        E::InvalidConfig => "the request configuration is invalid",
+        E::GenerationExhausted => "the graph revision space is exhausted",
+        E::RequestIdExhausted => "the request id space is exhausted",
+    }
+}
+
 /// The ProjectIo group of StudioShell state (design 20 §4): the open
 /// project's file identity and status line, and the in-flight load staged
 /// while the service confirms.
 pub(crate) struct ProjectIo {
     pub(crate) path: Option<std::path::PathBuf>,
     pub(crate) name: String,
-    pub(crate) message: Option<String>,
+    pub(crate) message: Option<ProjectMessage>,
     pub(crate) busy: bool,
     pub(crate) pending: Option<(
         crate::service::RequestId,
@@ -506,7 +782,7 @@ impl StudioShell {
         let document = match self.project_document(cx) {
             Ok(document) => document,
             Err(error) => {
-                self.project_io.message = Some(error.to_string());
+                self.project_io.message = Some(ProjectMessage::Persisted(error.into()));
                 cx.notify();
                 return;
             }
@@ -524,17 +800,13 @@ impl StudioShell {
             let path = if let Some(path) = known {
                 Some(path)
             } else {
-                match prompt.expect("save prompt").await {
-                    Ok(Ok(path)) => path,
-                    other => {
-                        let message = t!(
-                            "Could not open save dialog: %{error}",
-                            error = format!("{other:?}")
-                        )
-                        .to_string();
+                match dialog_outcome(prompt.expect("save prompt").await) {
+                    Ok(path) => path,
+                    Err(detail) => {
                         let _ = this.update(cx, |s, cx| {
                             s.project_io.busy = false;
-                            s.project_io.message = Some(message);
+                            s.project_io.message =
+                                Some(ProjectMessage::SaveDialogFailed { detail });
                             cx.notify();
                         });
                         return;
@@ -558,10 +830,12 @@ impl StudioShell {
                 match result {
                     Ok(()) => {
                         s.project_io.path = Some(path);
-                        s.project_io.message = Some(t!("Project saved").into());
+                        s.project_io.message = Some(ProjectMessage::Saved);
                         s.remember_project_file(cx);
                     }
-                    Err(error) => s.project_io.message = Some(error.to_string()),
+                    Err(error) => {
+                        s.project_io.message = Some(ProjectMessage::Persisted(error.into()))
+                    }
                 }
                 cx.notify();
             });
@@ -579,19 +853,13 @@ impl StudioShell {
         self.project_io.busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let path = match prompt.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                Ok(Ok(None)) => None,
-                other => {
+            let path = match dialog_outcome(prompt.await) {
+                Ok(Some(paths)) => paths.into_iter().next(),
+                Ok(None) => None,
+                Err(detail) => {
                     let _ = this.update(cx, |s, cx| {
                         s.project_io.busy = false;
-                        s.project_io.message = Some(
-                            t!(
-                                "Could not open file dialog: %{error}",
-                                error = format!("{other:?}")
-                            )
-                            .to_string(),
-                        );
+                        s.project_io.message = Some(ProjectMessage::LoadDialogFailed { detail });
                         cx.notify();
                     });
                     return;
@@ -633,9 +901,13 @@ impl StudioShell {
                 match result {
                     Ok(document) => match s.stage_project(document, path, cx) {
                         Ok(()) => {}
-                        Err(error) => s.project_io.message = Some(error.to_string()),
+                        Err(error) => {
+                            s.project_io.message = Some(ProjectMessage::Persisted(error.into()))
+                        }
                     },
-                    Err(error) => s.project_io.message = Some(error.to_string()),
+                    Err(error) => {
+                        s.project_io.message = Some(ProjectMessage::Persisted(error.into()))
+                    }
                 }
                 cx.notify();
             });
@@ -657,10 +929,10 @@ impl StudioShell {
             })
             .map_err(|error| crate::project::PersistenceError::Invalid {
                 field: "service request".into(),
-                reason: format!("{error:?}"),
+                reason: dispatch_error_cause(error).into(),
             })?;
         self.project_io.busy = true;
-        self.project_io.message = Some(t!("Project load requested").into());
+        self.project_io.message = Some(ProjectMessage::LoadRequested);
         self.project_io.pending = Some((request, document, path));
         Ok(())
     }
@@ -676,16 +948,19 @@ impl StudioShell {
         let (_, document, path) = self.project_io.pending.take().expect("pending project");
         self.project_io.busy = false;
         if let Some(error) = &snapshot.graph.last_error {
-            self.project_io.message =
-                Some(t!("Project was not loaded: %{error}", error = error).to_string());
+            self.project_io.message = Some(ProjectMessage::NotLoaded {
+                cause: error.clone(),
+            });
         } else {
             match self.apply_project_presentation(&document, cx) {
                 Ok(()) => {
                     self.project_io.path = Some(path);
-                    self.project_io.message = Some(t!("Project opened").into());
+                    self.project_io.message = Some(ProjectMessage::Opened);
                     self.remember_project_file(cx);
                 }
-                Err(error) => self.project_io.message = Some(error.to_string()),
+                Err(error) => {
+                    self.project_io.message = Some(ProjectMessage::Persisted(error.into()))
+                }
             }
         }
         cx.notify();
@@ -732,7 +1007,7 @@ impl StudioShell {
                 })
                 .map_err(|error| crate::project::PersistenceError::Invalid {
                     field: "service request".into(),
-                    reason: format!("{error:?}"),
+                    reason: dispatch_error_cause(error).into(),
                 })?;
         }
         self.graph_view.node_positions.clear();

@@ -465,7 +465,7 @@ impl StudioShell {
             .update(cx, |state, _| state.startup_project.take());
         if let Some(document) = restored {
             if let Err(error) = shell.apply_project_presentation(&document, cx) {
-                shell.project_io.message = Some(error.to_string());
+                shell.project_io.message = Some(project::ProjectMessage::Persisted(error.into()));
             }
             shell.project_io.path = shell.preferences.values.last_project_path.clone();
         }
