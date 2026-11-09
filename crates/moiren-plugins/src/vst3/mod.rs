@@ -1301,9 +1301,16 @@ impl PluginInstance for Vst3Instance {
         {
             let mut stream = BStreamObject::writer(&mut component_bytes);
             // SAFETY: live component; stream valid for this call.
-            if unsafe { IComponent::get_state(self.component, stream.stream_mut()) } != K_RESULT_OK
-            {
-                return Err(PluginError::State("component getState failed".into()));
+            let result = unsafe { IComponent::get_state(self.component, stream.stream_mut()) };
+            if result != K_RESULT_OK {
+                // Same leniency as the controller segment below: plugins
+                // that keep no component state answer kNotImplemented or
+                // kResultFalse (the DPF builds do), meaning "no segment",
+                // not an error. Any other result is a real failure.
+                if result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
+                    return Err(PluginError::State("component getState failed".into()));
+                }
+                component_bytes.clear();
             }
         }
         let mut controller_bytes = Vec::new();
@@ -1324,6 +1331,11 @@ impl PluginInstance for Vst3Instance {
                 controller_bytes.clear();
             }
         }
+        // A plugin that keeps no state on either side stores none, matching
+        // the VST2 non-chunk contract instead of a zero-length blob.
+        if component_bytes.is_empty() && controller_bytes.is_empty() {
+            return Ok(None);
+        }
         let mut blob = Vec::with_capacity(8 + component_bytes.len() + controller_bytes.len());
         blob.extend_from_slice(&(component_bytes.len() as u32).to_le_bytes());
         blob.extend_from_slice(&component_bytes);
@@ -1338,9 +1350,13 @@ impl PluginInstance for Vst3Instance {
         {
             let mut stream = BStreamObject::reader(component_bytes);
             // SAFETY: live component; stream valid for this call.
-            if unsafe { IComponent::set_state(self.component, stream.stream_mut()) } != K_RESULT_OK
-            {
-                return Err(PluginError::State("component setState failed".into()));
+            let result = unsafe { IComponent::set_state(self.component, stream.stream_mut()) };
+            if result != K_RESULT_OK {
+                // State-less plugins (see save_state) also decline restore;
+                // that is a no-op, not an error.
+                if result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
+                    return Err(PluginError::State("component setState failed".into()));
+                }
             }
         }
         if !self.controller.is_null() && !component_bytes.is_empty() {
