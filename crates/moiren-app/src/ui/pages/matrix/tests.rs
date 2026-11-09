@@ -13,7 +13,7 @@ use gpui_kit::{
     Entity, ScrollDelta, SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 
-use super::{Page, StudioShell};
+use super::{Page, StudioShell, WorkspaceView};
 use crate::service::{AppRequest, GraphEdit};
 use crate::ui::shell::test_harness::{finish_service, settle_panels, test_shell, wait_until};
 use crate::ui::widgets::actions::Density;
@@ -73,7 +73,7 @@ fn assert_headers_align_with_body(cx: &mut VisualTestContext) {
 /// pinned explicitly.
 fn open_matrix_page(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Matrix;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Matrix);
         shell.chrome.inspector_open = false;
         shell.preferences.values.density = crate::project::UiDensity::Comfortable;
         shell.chrome.density = Density::Comfortable;

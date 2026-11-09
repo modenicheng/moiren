@@ -67,7 +67,7 @@ impl CachedPanel for InspectorPanel {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
             selected_node: shell.selection.node,
             selected_route: shell.selection.route,
-            page: shell.presentation.page,
+            page: shell.presentation.page(),
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
             device_revision: shell.settings.editor.device.revision,
@@ -655,7 +655,7 @@ fn edge_handle(
 /// Inspector content follows the active page; the shell guarantees one
 /// consistent host width across all of them.
 fn page_inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    match shell.presentation.page {
+    match shell.presentation.page() {
         Page::Graph => {
             if shell.selection.node.is_none() && shell.selection.route.is_some() {
                 matrix::inspector(shell, cx)

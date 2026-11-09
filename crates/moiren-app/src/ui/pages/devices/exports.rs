@@ -127,7 +127,8 @@ fn binding_candidate(
 
 impl StudioShell {
     pub(crate) fn sync_export_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.presentation.page != Page::Devices || self.devices.device_tab != DeviceTab::Exports
+        if self.presentation.page() != Page::Devices
+            || self.devices.device_tab != DeviceTab::Exports
         {
             return;
         }

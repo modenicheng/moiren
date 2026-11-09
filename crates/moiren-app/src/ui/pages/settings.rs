@@ -82,11 +82,11 @@ impl CachedPanel for SettingsPanel {
 }
 
 /// The settings page's cached splice; mounted in place of the workspace
-/// while settings are open (the shell's own `.when`).
+/// while the shell's view is [`WorkspaceView::Settings`].
 /// The Settings page's shell-owned state (design 20 §4): the draft editor,
 /// the open value menu, the page's scroll container, and the cached
-/// SettingsPanel host. `settings_open` itself stays on the shell until the
-/// chrome group's WorkspaceView lands.
+/// SettingsPanel host. Which view is shown lives on the shell's
+/// presentation (`WorkspaceView`).
 pub(crate) struct SettingsPageState {
     pub(crate) editor: SettingsEditor,
     pub(crate) menu: Option<ValueMenu>,

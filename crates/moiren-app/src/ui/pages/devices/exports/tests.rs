@@ -323,7 +323,7 @@ mod headless {
         view.update(cx, |shell, cx| {
             shell.preferences.path = None;
             shell.preferences.values.export_authorizations.clear();
-            shell.presentation.page = pages::Page::Devices;
+            shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
             shell.devices.device_tab = devices::DeviceTab::Exports;
             cx.notify();
         });
@@ -423,7 +423,7 @@ mod headless {
         view.update(cx, |shell, cx| {
             shell.preferences.path = None;
             shell.preferences.values.export_authorizations.clear();
-            shell.presentation.page = pages::Page::Devices;
+            shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
             shell.devices.device_tab = devices::DeviceTab::Exports;
             shell.chrome.inspector_open = false;
             shell.chrome.sidebar_open = false;
@@ -615,7 +615,7 @@ mod headless {
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
             shell.preferences.path = None;
-            shell.presentation.page = pages::Page::Devices;
+            shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
             shell.devices.device_tab = devices::DeviceTab::Exports;
             shell.chrome.inspector_open = false;
             shell.chrome.sidebar_open = false;

@@ -382,7 +382,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     );
             }
             let this = cx.entity();
-            view = view.when(shell.presentation.page != Page::Graph, |view| {
+            view = view.when(shell.presentation.page() != Page::Graph, |view| {
                 view.child(button("show-in-graph", t!("Show in Graph")).on_click(
                     move |_, _, cx| {
                         this.update(cx, |s, cx| {

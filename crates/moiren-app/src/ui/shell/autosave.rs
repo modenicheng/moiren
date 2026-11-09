@@ -54,7 +54,7 @@ impl AutosaveStamp {
                 shell.graph_view.camera.pan_y,
                 shell.graph_view.camera.zoom,
             ),
-            workspace: StudioShell::workspace_document(shell.presentation.page),
+            workspace: StudioShell::workspace_document(shell.presentation.page()),
             mixer_order: shell.mixer.presentation.order.clone(),
             node_positions: shell
                 .graph_view
@@ -103,7 +103,7 @@ impl StudioShell {
                     self.graph_view.camera.zoom,
                 )
             && self.autosave.stamp.workspace
-                == StudioShell::workspace_document(self.presentation.page)
+                == StudioShell::workspace_document(self.presentation.page())
             && self.autosave.stamp.mixer_order == self.mixer.presentation.order
             && self.graph_view.node_positions.len() == self.autosave.stamp.node_positions.len()
             && self
