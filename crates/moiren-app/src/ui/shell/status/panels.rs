@@ -296,7 +296,7 @@ fn clock(shell: &StudioShell, cx: &Context<StudioShell>) -> Vec<AnyElement> {
                     theme::TEXT_FAINT
                 },
                 super::sink_device_name(snapshot, stream.node).unwrap_or_else(|| "—".into()),
-                detail,
+                Some(detail.into()),
             ));
         }
         if !streams.iter().any(|stream| stream.master) {
@@ -304,13 +304,21 @@ fn clock(shell: &StudioShell, cx: &Context<StudioShell>) -> Vec<AnyElement> {
         }
         return rows;
     }
+    // No stream is observed: the graph's own policy names the master. While
+    // a session is active the first observation is merely still on its way
+    // (they refresh once a second), so only an idle graph speaks of the
+    // next start.
+    let active = matches!(
+        snapshot.phase,
+        SessionPhase::Starting | SessionPhase::Running | SessionPhase::Stopping
+    );
     let graph = &snapshot.graph;
     match crate::service::clock_master(&graph.graph, &graph.exports) {
         Some(node) => rows.push(clock_row(
             t!("Master output"),
             theme::SIGNAL_DEVICE,
             super::sink_device_name(snapshot, node).unwrap_or_else(|| "—".into()),
-            t!("Takes effect at the next start").into_owned(),
+            (!active).then(|| t!("Takes effect at the next start").into_owned().into()),
         )),
         None if super::has_sink(snapshot) => {
             rows.push(note(t!("Engine realtime clock; no hardware master")))
@@ -324,7 +332,7 @@ fn clock_row(
     role: impl Into<SharedString>,
     color: Hsla,
     name: String,
-    detail: impl Into<SharedString>,
+    detail: Option<SharedString>,
 ) -> AnyElement {
     div()
         .flex()
@@ -344,12 +352,14 @@ fn clock_row(
                         .child(name),
                 ),
         )
-        .child(
-            div()
-                .text_size(px(theme::TEXT_CAPTION))
-                .text_color(theme::TEXT_FAINT)
-                .child(detail.into()),
-        )
+        .when_some(detail, |row, detail| {
+            row.child(
+                div()
+                    .text_size(px(theme::TEXT_CAPTION))
+                    .text_color(theme::TEXT_FAINT)
+                    .child(detail),
+            )
+        })
         .into_any_element()
 }
 

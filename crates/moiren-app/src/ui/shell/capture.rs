@@ -254,17 +254,24 @@ async fn echo_probe(shell: &Entity<StudioShell>, cx: &mut AsyncApp) {
     }
 }
 
-/// Opens each status bar panel in turn and captures it, with the bar at the
-/// window's bottom edge. Seeding the shell state directly — the same state
-/// the pointer's hover would produce — keeps the shots deterministic and
-/// works without synthesizing a real pointer.
+/// Opens each status bar panel in turn and captures it at the comfortable
+/// size. The panels open through the production path (`status_show`), so a
+/// shot shows what a hover shows — the performance panel's sampler included
+/// — without synthesizing a real pointer.
 async fn status_panels(
+    window: AnyWindowHandle,
     shell: &Entity<StudioShell>,
     directory: &std::path::Path,
     capture: &impl Fn(&mut AsyncApp, std::path::PathBuf),
     cx: &mut AsyncApp,
 ) {
     use crate::ui::shell::status::StatusItem;
+    // Whatever size the preceding captures left behind, review these at
+    // the comfortable one.
+    let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
+    cx.background_executor()
+        .timer(Duration::from_millis(200))
+        .await;
     for (name, item) in [
         ("status-engine", StatusItem::Engine),
         ("status-clock", StatusItem::Clock),
@@ -272,20 +279,18 @@ async fn status_panels(
         ("status-perf", StatusItem::Perf),
         ("status-format", StatusItem::Format),
     ] {
-        shell.update(cx, |shell, cx| {
-            shell.chrome.status_popup = Some(item);
-            cx.notify();
-        });
-        // The panel fades in; let the animation settle.
+        // Toggle through the production path: the performance sampler starts with
+        // the open, exactly as a hover would produce it.
+        shell.update(cx, |shell, cx| shell.status_toggle(item, cx));
+        // The panel fades in; the performance panel also needs two process
+        // tables a second apart before its CPU shares are rates.
+        let settle = if item == StatusItem::Perf { 1400 } else { 250 };
         cx.background_executor()
-            .timer(Duration::from_millis(250))
+            .timer(Duration::from_millis(settle))
             .await;
         capture(cx, directory.join(format!("{name}.png")));
     }
-    shell.update(cx, |shell, cx| {
-        shell.chrome.status_popup = None;
-        cx.notify();
-    });
+    shell.update(cx, |shell, cx| shell.status_close(cx));
 }
 
 pub fn run_ui_capture() -> anyhow::Result<()> {
@@ -469,7 +474,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         echo_probe(&shell, cx).await;
                     }
                     if std::env::var_os("MOIREN_CAPTURE_STATUS").is_some() {
-                        status_panels(&shell, &directory, &capture, cx).await;
+                        status_panels(window, &shell, &directory, &capture, cx).await;
                     }
                     cx.update(|cx| cx.quit());
                     return;
@@ -563,7 +568,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 // precedent: the harness seeds the same shell state the
                 // interaction would produce).
                 if std::env::var_os("MOIREN_CAPTURE_STATUS").is_some() {
-                    status_panels(&shell, &directory, &capture, cx).await;
+                    status_panels(window, &shell, &directory, &capture, cx).await;
                 }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
