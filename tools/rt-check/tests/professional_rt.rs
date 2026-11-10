@@ -493,6 +493,7 @@ fn observation_snapshot_exposes_native_metadata_fields() {
     let node = graph.create_node(NodeKind::Source, 2).unwrap();
     let observation = observations::ProfessionalStreamObservation {
         node,
+        endpoint: observations::StreamEndpoint::Physical("rt-check-probe".into()),
         input: true,
         master: false,
         requested: moiren_engine::node::DeviceOptions::default(),
