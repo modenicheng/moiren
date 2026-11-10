@@ -520,6 +520,35 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         capture(cx, directory.join(format!("{name}-{suffix}.png")));
                     }
                 }
+                // `MOIREN_CAPTURE_STATUS` opens each status bar panel for a
+                // dedicated shot, so the hover surfaces are reviewable
+                // without driving a real pointer (the mixer state captures'
+                // precedent: the harness seeds the same shell state the
+                // interaction would produce).
+                if std::env::var_os("MOIREN_CAPTURE_STATUS").is_some() {
+                    use crate::ui::shell::status::StatusItem;
+                    for (name, item) in [
+                        ("status-engine", StatusItem::Engine),
+                        ("status-clock", StatusItem::Clock),
+                        ("status-xrun", StatusItem::Xrun),
+                        ("status-perf", StatusItem::Perf),
+                        ("status-format", StatusItem::Format),
+                    ] {
+                        shell.update(cx, |shell, cx| {
+                            shell.chrome.status_popup = Some(item);
+                            cx.notify();
+                        });
+                        // The panel fades in; let the animation settle.
+                        cx.background_executor()
+                            .timer(Duration::from_millis(250))
+                            .await;
+                        capture(cx, directory.join(format!("{name}.png")));
+                    }
+                    shell.update(cx, |shell, cx| {
+                        shell.chrome.status_popup = None;
+                        cx.notify();
+                    });
+                }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
                     shell.chrome.sidebar_open = false;

@@ -15,6 +15,7 @@ pub use builtin::BuiltinState;
 pub use compressor::{CompressorParameter, CompressorState};
 use edit::edit_candidate;
 pub use mixer::MixerState;
+pub use preparation::clock_master;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphNodeState {

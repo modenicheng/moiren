@@ -40,6 +40,8 @@ const REST_BELOW_TICK_DB: f32 = 24.;
 pub(super) const REST_DB: f32 = SCALE_TICK_DB - REST_BELOW_TICK_DB;
 
 mod ballistics;
+pub(crate) mod perf;
+pub(crate) mod runtime;
 mod spectrum;
 mod table;
 use crate::project::MeterDisplayPreferences;

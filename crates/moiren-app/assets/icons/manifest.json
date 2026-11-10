@@ -149,6 +149,48 @@
       "icon": "custom:fader-scale",
       "license": "MIT",
       "note": "Drawn by hand to the Tabler 24x24 / 2px round-stroke spec for the mixer I/O redesign (docs/experiments/mixer-io-prototype); no upstream source."
+    },
+    {
+      "file": "loader-2.svg",
+      "icon": "tabler:loader-2",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/loader-2.svg",
+      "license": "MIT",
+      "sha256": "690b5b93244858b2268693bb1b62e1e6c0f56f0a129bdd0f3174e6017183f616"
+    },
+    {
+      "file": "bolt-off.svg",
+      "icon": "tabler:bolt-off",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/bolt-off.svg",
+      "license": "MIT",
+      "sha256": "a852a58d7dda97869e4802be1d816c7d48ecbb345c8cf013c7b371d4a4ab4478"
+    },
+    {
+      "file": "cpu.svg",
+      "icon": "tabler:cpu",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/cpu.svg",
+      "license": "MIT",
+      "sha256": "dbe853a82b658fb17fd283afd3328ea6126d7202b79c34a21e6d05dae474956a"
+    },
+    {
+      "file": "gauge.svg",
+      "icon": "tabler:gauge",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/gauge.svg",
+      "license": "MIT",
+      "sha256": "497c9731e2a402ec9dd68c1b2c5530671d28eb3c39499fd84fb9012074165ad9"
+    },
+    {
+      "file": "player-play.svg",
+      "icon": "tabler:player-play",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/player-play.svg",
+      "license": "MIT",
+      "sha256": "32e815409deefb0a378e1fdcb7e7463fe0ed8b9e99550fd6c24651202d1f9773"
+    },
+    {
+      "file": "player-stop.svg",
+      "icon": "tabler:player-stop",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/player-stop.svg",
+      "license": "MIT",
+      "sha256": "dc88921398dbb7aac7124f8ab142dfa17a51a5aaf0785d32016a425689c689f4"
     }
   ]
 }

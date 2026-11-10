@@ -20,18 +20,6 @@ _version: 2
 "Show error details":
   en: Show error details
   zh-CN: 查看错误详情
-"Start":
-  en: Start
-  zh-CN: 启动
-"Stop":
-  en: Stop
-  zh-CN: 停止
-"%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}":
-  en: "%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}"
-  zh-CN: "%{khz} kHz · %{frames} 采样 · %{ms} ms · %{precision}"
-"%{khz} kHz · period unknown · %{precision}":
-  en: "%{khz} kHz · period unknown · %{precision}"
-  zh-CN: "%{khz} kHz · 周期未知 · %{precision}"
 "Mono":
   en: Mono
   zh-CN: 单声道
@@ -1535,3 +1523,138 @@ _version: 2
 "at most 256 device overrides can be saved per direction":
   en: at most 256 device overrides can be saved per direction
   zh-CN: 每个方向最多可保存 256 条设备覆盖配置
+"Engine clock":
+  en: Engine clock
+  zh-CN: 引擎时钟
+"XRUN":
+  en: XRUN
+  zh-CN: XRUN
+"Audio engine":
+  en: Audio engine
+  zh-CN: 音频引擎
+"Realtime thread is running":
+  en: Realtime thread is running
+  zh-CN: 实时线程运行中
+"Opening audio devices…":
+  en: Opening audio devices…
+  zh-CN: 正在打开音频设备…
+"Releasing audio devices…":
+  en: Releasing audio devices…
+  zh-CN: 正在释放音频设备…
+"The audio engine stopped with an error":
+  en: The audio engine stopped with an error
+  zh-CN: 音频引擎因错误停止
+"Engine is idle":
+  en: Engine is idle
+  zh-CN: 引擎空闲
+"Shutting down":
+  en: Shutting down
+  zh-CN: 正在关闭
+"Stop engine":
+  en: Stop engine
+  zh-CN: 停止引擎
+"Start engine":
+  en: Start engine
+  zh-CN: 启动引擎
+"Restart engine":
+  en: Restart engine
+  zh-CN: 重新启动引擎
+"Master clock":
+  en: Master clock
+  zh-CN: 主时钟
+"Sample clock source of the whole graph":
+  en: Sample clock source of the whole graph
+  zh-CN: 全图采样时钟源
+"Takes effect at the next start":
+  en: Takes effect at the next start
+  zh-CN: 下次启动时生效
+"Engine realtime clock; no hardware master":
+  en: Engine realtime clock; no hardware master
+  zh-CN: 引擎实时时钟；无硬件主时钟
+"No output device in the graph":
+  en: No output device in the graph
+  zh-CN: 图中没有输出设备
+"XRUN statistics":
+  en: XRUN statistics
+  zh-CN: XRUN 统计
+"Events in the last 60 s":
+  en: Events in the last 60 s
+  zh-CN: 近 60 秒事件分布
+"Reset":
+  en: Reset
+  zh-CN: 重置
+"Total XRUNs":
+  en: Total XRUNs
+  zh-CN: 累计 XRUN
+"Last event":
+  en: Last event
+  zh-CN: 最近一次
+"Longest clean run":
+  en: Longest clean run
+  zh-CN: 最长无故障
+"No events in the last 60 s":
+  en: No events in the last 60 s
+  zh-CN: 近 60 秒无事件
+"%{count} events (%{percent})":
+  en: "%{count} events (%{percent})"
+  zh-CN: "%{count} 次（%{percent}）"
+"Performance":
+  en: Performance
+  zh-CN: 性能监控
+"By process, refreshed every second":
+  en: By process, refreshed every second
+  zh-CN: 按进程，每 1 秒刷新
+"Process":
+  en: Process
+  zh-CN: 进程
+"CPU":
+  en: CPU
+  zh-CN: CPU
+"Memory":
+  en: Memory
+  zh-CN: 内存
+"Sampling…":
+  en: Sampling…
+  zh-CN: 采样中…
+"Total CPU / last 60 s":
+  en: Total CPU / last 60 s
+  zh-CN: 总 CPU / 近 60 秒
+"DSP load":
+  en: DSP load
+  zh-CN: DSP 负载
+"%{average} avg / %{peak} peak":
+  en: "%{average} avg / %{peak} peak"
+  zh-CN: "均值 %{average} / 峰值 %{peak}"
+"Engine information":
+  en: Engine information
+  zh-CN: 引擎运行信息
+"Processing format":
+  en: Processing format
+  zh-CN: 处理格式
+"Device format":
+  en: Device format
+  zh-CN: 设备位深
+"Driver latency":
+  en: Driver latency
+  zh-CN: 驱动延迟
+"In %{input} / out %{output} smp":
+  en: "In %{input} / out %{output} smp"
+  zh-CN: "输入 %{input} / 输出 %{output} 采样"
+"Rendered blocks":
+  en: Rendered blocks
+  zh-CN: 已渲染块
+"%{seconds} s ago":
+  en: "%{seconds} s ago"
+  zh-CN: "%{seconds} 秒前"
+"%{minutes} min %{seconds} s ago":
+  en: "%{minutes} min %{seconds} s ago"
+  zh-CN: "%{minutes} 分 %{seconds} 秒前"
+"%{seconds} s":
+  en: "%{seconds} s"
+  zh-CN: "%{seconds} 秒"
+"%{minutes} min %{seconds} s":
+  en: "%{minutes} min %{seconds} s"
+  zh-CN: "%{minutes} 分 %{seconds} 秒"
+"%{frames} smp / %{ms} ms":
+  en: "%{frames} smp / %{ms} ms"
+  zh-CN: "%{frames} 采样 / %{ms} ms"

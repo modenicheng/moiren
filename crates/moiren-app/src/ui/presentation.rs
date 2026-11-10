@@ -21,26 +21,6 @@ fn fresh_observation(
     phase == SessionPhase::Running && generation == status_generation && running
 }
 
-/// The measured `(sample rate, buffer frames)` of the fresh master output
-/// stream. `None` when idle, off Windows, or the observation is stale:
-/// callers fall back to configured values instead of plausible-looking
-/// stale truth.
-#[cfg(windows)]
-pub(crate) fn measured_master_output(snapshot: &AppSnapshot) -> Option<(u32, u32)> {
-    let stream = professional_observations(snapshot)?
-        .streams
-        .iter()
-        .find(|stream| stream.master && !stream.input)?;
-    Some((stream.actual.sample_rate, stream.actual.buffer_frames))
-}
-
-/// Non-Windows builds carry no professional observation snapshot; callers
-/// fall back to configured values.
-#[cfg(not(windows))]
-pub(crate) fn measured_master_output(_: &AppSnapshot) -> Option<(u32, u32)> {
-    None
-}
-
 /// The running engine's stream observations behind the display-level stale
 /// guard ([`fresh_observation`]): `None` when idle, off Windows, or the
 /// snapshot predates the current session generation. The one gate every
@@ -57,6 +37,132 @@ pub(crate) fn professional_observations(
         status.observation.running,
     )
     .then_some(&status.observation)
+}
+
+/// What the status bar reads off one observed output stream, reduced to
+/// platform-free values so the projections below compile everywhere.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct OutputStream {
+    pub node: moiren_core::graph::NodeId,
+    /// Whether this output owns the native device clock.
+    pub master: bool,
+    pub sample_rate: u32,
+    pub format: moiren_engine::audio_config::SampleFormat,
+    pub buffer_frames: u32,
+    pub backend: moiren_engine::audio_config::AudioBackend,
+    pub mode: moiren_engine::node::DeviceMode,
+    /// ASIO's driver-reported `(input, output)` frames, when the driver
+    /// published them.
+    pub driver_latency: Option<(u32, u32)>,
+}
+
+/// The fresh output streams behind the display-level stale guard, master
+/// first. Empty when idle, off Windows, or the observation is stale.
+#[cfg(windows)]
+pub(crate) fn output_streams(snapshot: &AppSnapshot) -> Vec<OutputStream> {
+    let Some(observations) = professional_observations(snapshot) else {
+        return Vec::new();
+    };
+    let mut streams: Vec<OutputStream> = observations
+        .streams
+        .iter()
+        .filter(|stream| !stream.input)
+        .map(|stream| OutputStream {
+            node: stream.node,
+            master: stream.master,
+            sample_rate: stream.actual.sample_rate,
+            format: stream.actual.format,
+            buffer_frames: stream.actual.buffer_frames,
+            backend: stream.requested.backend,
+            mode: stream.requested.mode,
+            driver_latency: stream
+                .driver_latency
+                .map(|latency| (latency.input_frames, latency.output_frames)),
+        })
+        .collect();
+    streams.sort_by_key(|stream| !stream.master);
+    streams
+}
+
+#[cfg(not(windows))]
+pub(crate) fn output_streams(_: &AppSnapshot) -> Vec<OutputStream> {
+    Vec::new()
+}
+
+/// The fresh master output stream, when one runs.
+pub(crate) fn master_stream(snapshot: &AppSnapshot) -> Option<OutputStream> {
+    output_streams(snapshot)
+        .into_iter()
+        .find(|stream| stream.master)
+}
+
+/// A share as the status bar spells it: two decimals, or "<0.01%" while the
+/// value is real but rounds to zero — `0.00%` for three XRUNs would read as
+/// an exact zero the counters disprove.
+pub(crate) fn percent_text(value: f64) -> String {
+    if value > 0. && value < 0.01 {
+        "<0.01%".into()
+    } else {
+        format!("{value:.2}%")
+    }
+}
+
+/// How long ago something happened, for the XRUN summary.
+pub(crate) fn ago_text(ago: std::time::Duration) -> String {
+    let seconds = ago.as_secs();
+    if seconds < 60 {
+        t!("%{seconds} s ago", seconds = seconds).to_string()
+    } else {
+        t!(
+            "%{minutes} min %{seconds} s ago",
+            minutes = seconds / 60,
+            seconds = seconds % 60
+        )
+        .to_string()
+    }
+}
+
+/// A plain time span, for the clean-streak readout.
+pub(crate) fn span_text(span: std::time::Duration) -> String {
+    let seconds = span.as_secs();
+    if seconds < 60 {
+        t!("%{seconds} s", seconds = seconds).to_string()
+    } else {
+        t!(
+            "%{minutes} min %{seconds} s",
+            minutes = seconds / 60,
+            seconds = seconds % 60
+        )
+        .to_string()
+    }
+}
+
+/// One buffer period as the bar spells it: frames and their duration.
+pub(crate) fn buffer_text(frames: u32, sample_rate: u32) -> String {
+    if frames == 0 || sample_rate == 0 {
+        return "—".into();
+    }
+    let ms = f64::from(frames) * 1000. / f64::from(sample_rate);
+    t!(
+        "%{frames} smp / %{ms} ms",
+        frames = frames,
+        ms = format!("{ms:.1}")
+    )
+    .to_string()
+}
+
+/// The bar's compact rate line: rate plus whatever depth is known — the
+/// measured device format while running, the configured engine precision
+/// otherwise.
+pub(crate) fn format_short_text(rate: u32, depth: Option<Cow<'static, str>>) -> String {
+    if rate == 0 {
+        return "—".into();
+    }
+    let khz = format!("{:.1}", f64::from(rate) / 1000.);
+    match depth {
+        Some(depth) => format!("{khz} kHz / {depth}"),
+        None => format!("{khz} kHz"),
+    }
 }
 
 pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
@@ -278,15 +384,6 @@ fn stream_device_title(
             .find(|status| status.intent.endpoint_id == *endpoint_id)
             .map(|status| status.intent.name.clone())
             .unwrap_or_else(|| endpoint_id.to_string()),
-    }
-}
-
-pub fn elapsed_text(snapshot: &AppSnapshot) -> String {
-    let secs = snapshot.elapsed.as_secs();
-    if secs == 0 && snapshot.phase != SessionPhase::Running {
-        "—".into()
-    } else {
-        format!("{:02}:{:02}", secs / 60, secs % 60)
     }
 }
 

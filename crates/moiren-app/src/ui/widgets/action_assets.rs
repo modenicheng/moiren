@@ -24,13 +24,15 @@ pub enum ActionIcon {
     Sliders,
     ListDetails,
     ChevronDown,
+    Play,
+    Stop,
 }
 
 impl ActionIcon {
     /// Every variant, so the asset regression test can enumerate all request
     /// sites instead of chasing scattered call sites.
     #[cfg(test)]
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 19] = [
         Self::Plus,
         Self::Settings,
         Self::Graph,
@@ -48,6 +50,8 @@ impl ActionIcon {
         Self::Sliders,
         Self::ListDetails,
         Self::ChevronDown,
+        Self::Play,
+        Self::Stop,
     ];
 
     /// The asset path is a literal: every toolbar rebuild used to pay a
@@ -71,6 +75,8 @@ impl ActionIcon {
             Self::Sliders => "icons/sliders.svg",
             Self::ListDetails => "icons/list-details.svg",
             Self::ChevronDown => "icons/chevron-down.svg",
+            Self::Play => "icons/player-play.svg",
+            Self::Stop => "icons/player-stop.svg",
         }
     }
 
@@ -162,6 +168,16 @@ impl AssetSource for ActionAssets {
             "icons/check.svg" => Some(include_bytes!("../../../assets/icons/check.svg")),
             "icons/fader-scale.svg" => {
                 Some(include_bytes!("../../../assets/icons/fader-scale.svg"))
+            }
+            "icons/loader-2.svg" => Some(include_bytes!("../../../assets/icons/loader-2.svg")),
+            "icons/bolt-off.svg" => Some(include_bytes!("../../../assets/icons/bolt-off.svg")),
+            "icons/cpu.svg" => Some(include_bytes!("../../../assets/icons/cpu.svg")),
+            "icons/gauge.svg" => Some(include_bytes!("../../../assets/icons/gauge.svg")),
+            "icons/player-play.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-play.svg"))
+            }
+            "icons/player-stop.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-stop.svg"))
             }
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
@@ -289,6 +305,10 @@ mod tests {
             "icons/arrow-right.svg",   // mixer strip: send enable/mute arrow
             "icons/check.svg",         // mixer strip: input dropdown checkbox
             "icons/fader-scale.svg",   // mixer strip: send PRE/POST tap toggle
+            "icons/loader-2.svg",      // status bar: starting/stopping spinner
+            "icons/bolt-off.svg",      // status bar: XRUN item
+            "icons/cpu.svg",           // status bar: performance item
+            "icons/gauge.svg",         // status bar: buffer/latency item
         ];
         // Design 18 node-card glyphs: the per-kind icons, the chip dropdown,
         // the rack markers, and the alert the fault tooltip leads with.

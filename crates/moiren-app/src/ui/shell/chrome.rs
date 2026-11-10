@@ -12,16 +12,11 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         shell.trace.borrow_mut().toolbar_renders += 1;
     }
     let this = cx.entity();
-    let state = shell.state.read(cx);
     // The toolbar's project label shares the status bar's truncation, at a
     // tighter limit when the window goes compact.
     let project_label = truncate_name(
         &shell.project_io.name,
         theme::compact(shell.chrome.compact, 16, STATUS_NAME_LIMIT),
-    );
-    let running = matches!(
-        state.snapshot.phase,
-        SessionPhase::Running | SessionPhase::Starting
     );
     let mut tabs = div()
         .id("workspace-tabs")
@@ -117,41 +112,11 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .items_center()
                 .gap(px(theme::SPACE_1))
                 .child(
-                    button("transport", if running { t!("Stop") } else { t!("Start") })
-                        .variant(if running {
-                            ButtonVariant::Danger
-                        } else {
-                            ButtonVariant::Primary
-                        })
-                        // Design 23 §4.2: the button stays clickable on an
-                        // unstartable graph — the service is the one place
-                        // that validates, and its verdict lands on the nodes
-                        // the faults name. Only an in-flight request or a
-                        // transitional phase disables it.
-                        .disabled(
-                            state.pending_request
-                                || matches!(
-                                    state.snapshot.phase,
-                                    SessionPhase::Stopping
-                                        | SessionPhase::Exiting
-                                        | SessionPhase::Exited
-                                ),
-                        )
-                        .on_click({
-                            let this = this.clone();
-                            move |_, _, cx| {
-                                this.update(cx, |shell, cx| {
-                                    shell.state.update(cx, |state, _| state.toggle_transport());
-                                    cx.notify();
-                                })
-                            }
-                        }),
-                )
-                .child(
                     // The gear is the page toggle (click again closes it) but
                     // carries no active state of its own: the page itself is
-                    // the open indicator, and a lit button beside the
-                    // transport reads as a second stop control.
+                    // the open indicator. The engine's start/stop control
+                    // lives in the status bar's phase panel, next to the
+                    // state it changes.
                     IconButton::new("open-settings", t!("Settings"), ActionIcon::Settings)
                         .on_click({
                             let this = this.clone();
@@ -196,17 +161,17 @@ pub(super) type StatusbarChrome = PanelHost<StatusbarPanel>;
 /// Everything the toolbar tree consumes. Shell notifications arrive far more
 /// often than these inputs change (meter pumps are excluded by design — the
 /// meter frames own the animation loops), so the key exists to keep those
-/// notifications from rebuilding the chrome.
+/// notifications from rebuilding the chrome. The published snapshot is not
+/// an input any more: the transport button that read the session phase moved
+/// into the status bar's engine panel.
 #[derive(PartialEq)]
 pub(crate) struct ToolbarKey {
-    snapshot: PublishRef<crate::service::AppSnapshot>,
     /// One field for the page the tab strip highlights and whether Settings
     /// replaces the workspace: the former `page` + `settings_open` pair
     /// encoded exactly this, with no extra information.
     workspace: WorkspaceView,
     compact: bool,
     project_name: String,
-    pending_request: bool,
 }
 
 pub(crate) struct ToolbarPanel;
@@ -215,14 +180,11 @@ impl CachedPanel for ToolbarPanel {
     type Owner = StudioShell;
     type Key = ToolbarKey;
 
-    fn key(&self, shell: &StudioShell, cx: &App) -> Self::Key {
-        let state = shell.state.read(cx);
+    fn key(&self, shell: &StudioShell, _cx: &App) -> Self::Key {
         Self::Key {
-            snapshot: PublishRef::new(Arc::clone(&state.snapshot)),
             workspace: shell.presentation.workspace,
             compact: shell.chrome.compact,
             project_name: shell.project_io.name.clone(),
-            pending_request: state.pending_request,
         }
     }
 
@@ -291,8 +253,10 @@ impl CachedPanel for StatusbarPanel {
 
 /// The window chrome's shell-owned state (design 20 §4): the toolbar and
 /// status panel hosts, the project-menu toggle, the side-panel visibility
-/// pair, the compact-width flag, the density preference, and the fault
-/// popover anchor.
+/// pair, the compact-width flag, the density preference, the fault
+/// popover anchor, and the status bar's hover-panel state machine. None of
+/// the status fields ride a panel key: the bar is rendered live every drawn
+/// frame (`status_for_page`), and a key input would only add rebuild churn.
 pub(crate) struct ShellChrome {
     pub(crate) project_menu: bool,
     pub(crate) sidebar_open: bool,
@@ -302,6 +266,24 @@ pub(crate) struct ShellChrome {
     pub(crate) toolbar: Entity<ToolbarChrome>,
     pub(crate) status: Entity<StatusbarChrome>,
     pub(crate) fault_popover: Option<fault_popover::FaultPopover>,
+    /// The status bar item whose panel is open, if any.
+    pub(crate) status_popup: Option<status::StatusItem>,
+    /// Where the pointer rests, as the hover listeners last reported it:
+    /// the item under it, and whether it is on the open panel. The panel
+    /// state machine arbitrates on these facts, not on event order.
+    pub(crate) status_hover_item: Option<status::StatusItem>,
+    pub(crate) status_hover_panel: bool,
+    /// The pending hover transition the status timer resolves.
+    pub(crate) status_wait: Option<status::StatusWait>,
+    /// The armed open-delay or close-grace timer; dropping the task cancels.
+    pub(crate) status_timer: Option<Task<()>>,
+    /// `Window::is_window_hovered`'s last observed value, so `status::sync`
+    /// closes panels on the pointer-leaves-the-window transition.
+    pub(crate) status_window_hovered: bool,
+    /// The performance panel's CPU history and process table.
+    pub(crate) perf: crate::ui::monitoring::perf::PerfModel,
+    /// The process sampler, alive only while the performance panel is open.
+    pub(crate) perf_task: Option<Task<()>>,
 }
 
 pub(super) fn toolbar_for_page(shell: &StudioShell, _window: &Window) -> AnyElement {
@@ -344,12 +326,12 @@ fn titlebar_drag_region(id: &'static str) -> impl IntoElement {
 }
 
 /// Status-bar names must survive long Windows device names.
-const STATUS_NAME_LIMIT: usize = 24;
+pub(super) const STATUS_NAME_LIMIT: usize = 24;
 
 /// Truncates `name` to `limit` characters, reserving one slot for the
 /// ellipsis so the result never exceeds the limit. Long Windows device names
 /// and the toolbar's project label share it at their own limits.
-fn truncate_name(name: &str, limit: usize) -> String {
+pub(super) fn truncate_name(name: &str, limit: usize) -> String {
     if name.chars().count() > limit {
         format!("{}…", name.chars().take(limit - 1).collect::<String>())
     } else {
@@ -357,120 +339,51 @@ fn truncate_name(name: &str, limit: usize) -> String {
     }
 }
 
-/// One compact audio-format line: rate, period, and the period's duration.
-/// Running monitors report measured device truth; everything else shows the
-/// configured processing values instead of an empty bar.
-fn format_text(
-    rate: u32,
-    period: Option<u32>,
-    precision: moiren_engine::audio_config::ProcessingPrecision,
-) -> String {
-    use moiren_engine::audio_config::ProcessingPrecision;
-    if rate == 0 {
-        return "—".into();
-    }
-    let khz = format!("{:.1}", f64::from(rate) / 1000.);
-    let short = match precision {
-        ProcessingPrecision::F32 => "f32",
-        ProcessingPrecision::F64 => "f64",
-    };
-    match period.filter(|frames| *frames != 0) {
-        Some(frames) => {
-            let ms = f64::from(frames) * 1000. / f64::from(rate);
-            t!(
-                "%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}",
-                khz = khz,
-                frames = frames,
-                ms = format!("{ms:.1}"),
-                precision = short
-            )
-            .to_string()
-        }
-        None => t!(
-            "%{khz} kHz · period unknown · %{precision}",
-            khz = khz,
-            precision = short
-        )
-        .to_string(),
-    }
-}
-
 pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<Div> {
-    let state = shell.state.read(cx);
-    let snapshot = &state.snapshot;
-    let running = snapshot.phase == SessionPhase::Running;
-    let color = if running {
-        theme::SIGNAL_DEVICE
-    } else if snapshot.phase == SessionPhase::Failed {
-        theme::DANGER
-    } else {
-        theme::TEXT_FAINT
-    };
-    let settings = snapshot
-        .active_audio_settings
-        .as_ref()
-        .unwrap_or(&snapshot.audio_settings);
-    let (rate, period) = match crate::ui::presentation::measured_master_output(snapshot) {
-        Some((rate, frames)) => (rate, Some(frames)),
-        None => (
-            settings.processing.sample_rate,
-            Some(settings.processing.block_frames),
-        ),
-    };
     div()
         .id("engine-statusbar")
         .flex()
         .flex_none()
         .h(px(theme::STATUSBAR_HEIGHT))
-        .px(px(theme::SPACE_3))
+        .px(px(theme::SPACE_2))
         .items_center()
         .justify_between()
-        .gap(px(theme::SPACE_3))
+        .gap(px(theme::SPACE_2))
         .bg(theme::SURFACE)
         .border_t_1()
         .border_color(theme::BORDER)
+        // The left group yields: the clock label truncates before the bar
+        // grows wide (design 21 §2). Both groups span the bar's height so an
+        // item's anchor does too — the panels hang off the anchor's bottom
+        // edge, which must be the bar's.
         .child(
             div()
                 .flex()
+                .h_full()
                 .items_center()
-                .gap(px(theme::SPACE_3))
+                .gap(px(theme::SPACE_1))
                 .min_w_0()
-                .child(badge(crate::ui::presentation::phase_text(snapshot), color))
+                .child(status::phase_item(shell, cx))
                 // The unlocated errors' home after the error strip: a
-                // VS Code-style red summary beside the phase badge; clicking
+                // VS Code-style red summary beside the phase item; clicking
                 // opens the fault popover with the whole group.
-                .when(super::fault_popover::has_unlocated(state), |view| {
-                    view.child(fault_summary(shell, cx))
-                })
-                .when(running || !snapshot.elapsed.is_zero(), |view| {
-                    // Design 21 §2: the elapsed readout ellipsizes instead of
-                    // pushing the bar wide.
-                    view.child(
-                        label(crate::ui::presentation::elapsed_text(snapshot))
-                            .min_w_0()
-                            .truncate(),
-                    )
-                }),
+                .when(
+                    super::fault_popover::has_unlocated(shell.state.read(cx)),
+                    |view| view.child(fault_summary(shell, cx)),
+                )
+                .child(status::clock_item(shell, cx)),
         )
         .child(
-            // Design 21 §2: the format readout participates in the bar's
-            // squeeze — the group is shrinkable (`min_w_0`, no `flex_none`)
-            // and the text ellipsizes rather than forcing the bar wide.
             div()
                 .flex()
+                .h_full()
                 .min_w_0()
                 .items_center()
-                .gap(px(theme::SPACE_3))
-                .child(
-                    div()
-                        .id("statusbar-format")
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(theme::TEXT_SM))
-                        .text_color(theme::TEXT_MUTED)
-                        .child(format_text(rate, period, settings.processing.precision))
-                        .gpui_test_observe(),
-                ),
+                .gap(px(theme::SPACE_1))
+                .child(status::xrun_item(shell, cx))
+                .child(status::perf_item(shell, cx))
+                .child(status::buffer_item(shell, cx))
+                .child(status::format_item(shell, cx)),
         )
 }
 
@@ -532,36 +445,4 @@ fn fault_summary(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEle
                 .child(summary),
         )
         .gpui_test_observe()
-}
-
-#[cfg(test)]
-mod tests {
-    // Explicit imports: a glob here would shadow the built-in #[test] with
-    // the gpui test macro re-exported through the window module chain.
-    use super::format_text;
-    use moiren_engine::audio_config::ProcessingPrecision;
-
-    // Expected strings assert on the interpolated facts (names, numbers,
-    // units) rather than whole translations so they hold under any locale.
-
-    #[test]
-    fn format_shows_rate_period_duration_and_precision() {
-        let text = format_text(48_000, Some(256), ProcessingPrecision::F32);
-        assert!(text.contains("48.0"), "rate in kHz: {text}");
-        assert!(text.contains("256"), "period in samples: {text}");
-        assert!(text.contains("5.3"), "period duration: {text}");
-        assert!(text.contains("f32"), "precision: {text}");
-    }
-
-    #[test]
-    fn format_admits_an_unknown_period_instead_of_inventing_one() {
-        let text = format_text(96_000, None, ProcessingPrecision::F64);
-        assert!(text.contains("96.0"), "{text}");
-        assert!(text.contains("f64"), "{text}");
-        assert!(!text.contains(" smp"), "no invented period: {text}");
-        assert_eq!(
-            format_text(0, Some(256), ProcessingPrecision::F32),
-            "\u{2014}"
-        );
-    }
 }

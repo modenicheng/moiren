@@ -409,6 +409,14 @@ impl StudioShell {
                 toolbar: toolbar_chrome,
                 status: status_chrome,
                 fault_popover: None,
+                status_popup: None,
+                status_hover_item: None,
+                status_hover_panel: false,
+                status_wait: None,
+                status_timer: None,
+                status_window_hovered: false,
+                perf: Default::default(),
+                perf_task: None,
             },
             selection: graph::Selection::default(),
             press: PressTracker::default(),
@@ -617,7 +625,12 @@ impl StudioShell {
         self.finish_project_load(cx);
         self.poll_autosave(cx);
         let meters_changed = !self.frames_wanted(cx) && self.pump_meters(cx);
-        if (changed || meters_changed || repaint.force) && !repaint.mute {
+        // The performance panel's CPU history samples once a second from this
+        // pump; the repaint only matters while its panel is open — closed,
+        // the next natural frame (an open, a publish) picks the history up.
+        let perf_changed = self.chrome.perf.tick(Instant::now())
+            && self.chrome.status_popup == Some(status::StatusItem::Perf);
+        if (changed || meters_changed || perf_changed || repaint.force) && !repaint.mute {
             cx.notify();
         }
         changed
@@ -835,6 +848,7 @@ pub(crate) mod test_harness;
 pub use test_harness::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
 #[cfg(feature = "gpui-test")]
 pub use test_harness::{settle_panels, shell_with_state, test_shell};
+pub(crate) mod status;
 #[cfg(all(test, feature = "gpui-test"))]
 pub(crate) mod tests;
 mod tray_mixer;
@@ -853,6 +867,7 @@ impl StudioShell {
         self.finish_node_spawn(cx);
         graph::sync_binding_menu(self, cx);
         fault_popover::sync(self, cx);
+        status::sync(self, window, cx);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
@@ -955,12 +970,12 @@ impl Render for StudioShell {
                 }
             })
             .child(chrome::status_for_page(self, window))
-            // Clicking anywhere outside an open inline editor commits it, so
-            // saving never requires Enter. Editors stop presses inside their
-            // own bounds from propagating; a press that reaches this root
-            // listener therefore landed outside the active editor, and the
-            // bubble phase runs it after whatever deeper handler the press
-            // targeted.
+            // Clicking anywhere outside an open inline editor commits it, and
+            // outside an open status-bar panel closes it; editors and the
+            // bar's items stop presses inside their own bounds from
+            // propagating, so a press that reaches this root listener
+            // therefore landed outside both, and the bubble phase runs it
+            // after whatever deeper handler the press targeted.
             .on_mouse_down(MouseButton::Left, {
                 let shell = cx.entity();
                 move |_, _, cx| {
@@ -968,6 +983,7 @@ impl Render for StudioShell {
                         if mixer::commit_active_editor(shell, cx) {
                             cx.notify();
                         }
+                        shell.status_dismiss_outside(cx);
                     });
                 }
             })
