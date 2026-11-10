@@ -623,9 +623,14 @@ impl EngineBackend<f64> for MockBackend {
                 actual,
                 dropped_frames: 0,
                 silent_frames: 0,
+                xruns: 0,
                 native_callbacks: 0,
                 native_dropped_frames: 0,
                 native_silent_frames: 0,
+                native_xruns: 0,
+                engine_blocks: 0,
+                engine_busy_100ns: 0,
+                engine_peak_block_100ns: 0,
                 driver_latency: None,
             },
             counters,
@@ -945,6 +950,42 @@ fn assert_exact_configuration(test: &TestHost, first: &HostSnapshot, recovered: 
     assert_eq!(stream.driver_latency, Some(latency(2)));
     assert_eq!(stream.native_dropped_frames, 14);
     assert_eq!(stream.native_silent_frames, 22);
+}
+
+/// The status bar's runtime readouts ride the master pump's render
+/// accounting: blocks count up in the observation snapshot while the real
+/// engine renders through the real pump, and a healthy master never records
+/// a shortfall. On Windows the QPC-timed busy total advances with the
+/// blocks; elsewhere the pump has no clock and the total stays zero.
+#[test]
+fn master_render_accounting_reaches_the_observation_snapshot() {
+    let test = TestHost::open(Fault::Healthy, Fault::Healthy);
+    let first = test.running(0);
+    let deadline = Instant::now() + TIMEOUT;
+    let master = loop {
+        let snapshot = test
+            .observations
+            .snapshot()
+            .expect("running native session");
+        assert_eq!(snapshot.owner_generation, first.owner_generation);
+        let master = snapshot.streams[0].clone();
+        if master.engine_blocks > 0 {
+            break master;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the master never accounted a rendered block"
+        );
+        thread::park_timeout(POLL);
+    };
+    assert!(master.master && !master.input);
+    assert_eq!(master.xruns, 0, "a healthy master pump never falls short");
+    #[cfg(windows)]
+    assert!(
+        master.engine_busy_100ns > 0,
+        "Engine::render takes measurable time"
+    );
+    assert_eq!(test.close(1).cleanup_error, None);
 }
 
 #[test]

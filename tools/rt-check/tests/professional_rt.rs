@@ -500,9 +500,14 @@ fn observation_snapshot_exposes_native_metadata_fields() {
         actual: info(),
         dropped_frames: 3,
         silent_frames: 5,
+        xruns: 0,
         native_callbacks: 0,
         native_dropped_frames: 0,
         native_silent_frames: 0,
+        native_xruns: 0,
+        engine_blocks: 0,
+        engine_busy_100ns: 0,
+        engine_peak_block_100ns: 0,
         driver_latency: None,
     };
     assert_eq!(observation.node, node);
