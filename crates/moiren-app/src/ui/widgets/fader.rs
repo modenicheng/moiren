@@ -199,10 +199,17 @@ fn gestures(
                 }
             }
         })
-        .on_click({
+        // The double click resets on its second press, in the capture phase,
+        // ahead of everything under the pointer. The first press jumps the
+        // thumb to the pointer, so the second lands on the thumb — which
+        // claims its presses for itself, so a bubble-phase click handler
+        // here never counted to two. Stopping the press also keeps the track
+        // from re-jumping and gpui from starting a drag on it.
+        .capture_any_mouse_down({
             let behavior = behavior.clone();
-            move |event: &ClickEvent, window, cx| {
-                if event.click_count() == 2 {
+            move |event: &MouseDownEvent, window, cx| {
+                if event.button == MouseButton::Left && event.click_count >= 2 {
+                    cx.stop_propagation();
                     (behavior.commit)(behavior.reset, window, cx);
                 }
             }

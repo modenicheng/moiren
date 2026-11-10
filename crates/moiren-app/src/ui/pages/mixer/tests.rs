@@ -973,6 +973,99 @@ fn fader_readout_tracks_the_thumb_until_the_service_confirms_it(cx: &mut TestApp
     finish_service(runtime);
 }
 
+/// Double click resets a fader wherever its second press lands. The first
+/// press jumps the thumb to the pointer and the strip repaints it there
+/// within a frame, so a human's second press hits the thumb, which claims
+/// its presses for itself: a bubble-phase click never counted to two, and
+/// the reset only worked beside the track.
+#[gpui_kit::test]
+fn double_click_resets_the_fader_after_the_first_click_moved_the_thumb(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    // A press well below the unity thumb, on the bare track.
+    let press = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
+        point(bounds.center().x, bounds.top() + bounds.size.height * 0.75)
+    });
+    let click = |cx: &mut VisualTestContext, click_count: usize| {
+        cx.simulate_event(gpui_kit::MouseDownEvent {
+            position: press,
+            button: MouseButton::Left,
+            click_count,
+            ..Default::default()
+        });
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            position: press,
+            button: MouseButton::Left,
+            click_count,
+            ..Default::default()
+        });
+        // A real double click takes longer than a frame: the thumb is
+        // already drawn under the pointer when the second press arrives.
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    };
+    click(cx, 1);
+    poll(&view, cx);
+    let jumped = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .expect("strip node")
+            .mixer
+            .gain
+    });
+    assert!(
+        jumped < 0.5,
+        "the first click jumps to the press, got {jumped}"
+    );
+    click(cx, 2);
+    poll(&view, cx);
+    let (gain, thumb) = view.read_with(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+        )
+    });
+    assert!(
+        (gain - 1.).abs() < 1e-6,
+        "the second press restores unity, got {gain}"
+    );
+    assert!(
+        (thumb - (1. - FaderScale::position(1.))).abs() < 1e-6,
+        "the thumb returns to unity, got {thumb}"
+    );
+    finish_service(runtime);
+}
+
 /// The user's repro: select the strip by clicking its bottom header, then
 /// drag the fader a tiny bit — the thumb must not lock onto -inf. The
 /// selection rebuilds the strip and (when the inspector is open) rewires
