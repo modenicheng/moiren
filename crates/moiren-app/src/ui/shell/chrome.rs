@@ -123,6 +123,11 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         } else {
                             ButtonVariant::Primary
                         })
+                        // Design 23 §4.2: the button stays clickable on an
+                        // unstartable graph — the service is the one place
+                        // that validates, and its verdict lands on the nodes
+                        // the faults name. Only an in-flight request or a
+                        // transitional phase disables it.
                         .disabled(
                             state.pending_request
                                 || matches!(
@@ -130,8 +135,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                                     SessionPhase::Stopping
                                         | SessionPhase::Exiting
                                         | SessionPhase::Exited
-                                )
-                                || (!running && !state.can_start_transport()),
+                                ),
                         )
                         .on_click({
                             let this = this.clone();
@@ -339,15 +343,6 @@ fn titlebar_drag_region(id: &'static str) -> impl IntoElement {
         .gpui_test_observe()
 }
 
-/// Resolves an endpoint id against the catalog, falling back to the raw id
-/// when the device has vanished since the session started.
-fn endpoint_name<'a>(rows: &'a [crate::service::DeviceRow], endpoint_id: &'a str) -> &'a str {
-    rows.iter()
-        .find(|row| row.endpoint_id == endpoint_id)
-        .map(|row| row.name.as_str())
-        .unwrap_or(endpoint_id)
-}
-
 /// Status-bar names must survive long Windows device names.
 const STATUS_NAME_LIMIT: usize = 24;
 
@@ -360,38 +355,6 @@ fn truncate_name(name: &str, limit: usize) -> String {
     } else {
         name.to_string()
     }
-}
-
-/// "In name → Out name" for the desired session chain; software sources name
-/// themselves instead of borrowing a device row.
-fn route_label(
-    source: &crate::service::InputSelection,
-    output_endpoint_id: &str,
-    catalog: &crate::service::DeviceCatalog,
-) -> String {
-    let source = match source {
-        crate::service::InputSelection::Physical { endpoint_id } => truncate_name(
-            endpoint_name(&catalog.inputs, endpoint_id),
-            STATUS_NAME_LIMIT,
-        ),
-        crate::service::InputSelection::Process {
-            pid,
-            creation_time_100ns,
-        } => catalog
-            .processes
-            .iter()
-            .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
-            .map(|row| truncate_name(&row.name, STATUS_NAME_LIMIT))
-            .unwrap_or_else(|| format!("#{pid}")),
-        crate::service::InputSelection::Tone { frequency_hz } => {
-            t!("Tone generator · %{hz} Hz", hz = frequency_hz).to_string()
-        }
-    };
-    let sink = truncate_name(
-        endpoint_name(&catalog.outputs, output_endpoint_id),
-        STATUS_NAME_LIMIT,
-    );
-    t!("%{source} → %{sink}", source = source, sink = sink).to_string()
 }
 
 /// One compact audio-format line: rate, period, and the period's duration.
@@ -480,35 +443,14 @@ pub(super) fn statusbar(shell: &StudioShell, cx: &Context<StudioShell>) -> State
                     view.child(fault_summary(shell, cx))
                 })
                 .when(running || !snapshot.elapsed.is_zero(), |view| {
-                    // Design 21 §2: the elapsed readout yields to the route
-                    // label and ellipsizes instead of pushing the bar wide.
+                    // Design 21 §2: the elapsed readout ellipsizes instead of
+                    // pushing the bar wide.
                     view.child(
                         label(crate::ui::presentation::elapsed_text(snapshot))
                             .min_w_0()
                             .truncate(),
                     )
-                })
-                .when_some(
-                    snapshot.desired.as_ref().map(|desired| {
-                        route_label(
-                            &desired.source,
-                            &desired.output_endpoint_id,
-                            &snapshot.catalog,
-                        )
-                    }),
-                    |view, route| {
-                        view.child(
-                            div()
-                                .id("statusbar-route")
-                                .min_w_0()
-                                .overflow_x_hidden()
-                                .text_size(px(theme::TEXT_SM))
-                                .text_color(theme::TEXT_MUTED)
-                                .child(route)
-                                .gpui_test_observe(),
-                        )
-                    },
-                ),
+                }),
         )
         .child(
             // Design 21 §2: the format readout participates in the bar's
@@ -596,67 +538,11 @@ fn fault_summary(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEle
 mod tests {
     // Explicit imports: a glob here would shadow the built-in #[test] with
     // the gpui test macro re-exported through the window module chain.
-    use super::{format_text, route_label};
-    use crate::service::{DeviceCatalog, DeviceRow, InputSelection};
+    use super::format_text;
     use moiren_engine::audio_config::ProcessingPrecision;
-
-    fn catalog_with(named: &[(&str, &str)]) -> DeviceCatalog {
-        let mut catalog = DeviceCatalog::default();
-        for (endpoint_id, name) in named {
-            catalog.outputs.push(DeviceRow {
-                endpoint_id: (*endpoint_id).into(),
-                name: (*name).into(),
-            });
-        }
-        catalog
-    }
 
     // Expected strings assert on the interpolated facts (names, numbers,
     // units) rather than whole translations so they hold under any locale.
-
-    #[test]
-    fn route_names_tone_sources_and_resolves_catalog_rows() {
-        let catalog = catalog_with(&[("out-1", "Studio monitors")]);
-        let label = route_label(
-            &InputSelection::Tone { frequency_hz: 440. },
-            "out-1",
-            &catalog,
-        );
-        assert!(label.contains("440"), "names the frequency: {label}");
-        assert!(label.contains("Studio monitors"), "names the sink: {label}");
-        assert!(label.contains('\u{2192}'), "joins source and sink: {label}");
-    }
-
-    #[test]
-    fn route_falls_back_to_the_endpoint_id_for_vanished_devices() {
-        let label = route_label(
-            &InputSelection::Physical {
-                endpoint_id: "gone-input".into(),
-            },
-            "gone-output",
-            &DeviceCatalog::default(),
-        );
-        assert!(label.contains("gone-input"), "{label}");
-        assert!(label.contains("gone-output"), "{label}");
-    }
-
-    #[test]
-    fn route_truncates_long_windows_device_names() {
-        let catalog = catalog_with(&[(
-            "out-1",
-            "Very Long Manufacturer Name With Many Words (High Definition Audio)",
-        )]);
-        let label = route_label(
-            &InputSelection::Tone { frequency_hz: 440. },
-            "out-1",
-            &catalog,
-        );
-        assert!(label.chars().count() < 60, "label stays compact: {label}");
-        assert!(
-            label.ends_with('\u{2026}'),
-            "truncated name ends with ellipsis"
-        );
-    }
 
     #[test]
     fn format_shows_rate_period_duration_and_precision() {

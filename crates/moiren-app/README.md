@@ -3,7 +3,7 @@
 运行 `cargo run --locked -p moiren-app` 打开原生 gpui 桌面应用。
 
 - Graph、Mixer、Matrix、Devices 共用服务端的 LogicalGraph。Settings 从齿轮进入，返回时保留工作区与选择。
-- 在 Devices 选择下次启动的物理输入、应用音源与输出；选择不会替换当前活动会话。Graph 的 Session 面板也可选测试音。
+- Devices 配置各设备的流参数并查看设备与流的状态（含虚拟设备）；输入、输出与应用音源在 Graph 的 IO 节点上绑定。
 - Graph 添加、删除节点，Inspector 调参数与 Bus 输入；在 Matrix 选择端口交点并连接、断开或编辑路由增益。图编辑自动应用：兼容更新经 EngineHost 在块边界生效并保留原音频 owner，界面区分候选与引擎确认的活动 revision。设备或 IO 集合变化可以重建会话。
 - Node library 现在可创建 EQ、Gate、Limiter、Delay、Channel Mapper、Recorder、Meter、Spectrum Analyzer 和 Rack；Inspector 通过服务端候选图编辑真实配置。观察节点的 recording、metering 和 spectrum 资源由托管 host 自动准备，编辑期间保持 candidate 状态。
 - Mixer 的推子、Balance、Mute、Dim、Mono、Swap 提交真实音频请求，反馈区分 Requested、Accepted、Applied。Peak、RMS 仅显示对应节点的真实观测。

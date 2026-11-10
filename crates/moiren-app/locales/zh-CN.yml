@@ -32,12 +32,6 @@ _version: 2
 "%{khz} kHz · period unknown · %{precision}":
   en: "%{khz} kHz · period unknown · %{precision}"
   zh-CN: "%{khz} kHz · 周期未知 · %{precision}"
-"%{source} → %{sink}":
-  en: "%{source} → %{sink}"
-  zh-CN: "%{source} → %{sink}"
-"Tone generator · %{hz} Hz":
-  en: Tone generator · %{hz} Hz
-  zh-CN: 测试音发生器 · %{hz} Hz
 "Mono":
   en: Mono
   zh-CN: 单声道
@@ -1100,12 +1094,6 @@ _version: 2
 "Next start · engine stopped":
   en: Next start · engine stopped
   zh-CN: 下次启动 · 引擎已停止
-"Choose an available source and output before starting.":
-  en: Choose an available source and output before starting.
-  zh-CN: 启动前请选择可用的音源与输出。
-"Graph is not ready: %{error}":
-  en: "Graph is not ready: %{error}"
-  zh-CN: "图尚未就绪：%{error}"
 "Unavailable output":
   en: Unavailable output
   zh-CN: 输出不可用

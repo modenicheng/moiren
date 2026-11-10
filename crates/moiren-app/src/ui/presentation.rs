@@ -411,17 +411,6 @@ pub(crate) fn failure_text_in(failure: &UiFailure, locale: &str) -> String {
         UiFailure::InvalidAudioSettings(error) => {
             t!(error.to_string(), locale = locale).into_owned()
         }
-        UiFailure::SourceUnavailable => t!(
-            "Choose an available source and output before starting.",
-            locale = locale
-        )
-        .into_owned(),
-        UiFailure::GraphNotReady { cause } => t!(
-            "Graph is not ready: %{error}",
-            locale = locale,
-            error = t!(cause.as_str(), locale = locale)
-        )
-        .into_owned(),
         UiFailure::ExportInvalid { reason } => reason.clone(),
     }
 }

@@ -207,7 +207,6 @@ mod tests {
                 Some(&(-80., 120.))
             );
             assert!(!shell.project_io.busy);
-            assert!(shell.state.read(cx).selection.output_id.is_none());
         });
         finish_service(runtime);
     }
@@ -313,7 +312,6 @@ mod tests {
         });
         view.update(cx, |shell, cx| {
             let state = shell.state.read(cx);
-            assert_eq!(state.max_block_frames, 1024);
             assert_eq!(
                 state.snapshot.audio_settings.output,
                 hardware_defaults.output
@@ -391,6 +389,9 @@ mod tests {
                 .iter()
                 .any(|node| node.label == "Renamed by edit")
         );
+        // Design 23 §4.3: the graph carries every binding; a saved document
+        // no longer writes a `session` section.
+        assert!(document.session.is_none());
         let _ = std::fs::remove_file(&autosave_file);
         finish_service(runtime);
     }
@@ -744,7 +745,8 @@ impl StudioShell {
         let state = self.state.read(cx);
         let mut document =
             ProjectDocument::from_graph(self.project_io.name.clone(), &state.snapshot.graph)?;
-        document.session = state.candidate_config().as_ref().map(Into::into);
+        // Design 23 §4.3: no `session` section anymore — the graph carries
+        // every binding, and processing settings travel in their own field.
         document.processing = Some(state.snapshot.audio_settings.processing);
         document.layout.camera_x = self.graph_view.camera.pan_x;
         document.layout.camera_y = self.graph_view.camera.pan_y;
@@ -1001,9 +1003,7 @@ impl StudioShell {
             audio.processing = processing;
             self.state
                 .update(cx, |state, _| {
-                    state
-                        .try_dispatch(AppRequest::SetAudioSettings(audio))
-                        .map(|_| state.max_block_frames = processing.block_frames as usize)
+                    state.try_dispatch(AppRequest::SetAudioSettings(audio))
                 })
                 .map_err(|error| crate::project::PersistenceError::Invalid {
                     field: "service request".into(),
@@ -1032,13 +1032,6 @@ impl StudioShell {
             }
         }
         self.metering.observation_nodes = None;
-        if let Some(spec) = document.session_spec()? {
-            self.state
-                .update(cx, |state, _| state.restore_candidate(&spec));
-        } else {
-            self.state
-                .update(cx, |state, _| state.restore_graph_candidate());
-        }
         self.project_io.name = document.name.clone();
         self.graph_view.camera = Camera {
             pan_x: document.layout.camera_x,

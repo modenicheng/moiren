@@ -20,7 +20,6 @@ pub(super) const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 pub(crate) struct AutosaveStamp {
     revision: u64,
     processing: moiren_engine::audio_config::ProcessingSettings,
-    session: Option<crate::service::SessionSpec>,
     camera: (f32, f32, f32),
     workspace: crate::project::WorkspaceDocument,
     mixer_order: Vec<moiren_core::graph::NodeId>,
@@ -46,7 +45,6 @@ impl AutosaveStamp {
         Self {
             revision: state.snapshot.graph.candidate_revision,
             processing: state.snapshot.audio_settings.processing,
-            session: state.candidate_config(),
             camera: (
                 shell.graph_view.camera.pan_x,
                 shell.graph_view.camera.pan_y,
@@ -93,7 +91,6 @@ impl StudioShell {
         let state = self.state.read(cx);
         self.autosave.stamp.revision == state.snapshot.graph.candidate_revision
             && self.autosave.stamp.processing == state.snapshot.audio_settings.processing
-            && self.autosave.stamp.session == state.candidate_config()
             && self.autosave.stamp.camera
                 == (
                     self.graph_view.camera.pan_x,
