@@ -2,7 +2,8 @@
 
 Status: implemented on `feat/fader-feel` (2026-11-10). The investigation
 ran read-only on `main` @ `27aa57d7`; the implementation is based on `main`
-@ `66dd66ef`. Measurements in §1.5, §1.5b and §4.
+@ `6fd8268c`, which includes the strip I/O block (#163) and the send-bar
+fixes that D7 and D8 extend to. Measurements in §1.5, §1.5b and §4.
 
 User report: the fader "doesn't follow the hand" and "occasionally jumps".
 Hypothesis on the table: the decoupled-but-synchronous data bus makes the
@@ -62,7 +63,8 @@ Per dispatched drag tick (~30 Hz while dragging, before D4):
 4. UI: the control-side poll runs every 33 ms (`desktop.rs` `spawn_poll`,
    shared with the headless twin) → `UiState::poll` → `cx.notify` → the
    next frame's `sync_mixer_controls`. **Publishes reach the UI at most
-   ~30 times per second, whatever the dispatch rate.**
+   ~30 times per second, whatever the dispatch rate** (R11; D7 wakes the
+   pump on publish instead).
 5. The strip **dB readout rendered from the snapshot**
    (`pages/mixer.rs`, `db_text(entry.mixer.gain)`), so during a drag it
    trailed the thumb by the whole loop: dispatch + service edit + ≤33 ms
@@ -150,6 +152,8 @@ survives only as echo latency (R2).
 | R8 | The drag gate flushed a stashed value only on the next move or at release | a paused drag left the service (the audio) on an older value while the button was held | regression test: service 0.833 vs thumb 0.784 | D4 |
 | R9 | Double click on the thumb never reset (pre-existing) | reset only worked beside the track | regression test | double-click fix |
 | R10 | Wheel up from below the −72 dB floor snapped to silence | a wheel up muted the strip | unit test | D3 |
+| R11 | The control pump picked snapshots up only on its 33 ms timer (§1.2 step 4) | every control whose display comes back through the snapshot — send mute and PRE/POST, the input checkboxes, strip buttons, mirrored faders — answered up to a tick late, and clicks within that window acted on a stale snapshot (a double click on a send's mute muted it twice; two quick input checks computed the same free port) | echo probe: p50 31 ms, p95 48 ms | D7 |
+| R12 | The input dropdown offered connections the graph refuses | checking a node downstream of the strip, or one of another width, produced a fault on the strips instead of a connection | regression test: "the connection would create a cycle" | D8 |
 | R4 | Per-publish full sync walk | hygiene only — measured immaterial | code | — |
 | R5 | Service-side per-edit deep clones + full validate + O(n²) mixer resync | hygiene only — ≤0.07 s CPU under a drag storm | code + profile | deferred (D5) |
 | R6 | Upstream vsync latency residue | fixed ~1 frame floor | zed#66221 | — |
@@ -157,6 +161,13 @@ survives only as echo latency (R2).
 R9 surfaced through D0: the existing tray double-click test only passed
 because its two clicks fell inside the 33 ms throttle, before the first
 click's thumb jump repainted under the pointer.
+
+R11 and R12 came out of a second pass over the strip's I/O block (the
+send rows and bars, the input row and its dropdown) after it landed on
+main. The send bars already ride the fader's slider path, so D0–D4 cover
+their drags; send gain, pan and mute are live parameter edits the engine
+ramps (only a PRE/POST change re-prepares). What remained was the echo of
+everything that is not a slider, and the dropdown's judgment.
 
 ## 2. Design (as implemented)
 
@@ -235,6 +246,32 @@ capture phase, ahead of the thumb and the track, and stops the press so
 the track does not jump again and no drag starts. Covers every slider on
 the shared surface: strip and tray faders, inspector rows, send bars.
 
+### D7 — Wake the control pump on publish (kills R11)
+
+The service applies a request and publishes the snapshot in the same
+loop iteration; the UI's pump only looked every 33 ms. The mailbox now
+carries a publish signal — a generation the service bumps after every
+snapshot it actually swaps in (a deduplicated publish wakes nobody), plus
+the wakers to wake. The desktop pump, and the headless twin the capture
+harness runs, wait on their timer or the next publish, whichever comes
+first (`pump_wait`), reading the generation before each drain so a
+publish landing mid-drain cuts the next wait short. The timer keeps
+pacing the pump's own chores (autosave, the idle meter pump, the tray's
+focus check). This is the "decouple it completely" direction for every
+control at once: the UI still never waits for the bus, and the bus's
+answer now arrives as soon as it exists. With the echo down to a few
+milliseconds, a human's second click always sees the first one's result,
+which closes the stale-snapshot races without an optimistic overlay.
+
+### D8 — The input dropdown only offers connections the graph takes (kills R12)
+
+`LogicalGraph::can_connect` answers exactly what `connect` would without
+connecting. The dropdown judges each unchecked row against the exact
+connection its check would make — the candidate's first output into the
+node's lowest free input — and shows refused rows dead with the reason in
+the tooltip: the cap, a feedback loop, or the two channel counts. The
+checkbox handler asks the same question before it dispatches.
+
 ### D5 — Service-side edit slimming (deferred)
 
 Measured immaterial at current graph sizes (§1.5b). Ranked for later:
@@ -259,6 +296,9 @@ draw p95 against the same table.
 | `fix(app): rebuild a panel for every nested change, not every 33 ms` | D0 |
 | `fix(app): flush drag dispatches once per frame instead of every 33 ms` | D4 |
 | `fix(app): glide fractional wheel lines instead of stepping a notch` | D3 |
+| `test(app): measure the edit echo latency in the ui_capture meter run` | `MOIREN_CAPTURE_ECHO` probe (§5) |
+| `fix(app): wake the control pump when the service publishes` | D7 |
+| `fix(app): keep input dropdown rows the graph would refuse dead` | D8 |
 
 ## 4. Validation
 
@@ -277,11 +317,22 @@ Regression tests, each confirmed to fail on the code it replaces:
 - Unit tests: the frame-paced gate (ported from the interval gate's four),
   fractional line classification, fractional and sub-floor fader steps,
   fractional compressor steps.
+- `the_pump_delivers_a_publish_without_waiting_for_its_timer` (R11; the
+  test thread plays the service, and with a timer-only pump the snapshot
+  never arrives), plus the mailbox's publish-signal unit tests (a publish
+  wakes the waiter, a deduplicated one wakes nobody, a wait from an older
+  generation resolves at once).
+- `input_dropdown_rows_go_dead_for_loops_and_channel_mismatches` (R12; the
+  old dropdown dispatched the loop and the service answered "the
+  connection would create a cycle") and
+  `can_connect_answers_exactly_what_connect_would_without_connecting` in
+  moiren-core.
 
-Full suites on the LAN machine: `cargo test -p moiren-app --features
-gpui-test` (559 lib + integration), `cargo clippy --workspace
---all-targets -- -D warnings`, `cargo test --workspace`, `cargo fmt
---check`.
+Full suites on the LAN machine, mirroring CI: `cargo test -p moiren-app
+--features gpui-test` (565 lib tests plus the integration targets),
+`cargo clippy --workspace --all-targets -- -D warnings`, the two
+feature-gated app lints (`--features ui-profiler`, `--features
+vad-integration-probe`), `cargo test --workspace`, `cargo fmt --check`.
 
 Live-gesture captures, baseline (`b2f9f7e9` + the harness commit) against
 `feat/fader-feel` before its rebase onto the two send-bar commits (which
@@ -308,6 +359,21 @@ while edits now reach the service once per frame instead of ~29 times a
 second; a pan pays ~0.25 ms per frame to paint the thumb at display rate
 instead of ~49 fps.
 
+Edit echo latency (`MOIREN_CAPTURE_ECHO`, 40 no-op strip edits 60 ms
+apart, from the dispatch to the shell notification that delivers the
+consuming snapshot), the commit before D7 against D7, two interleaved
+rounds:
+
+| Round | p50 | p95 | max |
+| --- | --- | --- | --- |
+| before D7 | 31.55 / 30.15 ms | 48.53 / 47.29 ms | 48.99 / 49.00 ms |
+| with D7 | 0.18 / 0.20 ms | 2.58 / 2.81 ms | 2.88 / 3.23 ms |
+
+Waking the pump per publish (up to one per frame during a gesture) did
+not move the frame cost, same machine, interleaved: pointer drag draw
+p50/p95 4.02/5.35 → 4.01/4.78 ms, pan 2.82/3.74 → 2.85/3.57 ms, 144 fps
+throughout.
+
 Still to do by hand on real hardware: (a) a slow drag below −72 dB, then
 release — the thumb never snaps back; (b) a wheel spin and immediate
 release — no stale echo; (c) touchpad pans on the DirectManipulation and
@@ -329,8 +395,10 @@ MOIREN_CAPTURE_METERS=1 MOIREN_CAPTURE_SECONDS=5 MOIREN_CAPTURE_DRAG=pan \
 ```
 
 The run prints strip and inspector rebuilds and graph revisions per window
-size and writes `platform-<size>[-drag|-drag-inspector|-pan].json`. Three
-pitfalls:
+size and writes `platform-<size>[-drag|-drag-inspector|-pan].json`.
+`MOIREN_CAPTURE_ECHO=1` adds the echo probe after the meter scenarios and
+prints `Echo latency: p50=… p95=… max=…`; `MOIREN_CAPTURE_SECONDS=1` keeps
+such a run to a few seconds. Three pitfalls:
 
 - **Interleave baseline and candidate binaries.** Absolute frame times on
   the development machine drift by about a millisecond over a day; only
@@ -373,8 +441,15 @@ child exit; a graceful tray exit does not end it).
    mouse listeners instead of drag-and-drop (kit), or letting a drag opt
    out of the full refresh (fork), would bring drag frames back to the
    steady-state cost — the prerequisite for 240 Hz on the Mixer page.
-2. **The 33 ms control poll bounds confirmation latency.** Mirrors (the
-   inspector row while the strip is dragged, the tray flyout) and the
-   readout's switch back to the published value move at the poll rate.
-   Polling once per frame while frames are wanted would tighten both.
-3. D5, when graph sizes make it observable.
+2. **The closed inspector still rebuilds per publish.** Its panel stays
+   mounted inside a zero-width spring sleeve and keys on the snapshot, so
+   a pan rebuilds it once per publish (576 rebuilds in 4 s with it closed,
+   174 before D7). The draw time did not move, but a key that ignores the
+   snapshot while the sleeve is closed would drop the work.
+3. **Mutes are hard cuts.** Both the strip's effective mute and a send's
+   mute zero the block outright, so toggling either under signal clicks;
+   a short gain ramp in the engine would make them click-free.
+4. **`input_dropdown_rows_go_dead_at_the_port_cap` is order-dependent.**
+   It fails when run on its own (the dropdown never opens), on `main` as
+   well, and passes inside the suite.
+5. D5, when graph sizes make it observable.
