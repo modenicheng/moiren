@@ -249,7 +249,10 @@ impl RuntimeStats {
 /// `block_frames / sample_rate` seconds of audio, so the average is render
 /// time over rendered audio time and the peak compares the worst block with
 /// one block's audio time. `None` while no block was rendered in between —
-/// a readout without a denominator is a lie.
+/// a readout without a denominator is a lie — and while zero time was
+/// measured over rendered blocks: real rendering takes nonzero time, so a
+/// zero delta means the render clock was missing, and a confident 0.0%
+/// would be a lie of the same kind.
 pub(crate) fn dsp_load(
     previous: RenderCounters,
     current: RenderCounters,
@@ -263,10 +266,13 @@ pub(crate) fn dsp_load(
     if block_frames == 0 || sample_rate == 0 {
         return None;
     }
+    let busy = current.busy_100ns.saturating_sub(previous.busy_100ns);
+    if busy == 0 {
+        return None;
+    }
     let block_100ns = f64::from(block_frames) * 1e7 / f64::from(sample_rate);
-    let busy = current.busy_100ns.saturating_sub(previous.busy_100ns) as f64;
     Some(DspLoad {
-        average: (busy / (blocks as f64 * block_100ns) * 100.) as f32,
+        average: (busy as f64 / (blocks as f64 * block_100ns) * 100.) as f32,
         peak: (current.peak_block_100ns as f64 / block_100ns * 100.) as f32,
     })
 }
@@ -542,6 +548,22 @@ mod tests {
             ),
             None,
             "no sample rate"
+        );
+        // Blocks rendered with zero measured time mean the render clock was
+        // missing (real rendering takes nonzero time): no readout, not 0%.
+        assert_eq!(
+            dsp_load(
+                counters,
+                RenderCounters {
+                    blocks: 6,
+                    busy_100ns: 0,
+                    peak_block_100ns: 0,
+                },
+                256,
+                48_000
+            ),
+            None,
+            "zero busy over rendered blocks is unmeasured, not idle"
         );
     }
 

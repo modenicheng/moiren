@@ -46,7 +46,8 @@ pub struct ProfessionalStreamObservation {
     pub native_dropped_frames: u64,
     pub native_silent_frames: u64,
     /// Native-callback shortfall events (ASIO driver level), one per
-    /// starved callback.
+    /// starved callback per direction — a full-duplex callback starving on
+    /// both ends counts twice.
     pub native_xruns: u64,
     /// Engine render accounting, advanced by the master output's pump only:
     /// blocks rendered, total time spent inside `Engine::render`, and the
