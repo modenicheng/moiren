@@ -774,7 +774,8 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
         window.render_frame(cx);
-        window.click("inspect-output-a", cx);
+        // The device row itself opens the detail view (design 23 §3.2).
+        window.click("device-row-output-a", cx);
         window.click("device-override", cx);
         window.click("device-output-rate-trigger", cx);
         window.render_frame(cx);

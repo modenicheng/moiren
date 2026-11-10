@@ -265,6 +265,44 @@ impl StudioShell {
         self.selection.route = None;
     }
 
+    /// Jump navigation for "locate in graph" affordances (design 23 §3.6):
+    /// switch to the Graph page, single-select the node, and open the
+    /// inspector. The zoom is preserved; a node outside the viewport pans to
+    /// the viewport's center, and an unknown canvas size skips the pan — the
+    /// graph's first-frame fit covers it. A node that no longer exists in
+    /// the candidate does nothing. Navigation only: it writes no graph
+    /// state.
+    pub(crate) fn reveal_node(&mut self, node: moiren_core::graph::NodeId, cx: &mut Context<Self>) {
+        let anchor = {
+            let state = self.state.read(cx);
+            if state.snapshot.graph.node(node).is_none() {
+                return;
+            }
+            crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
+                &state.snapshot,
+                &self.graph_view.node_positions,
+            )
+            .nodes
+            .into_iter()
+            .find(|card| card.node_id == Some(node))
+            .map(|card| (card.x, card.y))
+        };
+        self.set_page(Page::Graph, cx);
+        self.select_single_node(node);
+        self.open_inspector();
+        if let (Some((x, y)), Some((viewport_w, viewport_h))) =
+            (anchor, self.graph_view.canvas_size)
+        {
+            let (canvas_x, canvas_y) = self.graph_view.camera.world_to_canvas((x, y));
+            if canvas_x < 0. || canvas_y < 0. || canvas_x > viewport_w || canvas_y > viewport_h {
+                self.graph_view
+                    .camera
+                    .pan_by(viewport_w / 2. - canvas_x, viewport_h / 2. - canvas_y);
+            }
+        }
+        cx.notify();
+    }
+
     /// Enters the inspector's inline rename for `node`, seeded with the
     /// label it shows today and focused so typing replaces it immediately.
     fn begin_node_rename(

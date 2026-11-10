@@ -196,9 +196,9 @@
 ```rust
 // moiren-windows-audio/src/engine_backend/observations.rs
 pub enum StreamEndpoint {
-    /// MMDevice 端点 id 或 ASIO 驱动 id，与设备目录行的 id 相同。
+    /// 服务侧绑定身份（MMDevice 端点 id 或 `asio:{CLSID}`），与设备目录行 id 相同。
     Physical(String),
-    Application { executable: String },
+    Application { pid: u32, creation_time_100ns: u64 },
     Virtual(VirtualEndpointId),
 }
 
@@ -209,10 +209,18 @@ pub struct ProfessionalStreamObservation {
 }
 ```
 
-流的登记点有四处：物理输入与输出（`engine_backend.rs:520`、`536`，端点 id 就是
-`Group.id`）、应用回环（`engine_backend.rs:686`）、虚拟 IO
-（`engine_backend/virtual_io.rs:78`）。登记时端点身份都在作用域内。这是控制侧的
-元数据，不进实时路径。
+实现修订（2026-11-10）：身份不取引擎打开用的规范化 id。ASIO 的 `Group.id` 是
+`canonical_asio_driver_id` 产出的大写裸 CLSID，与目录行的 `asio:{CLSID}` 不同，直接
+用它设备页永远匹配不上。身份取**选择器里的绑定字符串**（`PinnedEndpoint` 原样透传，
+`FollowDefault` 取解析出的 GetId，同样是目录行 id）；应用分支用解析后的
+`(pid, creation_time_100ns)` 而非 `executable` 字符串——登记点作用域里就是这个类型。
+
+流的登记点有四处：物理输入与输出（`engine_backend.rs` 的 `observation()`，端点身份
+存进 `Direction.endpoint`）、应用回环（`prepare_process`）、虚拟 IO
+（`virtual_io.rs::virtual_observation`）。登记时端点身份都在作用域内。这是控制侧的
+元数据，不进实时路径。应用登记点无法在不开真实外部进程的情况下走完整 prepare，
+测试覆盖物理/虚拟三处（`engine_backend/tests.rs::
+prepared_streams_record_their_service_endpoint_identities`），应用点按构造保证。
 
 app 侧新增一组纯函数（建议放 `ui/pages/devices/monitor.rs`）：
 
@@ -239,6 +247,11 @@ fault 或图有 `pending_revision` 时隐藏流数值。缺陷是图级 fault �
 | `ui/pages/devices/exports.rs` | `binding_candidate`、`submit_export_binding`、绑定与解绑按钮 |
 | `ui/state.rs` | `device_rows`（89-132）；`bind_candidate_resources`（752-775，唯一调用者是设备页） |
 | `ui/presentation.rs` | `native_timing_rows` 改为按流投影并带设备名、节点名；`source_name`、`output_name` 若无其他引用则删 |
+
+实现补充（2026-11-10）：审计漏了 `native_timing_rows` 的第三个消费者——设置页诊断卡片
+（`pages/settings.rs`）。它改为 `native_timing_card_rows`：处理参数行 + 每条流一组
+（`设备名 · 节点标签 · 角色` 小标题 + 明细行），空闲时保留 `Actual native timing — `
+回退行。`source_name`/`output_name` 在 A 中仍有测试引用（B 删影子账本测试时一并处理）。
 
 ### 3.9 职责守卫
 

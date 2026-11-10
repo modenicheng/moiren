@@ -5,7 +5,6 @@ use crate::service::{
 };
 use crate::ui::state::UiFailure;
 use crate::ui::widgets::overlay_scrollbar::notify_owner;
-use moiren_core::graph::NodeId;
 use moiren_engine::node::VirtualEndpointId;
 use rust_i18n::t;
 use std::collections::BTreeMap;
@@ -96,7 +95,7 @@ fn edit_export(
     let export = exports
         .iter_mut()
         .find(|export| export.endpoint_id == endpoint_id)
-        .ok_or(t!("Export is no longer in this project's candidate graph").to_string())?;
+        .ok_or(t!("The virtual device is no longer in this project's graph").to_string())?;
     match edit {
         IntentEdit::Rename(name) => export.name = name,
         IntentEdit::Channels(channels) => export.channels = channels,
@@ -105,25 +104,6 @@ fn edit_export(
     }
     validate_exports(&exports, &graph.graph)?;
     Ok(exports)
-}
-
-fn binding_candidate(
-    graph: &GraphSnapshot,
-    endpoint_id: VirtualEndpointId,
-    selected: Option<NodeId>,
-) -> Option<NodeId> {
-    let export = graph
-        .exports
-        .iter()
-        .find(|export| export.endpoint_id == endpoint_id)?;
-    selected.filter(|id| {
-        graph.graph.get_node(*id).is_ok_and(|node| {
-            node.kind() == export.direction.node_kind() && node.channels() == export.channels
-        }) && !graph
-            .exports
-            .iter()
-            .any(|other| other.endpoint_id != endpoint_id && other.binding == Some(*id))
-    })
 }
 
 impl StudioShell {
@@ -170,23 +150,6 @@ impl StudioShell {
         self.dispatch_exports(result, cx);
     }
 
-    fn submit_export_binding(
-        &mut self,
-        id: VirtualEndpointId,
-        node: Option<NodeId>,
-        cx: &mut Context<StudioShell>,
-    ) {
-        self.state.update(cx, |state, _| {
-            if !state.pending_request {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::BindExport {
-                    endpoint_id: id,
-                    node,
-                }));
-            }
-        });
-        cx.notify();
-    }
-
     fn dispatch_exports(
         &mut self,
         exports: Result<Vec<ExportIntent>, String>,
@@ -221,18 +184,18 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .track_scroll(&shell.devices.exports_scroll)
         .restrict_scroll_to_axis()
         .on_scroll_wheel(notify_owner(cx.entity()))
-        .child(heading(t!("Virtual exports")))
+        .child(heading(t!("Virtual devices")))
         .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
         .child(creation_controls(shell, cx))
-        .child(label(t!("Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.")))
+        .child(label(t!("Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Choose this device on a Graph input/output node; each IO node belongs to one virtual device.")))
         .child(div().id("export-default-help")
             .aria_label(t!(DEFAULT_ELIGIBILITY_HELP))
             .child(label(t!(DEFAULT_ELIGIBILITY_HELP)))
             .gpui_test_observe())
-        .child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.")));
+        .child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first.")));
     if snapshot.exports.is_empty() {
         list = list.child(label(t!(
-            "No virtual exports yet. Create one above; it starts unbound."
+            "No virtual devices yet. Create one above; it starts unbound."
         )));
     }
     for status in &snapshot.exports {
@@ -309,7 +272,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         .p(px(theme::SPACE_3))
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
-        .child(heading(t!("Create export")))
+        .child(heading(t!("Create virtual device")))
         .child(choices)
         .child(label(t!(
             "Endpoint name (1-63 UTF-16 units; no control characters)"
@@ -328,7 +291,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 .items_center()
                 .gap(px(theme::SPACE_2))
                 .child(
-                    button("export-create", t!("Create export"))
+                    button("export-create", t!("Create"))
                         .variant(ButtonVariant::Primary)
                         .disabled(
                             pending
@@ -364,7 +327,8 @@ fn export_row(
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
     let state = shell.state.read(cx);
-    let graph = &state.snapshot.graph;
+    let snapshot = &state.snapshot;
+    let graph = &snapshot.graph;
     let id = status.intent.endpoint_id;
     let desired = graph.exports.iter().find(|export| export.endpoint_id == id);
     let mut row = div()
@@ -410,18 +374,10 @@ fn export_row(
             } else {
                 t!("Inactive").into()
             },
-        ))
-        .child(detail(
-            &t!("Candidate graph binding"),
-            desired
-                .and_then(|intent| intent.binding)
-                .and_then(|node| graph.node(node))
-                .map(|node| node.label.clone())
-                .unwrap_or_else(|| t!("Unbound").into()),
         ));
     if let Some(desired) = desired {
         row = row.child(detail(
-            &t!("Candidate intent"),
+            &t!("Status"),
             if desired.enabled {
                 t!("Enabled")
             } else {
@@ -482,11 +438,8 @@ fn export_row(
                     }),
                 );
         }
-        let selected = binding_candidate(graph, id, shell.selection.node);
         let enabled = !desired.enabled;
         let this = cx.entity();
-        let bind = cx.entity();
-        let unbind = cx.entity();
         let remove = cx.entity();
         row = row.child(
             div()
@@ -497,9 +450,9 @@ fn export_row(
                     button(
                         SharedString::from(format!("export-toggle-{id}")),
                         if desired.enabled {
-                            t!("Disable intent")
+                            t!("Disable")
                         } else {
-                            t!("Enable intent")
+                            t!("Enable")
                         },
                     )
                     .disabled(state.pending_request)
@@ -511,40 +464,8 @@ fn export_row(
                 )
                 .child(
                     button(
-                        SharedString::from(format!("export-bind-{id}")),
-                        t!("Bind selected IO"),
-                    )
-                    .disabled(
-                        state.pending_request || selected.is_none() || selected == desired.binding,
-                    )
-                    .on_click(move |_, _, cx| {
-                        bind.update(cx, |shell, cx| {
-                            // Re-resolve current selection and intent instead of replaying a stale render snapshot.
-                            let selected = binding_candidate(
-                                &shell.state.read(cx).snapshot.graph,
-                                id,
-                                shell.selection.node,
-                            );
-                            if let Some(node) = selected {
-                                shell.submit_export_binding(id, Some(node), cx);
-                            }
-                        });
-                    }),
-                )
-                .child(
-                    button(
-                        SharedString::from(format!("export-unbind-{id}")),
-                        t!("Unbind"),
-                    )
-                    .disabled(state.pending_request || desired.binding.is_none())
-                    .on_click(move |_, _, cx| {
-                        unbind.update(cx, |shell, cx| shell.submit_export_binding(id, None, cx));
-                    }),
-                )
-                .child(
-                    button(
                         SharedString::from(format!("export-remove-{id}")),
-                        t!("Remove intent"),
+                        t!("Remove"),
                     )
                     .disabled(state.pending_request)
                     .on_click(move |_, _, cx| {
@@ -554,11 +475,91 @@ fn export_row(
                     }),
                 ),
         );
+        row = row.child(users_block(snapshot, id, cx));
         row = row.child(default_control(shell, status, cx));
     } else {
-        row = row.child(label(t!("Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.")));
+        row = row.child(label(t!("Removed from the graph. The service retains lifecycle tracking until safe retirement is confirmed.")));
     }
     row.gpui_test_observe()
+}
+
+/// The read-only user list of a virtual device (design 23 §3.4): who the
+/// candidate graph routes through this endpoint, with a jump to the node.
+/// Binding itself lives on the node, never on this page.
+fn users_block(
+    snapshot: &crate::service::AppSnapshot,
+    id: VirtualEndpointId,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
+    let device = DeviceKey::Virtual(id);
+    let users = monitor::device_users(snapshot, &device);
+    let timing = crate::ui::presentation::native_timing_views(snapshot);
+    let mut block = div()
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_1_5))
+        .child(heading(t!("Users")));
+    if users.is_empty() {
+        return block.child(
+            div()
+                .id(SharedString::from(format!("export-users-empty-{id}")))
+                .child(label(t!(
+                    "Unbound. Choose this device on a Graph input/output node."
+                )))
+                .gpui_test_observe(),
+        );
+    }
+    for user in &users {
+        let node = user.node;
+        let state_text = match user.state {
+            monitor::UserState::Running => t!("Running").to_string(),
+            monitor::UserState::NotRunning => {
+                if snapshot.phase == SessionPhase::Running {
+                    t!("Waiting to take effect").to_string()
+                } else {
+                    t!("Not running").to_string()
+                }
+            }
+            monitor::UserState::Detached => {
+                t!("Binding changed; the old stream is still running").to_string()
+            }
+        };
+        let this = cx.entity();
+        block = block
+            .child(
+                div()
+                    .id(SharedString::from(format!("export-user-{id}-{node:?}")))
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(theme::SPACE_2))
+                    .child(label(user.label.clone()).min_w_0().truncate())
+                    .child(if user.state == monitor::UserState::Running {
+                        badge(state_text, theme::SIGNAL_DEVICE)
+                    } else {
+                        label(state_text)
+                    })
+                    .child(
+                        button(
+                            SharedString::from(format!("export-reveal-{id}-{node:?}")),
+                            t!("Locate in graph"),
+                        )
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |shell, cx| shell.reveal_node(node, cx));
+                        }),
+                    )
+                    .gpui_test_observe(),
+            )
+            .children(
+                timing
+                    .streams
+                    .iter()
+                    .filter(|view| view.node == node && user.state == monitor::UserState::Running)
+                    .flat_map(|view| view.rows.iter().cloned())
+                    .map(|(key, value)| detail(&key, value)),
+            );
+    }
+    block
 }
 
 fn default_control(

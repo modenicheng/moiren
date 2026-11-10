@@ -700,13 +700,13 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 /// - display-name registries translated at paint from `&'static str`
 ///   accessors: page titles, node catalog titles/descriptions/groups,
 ///   window-control labels, latency-profile titles/descriptions, backend /
-///   precision / sample-format / source-mode / meter-status labels,
-///   compressor parameter names;
+///   precision / sample-format / meter-status labels, compressor parameter
+///   names;
 /// - `DEFAULT_ELIGIBILITY_HELP` help prose (devices/exports.rs).
 ///
 /// When one of these keys gains a literal call site, remove it here — the
 /// guard fails on stale entries on purpose.
-const DYNAMIC_KEY_EXCEPTIONS: [&str; 115] = [
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 113] = [
     // AudioConfigError Display strings looked up at paint from the enum payload
     // (UiFailure::InvalidAudioSettings); mirrored in tests/i18n_ledger.rs
     // ALLOWED_RUNTIME_KEYS.
@@ -724,7 +724,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 115] = [
     "ASIO",
     "Adjust linear amplitude",
     "Adjust the channel count, or reconnect the route",
-    "Application",
     "Application audio",
     "Attack",
     "Balanced",
@@ -796,7 +795,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 115] = [
     "SOURCES",
     "Static channel routing matrix",
     "Stereo balance, mono and swap",
-    "Test tone",
     "The Balance node's position must be a finite value in -1..1",
     "The Gain node's gain must be a finite value in 0..16",
     "The Sink node is not bound to an output device",

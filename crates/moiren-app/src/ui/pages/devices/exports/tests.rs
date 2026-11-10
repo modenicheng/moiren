@@ -1,6 +1,5 @@
-use super::{IntentEdit, binding_candidate, create_export, edit_export};
-use crate::service::{ExportDirection, ExportIntent, GraphEdit, ServiceGraph};
-use moiren_core::graph::NodeKind;
+use super::{IntentEdit, create_export, edit_export};
+use crate::service::{ExportDirection, ExportIntent, ServiceGraph};
 use moiren_engine::node::VirtualEndpointId;
 
 fn id(value: u8) -> VirtualEndpointId {
@@ -61,85 +60,6 @@ fn edits_preserve_other_intents_identity_and_channel_shape() {
 }
 
 #[test]
-fn binding_requires_matching_direction_shape_and_exclusive_graph_io() {
-    let mut service = ServiceGraph::default();
-    let source = service.snapshot().graph.nodes()[0].id();
-    let sink = service.snapshot().graph.nodes()[3].id();
-    let gain = service.snapshot().graph.nodes()[1].id();
-    service
-        .edit(GraphEdit::AddNode {
-            kind: NodeKind::Source,
-            channels: 1,
-        })
-        .unwrap();
-    let mono = service.snapshot().graph.nodes()[4].id();
-    service
-        .edit(GraphEdit::SetExports(vec![ExportIntent {
-            endpoint_id: id(1),
-            direction: ExportDirection::Playback,
-            name: "Playback".into(),
-            channels: 2,
-            enabled: true,
-            binding: None,
-        }]))
-        .unwrap();
-    assert_eq!(
-        binding_candidate(&service.snapshot(), id(1), Some(source)),
-        Some(source)
-    );
-    for selection in [None, Some(sink), Some(mono), Some(gain)] {
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), selection),
-            None
-        );
-    }
-    assert!(
-        service
-            .edit(GraphEdit::BindExport {
-                endpoint_id: id(1),
-                node: Some(sink)
-            })
-            .is_err()
-    );
-    service
-        .edit(GraphEdit::BindExport {
-            endpoint_id: id(1),
-            node: Some(source),
-        })
-        .unwrap();
-    let mut exports = service.snapshot().exports;
-    exports.push(ExportIntent {
-        endpoint_id: id(2),
-        name: "Other".into(),
-        binding: None,
-        ..exports[0].clone()
-    });
-    service.edit(GraphEdit::SetExports(exports)).unwrap();
-    assert_eq!(
-        binding_candidate(&service.snapshot(), id(2), Some(source)),
-        None
-    );
-    service
-        .edit(GraphEdit::BindExport {
-            endpoint_id: id(2),
-            node: Some(source),
-        })
-        .unwrap();
-    assert_eq!(service.snapshot().exports[0].binding, None);
-    assert_eq!(service.snapshot().exports[1].binding, Some(source));
-    service
-        .edit(GraphEdit::BindExport {
-            endpoint_id: id(2),
-            node: None,
-        })
-        .unwrap();
-    assert_eq!(
-        binding_candidate(&service.snapshot(), id(1), Some(source)),
-        Some(source)
-    );
-}
-
-#[test]
 fn create_enforces_service_export_limit() {
     let mut graph = ServiceGraph::default().snapshot();
     for value in 0..crate::service::MAX_EXPORTS as u8 {
@@ -149,6 +69,9 @@ fn create_enforces_service_export_limit() {
     assert!(create_export(&graph, id(255), ExportDirection::Playback, "Overflow", 2).is_err());
 }
 
+/// Channel-shape edits still refuse an incompatible bound node, and the
+/// binding itself is arranged through the service graph edits the node-side
+/// surfaces send (design 23 §3.4: this page never binds).
 #[test]
 fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
     for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
@@ -159,14 +82,14 @@ fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
             service.snapshot().graph.nodes()[3].id()
         };
         service
-            .edit(GraphEdit::AddNode {
+            .edit(crate::service::GraphEdit::AddNode {
                 kind: direction.node_kind(),
                 channels: 1,
             })
             .unwrap();
         let mono = service.snapshot().graph.nodes()[4].id();
         service
-            .edit(GraphEdit::SetExports(vec![ExportIntent {
+            .edit(crate::service::GraphEdit::SetExports(vec![ExportIntent {
                 endpoint_id: id(1),
                 direction,
                 name: "Endpoint".into(),
@@ -176,7 +99,7 @@ fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
             }]))
             .unwrap();
         service
-            .edit(GraphEdit::BindExport {
+            .edit(crate::service::GraphEdit::BindExport {
                 endpoint_id: id(1),
                 node: Some(stereo),
             })
@@ -184,7 +107,7 @@ fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
         let before = service.snapshot();
         assert!(edit_export(&before, id(1), IntentEdit::Channels(1)).is_err());
         service
-            .edit(GraphEdit::BindExport {
+            .edit(crate::service::GraphEdit::BindExport {
                 endpoint_id: id(1),
                 node: None,
             })
@@ -192,23 +115,26 @@ fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
         let mut candidate = service.snapshot();
         candidate.exports = edit_export(&candidate, id(1), IntentEdit::Channels(1)).unwrap();
         service
-            .edit(GraphEdit::SetExports(candidate.exports.clone()))
+            .edit(crate::service::GraphEdit::SetExports(
+                candidate.exports.clone(),
+            ))
             .unwrap();
         let exports = candidate.exports;
         assert_eq!(exports[0].endpoint_id, id(1));
         assert_eq!(exports[0].name, "Endpoint");
         assert_eq!(exports[0].direction, direction);
         assert!(exports[0].enabled);
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(stereo)),
-            None
-        );
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(mono)),
-            Some(mono)
+        // The service edit keeps direction and shape exclusive.
+        assert!(
+            service
+                .edit(crate::service::GraphEdit::BindExport {
+                    endpoint_id: id(1),
+                    node: Some(stereo),
+                })
+                .is_err()
         );
         service
-            .edit(GraphEdit::BindExport {
+            .edit(crate::service::GraphEdit::BindExport {
                 endpoint_id: id(1),
                 node: Some(mono),
             })
@@ -216,26 +142,13 @@ fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
         assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(2)).is_err());
         assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(0)).is_err());
         assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(3)).is_err());
-        service
-            .edit(GraphEdit::BindExport {
-                endpoint_id: id(1),
-                node: None,
-            })
-            .unwrap();
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(stereo)),
-            None
-        );
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(mono)),
-            Some(mono)
-        );
     }
 }
 
 #[cfg(feature = "gpui-test")]
 mod headless {
-    use crate::service::{AppSnapshot, ExportDirection, GraphSnapshot, ServiceRuntime};
+    use crate::service::{AppSnapshot, ExportDirection, GraphEdit, GraphSnapshot, ServiceRuntime};
+    use crate::ui::pages::Page;
     use crate::ui::pages::{self, devices};
     use crate::ui::shell::{StudioShell, UiState};
     use gpui_kit::test::TestWindowExt;
@@ -311,7 +224,7 @@ mod headless {
     }
 
     #[gpui_kit::test]
-    fn compact_exports_controls_remain_reachable_by_scrolling_at_1024x720(
+    fn compact_virtual_device_controls_remain_reachable_by_scrolling_at_1024x720(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
@@ -358,7 +271,7 @@ mod headless {
             .unwrap();
         let key = |action| SharedString::from(format!("export-{action}-{id}"));
         for action in [
-            "mono", "stereo", "name", "rename", "toggle", "bind", "unbind", "remove", "default",
+            "mono", "stereo", "name", "rename", "toggle", "remove", "default",
         ] {
             scroll_to_control(cx, key(action));
         }
@@ -410,8 +323,13 @@ mod headless {
         runtime.join().unwrap();
     }
 
+    /// Creation, rename, toggle, default eligibility and removal stay; the
+    /// binding column is gone (design 23 §3.4). The binding itself is what
+    /// the node sends: the test drives the same graph edit the node-side
+    /// dropdown dispatches, then the virtual device's user list carries the
+    /// node read-only, with a working "Locate in graph" jump.
     #[gpui_kit::test]
-    fn export_controls_create_rename_bind_unbind_toggle_and_remove(
+    fn export_controls_create_toggle_and_remove_with_a_read_only_user_list(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
@@ -473,36 +391,30 @@ mod headless {
             .find(|node| node.kind() == moiren_core::graph::NodeKind::Source)
             .unwrap()
             .id();
-        let sink = graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|node| node.kind() == moiren_core::graph::NodeKind::Sink)
-            .unwrap()
-            .id();
-        view.update(cx, |shell, cx| {
-            shell.selection.node = Some(sink);
-            cx.notify();
-        });
+        // Unbound: the page points at the node instead of binding here.
         cx.update(|window, cx| {
             window.render_frame(cx);
-            window.click(key("bind"), cx);
-            window.click(key("unbind"), cx);
-        });
-        view.update(cx, |shell, cx| {
+            assert!(window.try_find(key("bind")).is_none());
+            assert!(window.try_find(key("unbind")).is_none());
             assert!(
-                !shell.state.read(cx).pending_request,
-                "incompatible controls are inert"
+                window
+                    .find(SharedString::from(format!("export-users-empty-{id}")))
+                    .visible(),
+                "the unbound hint must point at the graph nodes"
             );
         });
-        assert_eq!(candidate(&view, cx).exports[0].binding, None);
+        // The node's own dropdown is the binding surface: replay the edit it
+        // would send and watch the user list pick the node up.
         view.update(cx, |shell, cx| {
-            shell.selection.node = Some(source);
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    GraphEdit::BindExport {
+                        endpoint_id: id,
+                        node: Some(source),
+                    },
+                ))
+            });
             cx.notify();
-        });
-        cx.update(|window, cx| {
-            window.render_frame(cx);
-            window.click(key("bind"), cx);
         });
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].binding == Some(source)
@@ -513,13 +425,53 @@ mod headless {
             "binding edits do not activate audio"
         );
         cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find(SharedString::from(format!("export-user-{id}-{source:?}")))
+                    .visible(),
+                "the bound node must list as the device's user"
+            );
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(
+                SharedString::from(format!("export-reveal-{id}-{source:?}")),
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.presentation.page(), Page::Graph);
+            assert_eq!(shell.selection.node, Some(source));
+            assert!(shell.chrome.inspector_open);
+        });
+        // Shape edits against a bound node still fail loudly, and removing
+        // the binding is the node's clear action, exercised through the same
+        // service edit before the shape can change.
+        view.update(cx, |shell, cx| {
+            shell.set_page(Page::Devices, cx);
+            shell.devices.device_tab = devices::DeviceTab::Exports;
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
             window.click(key("mono"), cx);
             window.render_frame(cx);
             assert!(window.find("statusbar-faults").visible());
         });
         assert_eq!(candidate(&view, cx).exports[0].channels, 2);
         assert_eq!(candidate(&view, cx).exports[0].binding, Some(source));
-        cx.update(|window, cx| window.click(key("unbind"), cx));
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    GraphEdit::BindExport {
+                        endpoint_id: id,
+                        node: None,
+                    },
+                ))
+            });
+            cx.notify();
+        });
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].binding.is_none()
         });
@@ -527,12 +479,6 @@ mod headless {
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].channels == 1
         });
-        cx.update(|window, cx| window.click(key("bind"), cx));
-        assert_eq!(
-            candidate(&view, cx).exports[0].binding,
-            None,
-            "stereo selection cannot bind mono export"
-        );
         cx.update(|window, cx| window.click(key("stereo"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].channels == 2
