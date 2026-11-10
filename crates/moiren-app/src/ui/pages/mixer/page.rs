@@ -719,6 +719,10 @@ pub(crate) struct MixerMeters {
     /// Shared, bounded shaping cache for every strip's readout, keyed by
     /// the exact text (see [`ReadoutShapes`]).
     readouts: std::cell::RefCell<ReadoutShapes>,
+    /// Shared, bounded shaping cache for the per-frame channel labels
+    /// ("L"/"R"/channel numbers), keyed by (text, font size) — the readout
+    /// cache's twin for the hot layer's static short labels.
+    labels: std::cell::RefCell<crate::ui::widgets::fader::LabelShapes>,
 }
 
 impl MixerMeters {
@@ -727,6 +731,7 @@ impl MixerMeters {
             shell,
             geometry,
             readouts: std::cell::RefCell::new(ReadoutShapes::default()),
+            labels: std::cell::RefCell::new(crate::ui::widgets::fader::LabelShapes::default()),
         }
     }
 
@@ -743,6 +748,20 @@ impl MixerMeters {
     #[cfg(all(test, feature = "gpui-test"))]
     pub(crate) fn last_readout(&self, id: NodeId) -> Option<String> {
         self.readouts.borrow().census.painted.get(&id).cloned()
+    }
+
+    /// How many shaper runs the label cache has needed, and how many
+    /// distinct (text, size) entries it holds — the channel-label twin of
+    /// [`Self::readout_shape_stats`].
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(crate) fn label_shape_stats(&self) -> (usize, usize) {
+        self.labels.borrow().stats()
+    }
+
+    /// The distinct label texts painted through the label cache so far.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(crate) fn painted_labels(&self) -> std::collections::BTreeSet<String> {
+        self.labels.borrow().painted()
     }
 }
 
@@ -842,7 +861,15 @@ impl HotSurface for MixerMeters {
             return;
         };
         shell.update(cx, |shell, cx| {
-            paint_mixer_meter_frame(frame, shell, layer, window, cx, &self.readouts)
+            paint_mixer_meter_frame(
+                frame,
+                shell,
+                layer,
+                window,
+                cx,
+                &self.readouts,
+                &self.labels,
+            )
         });
     }
 }
@@ -871,11 +898,15 @@ fn paint_mixer_meter_frame(
     window: &mut Window,
     cx: &mut Context<StudioShell>,
     readouts: &std::cell::RefCell<ReadoutShapes>,
+    labels: &std::cell::RefCell<crate::ui::widgets::fader::LabelShapes>,
 ) {
     #[cfg(feature = "gpui-test")]
     let began = std::time::Instant::now();
     #[cfg(feature = "gpui-test")]
     let mut levels_fingerprint = 0u64;
+    // The channel labels' shaping cache, borrowed once for the whole frame:
+    // every strip's labels paint through the same (text, size) entries.
+    let mut labels = labels.borrow_mut();
     for (&id, &(placement, channels, legacy_input)) in &frame.tracks {
         if !placement.decorations_visible() {
             continue;
@@ -905,6 +936,7 @@ fn paint_mixer_meter_frame(
                 levels.as_ref().map(|levels| levels.as_slice()),
                 channels,
                 &clips,
+                &mut labels,
                 window,
                 cx,
             );

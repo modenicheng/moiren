@@ -3,6 +3,7 @@
 //! zone above it extends to the peak bar, and the thin marker holds the
 //! recent peak maximum. The digital scale uses green below −6 dBFS, yellow
 //! from −6 to 0 dBFS, and red above digital zero.
+use super::fader::LabelShapes;
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::theme;
 use gpui_kit::*;
@@ -64,10 +65,10 @@ pub(crate) fn paint_channel_meter(
     levels: Option<&[DisplayLevel]>,
     channels: usize,
     clips: &[bool],
+    labels: &mut LabelShapes,
     window: &mut Window,
     cx: &mut App,
 ) {
-    use super::fader::paint_text;
     let (width, gap) = channel_track_layout(channels);
     for index in 0..channels {
         let left = bounds.left() + px(index as f32 * (width + gap));
@@ -84,13 +85,19 @@ pub(crate) fn paint_channel_meter(
         let clip = clips.get(index).copied().unwrap_or(false);
         paint_clip_lamp(track, Axis::Vertical, clip, window);
         if width + gap >= 5. {
-            let label = if channels == 2 {
-                ["L", "R"][index].to_owned()
+            // The labels are static short texts from a fixed population, so
+            // they are spelled on the stack and painted through the shared
+            // (text, size) shaping cache: a held display frame reshapes
+            // nothing (audit A-2).
+            let mut digits = [0u8; 24];
+            let label: &str = if channels == 2 {
+                ["L", "R"][index]
             } else {
-                (index + 1).to_string()
+                let len = decimal_digits(index + 1, &mut digits);
+                std::str::from_utf8(&digits[..len]).expect("decimal digits are ascii")
             };
-            paint_text(
-                &label,
+            labels.paint_text(
+                label,
                 point(left, bounds.bottom() + px(6.)),
                 8.,
                 TextAlign::Left,
@@ -101,8 +108,13 @@ pub(crate) fn paint_channel_meter(
         }
     }
     if width + gap < 5. {
-        paint_text(
-            &format!("{channels} ch"),
+        let mut digits = [0u8; 24];
+        let len = decimal_digits(channels, &mut digits);
+        digits[len..len + " ch".len()].copy_from_slice(b" ch");
+        let label =
+            std::str::from_utf8(&digits[..len + " ch".len()]).expect("decimal digits are ascii");
+        labels.paint_text(
+            label,
             point(bounds.left(), bounds.bottom() + px(6.)),
             8.,
             TextAlign::Left,
@@ -111,6 +123,26 @@ pub(crate) fn paint_channel_meter(
             cx,
         );
     }
+}
+
+/// Writes `number`'s decimal digits into `buffer` and returns how many it
+/// wrote. The hot layer spells the per-channel labels every display frame,
+/// so they are formatted on the stack instead of through `to_string` (audit
+/// A-2: the hot layer must not allocate per frame). `buffer` must hold at
+/// least 20 bytes — the most digits a `usize` can grow.
+fn decimal_digits(mut number: usize, buffer: &mut [u8]) -> usize {
+    debug_assert!(buffer.len() >= 20, "a usize has at most 20 digits");
+    let mut len = 0;
+    loop {
+        buffer[len] = b'0' + (number % 10) as u8;
+        len += 1;
+        number /= 10;
+        if number == 0 {
+            break;
+        }
+    }
+    buffer[..len].reverse();
+    len
 }
 
 fn meter_height(value: f32) -> f32 {
@@ -209,10 +241,64 @@ pub(crate) fn paint_meter_fill_horizontal(
 
 /// One colored layer of a meter bar, spanning `bottom`..`bottom + height` in
 /// the 0..1 track space.
+#[derive(Clone, Copy)]
 struct MeterSpan {
     bottom: f32,
     height: f32,
     color: Hsla,
+}
+
+/// The most layers one channel can wear: the three zone fills plus the dark
+/// RMS tail.
+const METER_SPAN_SLOTS: usize = 4;
+
+/// One channel's layers, built on the stack. Every meter surface recomputes
+/// this list every display frame for every channel — the hot layers most of
+/// all — so it must never allocate: the fixed slot array replaces the
+/// per-call `Vec` this used to return (audit A-2).
+struct MeterSpans {
+    slots: [Option<MeterSpan>; METER_SPAN_SLOTS],
+}
+
+impl MeterSpans {
+    fn new() -> Self {
+        Self {
+            slots: [None; METER_SPAN_SLOTS],
+        }
+    }
+
+    fn push(&mut self, span: MeterSpan) {
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("a channel wears at most METER_SPAN_SLOTS spans");
+        *slot = Some(span);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.is_some()).count()
+    }
+}
+
+impl std::ops::Index<usize> for MeterSpans {
+    type Output = MeterSpan;
+
+    fn index(&self, index: usize) -> &MeterSpan {
+        self.slots[index]
+            .as_ref()
+            .expect("a span behind every index below len")
+    }
+}
+
+impl IntoIterator for MeterSpans {
+    type Item = MeterSpan;
+    type IntoIter = std::iter::Flatten<std::array::IntoIter<Option<MeterSpan>, METER_SPAN_SLOTS>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.slots.into_iter().flatten()
+    }
 }
 
 /// Layers for one channel: the bright segment fill covers the RMS body, and
@@ -222,9 +308,9 @@ struct MeterSpan {
 /// (green→yellow) and 0 dBFS (yellow→red). This is the single source for the
 /// segmentation strategy: every meter surface paints these spans through the
 /// [`paint_meter_fill`] painters in its own orientation.
-fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
+fn meter_spans(level: DisplayLevel) -> MeterSpans {
     let bar_amount = meter_height(level.bar);
-    let mut spans = Vec::with_capacity(4);
+    let mut spans = MeterSpans::new();
     let green_top = meter_height(10f32.powf(-6. / 20.));
     let red_top = meter_height(1.);
     for (bottom, top, color) in [
@@ -257,7 +343,10 @@ fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MeterSpan, meter_height, meter_marker_position, meter_spans};
+    use super::{
+        METER_SPAN_SLOTS, MeterSpan, decimal_digits, meter_height, meter_marker_position,
+        meter_spans,
+    };
     use crate::ui::monitoring::DisplayLevel;
     use crate::ui::theme;
 
@@ -350,5 +439,47 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert!((spans[0].height - meter_height(0.1)).abs() < 0.00001);
         assert!(!same_color(&spans[0], theme::METER_PEAK_ZONE));
+    }
+
+    #[test]
+    fn meter_spans_stay_within_the_fixed_stack_slots() {
+        // The hot layers rebuild this list every display frame for every
+        // channel, so it is built on the stack with a fixed slot count (the
+        // three zone fills plus the dark tail). The bound must hold for
+        // every reading — clipping bars with a falling RMS tail included —
+        // or `MeterSpans::push` would panic.
+        for step in 0..=60i32 {
+            let db = -72. + step as f32 * 2.;
+            let bar = 10f32.powf(db / 20.);
+            let rms = bar * 0.7;
+            let spans = meter_spans(DisplayLevel {
+                bar,
+                marker: bar,
+                rms,
+            });
+            assert!(
+                spans.len() <= METER_SPAN_SLOTS,
+                "a {db} dB bar wore {} spans",
+                spans.len()
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_labels_are_spelled_on_the_stack_without_allocation() {
+        // The per-frame channel labels are formatted into a stack buffer
+        // instead of a `String` (audit A-2); the digits must come out in
+        // reading order.
+        let mut buffer = [0u8; 24];
+        for (number, expected) in [
+            (1usize, "1"),
+            (9, "9"),
+            (10, "10"),
+            (16, "16"),
+            (128, "128"),
+        ] {
+            let len = decimal_digits(number, &mut buffer);
+            assert_eq!(std::str::from_utf8(&buffer[..len]).unwrap(), expected);
+        }
     }
 }
