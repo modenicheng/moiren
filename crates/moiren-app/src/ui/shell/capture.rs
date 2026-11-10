@@ -254,6 +254,40 @@ async fn echo_probe(shell: &Entity<StudioShell>, cx: &mut AsyncApp) {
     }
 }
 
+/// Opens each status bar panel in turn and captures it, with the bar at the
+/// window's bottom edge. Seeding the shell state directly — the same state
+/// the pointer's hover would produce — keeps the shots deterministic and
+/// works without synthesizing a real pointer.
+async fn status_panels(
+    shell: &Entity<StudioShell>,
+    directory: &std::path::Path,
+    capture: &impl Fn(&mut AsyncApp, std::path::PathBuf),
+    cx: &mut AsyncApp,
+) {
+    use crate::ui::shell::status::StatusItem;
+    for (name, item) in [
+        ("status-engine", StatusItem::Engine),
+        ("status-clock", StatusItem::Clock),
+        ("status-xrun", StatusItem::Xrun),
+        ("status-perf", StatusItem::Perf),
+        ("status-format", StatusItem::Format),
+    ] {
+        shell.update(cx, |shell, cx| {
+            shell.chrome.status_popup = Some(item);
+            cx.notify();
+        });
+        // The panel fades in; let the animation settle.
+        cx.background_executor()
+            .timer(Duration::from_millis(250))
+            .await;
+        capture(cx, directory.join(format!("{name}.png")));
+    }
+    shell.update(cx, |shell, cx| {
+        shell.chrome.status_popup = None;
+        cx.notify();
+    });
+}
+
 pub fn run_ui_capture() -> anyhow::Result<()> {
     let directory = std::env::args()
         .nth(1)
@@ -434,6 +468,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     if std::env::var_os("MOIREN_CAPTURE_ECHO").is_some() {
                         echo_probe(&shell, cx).await;
                     }
+                    if std::env::var_os("MOIREN_CAPTURE_STATUS").is_some() {
+                        status_panels(&shell, &directory, &capture, cx).await;
+                    }
                     cx.update(|cx| cx.quit());
                     return;
                 }
@@ -526,28 +563,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 // precedent: the harness seeds the same shell state the
                 // interaction would produce).
                 if std::env::var_os("MOIREN_CAPTURE_STATUS").is_some() {
-                    use crate::ui::shell::status::StatusItem;
-                    for (name, item) in [
-                        ("status-engine", StatusItem::Engine),
-                        ("status-clock", StatusItem::Clock),
-                        ("status-xrun", StatusItem::Xrun),
-                        ("status-perf", StatusItem::Perf),
-                        ("status-format", StatusItem::Format),
-                    ] {
-                        shell.update(cx, |shell, cx| {
-                            shell.chrome.status_popup = Some(item);
-                            cx.notify();
-                        });
-                        // The panel fades in; let the animation settle.
-                        cx.background_executor()
-                            .timer(Duration::from_millis(250))
-                            .await;
-                        capture(cx, directory.join(format!("{name}.png")));
-                    }
-                    shell.update(cx, |shell, cx| {
-                        shell.chrome.status_popup = None;
-                        cx.notify();
-                    });
+                    status_panels(&shell, &directory, &capture, cx).await;
                 }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
