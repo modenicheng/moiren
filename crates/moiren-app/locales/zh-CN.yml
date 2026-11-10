@@ -1282,10 +1282,10 @@ _version: 2
   zh-CN: 独奏此通道及其相连的信号路径
 "M":
   en: M
-  zh-CN: 静音
+  zh-CN: M
 "S":
   en: S
-  zh-CN: 独奏
+  zh-CN: S
 "Stereo -> Mono average -> Left to both -> Right to both -> Swap":
   en: Stereo -> Mono average -> Left to both -> Right to both -> Swap
   zh-CN: 立体声 → 单声道平均 → 左声道复制到双侧 → 右声道复制到双侧 → 交换左右
@@ -1294,28 +1294,28 @@ _version: 2
   zh-CN: 循环切换正常、单声道平均、独立声道与反转声道顺序
 "ST":
   en: ST
-  zh-CN: 立体声
+  zh-CN: ST
 "MONO":
   en: MONO
-  zh-CN: 单声道
+  zh-CN: MONO
 "SWAP":
   en: SWAP
-  zh-CN: 交换
+  zh-CN: SWAP
 "L":
   en: L
-  zh-CN: 左
+  zh-CN: L
 "R":
   en: R
-  zh-CN: 右
+  zh-CN: R
 "%{channels} CH":
   en: "%{channels} CH"
-  zh-CN: "%{channels} 声道"
+  zh-CN: "%{channels} CH"
 "CH %{n} ONLY":
   en: "CH %{n} ONLY"
-  zh-CN: "仅声道 %{n}"
+  zh-CN: "CH %{n} ONLY"
 "DIM":
   en: DIM
-  zh-CN: 衰减
+  zh-CN: DIM
 "Dim attenuates the post-fader signal by 12 dB":
   en: Dim attenuates the post-fader signal by 12 dB
   zh-CN: 衰减将推子后信号降低 12 dB
