@@ -408,12 +408,13 @@ pub fn hslider(
 }
 
 /// Fill fraction of the send level bar for a value in the send sliders' dB
-/// space: the same [`FaderScale`] the channel fader reads, so "0 dB sits a
-/// quarter from the loud end" means the same thing on both controls. (The
-/// pointer→dB mapping itself stays the sliders' linear dB space, exactly like
-/// the approved prototype: the fill is the only surface that reads the scale.)
+/// space: the channel fader's [`FaderScale`] read along the horizontal axis —
+/// silence empties the bar, unity reaches its 0 dB anchor three quarters
+/// along, and the +12 dB scale top fills it completely. The send sliders live
+/// in the mirrored value space (`FaderScale::gain(1 - value)`), so the fill
+/// tracks the pointer one-to-one while dragging.
 pub fn send_fill(db: f32) -> f32 {
-    FaderScale::position(10f64.powf(f64::from(db) / 20.))
+    1. - FaderScale::position(10f64.powf(f64::from(db) / 20.))
 }
 
 /// Visible height of the send level bar. Off the spacing grid on purpose:
@@ -423,9 +424,10 @@ pub const SEND_BAR_H: f32 = 4.;
 
 /// The send level bar: a plain rectangular controller — no thumb, no rounded
 /// corners, flush at both ends. The whole bar is the control: the fill's
-/// extent is the level, drawn from the loud (left) end so a quieter send
-/// lights more of the bar (silence fills it), the exact direction the
-/// prototype shipped. The track is [`theme::controls::RAISED`] for every
+/// extent is the level, growing from the quiet (left) end toward the loud
+/// (right) end — silence empties it, unity reaches three quarters, and the
+/// +12 dB scale top fills it flush against the right edge. The track is
+/// [`theme::controls::RAISED`] for every
 /// send regardless of selection or mute; muting only grays the fill. The 4 px
 /// under the track are breathing room and part of the drag hit area, so the
 /// element is twice [`SEND_BAR_H`] tall while the visible strip stays 4 px.
@@ -571,15 +573,30 @@ mod tests {
     #[test]
     fn send_fill_reads_the_shared_fader_scale() {
         use super::send_fill;
-        // The bar paints the same anchors the fader's ruler prints: 0 dB a
-        // quarter from the loud end, −12 dB halfway, the −60 dB floor near
-        // the quiet end.
-        assert!((send_fill(0.) - 0.24).abs() < 0.0001);
-        assert!((send_fill(-12.) - 0.51).abs() < 0.0001);
-        assert!((send_fill(-60.) - 0.92).abs() < 0.0001);
-        // A boost past the +12 dB scale top pins at the loud end, exactly
-        // like the channel fader's top anchor.
-        assert_eq!(send_fill(24.), 0.);
+        // The bar paints the fader's ruler anchors along the horizontal axis,
+        // mirrored onto the width: unity a quarter from the loud (right) end,
+        // −12 dB halfway, the −60 dB floor near the quiet end.
+        assert!((send_fill(0.) - 0.76).abs() < 0.0001);
+        assert!((send_fill(-12.) - 0.49).abs() < 0.0001);
+        assert!((send_fill(-60.) - 0.08).abs() < 0.0001);
+        // Silence empties the bar; a boost past the +12 dB scale top pins it
+        // full, exactly like the channel fader's top anchor.
+        assert_eq!(send_fill(f32::NEG_INFINITY), 0.);
+        assert_eq!(send_fill(24.), 1.);
+    }
+
+    #[test]
+    fn the_send_fill_and_the_drag_space_are_exact_inverses() {
+        use super::send_fill;
+        // The send sliders live in the fader's perceptual value space: a
+        // pointer fraction maps through `FaderScale::gain` to a gain whose
+        // fill lands back on the pointer, so the painted bar tracks the drag
+        // exactly instead of leading or lagging it.
+        for (_, position) in FaderScale::ANCHORS {
+            let value = 1. - position;
+            let db = 20. * FaderScale::gain(1. - value).log10();
+            assert!((send_fill(db as f32) - value).abs() < 0.0001);
+        }
     }
 
     #[test]

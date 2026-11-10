@@ -219,24 +219,6 @@ impl MixerPresentation {
     }
 }
 
-/// dB readout for send gains: −∞ collapses to −60 dB at the slider's quiet
-/// end, +24 dB caps the boost end.
-fn gain_db(gain: f64) -> f32 {
-    if gain <= 0. {
-        -60.
-    } else {
-        (20. * gain.log10()).clamp(-60., 24.) as f32
-    }
-}
-
-fn linear_gain(value: f32) -> f64 {
-    if value <= -60. {
-        0.
-    } else {
-        10f64.powf(f64::from(value) / 20.)
-    }
-}
-
 /// Loudness domain of the click-to-type dB entries. +24 dB keeps the parsed
 /// amplitude inside [`MixerState::valid`]'s 0..=16 bound (10^(24/20) ≈ 15.8);
 /// the −120 dB floor matches the send readouts' editing domain.
@@ -395,16 +377,18 @@ fn fader_behavior(
     }
 }
 
-/// Send faders live in dB space: one notch is 1 dB, double click restores
-/// unity (0 dB, the value `0.` in this space).
+/// Send bars share the channel fader's perceptual value space and gestures:
+/// ±1 dB per wheel notch in gain space, double click restores unity (the
+/// value `1 - FaderScale::position(1.)` here), and the fader step's floor
+/// handling lets the wheel leave exact silence.
 fn send_behavior(
     ui: Entity<UiState>,
     edit: Rc<SliderEdit>,
     slider: Entity<base::slider::SliderState>,
 ) -> SliderBehavior {
     SliderBehavior {
-        step: Rc::new(|value, dir| (value + dir as f32).clamp(-60., 24.)),
-        reset: 0.,
+        step: Rc::new(fader_step),
+        reset: 1. - FaderScale::position(1.),
         commit: commit_closure(&ui, &edit, &slider),
     }
 }
@@ -757,9 +741,12 @@ pub(crate) fn sync_faders<T: 'static>(
     );
 }
 
-/// Slider construction and value sync for the send (edge) column in dB space;
-/// faders use [`sync_faders`]'s perceptual space instead. Drag Changes are
-/// coalesced and the release's final value dispatches unconditionally.
+/// Slider construction and value sync for the send (edge) column. The value
+/// space is the channel fader's perceptual [0, 1] (`1 - FaderScale::position`),
+/// not the sliders' old linear dB axis: dragging right raises the level to
+/// the +12 dB scale top at the right edge, the fill tracks the pointer
+/// one-to-one, and the left rail is exact silence. Drag Changes are coalesced
+/// and the release's final value dispatches unconditionally.
 fn sync_sliders<K: Ord + Clone, T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
@@ -773,7 +760,7 @@ fn sync_sliders<K: Ord + Clone, T: 'static>(
         state,
         sliders,
         rows,
-        [-60., 24., 0.1],
+        [0., 1., 0.0001],
         |_, ui, edit, slider| send_behavior(ui, edit, slider),
     );
 }
@@ -1054,13 +1041,13 @@ impl StudioShell {
                 let id = edge.id();
                 (
                     id,
-                    gain_db(edge.params().gain),
+                    1. - FaderScale::position(edge.params().gain),
                     Box::new(move |value: f32, graph: &GraphSnapshot| {
                         graph.graph.get_edge(id).ok().map(|edge| {
                             AppRequest::EditGraph(GraphEdit::SetSend {
                                 edge: id,
                                 params: SendParams {
-                                    gain: linear_gain(value),
+                                    gain: FaderScale::gain(1. - value),
                                     ..*edge.params()
                                 },
                             })
