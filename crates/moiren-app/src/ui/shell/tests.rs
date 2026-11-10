@@ -478,6 +478,21 @@ fn settle_settings(view: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::Visu
     cx.run_until_parked();
 }
 
+/// The audio actions live at the very bottom of the scrolled settings
+/// column, so a click needs the page scrolled to its end first — the
+/// headless hit test does not clip to the window, which would otherwise let
+/// a click on an off-screen button pass silently.
+fn scroll_settings_to_bottom(cx: &mut gpui_kit::VisualTestContext) {
+    cx.update(|window, cx| {
+        window.scroll(
+            "settings-scroll",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-4000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    });
+}
+
 #[gpui_kit::test]
 fn settings_page_replaces_workspace_and_restores_it_on_close(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
@@ -621,6 +636,7 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         assert!(!shell.state.read(cx).pending_request);
     });
     assert!(!path.exists());
+    scroll_settings_to_bottom(cx);
     cx.update(|window, cx| window.click("settings-save", cx));
     settle_settings(&view, cx);
     view.update(cx, |shell, cx| {
@@ -994,8 +1010,9 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
         window.render_frame(cx);
         window.click("processing-rate-3", cx);
         window.render_frame(cx);
-        window.click("settings-save", cx);
     });
+    scroll_settings_to_bottom(cx);
+    cx.update(|window, cx| window.click("settings-save", cx));
     settle_settings(&view, cx);
     assert!(
         !log.lock()
@@ -1018,10 +1035,9 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
         );
         shell.settings.editor.global.profile = AudioLatencyProfile::Balanced;
     });
-    cx.update(|window, cx| {
-        window.click("processing-rate-0", cx);
-        window.click("settings-restart", cx);
-    });
+    cx.update(|window, cx| window.click("processing-rate-0", cx));
+    scroll_settings_to_bottom(cx);
+    cx.update(|window, cx| window.click("settings-restart", cx));
     wait_until(Duration::from_secs(3), || {
         view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
@@ -1071,10 +1087,9 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
         44_100
     );
     fail.store(true, Ordering::Release);
-    cx.update(|window, cx| {
-        window.click("processing-rate-3", cx);
-        window.click("settings-restart", cx);
-    });
+    cx.update(|window, cx| window.click("processing-rate-3", cx));
+    scroll_settings_to_bottom(cx);
+    cx.update(|window, cx| window.click("settings-restart", cx));
     settle_settings(&view, cx);
     view.update(cx, |shell, cx| {
         assert!(shell.settings.editor.global.dirty());

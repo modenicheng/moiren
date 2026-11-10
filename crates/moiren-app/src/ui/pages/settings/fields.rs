@@ -349,7 +349,23 @@ pub(crate) fn stream_editor(
     ))
 }
 
+/// The action bar pinned under the device override inspector's scroll area.
 pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShell>) -> Div {
+    div()
+        .flex_none()
+        .px(px(theme::SPACE_4))
+        .py(px(theme::SPACE_3))
+        .border_t_1()
+        .border_color(theme::BORDER)
+        // No fill of its own: the bar sits on the inspector panel that
+        // carries it instead of drawing a second band across the bottom.
+        .child(actions(shell, editor, cx))
+}
+
+/// The draft status line over the discard/save/restart buttons. It has no
+/// chrome of its own, so it lays out wherever the caller puts it: the last
+/// block of the settings page's scrolled column, or inside [`footer`].
+pub(crate) fn actions(shell: &StudioShell, editor: Editor, cx: &Context<StudioShell>) -> Div {
     let draft = shell.settings.editor.draft(editor);
     let state = shell.state.read(cx);
     let running = state.snapshot.phase == SessionPhase::Running;
@@ -374,99 +390,89 @@ pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShe
     let this = cx.entity();
     let restart_this = this.clone();
     div()
-        .flex_none()
+        .w_full()
         .flex()
         .flex_col()
         .gap(px(theme::SPACE_2))
-        .px(px(theme::SPACE_4))
-        .py(px(theme::SPACE_3))
-        .border_t_1()
-        .border_color(theme::BORDER)
-        // No fill of its own: the bar sits on whatever surface carries it
-        // (canvas on the settings page, the inspector panel for device
-        // overrides) instead of drawing a second band across the bottom.
-        // Its contents share the reading measure of the cards above.
         .child(
             div()
-                .w_full()
-                .max_w(px(680.))
-                .mx_auto()
+                .id(SharedString::from(format!("{prefix}-feedback")))
+                .text_size(px(theme::TEXT_SM))
+                .text_color(match draft.feedback.as_ref() {
+                    Some(feedback) if feedback.is_error() => theme::DANGER,
+                    _ => theme::TEXT_MUTED,
+                })
+                // The stored status translates here with the current
+                // locale (design 21 §4); the fallbacks are paint-time
+                // t! calls like every other rendered string.
+                .child(match draft.feedback.as_ref() {
+                    Some(feedback) => super::model::feedback_text(feedback),
+                    None => {
+                        if draft.dirty() {
+                            t!("Unsaved changes").into_owned()
+                        } else if running {
+                            t!(
+                                "Saved requests and active audio are shown separately in Diagnostics."
+                            )
+                            .into_owned()
+                        } else {
+                            t!("Audio is stopped. Save keeps it stopped.").into_owned()
+                        }
+                    }
+                })
+                .gpui_test_observe(),
+        )
+        .child(
+            div()
                 .flex()
-                .flex_col()
+                .flex_wrap()
                 .gap(px(theme::SPACE_2))
+                .justify_end()
                 .child(
-                    div()
-                        .id(SharedString::from(format!("{prefix}-feedback")))
-                        .text_size(px(theme::TEXT_SM))
-                        .text_color(match draft.feedback.as_ref() {
-                            Some(feedback) if feedback.is_error() => theme::DANGER,
-                            _ => theme::TEXT_MUTED,
+                    button(
+                        SharedString::from(format!("{prefix}-discard")),
+                        t!("Discard changes"),
+                    )
+                    .disabled(busy || !draft.dirty())
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
+                            *shell.settings.editor.draft_mut(editor) =
+                                shell.current_settings_draft(cx);
+                            cx.notify();
                         })
-                        // The stored status translates here with the current
-                        // locale (design 21 §4); the fallbacks are paint-time
-                        // t! calls like every other rendered string.
-                        .child(match draft.feedback.as_ref() {
-                            Some(feedback) => super::model::feedback_text(feedback),
-                            None => {
-                                if draft.dirty() {
-                                    t!("Unsaved changes").into_owned()
-                                } else if running {
-                                    t!(
-                                        "Saved requests and active audio are shown separately in Diagnostics."
-                                    )
-                                    .into_owned()
-                                } else {
-                                    t!("Audio is stopped. Save keeps it stopped.").into_owned()
-                                }
-                            }
-                        })
-                        .gpui_test_observe(),
+                    }),
                 )
                 .child(
-                    div().flex().flex_wrap().gap(px(theme::SPACE_2)).justify_end()
-                        .child(
-                            button(SharedString::from(format!("{prefix}-discard")), t!("Discard changes"))
-                                .disabled(busy || !draft.dirty())
-                                .on_click(move |_, _, cx| {
-                                    this.update(cx, |shell, cx| {
-                                        *shell.settings.editor.draft_mut(editor) =
-                                            shell.current_settings_draft(cx);
-                                        cx.notify();
-                                    })
-                                }),
-                        )
-                        .child(
-                            button(SharedString::from(format!("{prefix}-save")), t!("Save"))
-                                .variant(if running {
-                                    ButtonVariant::Secondary
-                                } else {
-                                    ButtonVariant::Primary
+                    button(SharedString::from(format!("{prefix}-save")), t!("Save"))
+                        .variant(if running {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Primary
+                        })
+                        .disabled(busy || !draft.dirty())
+                        .on_click({
+                            let this = cx.entity();
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.save_audio_settings(editor, false, cx)
                                 })
-                                .disabled(busy || !draft.dirty())
-                                .on_click({
-                                    let this = cx.entity();
-                                    move |_, _, cx| {
-                                        this.update(cx, |shell, cx| {
-                                            shell.save_audio_settings(editor, false, cx)
-                                        })
-                                    }
-                                }),
-                        )
-                        .when(running, |view| {
-                            view.child(
-                                button(
-                                    SharedString::from(format!("{prefix}-restart")),
-                                    t!("Restart Audio"),
-                                )
-                                .variant(ButtonVariant::Primary)
-                                .disabled(busy || !needs_restart)
-                                .on_click(move |_, _, cx| {
-                                    restart_this.update(cx, |shell, cx| {
-                                        shell.save_audio_settings(editor, true, cx)
-                                    })
-                                }),
-                            )
+                            }
                         }),
-                ),
+                )
+                .when(running, |view| {
+                    view.child(
+                        button(
+                            SharedString::from(format!("{prefix}-restart")),
+                            t!("Restart Audio"),
+                        )
+                        .variant(ButtonVariant::Primary)
+                        .disabled(busy || !needs_restart)
+                        .on_click(move |_, _, cx| {
+                            restart_this.update(cx, |shell, cx| {
+                                shell.save_audio_settings(editor, true, cx)
+                            })
+                        }),
+                    )
+                }),
         )
 }
