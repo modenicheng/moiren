@@ -118,11 +118,14 @@ mod tests {
             ),
             "已达上限 2 路 — 先取消一路再勾选"
         );
-        assert_eq!(rust_i18n::t!("ST", locale = SIMPLIFIED_CHINESE), "立体声");
-        assert_eq!(rust_i18n::t!("MONO", locale = SIMPLIFIED_CHINESE), "单声道");
+        // Strip and channel-mode terms (M/S/ST/MONO/SWAP/L/R/n CH/CH n ONLY/DIM)
+        // are audio-engineering shorthand: they stay identical in every locale,
+        // so the zh-CN catalog mirrors them instead of translating.
+        assert_eq!(rust_i18n::t!("ST", locale = SIMPLIFIED_CHINESE), "ST");
+        assert_eq!(rust_i18n::t!("MONO", locale = SIMPLIFIED_CHINESE), "MONO");
         assert_eq!(
             rust_i18n::t!("%{channels} CH", locale = SIMPLIFIED_CHINESE, channels = 6),
-            "6 声道"
+            "6 CH"
         );
         assert_eq!(rust_i18n::t!("No sends", locale = ENGLISH), "No sends");
     }
