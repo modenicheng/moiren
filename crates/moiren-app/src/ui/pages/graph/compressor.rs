@@ -1,6 +1,8 @@
 use super::*;
 use crate::service::{CompressorParameter, CompressorState, GraphEdit, GraphSnapshot};
-use crate::ui::shell::mixer::{SliderEdit, SliderSlot, commit_closure, sync_slider_range};
+use crate::ui::shell::mixer::{
+    SliderDispatch, SliderEdit, SliderSlot, commit_closure, sync_slider_range,
+};
 use crate::ui::widgets::fader::SliderBehavior;
 use moiren_core::graph::{NodeId, NodeKind};
 use std::collections::BTreeMap;
@@ -15,10 +17,10 @@ pub(crate) struct CompressorControls {
     pub sliders: BTreeMap<(NodeId, CompressorParameter), SliderSlot>,
 }
 
-/// One wheel notch on a compressor parameter: one normalized slider step,
-/// clamped to the unit position range.
-fn compressor_step(value: f32, dir: i32) -> f32 {
-    (value + dir as f32 * SLIDER_STEP).clamp(0., 1.)
+/// Wheel travel on a compressor parameter: one normalized slider step per
+/// notch, clamped to the unit position range.
+fn compressor_step(value: f32, notches: f32) -> f32 {
+    (value + notches * SLIDER_STEP).clamp(0., 1.)
 }
 
 /// Wheel + double-click behavior for one compressor parameter slider: one
@@ -28,15 +30,14 @@ fn compressor_step(value: f32, dir: i32) -> f32 {
 /// value and dispatch the parameter edit immediately, bypassing drag
 /// coalescing.
 fn slider_behavior(
-    ui: Entity<UiState>,
-    edit: Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: Entity<base::slider::SliderState>,
     parameter: CompressorParameter,
 ) -> SliderBehavior {
     SliderBehavior {
         step: Rc::new(compressor_step),
         reset: default_position(parameter),
-        commit: commit_closure(&ui, &edit, &slider),
+        commit: commit_closure(dispatch, &slider),
     }
 }
 
@@ -117,9 +118,9 @@ impl StudioShell {
                 });
             }
         }
-        // Sliders ride the shared mixer sync: drag Changes coalesce at the
-        // fader dispatch interval, the release's final value lands, the
-        // snapshot write-back stands down while a drag owns the thumb, and
+        // Sliders ride the shared mixer sync: drag Changes dispatch at most
+        // once per frame, the release's final value lands, the snapshot
+        // write-back stands down while the slider leads the snapshot, and
         // the slot carries the wheel/double-click behavior.
         let rows = CompressorParameter::ALL
             .iter()
@@ -145,7 +146,7 @@ impl StudioShell {
             &mut self.inspector.compressor.sliders,
             rows,
             [0., 1., SLIDER_STEP],
-            |key, ui, edit, slider| slider_behavior(ui, edit, slider, key.1),
+            |key, dispatch, slider| slider_behavior(dispatch, slider, key.1),
         );
     }
 }
@@ -199,12 +200,14 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn compressor_slider_step_moves_one_normalized_step_and_clamps() {
-        assert!((compressor_step(0.5, 1) - 0.501).abs() < 1e-6);
-        assert!((compressor_step(0.5, -1) - 0.499).abs() < 1e-6);
-        // The unit range clamps; direction 0 is a no-op.
-        assert_eq!(compressor_step(0., -1), 0.);
-        assert_eq!(compressor_step(1., 1), 1.);
-        assert_eq!(compressor_step(0.5, 0), 0.5);
+        assert!((compressor_step(0.5, 1.) - 0.501).abs() < 1e-6);
+        assert!((compressor_step(0.5, -1.) - 0.499).abs() < 1e-6);
+        // A fractional notch moves its share of the step.
+        assert!((compressor_step(0.5, 0.5) - 0.5005).abs() < 1e-6);
+        // The unit range clamps; zero travel is a no-op.
+        assert_eq!(compressor_step(0., -1.), 0.);
+        assert_eq!(compressor_step(1., 1.), 1.);
+        assert_eq!(compressor_step(0.5, 0.), 0.5);
     }
 
     #[::core::prelude::v1::test]

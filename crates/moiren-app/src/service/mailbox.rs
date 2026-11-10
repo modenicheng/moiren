@@ -2,11 +2,14 @@ use super::*;
 use std::{
     cell::Cell,
     cell::RefCell,
+    future::Future,
+    pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
+    task::{Context as TaskContext, Poll, Waker},
     thread::Thread,
 };
 const REQUEST_CAPACITY: usize = 64;
@@ -18,12 +21,61 @@ enum QueuedPayload {
     Application(Box<AppRequest>),
     Subscription(signals::SubscriptionRequest),
 }
+/// Publish notification for the UI's control pump (design 22 D7). The
+/// service bumps the generation after every snapshot it actually swaps in
+/// and wakes whoever waits, so an edit's echo reaches the UI as soon as the
+/// service has applied it, not on the pump's next timer tick.
+#[derive(Default)]
+struct PublishSignal {
+    generation: AtomicU64,
+    wakers: Mutex<Vec<Waker>>,
+}
+impl PublishSignal {
+    /// Service side, after the snapshot swap: a reader that sees the new
+    /// generation also sees the new snapshot. The wakers are taken, not
+    /// cloned, so waking costs no allocation on the service thread.
+    fn notify(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+        let wakers = std::mem::take(&mut *self.wakers.lock().unwrap_or_else(|e| e.into_inner()));
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+/// Resolves once the service has published past `seen`.
+struct PublishedAfter {
+    signal: Arc<PublishSignal>,
+    seen: u64,
+}
+impl Future for PublishedAfter {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<()> {
+        let published = || self.signal.generation.load(Ordering::Acquire) != self.seen;
+        if published() {
+            return Poll::Ready(());
+        }
+        {
+            let mut wakers = self.signal.wakers.lock().unwrap_or_else(|e| e.into_inner());
+            if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
+                wakers.push(cx.waker().clone());
+            }
+        }
+        // Check again after registering: a publish between the first check
+        // and the registration took the waker list before this waker joined.
+        if published() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
 #[derive(Clone)]
 pub struct AppHandle {
     sender: SyncSender<QueuedRequest>,
     enqueue_id: Arc<Mutex<u64>>,
     exit: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Arc<AppSnapshot>>>,
+    publish: Arc<PublishSignal>,
     wake: Thread,
 }
 impl AppHandle {
@@ -99,6 +151,21 @@ impl AppHandle {
             .ok()
             .map(|value| Arc::clone(&value))
     }
+    /// How many snapshots the service has published. A pump reads it before
+    /// draining the snapshot and then waits with [`Self::published_after`],
+    /// so a publish that lands during the drain cuts the next wait short.
+    pub fn publish_generation(&self) -> u64 {
+        self.publish.generation.load(Ordering::Acquire)
+    }
+    /// Resolves once the service publishes past generation `seen` — at once
+    /// when it already has. The UI's control pump waits on this next to its
+    /// timer.
+    pub fn published_after(&self, seen: u64) -> impl Future<Output = ()> + Unpin + 'static {
+        PublishedAfter {
+            signal: Arc::clone(&self.publish),
+            seen,
+        }
+    }
 }
 /// Requests and exit are independent so a full queue cannot suppress shutdown.
 pub struct ServiceMailbox {
@@ -109,6 +176,7 @@ pub struct ServiceMailbox {
     snapshot: Arc<Mutex<Arc<AppSnapshot>>>,
     /// Publish-side dedup state; only the service thread calls [`publish`].
     last_published: RefCell<Option<Arc<AppSnapshot>>>,
+    publish_signal: Arc<PublishSignal>,
 }
 impl ServiceMailbox {
     pub fn new(wake: Thread) -> (AppHandle, Self) {
@@ -119,12 +187,14 @@ impl ServiceMailbox {
         let exit = Arc::new(AtomicBool::new(false));
         let initial = Arc::new(initial);
         let snapshot = Arc::new(Mutex::new(Arc::clone(&initial)));
+        let publish_signal = Arc::new(PublishSignal::default());
         (
             AppHandle {
                 sender,
                 enqueue_id: Arc::new(Mutex::new(0)),
                 exit: exit.clone(),
                 snapshot: snapshot.clone(),
+                publish: publish_signal.clone(),
                 wake,
             },
             Self {
@@ -134,6 +204,7 @@ impl ServiceMailbox {
                 exit,
                 snapshot,
                 last_published: RefCell::new(Some(initial)),
+                publish_signal,
             },
         )
     }
@@ -198,6 +269,7 @@ impl ServiceMailbox {
             let mut slot = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::replace(&mut *slot, replacement)
         };
+        self.publish_signal.notify();
         drop(previous);
     }
 }
@@ -205,6 +277,67 @@ impl ServiceMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Counts wakes, for driving [`PublishedAfter`] by hand.
+    #[derive(Default)]
+    struct CountingWaker(std::sync::atomic::AtomicUsize);
+    impl std::task::Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn poll_once(future: &mut (impl Future<Output = ()> + Unpin), waker: &Waker) -> Poll<()> {
+        Pin::new(future).poll(&mut TaskContext::from_waker(waker))
+    }
+
+    #[test]
+    fn a_publish_wakes_the_pump_waiting_on_it() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        let counter = Arc::new(CountingWaker::default());
+        let waker = Waker::from(counter.clone());
+        let seen = handle.publish_generation();
+        let mut wait = handle.published_after(seen);
+        assert!(poll_once(&mut wait, &waker).is_pending());
+        let mut changed = (*handle.try_snapshot().unwrap()).clone();
+        changed.phase = SessionPhase::Running;
+        mailbox.publish(changed);
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            1,
+            "the publish wakes the waiter"
+        );
+        assert!(poll_once(&mut wait, &waker).is_ready());
+        assert_eq!(handle.publish_generation(), seen + 1);
+        // A wait created after the publish, from a generation read before
+        // it, resolves without waiting: the pump cannot miss a publish that
+        // landed while it drained.
+        assert!(poll_once(&mut handle.published_after(seen), &waker).is_ready());
+    }
+
+    #[test]
+    fn an_unchanged_publish_wakes_nobody() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        let counter = Arc::new(CountingWaker::default());
+        let waker = Waker::from(counter.clone());
+        let seen = handle.publish_generation();
+        let mut wait = handle.published_after(seen);
+        assert!(poll_once(&mut wait, &waker).is_pending());
+        // Polling again does not register the same waker twice.
+        assert!(poll_once(&mut wait, &waker).is_pending());
+        mailbox.publish((*handle.try_snapshot().unwrap()).clone());
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            0,
+            "a deduplicated publish is no news"
+        );
+        assert!(poll_once(&mut wait, &waker).is_pending());
+        let mut changed = (*handle.try_snapshot().unwrap()).clone();
+        changed.phase = SessionPhase::Running;
+        mailbox.publish(changed);
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "one waker, one wake");
+    }
+
     #[test]
     fn identical_publish_keeps_arc_and_real_change_swaps_it() {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());

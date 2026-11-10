@@ -1,11 +1,10 @@
 use super::*;
-use crate::service::{GraphEdit, GraphSnapshot, MixerState};
+use crate::service::{GraphEdit, GraphSnapshot, MixerState, RequestId};
 use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior, send_gain, send_value};
 use rust_i18n::t;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 pub(crate) struct MixerPresentation {
     pub order: Vec<NodeId>,
@@ -67,7 +66,12 @@ pub(crate) struct MixerPresentation {
     /// [`Self::DOCK_WIDTH`]. Session presentation state, like the collapse
     /// flags above: it is not persisted.
     pub dock_width: f32,
-    synced_revision: Option<u64>,
+    /// The snapshot the controls last synced from: its graph revision and
+    /// the newest request it consumed. The consumed request rides next to
+    /// the revision because a slider's revision fence lifts on it — an edit
+    /// the service refused leaves the revision alone, and the slider that
+    /// sent it must still fall back to the published value.
+    synced: Option<(u64, RequestId)>,
 }
 
 /// The mixer strip's open input dropdown: which strip it belongs to and the
@@ -121,18 +125,21 @@ impl MixerPresentation {
             input_popover_scroll: ScrollHandle::default(),
             hovered_route: None,
             dock_width: 0.,
-            synced_revision: None,
+            synced: None,
         }
     }
 }
 
-/// Per-slider bookkeeping kept next to its entity: the dragging flag lets the
-/// snapshot write-back in [`sync_slider_range`] stand down while a drag owns the
-/// thumb, and the behavior carries the shared wheel/double-click actions.
+/// Per-slider bookkeeping kept next to its entity: the dragging flag and the
+/// edit path's revision fence decide when the snapshot write-back in
+/// [`sync_slider_range`] may move the thumb, and the behavior carries the
+/// shared wheel/double-click actions.
 pub(crate) struct SliderSlot {
     pub state: Entity<base::slider::SliderState>,
     pub dragging: Rc<Cell<bool>>,
     cancelled: Rc<Cell<bool>>,
+    gate: Rc<RefCell<DispatchGate>>,
+    dispatch: Rc<SliderDispatch>,
     pub behavior: SliderBehavior,
 }
 
@@ -142,51 +149,156 @@ impl SliderSlot {
     /// the release's stale pointer value — is dropped instead of landing as
     /// fresh edits. Used when a journal step (undo) lands under a live drag:
     /// without this, the suppressed write-back hides the undone value and
-    /// the release then overwrites it (audit SD-7).
+    /// the release then overwrites it (audit SD-7). The revision fence stays:
+    /// the journal step is a newer request than any edit the drag sent, so
+    /// its publish clears the fence while older echoes of the drag cannot.
     pub(crate) fn cancel_drag(&self) {
         self.dragging.set(false);
         self.cancelled.set(true);
+        self.gate.borrow_mut().discard();
+    }
+
+    /// Whether the slider is ahead of the snapshot that consumed request
+    /// `consumed`: a drag owns the thumb, or the slot's newest edit is not
+    /// in that snapshot yet. Either way the snapshot's value for this slider
+    /// is older than the one the slider shows.
+    pub(crate) fn leads(&self, consumed: RequestId) -> bool {
+        self.dragging.get() || self.dispatch.unconfirmed(consumed)
+    }
+
+    /// The slider's own value while it leads the published snapshot (see
+    /// [`Self::leads`]); `None` once the snapshot caught up.
+    pub(crate) fn leading_value(&self, cx: &App) -> Option<f32> {
+        let consumed = self.dispatch.ui.read(cx).snapshot.consumed_request_id;
+        self.leads(consumed)
+            .then(|| self.state.read(cx).value().end())
     }
 }
 
-/// Drag Changes reach the service at most once per interval; the release
-/// passes its final value unless a wheel/double-click commit already
-/// superseded it. Pure and clock-injected so tests drive it without gpui,
-/// and so no timer is needed: a stashed pending value flushes on the next
-/// Change past the interval, or at latest on release.
-const FADER_DISPATCH_INTERVAL: Duration = Duration::from_millis(33);
+/// The gain a fader readout shows (design 22 D1): the slot's own value while
+/// it leads the snapshot — a drag, or an edit the service has not confirmed
+/// yet — and the published gain otherwise, so the number moves with the
+/// thumb instead of trailing it by a service round trip. The edit dispatches
+/// exactly this gain, so the switch back to the published one is seamless.
+pub(crate) fn fader_readout_gain(slot: Option<&SliderSlot>, published: f64, cx: &App) -> f64 {
+    slot.and_then(|slot| slot.leading_value(cx))
+        .map_or(published, |value| FaderScale::gain(1. - value))
+}
 
+/// [`fader_readout_gain`] for a send slider, mapped through the send bar's
+/// own gain pair ([`send_gain`]).
+pub(crate) fn send_readout_gain(slot: Option<&SliderSlot>, published: f64, cx: &App) -> f64 {
+    slot.and_then(|slot| slot.leading_value(cx))
+        .map_or(published, send_gain)
+}
+
+/// One slider's edit path: builds the request against the live snapshot,
+/// dispatches it, and fences the slot's snapshot write-back on it (design 22
+/// D2). The drag subscription and the wheel/double-click commit share one,
+/// so every edit a slot sends fences the echoes that predate it.
+pub(crate) struct SliderDispatch {
+    ui: Entity<UiState>,
+    edit: SliderEdit,
+    /// The newest request this slot dispatched. A snapshot that consumed an
+    /// older request was built before the service applied it, so its value
+    /// for this slider is stale: writing it back is the release echo race
+    /// that pulled a just-released thumb back by one dispatch tick of
+    /// travel, until the next publish snapped it forward again.
+    sent: Cell<Option<RequestId>>,
+}
+
+impl SliderDispatch {
+    fn new(ui: Entity<UiState>, edit: SliderEdit) -> Self {
+        Self {
+            ui,
+            edit,
+            sent: Cell::new(None),
+        }
+    }
+
+    /// Applies one slider value; a target that vanished since the slider was
+    /// created simply skips. A refused dispatch leaves the fence on the last
+    /// request that did go out.
+    fn send(&self, value: f32, cx: &mut App) {
+        let sent = self.ui.update(cx, |state, _| {
+            let request = (self.edit)(value, &state.snapshot.graph)?;
+            state.try_dispatch(request).ok()
+        });
+        if sent.is_some() {
+            self.sent.set(sent);
+        }
+    }
+
+    /// Whether a snapshot that consumed request `consumed` predates this
+    /// slot's newest edit.
+    fn unconfirmed(&self, consumed: RequestId) -> bool {
+        self.sent.get().is_some_and(|sent| consumed < sent)
+    }
+}
+
+/// Drag Changes reach the service at most once per displayed frame (design
+/// 22 D4). The first Change dispatches at once and arms a frame boundary;
+/// later Changes before it supersede one pending value, which the boundary
+/// dispatches — re-arming while the pointer keeps producing Changes and
+/// reopening after a frame without one. A drag that pauses therefore lands
+/// its last value one frame later, where the fixed 33 ms interval this
+/// replaced only flushed on the next move or at release. Pure so the tests
+/// drive it without gpui; the subscription schedules the boundary through
+/// `Window::on_next_frame` ([`flush_at_next_frame`]).
 #[derive(Default)]
 struct DispatchGate {
-    last_sent: Option<Instant>,
+    /// A frame boundary is scheduled: Changes until it only stash.
+    armed: bool,
     pending: Option<f32>,
 }
 
 impl DispatchGate {
-    /// One drag Change: send it now when the interval elapsed since the last
-    /// dispatch (or no dispatch happened yet), otherwise supersede whatever
-    /// pending value is stashed.
-    fn change(&mut self, value: f32, now: Instant) -> Option<f32> {
-        match self.last_sent {
-            Some(sent) if now.duration_since(sent) < FADER_DISPATCH_INTERVAL => {
-                self.pending = Some(value);
-                None
-            }
-            _ => {
-                self.last_sent = Some(now);
-                self.pending = None;
-                Some(value)
-            }
+    /// One drag Change: `Some` to dispatch now — the caller then schedules
+    /// the frame boundary — or `None` when it only supersedes the pending
+    /// value.
+    fn change(&mut self, value: f32) -> Option<f32> {
+        if self.armed {
+            self.pending = Some(value);
+            None
+        } else {
+            self.armed = true;
+            Some(value)
         }
     }
 
-    /// Drag finished: the event's final value is dispatched unconditionally
-    /// by the caller; forget the timer and any stashed intermediate so the
-    /// next drag's first Change sends immediately.
-    fn release(&mut self) {
-        self.last_sent = None;
+    /// The frame boundary: the pending value to dispatch now, which keeps
+    /// the gate armed for one more frame (the caller schedules it); with
+    /// nothing pending the gate reopens.
+    fn frame(&mut self) -> Option<f32> {
+        let pending = self.pending.take();
+        self.armed = pending.is_some();
+        pending
+    }
+
+    /// Drops the pending value: the release dispatches its own final value,
+    /// and a cancelled gesture's tail must not land at all. A boundary that
+    /// is already scheduled still fires, finds nothing and reopens the gate.
+    fn discard(&mut self) {
         self.pending = None;
     }
+}
+
+/// Schedules a drag gate's frame boundary: the pending value, if any,
+/// dispatches when the next frame starts, and the boundary re-arms for as
+/// long as the pointer keeps the value moving.
+fn flush_at_next_frame(
+    window: &Window,
+    gate: &Rc<RefCell<DispatchGate>>,
+    dispatch: &Rc<SliderDispatch>,
+) {
+    let (gate, dispatch) = (gate.clone(), dispatch.clone());
+    window.on_next_frame(move |window, cx| {
+        let pending = gate.borrow_mut().frame();
+        if let Some(value) = pending {
+            dispatch.send(value, cx);
+            flush_at_next_frame(window, &gate, &dispatch);
+        }
+    });
 }
 
 impl MixerPresentation {
@@ -317,21 +429,25 @@ pub(crate) type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<AppReques
 /// well below this, so clamping only guards edit validity.
 const FADER_MAX_GAIN: f64 = 16.;
 
-/// One wheel notch on a node fader: a multiplicative ±1 dB step in the
-/// perceptual value space (`1 - FaderScale::position(gain)`). Stepping below
-/// the −72 dB floor snaps to exact digital zero, and stepping up from exact
-/// silence un-silences one step above the floor so the wheel can always
-/// leave −∞ (0 gain cannot be multiplied into something audible).
-fn fader_step(value: f32, dir: i32) -> f32 {
-    if dir == 0 {
+/// Wheel travel on a node fader: a multiplicative step of `notches` dB in
+/// the perceptual value space (`1 - FaderScale::position(gain)`), ±1 per
+/// notch and a fraction of it from fine-grained wheels. Stepping below the
+/// −72 dB floor snaps to exact digital zero. Stepping up from below the
+/// floor — exact silence, or a quieter gain only a drag reaches — enters one
+/// step above the floor: silence cannot be multiplied into something
+/// audible, and a sub-floor gain multiplied by a small step would still sit
+/// below the floor and snap to silence, cutting the signal on a wheel up.
+fn fader_step(value: f32, notches: f32) -> f32 {
+    if notches == 0. {
         return value;
     }
     let floor = 10f64.powf(-72. / 20.);
     let gain = FaderScale::gain(1. - value);
-    let stepped = if gain <= 0. && dir > 0 {
-        floor * 10f64.powf(f64::from(dir) / 20.)
+    let step = 10f64.powf(f64::from(notches) / 20.);
+    let stepped = if gain < floor && notches > 0. {
+        floor * step
     } else {
-        gain * 10f64.powf(f64::from(dir) / 20.)
+        gain * step
     };
     // f32 round-trips through FaderScale carry a few 1e-5 dB of slack, so
     // only fall a meaningful 0.001 dB below the floor: the floor itself must
@@ -347,18 +463,16 @@ fn fader_step(value: f32, dir: i32) -> f32 {
 /// Wheel + double-click commit shared by every mixer slider: write the value
 /// into the slider state (`set_value` emits no `Change`, so this never loops
 /// through the drag path) and dispatch the edit immediately, bypassing the
-/// drag coalescer.
+/// drag coalescer. The dispatch fences the write-back like a drag's.
 pub(crate) fn commit_closure(
-    ui: &Entity<UiState>,
-    edit: &Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: &Entity<base::slider::SliderState>,
 ) -> Commit {
-    let ui = ui.clone();
-    let edit = edit.clone();
+    let dispatch = dispatch.clone();
     let slider = slider.clone();
     Rc::new(move |value, window, cx| {
         slider.update(cx, |state, cx| state.set_value(value, window, cx));
-        dispatch_edit(&ui, &edit, value, cx);
+        dispatch.send(value, cx);
     })
 }
 
@@ -366,14 +480,13 @@ pub(crate) fn commit_closure(
 /// ±1 dB per notch, double click restores unity. Slots built by
 /// [`sync_faders`] carry it, so every surface renders the same gestures.
 fn fader_behavior(
-    ui: Entity<UiState>,
-    edit: Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: Entity<base::slider::SliderState>,
 ) -> SliderBehavior {
     SliderBehavior {
         step: Rc::new(fader_step),
         reset: 1. - FaderScale::position(1.),
-        commit: commit_closure(&ui, &edit, &slider),
+        commit: commit_closure(dispatch, &slider),
     }
 }
 
@@ -382,25 +495,14 @@ fn fader_behavior(
 /// double click restores unity, and the fader step's floor handling lets the
 /// wheel leave exact silence.
 fn send_behavior(
-    ui: Entity<UiState>,
-    edit: Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: Entity<base::slider::SliderState>,
 ) -> SliderBehavior {
     SliderBehavior {
         step: Rc::new(fader_step),
         reset: send_value(1.),
-        commit: commit_closure(&ui, &edit, &slider),
+        commit: commit_closure(dispatch, &slider),
     }
-}
-
-/// Applies one slider edit against the live snapshot; a target that vanished
-/// since the slider was created simply skips.
-fn dispatch_edit(ui: &Entity<UiState>, edit: &Rc<SliderEdit>, value: f32, cx: &mut App) {
-    ui.update(cx, |state, _| {
-        if let Some(request) = edit(value, &state.snapshot.graph) {
-            state.dispatch(request);
-        }
-    });
 }
 
 /// Which click-to-type editor family a readout belongs to. The strip fader
@@ -737,7 +839,7 @@ pub(crate) fn sync_faders<T: 'static>(
         faders,
         rows,
         [0., 1., 0.0001],
-        |_, ui, edit, slider| fader_behavior(ui, edit, slider),
+        |_, dispatch, slider| fader_behavior(dispatch, slider),
     );
 }
 
@@ -761,7 +863,7 @@ fn sync_sliders<K: Ord + Clone, T: 'static>(
         sliders,
         rows,
         [0., 1., 0.0001],
-        |_, ui, edit, slider| send_behavior(ui, edit, slider),
+        |_, dispatch, slider| send_behavior(dispatch, slider),
     );
 }
 
@@ -769,8 +871,9 @@ fn sync_sliders<K: Ord + Clone, T: 'static>(
 /// (channel faders, sends, compressor parameters): per-slider slot with the
 /// dragging flag and wheel/double-click behavior, drag Changes coalesced
 /// through [`DispatchGate`], the release's final value dispatched, and the
-/// snapshot write-back suppressed while a drag owns the thumb. `behavior`
-/// receives the row key so one call can serve keyed parameter families.
+/// snapshot write-back suppressed while the slider leads the snapshot (see
+/// [`SliderSlot::leads`]). `behavior` receives the row key so one call can
+/// serve keyed parameter families.
 pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
@@ -778,16 +881,12 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
     sliders: &mut BTreeMap<K, SliderSlot>,
     rows: Vec<(K, f32, SliderEdit)>,
     range: [f32; 3],
-    behavior: impl Fn(
-        &K,
-        Entity<UiState>,
-        Rc<SliderEdit>,
-        Entity<base::slider::SliderState>,
-    ) -> SliderBehavior,
+    behavior: impl Fn(&K, &Rc<SliderDispatch>, Entity<base::slider::SliderState>) -> SliderBehavior,
 ) {
+    let consumed = state.read(cx).snapshot.consumed_request_id;
     for (id, value, edit) in rows {
         let slot = sliders.entry(id.clone()).or_insert_with(|| {
-            let edit = Rc::new(edit);
+            let dispatch = Rc::new(SliderDispatch::new(state.clone(), edit));
             let dragging = Rc::new(Cell::new(false));
             let cancelled = Rc::new(Cell::new(false));
             let slider = cx.new(|_| {
@@ -797,14 +896,15 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                     .step(range[2])
                     .default_value(value)
             });
-            let ui = state.clone();
             let drag_flag = dragging.clone();
             let cancel_flag = cancelled.clone();
-            let drag_edit = edit.clone();
-            let mut gate = DispatchGate::default();
-            cx.subscribe(
+            let drag_dispatch = dispatch.clone();
+            let gate = Rc::new(RefCell::new(DispatchGate::default()));
+            let drag_gate = gate.clone();
+            cx.subscribe_in(
                 &slider,
-                move |_, slider, event: &base::slider::SliderEvent, cx| {
+                window,
+                move |_, slider, event: &base::slider::SliderEvent, window, cx| {
                     match event {
                         base::slider::SliderEvent::Change(value) => {
                             drag_flag.set(true);
@@ -820,13 +920,15 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             if !value.is_finite() {
                                 return;
                             }
-                            if let Some(send) = gate.change(value, Instant::now()) {
-                                dispatch_edit(&ui, &drag_edit, send, cx);
+                            let now = drag_gate.borrow_mut().change(value);
+                            if let Some(value) = now {
+                                drag_dispatch.send(value, cx);
+                                flush_at_next_frame(window, &drag_gate, &drag_dispatch);
                             }
                         }
                         base::slider::SliderEvent::Release(value) => {
                             drag_flag.set(false);
-                            gate.release();
+                            drag_gate.borrow_mut().discard();
                             let value = value.end();
                             // A cancelled drag's release carries only the
                             // stale pointer tail: the journal already moved
@@ -842,7 +944,7 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             // mouse-up a stale track value would otherwise
                             // overwrite the committed one.
                             if slider.read(cx).value().end() == value {
-                                dispatch_edit(&ui, &drag_edit, value, cx);
+                                drag_dispatch.send(value, cx);
                             }
                         }
                     }
@@ -851,17 +953,19 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
             )
             .detach();
             SliderSlot {
-                state: slider.clone(),
+                behavior: behavior(&id, &dispatch, slider.clone()),
+                state: slider,
                 dragging,
                 cancelled,
-                behavior: behavior(&id, state.clone(), edit, slider),
+                gate,
+                dispatch,
             }
         });
-        // A live drag owns the thumb: snapshot write-backs (about one
-        // dispatch interval stale) must not snap it away from the pointer.
-        // Normal revision sync resumes on release and any one stale
-        // write-back self-corrects on the next revision.
-        if !slot.dragging.get() && slot.state.read(cx).value().end() != value {
+        // The snapshot reconciles into the slider only once it caught up
+        // with it. A live drag owns the thumb, and a snapshot older than the
+        // slot's newest edit — the release's, a wheel step's — still carries
+        // a value the pointer already left behind.
+        if !slot.leads(consumed) && slot.state.read(cx).value().end() != value {
             slot.state
                 .update(cx, |state, cx| state.set_value(value, window, cx));
         }
@@ -870,11 +974,15 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
 
 impl StudioShell {
     pub(crate) fn sync_mixer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let revision = self.state.read(cx).snapshot.graph.candidate_revision;
-        if self.mixer.presentation.synced_revision == Some(revision) {
+        let snapshot = &self.state.read(cx).snapshot;
+        let synced = (
+            snapshot.graph.candidate_revision,
+            snapshot.consumed_request_id,
+        );
+        if self.mixer.presentation.synced == Some(synced) {
             return;
         }
-        self.mixer.presentation.synced_revision = Some(revision);
+        self.mixer.presentation.synced = Some(synced);
         let graph = self.state.read(cx).snapshot.graph.clone();
         self.mixer
             .presentation
@@ -1145,54 +1253,67 @@ impl Render for StripDrag {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DispatchGate, Duration, FaderScale, Instant, fader_step, parse_balance, parse_gain_db,
-        parse_pan,
-    };
+    use super::{DispatchGate, FaderScale, fader_step, parse_balance, parse_gain_db, parse_pan};
 
-    fn millis(base: Instant, offset: u64) -> Instant {
-        base + Duration::from_millis(offset)
+    #[test]
+    fn first_change_dispatches_immediately_and_arms_the_frame_boundary() {
+        let mut gate = DispatchGate::default();
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(
+            gate.change(0.6),
+            None,
+            "until the boundary, Changes only stash"
+        );
     }
 
     #[test]
-    fn first_change_dispatches_immediately() {
+    fn changes_within_a_frame_supersede_one_pending_value() {
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.6), None);
+        assert_eq!(gate.change(0.7), None);
+        assert_eq!(gate.frame(), Some(0.7), "the boundary sends the newest");
     }
 
     #[test]
-    fn changes_within_the_interval_are_coalesced_and_superseded() {
+    fn the_boundary_rearms_while_changes_keep_coming_and_reopens_after_a_quiet_frame() {
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
-        assert_eq!(gate.change(0.6, millis(base, 10)), None);
-        // A later Change within the interval replaces the stashed value.
-        assert_eq!(gate.change(0.7, millis(base, 20)), None);
-        assert_eq!(gate.change(0.8, millis(base, 32)), None);
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.6), None);
+        assert_eq!(gate.frame(), Some(0.6));
+        // The flush keeps the gate armed for the frame it started.
+        assert_eq!(gate.change(0.65), None);
+        assert_eq!(gate.frame(), Some(0.65));
+        // A frame without Changes reopens it: the next one goes out at once.
+        assert_eq!(gate.frame(), None);
+        assert_eq!(gate.change(0.7), Some(0.7));
     }
 
     #[test]
-    fn change_after_the_interval_dispatches_the_latest_value() {
+    fn a_paused_drag_lands_its_last_value_at_the_next_frame() {
+        // The fixed interval this gate replaced flushed only on the next
+        // Change past the interval or at release: a drag that stopped
+        // moving left the service on an older value while the button stayed
+        // down. Frames keep coming without Changes.
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
-        assert_eq!(gate.change(0.6, millis(base, 10)), None);
-        // The stashed intermediate is superseded by the newer value.
-        assert_eq!(gate.change(0.7, millis(base, 33)), Some(0.7));
-        assert_eq!(gate.change(0.8, millis(base, 40)), None);
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.42), None);
+        assert_eq!(gate.frame(), Some(0.42));
+        assert_eq!(gate.frame(), None);
     }
 
     #[test]
-    fn release_clears_the_gate_so_the_next_drag_resumes_immediately() {
+    fn discard_drops_the_pending_value_and_the_next_drag_resumes_immediately() {
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
-        assert_eq!(gate.change(0.6, millis(base, 5)), None);
-        gate.release();
-        assert_eq!(gate.pending, None);
-        // Even an instant next drag sends its first Change.
-        assert_eq!(gate.change(0.1, millis(base, 6)), Some(0.1));
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.6), None);
+        gate.discard();
+        assert_eq!(
+            gate.frame(),
+            None,
+            "a released or cancelled gesture's tail never lands"
+        );
+        assert_eq!(gate.change(0.1), Some(0.1));
     }
 
     #[test]
@@ -1201,11 +1322,27 @@ mod tests {
         let db_of = |value: f32| 20. * FaderScale::gain(1. - value).log10();
         // Up then down from −6 dB returns to the same slider value.
         let start = at_db(-6.);
-        let up = fader_step(start, 1);
+        let up = fader_step(start, 1.);
         assert!((db_of(up) + 5.).abs() < 0.001, "got {} dB", db_of(up));
-        assert!((fader_step(up, -1) - start).abs() < 0.00001);
-        let down = fader_step(start, -1);
+        assert!((fader_step(up, -1.) - start).abs() < 0.00001);
+        let down = fader_step(start, -1.);
         assert!((db_of(down) + 7.).abs() < 0.001, "got {} dB", db_of(down));
+    }
+
+    #[test]
+    fn fader_step_glides_by_fractional_notches() {
+        let at_db = |db: f64| 1. - FaderScale::position(10f64.powf(db / 20.));
+        let db_of = |value: f32| 20. * FaderScale::gain(1. - value).log10();
+        let start = at_db(-6.);
+        let quarter = fader_step(start, 0.25);
+        assert!(
+            (db_of(quarter) + 5.75).abs() < 0.001,
+            "got {} dB",
+            db_of(quarter)
+        );
+        // Four quarter notches travel exactly one notch.
+        let value = (0..4).fold(start, |value, _| fader_step(value, 0.25));
+        assert!((db_of(value) + 5.).abs() < 0.001, "got {} dB", db_of(value));
     }
 
     #[test]
@@ -1213,19 +1350,35 @@ mod tests {
         // Silence cannot be multiplied into something audible: the first
         // up-step lands one dB above the −72 dB floor, inside the final
         // finite segment between the −72 and −60 dB ticks.
-        let unsilenced = fader_step(0., 1);
+        let unsilenced = fader_step(0., 1.);
         let db = 20. * FaderScale::gain(1. - unsilenced).log10();
         assert!(db > -72. && db <= -60., "got {db} dB");
         // Stepping down again returns to the floor (still finite); one more
         // step falls below it and snaps to exact digital zero.
-        let floor = fader_step(unsilenced, -1);
+        let floor = fader_step(unsilenced, -1.);
         assert!(
             (FaderScale::gain(1. - floor) - 10f64.powf(-72. / 20.)).abs() < 1e-9,
             "expected the −72 dB floor"
         );
-        assert_eq!(FaderScale::gain(1. - fader_step(floor, -1)), 0.);
+        assert_eq!(FaderScale::gain(1. - fader_step(floor, -1.)), 0.);
         // Silence is sticky downwards.
-        assert_eq!(fader_step(0., -1), 0.);
+        assert_eq!(fader_step(0., -1.), 0.);
+    }
+
+    #[test]
+    fn fader_step_up_from_below_the_floor_never_cuts_to_silence() {
+        // A drag can park the fader below the −72 dB floor. A wheel up there
+        // used to multiply the gain by its step, stay under the floor and
+        // snap to digital silence — muting the strip on a wheel up, and on
+        // every fractional event of a fine-grained wheel.
+        let deep = 1. - FaderScale::position(10f64.powf(-90. / 20.));
+        for notches in [1., 0.25] {
+            let db = 20. * FaderScale::gain(1. - fader_step(deep, notches)).log10();
+            assert!(
+                db > -72. && db < -70.9,
+                "{notches} notch up from -90 dB landed at {db} dB"
+            );
+        }
     }
 
     #[test]
@@ -1234,7 +1387,7 @@ mod tests {
         // through FaderScale::position, and the stepped gain stays inside
         // the amplitude-16 validity bound of MixerState.
         let top = 1. - FaderScale::position(10f64.powf(12. / 20.));
-        assert_eq!(fader_step(top, 1), top);
+        assert_eq!(fader_step(top, 1.), top);
     }
 
     #[test]

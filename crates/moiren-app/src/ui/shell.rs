@@ -153,6 +153,46 @@ struct RepaintTerms {
     mute: bool,
 }
 
+/// The control pump's wait between ticks: its timer, cut short as soon as
+/// the service publishes past generation `seen` (design 22 D7). The timer
+/// still paces the pump's own chores — autosave, the idle meter pump, the
+/// tray's focus check — but a snapshot no longer sits in the mailbox for up
+/// to a whole tick: an edit's echo reaches the screen on the next frame, so
+/// toggles, checkboxes and mirrored controls answer as fast as the service
+/// applies the edit. Callers read [`AppHandle::publish_generation`] before
+/// each drain and pass it here.
+async fn pump_wait(cx: &AsyncApp, handle: &AppHandle, seen: u64, delay: Duration) {
+    FirstOf(
+        cx.background_executor().timer(delay),
+        handle.published_after(seen),
+    )
+    .await
+}
+
+/// Resolves as soon as either future does; the other is dropped with it.
+struct FirstOf<A, B>(A, B);
+
+impl<A, B> std::future::Future for FirstOf<A, B>
+where
+    A: std::future::Future + Unpin,
+    B: std::future::Future + Unpin,
+{
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if std::pin::Pin::new(&mut self.0).poll(cx).is_ready()
+            || std::pin::Pin::new(&mut self.1).poll(cx).is_ready()
+        {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+}
+
 /// The metering infrastructure (design 20 §4): the legacy I/O
 /// subscription table, the demand sets the pages' canvases register, the
 /// frame-demand arbiter, and the observation-node pair the pump keeps.
@@ -533,11 +573,12 @@ impl StudioShell {
 
     #[cfg(feature = "gpui-test")]
     fn spawn_poll(&self, cx: &mut Context<Self>) {
+        let handle = self.state.read(cx).handle.clone();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let mut seen = handle.publish_generation();
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await;
+                pump_wait(cx, &handle, seen, Duration::from_millis(33)).await;
+                seen = handle.publish_generation();
                 // Stop polling once the shell view is gone (window closed).
                 if this
                     .update(cx, |shell, cx| {

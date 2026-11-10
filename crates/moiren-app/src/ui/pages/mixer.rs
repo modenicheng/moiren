@@ -16,9 +16,10 @@ use crate::ui::widgets::fader::{FaderScale, fader, ruler};
 // coalesced sync/commit entry points are visible across the window.
 use model::StripDrag;
 pub(crate) use model::{
-    EditableValueFamily, InputPopover, MixerPresentation, SliderEdit, SliderSlot, balance_text,
-    commit_active_editor, commit_closure, fader_rows, gain_db_text, mixer_edit,
-    reset_clip_on_click, start_value_edit, sync_faders, sync_slider_range,
+    EditableValueFamily, InputPopover, MixerPresentation, SliderDispatch, SliderEdit, SliderSlot,
+    balance_text, commit_active_editor, commit_closure, fader_readout_gain, fader_rows,
+    gain_db_text, mixer_edit, reset_clip_on_click, send_readout_gain, start_value_edit,
+    sync_faders, sync_slider_range,
 };
 
 impl StudioShell {
@@ -276,7 +277,11 @@ fn strip_body(
             let editing = shell.mixer.presentation.editing_value == Some(id);
             editable_value(
                 SharedString::from(format!("strip-readout-{id:?}")),
-                db_text(entry.mixer.gain),
+                db_text(fader_readout_gain(
+                    shell.mixer.presentation.faders.get(&id),
+                    entry.mixer.gain,
+                    cx,
+                )),
                 editing,
                 &shell.mixer.presentation.value_inputs[&id],
                 start_value_edit(cx.entity(), EditableValueFamily::Fader, id, move |graph| {

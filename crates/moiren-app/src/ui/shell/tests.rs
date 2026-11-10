@@ -7,6 +7,34 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, point, px};
 use std::time::Duration;
 
+/// The control pump hands a published snapshot to the UI as soon as the
+/// service publishes it, not on its next timer tick (design 22 D7). The test
+/// executor never fires the pump's 33 ms timer unless its clock is advanced,
+/// so the snapshot below can only reach the state through the publish wake —
+/// the path that made every toggle and checkbox wait up to a whole tick.
+/// The test thread plays the service (a real service thread waking the pump
+/// would trip the test scheduler's determinism check).
+#[gpui_kit::test]
+fn the_pump_delivers_a_publish_without_waiting_for_its_timer(cx: &mut gpui_kit::TestAppContext) {
+    let (handle, mailbox) = crate::service::ServiceMailbox::new(std::thread::current());
+    let initial = handle.try_snapshot().expect("initial snapshot");
+    let state = cx.new(|_| UiState::new(handle.clone(), initial.clone()));
+    let (view, cx) = shell_with_state(cx, state);
+    view.update(cx, |shell, cx| shell.spawn_poll(cx));
+    cx.run_until_parked();
+    let mut published = (*initial).clone();
+    published.elapsed = Duration::from_secs(7);
+    mailbox.publish(published);
+    cx.run_until_parked();
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell.state.read(cx).snapshot.elapsed,
+            Duration::from_secs(7),
+            "the publish reached the UI without the pump's timer firing"
+        );
+    });
+}
+
 #[gpui_kit::test]
 fn toolbar_reserves_draggable_space_outside_interactive_controls(
     cx: &mut gpui_kit::TestAppContext,

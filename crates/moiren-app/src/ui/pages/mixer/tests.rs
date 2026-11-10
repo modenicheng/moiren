@@ -1,4 +1,5 @@
 use super::super::{Page, WorkspaceView};
+use super::fader_readout_gain;
 use super::model::reorder;
 use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{
@@ -7,8 +8,8 @@ use crate::ui::shell::test_harness::{
 use crate::ui::widgets::fader::{FaderScale, send_gain};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
-    SharedString, TestAppContext, VisualTestContext, point, px, size,
+    AppContext, Entity, Modifiers, MouseButton, MouseMoveEvent, Pixels, PlatformInput, ScrollDelta,
+    ScrollWheelEvent, SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 use moiren_core::graph::{NodeId, NodeKind};
 use std::time::Duration;
@@ -787,10 +788,21 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
         MouseButton::Left,
         Modifiers::default(),
     );
+    let released = view.read_with(cx, |shell, cx| {
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .value()
+            .end()
+    });
+    assert!(
+        released > 0.5 && released < start_value,
+        "the release must land between unity and the rail, got {released}"
+    );
     // The dispatch rides the mailbox: until a poll consumes the published
-    // confirmation, the UI snapshot still holds the PRE-DRAG gain, and every
+    // confirmation, the UI snapshot still holds an older gain, and every
     // rendered frame runs the snapshot write-back. The thumb must hold the
-    // user's value through that window instead of snapping back to the rail.
+    // user's value through that window instead of snapping back.
     for _ in 0..3 {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let held = view.read_with(cx, |shell, cx| {
@@ -800,14 +812,16 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
                 .value()
                 .end()
         });
-        assert!(
-            held > 0.5,
-            "the thumb snapped back to the pre-drag snapshot value {held} before confirmation"
+        assert_eq!(
+            held, released,
+            "the thumb left the released value before confirmation"
         );
     }
-    // A stale publication (the driver's strip sync races the edit path on a
-    // real machine): a revision the UI has not seen, carrying the PRE-DRAG
-    // gain. The fresh user commit must shield the thumb from it.
+    // A stale publication — the release echo race: a revision the UI has
+    // not seen, built before the service consumed the release, so it still
+    // carries an older gain. The revision fence must keep it off the thumb
+    // entirely; without it the thumb snapped back by the last dispatch
+    // tick's travel and forward again on the next publish (design 22 R1).
     view.update(cx, |shell, cx| {
         let stale_gain = shell
             .state
@@ -836,9 +850,9 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
             .value()
             .end()
     });
-    assert!(
-        shielded > 0.5,
-        "a stale publication yanked the thumb back to {shielded}"
+    assert_eq!(
+        shielded, released,
+        "a stale publication pulled the just-released thumb back"
     );
     poll(&view, cx);
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -866,6 +880,316 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     assert!(
         (-6. ..=0.01).contains(&final_db),
         "a ~10px drag from unity landed at {final_db} dB"
+    );
+    finish_service(runtime);
+}
+
+/// The fader readout renders the slider's own value while the slider leads
+/// the snapshot (design 22 D1): mid-drag and after the release until the
+/// service confirms it, the number tracks the thumb instead of trailing it
+/// by a round trip; the confirmation then swaps in the published gain
+/// without moving the number, because the edit dispatched exactly that gain.
+#[gpui_kit::test]
+fn fader_readout_tracks_the_thumb_until_the_service_confirms_it(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    // (readout, published, the thumb's own) gains.
+    let gains = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |shell, cx| {
+            let slot = &shell.mixer.presentation.faders[&node];
+            let published = shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain;
+            let own = FaderScale::gain(1. - slot.state.read(cx).value().end());
+            (
+                fader_readout_gain(Some(slot), published, cx),
+                published,
+                own,
+            )
+        })
+    };
+    let (readout, published, _) = gains(&view, cx);
+    assert_eq!(
+        readout, published,
+        "at rest the readout is the published gain"
+    );
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    // The first move past the threshold starts the drag; the second one
+    // moves the value.
+    for travel in [12., 24.] {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(travel)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (readout, published, own) = gains(&view, cx);
+    assert_eq!(readout, own, "mid-drag the readout shows the thumb's value");
+    assert_ne!(readout, published, "not the published gain it left behind");
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let (released, published, own) = gains(&view, cx);
+    assert_eq!(
+        released, own,
+        "until the service confirms the release, the readout keeps the thumb's value"
+    );
+    assert_ne!(released, published);
+    poll(&view, cx);
+    let (confirmed, published, _) = gains(&view, cx);
+    assert_eq!(
+        confirmed, published,
+        "confirmed: the readout is the published gain"
+    );
+    assert_eq!(
+        confirmed, released,
+        "the confirmation must not move the number"
+    );
+    finish_service(runtime);
+}
+
+/// A drag that pauses must land its last value one frame later, with the
+/// button still down (design 22 D4). The fixed 33 ms dispatch interval
+/// this replaced flushed a stashed value only on the next move past the
+/// interval or at release, so the service sat on an older gain — and,
+/// with the readout showing the thumb, on a different number than the
+/// one on screen — for as long as the user held the fader still.
+#[gpui_kit::test]
+fn a_paused_fader_drag_lands_its_last_value_at_the_next_frame(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    // The press dispatches at once and arms the frame boundary. The moves
+    // then arrive together inside one frame, as a fast pointer's do: the
+    // first starts the drag, the next two change the value and only stash.
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| {
+        for travel in [12., 18., 24.] {
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: press + point(px(0.), px(travel)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        }
+    });
+    // Hold still: frames keep coming, the pointer does not move.
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    poll(&view, cx);
+    let (gain, thumb) = view.read_with(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+        )
+    });
+    assert_eq!(
+        gain,
+        FaderScale::gain(1. - thumb),
+        "the held drag's value must reach the service before release"
+    );
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    finish_service(runtime);
+}
+
+/// A touchpad pan over a fader must repaint the thumb on every frame
+/// (design 22 D0). The pan writes the slider state, and that notification
+/// rebuilds the strip's cached panel. The 33 ms nested-rebuild throttle
+/// this replaced let only one rebuild through per 33 ms, so a pan arriving
+/// at display rate showed the thumb at about 30 fps. Only the panned strip
+/// may rebuild; its siblings keep replaying.
+#[gpui_kit::test]
+fn a_touchpad_pan_rebuilds_the_panned_strip_every_frame(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let center = view.update(cx, |shell, cx| {
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds()
+            .center()
+    });
+    let pan = |cx: &mut VisualTestContext| {
+        cx.simulate_event(ScrollWheelEvent {
+            position: center,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-3.))),
+            ..Default::default()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    // The first event also moves the pointer onto the fader; count from the
+    // frames after it.
+    pan(cx);
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    for _ in 0..5 {
+        pan(cx);
+    }
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    assert_eq!(
+        after - before,
+        5,
+        "each panned frame must rebuild exactly the panned strip"
+    );
+    finish_service(runtime);
+}
+
+/// Double click resets a fader wherever its second press lands. The first
+/// press jumps the thumb to the pointer and the strip repaints it there
+/// within a frame, so a human's second press hits the thumb, which claims
+/// its presses for itself: a bubble-phase click never counted to two, and
+/// the reset only worked beside the track.
+#[gpui_kit::test]
+fn double_click_resets_the_fader_after_the_first_click_moved_the_thumb(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    // A press well below the unity thumb, on the bare track.
+    let press = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
+        point(bounds.center().x, bounds.top() + bounds.size.height * 0.75)
+    });
+    let click = |cx: &mut VisualTestContext, click_count: usize| {
+        cx.simulate_event(gpui_kit::MouseDownEvent {
+            position: press,
+            button: MouseButton::Left,
+            click_count,
+            ..Default::default()
+        });
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            position: press,
+            button: MouseButton::Left,
+            click_count,
+            ..Default::default()
+        });
+        // A real double click takes longer than a frame: the thumb is
+        // already drawn under the pointer when the second press arrives.
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    };
+    click(cx, 1);
+    poll(&view, cx);
+    let jumped = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .expect("strip node")
+            .mixer
+            .gain
+    });
+    assert!(
+        jumped < 0.5,
+        "the first click jumps to the press, got {jumped}"
+    );
+    click(cx, 2);
+    poll(&view, cx);
+    let (gain, thumb) = view.read_with(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+        )
+    });
+    assert!(
+        (gain - 1.).abs() < 1e-6,
+        "the second press restores unity, got {gain}"
+    );
+    assert!(
+        (thumb - (1. - FaderScale::position(1.))).abs() < 1e-6,
+        "the thumb returns to unity, got {thumb}"
     );
     finish_service(runtime);
 }
@@ -3460,6 +3784,95 @@ fn input_dropdown_rows_go_dead_at_the_port_cap(cx: &mut TestAppContext) {
             "the checked row still releases its input"
         );
     });
+    finish_service(runtime);
+}
+
+/// Rows the graph would refuse are dead like the at-cap rows: a candidate
+/// that already listens to the strip (checking it would close a feedback
+/// loop) and one whose output width differs from the free input. Checking
+/// them used to dispatch the connection anyway, and the service answered
+/// with a fault on both strips; a legal row still connects.
+#[gpui_kit::test]
+fn input_dropdown_rows_go_dead_for_loops_and_channel_mismatches(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(900.)));
+    show_mixer(&view, cx);
+    let bus = add_node(&view, cx, NodeKind::Bus, 2);
+    for _ in 0..2 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    crate::service::GraphEdit::AddBusInput(bus),
+                ));
+            });
+        });
+        poll(&view, cx);
+    }
+    // The bus feeds a new gain: the gain now listens to the bus.
+    let downstream = add_node(&view, cx, NodeKind::Gain, 2);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let graph = &state.snapshot.graph.graph;
+            let source = graph.get_node(bus).unwrap().outputs()[0].id();
+            let destination = graph.get_node(downstream).unwrap().inputs()[0].id();
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::Connect {
+                    source,
+                    destination,
+                },
+            ));
+        });
+    });
+    poll(&view, cx);
+    let mono = add_node(&view, cx, NodeKind::Gain, 1);
+    let source = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .map(|node| node.id())
+            .expect("default session has a source")
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(SharedString::from(format!("input-add-{bus:?}")), cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{bus:?}")))
+            .bounds();
+    });
+    let feeds = |view: &Entity<StudioShell>, cx: &mut VisualTestContext, from: NodeId| {
+        view.update(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            assert_eq!(graph.last_error, None, "no rejected connection");
+            assert!(graph.faults.is_empty(), "no fault on any strip");
+            graph
+                .graph
+                .edges()
+                .iter()
+                .any(|edge| edge.src() == from && edge.dst() == bus)
+        })
+    };
+    for blocked in [downstream, mono] {
+        cx.update(|window, cx| {
+            window.click(SharedString::from(format!("input-pop-row-{blocked:?}")), cx);
+        });
+        poll(&view, cx);
+        assert!(!feeds(&view, cx, blocked), "a dead row must not connect");
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
+    });
+    poll(&view, cx);
+    assert!(feeds(&view, cx, source), "a legal row still connects");
     finish_service(runtime);
 }
 

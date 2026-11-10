@@ -590,7 +590,11 @@ fn send_slot(
     let selected = shell.selection.route == Some((edge.src_port(), edge.dst_port()));
     let this = cx.entity();
     let graph = &shell.state.read(cx).snapshot.graph;
-    let value = crate::ui::presentation::db_text_bare(params.gain);
+    let value = crate::ui::presentation::db_text_bare(send_readout_gain(
+        shell.mixer.presentation.sends.get(&id),
+        params.gain,
+        cx,
+    ));
     let editing = shell.mixer.presentation.editing_send == Some(id);
     let revealed = shell.mixer.presentation.hovered_route == Some((strip_id, id));
 
@@ -792,7 +796,10 @@ pub(crate) fn input_popover_overlay(
         .iter()
         .filter(|edge| edge.dst() == pop.node)
         .collect();
-    let full = ins.len() >= cap;
+    // The input the next check connects to: every row is judged against the
+    // exact connection its check would make.
+    let free = lowest_free_input(&graph.graph, pop.node);
+    let full = free.is_none();
     let mut count = 0usize;
     let mut rows: Vec<AnyElement> = Vec::new();
     for candidate in &shell.mixer.presentation.order {
@@ -808,7 +815,7 @@ pub(crate) fn input_popover_overlay(
             continue;
         }
         count += 1;
-        rows.push(pop_row(&graph, pop.node, cap, full, *candidate, cx).into_any_element());
+        rows.push(pop_row(&graph, pop.node, cap, free, *candidate, cx).into_any_element());
     }
     let height = (count as f32 * POPOVER_ROW_H + POPOVER_CHROME_H).min(POPOVER_MAX_H);
     let placed =
@@ -883,6 +890,65 @@ pub(crate) fn input_popover_overlay(
     )
 }
 
+/// Why checking a candidate cannot connect it: the dropdown shows these rows
+/// dead instead of dispatching a connection the service would only reject
+/// with a fault on both strips.
+enum Blocked {
+    /// Every input port of the node is wired.
+    Full,
+    /// The candidate already listens to this strip, directly or further
+    /// down: feeding it back in would close a loop.
+    Loop,
+    /// The candidate's output and the free input differ in width.
+    Width { from: usize, to: usize },
+    /// Anything else the graph refuses.
+    Refused,
+}
+
+/// The node's lowest unwired input port: where the dropdown's next check
+/// connects. Each input port takes one connection.
+fn lowest_free_input(
+    graph: &moiren_core::graph::LogicalGraph,
+    node: NodeId,
+) -> Option<moiren_core::graph::PortId> {
+    graph
+        .get_node(node)
+        .ok()?
+        .inputs()
+        .iter()
+        .map(|port| port.id())
+        .find(|port| graph.edges().iter().all(|edge| edge.dst_port() != *port))
+}
+
+/// Whether checking `candidate` could connect its first output to `free`,
+/// the node's next free input: `None` when it can.
+fn connect_blocker(
+    graph: &moiren_core::graph::LogicalGraph,
+    candidate: NodeId,
+    free: Option<moiren_core::graph::PortId>,
+) -> Option<Blocked> {
+    use moiren_core::graph::GraphError;
+    let Some(free) = free else {
+        return Some(Blocked::Full);
+    };
+    let Some(source) = graph
+        .get_node(candidate)
+        .ok()
+        .and_then(|node| node.outputs().first())
+    else {
+        return Some(Blocked::Refused);
+    };
+    match graph.can_connect(source.id(), free) {
+        Ok(()) => None,
+        Err(GraphError::CycleDetected) => Some(Blocked::Loop),
+        Err(GraphError::ChannelMismatch) => Some(Blocked::Width {
+            from: source.channels(),
+            to: graph.get_port(free).map_or(0, |port| port.channels()),
+        }),
+        Err(_) => Some(Blocked::Refused),
+    }
+}
+
 /// One dropdown row: checkbox + candidate name + the connected input port.
 /// A row's click is its checkbox's click — the checkbox paints the state,
 /// the row is its hit area, exactly like a form's label-wrapped control.
@@ -890,7 +956,7 @@ fn pop_row(
     graph: &crate::service::GraphSnapshot,
     node: NodeId,
     cap: usize,
-    full: bool,
+    free: Option<moiren_core::graph::PortId>,
     candidate: NodeId,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
@@ -902,7 +968,14 @@ fn pop_row(
         .filter(|edge| edge.src() == candidate && edge.dst() == node)
         .collect();
     let connected = !existing.is_empty();
-    let disabled = !connected && full;
+    // A checked row always works (unchecking releases its input); an
+    // unchecked one only when the graph would take the connection.
+    let blocked = if connected {
+        None
+    } else {
+        connect_blocker(&graph.graph, candidate, free)
+    };
+    let disabled = blocked.is_some();
     let name = graph
         .node(candidate)
         .map(crate::ui::presentation::display_label)
@@ -923,13 +996,25 @@ fn pop_row(
     });
     let tip = if connected {
         t!("Connected — uncheck to disconnect")
-    } else if disabled {
-        t!(
-            "Input limit reached (%{max}) — release one first",
-            max = cap
-        )
     } else {
-        t!("Check to connect to the next free input")
+        match blocked {
+            Some(Blocked::Full) => t!(
+                "Input limit reached (%{max}) — release one first",
+                max = cap
+            ),
+            Some(Blocked::Loop) => {
+                t!("Would close a feedback loop — this source already listens to the strip")
+            }
+            Some(Blocked::Width { from, to }) => {
+                t!(
+                    "Channel counts differ (%{from} → %{to})",
+                    from = from,
+                    to = to
+                )
+            }
+            Some(Blocked::Refused) => t!("This connection is not possible"),
+            None => t!("Check to connect to the next free input"),
+        }
     };
     let tip = tip.into_owned();
     let row = div()
@@ -993,8 +1078,8 @@ fn pop_row(
         })
         .tooltip(move |window, cx| component::tooltip::Tooltip::new(tip.clone()).build(window, cx));
     if disabled {
-        // At the cap the unchecked row is display-only: the click handler is
-        // not attached at all, so the row neither fires nor lies about it.
+        // A blocked unchecked row is display-only: the click handler is not
+        // attached at all, so the row neither fires nor lies about it.
         row.gpui_test_observe()
     } else {
         row.on_click(move |_, _, cx| toggle_connect(&this, node, candidate, cx))
@@ -1031,28 +1116,17 @@ fn toggle_connect(this: &Entity<StudioShell>, node: NodeId, candidate: NodeId, c
             }
         } else {
             // Connect to the node's lowest free input port from the
-            // candidate's first output; each input port is
-            // single-connection, so a free port is one no edge lands on.
-            let used: std::collections::HashSet<_> = graph
-                .graph
-                .edges()
-                .iter()
-                .filter(|edge| edge.dst() == node)
-                .map(|edge| edge.dst_port())
-                .collect();
-            let free = graph.graph.get_node(node).ok().and_then(|target| {
-                target
-                    .inputs()
-                    .iter()
-                    .map(|port| port.id())
-                    .find(|port| !used.contains(port))
-            });
+            // candidate's first output — and only a connection the graph
+            // takes, the same judgment that keeps blocked rows dead.
+            let free = lowest_free_input(&graph.graph, node);
             let source = graph
                 .graph
                 .get_node(candidate)
                 .ok()
                 .and_then(|node| node.outputs().first().map(|port| port.id()));
-            if let (Some(source), Some(destination)) = (source, free) {
+            if let (Some(source), Some(destination)) = (source, free)
+                && graph.graph.can_connect(source, destination).is_ok()
+            {
                 shell.state.update(cx, |state, _| {
                     state.dispatch(AppRequest::EditGraph(GraphEdit::Connect {
                         source,

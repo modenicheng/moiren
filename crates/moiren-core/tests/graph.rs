@@ -285,6 +285,54 @@ fn cycle_detection_handles_self_loops_indirect_cycles_and_disconnected_component
 }
 
 #[test]
+fn can_connect_answers_exactly_what_connect_would_without_connecting() {
+    let mut graph = LogicalGraph::new();
+    let a = graph.create_node(NodeKind::Gain, 2).unwrap();
+    let b = graph.create_node(NodeKind::Gain, 2).unwrap();
+    let c = graph.create_node(NodeKind::Gain, 2).unwrap();
+    let mono = graph.create_node(NodeKind::Gain, 1).unwrap();
+    graph
+        .connect(output(&graph, a), input(&graph, b), SendParams::default())
+        .unwrap();
+    let before = graph.clone();
+    let cases = [
+        (
+            output(&graph, b),
+            input(&graph, a),
+            Err(GraphError::CycleDetected),
+        ),
+        (
+            output(&graph, mono),
+            input(&graph, c),
+            Err(GraphError::ChannelMismatch),
+        ),
+        (
+            output(&graph, c),
+            input(&graph, b),
+            Err(GraphError::InputAlreadyConnected),
+        ),
+        (
+            input(&graph, a),
+            input(&graph, c),
+            Err(GraphError::PortDirectionMismatch),
+        ),
+        (output(&graph, b), input(&graph, c), Ok(())),
+    ];
+    for (source, destination, expected) in cases {
+        assert_eq!(graph.can_connect(source, destination), expected);
+        assert_eq!(graph, before, "a check never changes the graph");
+        let mut connected = graph.clone();
+        assert_eq!(
+            connected
+                .connect(source, destination, SendParams::default())
+                .map(|_| ()),
+            expected,
+            "the check and the connection agree"
+        );
+    }
+}
+
+#[test]
 fn stable_topological_order_counts_parallel_edges_and_includes_isolated_nodes() {
     let mut graph = LogicalGraph::new();
     let bus = graph.create_node(NodeKind::Bus, 2).unwrap();

@@ -21,8 +21,8 @@ use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::hot::{HotLayerView, HotSurface, MeterTracks};
 use super::mixer::{
-    SliderSlot, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click, strip_subtitle,
-    sync_faders,
+    SliderSlot, fader_readout_gain, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click,
+    strip_subtitle, sync_faders,
 };
 use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
@@ -448,7 +448,11 @@ fn strip(
                         .font_family(theme::FONT_MONO)
                         .text_size(px(theme::TEXT_CAPTION))
                         .text_color(theme::TEXT_MUTED)
-                        .child(db_text(entry.mixer.gain)),
+                        .child(db_text(fader_readout_gain(
+                            flyout.faders.get(&id),
+                            entry.mixer.gain,
+                            cx,
+                        ))),
                 )
                 .gpui_test_observe(),
         )

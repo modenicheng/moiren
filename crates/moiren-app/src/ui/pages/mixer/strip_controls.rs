@@ -278,7 +278,7 @@ pub(crate) fn balance(
                         // full Left..Right span. The drag path has no center
                         // snap, so stepping keeps the value it lands on.
                         let step = match gesture {
-                            ScrollGesture::Notch(direction) => f64::from(direction) * 0.1,
+                            ScrollGesture::Notch(notches) => f64::from(notches) * 0.1,
                             ScrollGesture::Pan(travel) => f64::from(travel) * 2.,
                         };
                         set_balance(&this, id, (value + step).clamp(-1., 1.), cx);
