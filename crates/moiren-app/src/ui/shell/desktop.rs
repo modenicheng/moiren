@@ -379,7 +379,9 @@ impl Desktop {
     }
 
     pub(super) fn spawn_poll(&self, cx: &mut Context<Self>) {
+        let handle = self.state.read(cx).handle.clone();
         cx.spawn(async move |this, cx| {
+            let mut seen = handle.publish_generation();
             loop {
                 let delay = this
                     .update(cx, |desktop, _| {
@@ -390,9 +392,12 @@ impl Desktop {
                         }
                     })
                     .unwrap_or(100);
-                cx.background_executor()
-                    .timer(Duration::from_millis(delay))
-                    .await;
+                // A publish ends the wait early, so edits echo on the next
+                // frame instead of the next tick.
+                super::pump_wait(cx, &handle, seen, Duration::from_millis(delay)).await;
+                // Read before draining: a publish landing during the drain
+                // then cuts the next wait short instead of waiting it out.
+                seen = handle.publish_generation();
                 if this.update(cx, |desktop, cx| desktop.poll(cx)).is_err() {
                     break;
                 }
