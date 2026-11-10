@@ -3787,6 +3787,95 @@ fn input_dropdown_rows_go_dead_at_the_port_cap(cx: &mut TestAppContext) {
     finish_service(runtime);
 }
 
+/// Rows the graph would refuse are dead like the at-cap rows: a candidate
+/// that already listens to the strip (checking it would close a feedback
+/// loop) and one whose output width differs from the free input. Checking
+/// them used to dispatch the connection anyway, and the service answered
+/// with a fault on both strips; a legal row still connects.
+#[gpui_kit::test]
+fn input_dropdown_rows_go_dead_for_loops_and_channel_mismatches(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(900.)));
+    show_mixer(&view, cx);
+    let bus = add_node(&view, cx, NodeKind::Bus, 2);
+    for _ in 0..2 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    crate::service::GraphEdit::AddBusInput(bus),
+                ));
+            });
+        });
+        poll(&view, cx);
+    }
+    // The bus feeds a new gain: the gain now listens to the bus.
+    let downstream = add_node(&view, cx, NodeKind::Gain, 2);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let graph = &state.snapshot.graph.graph;
+            let source = graph.get_node(bus).unwrap().outputs()[0].id();
+            let destination = graph.get_node(downstream).unwrap().inputs()[0].id();
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::Connect {
+                    source,
+                    destination,
+                },
+            ));
+        });
+    });
+    poll(&view, cx);
+    let mono = add_node(&view, cx, NodeKind::Gain, 1);
+    let source = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .map(|node| node.id())
+            .expect("default session has a source")
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(SharedString::from(format!("input-add-{bus:?}")), cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{bus:?}")))
+            .bounds();
+    });
+    let feeds = |view: &Entity<StudioShell>, cx: &mut VisualTestContext, from: NodeId| {
+        view.update(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            assert_eq!(graph.last_error, None, "no rejected connection");
+            assert!(graph.faults.is_empty(), "no fault on any strip");
+            graph
+                .graph
+                .edges()
+                .iter()
+                .any(|edge| edge.src() == from && edge.dst() == bus)
+        })
+    };
+    for blocked in [downstream, mono] {
+        cx.update(|window, cx| {
+            window.click(SharedString::from(format!("input-pop-row-{blocked:?}")), cx);
+        });
+        poll(&view, cx);
+        assert!(!feeds(&view, cx, blocked), "a dead row must not connect");
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
+    });
+    poll(&view, cx);
+    assert!(feeds(&view, cx, source), "a legal row still connects");
+    finish_service(runtime);
+}
+
 /// A routing row's click selects the edge; its double click jumps to the
 /// Graph page with the same wire selected.
 #[gpui_kit::test]

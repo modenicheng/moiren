@@ -319,6 +319,16 @@ impl LogicalGraph {
         })
     }
 
+    /// Checks a prospective connection against the complete graph without
+    /// making it: the exact contract [`Self::connect`] enforces (an output
+    /// into an unoccupied input of the same width, no cycle). Pickers that
+    /// offer connections ask this first, so they never dispatch one the
+    /// service would only reject.
+    pub fn can_connect(&self, src_port: PortId, dst_port: PortId) -> Result<(), GraphError> {
+        self.connection_nodes(src_port, dst_port, SendParams::default())
+            .map(|_| ())
+    }
+
     /// Connect existing ports only. Gain is linear; no implicit conversion or
     /// mixing is performed. Send parameters remain compiler input metadata.
     pub fn connect(

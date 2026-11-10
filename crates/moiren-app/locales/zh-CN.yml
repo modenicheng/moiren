@@ -1256,6 +1256,15 @@ _version: 2
 "Input limit reached (%{max}) — release one first":
   en: "Input limit reached (%{max}) — release one first"
   zh-CN: "已达上限 %{max} 路 — 先取消一路再勾选"
+"Would close a feedback loop — this source already listens to the strip":
+  en: Would close a feedback loop — this source already listens to the strip
+  zh-CN: 会形成反馈环 — 该节点已在本通道下游
+"Channel counts differ (%{from} → %{to})":
+  en: "Channel counts differ (%{from} → %{to})"
+  zh-CN: "声道数不同（%{from} → %{to}）"
+"This connection is not possible":
+  en: This connection is not possible
+  zh-CN: 无法建立此连接
 "Check to connect to the next free input":
   en: Check to connect to the next free input
   zh-CN: 勾选即连接到下一个空闲输入口
