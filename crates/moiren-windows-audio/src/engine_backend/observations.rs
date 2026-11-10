@@ -38,9 +38,24 @@ pub struct ProfessionalStreamObservation {
     pub actual: NativeStreamInfo,
     pub dropped_frames: u64,
     pub silent_frames: u64,
+    /// Bridge shortfall events (capture ring overflow, follower silence
+    /// fill), one per starved pump cycle; the frame fields above carry the
+    /// frames lost.
+    pub xruns: u64,
     pub native_callbacks: u64,
     pub native_dropped_frames: u64,
     pub native_silent_frames: u64,
+    /// Native-callback shortfall events (ASIO driver level), one per
+    /// starved callback per direction — a full-duplex callback starving on
+    /// both ends counts twice.
+    pub native_xruns: u64,
+    /// Engine render accounting, advanced by the master output's pump only:
+    /// blocks rendered, total time spent inside `Engine::render`, and the
+    /// worst single block of the last completed one-second window, in 100 ns
+    /// ticks. The DSP-load readout divides the deltas by rendered audio time.
+    pub engine_blocks: u64,
+    pub engine_busy_100ns: u64,
+    pub engine_peak_block_100ns: u64,
     pub driver_latency: Option<NativeLatency>,
 }
 
@@ -55,9 +70,17 @@ pub struct ProfessionalObservationSnapshot {
 pub(crate) struct Counters {
     pub dropped: AtomicU64,
     pub silent: AtomicU64,
+    pub xruns: AtomicU64,
+    /// Master pump only: engine blocks rendered, cumulative render time, and
+    /// the worst single block of the last completed one-second window. The
+    /// audio thread owns the windowing, so readers only load.
+    pub blocks: AtomicU64,
+    pub render_ticks: AtomicU64,
+    pub render_peak_ticks: AtomicU64,
     native_callbacks: AtomicU64,
     native_dropped: AtomicU64,
     native_silent: AtomicU64,
+    native_xruns: AtomicU64,
     latency_sequence: AtomicU64,
     latency: AtomicU64,
     latency_valid: AtomicBool,
@@ -72,6 +95,7 @@ impl Counters {
             .store(stats.capture_dropped_frames, Ordering::Relaxed);
         self.native_silent
             .store(stats.render_silent_frames, Ordering::Relaxed);
+        self.native_xruns.store(stats.xruns, Ordering::Relaxed);
         // One native owner writes; readers use a bounded seqlock snapshot.
         self.latency_sequence.fetch_add(1, Ordering::SeqCst);
         if let Some(latency) = latency {
@@ -121,9 +145,15 @@ impl ProfessionalObservations {
                     let mut stream = stream.clone();
                     stream.dropped_frames = counters.dropped.load(Ordering::Relaxed);
                     stream.silent_frames = counters.silent.load(Ordering::Relaxed);
+                    stream.xruns = counters.xruns.load(Ordering::Relaxed);
                     stream.native_callbacks = counters.native_callbacks.load(Ordering::Relaxed);
                     stream.native_dropped_frames = counters.native_dropped.load(Ordering::Relaxed);
                     stream.native_silent_frames = counters.native_silent.load(Ordering::Relaxed);
+                    stream.native_xruns = counters.native_xruns.load(Ordering::Relaxed);
+                    stream.engine_blocks = counters.blocks.load(Ordering::Relaxed);
+                    stream.engine_busy_100ns = counters.render_ticks.load(Ordering::Relaxed);
+                    stream.engine_peak_block_100ns =
+                        counters.render_peak_ticks.load(Ordering::Relaxed);
                     stream.driver_latency = counters.driver_latency();
                     stream
                 })
@@ -207,9 +237,14 @@ mod tests {
             },
             dropped_frames: 0,
             silent_frames: 0,
+            xruns: 0,
             native_callbacks: 0,
             native_dropped_frames: 0,
             native_silent_frames: 0,
+            native_xruns: 0,
+            engine_blocks: 0,
+            engine_busy_100ns: 0,
+            engine_peak_block_100ns: 0,
             driver_latency: None,
         };
         observations.publish(1, vec![(stream.clone(), old.clone())]);
@@ -222,11 +257,16 @@ mod tests {
             None,
         );
         fresh.dropped.store(3, Ordering::Relaxed);
+        fresh.xruns.store(2, Ordering::Relaxed);
+        fresh.blocks.store(41_000, Ordering::Relaxed);
+        fresh.render_ticks.store(9_000, Ordering::Relaxed);
+        fresh.render_peak_ticks.store(150, Ordering::Relaxed);
         fresh.publish_native(
             NativeStreamStats {
                 callbacks: 7,
                 capture_dropped_frames: 11,
                 render_silent_frames: 13,
+                xruns: 5,
                 ..Default::default()
             },
             Some(NativeLatency {
@@ -238,9 +278,14 @@ mod tests {
         let actual = &snapshot.streams[0];
         assert_eq!(actual.dropped_frames, 3);
         assert_eq!(actual.silent_frames, 0);
+        assert_eq!(actual.xruns, 2);
         assert_eq!(actual.native_callbacks, 7);
         assert_eq!(actual.native_dropped_frames, 11);
         assert_eq!(actual.native_silent_frames, 13);
+        assert_eq!(actual.native_xruns, 5);
+        assert_eq!(actual.engine_blocks, 41_000);
+        assert_eq!(actual.engine_busy_100ns, 9_000);
+        assert_eq!(actual.engine_peak_block_100ns, 150);
         assert_eq!(actual.driver_latency.unwrap().output_frames, 64);
         fresh.publish_native(NativeStreamStats::default(), None);
         assert_eq!(

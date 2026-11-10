@@ -1664,18 +1664,263 @@ fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::
 }
 
 #[gpui_kit::test]
-fn statusbar_shows_the_configured_format_when_idle(cx: &mut gpui_kit::TestAppContext) {
-    let (_view, cx, runtime) = test_shell(cx);
+fn statusbar_lists_its_items_and_opens_no_panel_at_rest(cx: &mut gpui_kit::TestAppContext) {
+    // Reaching Running through the real driver needs live audio devices, so
+    // the running-path projections are covered by the pure unit tests.
+    let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(
-            window.find("statusbar-format").visible(),
-            "the configured processing format is informative even when idle"
-        );
-        // Design 23 §4.4 removed the route label entirely; drift went with
-        // the clock work that preceded it.
-        assert!(window.try_find("statusbar-drift").is_none());
+        for id in [
+            "statusbar-phase",
+            "statusbar-clock",
+            "statusbar-xrun",
+            "statusbar-perf",
+            "statusbar-buffer",
+            "statusbar-format",
+        ] {
+            assert!(window.find(id).visible(), "{id} is on the bar while idle");
+        }
+        for panel in [
+            "status-panel-engine",
+            "status-panel-clock",
+            "status-panel-xrun",
+            "status-panel-perf",
+            "status-panel-format",
+        ] {
+            assert!(
+                window.try_find(panel).is_none(),
+                "{panel} opens only on hover or click"
+            );
+        }
     });
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.chrome.status_popup),
+        None
+    );
+    finish_service(runtime);
+}
+
+/// The engine's start/stop control lives in the status bar's engine panel;
+/// the toolbar keeps only navigation, settings and the window controls.
+#[gpui_kit::test]
+fn the_toolbar_carries_no_transport_button(cx: &mut gpui_kit::TestAppContext) {
+    let (_view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        assert!(window.try_find("transport").is_none());
+        assert!(window.find("open-settings").visible());
+        for id in ["titlebar-drag-leading", "titlebar-drag-trailing"] {
+            assert!(window.find(id).bounds().size.width >= px(20.0));
+        }
+    });
+    finish_service(runtime);
+}
+
+/// The status bar's hover state machine: a cold hover opens after the
+/// intent delay, a second item switches at once, resting on the panel keeps
+/// it open past the close grace (the deferred panel's enter arrives before
+/// the item's leave, so the arbitration must not depend on event order),
+/// and leaving both closes after the grace.
+#[gpui_kit::test]
+fn hovering_status_items_opens_switches_holds_and_closes_their_panels(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::ui::shell::status::StatusItem;
+    let (view, cx, runtime) = test_shell(cx);
+    let open = |cx: &mut gpui_kit::VisualTestContext| {
+        view.read_with(cx, |shell, _| shell.chrome.status_popup)
+    };
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        window.hover("statusbar-phase", cx);
+    });
+    assert_eq!(open(cx), None, "a cold hover waits out the intent delay");
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert_eq!(open(cx), Some(StatusItem::Engine));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("status-panel-engine").visible());
+        window.hover("statusbar-format", cx);
+    });
+    assert_eq!(
+        open(cx),
+        Some(StatusItem::Format),
+        "browsing to another item switches without a delay"
+    );
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("status-panel-engine").is_none());
+        assert!(window.find("status-panel-format").visible());
+        // The pointer travels up into the panel.
+        window.hover("status-panel-format", cx);
+    });
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(
+        open(cx),
+        Some(StatusItem::Format),
+        "resting on the panel keeps it open"
+    );
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.hover("tab-graph", cx);
+    });
+    assert_eq!(
+        open(cx),
+        Some(StatusItem::Format),
+        "the grace period has not elapsed yet"
+    );
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(open(cx), None, "leaving both anchor and panel closes it");
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("status-panel-format").is_none());
+    });
+    finish_service(runtime);
+}
+
+/// Click is the touch path: it toggles the item's panel, and a press that
+/// reaches the shell root (anything outside the items and panels) closes it.
+#[gpui_kit::test]
+fn clicking_a_status_item_toggles_its_panel_and_an_outside_press_closes_it(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::ui::shell::status::StatusItem;
+    use gpui_kit::{Modifiers, MouseButton};
+    let (view, cx, runtime) = test_shell(cx);
+    let open = |cx: &mut gpui_kit::VisualTestContext| {
+        view.read_with(cx, |shell, _| shell.chrome.status_popup)
+    };
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        window.click("statusbar-xrun", cx);
+        window.render_frame(cx);
+        assert!(window.find("status-panel-xrun").visible());
+    });
+    assert_eq!(open(cx), Some(StatusItem::Xrun));
+    cx.update(|window, cx| {
+        window.click("statusbar-xrun", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("status-panel-xrun").is_none());
+    });
+    assert_eq!(open(cx), None, "a second click closes the panel");
+    // Reopen, then press the bar's empty middle: no item claims it, so the
+    // shell root's outside-press listener sees it.
+    let outside = cx.update(|window, cx| {
+        window.click("statusbar-xrun", cx);
+        window.render_frame(cx);
+        window.find("engine-statusbar").bounds().center()
+    });
+    assert_eq!(open(cx), Some(StatusItem::Xrun));
+    cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    assert_eq!(open(cx), None, "an outside press dismisses the panel");
+    finish_service(runtime);
+}
+
+/// Every panel hangs above the bar by the shared popover gap and stays
+/// inside the window, at the comfortable width and below the compact
+/// breakpoint alike.
+#[gpui_kit::test]
+fn status_panels_hang_above_the_bar_inside_the_window(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ui::shell::status::StatusItem;
+    let (view, cx, runtime) = test_shell(cx);
+    for (width, height) in [(1440.0, 900.0), (1024.0, 720.0)] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        for item in [
+            StatusItem::Engine,
+            StatusItem::Clock,
+            StatusItem::Xrun,
+            StatusItem::Perf,
+            StatusItem::Format,
+        ] {
+            view.update(cx, |shell, cx| {
+                shell.chrome.status_popup = Some(item);
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                let bar = window.find("engine-statusbar").bounds();
+                let panel = window.find(item.panel_id()).bounds();
+                let gap = f32::from(bar.top() - panel.bottom());
+                assert!(
+                    (gap - theme::POPOVER_ANCHOR_GAP).abs() < 0.5,
+                    "{item:?} hangs {gap}px above the bar at {width}x{height}"
+                );
+                assert!(
+                    panel.left() >= px(0.) && panel.right() <= px(width) && panel.top() >= px(0.),
+                    "{item:?} stays inside the {width}x{height} window: {panel:?}"
+                );
+            });
+        }
+    }
+    finish_service(runtime);
+}
+
+/// The XRUN panel's reset is a control-side baseline move: history and the
+/// headline count clear at once, with no service request behind it.
+#[gpui_kit::test]
+fn the_xrun_panel_reset_clears_the_statistics_window(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ui::monitoring::runtime::StreamCounters;
+    use crate::ui::shell::status::StatusItem;
+    let (view, cx, runtime) = test_shell(cx);
+    let node = moiren_core::graph::LogicalGraph::new()
+        .create_node(moiren_core::graph::NodeKind::Sink, 2)
+        .unwrap();
+    let total = |cx: &mut gpui_kit::VisualTestContext| {
+        view.read_with(cx, |shell, cx| shell.state.read(cx).runtime.xruns.total())
+    };
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let now = std::time::Instant::now();
+            let counters = |xruns: u64| StreamCounters {
+                node,
+                xruns,
+                native_xruns: 0,
+                engine_blocks: xruns * 1_000,
+            };
+            state.runtime.xruns.ingest(1, &[counters(0)], now);
+            state.runtime.xruns.ingest(1, &[counters(3)], now);
+        });
+        shell.chrome.status_popup = Some(StatusItem::Xrun);
+        cx.notify();
+    });
+    assert_eq!(total(cx), 3);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        window.click("status-xrun-reset", cx);
+    });
+    assert_eq!(total(cx), 0, "reset clears the statistics window");
+    finish_service(runtime);
+}
+
+/// Start is start-by-graph (design 23 §4.2): the engine panel's button
+/// dispatches from idle without a UI-side verdict on the graph, and only an
+/// in-flight request or a transitional phase disables it.
+#[gpui_kit::test]
+fn the_engine_panel_button_dispatches_the_transport_toggle(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ui::shell::status::StatusItem;
+    let (view, cx, runtime) = test_shell(cx);
+    view.update(cx, |shell, cx| {
+        shell.chrome.status_popup = Some(StatusItem::Engine);
+        cx.notify();
+    });
+    assert!(!view.read_with(cx, |shell, cx| shell.state.read(cx).pending_request));
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        window.click("status-engine-toggle", cx);
+    });
+    assert!(
+        view.read_with(cx, |shell, cx| shell.state.read(cx).pending_request),
+        "the click dispatched the start request"
+    );
     finish_service(runtime);
 }
 
@@ -1749,6 +1994,70 @@ fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
         );
     });
     assert!(probe.is_ok(), "the probe window stays open");
+    finish_service(runtime);
+}
+
+/// Opening, holding and closing a status panel must not do more strip-panel
+/// work than an idle rendered frame (design 17): the bar is a live sibling
+/// of the pages, its open state rides no key, and the panel's fade runs on
+/// the live surface. The panel opens and closes through seeded shell state
+/// — the capture harness's pattern — because a pointer move itself dirties
+/// strip paint (verified identical on origin/main). One rendered frame
+/// rebuilds a few strips on the current build — the same on main — so the
+/// invariant is pinned relative to that idle-frame floor, not against zero.
+#[gpui_kit::test]
+fn opening_a_status_panel_rebuilds_no_cached_page_panel(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ui::shell::status::StatusItem;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        window.click("tab-mixer", cx);
+    });
+    settle_panels(cx);
+    let strips = |cx: &mut gpui_kit::VisualTestContext| {
+        view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders)
+    };
+    // The idle-frame floor: one rendered frame's strip work with no panel.
+    let before = strips(cx);
+    cx.update(|window, cx| window.render_frame(cx));
+    let floor = strips(cx) - before;
+    // Open, hold over its fade, close: every step may only cost what an
+    // idle frame costs, never a page-panel rebuild on top.
+    view.update(cx, |shell, cx| {
+        shell.chrome.status_popup = Some(StatusItem::Perf);
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("status-panel-perf").visible());
+        // Frames while the panel is open, fade included: simulate_next_frame
+        // pairs draw without the refresh that carries the idle noise.
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(window.find("status-panel-perf").visible());
+    });
+    let open = strips(cx);
+    assert!(
+        open - before <= 2 * floor,
+        "an open, animating status panel must not exceed two idle frames of          strip work (open delta {} over floor {})",
+        open - before,
+        floor
+    );
+    view.update(cx, |shell, cx| shell.status_close(cx));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("status-panel-perf").is_none());
+    });
+    let closed = strips(cx);
+    assert!(
+        closed - open <= floor,
+        "closing the panel must not exceed one idle frame of strip work          (close delta {} over floor {})",
+        closed - open,
+        floor
+    );
     finish_service(runtime);
 }
 

@@ -130,6 +130,10 @@ pub struct UiState {
     /// The spectrum analyzers' subscription table, pumped with the same
     /// visible set as the meters and feeding the graph card's live body.
     pub node_spectra: crate::ui::monitoring::NodeSpectra,
+    /// The status bar's runtime statistics — XRUN history and DSP load —
+    /// derived here from consecutive observation snapshots so the counters'
+    /// deltas turn into one consistent model for the bar and its panels.
+    pub(crate) runtime: crate::ui::monitoring::runtime::RuntimeStats,
     pub pending_request: bool,
     pub(crate) dispatch_error: Option<UiFailure>,
     request_id: Option<RequestId>,
@@ -145,6 +149,7 @@ impl UiState {
             snapshot: initial,
             node_meters,
             node_spectra,
+            runtime: Default::default(),
             pending_request: false,
             dispatch_error: None,
             request_id: None,
@@ -158,6 +163,7 @@ impl UiState {
         };
         let changed = !Arc::ptr_eq(&self.snapshot, &snapshot);
         if changed {
+            self.ingest_runtime(&snapshot);
             self.snapshot = snapshot;
             if self
                 .request_id
@@ -167,6 +173,68 @@ impl UiState {
             }
         }
         changed
+    }
+
+    /// Feeds the runtime statistics from a freshly drained snapshot: the
+    /// observation snapshot reduces to counters here, and the deltas become
+    /// events and load figures inside the model. One shared entry point —
+    /// only the view extraction below knows about platforms, so the model's
+    /// whole surface stays compiled on every one of them.
+    fn ingest_runtime(&mut self, snapshot: &AppSnapshot) {
+        self.runtime
+            .ingest(Self::runtime_view(snapshot), std::time::Instant::now());
+    }
+
+    /// The observation snapshot reduced to the runtime counters. `None`
+    /// when the session carries no observations — and always off Windows,
+    /// where the native backend does not exist.
+    #[cfg(windows)]
+    fn runtime_view(
+        snapshot: &AppSnapshot,
+    ) -> Option<crate::ui::monitoring::runtime::ObservationView> {
+        use crate::ui::monitoring::runtime::{ObservationView, RenderCounters, StreamCounters};
+        let status = snapshot.professional_observations.as_ref()?;
+        let streams: Vec<StreamCounters> = status
+            .observation
+            .streams
+            .iter()
+            .map(|stream| StreamCounters {
+                node: stream.node,
+                xruns: stream.xruns,
+                native_xruns: stream.native_xruns,
+                engine_blocks: stream.engine_blocks,
+            })
+            .collect();
+        // The engine render accounting rides on the master output's pump.
+        let render = status
+            .observation
+            .streams
+            .iter()
+            .find(|stream| stream.master && !stream.input)
+            .map(|stream| RenderCounters {
+                blocks: stream.engine_blocks,
+                busy_100ns: stream.engine_busy_100ns,
+                peak_block_100ns: stream.engine_peak_block_100ns,
+            });
+        let processing = snapshot
+            .active_audio_settings
+            .as_ref()
+            .unwrap_or(&snapshot.audio_settings)
+            .processing;
+        Some(ObservationView {
+            generation: status.generation.0,
+            streams,
+            render,
+            block_frames: processing.block_frames,
+            sample_rate: processing.sample_rate,
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn runtime_view(
+        _snapshot: &AppSnapshot,
+    ) -> Option<crate::ui::monitoring::runtime::ObservationView> {
+        None
     }
 
     pub fn dispatch(&mut self, request: AppRequest) {
