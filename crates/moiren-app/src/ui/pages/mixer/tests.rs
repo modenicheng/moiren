@@ -787,10 +787,21 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
         MouseButton::Left,
         Modifiers::default(),
     );
+    let released = view.read_with(cx, |shell, cx| {
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .value()
+            .end()
+    });
+    assert!(
+        released > 0.5 && released < start_value,
+        "the release must land between unity and the rail, got {released}"
+    );
     // The dispatch rides the mailbox: until a poll consumes the published
-    // confirmation, the UI snapshot still holds the PRE-DRAG gain, and every
+    // confirmation, the UI snapshot still holds an older gain, and every
     // rendered frame runs the snapshot write-back. The thumb must hold the
-    // user's value through that window instead of snapping back to the rail.
+    // user's value through that window instead of snapping back.
     for _ in 0..3 {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let held = view.read_with(cx, |shell, cx| {
@@ -800,14 +811,16 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
                 .value()
                 .end()
         });
-        assert!(
-            held > 0.5,
-            "the thumb snapped back to the pre-drag snapshot value {held} before confirmation"
+        assert_eq!(
+            held, released,
+            "the thumb left the released value before confirmation"
         );
     }
-    // A stale publication (the driver's strip sync races the edit path on a
-    // real machine): a revision the UI has not seen, carrying the PRE-DRAG
-    // gain. The fresh user commit must shield the thumb from it.
+    // A stale publication — the release echo race: a revision the UI has
+    // not seen, built before the service consumed the release, so it still
+    // carries an older gain. The revision fence must keep it off the thumb
+    // entirely; without it the thumb snapped back by the last dispatch
+    // tick's travel and forward again on the next publish (design 22 R1).
     view.update(cx, |shell, cx| {
         let stale_gain = shell
             .state
@@ -836,9 +849,9 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
             .value()
             .end()
     });
-    assert!(
-        shielded > 0.5,
-        "a stale publication yanked the thumb back to {shielded}"
+    assert_eq!(
+        shielded, released,
+        "a stale publication pulled the just-released thumb back"
     );
     poll(&view, cx);
     cx.update(|window, cx| window.draw(cx).clear(cx));

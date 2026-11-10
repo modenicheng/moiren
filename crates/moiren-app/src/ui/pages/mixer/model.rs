@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::{GraphEdit, GraphSnapshot, MixerState};
+use crate::service::{GraphEdit, GraphSnapshot, MixerState, RequestId};
 use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior, send_gain, send_value};
 use rust_i18n::t;
 use std::cell::Cell;
@@ -67,7 +67,12 @@ pub(crate) struct MixerPresentation {
     /// [`Self::DOCK_WIDTH`]. Session presentation state, like the collapse
     /// flags above: it is not persisted.
     pub dock_width: f32,
-    synced_revision: Option<u64>,
+    /// The snapshot the controls last synced from: its graph revision and
+    /// the newest request it consumed. The consumed request rides next to
+    /// the revision because a slider's revision fence lifts on it — an edit
+    /// the service refused leaves the revision alone, and the slider that
+    /// sent it must still fall back to the published value.
+    synced: Option<(u64, RequestId)>,
 }
 
 /// The mixer strip's open input dropdown: which strip it belongs to and the
@@ -121,18 +126,20 @@ impl MixerPresentation {
             input_popover_scroll: ScrollHandle::default(),
             hovered_route: None,
             dock_width: 0.,
-            synced_revision: None,
+            synced: None,
         }
     }
 }
 
-/// Per-slider bookkeeping kept next to its entity: the dragging flag lets the
-/// snapshot write-back in [`sync_slider_range`] stand down while a drag owns the
-/// thumb, and the behavior carries the shared wheel/double-click actions.
+/// Per-slider bookkeeping kept next to its entity: the dragging flag and the
+/// edit path's revision fence decide when the snapshot write-back in
+/// [`sync_slider_range`] may move the thumb, and the behavior carries the
+/// shared wheel/double-click actions.
 pub(crate) struct SliderSlot {
     pub state: Entity<base::slider::SliderState>,
     pub dragging: Rc<Cell<bool>>,
     cancelled: Rc<Cell<bool>>,
+    dispatch: Rc<SliderDispatch>,
     pub behavior: SliderBehavior,
 }
 
@@ -142,10 +149,64 @@ impl SliderSlot {
     /// the release's stale pointer value — is dropped instead of landing as
     /// fresh edits. Used when a journal step (undo) lands under a live drag:
     /// without this, the suppressed write-back hides the undone value and
-    /// the release then overwrites it (audit SD-7).
+    /// the release then overwrites it (audit SD-7). The revision fence stays:
+    /// the journal step is a newer request than any edit the drag sent, so
+    /// its publish clears the fence while older echoes of the drag cannot.
     pub(crate) fn cancel_drag(&self) {
         self.dragging.set(false);
         self.cancelled.set(true);
+    }
+
+    /// Whether the slider is ahead of the snapshot that consumed request
+    /// `consumed`: a drag owns the thumb, or the slot's newest edit is not
+    /// in that snapshot yet. Either way the snapshot's value for this slider
+    /// is older than the one the slider shows.
+    pub(crate) fn leads(&self, consumed: RequestId) -> bool {
+        self.dragging.get() || self.dispatch.unconfirmed(consumed)
+    }
+}
+
+/// One slider's edit path: builds the request against the live snapshot,
+/// dispatches it, and fences the slot's snapshot write-back on it (design 22
+/// D2). The drag subscription and the wheel/double-click commit share one,
+/// so every edit a slot sends fences the echoes that predate it.
+pub(crate) struct SliderDispatch {
+    ui: Entity<UiState>,
+    edit: SliderEdit,
+    /// The newest request this slot dispatched. A snapshot that consumed an
+    /// older request was built before the service applied it, so its value
+    /// for this slider is stale: writing it back is the release echo race
+    /// that pulled a just-released thumb back by one dispatch tick of
+    /// travel, until the next publish snapped it forward again.
+    sent: Cell<Option<RequestId>>,
+}
+
+impl SliderDispatch {
+    fn new(ui: Entity<UiState>, edit: SliderEdit) -> Self {
+        Self {
+            ui,
+            edit,
+            sent: Cell::new(None),
+        }
+    }
+
+    /// Applies one slider value; a target that vanished since the slider was
+    /// created simply skips. A refused dispatch leaves the fence on the last
+    /// request that did go out.
+    fn send(&self, value: f32, cx: &mut App) {
+        let sent = self.ui.update(cx, |state, _| {
+            let request = (self.edit)(value, &state.snapshot.graph)?;
+            state.try_dispatch(request).ok()
+        });
+        if sent.is_some() {
+            self.sent.set(sent);
+        }
+    }
+
+    /// Whether a snapshot that consumed request `consumed` predates this
+    /// slot's newest edit.
+    fn unconfirmed(&self, consumed: RequestId) -> bool {
+        self.sent.get().is_some_and(|sent| consumed < sent)
     }
 }
 
@@ -347,18 +408,16 @@ fn fader_step(value: f32, dir: i32) -> f32 {
 /// Wheel + double-click commit shared by every mixer slider: write the value
 /// into the slider state (`set_value` emits no `Change`, so this never loops
 /// through the drag path) and dispatch the edit immediately, bypassing the
-/// drag coalescer.
+/// drag coalescer. The dispatch fences the write-back like a drag's.
 pub(crate) fn commit_closure(
-    ui: &Entity<UiState>,
-    edit: &Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: &Entity<base::slider::SliderState>,
 ) -> Commit {
-    let ui = ui.clone();
-    let edit = edit.clone();
+    let dispatch = dispatch.clone();
     let slider = slider.clone();
     Rc::new(move |value, window, cx| {
         slider.update(cx, |state, cx| state.set_value(value, window, cx));
-        dispatch_edit(&ui, &edit, value, cx);
+        dispatch.send(value, cx);
     })
 }
 
@@ -366,14 +425,13 @@ pub(crate) fn commit_closure(
 /// ±1 dB per notch, double click restores unity. Slots built by
 /// [`sync_faders`] carry it, so every surface renders the same gestures.
 fn fader_behavior(
-    ui: Entity<UiState>,
-    edit: Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: Entity<base::slider::SliderState>,
 ) -> SliderBehavior {
     SliderBehavior {
         step: Rc::new(fader_step),
         reset: 1. - FaderScale::position(1.),
-        commit: commit_closure(&ui, &edit, &slider),
+        commit: commit_closure(dispatch, &slider),
     }
 }
 
@@ -382,25 +440,14 @@ fn fader_behavior(
 /// double click restores unity, and the fader step's floor handling lets the
 /// wheel leave exact silence.
 fn send_behavior(
-    ui: Entity<UiState>,
-    edit: Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: Entity<base::slider::SliderState>,
 ) -> SliderBehavior {
     SliderBehavior {
         step: Rc::new(fader_step),
         reset: send_value(1.),
-        commit: commit_closure(&ui, &edit, &slider),
+        commit: commit_closure(dispatch, &slider),
     }
-}
-
-/// Applies one slider edit against the live snapshot; a target that vanished
-/// since the slider was created simply skips.
-fn dispatch_edit(ui: &Entity<UiState>, edit: &Rc<SliderEdit>, value: f32, cx: &mut App) {
-    ui.update(cx, |state, _| {
-        if let Some(request) = edit(value, &state.snapshot.graph) {
-            state.dispatch(request);
-        }
-    });
 }
 
 /// Which click-to-type editor family a readout belongs to. The strip fader
@@ -737,7 +784,7 @@ pub(crate) fn sync_faders<T: 'static>(
         faders,
         rows,
         [0., 1., 0.0001],
-        |_, ui, edit, slider| fader_behavior(ui, edit, slider),
+        |_, dispatch, slider| fader_behavior(dispatch, slider),
     );
 }
 
@@ -761,7 +808,7 @@ fn sync_sliders<K: Ord + Clone, T: 'static>(
         sliders,
         rows,
         [0., 1., 0.0001],
-        |_, ui, edit, slider| send_behavior(ui, edit, slider),
+        |_, dispatch, slider| send_behavior(dispatch, slider),
     );
 }
 
@@ -769,8 +816,9 @@ fn sync_sliders<K: Ord + Clone, T: 'static>(
 /// (channel faders, sends, compressor parameters): per-slider slot with the
 /// dragging flag and wheel/double-click behavior, drag Changes coalesced
 /// through [`DispatchGate`], the release's final value dispatched, and the
-/// snapshot write-back suppressed while a drag owns the thumb. `behavior`
-/// receives the row key so one call can serve keyed parameter families.
+/// snapshot write-back suppressed while the slider leads the snapshot (see
+/// [`SliderSlot::leads`]). `behavior` receives the row key so one call can
+/// serve keyed parameter families.
 pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
@@ -778,16 +826,12 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
     sliders: &mut BTreeMap<K, SliderSlot>,
     rows: Vec<(K, f32, SliderEdit)>,
     range: [f32; 3],
-    behavior: impl Fn(
-        &K,
-        Entity<UiState>,
-        Rc<SliderEdit>,
-        Entity<base::slider::SliderState>,
-    ) -> SliderBehavior,
+    behavior: impl Fn(&K, &Rc<SliderDispatch>, Entity<base::slider::SliderState>) -> SliderBehavior,
 ) {
+    let consumed = state.read(cx).snapshot.consumed_request_id;
     for (id, value, edit) in rows {
         let slot = sliders.entry(id.clone()).or_insert_with(|| {
-            let edit = Rc::new(edit);
+            let dispatch = Rc::new(SliderDispatch::new(state.clone(), edit));
             let dragging = Rc::new(Cell::new(false));
             let cancelled = Rc::new(Cell::new(false));
             let slider = cx.new(|_| {
@@ -797,10 +841,9 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                     .step(range[2])
                     .default_value(value)
             });
-            let ui = state.clone();
             let drag_flag = dragging.clone();
             let cancel_flag = cancelled.clone();
-            let drag_edit = edit.clone();
+            let drag_dispatch = dispatch.clone();
             let mut gate = DispatchGate::default();
             cx.subscribe(
                 &slider,
@@ -821,7 +864,7 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                                 return;
                             }
                             if let Some(send) = gate.change(value, Instant::now()) {
-                                dispatch_edit(&ui, &drag_edit, send, cx);
+                                drag_dispatch.send(send, cx);
                             }
                         }
                         base::slider::SliderEvent::Release(value) => {
@@ -842,7 +885,7 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             // mouse-up a stale track value would otherwise
                             // overwrite the committed one.
                             if slider.read(cx).value().end() == value {
-                                dispatch_edit(&ui, &drag_edit, value, cx);
+                                drag_dispatch.send(value, cx);
                             }
                         }
                     }
@@ -851,17 +894,18 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
             )
             .detach();
             SliderSlot {
-                state: slider.clone(),
+                behavior: behavior(&id, &dispatch, slider.clone()),
+                state: slider,
                 dragging,
                 cancelled,
-                behavior: behavior(&id, state.clone(), edit, slider),
+                dispatch,
             }
         });
-        // A live drag owns the thumb: snapshot write-backs (about one
-        // dispatch interval stale) must not snap it away from the pointer.
-        // Normal revision sync resumes on release and any one stale
-        // write-back self-corrects on the next revision.
-        if !slot.dragging.get() && slot.state.read(cx).value().end() != value {
+        // The snapshot reconciles into the slider only once it caught up
+        // with it. A live drag owns the thumb, and a snapshot older than the
+        // slot's newest edit — the release's, a wheel step's — still carries
+        // a value the pointer already left behind.
+        if !slot.leads(consumed) && slot.state.read(cx).value().end() != value {
             slot.state
                 .update(cx, |state, cx| state.set_value(value, window, cx));
         }
@@ -870,11 +914,15 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
 
 impl StudioShell {
     pub(crate) fn sync_mixer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let revision = self.state.read(cx).snapshot.graph.candidate_revision;
-        if self.mixer.presentation.synced_revision == Some(revision) {
+        let snapshot = &self.state.read(cx).snapshot;
+        let synced = (
+            snapshot.graph.candidate_revision,
+            snapshot.consumed_request_id,
+        );
+        if self.mixer.presentation.synced == Some(synced) {
             return;
         }
-        self.mixer.presentation.synced_revision = Some(revision);
+        self.mixer.presentation.synced = Some(synced);
         let graph = self.state.read(cx).snapshot.graph.clone();
         self.mixer
             .presentation

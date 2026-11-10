@@ -1,6 +1,8 @@
 use super::*;
 use crate::service::{CompressorParameter, CompressorState, GraphEdit, GraphSnapshot};
-use crate::ui::shell::mixer::{SliderEdit, SliderSlot, commit_closure, sync_slider_range};
+use crate::ui::shell::mixer::{
+    SliderDispatch, SliderEdit, SliderSlot, commit_closure, sync_slider_range,
+};
 use crate::ui::widgets::fader::SliderBehavior;
 use moiren_core::graph::{NodeId, NodeKind};
 use std::collections::BTreeMap;
@@ -28,15 +30,14 @@ fn compressor_step(value: f32, dir: i32) -> f32 {
 /// value and dispatch the parameter edit immediately, bypassing drag
 /// coalescing.
 fn slider_behavior(
-    ui: Entity<UiState>,
-    edit: Rc<SliderEdit>,
+    dispatch: &Rc<SliderDispatch>,
     slider: Entity<base::slider::SliderState>,
     parameter: CompressorParameter,
 ) -> SliderBehavior {
     SliderBehavior {
         step: Rc::new(compressor_step),
         reset: default_position(parameter),
-        commit: commit_closure(&ui, &edit, &slider),
+        commit: commit_closure(dispatch, &slider),
     }
 }
 
@@ -145,7 +146,7 @@ impl StudioShell {
             &mut self.inspector.compressor.sliders,
             rows,
             [0., 1., SLIDER_STEP],
-            |key, ui, edit, slider| slider_behavior(ui, edit, slider, key.1),
+            |key, dispatch, slider| slider_behavior(dispatch, slider, key.1),
         );
     }
 }
