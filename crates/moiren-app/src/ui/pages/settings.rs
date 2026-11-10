@@ -582,6 +582,33 @@ fn peak_hold_title(hold: crate::project::PeakHold) -> String {
     }
 }
 
+/// The diagnostics card's native timing rows: the processing parameters
+/// once, then one group per live stream titled by device · node · role.
+fn native_timing_card_rows(snapshot: &crate::service::AppSnapshot) -> Vec<Div> {
+    let views = crate::ui::presentation::native_timing_views(snapshot);
+    let mut items = Vec::new();
+    if let Some((key, value)) = views.processing {
+        items.push(detail(&key, value));
+    }
+    for view in &views.streams {
+        items.push(label(format!(
+            "{} · {} · {}",
+            view.device_title,
+            view.node_label,
+            view.role()
+        )));
+        items.extend(
+            view.rows
+                .iter()
+                .map(|(key, value)| detail(key, value.clone())),
+        );
+    }
+    if items.is_empty() {
+        items.push(detail(&t!("Actual native timing"), "—"));
+    }
+    items
+}
+
 fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
@@ -661,9 +688,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         // The timing rows carry their own names, so the card stays untitled
         // rather than repeating one.
         .child(card_shell().px(px(theme::SPACE_4)).pt(px(theme::SPACE_2)).pb(px(theme::SPACE_2)).child(rows(
-            crate::ui::presentation::native_timing_rows(snapshot)
-                .into_iter()
-                .map(|(key, value)| detail(&key, value)),
+            native_timing_card_rows(snapshot),
         )))
         .child(group(
             t!("System"),

@@ -27,19 +27,7 @@ fn fresh_observation(
 /// stale truth.
 #[cfg(windows)]
 pub(crate) fn measured_master_output(snapshot: &AppSnapshot) -> Option<(u32, u32)> {
-    let status = snapshot
-        .professional_observations
-        .as_ref()
-        .filter(|status| {
-            fresh_observation(
-                snapshot.phase,
-                snapshot.generation,
-                status.generation,
-                status.observation.running,
-            )
-        })?;
-    let stream = status
-        .observation
+    let stream = professional_observations(snapshot)?
         .streams
         .iter()
         .find(|stream| stream.master && !stream.input)?;
@@ -51,6 +39,24 @@ pub(crate) fn measured_master_output(snapshot: &AppSnapshot) -> Option<(u32, u32
 #[cfg(not(windows))]
 pub(crate) fn measured_master_output(_: &AppSnapshot) -> Option<(u32, u32)> {
     None
+}
+
+/// The running engine's stream observations behind the display-level stale
+/// guard ([`fresh_observation`]): `None` when idle, off Windows, or the
+/// snapshot predates the current session generation. The one gate every
+/// observation reader goes through (design 23 §3.7).
+#[cfg(windows)]
+pub(crate) fn professional_observations(
+    snapshot: &AppSnapshot,
+) -> Option<&moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot> {
+    let status = snapshot.professional_observations.as_ref()?;
+    fresh_observation(
+        snapshot.phase,
+        snapshot.generation,
+        status.generation,
+        status.observation.running,
+    )
+    .then_some(&status.observation)
 }
 
 pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
@@ -78,117 +84,201 @@ pub fn latency_apply_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     }
 }
 
-/// Only the currently running owner can supply timing. In particular, a
-/// stopped or replaced owner must not leave plausible-looking stale values.
-pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
+/// One live stream as the clock overview and the device monitor render it:
+/// identity in the title fields, detail rows in the format the clock tab has
+/// always shown (design 23 §3.3/§3.5).
+pub struct StreamTimingView {
+    pub node: moiren_core::graph::NodeId,
+    pub input: bool,
+    pub master: bool,
+    /// The actual-stream line on its own — the row summary and the monitor
+    /// section reuse it without re-parsing the detail rows.
+    pub summary: String,
+    pub device_title: String,
+    pub node_label: String,
+    pub rows: Vec<(String, String)>,
+}
+
+/// The clock tab's projection: the processing parameters once, then one
+/// group per live stream. Only the currently running owner can supply
+/// timing — a stopped or replaced owner leaves nothing here rather than
+/// plausible-looking stale values.
+#[derive(Default)]
+pub struct NativeTimingViews {
+    pub processing: Option<(String, String)>,
+    pub streams: Vec<StreamTimingView>,
+}
+
+pub fn native_timing_views(snapshot: &AppSnapshot) -> NativeTimingViews {
     #[cfg(not(windows))]
-    let _ = snapshot;
+    {
+        let _ = snapshot;
+        NativeTimingViews::default()
+    }
     #[cfg(windows)]
     {
-        if let Some(status) = snapshot
-            .professional_observations
-            .as_ref()
-            .filter(|status| {
-                fresh_observation(
-                    snapshot.phase,
-                    snapshot.generation,
-                    status.generation,
-                    status.observation.running,
-                )
-            })
-        {
-            let mut rows = Vec::new();
-            if let Some(settings) = &snapshot.active_audio_settings {
-                rows.push((
-                    t!("Processing").to_string(),
-                    format!(
-                        "{} Hz; {}; {} frames",
-                        settings.processing.sample_rate,
-                        t!(settings.processing.precision.title()),
-                        settings.processing.block_frames,
-                    ),
-                ));
-            }
-            for (index, stream) in status.observation.streams.iter().enumerate() {
-                let kind = if stream.input {
-                    t!("Input").to_string()
-                } else if stream.master {
-                    t!("Master output").to_string()
-                } else {
-                    t!("Follower output").to_string()
-                };
-                let prefix = format!("{} {kind}", index + 1);
-                rows.push((
-                    t!("%{prefix}: actual stream", prefix = prefix).to_string(),
-                    format!(
-                        "{} Hz; {}; {} channels; {} frames ({:.2} ms)",
-                        stream.actual.sample_rate,
-                        t!(stream.actual.format.title()),
-                        stream.actual.channels,
-                        stream.actual.buffer_frames,
-                        f64::from(stream.actual.buffer_frames) * 1000.0
-                            / f64::from(stream.actual.sample_rate),
-                    ),
-                ));
-                rows.push((
-                    t!("%{prefix}: backend / mode", prefix = prefix).to_string(),
-                    match stream.requested.backend {
-                        AudioBackend::Asio => t!("ASIO driver (driver owns mode)").to_string(),
-                        AudioBackend::Wasapi => {
-                            format!("WASAPI / {}", t!(stream.requested.mode.title()))
-                        }
-                    },
-                ));
-                rows.push((
-                    t!("%{prefix}: requested buffer", prefix = prefix).to_string(),
-                    stream
-                        .requested
-                        .period_frames
-                        .map(|frames| format!("{frames} frames"))
-                        .unwrap_or_else(|| t!("Driver default").to_string()),
-                ));
-                rows.push((
-                    t!("%{prefix}: bridge counters", prefix = prefix).to_string(),
-                    t!(
-                        "Dropped %{dropped} / silence %{silent} frames",
-                        dropped = stream.dropped_frames,
-                        silent = stream.silent_frames,
-                    )
-                    .to_string(),
-                ));
-                if stream.requested.backend == AudioBackend::Asio {
-                    rows.push((
-                        t!("%{prefix}: ASIO callback counters", prefix = prefix).to_string(),
-                        t!(
-                            "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)",
-                            callbacks = stream.native_callbacks,
-                            dropped = stream.native_dropped_frames,
-                            silent = stream.native_silent_frames,
-                        )
-                        .to_string(),
-                    ));
-                    rows.push((
-                        t!("%{prefix}: driver-reported latency", prefix = prefix).to_string(),
-                        stream
-                            .driver_latency
-                            .map(|latency| {
-                                t!(
-                                    "Input %{input} / output %{output} frames; excludes application queues",
-                                    input = latency.input_frames,
-                                    output = latency.output_frames,
-                                )
-                                .to_string()
-                            })
-                            .unwrap_or_else(|| {
-                                t!("Unavailable (not measured round-trip latency)").to_string()
-                            }),
-                    ));
-                }
-            }
-            return rows;
+        let Some(observations) = professional_observations(snapshot) else {
+            return NativeTimingViews::default();
+        };
+        let processing = snapshot.active_audio_settings.as_ref().map(|settings| {
+            (
+                t!("Processing").to_string(),
+                format!(
+                    "{} Hz; {}; {} frames",
+                    settings.processing.sample_rate,
+                    t!(settings.processing.precision.title()),
+                    settings.processing.block_frames,
+                ),
+            )
+        });
+        let streams = observations
+            .streams
+            .iter()
+            .map(|stream| stream_timing_view(snapshot, stream))
+            .collect();
+        NativeTimingViews {
+            processing,
+            streams,
         }
     }
-    vec![(t!("Actual native timing").to_string(), "—".into())]
+}
+
+#[cfg(windows)]
+fn stream_timing_view(
+    snapshot: &AppSnapshot,
+    stream: &moiren_windows_audio::engine_backend::ProfessionalStreamObservation,
+) -> StreamTimingView {
+    let summary = format!(
+        "{} Hz; {}; {} channels; {} frames ({:.2} ms)",
+        stream.actual.sample_rate,
+        t!(stream.actual.format.title()),
+        stream.actual.channels,
+        stream.actual.buffer_frames,
+        f64::from(stream.actual.buffer_frames) * 1000.0 / f64::from(stream.actual.sample_rate),
+    );
+    let mut rows = vec![
+        (t!("Actual stream").to_string(), summary.clone()),
+        (
+            t!("Backend / mode").to_string(),
+            match stream.requested.backend {
+                AudioBackend::Asio => t!("ASIO driver (driver owns mode)").to_string(),
+                AudioBackend::Wasapi => {
+                    format!("WASAPI / {}", t!(stream.requested.mode.title()))
+                }
+            },
+        ),
+        (
+            t!("Requested buffer").to_string(),
+            stream
+                .requested
+                .period_frames
+                .map(|frames| format!("{frames} frames"))
+                .unwrap_or_else(|| t!("Driver default").to_string()),
+        ),
+        (
+            t!("Bridge counters").to_string(),
+            t!(
+                "Dropped %{dropped} / silence %{silent} frames",
+                dropped = stream.dropped_frames,
+                silent = stream.silent_frames,
+            )
+            .to_string(),
+        ),
+    ];
+    if stream.requested.backend == AudioBackend::Asio {
+        rows.push((
+            t!("ASIO callback counters").to_string(),
+            t!(
+                "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)",
+                callbacks = stream.native_callbacks,
+                dropped = stream.native_dropped_frames,
+                silent = stream.native_silent_frames,
+            )
+            .to_string(),
+        ));
+        rows.push((
+            t!("Driver-reported latency").to_string(),
+            stream
+                .driver_latency
+                .map(|latency| {
+                    t!(
+                        "Input %{input} / output %{output} frames; excludes application queues",
+                        input = latency.input_frames,
+                        output = latency.output_frames,
+                    )
+                    .to_string()
+                })
+                .unwrap_or_else(|| t!("Unavailable (not measured round-trip latency)").to_string()),
+        ));
+    }
+    StreamTimingView {
+        node: stream.node,
+        input: stream.input,
+        master: stream.master,
+        device_title: stream_device_title(snapshot, stream),
+        node_label: snapshot
+            .graph
+            .node(stream.node)
+            .map(display_label)
+            .unwrap_or_else(|| format!("{:?}", stream.node)),
+        summary,
+        rows,
+    }
+}
+
+impl StreamTimingView {
+    /// The stream's clock role, localized: input, master output, or
+    /// follower output — the third title segment of a stream group.
+    pub fn role(&self) -> Cow<'static, str> {
+        if self.input {
+            t!("Input")
+        } else if self.master {
+            t!("Master output")
+        } else {
+            t!("Follower output")
+        }
+    }
+}
+
+/// The display name of a stream's endpoint: the catalog row's name for a
+/// physical device, the process name for a loopback, the virtual device's
+/// own name. Falls back to the raw identity when the row has since left
+/// the catalog.
+#[cfg(windows)]
+fn stream_device_title(
+    snapshot: &AppSnapshot,
+    stream: &moiren_windows_audio::engine_backend::ProfessionalStreamObservation,
+) -> String {
+    use moiren_windows_audio::engine_backend::StreamEndpoint;
+    match &stream.endpoint {
+        StreamEndpoint::Physical(id) => {
+            let catalog = &snapshot.catalog;
+            catalog
+                .inputs
+                .iter()
+                .chain(catalog.outputs.iter())
+                .chain(catalog.asio_drivers.iter())
+                .find(|row| &row.endpoint_id == id)
+                .map(|row| row.name.clone())
+                .unwrap_or_else(|| id.clone())
+        }
+        StreamEndpoint::Application {
+            pid,
+            creation_time_100ns,
+        } => snapshot
+            .catalog
+            .processes
+            .iter()
+            .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
+            .map(|row| row.name.clone())
+            .unwrap_or_else(|| format!("PID {pid}")),
+        StreamEndpoint::Virtual(endpoint_id) => snapshot
+            .exports
+            .iter()
+            .find(|status| status.intent.endpoint_id == *endpoint_id)
+            .map(|status| status.intent.name.clone())
+            .unwrap_or_else(|| endpoint_id.to_string()),
+    }
 }
 
 pub fn elapsed_text(snapshot: &AppSnapshot) -> String {

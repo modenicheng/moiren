@@ -228,3 +228,85 @@ fn microphone_exports(snapshot: &AppSnapshot) -> impl Iterator<Item = &ExportInt
         .iter()
         .filter(|export| export.enabled && export.direction == ExportDirection::Microphone)
 }
+
+#[cfg(test)]
+mod tests {
+    // No `use super::*` here: the glob re-exports gpui_kit's `test`, which
+    // shadows the std #[test] attribute (the PR #28 trap).
+    use super::{BindingChoice, source_choices};
+    use moiren_core::graph::NodeKind;
+    use moiren_engine::audio_config::AudioBackend;
+
+    fn snapshot(backend: AudioBackend) -> crate::service::AppSnapshot {
+        let mut context = crate::service::ServiceContext::default();
+        context.audio_settings.backend = backend;
+        context.catalog = std::sync::Arc::new(crate::service::DeviceCatalog {
+            inputs: vec![crate::service::DeviceRow {
+                endpoint_id: "microphone".into(),
+                name: "Microphone".into(),
+            }],
+            outputs: vec![crate::service::DeviceRow {
+                endpoint_id: "speakers".into(),
+                name: "Speakers".into(),
+            }],
+            asio_drivers: vec![crate::service::DeviceRow {
+                endpoint_id: "asio:{driver}".into(),
+                name: "ASIO interface".into(),
+            }],
+            processes: vec![crate::service::ProcessRow {
+                pid: 42,
+                creation_time_100ns: 7,
+                name: "Player".into(),
+            }],
+            ..Default::default()
+        });
+        crate::service::snapshot(&context)
+    }
+
+    fn labels(choices: &[BindingChoice]) -> Vec<&str> {
+        choices.iter().map(|choice| choice.label.as_str()).collect()
+    }
+
+    fn source_entry(snapshot: &crate::service::AppSnapshot) -> &crate::service::GraphNodeState {
+        let node = snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .unwrap();
+        snapshot
+            .graph
+            .nodes
+            .iter()
+            .find(|entry| entry.id == node.id())
+            .unwrap()
+    }
+
+    /// Design 23 §6 (audit fact F10): the engine constrains application
+    /// sources by the input node's own device options, not by the output
+    /// backend — the picker lists applications under ASIO too, and the old
+    /// devices-page tab that claimed otherwise is gone.
+    #[test]
+    fn source_choices_list_applications_under_asio_as_well() {
+        let snapshot = snapshot(AudioBackend::Asio);
+        let choices = source_choices(&snapshot, source_entry(&snapshot));
+        let labels = labels(&choices);
+        assert!(labels.contains(&"Player"), "ASIO lists the application row");
+        assert!(
+            labels.contains(&"ASIO interface"),
+            "ASIO lists its drivers for the input direction"
+        );
+        assert!(!labels.contains(&"Microphone"), "WASAPI-only rows stay out");
+    }
+
+    #[test]
+    fn source_choices_list_physical_inputs_and_processes_under_wasapi() {
+        let snapshot = snapshot(AudioBackend::Wasapi);
+        let choices = source_choices(&snapshot, source_entry(&snapshot));
+        let labels = labels(&choices);
+        assert!(labels.contains(&"Microphone"));
+        assert!(labels.contains(&"Player"));
+        assert!(!labels.contains(&"ASIO interface"));
+    }
+}

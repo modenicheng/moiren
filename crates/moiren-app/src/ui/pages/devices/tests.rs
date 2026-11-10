@@ -1,267 +1,49 @@
-use super::export_bind_candidate;
-use crate::service::{ExportDirection, ExportIntent, GraphSnapshot};
-use moiren_core::graph::{LogicalGraph, NodeKind};
-use moiren_engine::node::VirtualEndpointId;
-
-#[cfg(feature = "gpui-test")]
-#[gpui_kit::test]
-fn owned_vad_rows_bind_in_opposite_app_directions_without_starting_audio(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    use crate::service::{
-        AppRequest, DeviceCatalog, DeviceRow, ExportObservation, ExportResourceState, GraphEdit,
-        RequestId, ServiceContext, ServiceMailbox, WindowsEndpointNameObservation,
-    };
-    use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AppContext, SharedString};
-    use std::sync::Arc;
-    cx.update(gpui_kit::init);
-    let mut context = ServiceContext::default();
-    let endpoints = [
-        (
-            VirtualEndpointId::from_bytes([0x41; 16]),
-            ExportDirection::Playback,
-            "virtual-speaker",
-        ),
-        (
-            VirtualEndpointId::from_bytes([0x42; 16]),
-            ExportDirection::Microphone,
-            "virtual-microphone",
-        ),
-    ];
-    let intents = endpoints.map(|(endpoint_id, direction, name)| ExportIntent {
-        endpoint_id,
-        direction,
-        name: name.into(),
-        channels: 2,
-        enabled: true,
-        binding: None,
-    });
-    context
-        .graph
-        .edit(GraphEdit::SetExports(intents.to_vec()))
-        .unwrap();
-    context.exports.set_available(true);
-    for intent in intents {
-        context
-            .exports
-            .observe(ExportObservation {
-                intent: intent.clone(),
-                generation: 1,
-                resource: ExportResourceState::Present,
-                allow_default: false,
-                gate_open: false,
-                active_revision: None,
-            })
-            .unwrap();
-    }
-    let project_snapshot = |context: &ServiceContext| {
-        let mut snapshot = crate::service::snapshot(context);
-        for status in &mut snapshot.exports {
-            status.windows_name = Some(WindowsEndpointNameObservation {
-                native_identity: [1, 2, 3],
-                observed_qpc_100ns: None,
-                mmdevice_id: Some(status.intent.name.clone()),
-                name: Some(status.intent.name.clone()),
-                error: None,
-            });
+/// Design 23 R1, held by a source scan instead of convention: the devices
+/// page reads the graph and never sends a binding edit. Any of the four
+/// binding-edit identifiers appearing in the page's production sources
+/// fails here — binding lives on the node (canvas chip, node inspector).
+/// Test modules are exempt: they legitimately build bound graphs.
+#[test]
+fn devices_page_sources_never_name_a_binding_edit() {
+    let pages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/pages");
+    let mut files = vec![pages.join("devices.rs")];
+    let mut stack = vec![pages.join("devices")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("devices page directory") {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
+                files.push(path);
+            }
         }
-        snapshot
-    };
-    let row = |id: &str| DeviceRow {
-        endpoint_id: id.into(),
-        name: id.into(),
-    };
-    context.catalog = Arc::new(DeviceCatalog {
-        inputs: vec![row("physical-microphone"), row("virtual-microphone")],
-        outputs: vec![row("physical-speaker"), row("virtual-speaker")],
-        vad_endpoints: endpoints
-            .map(|(id, _, name)| (id, name.to_string()))
-            .into_iter()
-            .collect(),
-        ..Default::default()
-    });
-    let (handle, mailbox) =
-        ServiceMailbox::with_snapshot(std::thread::current(), project_snapshot(&context));
-    let initial = handle.try_snapshot().unwrap();
-    let state = cx.new(|_| super::super::UiState::new(handle, initial));
-    let (view, cx) =
-        cx.add_window_view(|window, cx| super::super::StudioShell::new(state, window, cx, None));
-    while mailbox.try_request().is_some() {}
-    for (input, (endpoint_id, direction, name)) in [true, false].into_iter().zip(endpoints) {
-        view.update(cx, |shell, cx| {
-            shell.preferences.path = None;
-            shell.presentation.workspace =
-                crate::ui::pages::WorkspaceView::Page(crate::ui::pages::Page::Devices);
-            shell.devices.device_tab = if input {
-                super::DeviceTab::Inputs
-            } else {
-                super::DeviceTab::Outputs
-            };
-            shell
-                .state
-                .update(cx, |state, _| state.pending_request = false);
-            cx.notify();
-        });
-        cx.update(|window, cx| {
-            window.render_frame(cx);
-            assert!(
-                window
-                    .find(SharedString::from(format!("device-row-{name}")))
-                    .visible()
-            );
-            let wrong = if input {
-                "virtual-microphone"
-            } else {
-                "virtual-speaker"
-            };
-            assert!(
-                window
-                    .try_find(SharedString::from(format!("device-row-{wrong}")))
-                    .is_none()
-            );
-            window.click(SharedString::from(format!("choose-{name}")), cx);
-        });
-        let request = mailbox
-            .try_request()
-            .expect("Bind click dispatches an edit");
-        let AppRequest::EditGraph(GraphEdit::BindExport {
-            endpoint_id: actual,
-            node: Some(node),
-        }) = request
-        else {
-            panic!("must dispatch BindExport, not physical binding or audio start");
-        };
-        assert_eq!(actual, endpoint_id);
-        assert_eq!(
-            context
-                .graph
-                .snapshot()
-                .graph
-                .get_node(node)
-                .unwrap()
-                .kind(),
-            direction.node_kind()
-        );
-        context
-            .graph
-            .edit(GraphEdit::BindExport {
-                endpoint_id,
-                node: Some(node),
-            })
-            .unwrap();
-        let mut snapshot = project_snapshot(&context);
-        snapshot.consumed_request_id = RequestId(100);
-        mailbox.publish(snapshot);
-        view.update(cx, |shell, cx| {
-            shell.state.update(cx, |state, _| state.poll());
-            cx.notify();
-        });
     }
     assert!(
-        context
-            .exports
-            .preflight_audio(&context.graph.snapshot().exports)
-            .is_err()
+        files.len() >= 4,
+        "the scan must see the page and its submodules, found {files:?}"
     );
+    let mut hits = Vec::new();
+    for file in &files {
+        let source = std::fs::read_to_string(file).expect("devices page source");
+        for needle in ["BindSource", "BindOutput", "BindExport", "ClearBinding"] {
+            for (index, line) in source.lines().enumerate() {
+                if line.contains(needle) {
+                    hits.push(format!("{}:{}: {needle}", file.display(), index + 1));
+                }
+            }
+        }
+    }
     assert!(
-        mailbox.try_request().is_none(),
-        "no Start or ApplyGraph request"
-    );
-}
-
-fn snapshot(graph: LogicalGraph, exports: Vec<ExportIntent>) -> GraphSnapshot {
-    GraphSnapshot {
-        exports,
-        graph,
-        nodes: Vec::new(),
-        candidate_revision: 0,
-        active_revision: None,
-        pending_revision: None,
-        last_error: None,
-        faults: Vec::new(),
-        can_undo: false,
-        can_redo: false,
-        preparing_nodes: Vec::new(),
-    }
-}
-
-fn export(binding: Option<moiren_core::graph::NodeId>) -> ExportIntent {
-    ExportIntent {
-        endpoint_id: VirtualEndpointId::from_bytes([0x7e; 16]),
-        direction: ExportDirection::Playback,
-        name: "export".into(),
-        channels: 2,
-        enabled: true,
-        binding,
-    }
-}
-
-fn stereo_export_bound_to(node: moiren_core::graph::NodeId) -> ExportIntent {
-    ExportIntent {
-        endpoint_id: VirtualEndpointId::from_bytes([0x7d; 16]),
-        direction: ExportDirection::Playback,
-        name: "other".into(),
-        channels: 2,
-        enabled: true,
-        binding: Some(node),
-    }
-}
-
-#[test]
-fn quick_bind_skips_channel_mismatches() {
-    let mut graph = LogicalGraph::new();
-    let mono = graph.create_node(NodeKind::Source, 1).unwrap();
-    let stereo = graph.create_node(NodeKind::Source, 2).unwrap();
-    assert_eq!(
-        export_bind_candidate(
-            &snapshot(graph, vec![export(None)]),
-            ExportDirection::Playback,
-            2
-        ),
-        Some(stereo)
-    );
-    assert_eq!(
-        export_bind_candidate(
-            &snapshot(LogicalGraph::new(), vec![]),
-            ExportDirection::Playback,
-            2
-        )
-        .map(|_| ()),
-        None
-    );
-    let _ = mono;
-}
-
-#[test]
-fn quick_bind_prefers_an_unoccupied_match_and_falls_back_to_steal() {
-    let mut graph = LogicalGraph::new();
-    let first = graph.create_node(NodeKind::Source, 2).unwrap();
-    let second = graph.create_node(NodeKind::Source, 2).unwrap();
-    // Another export holds the first match; the shortcut must pick the
-    // free second node instead of silently rebinding the occupied one.
-    assert_eq!(
-        export_bind_candidate(
-            &snapshot(
-                graph.clone(),
-                vec![export(None), stereo_export_bound_to(first)]
-            ),
-            ExportDirection::Playback,
-            2
-        ),
-        Some(second)
-    );
-    // With every match occupied, the previous behavior of binding the
-    // first match (the service edit steals it) is preserved.
-    let mut single = LogicalGraph::new();
-    let only = single.create_node(NodeKind::Source, 2).unwrap();
-    assert_eq!(
-        export_bind_candidate(
-            &snapshot(single, vec![export(None), stereo_export_bound_to(only)]),
-            ExportDirection::Playback,
-            2
-        ),
-        Some(only)
+        hits.is_empty(),
+        "the devices page must not send binding edits (design 23 R1); bind on the node instead:\n{}",
+        hits.join("\n")
     );
 }
 
@@ -520,5 +302,199 @@ fn override_draft_revision_rebuilds_the_devices_and_inspector_panels(
         inspector_before + 1,
         "a notification without a draft edit must replay the cached inspector"
     );
+    finish_service(runtime);
+}
+
+/// Design 23 §3: the four tabs carry no routing or run-state controls. A
+/// device row's only interaction opens its detail view; the detail lists the
+/// candidate graph's users read-only; "Locate in graph" is navigation — it
+/// switches to the Graph page, selects the node and opens the inspector
+/// without sending any request. Moiren's own virtual endpoints never appear
+/// on the physical tabs.
+#[cfg(feature = "gpui-test")]
+#[gpui_kit::test]
+fn device_rows_open_the_detail_view_and_locate_users_without_routing(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::DeviceRow;
+    use crate::ui::pages::Page;
+    use crate::ui::shell::test_harness::{finish_service, settle_panels, test_shell};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{SharedString, px, size};
+    use moiren_core::graph::NodeKind;
+    use moiren_engine::node::VirtualEndpointId;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.preferences.path = None;
+        shell.set_page(Page::Devices, cx);
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let sink = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Sink)
+            .expect("the default graph has a sink")
+            .id()
+    });
+    let row = |id: &str| DeviceRow {
+        endpoint_id: id.into(),
+        name: id.into(),
+    };
+    publish_snapshot(&view, cx, |snapshot| {
+        use moiren_engine::audio_config::AudioBackend;
+        snapshot.audio_settings.backend = AudioBackend::Wasapi;
+        let catalog = std::sync::Arc::make_mut(&mut snapshot.catalog);
+        catalog.inputs = vec![row("probe-microphone"), row("virtual-microphone-mm")];
+        catalog.outputs = vec![row("probe-speakers"), row("virtual-speaker-mm")];
+        catalog.vad_endpoints = [
+            (
+                VirtualEndpointId::from_bytes([0x41; 16]),
+                "virtual-speaker-mm".to_string(),
+            ),
+            (
+                VirtualEndpointId::from_bytes([0x42; 16]),
+                "virtual-microphone-mm".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        std::sync::Arc::make_mut(&mut snapshot.graph)
+            .nodes
+            .iter_mut()
+            .find(|entry| entry.id == sink)
+            .expect("sink state")
+            .output_endpoint_id = Some("probe-speakers".into());
+    });
+
+    // No tab offers a routing or run-state control, and the applications
+    // tab is gone: applications are not devices.
+    cx.update(|window, _| {
+        assert!(window.try_find("devices-apps").is_none());
+        for tab in [
+            "devices-inputs",
+            "devices-outputs",
+            "devices-exports",
+            "devices-clock",
+        ] {
+            assert!(window.find(tab).visible(), "missing tab {tab}");
+        }
+        assert!(window.find("device-row-probe-speakers").visible());
+        for removed in ["choose-probe-speakers", "inspect-probe-speakers"] {
+            assert!(
+                window.try_find(removed).is_none(),
+                "{removed} must not exist"
+            );
+        }
+        assert!(
+            window.try_find("device-row-virtual-speaker-mm").is_none(),
+            "Moiren's own virtual endpoint must not list as a physical output"
+        );
+    });
+    view.update(cx, |shell, cx| {
+        shell.devices.device_tab = super::DeviceTab::Inputs;
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("device-row-probe-microphone").visible());
+        assert!(window.try_find("choose-probe-microphone").is_none());
+        assert!(
+            window
+                .try_find("device-row-virtual-microphone-mm")
+                .is_none(),
+            "Moiren's own virtual endpoint must not list as a physical input"
+        );
+    });
+
+    // The row is the interaction: clicking it opens the device detail.
+    view.update(cx, |shell, cx| {
+        shell.devices.device_tab = super::DeviceTab::Outputs;
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("device-row-probe-speakers", cx);
+    });
+    view.read_with(cx, |shell, _| {
+        assert_eq!(
+            shell.devices.selected_device.as_deref(),
+            Some("probe-speakers")
+        );
+        assert!(shell.chrome.inspector_open);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("device-override").visible());
+        assert!(
+            window
+                .find(SharedString::from(format!("device-user-{sink:?}")))
+                .visible(),
+            "the bound sink must list as this device's user"
+        );
+    });
+    let before = view.read_with(cx, |shell, cx| {
+        (
+            shell.state.read(cx).snapshot.graph.candidate_revision,
+            shell.state.read(cx).pending_request,
+        )
+    });
+
+    // Locate is navigation only: page, selection and inspector change; the
+    // graph and the request state do not.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("reveal-{sink:?}")), cx);
+    });
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(shell.presentation.page(), Page::Graph);
+        assert_eq!(shell.selection.node, Some(sink));
+        assert!(shell.selection.nodes.contains(&sink));
+        assert_eq!(shell.selection.nodes.len(), 1);
+        assert!(shell.chrome.inspector_open);
+        assert_eq!(
+            (
+                shell.state.read(cx).snapshot.graph.candidate_revision,
+                shell.state.read(cx).pending_request,
+            ),
+            before,
+            "locating a node must not edit the graph or dispatch a request"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// `reveal_node` on a node that is gone does nothing at all — no page
+/// switch, no selection change.
+#[cfg(feature = "gpui-test")]
+#[gpui_kit::test]
+fn revealing_a_vanished_node_is_a_no_op(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ui::pages::Page;
+    use crate::ui::shell::test_harness::{finish_service, test_shell};
+    let (view, cx, runtime) = test_shell(cx);
+    let node = view.read_with(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.nodes()[0].id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.set_page(Page::Devices, cx);
+        // Drop the node from the snapshot the shell reads, as a removal
+        // racing the click would.
+        let mut snapshot = (*shell.state.read(cx).snapshot).clone();
+        std::sync::Arc::make_mut(&mut snapshot.graph)
+            .nodes
+            .retain(|entry| entry.id != node);
+        shell.state.update(cx, |state, _| {
+            state.snapshot = std::sync::Arc::new(snapshot)
+        });
+        shell.reveal_node(node, cx);
+        assert_eq!(shell.presentation.page(), Page::Devices);
+        assert_eq!(shell.selection.node, None);
+    });
     finish_service(runtime);
 }

@@ -97,10 +97,6 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "Ordered processor chain",
     "Bus dynamic input ports",
     "WASAPI render endpoint",
-    // Devices page source selector: `SourceMode::title` in src/ui/state.rs.
-    "Test tone",
-    "Physical input",
-    "Application",
     // Settings/backend titles: `AudioBackend`, `ProcessingPrecision`, and
     // `SampleFormat` `title()` in crates/moiren-engine/src/audio_config.rs.
     "WASAPI",

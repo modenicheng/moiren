@@ -303,7 +303,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
     };
     use moiren_engine::node::DeviceOptions;
     use moiren_windows_audio::engine_backend::{
-        ProfessionalObservationSnapshot, ProfessionalStreamObservation,
+        ProfessionalObservationSnapshot, ProfessionalStreamObservation, StreamEndpoint,
     };
     use moiren_windows_audio::native::NativeStreamInfo;
     let runtime = spawn_service();
@@ -323,6 +323,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
             running: true,
             streams: vec![ProfessionalStreamObservation {
                 node,
+                endpoint: StreamEndpoint::Physical("asio:{probe-driver}".into()),
                 input: false,
                 master: true,
                 requested: DeviceOptions {
@@ -350,24 +351,33 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
             }],
         },
     });
-    let rows = crate::ui::presentation::native_timing_rows(&state.snapshot);
-    let actual = &rows
+    let views = crate::ui::presentation::native_timing_views(&state.snapshot);
+    assert_eq!(views.processing.as_ref().unwrap().0, "Processing");
+    let stream = &views.streams[0];
+    assert_eq!(stream.node, node);
+    // The endpoint identity carries the service-side row id; with no catalog
+    // row for it the title falls back to the raw identity.
+    assert_eq!(stream.device_title, "asio:{probe-driver}");
+    let actual = &stream
+        .rows
         .iter()
-        .find(|(key, _)| key.contains("actual stream"))
+        .find(|(key, _)| key.contains("Actual stream"))
         .unwrap()
         .1;
     assert!(actual.contains("44100 Hz"));
     assert!(actual.contains("24-bit PCM"));
     assert!(actual.contains("1024 frames"));
     assert!(!actual.contains("96000"));
-    let mode = &rows
+    let mode = &stream
+        .rows
         .iter()
-        .find(|(key, _)| key.contains("backend / mode"))
+        .find(|(key, _)| key.contains("Backend / mode"))
         .unwrap()
         .1;
     assert!(mode.contains("driver owns mode"));
     assert!(!mode.contains("Shared"));
-    let native = &rows
+    let native = &stream
+        .rows
         .iter()
         .find(|(key, _)| key.contains("ASIO callback counters"))
         .unwrap()
@@ -375,19 +385,17 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
     assert!(native.contains("100 callbacks"));
     assert!(native.contains("dropped 3 / render silence 5"));
     assert!(native.contains("startup"));
-    let latency = &rows
+    let latency = &stream
+        .rows
         .iter()
-        .find(|(key, _)| key.contains("driver-reported latency"))
+        .find(|(key, _)| key.contains("Driver-reported latency"))
         .unwrap()
         .1;
     assert!(latency.contains("Input 32 / output 64 frames"));
     assert!(latency.contains("excludes application queues"));
     Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(8);
-    assert!(
-        !crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(key, _)| key.contains("actual stream"))
-    );
+    let stale = crate::ui::presentation::native_timing_views(&state.snapshot);
+    assert!(stale.streams.is_empty() && stale.processing.is_none());
     finish_service(runtime);
 }
 

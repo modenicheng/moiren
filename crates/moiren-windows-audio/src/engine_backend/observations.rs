@@ -1,6 +1,6 @@
 //! Control snapshots clone prepared metadata; streaming only updates atomics.
 use moiren_core::graph::NodeId;
-use moiren_engine::node::DeviceOptions;
+use moiren_engine::node::{DeviceOptions, VirtualEndpointId};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -10,9 +10,28 @@ use std::sync::{
 use crate::native::NativeStreamStats;
 use crate::native::{NativeLatency, NativeStreamInfo};
 
+/// The device a live stream runs on, recorded when the stream is
+/// registered. This is control-side metadata (it never enters the realtime
+/// path) and carries the **service-side identity** — the string the graph
+/// bound, which is the device catalog row id — not the canonical id a
+/// native open resolves to (an ASIO `Group.id` is the upper-case bare
+/// CLSID while the catalog row says `asio:{CLSID}`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamEndpoint {
+    /// MMDevice endpoint id or the `asio:{CLSID}` driver id, exactly as the
+    /// graph's binding names it. A `FollowDefault` selector records the
+    /// resolved id instead, which is also a catalog row id.
+    Physical(String),
+    /// Process loopback target identity.
+    Application { pid: u32, creation_time_100ns: u64 },
+    /// A virtual playback/microphone boundary.
+    Virtual(VirtualEndpointId),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfessionalStreamObservation {
     pub node: NodeId,
+    pub endpoint: StreamEndpoint,
     pub input: bool,
     pub master: bool,
     pub requested: DeviceOptions,
@@ -176,6 +195,7 @@ mod tests {
         let fresh = Arc::new(Counters::default());
         let stream = ProfessionalStreamObservation {
             node,
+            endpoint: super::StreamEndpoint::Physical("test-endpoint".into()),
             input: true,
             master: false,
             requested: DeviceOptions::default(),

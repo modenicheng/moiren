@@ -122,41 +122,91 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     } else {
         content = content.child(label(t!("This device follows the current global defaults. Choose Override to customize all its stream settings.")));
     }
-    if let Some(active) = snapshot
-        .active_audio_settings
-        .as_ref()
-        .filter(|_| snapshot.phase == SessionPhase::Running)
-    {
-        let bound = snapshot.desired.as_ref().is_some_and(|session| {
-            if input {
-                matches!(&session.source, crate::service::InputSelection::Physical { endpoint_id } if endpoint_id == id)
-            } else {
-                session.output_endpoint_id == id
+    // The monitor section (design 23 §3.3): the candidate graph's users
+    // merged with the engine's live streams — two independent facts about
+    // this device, shown as such. Replaces the old desired-paired "active
+    // session" block, which could only speak about the legacy primary pair.
+    let device = DeviceKey::Physical {
+        endpoint_id: id.to_owned(),
+        input,
+    };
+    let users = monitor::device_users(snapshot, &device);
+    content = content.child(heading(t!("Users")));
+    if users.is_empty() {
+        content = content.child(label(t!("No nodes are bound to this device.")));
+    } else {
+        let timing = crate::ui::presentation::native_timing_views(snapshot);
+        for user in &users {
+            let node = user.node;
+            let state_text = match user.state {
+                monitor::UserState::Running => t!("Running").to_string(),
+                monitor::UserState::NotRunning => {
+                    if snapshot.phase == SessionPhase::Running {
+                        t!("Waiting to take effect").to_string()
+                    } else {
+                        t!("Not running").to_string()
+                    }
+                }
+                monitor::UserState::Detached => {
+                    t!("Binding changed; the old stream is still running").to_string()
+                }
+            };
+            let this = cx.entity();
+            content = content.child(
+                div()
+                    .id(SharedString::from(format!("device-user-{node:?}")))
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(theme::SPACE_2))
+                    .child(label(user.label.clone()).min_w_0().truncate())
+                    .child(if user.state == monitor::UserState::Running {
+                        badge(state_text, theme::SIGNAL_DEVICE)
+                    } else {
+                        label(state_text)
+                    })
+                    .child(
+                        button(
+                            SharedString::from(format!("reveal-{node:?}")),
+                            t!("Locate in graph"),
+                        )
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |shell, cx| shell.reveal_node(node, cx));
+                        }),
+                    )
+                    .gpui_test_observe(),
+            );
+            for view in timing
+                .streams
+                .iter()
+                .filter(|view| view.node == node && user.state == monitor::UserState::Running)
+            {
+                for (key, value) in &view.rows {
+                    content = content.child(detail(key, value.clone()));
+                }
             }
-        });
-        if bound {
+        }
+        // The request the running engine actually honored on this device —
+        // only meaningful while a stream is live here.
+        if users
+            .iter()
+            .any(|user| user.state != monitor::UserState::NotRunning)
+            && let Some(active) = snapshot
+                .active_audio_settings
+                .as_ref()
+                .filter(|_| snapshot.phase == SessionPhase::Running)
+        {
             let active_stream = if input {
                 active.effective_input(id)
             } else {
                 active.effective_output(id)
             };
-            content = content
-                .child(heading(t!("Active session")))
-                .child(detail(
-                    &t!("Active request"),
-                    settings::stream_summary(active.backend, active_stream),
-                ))
-                .child(label(t!("Observed session timing")));
-            for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
-                content = content.child(detail(&key, value));
-            }
-        } else {
-            content = content.child(label(t!(
-                "This device is not bound to the active source/output pair."
-            )));
+            content = content.child(detail(
+                &t!("Active request"),
+                settings::stream_summary(active.backend, active_stream),
+            ));
         }
     }
-    content = content.child(label(t!("Configure never changes routing; choosing Use next start on a device row updates the candidate graph.")));
     div()
         .id("device-override-inspector")
         .flex_none()

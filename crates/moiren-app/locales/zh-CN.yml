@@ -101,9 +101,6 @@ _version: 2
 "Output":
   en: Output
   zh-CN: 输出
-"Active session":
-  en: Active session
-  zh-CN: 活动会话
 "Actual native timing":
   en: Actual native timing
   zh-CN: 实际原生时序
@@ -230,12 +227,9 @@ _version: 2
 "Outputs":
   en: Outputs
   zh-CN: 输出
-"Applications":
-  en: Applications
-  zh-CN: 应用程序
-"Exports":
-  en: Exports
-  zh-CN: 导出
+"Virtual devices":
+  en: Virtual devices
+  zh-CN: 虚拟设备
 "Clock":
   en: Clock
   zh-CN: 时钟
@@ -257,57 +251,27 @@ _version: 2
 "Default":
   en: Default
   zh-CN: 默认
-"Configure":
-  en: Configure
-  zh-CN: 配置
+"Bound ×%{count}":
+  en: "Bound ×%{count}"
+  zh-CN: "已绑定 ×%{count}"
+"In use ×%{count}":
+  en: "In use ×%{count}"
+  zh-CN: "使用中 ×%{count}"
 "Active":
   en: Active
   zh-CN: 活动
-"Next start":
-  en: Next start
-  zh-CN: 下次启动
-"Use next start":
-  en: Use next start
-  zh-CN: 下次启动时使用
-"Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.":
-  en: Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.
-  zh-CN: 应用回环需要 WASAPI。请在设置中选择 WASAPI 以使用应用音源。
-"No capturable applications":
-  en: No capturable applications
-  zh-CN: 没有可捕获的应用程序
-"Start an application that plays audio, then refresh. Protected applications may be unavailable.":
-  en: Start an application that plays audio, then refresh. Protected applications may be unavailable.
-  zh-CN: 先启动一个正在播放音频的应用，再刷新。受保护的应用可能不可用。
-"PID %{pid} · created %{created}":
-  en: "PID %{pid} · created %{created}"
-  zh-CN: "PID %{pid} · 创建于 %{created}"
 "Active audio clocks":
   en: Active audio clocks
   zh-CN: 活动音频时钟
-"Session resources":
-  en: Session resources
-  zh-CN: 会话资源
 "Source":
   en: Source
   zh-CN: 音源
-"No active session":
-  en: No active session
-  zh-CN: 无活动会话
-"Source mode":
-  en: Source mode
-  zh-CN: 音源模式
-"Select available resources":
-  en: Select available resources
-  zh-CN: 选择可用资源
-"Not selected":
-  en: Not selected
-  zh-CN: 未选择
-"Selecting another resource leaves the running session unchanged. Stop and start to switch devices.":
-  en: Selecting another resource leaves the running session unchanged. Stop and start to switch devices.
-  zh-CN: 选择其他资源不会影响正在运行的会话。停止并重新启动即可切换设备。
 "Refresh devices":
   en: Refresh devices
   zh-CN: 刷新设备
+"Select a device to view its configuration and monitoring.":
+  en: Select a device to view its configuration and monitoring.
+  zh-CN: 选择一个设备查看其配置与监控。
 "ASIO discovery failed: %{error}. Refresh devices to retry.":
   en: "ASIO discovery failed: %{error}. Refresh devices to retry."
   zh-CN: "ASIO 发现失败：%{error}。刷新设备以重试。"
@@ -341,39 +305,57 @@ _version: 2
 "Active request":
   en: Active request
   zh-CN: 活动请求
-"Observed session timing":
-  en: Observed session timing
-  zh-CN: 观测到的会话时序
-"This device is not bound to the active source/output pair.":
-  en: This device is not bound to the active source/output pair.
-  zh-CN: 此设备未绑定到活动的音源/输出对。
+"Locate in graph":
+  en: Locate in graph
+  zh-CN: 在图中定位
+"Binding changed; the old stream is still running":
+  en: Binding changed; the old stream is still running
+  zh-CN: 绑定已变更，旧流仍在运行
+"Waiting to take effect":
+  en: Waiting to take effect
+  zh-CN: 等待生效
+"No nodes are bound to this device.":
+  en: No nodes are bound to this device.
+  zh-CN: 当前没有节点绑定此设备。
+"Users":
+  en: Users
+  zh-CN: 使用者
 "No active native timing. Start audio to inspect the actual stream clocks.":
   en: No active native timing. Start audio to inspect the actual stream clocks.
   zh-CN: 暂无活动的原生时序。启动音频后即可查看实际流时钟。
-"Configure never changes routing; choosing Use next start on a device row updates the candidate graph.":
-  en: Configure never changes routing; choosing Use next start on a device row updates the candidate graph.
-  zh-CN: 配置不会改变路由；在设备行选择“下次启动时使用”才会更新候选图。
-"Export is no longer in this project's candidate graph":
-  en: Export is no longer in this project's candidate graph
-  zh-CN: 该导出已不在此项目的候选图中
-"Virtual exports":
-  en: Virtual exports
-  zh-CN: 虚拟导出
 "Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.":
   en: Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.
   zh-CN: 默认资格仅是本机上的许可，不会保存到项目中。关闭时既阻止 Windows 自动选择默认，也阻止用户手动设为默认。开启只表示允许成为默认，并不会设置 Windows 默认设备。
-"No virtual exports yet. Create one above; it starts unbound.":
-  en: No virtual exports yet. Create one above; it starts unbound.
-  zh-CN: 还没有虚拟导出。在上方创建一个；初始为未绑定状态。
 "Playback":
   en: Playback
   zh-CN: 播放
+"No virtual devices yet. Create one above; it starts unbound.":
+  en: No virtual devices yet. Create one above; it starts unbound.
+  zh-CN: 还没有虚拟设备。在上方创建一个；初始为未绑定状态。
+"Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first.":
+  en: "Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first."
+  zh-CN: 更改声道、名称或默认资格会安全地退役并重建端点；请先在 Graph 的 IO 节点上清除或更改绑定。
+"Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Choose this device on a Graph input/output node; each IO node belongs to one virtual device.":
+  en: "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Choose this device on a Graph input/output node; each IO node belongs to one virtual device."
+  zh-CN: 虚拟扬声器：其他应用把声音播放进 Moiren 的输入。虚拟麦克风：Moiren 的输出送给其他应用。在 Graph 的输入/输出节点上选择此设备；每个 IO 节点只属于一个虚拟设备。
+"The clock overview groups every live stream by device. Start audio to see it.":
+  en: The clock overview groups every live stream by device. Start audio to see it.
+  zh-CN: 时钟总览按设备列出每条生效流。启动音频后即可查看。
+"Create and configure virtual devices here. Bind them on Graph input/output nodes.":
+  en: Create and configure virtual devices here. Bind them on Graph input/output nodes.
+  zh-CN: 在这里创建和配置虚拟设备；绑定请在 Graph 的输入/输出节点上进行。
+"The virtual device is no longer in this project's graph":
+  en: "The virtual device is no longer in this project's graph"
+  zh-CN: 该虚拟设备已不在此工程的图中
+"Create":
+  en: Create
+  zh-CN: 创建
+"Create virtual device":
+  en: Create virtual device
+  zh-CN: 创建虚拟设备
 "Microphone":
   en: Microphone
   zh-CN: 麦克风
-"Create export":
-  en: Create export
-  zh-CN: 创建导出
 "Endpoint name (1-63 UTF-16 units; no control characters)":
   en: Endpoint name (1-63 UTF-16 units; no control characters)
   zh-CN: 端点名称（1-63 个 UTF-16 单元；不含控制字符）
@@ -407,15 +389,6 @@ _version: 2
 "Inactive":
   en: Inactive
   zh-CN: 未激活
-"Candidate graph binding":
-  en: Candidate graph binding
-  zh-CN: 候选图绑定
-"Unbound":
-  en: Unbound
-  zh-CN: 未绑定
-"Candidate intent":
-  en: Candidate intent
-  zh-CN: 候选意图
 "Enabled":
   en: Enabled
   zh-CN: 已启用
@@ -431,30 +404,21 @@ _version: 2
 "Rename":
   en: Rename
   zh-CN: 重命名
-"Disable intent":
-  en: Disable intent
-  zh-CN: 禁用意图
-"Enable intent":
-  en: Enable intent
-  zh-CN: 启用意图
-"Bind":
-  en: Bind
-  zh-CN: 绑定
-"Bound":
-  en: Bound
-  zh-CN: 已绑定
-"Bind selected IO":
-  en: Bind selected IO
-  zh-CN: 绑定选中的 IO
-"Unbind":
-  en: Unbind
-  zh-CN: 解绑
-"Remove intent":
-  en: Remove intent
-  zh-CN: 移除意图
-"Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.":
-  en: Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.
-  zh-CN: 已从候选图移除。服务会保留生命周期跟踪，直到确认安全退役。
+"Removed from the graph. The service retains lifecycle tracking until safe retirement is confirmed.":
+  en: Removed from the graph. The service retains lifecycle tracking until safe retirement is confirmed.
+  zh-CN: 已从图中移除。服务会保留生命周期跟踪，直到确认安全退役。
+"Unbound. Choose this device on a Graph input/output node.":
+  en: Unbound. Choose this device on a Graph input/output node.
+  zh-CN: 未绑定。请在 Graph 的输入/输出节点上选择此设备。
+"Remove":
+  en: Remove
+  zh-CN: 移除
+"Enable":
+  en: Enable
+  zh-CN: 启用
+"Disable":
+  en: Disable
+  zh-CN: 停用
 "Revoke local default eligibility":
   en: Revoke local default eligibility
   zh-CN: 撤销本机默认资格
@@ -1073,36 +1037,36 @@ _version: 2
 "Master output":
   en: Master output
   zh-CN: 主输出
+"Driver-reported latency":
+  en: Driver-reported latency
+  zh-CN: 驱动报告延迟
+"ASIO callback counters":
+  en: ASIO callback counters
+  zh-CN: ASIO 回调计数
+"Bridge counters":
+  en: Bridge counters
+  zh-CN: 桥接计数
+"Requested buffer":
+  en: Requested buffer
+  zh-CN: 请求缓冲
+"Backend / mode":
+  en: Backend / mode
+  zh-CN: 后端 / 模式
+"Actual stream":
+  en: Actual stream
+  zh-CN: 实际流
 "Follower output":
   en: Follower output
   zh-CN: 从属输出
-"%{prefix}: actual stream":
-  en: "%{prefix}: actual stream"
-  zh-CN: "%{prefix}：实际流"
 "ASIO driver (driver owns mode)":
   en: ASIO driver (driver owns mode)
   zh-CN: ASIO 驱动（模式由驱动决定）
-"%{prefix}: backend / mode":
-  en: "%{prefix}: backend / mode"
-  zh-CN: "%{prefix}：后端 / 模式"
-"%{prefix}: requested buffer":
-  en: "%{prefix}: requested buffer"
-  zh-CN: "%{prefix}：请求缓冲"
-"%{prefix}: bridge counters":
-  en: "%{prefix}: bridge counters"
-  zh-CN: "%{prefix}：桥接计数"
 "Dropped %{dropped} / silence %{silent} frames":
   en: "Dropped %{dropped} / silence %{silent} frames"
   zh-CN: "丢弃 %{dropped} / 静音 %{silent} 帧"
-"%{prefix}: ASIO callback counters":
-  en: "%{prefix}: ASIO callback counters"
-  zh-CN: "%{prefix}：ASIO 回调计数"
 "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)":
   en: "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)"
   zh-CN: "%{callbacks} 次回调；采集丢弃 %{dropped} / 渲染静音 %{silent} 帧（含启动阶段）"
-"%{prefix}: driver-reported latency":
-  en: "%{prefix}: driver-reported latency"
-  zh-CN: "%{prefix}：驱动报告延迟"
 "Input %{input} / output %{output} frames; excludes application queues":
   en: "Input %{input} / output %{output} frames; excludes application queues"
   zh-CN: "输入 %{input} / 输出 %{output} 帧；不含应用队列"
@@ -1136,12 +1100,6 @@ _version: 2
 "Next start · engine stopped":
   en: Next start · engine stopped
   zh-CN: 下次启动 · 引擎已停止
-"Test tone":
-  en: Test tone
-  zh-CN: 测试音
-"Application":
-  en: Application
-  zh-CN: 应用程序
 "Choose an available source and output before starting.":
   en: Choose an available source and output before starting.
   zh-CN: 启动前请选择可用的音源与输出。
@@ -1347,9 +1305,6 @@ _version: 2
 "Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
   en: Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
   zh-CN: 端点存在不代表音频正在流动。停止后端点保留但闸门关闭。
-"Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.":
-  en: Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.
-  zh-CN: 修改声道数、名称或资格会安全退役并重建端点；改声道前先解开不兼容的图输入/输出。
 "Not running":
   en: Not running
   zh-CN: 未在运行
@@ -1515,10 +1470,6 @@ _version: 2
 "Parameters are outside their valid range":
   en: "Parameters are outside their valid range"
   zh-CN: "参数超出有效范围"
-
-"Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.":
-  en: "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export."
-  zh-CN: "虚拟扬声器：其他应用播放到 Moiren 输入。虚拟麦克风：Moiren 输出供其他应用录音。绑定时须匹配声道；每个 IO 仅属于一个导出。"
 
 "Interface":
   en: Interface

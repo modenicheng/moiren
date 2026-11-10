@@ -8,6 +8,7 @@ mod recovery;
 #[cfg(windows)]
 pub use observations::{
     ProfessionalObservationSnapshot, ProfessionalObservations, ProfessionalStreamObservation,
+    StreamEndpoint,
 };
 
 use crate::asio::{AsioOptions, AsioStream};
@@ -89,6 +90,11 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
 struct Direction {
     node: NodeId,
     device: DeviceOptions,
+    /// The service-side endpoint identity the graph bound — recorded into
+    /// the stream observation so the UI can attribute the stream to a
+    /// catalog row. Distinct from the native open id an ASIO group
+    /// canonicalizes to.
+    endpoint: String,
 }
 struct Group {
     id: String,
@@ -359,7 +365,17 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             };
             let id = native.resolve(selector, device, input)?;
             let endpoint_id_for_log = id.clone();
-            let direction = Direction { node, device };
+            let endpoint = match selector {
+                EndpointSelector::PinnedEndpoint { endpoint_id, .. } => endpoint_id.clone(),
+                // A followed default resolves to a concrete native id, which
+                // is also the catalog row identity.
+                EndpointSelector::FollowDefault(_) => id.clone(),
+            };
+            let direction = Direction {
+                node,
+                device,
+                endpoint,
+            };
             if let Some(group) = groups.iter_mut().find(|g| {
                 g.id == id
                     && g.backend == device.backend
@@ -577,6 +593,7 @@ fn observation(
 ) -> ProfessionalStreamObservation {
     ProfessionalStreamObservation {
         node: direction.node,
+        endpoint: StreamEndpoint::Physical(direction.endpoint.clone()),
         input,
         master,
         requested: direction.device,
@@ -686,6 +703,10 @@ fn prepare_process<S: ProcessingSample>(
     transport.streams.push((
         ProfessionalStreamObservation {
             node,
+            endpoint: StreamEndpoint::Application {
+                pid: identity.0,
+                creation_time_100ns: identity.1,
+            },
             input: true,
             master: false,
             requested: device,

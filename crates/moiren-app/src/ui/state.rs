@@ -86,50 +86,6 @@ pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec
     }
 }
 
-/// Application-facing directions differ from Windows flow only for owned VAD exports.
-pub(crate) fn device_rows(
-    catalog: &DeviceCatalog,
-    exports: &[crate::service::ExportStatus],
-    backend: AudioBackend,
-    input: bool,
-) -> Vec<DeviceRow> {
-    let mut rows = if input {
-        input_rows(catalog, backend)
-    } else {
-        output_rows(catalog, backend)
-    };
-    if backend == AudioBackend::Wasapi {
-        let direction = if input {
-            crate::service::ExportDirection::Playback
-        } else {
-            crate::service::ExportDirection::Microphone
-        };
-        rows.extend(
-            exports
-                .iter()
-                .filter(|status| {
-                    status.intent.enabled
-                        && status.intent.direction == direction
-                        && status.resource == crate::service::ExportResourceState::Present
-                })
-                .filter_map(|status| {
-                    let name = status.windows_name.as_ref()?;
-                    if name.error.is_some() {
-                        return None;
-                    }
-                    Some(DeviceRow {
-                        endpoint_id: name.mmdevice_id.clone()?,
-                        name: name
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| status.intent.name.clone()),
-                    })
-                }),
-        );
-    }
-    rows
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SourceMode {
     #[default]
@@ -746,32 +702,6 @@ impl UiState {
         self.pan = spec.pan;
         self.max_block_frames = spec.max_block_frames;
         self.run_limit = spec.limit;
-    }
-
-    /// Resource selection edits the candidate bindings, never the active owner.
-    pub fn bind_candidate_resources(&mut self) {
-        let source = self.current_selection();
-        use moiren_core::graph::NodeKind;
-        let input = self
-            .snapshot
-            .graph
-            .node_of_kind(NodeKind::Source)
-            .map(|(node, _)| node.id());
-        let output = self
-            .snapshot
-            .graph
-            .node_of_kind(NodeKind::Sink)
-            .map(|(node, _)| node.id());
-        if let Some((node, source)) = input.zip(source) {
-            self.dispatch(AppRequest::EditGraph(
-                crate::service::GraphEdit::BindSource { node, source },
-            ));
-        }
-        if let Some((node, endpoint_id)) = output.zip(self.selection.output_id.clone()) {
-            self.dispatch(AppRequest::EditGraph(
-                crate::service::GraphEdit::BindOutput { node, endpoint_id },
-            ));
-        }
     }
 }
 

@@ -8,7 +8,7 @@ use crate::native::{
 use super::{
     observations::{
         Counters, ProfessionalObservationSnapshot, ProfessionalObservations,
-        ProfessionalStreamObservation,
+        ProfessionalStreamObservation, StreamEndpoint,
     },
     owner::{self, AuxiliaryOwner, Transport, WorkerRequest},
     recovery::{RecoveryMonitor, RecoveryTicket},
@@ -616,6 +616,7 @@ impl EngineBackend<f64> for MockBackend {
         transport.streams.push((
             ProfessionalStreamObservation {
                 node,
+                endpoint: StreamEndpoint::Physical("asio:{fixture-driver}".into()),
                 input: false,
                 master: true,
                 requested: output.device,
