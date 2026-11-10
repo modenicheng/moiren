@@ -3591,7 +3591,7 @@ fn send_bar_drag_paints_and_commits_the_pointer_fraction(cx: &mut TestAppContext
             .find(SharedString::from(format!("send-track-{edge:?}")))
             .bounds();
         let fill = window.find(fill).bounds();
-        let fraction = f32::from(fill.size.width / track.size.width);
+        let fraction = fill.size.width / track.size.width;
         assert!(
             (fraction - 0.10).abs() < 0.01,
             "the painted fill sits at the pointer fraction: {fraction}"
