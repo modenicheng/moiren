@@ -33,7 +33,7 @@ assert() {
   fi
 }
 
-ALL_PKGS='moiren-core moiren-signal moiren-engine moiren-windows-audio moiren-app'
+ALL_PKGS='moiren-core moiren-signal moiren-plugins moiren-engine moiren-windows-audio moiren-app'
 ALL_MIRI='moiren-core moiren-signal moiren-engine moiren-windows-audio'
 
 # App-only change: just the app surface, no Miri, no driver, no rt-check.
@@ -63,6 +63,14 @@ out=$(surfaces 'crates/moiren-signal/src/transport/stream.rs')
 assert signal pkgs 'moiren-signal moiren-engine moiren-windows-audio moiren-app' "$(value "$out" pkgs)"
 assert signal lint_pkgs 'moiren-signal' "$(value "$out" lint_pkgs)"
 assert signal miri_pkgs 'moiren-signal moiren-engine moiren-windows-audio' "$(value "$out" miri_pkgs)"
+
+# Plugins change: the engine hosts plugins, so its dependents re-test; the
+# plugin suites themselves never run under Miri.
+out=$(surfaces 'crates/moiren-plugins/src/scan.rs')
+assert plugins pkgs 'moiren-plugins moiren-engine moiren-windows-audio moiren-app' "$(value "$out" pkgs)"
+assert plugins lint_pkgs 'moiren-plugins' "$(value "$out" lint_pkgs)"
+assert plugins miri_pkgs 'moiren-engine moiren-windows-audio' "$(value "$out" miri_pkgs)"
+assert plugins rtcheck true "$(value "$out" rtcheck)"
 
 # windows-audio change: itself plus app and rt-check.
 out=$(surfaces 'crates/moiren-windows-audio/src/vad/provider.rs')
