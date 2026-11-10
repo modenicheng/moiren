@@ -1,6 +1,6 @@
 use super::*;
 use crate::service::{GraphEdit, GraphSnapshot, MixerState};
-use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior};
+use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior, send_gain, send_value};
 use rust_i18n::t;
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -377,10 +377,10 @@ fn fader_behavior(
     }
 }
 
-/// Send bars share the channel fader's perceptual value space and gestures:
-/// ±1 dB per wheel notch in gain space, double click restores unity (the
-/// value `1 - FaderScale::position(1.)` here), and the fader step's floor
-/// handling lets the wheel leave exact silence.
+/// Send bars share the channel fader's perceptual value space (see
+/// [`fader::send_value`]) and gestures: ±1 dB per wheel notch in gain space,
+/// double click restores unity, and the fader step's floor handling lets the
+/// wheel leave exact silence.
 fn send_behavior(
     ui: Entity<UiState>,
     edit: Rc<SliderEdit>,
@@ -388,7 +388,7 @@ fn send_behavior(
 ) -> SliderBehavior {
     SliderBehavior {
         step: Rc::new(fader_step),
-        reset: 1. - FaderScale::position(1.),
+        reset: send_value(1.),
         commit: commit_closure(&ui, &edit, &slider),
     }
 }
@@ -742,11 +742,11 @@ pub(crate) fn sync_faders<T: 'static>(
 }
 
 /// Slider construction and value sync for the send (edge) column. The value
-/// space is the channel fader's perceptual [0, 1] (`1 - FaderScale::position`),
-/// not the sliders' old linear dB axis: dragging right raises the level to
-/// the +12 dB scale top at the right edge, the fill tracks the pointer
-/// one-to-one, and the left rail is exact silence. Drag Changes are coalesced
-/// and the release's final value dispatches unconditionally.
+/// space is [`fader::send_value`]'s perceptual fraction — the same number the
+/// bar paints as its fill — so dragging right raises the level with the fill
+/// tracking the pointer one-to-one, the right rail is the +12 dB scale top
+/// and the left rail is exact silence. Drag Changes are coalesced and the
+/// release's final value dispatches unconditionally.
 fn sync_sliders<K: Ord + Clone, T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
@@ -1041,13 +1041,13 @@ impl StudioShell {
                 let id = edge.id();
                 (
                     id,
-                    1. - FaderScale::position(edge.params().gain),
+                    send_value(edge.params().gain),
                     Box::new(move |value: f32, graph: &GraphSnapshot| {
                         graph.graph.get_edge(id).ok().map(|edge| {
                             AppRequest::EditGraph(GraphEdit::SetSend {
                                 edge: id,
                                 params: SendParams {
-                                    gain: FaderScale::gain(1. - value),
+                                    gain: send_gain(value),
                                     ..*edge.params()
                                 },
                             })

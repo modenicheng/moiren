@@ -1,4 +1,5 @@
 //! One numerical scale for the main Mixer's fader, ruler and meters.
+use crate::ui::observe::TestObserve;
 use crate::ui::theme;
 use crate::ui::widgets::scroll_step::{ScrollGesture, scroll_gesture};
 use gpui_kit::prelude::*;
@@ -407,14 +408,23 @@ pub fn hslider(
     .h(px(16.))
 }
 
-/// Fill fraction of the send level bar for a value in the send sliders' dB
-/// space: the channel fader's [`FaderScale`] read along the horizontal axis —
-/// silence empties the bar, unity reaches its 0 dB anchor three quarters
-/// along, and the +12 dB scale top fills it completely. The send sliders live
-/// in the mirrored value space (`FaderScale::gain(1 - value)`), so the fill
-/// tracks the pointer one-to-one while dragging.
-pub fn send_fill(db: f32) -> f32 {
-    1. - FaderScale::position(10f64.powf(f64::from(db) / 20.))
+/// The send bars' value space: the channel fader's [`FaderScale`] laid along
+/// the horizontal axis. A slider value IS its fill fraction — the pointer maps
+/// onto this space directly, so the painted fill tracks the mouse and the
+/// touchpad one-to-one with no second mapping to drift out of sync. 0 is
+/// exact silence at the quiet (left) rail, unity sits at the scale's 0 dB
+/// anchor three quarters along, and 1 is the +12 dB scale top filling the bar
+/// flush against the loud (right) rail (boosts past it pin at full).
+pub fn send_value(gain: f64) -> f32 {
+    1. - FaderScale::position(gain)
+}
+
+/// [`send_value`]'s inverse: the gain a send slider value stands for. The
+/// write-back (`sync_sliders`) and the drag dispatch both go through this one
+/// pair, so a value painted at a fraction also commits the gain whose fill is
+/// that fraction.
+pub fn send_gain(value: f32) -> f64 {
+    FaderScale::gain(1. - value)
 }
 
 /// Visible height of the send level bar. Off the spacing grid on purpose:
@@ -438,7 +448,9 @@ pub fn send_bar(
     cx: &App,
 ) -> Stateful<Div> {
     let slider = state.read(cx);
-    let fill = send_fill(slider.value().end());
+    // The value space IS the fill fraction (see [`send_value`]): paint the
+    // position the slider reports, never a second dB detour.
+    let fill = normalized_value(slider.value().end(), slider.min_value(), slider.max_value());
     gestures(
         state,
         behavior,
@@ -477,6 +489,10 @@ pub fn send_bar(
             )
             .child(
                 div()
+                    .id(SharedString::from(format!(
+                        "send-fill-{}",
+                        state.entity_id()
+                    )))
                     .absolute()
                     .left_0()
                     .top_0()
@@ -486,7 +502,8 @@ pub fn send_bar(
                         theme::TRACK_FILL
                     } else {
                         theme::SIGNAL_DEVICE
-                    }),
+                    })
+                    .gpui_test_observe(),
             ),
     )
     .flex_none()
@@ -571,31 +588,33 @@ mod tests {
     }
 
     #[test]
-    fn send_fill_reads_the_shared_fader_scale() {
-        use super::send_fill;
-        // The bar paints the fader's ruler anchors along the horizontal axis,
-        // mirrored onto the width: unity a quarter from the loud (right) end,
-        // −12 dB halfway, the −60 dB floor near the quiet end.
-        assert!((send_fill(0.) - 0.76).abs() < 0.0001);
-        assert!((send_fill(-12.) - 0.49).abs() < 0.0001);
-        assert!((send_fill(-60.) - 0.08).abs() < 0.0001);
-        // Silence empties the bar; a boost past the +12 dB scale top pins it
-        // full, exactly like the channel fader's top anchor.
-        assert_eq!(send_fill(f32::NEG_INFINITY), 0.);
-        assert_eq!(send_fill(24.), 1.);
+    fn send_values_lay_the_fader_scale_on_the_bar_axis() {
+        use super::send_value;
+        // The bar's value space is the fader's scale mirrored onto the width:
+        // silence empties the bar at the left rail, unity reaches its 0 dB
+        // anchor three quarters along, and the +12 dB scale top fills it.
+        assert_eq!(send_value(0.), 0.);
+        assert!((send_value(1.) - 0.76).abs() < 0.0001);
+        assert_eq!(send_value(10f64.powf(12. / 20.)), 1.);
+        // Boosts past the scale top pin at full, exactly like the fader's top
+        // anchor.
+        assert_eq!(send_value(10f64.powf(24. / 20.)), 1.);
     }
 
     #[test]
-    fn the_send_fill_and_the_drag_space_are_exact_inverses() {
-        use super::send_fill;
-        // The send sliders live in the fader's perceptual value space: a
-        // pointer fraction maps through `FaderScale::gain` to a gain whose
-        // fill lands back on the pointer, so the painted bar tracks the drag
-        // exactly instead of leading or lagging it.
-        for (_, position) in FaderScale::ANCHORS {
-            let value = 1. - position;
-            let db = 20. * FaderScale::gain(1. - value).log10();
-            assert!((send_fill(db as f32) - value).abs() < 0.0001);
+    fn the_send_value_space_round_trips_through_the_scale() {
+        use super::{send_gain, send_value};
+        // The dispatch (value -> gain) and the write-back (gain -> value)
+        // share one inverse pair, so a value painted at a fraction commits
+        // the gain whose fill is that fraction — the bar can never disagree
+        // with the committed level.
+        for step in 0..=100 {
+            let value = step as f32 / 100.;
+            assert!((send_value(send_gain(value)) - value).abs() < 0.0001);
+        }
+        for db in -72..=12 {
+            let gain = 10f64.powf(f64::from(db) / 20.);
+            assert!((20. * send_gain(send_value(gain)).log10() - f64::from(db)).abs() < 0.001);
         }
     }
 

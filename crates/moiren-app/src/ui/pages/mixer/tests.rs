@@ -4,7 +4,7 @@ use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{
     finish_service, settle_panels, shell_with_state, test_shell, wait_until,
 };
-use crate::ui::widgets::fader::FaderScale;
+use crate::ui::widgets::fader::{FaderScale, send_gain};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
@@ -3512,6 +3512,90 @@ fn routing_rows_select_and_double_click_jumps_to_the_graph(cx: &mut TestAppConte
             shell.presentation.workspace,
             WorkspaceView::Page(Page::Graph)
         ));
+    });
+    finish_service(runtime);
+}
+
+/// The send bar's whole value chain is one number: the pointer fraction the
+/// kit reports becomes the slider value, the fill paints that same fraction,
+/// and the committed gain is that fraction's inverse through the shared
+/// scale — so the bar lands exactly under the mouse in both directions.
+/// (Regression: the fill once re-derived its width through a dB detour that
+/// was not in the drag's value space, so the painted bar barely moved.)
+#[gpui_kit::test]
+fn send_bar_drag_paints_and_commits_the_pointer_fraction(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let edge = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.edges()[0].id()
+    });
+    let (origin, loud, quiet) = cx.update(|window, _| {
+        let bounds = window
+            .find(SharedString::from(format!("send-track-{edge:?}")))
+            .bounds();
+        let at = |fraction: f32| {
+            point(
+                bounds.left() + bounds.size.width * fraction,
+                bounds.top() + px(2.),
+            )
+        };
+        (at(0.), at(0.75), at(0.10))
+    });
+    cx.simulate_mouse_down(origin, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(loud, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.render_frame(cx));
+    cx.simulate_mouse_move(quiet, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.render_frame(cx));
+    cx.simulate_mouse_up(quiet, MouseButton::Left, Modifiers::default());
+    poll(&view, cx);
+    // The slider value — the number the fill paints — sits at the pointer's
+    // final fraction, and the graph carries the gain of that same fraction.
+    view.update(cx, |shell, cx| {
+        let value = shell.mixer.presentation.sends[&edge]
+            .state
+            .read(cx)
+            .value()
+            .end();
+        assert!(
+            (value - 0.10).abs() < 0.01,
+            "the fill fraction follows the pointer: {value}"
+        );
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .get_edge(edge)
+            .unwrap()
+            .params()
+            .gain;
+        let expected = send_gain(0.10);
+        assert!(
+            (gain - expected).abs() < 0.01,
+            "the committed gain is the pointer fraction's gain: {gain} vs {expected}"
+        );
+    });
+    // The painted bar itself: the fill's width is the same fraction of the
+    // track, measured in pixels — the regression this pins is the paint, not
+    // just the value underneath it.
+    let fill = view.update(cx, |shell, _| {
+        SharedString::from(format!(
+            "send-fill-{}",
+            shell.mixer.presentation.sends[&edge].state.entity_id()
+        ))
+    });
+    cx.update(|window, _| {
+        let track = window
+            .find(SharedString::from(format!("send-track-{edge:?}")))
+            .bounds();
+        let fill = window.find(fill).bounds();
+        let fraction = f32::from(fill.size.width / track.size.width);
+        assert!(
+            (fraction - 0.10).abs() < 0.01,
+            "the painted fill sits at the pointer fraction: {fraction}"
+        );
     });
     finish_service(runtime);
 }
