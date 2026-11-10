@@ -1223,36 +1223,54 @@ _version: 2
 "32-bit PCM":
   en: 32-bit PCM
   zh-CN: 32 位 PCM
-"INPUTS":
-  en: INPUTS
-  zh-CN: 输入
 "Unknown":
   en: Unknown
   zh-CN: 未知
-"%{name} → in %{port}":
-  en: "%{name} → in %{port}"
-  zh-CN: "%{name} → 输入 %{port}"
 "%{name} · out %{source_port} → %{target} · in %{port}":
   en: "%{name} · out %{source_port} → %{target} · in %{port}"
   zh-CN: "%{name} · 输出 %{source_port} → %{target} · 输入 %{port}"
-"Resource · %{name}":
-  en: "Resource · %{name}"
-  zh-CN: "资源 · %{name}"
 "No inputs":
   en: No inputs
   zh-CN: 无输入
 "No sends":
   en: No sends
   zh-CN: 无发送
-"Enable send; turning it off preserves its gain":
-  en: Enable send; turning it off preserves its gain
-  zh-CN: 启用发送；关闭时保留增益设置
-"PRE":
-  en: PRE
-  zh-CN: 推子前
-"POST":
-  en: POST
-  zh-CN: 推子后
+"Add input (up to %{max})":
+  en: "Add input (up to %{max})"
+  zh-CN: "添加输入（最多 %{max} 路）"
+"Manage inputs (%{used} of %{max})":
+  en: "Manage inputs (%{used} of %{max})"
+  zh-CN: "管理输入（已用 %{used} / %{max}）"
+"Remove this input":
+  en: Remove this input
+  zh-CN: 移除输入
+"Choose inputs":
+  en: Choose inputs
+  zh-CN: 选择输入
+"In %{port}":
+  en: "In %{port}"
+  zh-CN: "输入 %{port}"
+"Connected — uncheck to disconnect":
+  en: Connected — uncheck to disconnect
+  zh-CN: 已连接 — 取消勾选即断开
+"Input limit reached (%{max}) — release one first":
+  en: "Input limit reached (%{max}) — release one first"
+  zh-CN: "已达上限 %{max} 路 — 先取消一路再勾选"
+"Check to connect to the next free input":
+  en: Check to connect to the next free input
+  zh-CN: 勾选即连接到下一个空闲输入口
+"Send enabled — click to mute; the gain is preserved":
+  en: Send enabled — click to mute; the gain is preserved
+  zh-CN: 发送已启用 — 点击箭头静音（保留电平）
+"Send muted — click to enable; the gain is preserved":
+  en: Send muted — click to enable; the gain is preserved
+  zh-CN: 发送已静音 — 点击箭头恢复（保留电平）
+"Click to enter the send level (−60 … +24 dB)":
+  en: "Click to enter the send level (−60 … +24 dB)"
+  zh-CN: "点击输入发送电平（−60 … +24 dB）"
+"Collapse or expand the sends of every strip":
+  en: Collapse or expand the sends of every strip
+  zh-CN: 折叠 / 展开所有通道条的发送列表
 "PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim.":
   en: "PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim."
   zh-CN: "推子前：位于声道模式、声像与静音之后，增益与衰减之前。推子后：位于增益与衰减之后。"

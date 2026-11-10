@@ -155,6 +155,14 @@ impl AssetSource for ActionAssets {
             "icons/hand-move.svg" => Some(include_bytes!("../../../assets/icons/hand-move.svg")),
             "icons/minus.svg" => Some(include_bytes!("../../../assets/icons/minus.svg")),
             "icons/plus.svg" => Some(include_bytes!("../../../assets/icons/plus.svg")),
+            "icons/arrow-left.svg" => Some(include_bytes!("../../../assets/icons/arrow-left.svg")),
+            "icons/arrow-right.svg" => {
+                Some(include_bytes!("../../../assets/icons/arrow-right.svg"))
+            }
+            "icons/check.svg" => Some(include_bytes!("../../../assets/icons/check.svg")),
+            "icons/fader-scale.svg" => {
+                Some(include_bytes!("../../../assets/icons/fader-scale.svg"))
+            }
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }
@@ -277,6 +285,10 @@ mod tests {
             "icons/chevron-right.svg", // sidebar collapse control
             "icons/zoom-scan.svg",     // inspector zoom-to-scan button
             "brand/mark.svg",          // toolbar brand mark
+            "icons/arrow-left.svg",    // mixer strip: input row's source arrow
+            "icons/arrow-right.svg",   // mixer strip: send enable/mute arrow
+            "icons/check.svg",         // mixer strip: input dropdown checkbox
+            "icons/fader-scale.svg",   // mixer strip: send PRE/POST tap toggle
         ];
         // Design 18 node-card glyphs: the per-kind icons, the chip dropdown,
         // the rack markers, and the alert the fault tooltip leads with.

@@ -407,6 +407,92 @@ pub fn hslider(
     .h(px(16.))
 }
 
+/// Fill fraction of the send level bar for a value in the send sliders' dB
+/// space: the same [`FaderScale`] the channel fader reads, so "0 dB sits a
+/// quarter from the loud end" means the same thing on both controls. (The
+/// pointer→dB mapping itself stays the sliders' linear dB space, exactly like
+/// the approved prototype: the fill is the only surface that reads the scale.)
+pub fn send_fill(db: f32) -> f32 {
+    FaderScale::position(10f64.powf(f64::from(db) / 20.))
+}
+
+/// Visible height of the send level bar. Off the spacing grid on purpose:
+/// twice the accent bar width, the same thickness the approved prototype
+/// shipped (`ACCENT_BAR_W × 2`).
+pub const SEND_BAR_H: f32 = 4.;
+
+/// The send level bar: a plain rectangular controller — no thumb, no rounded
+/// corners, flush at both ends. The whole bar is the control: the fill's
+/// extent is the level, drawn from the loud (left) end so a quieter send
+/// lights more of the bar (silence fills it), the exact direction the
+/// prototype shipped. The track is [`theme::controls::RAISED`] for every
+/// send regardless of selection or mute; muting only grays the fill. The 4 px
+/// under the track are breathing room and part of the drag hit area, so the
+/// element is twice [`SEND_BAR_H`] tall while the visible strip stays 4 px.
+pub fn send_bar(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    muted: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let slider = state.read(cx);
+    let fill = send_fill(slider.value().end());
+    gestures(
+        state,
+        behavior,
+        Axis::Horizontal,
+        base::slider::Slider::new(state)
+            .horizontal()
+            .relative()
+            .size_full()
+            // The pointer mapping and the drag hitbox span the whole element,
+            // the 4 px below the visible strip included.
+            .child(
+                base::slider::SliderIndicator::new(state)
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h_full(),
+            )
+            .child(
+                base::slider::SliderTrack::new(state)
+                    .axis(Axis::Horizontal)
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h(px(SEND_BAR_H))
+                    .bg(theme::controls::RAISED),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(relative(fill))
+                    .h(px(SEND_BAR_H))
+                    .bg(if muted {
+                        theme::TRACK_FILL
+                    } else {
+                        theme::SIGNAL_DEVICE
+                    }),
+            ),
+    )
+    .flex_none()
+    .w_full()
+    // Track + the hit-area strip below it.
+    .h(px(SEND_BAR_H * 2.))
+}
+
 #[cfg(test)]
 mod tests {
     use super::FaderScale;
@@ -480,6 +566,20 @@ mod tests {
         // A degenerate span keeps the thumb at the quiet end instead of NaN.
         assert_eq!(normalized_value(5., 5., 5.), 0.);
         assert_eq!(thumb_top(0., 0., 1.), 1.);
+    }
+
+    #[test]
+    fn send_fill_reads_the_shared_fader_scale() {
+        use super::send_fill;
+        // The bar paints the same anchors the fader's ruler prints: 0 dB a
+        // quarter from the loud end, −12 dB halfway, the −60 dB floor near
+        // the quiet end.
+        assert!((send_fill(0.) - 0.24).abs() < 0.0001);
+        assert!((send_fill(-12.) - 0.51).abs() < 0.0001);
+        assert!((send_fill(-60.) - 0.92).abs() < 0.0001);
+        // A boost past the +12 dB scale top pins at the loud end, exactly
+        // like the channel fader's top anchor.
+        assert_eq!(send_fill(24.), 0.);
     }
 
     #[test]

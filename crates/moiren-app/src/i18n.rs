@@ -87,21 +87,37 @@ mod tests {
     fn mixer_routes_translate_interpolation_and_meter_preferences() {
         assert_eq!(
             rust_i18n::t!(
-                "%{name} → in %{port}",
+                "%{name} · out %{source_port} → %{target} · in %{port}",
                 locale = SIMPLIFIED_CHINESE,
                 name = "Mic",
+                source_port = 1,
+                target = "Bus",
                 port = 2
             ),
-            "Mic → 输入 2"
+            "Mic · 输出 1 → Bus · 输入 2"
         );
         assert_eq!(
             rust_i18n::t!("Peak hold", locale = SIMPLIFIED_CHINESE),
             "峰值保持"
         );
-        // Strip and send-tap chrome localized through t! (PRE/POST are the
-        // pre/post-fader taps; see routing.rs).
-        assert_eq!(rust_i18n::t!("PRE", locale = SIMPLIFIED_CHINESE), "推子前");
-        assert_eq!(rust_i18n::t!("POST", locale = SIMPLIFIED_CHINESE), "推子后");
+        // The input dropdown's live multi-select chrome.
+        assert_eq!(
+            rust_i18n::t!(
+                "Manage inputs (%{used} of %{max})",
+                locale = SIMPLIFIED_CHINESE,
+                used = 2,
+                max = 8
+            ),
+            "管理输入（已用 2 / 8）"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Input limit reached (%{max}) — release one first",
+                locale = SIMPLIFIED_CHINESE,
+                max = 2
+            ),
+            "已达上限 2 路 — 先取消一路再勾选"
+        );
         assert_eq!(rust_i18n::t!("ST", locale = SIMPLIFIED_CHINESE), "立体声");
         assert_eq!(rust_i18n::t!("MONO", locale = SIMPLIFIED_CHINESE), "单声道");
         assert_eq!(

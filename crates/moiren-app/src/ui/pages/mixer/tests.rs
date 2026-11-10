@@ -249,10 +249,12 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
     cx.update(|window, cx| window.render_frame(cx));
     let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     cx.update(|window, cx| {
-        let sends = window
-            .find(SharedString::from(format!("sends-{id:?}")))
+        // The I/O block is density-independent by design: compact or not,
+        // every strip carries the same expanded height.
+        let io = window
+            .find(SharedString::from(format!("io-{id:?}")))
             .bounds();
-        assert_eq!(sends.size.height, px(80.));
+        assert_eq!(io.size.height, px(super::routing::IO_EXPANDED_H));
         let strip = window
             .find(SharedString::from(format!("strip-{id:?}")))
             .bounds();
@@ -281,10 +283,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
             .find(SharedString::from(format!("strip-readout-{id:?}")))
             .bounds();
         assert!(readout.bottom() <= levels.top());
-        let inputs = window
-            .find(SharedString::from(format!("inputs-{id:?}")))
-            .bounds();
-        assert!(inputs.bottom() <= sends.top());
+        assert!(io.bottom() <= levels.top());
         assert!(strip.bottom() <= px(720.));
         let footer = window
             .find(SharedString::from(format!("strip-header-{id:?}")))
@@ -317,7 +316,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
             .bounds();
         for edge in edges {
             let tap = window
-                .find(SharedString::from(format!("send-tap-{edge:?}")))
+                .find(SharedString::from(format!("send-pre-{edge:?}")))
                 .bounds();
             assert!(
                 tap.right() <= strip.right() - px(6.),
@@ -2006,11 +2005,13 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
         assert!(shell.mixer.presentation.editing_send.is_none());
         shell.mixer.presentation.order.clone()
     });
+    // One Sends head folds the list on every strip (the collapse is global,
+    // which is what keeps the meters aligned).
     let toggle = cx.update(|window, _| {
-        let bounds = window
-            .find(SharedString::from(format!("inputs-{:?}", order[0])))
-            .bounds();
-        bounds.origin + point(px(40.), px(14.))
+        window
+            .find(SharedString::from(format!("sends-head-{:?}", order[0])))
+            .bounds()
+            .center()
     });
     cx.simulate_click(toggle, Modifiers::default());
     cx.update(|window, cx| {
@@ -2018,11 +2019,11 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
         for id in &order {
             assert_eq!(
                 window
-                    .find(SharedString::from(format!("inputs-{id:?}")))
+                    .find(SharedString::from(format!("io-{id:?}")))
                     .bounds()
                     .size
                     .height,
-                px(28.)
+                px(super::routing::IO_COLLAPSED_H)
             );
         }
     });
@@ -3057,7 +3058,7 @@ fn mixer_strip_body_fills_the_strip_and_pins_the_title_to_its_bottom(cx: &mut Te
             .find(SharedString::from(format!("balance-track-{id:?}")))
             .bounds();
         let inputs = window
-            .find(SharedString::from(format!("inputs-{id:?}")))
+            .find(SharedString::from(format!("io-{id:?}")))
             .bounds();
         // The title rides the strip's bottom border; the levels row owns
         // everything between it and the fixed control stack.
@@ -3077,8 +3078,8 @@ fn mixer_strip_body_fills_the_strip_and_pins_the_title_to_its_bottom(cx: &mut Te
             "balance track must span the strip's inner width (track {track:?}, strip {strip:?})",
         );
         assert!(
-            inputs.bottom() < track.top(),
-            "routing sections sit above the balance track"
+            inputs.bottom() <= track.top(),
+            "the I/O block ends where the balance track begins"
         );
     });
     finish_service(runtime);
@@ -3128,5 +3129,389 @@ fn mixer_strip_hover_tracks_the_strip_for_the_fault_banner(cx: &mut TestAppConte
         0,
         "a hover change must never rebuild a strip panel"
     );
+    finish_service(runtime);
+}
+
+// --- The reworked I/O block --------------------------------------------------
+
+fn show_mixer(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+}
+
+fn add_node(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    kind: NodeKind,
+    channels: usize,
+) -> NodeId {
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::AddNode { kind, channels },
+            ));
+        });
+    });
+    poll(view, cx);
+    view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .nodes
+            .last()
+            .expect("node appended")
+            .id
+    })
+}
+
+/// The I/O block's whole point: every strip carries the same height, and the
+/// Sends head folds the list on every strip at once, so the meters below
+/// stay aligned however the routing differs.
+#[gpui_kit::test]
+fn io_block_heights_are_uniform_and_fold_globally(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let order = view.update(cx, |shell, _| shell.mixer.presentation.order.clone());
+    assert!(order.len() > 1, "the default session starts with strips");
+    let io_heights = |window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+        window.render_frame(cx);
+        order
+            .iter()
+            .map(|id| {
+                window
+                    .find(SharedString::from(format!("io-{id:?}")))
+                    .bounds()
+                    .size
+                    .height
+            })
+            .collect::<Vec<_>>()
+    };
+    cx.update(|window, cx| {
+        let heights = io_heights(window, cx);
+        assert!(
+            heights
+                .iter()
+                .all(|h| *h == px(super::routing::IO_EXPANDED_H)),
+            "every strip expanded: {heights:?}"
+        );
+    });
+    let head = view.update(cx, |shell, _| {
+        SharedString::from(format!(
+            "sends-head-{:?}",
+            shell.mixer.presentation.order[0]
+        ))
+    });
+    cx.update(|window, cx| window.click(head.clone(), cx));
+    cx.update(|window, cx| {
+        let heights = io_heights(window, cx);
+        assert!(
+            heights
+                .iter()
+                .all(|h| *h == px(super::routing::IO_COLLAPSED_H)),
+            "one head folds every strip: {heights:?}"
+        );
+    });
+    cx.update(|window, cx| window.click(head.clone(), cx));
+    cx.update(|window, cx| {
+        let heights = io_heights(window, cx);
+        assert!(
+            heights
+                .iter()
+                .all(|h| *h == px(super::routing::IO_EXPANDED_H)),
+            "one head unfolds every strip: {heights:?}"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// The dropdown is a live multi-select: checking a candidate connects it to
+/// the node's lowest free input port at once and the list stays open for the
+/// next pick; unchecking disconnects. The single-input row swaps its ghost
+/// button to the − remove control while occupied.
+#[gpui_kit::test]
+fn input_dropdown_connects_at_the_free_port_and_the_row_swaps_to_remove(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let gain = add_node(&view, cx, NodeKind::Gain, 2);
+    let source = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .map(|node| node.id())
+            .expect("default session has a source")
+    });
+    // Empty and able: the row carries the persistent +, never the −.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-add-{gain:?}")))
+            .bounds();
+        assert!(
+            window
+                .try_find(SharedString::from(format!("input-remove-{gain:?}")))
+                .is_none(),
+            "an empty node must not offer a remove control"
+        );
+    });
+    // Open the dropdown and check the source: the edge lands on the Gain's
+    // only input port, and the list stays open.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-add-{gain:?}")), cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{gain:?}")))
+            .bounds();
+    });
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        let edge = graph
+            .graph
+            .edges()
+            .iter()
+            .find(|edge| edge.dst() == gain)
+            .expect("checking the source connects it");
+        assert_eq!(edge.src(), source);
+        let free = graph.graph.get_node(gain).unwrap().inputs()[0].id();
+        assert_eq!(edge.dst_port(), free, "the edge takes the free input port");
+    });
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.mixer.presentation.input_popover.is_some(),
+            "the list stays open for the next pick"
+        );
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{gain:?}")))
+            .bounds();
+        window
+            .find(SharedString::from(format!("input-remove-{gain:?}")))
+            .bounds();
+        assert!(
+            window
+                .try_find(SharedString::from(format!("input-add-{gain:?}")))
+                .is_none(),
+            "an occupied single-input node swaps + for −"
+        );
+    });
+    // Unchecking disconnects through the same row.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        assert!(
+            graph.graph.edges().iter().all(|edge| edge.dst() != gain),
+            "unchecking disconnects the candidate"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// A press outside the open dropdown dismisses it, like every shell popover.
+#[gpui_kit::test]
+fn input_dropdown_closes_on_an_outside_press(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let gain = add_node(&view, cx, NodeKind::Gain, 2);
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-add-{gain:?}")), cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{gain:?}")))
+            .bounds();
+    });
+    // A press over the first strip's fader area — anywhere off the dropdown
+    // box — dismisses it.
+    let first = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let outside = cx.update(|window, _| {
+        // Press on the first strip's title row: anywhere off the dropdown
+        // box dismisses it.
+        let strip = window
+            .find(SharedString::from(format!("strip-{first:?}")))
+            .bounds();
+        point(strip.left() + px(80.), strip.bottom() - px(6.))
+    });
+    cx.simulate_click(outside, Modifiers::default());
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find(SharedString::from(format!("input-popover-{gain:?}")))
+                .is_none(),
+            "an outside press closes the dropdown"
+        );
+    });
+    view.update(cx, |shell, _| {
+        assert!(shell.mixer.presentation.input_popover.is_none());
+    });
+    finish_service(runtime);
+}
+
+/// At the node's input cap the unchecked candidates are dead rows: clicking
+/// them connects nothing, while the checked row still releases its input.
+#[gpui_kit::test]
+fn input_dropdown_rows_go_dead_at_the_port_cap(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    // A bus starts without input ports; one AddBusInput gives it exactly
+    // one, so a single connection saturates the cap.
+    let bus = add_node(&view, cx, NodeKind::Bus, 2);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::AddBusInput(bus),
+            ));
+        });
+    });
+    poll(&view, cx);
+    let second_source = add_node(&view, cx, NodeKind::Source, 2);
+    let (sources, port) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        (
+            graph
+                .graph
+                .nodes()
+                .iter()
+                .filter(|node| node.kind() == NodeKind::Source)
+                .map(|node| node.id())
+                .collect::<Vec<_>>(),
+            graph.graph.get_node(bus).unwrap().inputs()[0].id(),
+        )
+    });
+    assert!(sources.len() >= 2, "two candidates with outputs are needed");
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-add-{bus:?}")), cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{bus:?}")))
+            .bounds();
+    });
+    let first = sources[0];
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{first:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        let edge = graph
+            .graph
+            .edges()
+            .iter()
+            .find(|edge| edge.dst() == bus)
+            .expect("the first check connects");
+        assert_eq!(edge.dst_port(), port);
+    });
+    // The cap is reached: the second source's unchecked row is dead.
+    cx.update(|window, cx| {
+        window.click(
+            SharedString::from(format!("input-pop-row-{second_source:?}")),
+            cx,
+        );
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        assert_eq!(
+            graph
+                .graph
+                .edges()
+                .iter()
+                .filter(|edge| edge.dst() == bus)
+                .count(),
+            1,
+            "a dead row must not connect"
+        );
+    });
+    // The checked row keeps working: unchecking releases the port.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{first:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        assert!(
+            graph.graph.edges().iter().all(|edge| edge.dst() != bus),
+            "the checked row still releases its input"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// A routing row's click selects the edge; its double click jumps to the
+/// Graph page with the same wire selected.
+#[gpui_kit::test]
+fn routing_rows_select_and_double_click_jumps_to_the_graph(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let (edge, ports) = view.update(cx, |shell, cx| {
+        let edge = &shell.state.read(cx).snapshot.graph.graph.edges()[0];
+        (edge.id(), (edge.src_port(), edge.dst_port()))
+    });
+    // Single click selects on the input row.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-{edge:?}")), cx);
+    });
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.selection.route, Some(ports));
+        assert!(shell.chrome.inspector_open);
+        assert!(matches!(
+            shell.presentation.workspace,
+            WorkspaceView::Page(Page::Mixer)
+        ));
+    });
+    // Double click jumps on both rows.
+    cx.update(|window, cx| {
+        window.double_click(SharedString::from(format!("input-{edge:?}")), cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(matches!(
+            shell.presentation.workspace,
+            WorkspaceView::Page(Page::Graph)
+        ));
+        assert_eq!(shell.selection.route, Some(ports));
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+            cx.notify();
+        });
+        window.render_frame(cx);
+    });
+    cx.update(|window, cx| {
+        window.double_click(SharedString::from(format!("send-row-{edge:?}")), cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(matches!(
+            shell.presentation.workspace,
+            WorkspaceView::Page(Page::Graph)
+        ));
+    });
     finish_service(runtime);
 }

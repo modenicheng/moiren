@@ -706,7 +706,7 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 ///
 /// When one of these keys gains a literal call site, remove it here — the
 /// guard fails on stale entries on purpose.
-const DYNAMIC_KEY_EXCEPTIONS: [&str; 116] = [
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 115] = [
     // AudioConfigError Display strings looked up at paint from the enum payload
     // (UiFailure::InvalidAudioSettings); mirrored in tests/i18n_ledger.rs
     // ALLOWED_RUNTIME_KEYS.
@@ -793,7 +793,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 116] = [
     "Release",
     "Request ~10 ms device buffers (512 frames at 48 kHz).",
     "Request ~5 ms device buffers (256 frames at 48 kHz).",
-    "SENDS",
     "SOURCES",
     "Static channel routing matrix",
     "Stereo balance, mono and swap",
