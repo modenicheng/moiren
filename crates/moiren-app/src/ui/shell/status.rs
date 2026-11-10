@@ -97,24 +97,21 @@ const ITEM_HEIGHT: f32 = 22.;
 const DOT_SIZE: f32 = 8.;
 
 /// Reconciles hover-open panels with the window's hovered flag: the first
-/// render that observes the pointer gone closes the panel, and its return
-/// re-arms the open for the item the pointer still reads as hovered (the
-/// fork never delivers a hover-clear on exit, so the item's flag stays).
-/// The latch makes both transitions, so headless windows (never
-/// platform-hovered) keep their panels under the test harness' synthetic
-/// mouse moves.
-pub(crate) fn sync(shell: &mut StudioShell, window: &Window, cx: &mut Context<StudioShell>) {
+/// render that observes the pointer gone closes the panel and drops the
+/// pointer's resting facts with it. Re-entry always lands on a fresh
+/// `on_hover`, which re-arms the open through the normal path — a re-entry
+/// that never sends a mouse-move (title-bar activation) must not resurrect
+/// the last item's panel. The latch keeps this transition-only, so headless
+/// windows (never platform-hovered) leave their panels under the test
+/// harness' synthetic mouse moves alone.
+pub(crate) fn sync(shell: &mut StudioShell, window: &Window) {
     let hovered = window.is_window_hovered();
-    let was = shell.chrome.status_window_hovered;
-    if was && !hovered {
+    if shell.chrome.status_window_hovered && !hovered {
         shell.status_disarm();
         shell.status_stop_process_sampling();
         shell.chrome.status_popup = None;
+        shell.chrome.status_hover_item = None;
         shell.chrome.status_hover_panel = false;
-    } else if !was && hovered && shell.chrome.status_hover_item.is_some() {
-        // Re-entry lands on whichever item still reads hovered; re-run the
-        // arbitration so its panel opens without another wiggle.
-        shell.status_hover_changed(cx);
     }
     shell.chrome.status_window_hovered = hovered;
 }

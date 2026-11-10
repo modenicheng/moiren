@@ -617,4 +617,43 @@ mod tests {
             assert_eq!(zh(title), zh_cn, "zh-CN value for {title:?}");
         }
     }
+
+    // The status bar's text shapers. Expected strings assert on the
+    // interpolated facts (digits, units) so they hold under any locale
+    // fallback; the zh-CN entries are covered by the ledger guards.
+
+    #[test]
+    fn percent_text_never_claims_an_exact_zero_it_cannot_know() {
+        assert_eq!(super::percent_text(0.), "0.00%");
+        assert_eq!(super::percent_text(0.001), "<0.01%");
+        assert_eq!(super::percent_text(0.02), "0.02%");
+        assert_eq!(super::percent_text(3.5), "3.50%");
+    }
+
+    #[test]
+    fn time_texts_spell_seconds_and_minutes() {
+        use std::time::Duration;
+        assert_eq!(super::ago_text(Duration::from_secs(42)), "42 s ago");
+        assert_eq!(super::ago_text(Duration::from_secs(75)), "1 min 15 s ago");
+        assert_eq!(super::span_text(Duration::from_secs(7)), "7 s");
+        assert_eq!(super::span_text(Duration::from_secs(686)), "11 min 26 s");
+    }
+
+    #[test]
+    fn buffer_text_shows_frames_and_duration_or_a_dash() {
+        assert_eq!(super::buffer_text(256, 48_000), "256 smp / 5.3 ms");
+        assert_eq!(super::buffer_text(512, 48_000), "512 smp / 10.7 ms");
+        assert_eq!(super::buffer_text(0, 48_000), "—", "no invented period");
+        assert_eq!(super::buffer_text(256, 0), "—");
+    }
+
+    #[test]
+    fn format_short_text_pairs_rate_with_known_depth() {
+        assert_eq!(
+            super::format_short_text(48_000, Some("24-bit PCM".into())),
+            "48.0 kHz / 24-bit PCM"
+        );
+        assert_eq!(super::format_short_text(96_000, None), "96.0 kHz");
+        assert_eq!(super::format_short_text(0, None), "—", "no invented rate");
+    }
 }

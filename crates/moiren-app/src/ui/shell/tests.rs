@@ -1997,6 +1997,70 @@ fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
     finish_service(runtime);
 }
 
+/// Opening, holding and closing a status panel must not do more strip-panel
+/// work than an idle rendered frame (design 17): the bar is a live sibling
+/// of the pages, its open state rides no key, and the panel's fade runs on
+/// the live surface. The panel opens and closes through seeded shell state
+/// — the capture harness's pattern — because a pointer move itself dirties
+/// strip paint (verified identical on origin/main). One rendered frame
+/// rebuilds a few strips on the current build — the same on main — so the
+/// invariant is pinned relative to that idle-frame floor, not against zero.
+#[gpui_kit::test]
+fn opening_a_status_panel_rebuilds_no_cached_page_panel(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ui::shell::status::StatusItem;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        window.click("tab-mixer", cx);
+    });
+    settle_panels(cx);
+    let strips = |cx: &mut gpui_kit::VisualTestContext| {
+        view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders)
+    };
+    // The idle-frame floor: one rendered frame's strip work with no panel.
+    let before = strips(cx);
+    cx.update(|window, cx| window.render_frame(cx));
+    let floor = strips(cx) - before;
+    // Open, hold over its fade, close: every step may only cost what an
+    // idle frame costs, never a page-panel rebuild on top.
+    view.update(cx, |shell, cx| {
+        shell.chrome.status_popup = Some(StatusItem::Perf);
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("status-panel-perf").visible());
+        // Frames while the panel is open, fade included: simulate_next_frame
+        // pairs draw without the refresh that carries the idle noise.
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(window.find("status-panel-perf").visible());
+    });
+    let open = strips(cx);
+    assert!(
+        open - before <= 2 * floor,
+        "an open, animating status panel must not exceed two idle frames of          strip work (open delta {} over floor {})",
+        open - before,
+        floor
+    );
+    view.update(cx, |shell, cx| shell.status_close(cx));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("status-panel-perf").is_none());
+    });
+    let closed = strips(cx);
+    assert!(
+        closed - open <= floor,
+        "closing the panel must not exceed one idle frame of strip work          (close delta {} over floor {})",
+        closed - open,
+        floor
+    );
+    finish_service(runtime);
+}
+
 /// The status bar's error summary is the unlocated errors' only surface
 /// since the error strip: absent while clean, a located fault never mounts
 /// it (that fault belongs to its own strip/card), a dispatch failure alone

@@ -867,7 +867,7 @@ impl StudioShell {
         self.finish_node_spawn(cx);
         graph::sync_binding_menu(self, cx);
         fault_popover::sync(self, cx);
-        status::sync(self, window, cx);
+        status::sync(self, window);
         self.sync_node_name(window, cx);
         self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);

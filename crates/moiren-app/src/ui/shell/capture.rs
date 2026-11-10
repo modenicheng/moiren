@@ -255,9 +255,9 @@ async fn echo_probe(shell: &Entity<StudioShell>, cx: &mut AsyncApp) {
 }
 
 /// Opens each status bar panel in turn and captures it at the comfortable
-/// size. The panels open through the production path (`status_show`), so a
-/// shot shows what a hover shows — the performance panel's sampler included
-/// — without synthesizing a real pointer.
+/// size. The panels open through the production path (`status_toggle`), so
+/// a shot shows what a hover shows — the performance panel's sampler
+/// included — without synthesizing a real pointer.
 async fn status_panels(
     window: AnyWindowHandle,
     shell: &Entity<StudioShell>,

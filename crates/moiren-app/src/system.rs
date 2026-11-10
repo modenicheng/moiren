@@ -170,9 +170,10 @@ mod win {
     /// One `SystemProcessInformation` record, declared in full. The crate's
     /// partial binding hides the time fields inside `Reserved1` bytes;
     /// reading reserved bytes by offset is worse than spelling out the
-    /// stable Vista-and-later layout here (field-for-field: u32 pair, then
-    /// seven 64-bit fields at their natural offsets, the `UNICODE_STRING`,
-    /// then the id/handle/size block).
+    /// layout here — its field order has been stable across every 64-bit
+    /// Windows release this targets (field-for-field: u32 pair, then seven
+    /// 64-bit fields at their natural offsets, the `UNICODE_STRING`, then
+    /// the id/handle/size block).
     #[repr(C)]
     struct ProcessEntry {
         next_entry_offset: u32,
