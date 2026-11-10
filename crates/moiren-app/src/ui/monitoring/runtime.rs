@@ -35,9 +35,11 @@ pub(crate) struct RenderCounters {
 }
 
 /// One observation snapshot, reduced to what the runtime statistics consume.
-pub(crate) struct ObservationView<'a> {
+/// The streams are owned because the extractor collects them per snapshot;
+/// the ingest runs at the observations' 1 Hz tick, so the cost is nil.
+pub(crate) struct ObservationView {
     pub generation: u64,
-    pub streams: &'a [StreamCounters],
+    pub streams: Vec<StreamCounters>,
     pub render: Option<RenderCounters>,
     /// The engine's block geometry, the denominator of every load figure.
     pub block_frames: u32,
@@ -211,8 +213,17 @@ pub(crate) struct RuntimeStats {
 }
 
 impl RuntimeStats {
-    pub(crate) fn ingest(&mut self, view: ObservationView<'_>, now: Instant) {
-        self.xruns.ingest(view.generation, view.streams, now);
+    /// Ingests one observation snapshot. `None` means no observations exist
+    /// right now — a stopped session, or a platform without the native
+    /// backend — and takes the same gap path: stale readouts go with them
+    /// and the next `Some` rebases. Keeping the gap inside the model keeps
+    /// every item here compiled on every platform the crate builds on.
+    pub(crate) fn ingest(&mut self, view: Option<ObservationView>, now: Instant) {
+        let Some(view) = view else {
+            self.note_gap();
+            return;
+        };
+        self.xruns.ingest(view.generation, &view.streams, now);
         self.dsp = match (self.render_seen, view.render) {
             (Some((generation, previous)), Some(current)) if generation == view.generation => {
                 dsp_load(previous, current, view.block_frames, view.sample_rate).or(self.dsp)
@@ -552,24 +563,24 @@ mod tests {
         };
         let mut stats = RuntimeStats::default();
         stats.ingest(
-            ObservationView {
+            Some(ObservationView {
                 generation: 7,
-                streams: &[master(0, 1_000)],
+                streams: vec![master(0, 1_000)],
                 render: Some(render(1_000, 10_000)),
                 block_frames: 256,
                 sample_rate: 48_000,
-            },
+            }),
             at(0),
         );
         assert_eq!(stats.dsp(), None, "one observation is not a rate");
         stats.ingest(
-            ObservationView {
+            Some(ObservationView {
                 generation: 7,
-                streams: &[master(1, 11_000)],
+                streams: vec![master(1, 11_000)],
                 render: Some(render(11_000, 20_000)),
                 block_frames: 256,
                 sample_rate: 48_000,
-            },
+            }),
             at(1),
         );
         assert_eq!(stats.xruns.total(), 1);
@@ -581,13 +592,13 @@ mod tests {
         assert_eq!(stats.dsp(), None);
         assert_eq!(stats.xruns.total(), 1, "the count survives the gap");
         stats.ingest(
-            ObservationView {
+            Some(ObservationView {
                 generation: 7,
-                streams: &[master(0, 11_000)],
+                streams: vec![master(0, 11_000)],
                 render: Some(render(11_000, 20_000)),
                 block_frames: 256,
                 sample_rate: 48_000,
-            },
+            }),
             at(2),
         );
         assert_eq!(
@@ -596,13 +607,13 @@ mod tests {
             "the reappearance rebased the history"
         );
         stats.ingest(
-            ObservationView {
+            Some(ObservationView {
                 generation: 7,
-                streams: &[master(2, 21_000)],
+                streams: vec![master(2, 21_000)],
                 render: Some(render(21_000, 30_000)),
                 block_frames: 256,
                 sample_rate: 48_000,
-            },
+            }),
             at(3),
         );
         assert_eq!(stats.xruns.total(), 2);
@@ -610,5 +621,79 @@ mod tests {
             stats.dsp().is_some(),
             "the load readout resumed with the stream"
         );
+    }
+
+    #[test]
+    fn a_none_view_takes_the_gap_path_without_touching_history() {
+        let nodes = nodes();
+        let anchor = Instant::now();
+        let at = |seconds: u64| anchor + Duration::from_secs(seconds);
+        let mut stats = RuntimeStats::default();
+        stats.ingest(
+            Some(ObservationView {
+                generation: 7,
+                streams: vec![StreamCounters {
+                    node: nodes[0],
+                    xruns: 0,
+                    native_xruns: 0,
+                    engine_blocks: 1_000,
+                }],
+                render: Some(RenderCounters {
+                    blocks: 1_000,
+                    busy_100ns: 10_000,
+                    peak_block_100ns: 0,
+                }),
+                block_frames: 256,
+                sample_rate: 48_000,
+            }),
+            at(0),
+        );
+        stats.ingest(None, at(5));
+        assert_eq!(stats.xruns.total(), 0, "nothing existed to count");
+        assert_eq!(
+            stats.dsp(),
+            None,
+            "the stale load readout went with the gap"
+        );
+        // The reappearance itself only rebases — see the next ingest.
+        stats.ingest(
+            Some(ObservationView {
+                generation: 7,
+                streams: vec![StreamCounters {
+                    node: nodes[0],
+                    xruns: 2,
+                    native_xruns: 0,
+                    engine_blocks: 5_000,
+                }],
+                render: None,
+                block_frames: 256,
+                sample_rate: 48_000,
+            }),
+            at(6),
+        );
+        assert_eq!(stats.xruns.total(), 0, "the reappearance only rebases");
+        // The reappearance itself only rebases — the documented
+        // reappear-after-gap semantics — and deltas count from there.
+        stats.ingest(
+            Some(ObservationView {
+                generation: 7,
+                streams: vec![StreamCounters {
+                    node: nodes[0],
+                    xruns: 3,
+                    native_xruns: 0,
+                    engine_blocks: 6_000,
+                }],
+                render: None,
+                block_frames: 256,
+                sample_rate: 48_000,
+            }),
+            at(7),
+        );
+        assert_eq!(
+            stats.xruns.total(),
+            1,
+            "deltas count again after the rebase"
+        );
+        assert_eq!(stats.dsp(), None, "no master render, no load readout");
     }
 }

@@ -177,14 +177,23 @@ impl UiState {
 
     /// Feeds the runtime statistics from a freshly drained snapshot: the
     /// observation snapshot reduces to counters here, and the deltas become
-    /// events and load figures inside the model.
-    #[cfg(windows)]
+    /// events and load figures inside the model. One shared entry point —
+    /// only the view extraction below knows about platforms, so the model's
+    /// whole surface stays compiled on every one of them.
     fn ingest_runtime(&mut self, snapshot: &AppSnapshot) {
+        self.runtime
+            .ingest(Self::runtime_view(snapshot), std::time::Instant::now());
+    }
+
+    /// The observation snapshot reduced to the runtime counters. `None`
+    /// when the session carries no observations — and always off Windows,
+    /// where the native backend does not exist.
+    #[cfg(windows)]
+    fn runtime_view(
+        snapshot: &AppSnapshot,
+    ) -> Option<crate::ui::monitoring::runtime::ObservationView> {
         use crate::ui::monitoring::runtime::{ObservationView, RenderCounters, StreamCounters};
-        let Some(status) = &snapshot.professional_observations else {
-            self.runtime.note_gap();
-            return;
-        };
+        let status = snapshot.professional_observations.as_ref()?;
         let streams: Vec<StreamCounters> = status
             .observation
             .streams
@@ -212,32 +221,20 @@ impl UiState {
             .as_ref()
             .unwrap_or(&snapshot.audio_settings)
             .processing;
-        self.runtime.ingest(
-            ObservationView {
-                generation: status.generation.0,
-                streams: &streams,
-                render,
-                block_frames: processing.block_frames,
-                sample_rate: processing.sample_rate,
-            },
-            std::time::Instant::now(),
-        );
+        Some(ObservationView {
+            generation: status.generation.0,
+            streams,
+            render,
+            block_frames: processing.block_frames,
+            sample_rate: processing.sample_rate,
+        })
     }
 
-    /// No observation snapshot exists off Windows; an empty view keeps the
-    /// ingest path live and every readout blank.
     #[cfg(not(windows))]
-    fn ingest_runtime(&mut self, _snapshot: &AppSnapshot) {
-        self.runtime.ingest(
-            crate::ui::monitoring::runtime::ObservationView {
-                generation: 0,
-                streams: &[],
-                render: None,
-                block_frames: 0,
-                sample_rate: 0,
-            },
-            std::time::Instant::now(),
-        );
+    fn runtime_view(
+        _snapshot: &AppSnapshot,
+    ) -> Option<crate::ui::monitoring::runtime::ObservationView> {
+        None
     }
 
     pub fn dispatch(&mut self, request: AppRequest) {
