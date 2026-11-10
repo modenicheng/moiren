@@ -1,4 +1,5 @@
 use super::super::{Page, WorkspaceView};
+use super::fader_readout_gain;
 use super::model::reorder;
 use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{
@@ -879,6 +880,95 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     assert!(
         (-6. ..=0.01).contains(&final_db),
         "a ~10px drag from unity landed at {final_db} dB"
+    );
+    finish_service(runtime);
+}
+
+/// The fader readout renders the slider's own value while the slider leads
+/// the snapshot (design 22 D1): mid-drag and after the release until the
+/// service confirms it, the number tracks the thumb instead of trailing it
+/// by a round trip; the confirmation then swaps in the published gain
+/// without moving the number, because the edit dispatched exactly that gain.
+#[gpui_kit::test]
+fn fader_readout_tracks_the_thumb_until_the_service_confirms_it(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    // (readout, published, the thumb's own) gains.
+    let gains = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |shell, cx| {
+            let slot = &shell.mixer.presentation.faders[&node];
+            let published = shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain;
+            let own = FaderScale::gain(1. - slot.state.read(cx).value().end());
+            (
+                fader_readout_gain(Some(slot), published, cx),
+                published,
+                own,
+            )
+        })
+    };
+    let (readout, published, _) = gains(&view, cx);
+    assert_eq!(
+        readout, published,
+        "at rest the readout is the published gain"
+    );
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    // The first move past the threshold starts the drag; the second one
+    // moves the value.
+    for travel in [12., 24.] {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(travel)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (readout, published, own) = gains(&view, cx);
+    assert_eq!(readout, own, "mid-drag the readout shows the thumb's value");
+    assert_ne!(readout, published, "not the published gain it left behind");
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let (released, published, own) = gains(&view, cx);
+    assert_eq!(
+        released, own,
+        "until the service confirms the release, the readout keeps the thumb's value"
+    );
+    assert_ne!(released, published);
+    poll(&view, cx);
+    let (confirmed, published, _) = gains(&view, cx);
+    assert_eq!(
+        confirmed, published,
+        "confirmed: the readout is the published gain"
+    );
+    assert_eq!(
+        confirmed, released,
+        "the confirmation must not move the number"
     );
     finish_service(runtime);
 }

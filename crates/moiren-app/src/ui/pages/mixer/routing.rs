@@ -590,7 +590,11 @@ fn send_slot(
     let selected = shell.selection.route == Some((edge.src_port(), edge.dst_port()));
     let this = cx.entity();
     let graph = &shell.state.read(cx).snapshot.graph;
-    let value = crate::ui::presentation::db_text_bare(params.gain);
+    let value = crate::ui::presentation::db_text_bare(send_readout_gain(
+        shell.mixer.presentation.sends.get(&id),
+        params.gain,
+        cx,
+    ));
     let editing = shell.mixer.presentation.editing_send == Some(id);
     let revealed = shell.mixer.presentation.hovered_route == Some((strip_id, id));
 

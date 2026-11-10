@@ -164,6 +164,31 @@ impl SliderSlot {
     pub(crate) fn leads(&self, consumed: RequestId) -> bool {
         self.dragging.get() || self.dispatch.unconfirmed(consumed)
     }
+
+    /// The slider's own value while it leads the published snapshot (see
+    /// [`Self::leads`]); `None` once the snapshot caught up.
+    pub(crate) fn leading_value(&self, cx: &App) -> Option<f32> {
+        let consumed = self.dispatch.ui.read(cx).snapshot.consumed_request_id;
+        self.leads(consumed)
+            .then(|| self.state.read(cx).value().end())
+    }
+}
+
+/// The gain a fader readout shows (design 22 D1): the slot's own value while
+/// it leads the snapshot — a drag, or an edit the service has not confirmed
+/// yet — and the published gain otherwise, so the number moves with the
+/// thumb instead of trailing it by a service round trip. The edit dispatches
+/// exactly this gain, so the switch back to the published one is seamless.
+pub(crate) fn fader_readout_gain(slot: Option<&SliderSlot>, published: f64, cx: &App) -> f64 {
+    slot.and_then(|slot| slot.leading_value(cx))
+        .map_or(published, |value| FaderScale::gain(1. - value))
+}
+
+/// [`fader_readout_gain`] for a send slider, mapped through the send bar's
+/// own gain pair ([`send_gain`]).
+pub(crate) fn send_readout_gain(slot: Option<&SliderSlot>, published: f64, cx: &App) -> f64 {
+    slot.and_then(|slot| slot.leading_value(cx))
+        .map_or(published, send_gain)
 }
 
 /// One slider's edit path: builds the request against the live snapshot,

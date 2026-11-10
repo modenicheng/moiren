@@ -4,7 +4,7 @@ use super::*;
 use crate::service::{GraphEdit, InputSelection};
 use crate::ui::presentation::{db_text, dbfs_text, step_db};
 use crate::ui::shell::mixer::{
-    EditableValueFamily, gain_db_text, reset_clip_on_click, start_value_edit,
+    EditableValueFamily, fader_readout_gain, gain_db_text, reset_clip_on_click, start_value_edit,
 };
 use crate::ui::widgets::fader::hslider;
 use controls::*;
@@ -188,7 +188,11 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .child(detail_editable(
             &t!("Fader"),
             SharedString::from(format!("inspector-fader-{id:?}")),
-            db_text(entry.mixer.gain),
+            db_text(fader_readout_gain(
+                shell.mixer.presentation.inspector_faders.get(&id),
+                entry.mixer.gain,
+                cx,
+            )),
             shell.mixer.presentation.editing_value == Some(id),
             &shell.mixer.presentation.value_inputs[&id],
             start_value_edit(cx.entity(), EditableValueFamily::Fader, id, move |graph| {
