@@ -1394,6 +1394,48 @@ fn failed_auto_apply_keeps_audio_running_and_the_next_edit_retries() {
     assert_eq!(rig.sample(), 0.5);
 }
 
+/// Design 23 §6 (audit fact F6, the ghost rewrite): with no selection ledger
+/// left to mirror, clearing the primary Source's binding and starting by
+/// graph leaves the node unbound, fails on the node it names, and repairs
+/// cleanly once the binding is restored.
+#[test]
+fn clearing_the_primary_source_binding_fails_on_the_node_and_repairs_cleanly() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle);
+    let source = rig.node(NodeKind::Source);
+    rig.request(AppRequest::EditGraph(GraphEdit::ClearBinding(source)));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Failed);
+    let snapshot = rig.c.graph.snapshot();
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .find(|entry| entry.id == source)
+            .unwrap()
+            .source
+            .is_none(),
+        "nothing rewrites a stale selection back into the node"
+    );
+    assert!(snapshot.faults.iter().any(|fault| {
+        fault.subject == GraphSubject::Node(source)
+            && fault.cause == "The Source node is not bound to an input source"
+    }));
+    // The repair clears the fault group on the next successful edit, and
+    // the following start runs the repaired graph.
+    rig.request(AppRequest::EditGraph(GraphEdit::BindSource {
+        node: source,
+        source: InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+    }));
+    rig.wait(|r| r.c.graph.snapshot().faults.is_empty());
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+}
+
 #[test]
 fn solo_edits_fan_out_live_strip_mutes_to_parallel_sources() {
     let mut rig = Rig::new();
@@ -2729,6 +2771,48 @@ fn restored_document(
         .unwrap();
     extend(&mut graph);
     crate::project::ProjectDocument::from_graph("Restored", &graph.snapshot()).unwrap()
+}
+
+/// Design 23 §4.3: documents that predate the `processing` field carry the
+/// block size on the session, because the deleted UI ledger used to ferry it
+/// into a Start request. `load_project` migrates it so start-by-graph opens
+/// with the size the project was saved with; explicit processing stays
+/// authoritative when both forms are present.
+#[test]
+fn loading_a_legacy_document_migrates_the_session_block_size() {
+    let legacy_session = SessionSpec {
+        source: InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+        output_endpoint_id: "output".into(),
+        limit: RunLimit::UntilStopped,
+        gain: 1.0,
+        pan: 0.0,
+        max_block_frames: 512,
+    };
+    let mut document = restored_document(|_| {});
+    document.processing = None;
+    document.session = Some((&legacy_session).into());
+    let mut context = ServiceContext::default();
+    context
+        .load_project(document)
+        .expect("legacy document loads");
+    assert_eq!(context.audio_settings.processing.block_frames, 512);
+
+    let mut document = restored_document(|_| {});
+    document.session = Some((&legacy_session).into());
+    document.processing = Some(moiren_engine::audio_config::ProcessingSettings {
+        block_frames: 128,
+        ..Default::default()
+    });
+    let mut context = ServiceContext::default();
+    context
+        .load_project(document)
+        .expect("mixed document loads");
+    assert_eq!(
+        context.audio_settings.processing.block_frames, 128,
+        "explicit processing wins over the session block size"
+    );
 }
 
 fn add_physical_source(graph: &mut crate::service::ServiceGraph, label: &str, endpoint_id: &str) {

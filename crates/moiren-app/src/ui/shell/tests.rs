@@ -769,7 +769,10 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
         shell.set_page(pages::Page::Devices, cx);
     });
     let before = view.update(cx, |shell, cx| {
-        shell.state.read(cx).selection.output_id.clone()
+        (
+            shell.state.read(cx).snapshot.graph.clone(),
+            shell.state.read(cx).snapshot.phase,
+        )
     });
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(1000.)));
@@ -789,7 +792,15 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
     });
     settle_settings(&view, cx);
     view.update(cx, |shell, cx| {
-        assert_eq!(shell.state.read(cx).selection.output_id, before);
+        // Design 23: there is no selection ledger for an override to touch;
+        // the graph itself is the invariant.
+        assert_eq!(
+            (
+                shell.state.read(cx).snapshot.graph.clone(),
+                shell.state.read(cx).snapshot.phase,
+            ),
+            before
+        );
         assert_eq!(
             shell.state.read(cx).snapshot.phase,
             crate::service::SessionPhase::Idle
@@ -1653,11 +1664,7 @@ fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::
 }
 
 #[gpui_kit::test]
-fn statusbar_shows_the_configured_format_and_hides_route_and_clock_when_idle(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    // Reaching Running through the real driver needs live audio devices, so
-    // the running-path composition is covered by chrome's unit tests.
+fn statusbar_shows_the_configured_format_when_idle(cx: &mut gpui_kit::TestAppContext) {
     let (_view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -1665,7 +1672,8 @@ fn statusbar_shows_the_configured_format_and_hides_route_and_clock_when_idle(
             window.find("statusbar-format").visible(),
             "the configured processing format is informative even when idle"
         );
-        assert!(window.try_find("statusbar-route").is_none());
+        // Design 23 §4.4 removed the route label entirely; drift went with
+        // the clock work that preceded it.
         assert!(window.try_find("statusbar-drift").is_none());
     });
     finish_service(runtime);

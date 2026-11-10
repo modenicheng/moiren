@@ -52,7 +52,7 @@ Graph、Mixer、Matrix 展示同一份音频图：
 | Graph | 节点、端口、拓扑和信号流，解释连接关系 |
 | Mixer | 通道或节点的参数、增益结构、电平与监听控制 |
 | Matrix | 大规模输出侧到输入侧的连接关系、选中交点和路由详情 |
-| Devices | 设备、应用音源、可用性、能力和时钟资源 |
+| Devices | 设备目录、每设备的流配置与运行监控（含虚拟设备与时钟总览） |
 | Settings | 应用偏好、快捷键、引擎选项与诊断 |
 
 共享的是图对象身份、Session、资源、参数、请求与确认状态。各视图的相机、排序、筛选、折叠和滚动属于展示状态，不应产生另一份拓扑权威。不能将「共享 LogicalGraph」解释成「只有 Graph 页面可以编辑」。多视图统一编辑的具体端口、边和事务设计见第 10 节的评估文档。
@@ -334,7 +334,7 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 
 ### 7.4 Devices 与 Settings
 
-Devices 区分 Inputs、Outputs、Applications、Clock；设备详情展示能力、身份、Default、Active、Next start、可用性和诊断。默认设备、活动设备与下一次 Start 的候选不是同一状态。设备消失后保留稳定身份与不可用原因；刷新失败保留最后一次成功数据。
+Devices 区分 Inputs、Outputs、Virtual devices、Clock。它只回答三件事：有哪些设备、每台设备用什么流参数打开、每台设备此刻实际跑成什么样（设备行的使用/绑定徽标、详情页的使用者三态与流明细）。绑定只有一个入口族：Graph 的 IO 节点（画布 chip 下拉与节点 Inspector）；Devices 页没有任何路由或走带控制。应用音源不是设备，在 Source 节点下拉里选。设备消失后保留稳定身份与不可用原因；刷新失败保留最后一次成功数据。
 
 Settings 负责 Audio Engine、Appearance、Shortcuts、Diagnostics 等应用偏好。关闭后回到原工作区并恢复选择、相机与面板状态。设备选择、路由与 Session 参数留在各自工作区，避免重复入口。
 
@@ -348,7 +348,7 @@ Settings 负责 Audio Engine、Appearance、Shortcuts、Diagnostics 等应用偏
 
 这些规则应在重写后继续满足，与现有页面的结构无关。
 
-- 分开展示候选配置和当前 Active Session。运行 A 时选择下次启动的 B，不能把 A 的电平、身份或来源标签改成 B。
+- 路由的真相只有一份：候选图。绑定只在 IO 节点上编辑；任何页面不得维护第二份选择账本或在启动时回写绑定。运行事实以引擎观测为准，配置事实以已保存请求为准，两者并排展示而不互相冒充。
 - 参数反馈包含 Requested → Accepted → Applied；拒绝或错误显示原因。Applied 由真实回执确认，可带 request、revision 与 effective frame，不能在本地拖动后立即假装生效。
 - 无数据、无 publisher、等待完整窗口、不可用、停止、错误、Prototype 与真实读数分别展示。Unknown 使用 `—` 或状态说明。
 - Peak、RMS、LUFS、相关度、CPU、延迟和 XRUN 各自需要真实来源。不能将已有 Source / Sink 观测伪装成每个处理节点的独立测量。

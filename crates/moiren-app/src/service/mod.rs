@@ -186,6 +186,12 @@ impl ServiceContext {
         let mut audio = self.audio_settings.clone();
         if let Some(processing) = document.processing {
             audio.processing = processing;
+        } else if let Some(session) = &document.session {
+            // Design 23 §4.3: old documents carry the block size on the
+            // session because the deleted UI ledger used to ferry it into a
+            // Start request. Explicit project processing stays authoritative
+            // when both forms are present; a session without it migrates.
+            audio.processing.block_frames = session.max_block_frames as u32;
         }
         audio.validate().map_err(|error| error.to_string())?;
         if let Some(graph) = &document.graph {
@@ -197,7 +203,12 @@ impl ServiceContext {
                 .replace_with_exports(restored.graph, restored.nodes, restored.exports)?;
         } else if let Some(spec) = document.session_spec().map_err(|error| error.to_string())? {
             let mut candidate = ServiceGraph::default();
-            candidate.configure_session(&spec)?;
+            // The early-demo run limit is no longer honored (design 23 §7):
+            // the migrated bindings start like any other graph.
+            candidate.configure_session(&SessionSpec {
+                limit: RunLimit::UntilStopped,
+                ..spec
+            })?;
             let candidate = candidate.snapshot();
             self.graph.replace(candidate.graph, candidate.nodes)?;
         }
