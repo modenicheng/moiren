@@ -118,9 +118,9 @@ impl StudioShell {
                 });
             }
         }
-        // Sliders ride the shared mixer sync: drag Changes coalesce at the
-        // fader dispatch interval, the release's final value lands, the
-        // snapshot write-back stands down while a drag owns the thumb, and
+        // Sliders ride the shared mixer sync: drag Changes dispatch at most
+        // once per frame, the release's final value lands, the snapshot
+        // write-back stands down while the slider leads the snapshot, and
         // the slot carries the wheel/double-click behavior.
         let rows = CompressorParameter::ALL
             .iter()

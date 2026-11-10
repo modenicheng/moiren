@@ -8,8 +8,8 @@ use crate::ui::shell::test_harness::{
 use crate::ui::widgets::fader::{FaderScale, send_gain};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
-    SharedString, TestAppContext, VisualTestContext, point, px, size,
+    AppContext, Entity, Modifiers, MouseButton, MouseMoveEvent, Pixels, PlatformInput, ScrollDelta,
+    ScrollWheelEvent, SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 use moiren_core::graph::{NodeId, NodeKind};
 use std::time::Duration;
@@ -969,6 +969,85 @@ fn fader_readout_tracks_the_thumb_until_the_service_confirms_it(cx: &mut TestApp
     assert_eq!(
         confirmed, released,
         "the confirmation must not move the number"
+    );
+    finish_service(runtime);
+}
+
+/// A drag that pauses must land its last value one frame later, with the
+/// button still down (design 22 D4). The fixed 33 ms dispatch interval
+/// this replaced flushed a stashed value only on the next move past the
+/// interval or at release, so the service sat on an older gain — and,
+/// with the readout showing the thumb, on a different number than the
+/// one on screen — for as long as the user held the fader still.
+#[gpui_kit::test]
+fn a_paused_fader_drag_lands_its_last_value_at_the_next_frame(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    // The press dispatches at once and arms the frame boundary. The moves
+    // then arrive together inside one frame, as a fast pointer's do: the
+    // first starts the drag, the next two change the value and only stash.
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| {
+        for travel in [12., 18., 24.] {
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: press + point(px(0.), px(travel)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        }
+    });
+    // Hold still: frames keep coming, the pointer does not move.
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    poll(&view, cx);
+    let (gain, thumb) = view.read_with(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+        )
+    });
+    assert_eq!(
+        gain,
+        FaderScale::gain(1. - thumb),
+        "the held drag's value must reach the service before release"
+    );
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
     );
     finish_service(runtime);
 }

@@ -2,10 +2,9 @@ use super::*;
 use crate::service::{GraphEdit, GraphSnapshot, MixerState, RequestId};
 use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior, send_gain, send_value};
 use rust_i18n::t;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 pub(crate) struct MixerPresentation {
     pub order: Vec<NodeId>,
@@ -139,6 +138,7 @@ pub(crate) struct SliderSlot {
     pub state: Entity<base::slider::SliderState>,
     pub dragging: Rc<Cell<bool>>,
     cancelled: Rc<Cell<bool>>,
+    gate: Rc<RefCell<DispatchGate>>,
     dispatch: Rc<SliderDispatch>,
     pub behavior: SliderBehavior,
 }
@@ -155,6 +155,7 @@ impl SliderSlot {
     pub(crate) fn cancel_drag(&self) {
         self.dragging.set(false);
         self.cancelled.set(true);
+        self.gate.borrow_mut().discard();
     }
 
     /// Whether the slider is ahead of the snapshot that consumed request
@@ -235,44 +236,69 @@ impl SliderDispatch {
     }
 }
 
-/// Drag Changes reach the service at most once per interval; the release
-/// passes its final value unless a wheel/double-click commit already
-/// superseded it. Pure and clock-injected so tests drive it without gpui,
-/// and so no timer is needed: a stashed pending value flushes on the next
-/// Change past the interval, or at latest on release.
-const FADER_DISPATCH_INTERVAL: Duration = Duration::from_millis(33);
-
+/// Drag Changes reach the service at most once per displayed frame (design
+/// 22 D4). The first Change dispatches at once and arms a frame boundary;
+/// later Changes before it supersede one pending value, which the boundary
+/// dispatches — re-arming while the pointer keeps producing Changes and
+/// reopening after a frame without one. A drag that pauses therefore lands
+/// its last value one frame later, where the fixed 33 ms interval this
+/// replaced only flushed on the next move or at release. Pure so the tests
+/// drive it without gpui; the subscription schedules the boundary through
+/// `Window::on_next_frame` ([`flush_at_next_frame`]).
 #[derive(Default)]
 struct DispatchGate {
-    last_sent: Option<Instant>,
+    /// A frame boundary is scheduled: Changes until it only stash.
+    armed: bool,
     pending: Option<f32>,
 }
 
 impl DispatchGate {
-    /// One drag Change: send it now when the interval elapsed since the last
-    /// dispatch (or no dispatch happened yet), otherwise supersede whatever
-    /// pending value is stashed.
-    fn change(&mut self, value: f32, now: Instant) -> Option<f32> {
-        match self.last_sent {
-            Some(sent) if now.duration_since(sent) < FADER_DISPATCH_INTERVAL => {
-                self.pending = Some(value);
-                None
-            }
-            _ => {
-                self.last_sent = Some(now);
-                self.pending = None;
-                Some(value)
-            }
+    /// One drag Change: `Some` to dispatch now — the caller then schedules
+    /// the frame boundary — or `None` when it only supersedes the pending
+    /// value.
+    fn change(&mut self, value: f32) -> Option<f32> {
+        if self.armed {
+            self.pending = Some(value);
+            None
+        } else {
+            self.armed = true;
+            Some(value)
         }
     }
 
-    /// Drag finished: the event's final value is dispatched unconditionally
-    /// by the caller; forget the timer and any stashed intermediate so the
-    /// next drag's first Change sends immediately.
-    fn release(&mut self) {
-        self.last_sent = None;
+    /// The frame boundary: the pending value to dispatch now, which keeps
+    /// the gate armed for one more frame (the caller schedules it); with
+    /// nothing pending the gate reopens.
+    fn frame(&mut self) -> Option<f32> {
+        let pending = self.pending.take();
+        self.armed = pending.is_some();
+        pending
+    }
+
+    /// Drops the pending value: the release dispatches its own final value,
+    /// and a cancelled gesture's tail must not land at all. A boundary that
+    /// is already scheduled still fires, finds nothing and reopens the gate.
+    fn discard(&mut self) {
         self.pending = None;
     }
+}
+
+/// Schedules a drag gate's frame boundary: the pending value, if any,
+/// dispatches when the next frame starts, and the boundary re-arms for as
+/// long as the pointer keeps the value moving.
+fn flush_at_next_frame(
+    window: &Window,
+    gate: &Rc<RefCell<DispatchGate>>,
+    dispatch: &Rc<SliderDispatch>,
+) {
+    let (gate, dispatch) = (gate.clone(), dispatch.clone());
+    window.on_next_frame(move |window, cx| {
+        let pending = gate.borrow_mut().frame();
+        if let Some(value) = pending {
+            dispatch.send(value, cx);
+            flush_at_next_frame(window, &gate, &dispatch);
+        }
+    });
 }
 
 impl MixerPresentation {
@@ -869,10 +895,12 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
             let drag_flag = dragging.clone();
             let cancel_flag = cancelled.clone();
             let drag_dispatch = dispatch.clone();
-            let mut gate = DispatchGate::default();
-            cx.subscribe(
+            let gate = Rc::new(RefCell::new(DispatchGate::default()));
+            let drag_gate = gate.clone();
+            cx.subscribe_in(
                 &slider,
-                move |_, slider, event: &base::slider::SliderEvent, cx| {
+                window,
+                move |_, slider, event: &base::slider::SliderEvent, window, cx| {
                     match event {
                         base::slider::SliderEvent::Change(value) => {
                             drag_flag.set(true);
@@ -888,13 +916,15 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                             if !value.is_finite() {
                                 return;
                             }
-                            if let Some(send) = gate.change(value, Instant::now()) {
-                                drag_dispatch.send(send, cx);
+                            let now = drag_gate.borrow_mut().change(value);
+                            if let Some(value) = now {
+                                drag_dispatch.send(value, cx);
+                                flush_at_next_frame(window, &drag_gate, &drag_dispatch);
                             }
                         }
                         base::slider::SliderEvent::Release(value) => {
                             drag_flag.set(false);
-                            gate.release();
+                            drag_gate.borrow_mut().discard();
                             let value = value.end();
                             // A cancelled drag's release carries only the
                             // stale pointer tail: the journal already moved
@@ -923,6 +953,7 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
                 state: slider,
                 dragging,
                 cancelled,
+                gate,
                 dispatch,
             }
         });
@@ -1218,54 +1249,67 @@ impl Render for StripDrag {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DispatchGate, Duration, FaderScale, Instant, fader_step, parse_balance, parse_gain_db,
-        parse_pan,
-    };
+    use super::{DispatchGate, FaderScale, fader_step, parse_balance, parse_gain_db, parse_pan};
 
-    fn millis(base: Instant, offset: u64) -> Instant {
-        base + Duration::from_millis(offset)
+    #[test]
+    fn first_change_dispatches_immediately_and_arms_the_frame_boundary() {
+        let mut gate = DispatchGate::default();
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(
+            gate.change(0.6),
+            None,
+            "until the boundary, Changes only stash"
+        );
     }
 
     #[test]
-    fn first_change_dispatches_immediately() {
+    fn changes_within_a_frame_supersede_one_pending_value() {
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.6), None);
+        assert_eq!(gate.change(0.7), None);
+        assert_eq!(gate.frame(), Some(0.7), "the boundary sends the newest");
     }
 
     #[test]
-    fn changes_within_the_interval_are_coalesced_and_superseded() {
+    fn the_boundary_rearms_while_changes_keep_coming_and_reopens_after_a_quiet_frame() {
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
-        assert_eq!(gate.change(0.6, millis(base, 10)), None);
-        // A later Change within the interval replaces the stashed value.
-        assert_eq!(gate.change(0.7, millis(base, 20)), None);
-        assert_eq!(gate.change(0.8, millis(base, 32)), None);
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.6), None);
+        assert_eq!(gate.frame(), Some(0.6));
+        // The flush keeps the gate armed for the frame it started.
+        assert_eq!(gate.change(0.65), None);
+        assert_eq!(gate.frame(), Some(0.65));
+        // A frame without Changes reopens it: the next one goes out at once.
+        assert_eq!(gate.frame(), None);
+        assert_eq!(gate.change(0.7), Some(0.7));
     }
 
     #[test]
-    fn change_after_the_interval_dispatches_the_latest_value() {
+    fn a_paused_drag_lands_its_last_value_at_the_next_frame() {
+        // The fixed interval this gate replaced flushed only on the next
+        // Change past the interval or at release: a drag that stopped
+        // moving left the service on an older value while the button stayed
+        // down. Frames keep coming without Changes.
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
-        assert_eq!(gate.change(0.6, millis(base, 10)), None);
-        // The stashed intermediate is superseded by the newer value.
-        assert_eq!(gate.change(0.7, millis(base, 33)), Some(0.7));
-        assert_eq!(gate.change(0.8, millis(base, 40)), None);
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.42), None);
+        assert_eq!(gate.frame(), Some(0.42));
+        assert_eq!(gate.frame(), None);
     }
 
     #[test]
-    fn release_clears_the_gate_so_the_next_drag_resumes_immediately() {
+    fn discard_drops_the_pending_value_and_the_next_drag_resumes_immediately() {
         let mut gate = DispatchGate::default();
-        let base = Instant::now();
-        assert_eq!(gate.change(0.5, base), Some(0.5));
-        assert_eq!(gate.change(0.6, millis(base, 5)), None);
-        gate.release();
-        assert_eq!(gate.pending, None);
-        // Even an instant next drag sends its first Change.
-        assert_eq!(gate.change(0.1, millis(base, 6)), Some(0.1));
+        assert_eq!(gate.change(0.5), Some(0.5));
+        assert_eq!(gate.change(0.6), None);
+        gate.discard();
+        assert_eq!(
+            gate.frame(),
+            None,
+            "a released or cancelled gesture's tail never lands"
+        );
+        assert_eq!(gate.change(0.1), Some(0.1));
     }
 
     #[test]
