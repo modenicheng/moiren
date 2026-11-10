@@ -973,6 +973,55 @@ fn fader_readout_tracks_the_thumb_until_the_service_confirms_it(cx: &mut TestApp
     finish_service(runtime);
 }
 
+/// A touchpad pan over a fader must repaint the thumb on every frame
+/// (design 22 D0). The pan writes the slider state, and that notification
+/// rebuilds the strip's cached panel. The 33 ms nested-rebuild throttle
+/// this replaced let only one rebuild through per 33 ms, so a pan arriving
+/// at display rate showed the thumb at about 30 fps. Only the panned strip
+/// may rebuild; its siblings keep replaying.
+#[gpui_kit::test]
+fn a_touchpad_pan_rebuilds_the_panned_strip_every_frame(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let center = view.update(cx, |shell, cx| {
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds()
+            .center()
+    });
+    let pan = |cx: &mut VisualTestContext| {
+        cx.simulate_event(ScrollWheelEvent {
+            position: center,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-3.))),
+            ..Default::default()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    // The first event also moves the pointer onto the fader; count from the
+    // frames after it.
+    pan(cx);
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    for _ in 0..5 {
+        pan(cx);
+    }
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    assert_eq!(
+        after - before,
+        5,
+        "each panned frame must rebuild exactly the panned strip"
+    );
+    finish_service(runtime);
+}
+
 /// Double click resets a fader wherever its second press lands. The first
 /// press jumps the thumb to the pointer and the strip repaints it there
 /// within a frame, so a human's second press hits the thumb, which claims
