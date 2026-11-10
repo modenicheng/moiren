@@ -196,6 +196,64 @@ fn sweep_frame(
     });
 }
 
+/// `MOIREN_CAPTURE_ECHO`: how long an edit takes to come back to the UI.
+/// Dispatches a no-op strip edit 40 times, 60 ms apart, and times each from
+/// the dispatch to the shell notification that delivers the snapshot which
+/// consumed it: the service round trip plus however long the control pump
+/// takes to pick the publish up. Nothing here drains the state itself, so
+/// the number is the production pump's.
+async fn echo_probe(shell: &Entity<StudioShell>, cx: &mut AsyncApp) {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let in_flight: Rc<Cell<Option<(crate::service::RequestId, Instant)>>> = Rc::default();
+    let samples: Rc<RefCell<Vec<f64>>> = Rc::default();
+    let _delivery = cx.update(|cx| {
+        let (in_flight, samples) = (in_flight.clone(), samples.clone());
+        cx.observe(shell, move |shell, cx| {
+            let Some((request, sent)) = in_flight.get() else {
+                return;
+            };
+            if shell.read(cx).state.read(cx).snapshot.consumed_request_id >= request {
+                samples
+                    .borrow_mut()
+                    .push(sent.elapsed().as_secs_f64() * 1000.);
+                in_flight.set(None);
+            }
+        })
+    });
+    for _ in 0..40 {
+        let request = shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                let node = state.snapshot.graph.nodes.first()?;
+                let edit = crate::service::GraphEdit::SetMixer {
+                    node: node.id,
+                    state: node.mixer,
+                };
+                state.try_dispatch(AppRequest::EditGraph(edit)).ok()
+            })
+        });
+        in_flight.set(request.map(|request| (request, Instant::now())));
+        cx.background_executor()
+            .timer(Duration::from_millis(60))
+            .await;
+    }
+    in_flight.set(None);
+    let mut samples = samples.take();
+    samples.sort_by(f64::total_cmp);
+    let at = |p: f64| samples[((samples.len() - 1) as f64 * p).round() as usize];
+    if samples.is_empty() {
+        eprintln!("Echo latency: no edit came back");
+    } else {
+        eprintln!(
+            "Echo latency: p50={:.2}ms p95={:.2}ms max={:.2}ms (n={})",
+            at(0.5),
+            at(0.95),
+            at(1.),
+            samples.len()
+        );
+    }
+}
+
 pub fn run_ui_capture() -> anyhow::Result<()> {
     let directory = std::env::args()
         .nth(1)
@@ -372,6 +430,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     if std::env::var_os("MOIREN_CAPTURE_STATES").is_some() {
                         mixer_states::capture(window, &shell, &directory, &capture, cx)
                             .await.expect("Mixer state captures");
+                    }
+                    if std::env::var_os("MOIREN_CAPTURE_ECHO").is_some() {
+                        echo_probe(&shell, cx).await;
                     }
                     cx.update(|cx| cx.quit());
                     return;
