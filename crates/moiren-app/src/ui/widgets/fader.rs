@@ -146,9 +146,10 @@ pub type Commit = Rc<dyn Fn(f32, &mut Window, &mut App)>;
 /// the drag path.
 #[derive(Clone)]
 pub struct SliderBehavior {
-    /// One wheel notch: current value -> new value. Direction +1 = up/right
-    /// (increase), -1 = down/left.
-    pub step: Rc<dyn Fn(f32, i32) -> f32>,
+    /// Wheel travel: (current value, signed notches) -> new value. +1 is one
+    /// notch up/right (increase), -1 down/left; fine-grained wheels pass a
+    /// fraction of a notch.
+    pub step: Rc<dyn Fn(f32, f32) -> f32>,
     /// Value a double click restores (unity / default / center).
     pub reset: f32,
     /// Commit an externally computed value: set slider value + dispatch the
@@ -189,7 +190,7 @@ fn gestures(
                 let current = slider.value().end();
                 let (min, max) = (slider.min_value(), slider.max_value());
                 let value = match gesture {
-                    ScrollGesture::Notch(direction) => (behavior.step)(current, direction),
+                    ScrollGesture::Notch(notches) => (behavior.step)(current, notches),
                     ScrollGesture::Pan(travel) => (current + travel * (max - min)).clamp(min, max),
                 };
                 // An immediate, user-paced gesture: bypass drag coalescing

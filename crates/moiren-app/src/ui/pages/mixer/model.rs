@@ -429,21 +429,25 @@ pub(crate) type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<AppReques
 /// well below this, so clamping only guards edit validity.
 const FADER_MAX_GAIN: f64 = 16.;
 
-/// One wheel notch on a node fader: a multiplicative ±1 dB step in the
-/// perceptual value space (`1 - FaderScale::position(gain)`). Stepping below
-/// the −72 dB floor snaps to exact digital zero, and stepping up from exact
-/// silence un-silences one step above the floor so the wheel can always
-/// leave −∞ (0 gain cannot be multiplied into something audible).
-fn fader_step(value: f32, dir: i32) -> f32 {
-    if dir == 0 {
+/// Wheel travel on a node fader: a multiplicative step of `notches` dB in
+/// the perceptual value space (`1 - FaderScale::position(gain)`), ±1 per
+/// notch and a fraction of it from fine-grained wheels. Stepping below the
+/// −72 dB floor snaps to exact digital zero. Stepping up from below the
+/// floor — exact silence, or a quieter gain only a drag reaches — enters one
+/// step above the floor: silence cannot be multiplied into something
+/// audible, and a sub-floor gain multiplied by a small step would still sit
+/// below the floor and snap to silence, cutting the signal on a wheel up.
+fn fader_step(value: f32, notches: f32) -> f32 {
+    if notches == 0. {
         return value;
     }
     let floor = 10f64.powf(-72. / 20.);
     let gain = FaderScale::gain(1. - value);
-    let stepped = if gain <= 0. && dir > 0 {
-        floor * 10f64.powf(f64::from(dir) / 20.)
+    let step = 10f64.powf(f64::from(notches) / 20.);
+    let stepped = if gain < floor && notches > 0. {
+        floor * step
     } else {
-        gain * 10f64.powf(f64::from(dir) / 20.)
+        gain * step
     };
     // f32 round-trips through FaderScale carry a few 1e-5 dB of slack, so
     // only fall a meaningful 0.001 dB below the floor: the floor itself must
@@ -1318,11 +1322,27 @@ mod tests {
         let db_of = |value: f32| 20. * FaderScale::gain(1. - value).log10();
         // Up then down from −6 dB returns to the same slider value.
         let start = at_db(-6.);
-        let up = fader_step(start, 1);
+        let up = fader_step(start, 1.);
         assert!((db_of(up) + 5.).abs() < 0.001, "got {} dB", db_of(up));
-        assert!((fader_step(up, -1) - start).abs() < 0.00001);
-        let down = fader_step(start, -1);
+        assert!((fader_step(up, -1.) - start).abs() < 0.00001);
+        let down = fader_step(start, -1.);
         assert!((db_of(down) + 7.).abs() < 0.001, "got {} dB", db_of(down));
+    }
+
+    #[test]
+    fn fader_step_glides_by_fractional_notches() {
+        let at_db = |db: f64| 1. - FaderScale::position(10f64.powf(db / 20.));
+        let db_of = |value: f32| 20. * FaderScale::gain(1. - value).log10();
+        let start = at_db(-6.);
+        let quarter = fader_step(start, 0.25);
+        assert!(
+            (db_of(quarter) + 5.75).abs() < 0.001,
+            "got {} dB",
+            db_of(quarter)
+        );
+        // Four quarter notches travel exactly one notch.
+        let value = (0..4).fold(start, |value, _| fader_step(value, 0.25));
+        assert!((db_of(value) + 5.).abs() < 0.001, "got {} dB", db_of(value));
     }
 
     #[test]
@@ -1330,19 +1350,35 @@ mod tests {
         // Silence cannot be multiplied into something audible: the first
         // up-step lands one dB above the −72 dB floor, inside the final
         // finite segment between the −72 and −60 dB ticks.
-        let unsilenced = fader_step(0., 1);
+        let unsilenced = fader_step(0., 1.);
         let db = 20. * FaderScale::gain(1. - unsilenced).log10();
         assert!(db > -72. && db <= -60., "got {db} dB");
         // Stepping down again returns to the floor (still finite); one more
         // step falls below it and snaps to exact digital zero.
-        let floor = fader_step(unsilenced, -1);
+        let floor = fader_step(unsilenced, -1.);
         assert!(
             (FaderScale::gain(1. - floor) - 10f64.powf(-72. / 20.)).abs() < 1e-9,
             "expected the −72 dB floor"
         );
-        assert_eq!(FaderScale::gain(1. - fader_step(floor, -1)), 0.);
+        assert_eq!(FaderScale::gain(1. - fader_step(floor, -1.)), 0.);
         // Silence is sticky downwards.
-        assert_eq!(fader_step(0., -1), 0.);
+        assert_eq!(fader_step(0., -1.), 0.);
+    }
+
+    #[test]
+    fn fader_step_up_from_below_the_floor_never_cuts_to_silence() {
+        // A drag can park the fader below the −72 dB floor. A wheel up there
+        // used to multiply the gain by its step, stay under the floor and
+        // snap to digital silence — muting the strip on a wheel up, and on
+        // every fractional event of a fine-grained wheel.
+        let deep = 1. - FaderScale::position(10f64.powf(-90. / 20.));
+        for notches in [1., 0.25] {
+            let db = 20. * FaderScale::gain(1. - fader_step(deep, notches)).log10();
+            assert!(
+                db > -72. && db < -70.9,
+                "{notches} notch up from -90 dB landed at {db} dB"
+            );
+        }
     }
 
     #[test]
@@ -1351,7 +1387,7 @@ mod tests {
         // through FaderScale::position, and the stepped gain stays inside
         // the amplitude-16 validity bound of MixerState.
         let top = 1. - FaderScale::position(10f64.powf(12. / 20.));
-        assert_eq!(fader_step(top, 1), top);
+        assert_eq!(fader_step(top, 1.), top);
     }
 
     #[test]
