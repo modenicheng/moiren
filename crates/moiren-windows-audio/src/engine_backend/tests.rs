@@ -333,6 +333,90 @@ fn virtual_contract_and_native_constraints_are_validated_independently() {
 }
 
 #[test]
+fn prepared_streams_record_their_service_endpoint_identities() {
+    // Every registration site records the identity the graph bound — the
+    // service-side catalog row id — not the canonical id a native open
+    // resolves to. ASIO pins `asio:{CLSID}`; the observation must keep that
+    // exact string or the devices page cannot attribute the stream.
+    // (The process-loopback site is the fourth registrant; its identity is
+    // the parsed `moiren:process:{pid}:{creation}` pair, which needs a real
+    // foreign process to exercise and is covered by construction.)
+    let mut project = virtual_project(2, 48_000);
+    let physical_id = "asio:{01234567-89AB-CDEF-0123-456789ABCDEF}".to_string();
+    let physical_source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+    let physical_sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+    project
+        .graph
+        .connect(
+            project.graph.get_node(physical_source).unwrap().outputs()[0].id(),
+            project.graph.get_node(physical_sink).unwrap().inputs()[0].id(),
+            Default::default(),
+        )
+        .unwrap();
+    project.nodes.insert(
+        physical_source,
+        NodeConfig::Input(InputConfig {
+            source: InputSource::Physical(endpoint(&physical_id)),
+            channels: 2,
+            device: physical_device(ClockRole::Follower),
+        }),
+    );
+    project.nodes.insert(
+        physical_sink,
+        NodeConfig::Output(OutputConfig {
+            target: OutputTarget::Physical(endpoint(&physical_id)),
+            channels: 2,
+            device: physical_device(ClockRole::Master),
+        }),
+    );
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = backend::<f64>(&probe);
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    let mut identities: Vec<(NodeId, StreamEndpoint)> = streams
+        .iter()
+        .map(|stream| (stream.node, stream.endpoint.clone()))
+        .collect();
+    identities.sort_by_key(|(node, _)| format!("{node:?}"));
+    let mut expected = vec![
+        (
+            physical_source,
+            StreamEndpoint::Physical(physical_id.clone()),
+        ),
+        (physical_sink, StreamEndpoint::Physical(physical_id)),
+    ];
+    for (node, config) in &project.nodes {
+        let endpoint = match config {
+            NodeConfig::Input(input) => match &input.source {
+                InputSource::VirtualPlayback { endpoint_id } => {
+                    StreamEndpoint::Virtual(*endpoint_id)
+                }
+                _ => continue,
+            },
+            NodeConfig::Output(output) => match &output.target {
+                OutputTarget::VirtualMicrophone { endpoint_id } => {
+                    StreamEndpoint::Virtual(*endpoint_id)
+                }
+                _ => continue,
+            },
+            _ => continue,
+        };
+        expected.push((*node, endpoint));
+    }
+    expected.sort_by_key(|(node, _)| format!("{node:?}"));
+    assert_eq!(identities, expected);
+    owner.cancel();
+    let _ = owner.stop_and_join();
+}
+
+#[test]
 fn prepared_sessions_join_after_provider_binding_or_cancellation_failure() {
     let project = virtual_project(2, 44_100);
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();

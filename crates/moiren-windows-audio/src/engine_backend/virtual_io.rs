@@ -4,6 +4,7 @@ use crate::virtual_owner::{
     VirtualBoundaryRequest, VirtualSessions, bind_microphone_sink, bind_playback_source,
 };
 use moiren_engine::host::OwnerStatus;
+use moiren_engine::node::VirtualEndpointId;
 
 pub(super) struct VirtualAuxiliary(pub VirtualSessions);
 
@@ -75,7 +76,13 @@ pub(super) fn prepare<S: ProcessingSample>(
             bindings.bind_sink(node, sink).map_err(unsupported)?;
             sinks.push(node);
         }
-        observations.push(virtual_observation(node, playback, device, channels));
+        observations.push(virtual_observation(
+            node,
+            endpoint_id,
+            playback,
+            device,
+            channels,
+        ));
     }
     if cancel.is_cancelled() {
         return Err(BackendError::Cancelled);
@@ -87,6 +94,7 @@ pub(super) type VirtualObservation = (ProfessionalStreamObservation, Arc<Counter
 
 fn virtual_observation(
     node: NodeId,
+    endpoint_id: VirtualEndpointId,
     input: bool,
     requested: DeviceOptions,
     channels: usize,
@@ -94,6 +102,7 @@ fn virtual_observation(
     (
         ProfessionalStreamObservation {
             node,
+            endpoint: StreamEndpoint::Virtual(endpoint_id),
             input,
             master: false,
             requested,
