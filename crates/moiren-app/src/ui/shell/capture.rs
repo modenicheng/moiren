@@ -329,13 +329,13 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         let seconds = std::env::var("MOIREN_CAPTURE_SECONDS").ok()
                             .and_then(|value| value.parse::<u64>().ok()).unwrap_or(3).clamp(1, 60);
                         if let Some(sweep) = sweep {
-                            let press = shell.read_with(cx, |shell, cx| fader_press(shell, cx));
+                            let press = shell.read_with(cx, fader_press);
                             let until = std::time::Instant::now() + Duration::from_secs(seconds);
                             match press {
                                 Some(press) => {
                                     // Inactive windows throttle frame callbacks to
                                     // ~30 fps; the sweep must run at display rate.
-                                    let _ = cx.update_window(window.into(), |_, window, cx| {
+                                    let _ = cx.update_window(window, |_, window, cx| {
                                         window.activate_window();
                                         sweep_fader(window, press, sweep, until, cx)
                                     });
