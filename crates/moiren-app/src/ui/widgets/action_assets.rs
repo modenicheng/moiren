@@ -179,6 +179,12 @@ impl AssetSource for ActionAssets {
             "icons/player-stop.svg" => {
                 Some(include_bytes!("../../../assets/icons/player-stop.svg"))
             }
+            "icons/player-record.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-record.svg"))
+            }
+            "icons/player-pause.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-pause.svg"))
+            }
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }
@@ -311,7 +317,8 @@ mod tests {
             "icons/gauge.svg",         // status bar: buffer/latency item
         ];
         // Design 18 node-card glyphs: the per-kind icons, the chip dropdown,
-        // the rack markers, and the alert the fault tooltip leads with.
+        // the rack markers, the recorder strip's transport affordances, and
+        // the alert the fault tooltip leads with.
         const DESIGN18_REQUESTS: &[&str] = &[
             "icons/alert-triangle.svg",
             "icons/volume.svg",
@@ -323,6 +330,8 @@ mod tests {
             "icons/chart-histogram.svg",
             "icons/chevron-down.svg",
             "icons/list-details.svg",
+            "icons/player-record.svg",
+            "icons/player-pause.svg",
         ];
 
         let mut used: HashSet<String> = ActionIcon::ALL

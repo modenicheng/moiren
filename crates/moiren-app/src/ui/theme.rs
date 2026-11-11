@@ -167,6 +167,14 @@ pub mod card {
     pub const METER_H: f32 = 3.;
     pub const METER_CHANNEL_GAP: f32 = 2.;
     pub const METER_CHANNELS: usize = 2;
+    /// Recording-strip bodies (recorder cards): a status line, the output
+    /// file name, and one row of transport affordances. The live duration
+    /// shares the status line's right half but is painted by the hot layer.
+    pub const RECORD_BODY_H: f32 = 56.;
+    /// One transport glyph slot on the recording strip.
+    pub const REC_BTN: f32 = 18.;
+    /// The status dot beside the phase word.
+    pub const REC_DOT: f32 = 6.;
     /// Base distance from the card top to the first port anchor; taller
     /// bodies push the port rail down instead of overlapping the meter.
     pub const PORT_Y: f32 = 80.;

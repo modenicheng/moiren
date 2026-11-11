@@ -1658,3 +1658,48 @@ _version: 2
 "%{frames} smp / %{ms} ms":
   en: "%{frames} smp / %{ms} ms"
   zh-CN: "%{frames} 采样 / %{ms} ms"
+"Ready":
+  en: Ready
+  zh-CN: 就绪
+"Recording":
+  en: Recording
+  zh-CN: 录制中
+"Paused":
+  en: Paused
+  zh-CN: 已暂停
+"Saved":
+  en: Saved
+  zh-CN: 已保存
+"Duration":
+  en: Duration
+  zh-CN: 时长
+"File":
+  en: File
+  zh-CN: 文件
+"Dropped frames":
+  en: Dropped frames
+  zh-CN: 丢弃帧数
+"Start recording":
+  en: Start recording
+  zh-CN: 开始录制
+"Pause recording":
+  en: Pause recording
+  zh-CN: 暂停录制
+"Resume recording":
+  en: Resume recording
+  zh-CN: 继续录制
+"Stop recording":
+  en: Stop recording
+  zh-CN: 终止录制
+"Output directory":
+  en: Output directory
+  zh-CN: 输出目录
+"Change directory…":
+  en: Change directory…
+  zh-CN: 更换目录…
+"The buffer is fixed while a recording runs.":
+  en: The buffer is fixed while a recording runs.
+  zh-CN: 录制进行期间缓冲保持不变。
+"Choose the recording output directory":
+  en: Choose the recording output directory
+  zh-CN: 选择录制输出目录

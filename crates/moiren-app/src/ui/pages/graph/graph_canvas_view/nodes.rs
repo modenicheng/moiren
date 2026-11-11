@@ -11,8 +11,9 @@ use gpui_kit::{
 use rust_i18n::t;
 
 use super::super::graph_canvas::{
-    BindingChip, CanvasFrame, CanvasNode, CardFault, CardKnob, ChipLayout, CurveSpec, KnobLayout,
-    MeterLayout, NodeLayout, TextLayout, curves,
+    BindingChip, CanvasFrame, CanvasNode, CardFault, CardKnob, CardRecording, ChipLayout,
+    CurveSpec, KnobLayout, MeterLayout, NodeLayout, RecordAction, RecordingLayout, TextLayout,
+    curves,
 };
 use crate::ui::monitoring::{REST_DB, SPECTRUM_NOMINAL_SPAN_HZ, SpectrumCurve};
 use crate::ui::theme;
@@ -898,6 +899,154 @@ fn paint_binding_chip(
     );
 }
 
+/// The recorder card's session strip: status dot and phase word, the output
+/// file name, and the transport slots the phase offers. The ticking duration
+/// shares the status line's right half but is painted by the hot layer, so
+/// the cached card never repaints per second.
+pub(in crate::ui) fn paint_recording_strip(
+    frame: &CanvasFrame,
+    recording: &CardRecording,
+    layout: &RecordingLayout,
+    scale: f32,
+    paint: Paint<'_>,
+    cx: &mut App,
+) {
+    use crate::service::RecordingPhase;
+    let Paint { shapes, window } = paint;
+    let active = recording.phase == Some(RecordingPhase::Recording);
+    let dot = frame.window_rect(layout.dot);
+    window.paint_quad(PaintQuad {
+        bounds: dot,
+        corner_radii: (f32::from(dot.size.width) / 2.).into(),
+        background: if active {
+            theme::DANGER
+        } else if recording.phase.is_some_and(|phase| !phase.is_terminal()) {
+            theme::WARNING
+        } else {
+            theme::TEXT_FAINT
+        }
+        .into(),
+        border_widths: 0f32.into(),
+        border_color: theme::controls::TRANSPARENT,
+        border_style: BorderStyle::default(),
+    });
+    paint_label(
+        frame,
+        &layout.status,
+        Label {
+            text: &crate::ui::presentation::recording_phase_text(recording.phase),
+            family: theme::FONT_UI,
+            color: if active {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            },
+            right_aligned: false,
+            weight: FontWeight::SEMIBOLD,
+        },
+        Paint {
+            shapes: &mut *shapes,
+            window: &mut *window,
+        },
+        cx,
+    );
+    if !recording.file_name.is_empty() {
+        paint_label(
+            frame,
+            &layout.file_name,
+            Label {
+                text: &recording.file_name,
+                family: theme::FONT_UI,
+                color: theme::TEXT_FAINT,
+                right_aligned: false,
+                weight: FontWeight::NORMAL,
+            },
+            Paint {
+                shapes: &mut *shapes,
+                window: &mut *window,
+            },
+            cx,
+        );
+    }
+    // Transport slots: which carry an affordance follows the same
+    // availability the hit test consults, so paint and pointer never drift.
+    let slots = [
+        (
+            &layout.record,
+            RecordAction::Record,
+            "player-record",
+            theme::DANGER,
+        ),
+        (
+            &layout.pause,
+            RecordAction::Pause,
+            "player-pause",
+            theme::TEXT_MUTED,
+        ),
+        (
+            &layout.stop,
+            RecordAction::Stop,
+            "player-stop",
+            theme::TEXT_MUTED,
+        ),
+    ];
+    for (bounds, action, icon, color) in slots {
+        let Some(affordance) = action.available(recording.phase) else {
+            continue;
+        };
+        let bounds = frame.window_rect(*bounds);
+        rounded(bounds, theme::SURFACE_4, theme::RADIUS_SM * scale, window);
+        let glyph = match affordance {
+            RecordAction::Record => icon,
+            RecordAction::Pause => "player-pause",
+            RecordAction::Resume => "player-play",
+            RecordAction::Stop => "player-stop",
+        };
+        let glyph_px = px(10. * scale);
+        let inset = (bounds.size.width - glyph_px) / 2.;
+        let _ = window.paint_svg(
+            Bounds {
+                origin: bounds.origin + point(inset, inset),
+                size: size(glyph_px, glyph_px),
+            },
+            format!("icons/{glyph}.svg").into(),
+            None,
+            TransformationMatrix::unit(),
+            color,
+            cx,
+        );
+    }
+}
+
+/// The live duration over a recorder card, painted by the hot layer at the
+/// strip's reserved slot. Text only — geometry comes from the shared frame,
+/// translated for dragged cards by the caller.
+pub(in crate::ui) fn paint_recording_duration(
+    frame: &CanvasFrame,
+    layout: &RecordingLayout,
+    secs: u64,
+    paint: Paint<'_>,
+    cx: &mut App,
+) {
+    let Paint { shapes, window } = paint;
+    paint_label(
+        frame,
+        &layout.duration,
+        Label {
+            text: &crate::ui::presentation::recording_duration_text(secs),
+            family: theme::FONT_UI,
+            color: theme::TEXT_MUTED,
+            right_aligned: true,
+            weight: FontWeight::NORMAL,
+        },
+        Paint {
+            shapes: &mut *shapes,
+            window: &mut *window,
+        },
+        cx,
+    );
+}
+
 /// The channel-mapper preview: one intensity cell per weight, tint-filled
 /// over a dark grid so identity reads as a diagonal.
 fn paint_matrix_preview(
@@ -1399,6 +1548,19 @@ pub(in crate::ui) fn paint_node(
             );
         } else if let (Some(spec), Some(bounds)) = (&node.curve, layout.curve) {
             paint_curve_thumb(frame, bounds, spec, layout.scale, window);
+        } else if let (Some(recording), Some(strip)) = (&node.recording, layout.recording.as_ref())
+        {
+            paint_recording_strip(
+                frame,
+                recording,
+                strip,
+                layout.scale,
+                Paint {
+                    shapes: &mut *shapes,
+                    window: &mut *window,
+                },
+                cx,
+            );
         } else {
             paint_label(
                 frame,

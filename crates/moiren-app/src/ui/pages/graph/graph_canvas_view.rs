@@ -9,7 +9,8 @@ use rust_i18n::t;
 
 use super::graph_canvas::{
     Camera, CanvasFrame, CanvasNode, CanvasWire, CanvasWorld, ConnectionCandidate, DragGuides,
-    HitTarget, KnobControl, OverlayRects, PortDirection, PortTarget, WireCurve, WireGeometry,
+    HitTarget, KnobControl, OverlayRects, PortDirection, PortTarget, RecordAction, WireCurve,
+    WireGeometry,
 };
 use crate::ui::monitoring::{DisplayLevel, SpectrumCurve};
 use crate::ui::observe::TestObserve;
@@ -20,7 +21,8 @@ mod nodes;
 
 pub(in crate::ui) use nodes::{CanvasShapesHandle, Paint};
 pub(in crate::ui) use nodes::{
-    paint_fault_banner, paint_fault_tooltip, paint_meter_bars, paint_node, paint_spectrum_body,
+    paint_fault_banner, paint_fault_tooltip, paint_meter_bars, paint_node,
+    paint_recording_duration, paint_spectrum_body,
 };
 
 // The callback aliases ride `pub(in crate::ui)` so the window-side page
@@ -108,6 +110,9 @@ pub struct CanvasCallbacks {
     /// A binding chip was pressed: canvas node id plus the chip's window
     /// rect, which anchors the endpoint menu.
     pub on_chip: Rc<WindowAppCallback<(String, Bounds<Pixels>)>>,
+    /// A recorder card's transport slot was pressed, carrying the affordance
+    /// the phase offered at that position.
+    pub on_record: Rc<WindowAppCallback<(String, RecordAction)>>,
     /// A faulted card's "!" badge was pressed: canvas node id plus the
     /// badge's window rect, which anchors the fault detail popover.
     pub on_badge: Rc<WindowAppCallback<(String, Bounds<Pixels>)>>,
@@ -465,6 +470,7 @@ pub(in crate::ui) fn node_drag_preview(
         rack_stages: Vec::new(),
         curve: None,
         spectrum,
+        recording: None,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
@@ -594,6 +600,7 @@ pub fn graph_canvas_view(
         on_knob_wheel,
         on_expand,
         on_chip,
+        on_record,
         on_badge,
         on_connection_move,
         on_delete,
@@ -682,6 +689,7 @@ pub fn graph_canvas_view(
                     let on_knob_down = on_knob_down.clone();
                     let on_expand = on_expand.clone();
                     let on_chip = on_chip.clone();
+                    let on_record = on_record.clone();
                     let on_badge = on_badge.clone();
                     move |event, window, cx| {
                         window.focus(&focus, cx);
@@ -721,6 +729,9 @@ pub fn graph_canvas_view(
                                 if let Some(anchor) = anchor {
                                     on_chip((node.to_string(), anchor), window, cx)
                                 }
+                            }
+                            Some(HitTarget::CardAction { node, action }) => {
+                                on_record((node.to_string(), action), window, cx)
                             }
                             Some(HitTarget::Badge { node }) => {
                                 let anchor = frame

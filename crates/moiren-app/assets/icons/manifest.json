@@ -191,6 +191,20 @@
       "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/player-stop.svg",
       "license": "MIT",
       "sha256": "dc88921398dbb7aac7124f8ab142dfa17a51a5aaf0785d32016a425689c689f4"
+    },
+    {
+      "file": "player-record.svg",
+      "icon": "tabler:player-record",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/player-record.svg",
+      "license": "MIT",
+      "sha256": "078b196854f86dbf6bcfcdf3302364bdc8f9e4bc655c7763f443fabbc4aca92a"
+    },
+    {
+      "file": "player-pause.svg",
+      "icon": "tabler:player-pause",
+      "url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/icons/outline/player-pause.svg",
+      "license": "MIT",
+      "sha256": "d9be9ab25e52cdcae17def18d41edc0855fa44caa8492cde2b5b8cd085e8c5a6"
     }
   ]
 }

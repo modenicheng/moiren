@@ -1,5 +1,13 @@
 use super::*;
 
+/// The unset-preference recording directory: `<home>/Music/Moiren`, falling
+/// back to the temp directory when no home can be resolved.
+pub(crate) fn default_recording_directory() -> std::path::PathBuf {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    home.map(|home| std::path::PathBuf::from(home).join("Music").join("Moiren"))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 #[derive(Default)]
 struct PreferenceWriteCompletion {
     result: Option<Result<(), String>>,
@@ -7,6 +15,40 @@ struct PreferenceWriteCompletion {
 }
 
 impl StudioShell {
+    /// Where recordings land when no directory preference is set: the user's
+    /// Music folder under a Moiren subdirectory. Resolved at click time so a
+    /// preference change applies to the very next start without any sync.
+    pub(crate) fn recording_output_directory(&self) -> std::path::PathBuf {
+        self.preferences
+            .values
+            .recording_directory
+            .clone()
+            .unwrap_or_else(default_recording_directory)
+    }
+
+    /// Pick a new recording output directory and persist it quietly. The
+    /// dialog is the platform folder picker; cancellation changes nothing.
+    pub(crate) fn change_recording_directory(&mut self, cx: &mut Context<Self>) {
+        let prompt = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("Choose the recording output directory").into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = prompt.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |shell, cx| {
+                    shell.preferences.values.recording_directory = Some(path);
+                    shell.save_preferences_quiet(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Serialize preference writes so rapid profile/density actions cannot let
     /// an older background write overwrite the user's latest choice.
     pub(crate) fn save_preferences(&mut self, cx: &mut Context<Self>) {

@@ -227,6 +227,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         id,
         node,
         &entry.builtin,
+        snapshot,
         cx,
     ));
     view = view.child(node_observation(shell, node, cx));

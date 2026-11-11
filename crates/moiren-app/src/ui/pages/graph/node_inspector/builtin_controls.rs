@@ -7,7 +7,7 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::service::GraphEdit;
+use crate::service::{AppRequest, GraphEdit, RecordingPhase};
 use moiren_core::graph::NodeKind;
 use moiren_engine::{
     meter::MeterSettings,
@@ -27,6 +27,7 @@ pub(super) fn builtin_controls(
     id: moiren_core::graph::NodeId,
     node: &moiren_core::graph::Node,
     state: &crate::service::BuiltinState,
+    snapshot: &crate::service::AppSnapshot,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let mut view = div()
@@ -51,7 +52,7 @@ pub(super) fn builtin_controls(
             view = channel_mapper_controls(view, id, node, settings, cx);
         }
         crate::service::BuiltinState::Recorder(settings) => {
-            view = recorder_controls(view, id, settings, cx);
+            view = recorder_controls(view, id, settings, snapshot, cx);
         }
         crate::service::BuiltinState::Meter(settings) => {
             view = meter_controls(view, id, settings, cx);
@@ -64,10 +65,9 @@ pub(super) fn builtin_controls(
         }
         crate::service::BuiltinState::None => {}
     }
-    if matches!(
-        node.kind(),
-        NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer
-    ) {
+    // The recorder's observation is the session itself, shown above; meters
+    // and analyzers still become available only with a live graph.
+    if matches!(node.kind(), NodeKind::Meter | NodeKind::SpectrumAnalyzer) {
         view = view.child(label(t!(
             "Managed observation becomes available once the graph runs live."
         )));
@@ -333,43 +333,159 @@ fn channel_mapper_controls(
     view
 }
 
+/// The recorder's detail surface: session state, duration, the output file,
+/// the directory control, and the buffer — the card strip carries the quick
+/// transport, this column carries everything else.
 fn recorder_controls(
     mut view: Stateful<Div>,
     id: moiren_core::graph::NodeId,
     settings: &RecorderSettings,
+    snapshot: &crate::service::AppSnapshot,
     cx: &Context<StudioShell>,
 ) -> Stateful<Div> {
-    view = view
-        .child(heading(t!("Recorder")))
-        .child(detail(
-            &t!("Buffer"),
-            format!("{} frames", settings.capacity_frames),
-        ))
-        .child(
-            button("recorder-expand", t!("Add 1 second")).on_click(edit(
-                cx.entity(),
-                GraphEdit::SetBuiltin {
+    let session = snapshot.recordings.iter().find(|entry| entry.node == id);
+    let live = session.is_some_and(|entry| !entry.phase.is_terminal());
+    let phase = session.map(|entry| entry.phase);
+    let sample_rate = snapshot.audio_settings.processing.sample_rate as usize;
+    let this = cx.entity();
+    view = view.child(heading(t!("Recorder")));
+    if let Some(entry) = session {
+        view = view
+            .child(detail(
+                &t!("Status"),
+                crate::ui::presentation::recording_phase_text(Some(entry.phase)),
+            ))
+            .child(detail(
+                &t!("Duration"),
+                crate::ui::presentation::recording_duration_text(entry.recorded_secs),
+            ));
+        if !entry.path.as_os_str().is_empty() {
+            view = view.child(detail(&t!("File"), entry.path.display().to_string()));
+        }
+        if entry.dropped_frames > 0 {
+            view = view.child(detail(
+                &t!("Dropped frames"),
+                entry.dropped_frames.to_string(),
+            ));
+        }
+        if let Some(error) = &entry.error {
+            // Raw diagnostic, like the catalog error string: engine errors
+            // are not catalog text and never localize.
+            view = view.child(
+                div()
+                    .id("recorder-error")
+                    .text_size(px(theme::TEXT_SM))
+                    .text_color(theme::DANGER)
+                    .child(error.as_str().to_owned()),
+            );
+        }
+    }
+    // Transport mirror: the same requests the card's strip dispatches.
+    let transport = |request: AppRequest| {
+        let this = this.clone();
+        move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+            this.update(cx, |shell, cx| {
+                shell
+                    .state
+                    .update(cx, |state, _| state.dispatch(request.clone()));
+            });
+        }
+    };
+    let mut row = div()
+        .id("recorder-transport")
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(theme::SPACE_2));
+    if !live {
+        let directory = cx.entity().read(cx).recording_output_directory();
+        row = row.child(
+            button("recorder-start", t!("Start recording")).on_click(transport(
+                AppRequest::StartRecording {
                     node: id,
-                    state: crate::service::BuiltinState::Recorder(RecorderSettings {
-                        capacity_frames: settings
-                            .capacity_frames
-                            .saturating_add(48_000)
-                            .min(1_000_000),
-                    }),
-                },
-            )),
-        )
-        .child(
-            button("recorder-shrink", t!("Remove 1 second")).on_click(edit(
-                cx.entity(),
-                GraphEdit::SetBuiltin {
-                    node: id,
-                    state: crate::service::BuiltinState::Recorder(RecorderSettings {
-                        capacity_frames: settings.capacity_frames.saturating_sub(48_000).max(1),
-                    }),
+                    directory,
                 },
             )),
         );
+    }
+    if phase == Some(RecordingPhase::Recording) {
+        row = row.child(
+            button("recorder-pause", t!("Pause recording"))
+                .on_click(transport(AppRequest::PauseRecording { node: id })),
+        );
+    }
+    if phase == Some(RecordingPhase::Paused) {
+        row = row.child(
+            button("recorder-resume", t!("Resume recording"))
+                .on_click(transport(AppRequest::ResumeRecording { node: id })),
+        );
+    }
+    if live {
+        row = row.child(
+            button("recorder-stop", t!("Stop recording"))
+                .on_click(transport(AppRequest::StopRecording { node: id })),
+        );
+    }
+    view = view.child(row);
+    // Output directory: a machine-level preference, resolved at start time.
+    view = view
+        .child(detail(
+            &t!("Output directory"),
+            cx.entity()
+                .read(cx)
+                .recording_output_directory()
+                .display()
+                .to_string(),
+        ))
+        .child(
+            button("recorder-directory", t!("Change directory…")).on_click({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |shell, cx| shell.change_recording_directory(cx));
+                }
+            }),
+        );
+    // Buffer: one second steps at the graph's processing rate. A live
+    // session would be revoked by the reconfiguration, so the steps lock
+    // while one runs.
+    let second = sample_rate.max(1);
+    view = view
+        .child(detail(
+            &t!("Buffer"),
+            t!("%{frames} frames", frames = settings.capacity_frames).to_string(),
+        ))
+        .child(
+            button("recorder-expand", t!("Add 1 second"))
+                .disabled(live)
+                .on_click(edit(
+                    cx.entity(),
+                    GraphEdit::SetBuiltin {
+                        node: id,
+                        state: crate::service::BuiltinState::Recorder(RecorderSettings {
+                            capacity_frames: settings
+                                .capacity_frames
+                                .saturating_add(second)
+                                .min(RecorderSettings::MAX_CAPACITY_FRAMES),
+                        }),
+                    },
+                )),
+        )
+        .child(
+            button("recorder-shrink", t!("Remove 1 second"))
+                .disabled(live)
+                .on_click(edit(
+                    cx.entity(),
+                    GraphEdit::SetBuiltin {
+                        node: id,
+                        state: crate::service::BuiltinState::Recorder(RecorderSettings {
+                            capacity_frames: settings.capacity_frames.saturating_sub(second).max(1),
+                        }),
+                    },
+                )),
+        );
+    if live {
+        view = view.child(label(t!("The buffer is fixed while a recording runs.")));
+    }
     view
 }
 

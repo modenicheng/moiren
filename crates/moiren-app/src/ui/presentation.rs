@@ -137,6 +137,33 @@ pub(crate) fn span_text(span: std::time::Duration) -> String {
     }
 }
 
+/// A recording phase as the card and inspector spell it. `None` is the idle
+/// recorder with no session yet.
+pub(crate) fn recording_phase_text(phase: Option<crate::service::RecordingPhase>) -> String {
+    use crate::service::RecordingPhase;
+    match phase {
+        None => t!("Ready"),
+        Some(RecordingPhase::Recording) => t!("Recording"),
+        Some(RecordingPhase::Paused) => t!("Paused"),
+        Some(RecordingPhase::Stopping) => t!("Stopping"),
+        Some(RecordingPhase::Finished) => t!("Saved"),
+        Some(RecordingPhase::Failed) => t!("Failed"),
+    }
+    .to_string()
+}
+
+/// Recorded audio as a clock, `HH:MM:SS`. Pause gaps are already excluded
+/// upstream (the engine skips paused frames), so this counts tape, not wall
+/// time.
+pub(crate) fn recording_duration_text(secs: u64) -> String {
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60
+    )
+}
+
 /// One buffer period as the bar spells it: frames and their duration.
 pub(crate) fn buffer_text(frames: u32, sample_rate: u32) -> String {
     if frames == 0 || sample_rate == 0 {
