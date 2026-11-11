@@ -198,14 +198,15 @@ pub struct CanvasWire {
     pub tint: Option<Hsla>,
 }
 
-/// The whole world payload the canvas renders.
+/// The whole world payload the canvas renders. Gesture bookkeeping (snap
+/// guides, the dragged selection's live offset) stays out of here on
+/// purpose: the world is cached on the shell and reused across rebuilds
+/// that only the camera or the pointer moved, so anything per-frame must
+/// reach the paint closures separately (audit A-1).
 pub struct CanvasWorld {
     pub nodes: Vec<CanvasNode>,
     pub wires: Vec<CanvasWire>,
     pub graph_bounds: Bounds<f32>,
-    /// Snap alignment guides while a card drag is aligned, in world space:
-    /// the vertical/horizontal lines the canvas paints over the grid.
-    pub guides: Option<DragGuides>,
 }
 
 /// Snap guide lines for an in-flight card drag (item F): `x` is a vertical
@@ -627,7 +628,6 @@ impl CanvasWorld {
                 origin: graph_bounds.origin - point(8., 8.),
                 size: graph_bounds.size + size(16., 16.),
             },
-            guides: None,
         }
     }
 

@@ -946,3 +946,109 @@ fn badge_hits_on_a_faulted_card_and_falls_through_to_the_card_without_one() {
     );
     assert_eq!(frame.hit_test(position), Some(HitTarget::Node("sink")));
 }
+
+/// The hot layer paints a dragged card from its cached layout shifted by the
+/// drag offset. Projection is affine, so the shifted layout must equal the
+/// projection of the node at its moved world position — this is the
+/// zero-visual-change guarantee for the drag paint (audit A-1). The fixture
+/// carries every layout-bearing body kind so a field added to `NodeLayout`
+/// and missed by `translated` fails here.
+#[test]
+fn translated_layout_matches_the_projection_of_the_moved_node() {
+    // A knob card and a binding-chip card cover every layout-bearing body
+    // kind, with ports; the fixture mirrors what `CanvasWorld::positioned`
+    // builds for a gain and a sink.
+    let mut gain = node("gain", "Gain", "L/R").at(40., 60.).ports(true, true);
+    gain.knobs.push(super::CardKnob {
+        control: super::KnobControl::GainLevel,
+        label: "Gain".into(),
+        value_text: "0.0 dB".into(),
+        position: 0.5,
+        origin: 0.,
+    });
+    gain.body_height = theme::card::KNOB_BODY_H;
+    let mut sink = node("sink", "Output", "Device")
+        .at(480., 90.)
+        .ports(true, false);
+    sink.binding = Some(super::BindingChip {
+        label: "Speakers".into(),
+        icon: "speaker",
+        unbound: false,
+    });
+    sink.body_height = theme::card::CHIP_BODY_H;
+    let world = Arc::new(CanvasWorld::new(vec![gain, sink], Vec::new()));
+    let camera = Camera {
+        pan_x: 30.,
+        pan_y: 70.,
+        zoom: 0.8,
+        adjusted: true,
+    };
+    let (dx, dy) = (23., -17.);
+    for node in &world.nodes {
+        let moved = {
+            let mut moved = node.clone();
+            // The shift runs in canvas space; the moved node carries the
+            // same offset divided back into world units.
+            moved.x += dx / camera.zoom;
+            moved.y += dy / camera.zoom;
+            NodeLayout::new(&moved).project(camera)
+        };
+        let shifted = NodeLayout::new(node).project(camera).translated(dx, dy);
+        let close = |a: Bounds<f32>, b: Bounds<f32>| {
+            assert_close(a.origin.x, b.origin.x);
+            assert_close(a.origin.y, b.origin.y);
+            assert_close(a.size.width, b.size.width);
+            assert_close(a.size.height, b.size.height);
+        };
+        close(shifted.card, moved.card);
+        close(shifted.rail, moved.rail);
+        close(shifted.icon, moved.icon);
+        close(shifted.badge, moved.badge);
+        close(shifted.expand, moved.expand);
+        close(shifted.body, moved.body);
+        close(shifted.title.bounds, moved.title.bounds);
+        assert_close(shifted.title.font_size, moved.title.font_size);
+        close(shifted.detail.bounds, moved.detail.bounds);
+        match (&shifted.meter, &moved.meter) {
+            (MeterLayout::Horizontal { bounds: a }, MeterLayout::Horizontal { bounds: b })
+            | (MeterLayout::Vertical { bounds: a }, MeterLayout::Vertical { bounds: b }) => {
+                close(*a, *b)
+            }
+            _ => panic!("meter axis changed"),
+        }
+        assert_eq!(shifted.knobs.len(), moved.knobs.len(), "knobs");
+        for (shifted, moved) in shifted.knobs.iter().zip(&moved.knobs) {
+            close(shifted.dial, moved.dial);
+            close(shifted.label.bounds, moved.label.bounds);
+            close(shifted.value.bounds, moved.value.bounds);
+        }
+        match (&shifted.chip, &moved.chip) {
+            (Some(a), Some(b)) => {
+                close(a.bounds, b.bounds);
+                close(a.icon, b.icon);
+                close(a.label.bounds, b.label.bounds);
+                close(a.chevron, b.chevron);
+            }
+            (None, None) => {}
+            _ => panic!("chip presence changed"),
+        }
+        assert_eq!(shifted.inputs.len(), moved.inputs.len(), "input anchors");
+        for (shifted, moved) in shifted.inputs.iter().zip(&moved.inputs) {
+            assert_position(*shifted, *moved);
+        }
+        match (shifted.output, moved.output) {
+            (Some(shifted), Some(moved)) => assert_position(shifted, moved),
+            (None, None) => {}
+            _ => panic!("output anchor presence changed"),
+        }
+        close(
+            shifted.matrix.unwrap_or(shifted.body),
+            moved.matrix.unwrap_or(moved.body),
+        );
+        close(
+            shifted.curve.unwrap_or(shifted.body),
+            moved.curve.unwrap_or(moved.body),
+        );
+        assert_close(shifted.scale, moved.scale);
+    }
+}

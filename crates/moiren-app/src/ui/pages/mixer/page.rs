@@ -978,8 +978,16 @@ fn paint_mixer_meter_frame(
                 })
                 .collect()
         };
+        let mut shapes = shell.mixer.shapes.borrow_mut();
         crate::ui::pages::graph::graph_canvas_view::paint_fault_banner(
-            &faults, *bounds, layer, window, cx,
+            &faults,
+            *bounds,
+            layer,
+            crate::ui::pages::graph::graph_canvas_view::Paint {
+                shapes: &mut shapes,
+                window,
+            },
+            cx,
         );
     }
 }

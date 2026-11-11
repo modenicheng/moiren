@@ -82,7 +82,7 @@ pub(super) fn select_node(
             let pos = window.mouse_position();
             shell.graph_view.camera.adjusted = true;
             shell.graph_gestures.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
-            shell.graph_gestures.node_drag_snap = (0., 0.);
+            shell.graph_gestures.node_drag_offset = (0., 0.);
             shell.sync_drag_demand();
             // Single click selects; a double click on the same node also
             // opens the inspector.
@@ -113,10 +113,11 @@ pub(super) fn background_move(
                 );
                 if !held {
                     shell.graph_gestures.pan_grab = None;
-                    shell.graph_gestures.node_drag = None;
-                    shell.graph_gestures.node_drag_snap = (0., 0.);
                     shell.graph_gestures.knob_drag = None;
-                    shell.graph_gestures.drag_guides = None;
+                    // The card drag commits here, at release: positions
+                    // were frozen during the gesture, so this is the one
+                    // place they move (audit A-1).
+                    let drag_ended = shell.commit_node_drag();
                     // Hover for the fault tooltip: tracked here, painted by
                     // the meter frame, so a change costs one frame and never
                     // a page rebuild. Anything on a card counts, port dots
@@ -175,6 +176,12 @@ pub(super) fn background_move(
                     if shell.graph_gestures.connection_drag.take().is_some() {
                         cx.notify();
                     }
+                    // The drag end must reach the screen: the cached canvas
+                    // un-hides the dragged entities and paints their
+                    // committed positions.
+                    if drag_ended {
+                        cx.notify();
+                    }
                     shell.sync_drag_demand();
                     return;
                 }
@@ -224,57 +231,49 @@ pub(super) fn background_move(
                         }
                     }
                 }
-                if let Some((id, gx, gy)) = shell.graph_gestures.node_drag {
+                if let Some((_, gx, gy)) = shell.graph_gestures.node_drag {
                     shell.graph_view.camera.adjusted = true;
+                    // The drag's free path, measured from the fixed press
+                    // anchor in world units. Positions stay frozen during
+                    // the gesture: the offset rides the hot layer's paint
+                    // and commits at release, so no pointer report rebuilds
+                    // the page (audit A-1).
                     let raw = shell
                         .graph_view
                         .camera
                         .canvas_delta_to_world((x - gx, y - gy));
                     // Alignment snapping (item F): the dragged selection's
                     // bounding box seeks the other cards' edges and the
-                    // horizontal axis within 6 screen px. The threshold
-                    // reads the drag's free path: stored positions carry
-                    // the offset previous frames baked in, so it is undone
-                    // first — measuring the per-frame step instead would
-                    // re-match the same target every sub-threshold move and
-                    // pin the card forever. Alt bypasses it and releases a
-                    // baked one.
-                    let baked = shell.graph_gestures.node_drag_snap;
-                    shell.graph_gestures.node_drag_snap = (0., 0.);
+                    // horizontal axis within 6 screen px. Candidates are
+                    // measured on the free path — stored positions plus the
+                    // un-baked offset — so a snapped card lets go once the
+                    // cursor leaves the threshold, and nothing ever needs
+                    // undoing: the offset lives in the gesture, never in
+                    // the stored positions. Alt bypasses it.
                     if window.modifiers().alt {
+                        shell.graph_gestures.node_drag_offset = raw;
                         shell.graph_gestures.drag_guides = None;
                     } else if let Some(frame) = shell.graph_view.canvas_frame.read() {
                         let (snapped, guides) = snap_delta(
                             &frame,
                             &shell.selection.nodes,
                             &shell.graph_view.node_positions,
-                            baked,
                             raw,
                         );
-                        shell.graph_gestures.node_drag_snap = snapped;
+                        shell.graph_gestures.node_drag_offset =
+                            (raw.0 + snapped.0, raw.1 + snapped.1);
                         shell.graph_gestures.drag_guides = Some(guides);
+                    } else {
+                        shell.graph_gestures.node_drag_offset = raw;
                     }
-                    // The stored positions bake in the previous offset: this
-                    // frame's move lands them on the new one, or releases
-                    // them back onto the free path when the snap lets go.
-                    let applied = (
-                        raw.0 + shell.graph_gestures.node_drag_snap.0 - baked.0,
-                        raw.1 + shell.graph_gestures.node_drag_snap.1 - baked.1,
-                    );
-                    let selection: Vec<_> = shell.selection.nodes.iter().copied().collect();
-                    for id in selection {
-                        if let Some(pos) = shell.graph_view.node_positions.get_mut(&id) {
-                            pos.0 += applied.0;
-                            pos.1 += applied.1;
-                        }
-                    }
-                    shell.graph_gestures.node_drag = Some((id, x, y));
                     cx.notify();
                 }
                 if let Some((gx, gy)) = shell.graph_gestures.pan_grab {
                     shell.graph_view.camera.pan_by(x - gx, y - gy);
-                    shell.graph_gestures.node_drag = None;
-                    shell.graph_gestures.node_drag_snap = (0., 0.);
+                    // A pan grab takes the pointer from a card drag (a
+                    // second button pressed mid-drag): the drag commits
+                    // where its offset left it, exactly as a release would.
+                    shell.commit_node_drag();
                     shell.graph_gestures.pan_grab = Some((x, y));
                     shell.sync_drag_demand();
                     cx.notify();
@@ -415,16 +414,17 @@ const SNAP_THRESHOLD_SCREEN: f32 = 6.;
 /// selection's bounding box seeks the other cards' left/center/right and
 /// top/middle/bottom edges plus the horizontal axis, nearest candidate
 /// within the threshold wins per axis, and the aligned world coordinate
-/// comes back as the guide lines to paint. `positions` carry the offset
-/// previous frames baked in (`baked`): the candidates are measured on the
-/// drag's free path — stored minus baked plus this frame's raw move — so a
-/// snapped card lets go once the cursor leaves the threshold. Returns the
-/// offset to bake in going forward.
+/// comes back as the guide lines to paint. `positions` are the stored,
+/// un-dragged positions: the candidates are measured on the drag's free
+/// path — stored plus the live offset `raw` — so a snapped card lets go
+/// once the cursor leaves the threshold, and no offset ever needs baking
+/// or undoing (audit A-1: the drag's offset lives in the gesture, and the
+/// stored positions only commit it at release). Returns the snap offset to
+/// add to the free path.
 fn snap_delta(
     frame: &CanvasFrame,
     dragged: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
     positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
-    baked: (f32, f32),
     raw: (f32, f32),
 ) -> (
     (f32, f32),
@@ -450,10 +450,10 @@ fn snap_delta(
             continue;
         };
         let card = crate::ui::pages::graph::graph_canvas::NodeLayout::new(node).card;
-        min_x = min_x.min(x + raw.0 - baked.0);
-        min_y = min_y.min(y + raw.1 - baked.1);
-        max_x = max_x.max(x + raw.0 - baked.0 + card.size.width);
-        max_y = max_y.max(y + raw.1 - baked.1 + card.size.height);
+        min_x = min_x.min(x + raw.0);
+        min_y = min_y.min(y + raw.1);
+        max_x = max_x.max(x + raw.0 + card.size.width);
+        max_y = max_y.max(y + raw.1 + card.size.height);
     }
     if min_x > max_x {
         return (
