@@ -22,6 +22,7 @@ impl ManagedDriver {
         node: NodeId,
         directory: std::path::PathBuf,
         format: crate::service::RecordingFormat,
+        mp3: moiren_engine::recorder::Mp3Encoding,
     ) {
         if c.recordings
             .phase(node)
@@ -78,7 +79,7 @@ impl ManagedDriver {
         // preroll queued since graph start, then spawn the worker.
         let started = match format {
             crate::service::RecordingFormat::Wav => reader.record_wav_now(&path, sample_rate),
-            crate::service::RecordingFormat::Mp3 => reader.record_mp3_now(&path, sample_rate),
+            crate::service::RecordingFormat::Mp3 => reader.record_mp3_now(&path, sample_rate, mp3),
         };
         match started {
             Ok(session) => {

@@ -164,15 +164,18 @@ impl RecorderReader {
         spawn_recording(self, wav)
     }
 
-    /// Like `record_wav_now`, encoded to CBR 256 kbps MP3. Mono or stereo
-    /// sessions only; the sample rate must be one LAME supports natively.
+    /// Like `record_wav_now`, encoded to MP3 with the caller's settings.
+    /// Mono or stereo sessions only; the sample rate must be one LAME
+    /// supports natively.
     #[cfg(feature = "mp3")]
     pub fn record_mp3_now(
         mut self,
         path: impl AsRef<Path>,
         sample_rate: u32,
+        encoding: super::mp3::Mp3Encoding,
     ) -> io::Result<RecordingSession> {
-        let mp3 = super::mp3::Mp3Recording::create(path, self.channel_count(), sample_rate)?;
+        let mp3 =
+            super::mp3::Mp3Recording::create(path, self.channel_count(), sample_rate, encoding)?;
         self.skip_queued();
         spawn_recording(self, mp3)
     }

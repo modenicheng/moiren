@@ -108,6 +108,8 @@ pub enum AppRequest {
         node: moiren_core::graph::NodeId,
         directory: std::path::PathBuf,
         format: super::RecordingFormat,
+        /// MP3 knobs, read when `format` is `Mp3`; ignored for WAV.
+        mp3: moiren_engine::recorder::Mp3Encoding,
     },
     PauseRecording {
         node: moiren_core::graph::NodeId,

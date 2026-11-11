@@ -24,6 +24,11 @@ impl StudioShell {
         self.preferences.values.recording_format
     }
 
+    /// MP3 knobs applied to the next MP3 recording start.
+    pub(crate) fn recording_mp3(&self) -> moiren_engine::recorder::Mp3Encoding {
+        self.preferences.values.recording_mp3
+    }
+
     pub(crate) fn recording_output_directory(&self) -> std::path::PathBuf {
         self.preferences
             .values

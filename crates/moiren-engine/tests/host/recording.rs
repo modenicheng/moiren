@@ -264,7 +264,9 @@ fn managed_record_mp3_now_writes_and_finalizes_a_real_file() {
     });
     let reader = observer.recorder_reader(recorder).unwrap();
     let file = TemporaryFile::with_extension("mp3");
-    let session = reader.record_mp3_now(&file.0, 48_000).unwrap();
+    let session = reader
+        .record_mp3_now(&file.0, 48_000, Default::default())
+        .unwrap();
     wait_recording(&session, |s| s.status().written_frames > 0);
     let summary = session.finish().unwrap();
     assert!(summary.written_frames > 0);

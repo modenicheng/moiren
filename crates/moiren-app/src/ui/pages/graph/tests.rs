@@ -796,15 +796,32 @@ fn recorder_library_spawn_paints_strip_and_inspector_without_panicking(
         assert!(window.find("recorder-format-mp3").visible());
         assert!(window.find("recorder-directory").visible());
     });
-    // Switching the format preference must repaint the selector and persist.
+    // Switching the format preference must repaint the selector, persist, and
+    // mount the encoding knobs: bitrate ladder for CBR, quality for VBR.
     cx.update(|window, cx| window.click("recorder-format-mp3", cx));
     render(cx);
-    view.update(cx, |shell, cx| {
+    view.update(cx, |shell, _| {
         assert_eq!(
             shell.recording_format(),
             crate::service::RecordingFormat::Mp3
         );
-        let _ = cx;
+        assert_eq!(shell.recording_mp3().bitrate_kbps, 256);
+    });
+    cx.update(|window, cx| window.click("recorder-mp3-bitrate-up", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.recording_mp3().bitrate_kbps, 320);
+    });
+    cx.update(|window, cx| window.click("recorder-mp3-vbr", cx));
+    render(cx);
+    cx.update(|window, _| assert!(window.find("recorder-mp3-quality-up").visible()));
+    cx.update(|window, cx| window.click("recorder-mp3-quality-up", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.recording_mp3().mode,
+            moiren_engine::recorder::Mp3Mode::Vbr { quality: 3 }
+        );
     });
     // Starting without a native backend surfaces the fallback error instead
     // of panicking; the recording domain entry keeps the node usable.

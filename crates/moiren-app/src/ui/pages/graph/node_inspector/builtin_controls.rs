@@ -338,6 +338,139 @@ fn channel_mapper_controls(
 /// The recorder's detail surface: session state, duration, the output file,
 /// the directory control, and the buffer — the card strip carries the quick
 /// transport, this column carries everything else.
+/// MP3 encoding knobs: rate-control mode plus the matching bitrate ladder or
+/// VBR quality stepper. Preference-level settings applied to the next start,
+/// never to a running session.
+fn recorder_mp3_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> Stateful<Div> {
+    use moiren_engine::recorder::{MP3_BITRATE_KBPS, Mp3Encoding, Mp3Mode};
+
+    let mp3 = shell.recording_mp3();
+    let persist = |next: Mp3Encoding| {
+        let this = this.clone();
+        move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+            this.update(cx, |shell, cx| {
+                shell.preferences.values.recording_mp3 = next;
+                shell.save_preferences_quiet(cx);
+                cx.notify();
+            });
+        }
+    };
+    let mut section = div()
+        .id("recorder-mp3")
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_2));
+    let mut mode_row = div()
+        .id("recorder-mp3-mode")
+        .flex()
+        .flex_row()
+        .gap(px(theme::SPACE_2));
+    mode_row = mode_row.child(
+        button("recorder-mp3-cbr", t!("CBR"))
+            .variant(if matches!(mp3.mode, Mp3Mode::Cbr) {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            })
+            .on_click(persist(Mp3Encoding {
+                mode: Mp3Mode::Cbr,
+                ..mp3
+            })),
+    );
+    let quality = match mp3.mode {
+        Mp3Mode::Vbr { quality } => quality,
+        Mp3Mode::Cbr => 2,
+    };
+    mode_row = mode_row.child(
+        button("recorder-mp3-vbr", t!("VBR"))
+            .variant(if matches!(mp3.mode, Mp3Mode::Vbr { .. }) {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            })
+            .on_click(persist(Mp3Encoding {
+                mode: Mp3Mode::Vbr { quality },
+                ..mp3
+            })),
+    );
+    section = section.child(mode_row);
+    let mut steps = div()
+        .id("recorder-mp3-steps")
+        .flex()
+        .flex_row()
+        .gap(px(theme::SPACE_2));
+    match mp3.mode {
+        Mp3Mode::Cbr => {
+            let index = MP3_BITRATE_KBPS
+                .iter()
+                .position(|&kbps| kbps == mp3.bitrate_kbps)
+                .unwrap_or_default();
+            let top = MP3_BITRATE_KBPS.len() - 1;
+            section = section.child(detail(
+                &t!("Bitrate"),
+                t!("%{kbps} kbps", kbps = mp3.bitrate_kbps).to_string(),
+            ));
+            steps = steps
+                .child(
+                    button("recorder-mp3-bitrate-down", "\u{2212}")
+                        .disabled(index == 0)
+                        .on_click(persist(Mp3Encoding {
+                            bitrate_kbps: MP3_BITRATE_KBPS[index.saturating_sub(1)],
+                            ..mp3
+                        })),
+                )
+                .child(
+                    button("recorder-mp3-bitrate-up", "+")
+                        .disabled(index == top)
+                        .on_click(persist(Mp3Encoding {
+                            bitrate_kbps: MP3_BITRATE_KBPS[(index + 1).min(top)],
+                            ..mp3
+                        })),
+                );
+        }
+        Mp3Mode::Vbr { quality } => {
+            section = section
+                .child(detail(&t!("VBR quality"), quality.to_string()))
+                .child(
+                    div()
+                        .id("recorder-mp3-quality-hint")
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::TEXT_MUTED)
+                        .child(t!("0 is best.").to_owned()),
+                );
+            steps = steps
+                .child(
+                    button("recorder-mp3-quality-down", "\u{2212}")
+                        .disabled(quality == 0)
+                        .on_click(persist(Mp3Encoding {
+                            mode: Mp3Mode::Vbr {
+                                quality: quality.saturating_sub(1),
+                            },
+                            ..mp3
+                        })),
+                )
+                .child(
+                    button("recorder-mp3-quality-up", "+")
+                        .disabled(quality == 9)
+                        .on_click(persist(Mp3Encoding {
+                            mode: Mp3Mode::Vbr {
+                                quality: (quality + 1).min(9),
+                            },
+                            ..mp3
+                        })),
+                );
+        }
+    }
+    section = section.child(steps).child(
+        div()
+            .id("recorder-mp3-apply-hint")
+            .text_size(px(theme::TEXT_SM))
+            .text_color(theme::TEXT_MUTED)
+            .child(t!("Applies to the next recording.").to_owned()),
+    );
+    section
+}
+
 fn recorder_controls(
     mut view: Stateful<Div>,
     id: moiren_core::graph::NodeId,
@@ -406,12 +539,14 @@ fn recorder_controls(
         // travel in through `shell`.
         let directory = shell.recording_output_directory();
         let format = shell.recording_format();
+        let mp3 = shell.recording_mp3();
         row = row.child(
             button("recorder-start", t!("Start recording")).on_click(transport(
                 AppRequest::StartRecording {
                     node: id,
                     directory,
                     format,
+                    mp3,
                 },
             )),
         );
@@ -496,6 +631,10 @@ fn recorder_controls(
             }),
     );
     view = view.child(format_row);
+    // Encoding knobs apply to the next MP3 start, like the format itself.
+    if format == crate::service::RecordingFormat::Mp3 {
+        view = view.child(recorder_mp3_controls(shell, &this));
+    }
     // Buffer: one second steps at the graph's processing rate. A live
     // session would be revoked by the reconfiguration, so the steps lock
     // while one runs.

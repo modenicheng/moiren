@@ -436,6 +436,7 @@ pub struct AppPreferences {
     /// Music folder at start time.
     pub recording_directory: Option<std::path::PathBuf>,
     pub recording_format: crate::service::RecordingFormat,
+    pub recording_mp3: moiren_engine::recorder::Mp3Encoding,
     /// Recently opened project files, most recent first, for the session
     /// menu's quick switch.
     pub recent_projects: Vec<std::path::PathBuf>,
@@ -456,6 +457,7 @@ impl Default for AppPreferences {
             last_project_path: None,
             recording_directory: None,
             recording_format: Default::default(),
+            recording_mp3: Default::default(),
             recent_projects: Vec::new(),
         }
     }
@@ -502,6 +504,12 @@ impl AppPreferences {
             return Err(PersistenceError::invalid(
                 "recording_directory",
                 "must be a nonempty path without NUL",
+            ));
+        }
+        if !self.recording_mp3.valid() {
+            return Err(PersistenceError::invalid(
+                "recording_mp3",
+                "bitrate must sit on the LAME ladder and VBR quality within 0..=9",
             ));
         }
         if self.recent_projects.len() > RECENT_PROJECT_LIMIT {

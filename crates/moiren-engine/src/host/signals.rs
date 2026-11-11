@@ -193,17 +193,20 @@ impl ManagedRecorderReader {
         spawn_recording(source, wav)
     }
 
-    /// Like `record_wav_now`, encoded to CBR 256 kbps MP3 (mono or stereo,
-    /// LAME-native sample rates only). The same lease and ordering rules
-    /// apply: encoder creation failures return the reader unclaimed.
+    /// Like `record_wav_now`, encoded to MP3 with the caller's settings
+    /// (mono or stereo, LAME-native sample rates only). The same lease and
+    /// ordering rules apply: encoder creation failures return the reader
+    /// unclaimed.
     #[cfg(feature = "mp3")]
     pub fn record_mp3_now(
         &self,
         path: impl AsRef<Path>,
         sample_rate: u32,
+        encoding: crate::recorder::Mp3Encoding,
     ) -> io::Result<RecordingSession> {
         let mut source = self.claim()?;
-        let mp3 = Mp3Recording::create(path, source.reader().channel_count(), sample_rate)?;
+        let mp3 =
+            Mp3Recording::create(path, source.reader().channel_count(), sample_rate, encoding)?;
         source.reader().skip_queued();
         spawn_recording(source, mp3)
     }

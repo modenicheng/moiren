@@ -3151,6 +3151,7 @@ fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
         node: recorder,
         directory: directory.clone(),
         format: crate::service::RecordingFormat::Wav,
+        mp3: Default::default(),
     });
     rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
     // A second start while live is ignored; the first file keeps running.
@@ -3158,6 +3159,7 @@ fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
         node: recorder,
         directory,
         format: crate::service::RecordingFormat::Wav,
+        mp3: Default::default(),
     });
     rig.tick();
     assert_eq!(
@@ -3210,6 +3212,12 @@ fn mp3_recording_start_finalizes_a_playable_file_through_the_service_domain() {
         node: recorder,
         directory: std::env::temp_dir(),
         format: crate::service::RecordingFormat::Mp3,
+        // Deliberately off-default knobs prove the settings ride the
+        // request into the encoder, not just the default path.
+        mp3: moiren_engine::recorder::Mp3Encoding {
+            bitrate_kbps: 192,
+            mode: moiren_engine::recorder::Mp3Mode::Vbr { quality: 4 },
+        },
     });
     rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
     rig.request(AppRequest::StopRecording { node: recorder });
