@@ -69,21 +69,23 @@ struct ShapeVariants {
 /// each, and the cached canvas re-paints on every rebuild while the hot
 /// layer paints every frame — without a cache the same (text, style) lines
 /// re-shape, and overflowing titles re-run the truncation binary search, on
-/// every display frame. Keyed first by the exact text, then by style, so
-/// the same label at two zooms or two colors costs two entries and one
-/// lookup forever after. Far above the honest population of card labels;
-/// exceeding the cap clears the cache rather than growing without bound.
+/// every display frame. Keyed by the exact text, then by the style it is
+/// shaped at, so the same label at two zooms or two colors costs two
+/// entries and one lookup forever after — a line shaped at one size must
+/// never serve another, or a zoomed canvas would paint the old zoom's
+/// glyphs inside the new bounds.
 #[derive(Default)]
 pub(in crate::ui) struct CanvasShapes {
-    lines: HashMap<Arc<str>, ShapeVariants>,
+    lines: HashMap<Arc<str>, HashMap<ShapeStyle, ShapeVariants>>,
+    entries: usize,
     /// Test census: real shaper runs (full lines and truncation probes).
     #[cfg(feature = "gpui-test")]
     pub(in crate::ui) shapes: usize,
 }
 
-/// Far above the honest text population (every card's labels at the zooms
-/// the session actually uses); a pathological feed clears the cache and
-/// pays reshapes again instead of growing without bound.
+/// Far above the honest (text, style) population — every card's label at
+/// every zoom the session actually visits; a pathological feed clears the
+/// cache and pays reshapes again instead of growing without bound.
 const CANVAS_SHAPE_CACHE_CAP: usize = 4096;
 
 /// Shell-owned handle shared by the cached canvas paint and the hot layer's
@@ -126,26 +128,36 @@ impl CanvasShapes {
     /// cache miss. The returned line borrows the cache; paint it before the
     /// next lookup.
     fn full(&mut self, window: &Window, text: &str, style: ShapeStyle) -> &ShapedLine {
-        if !self.lines.contains_key(text) {
-            if self.lines.len() >= CANVAS_SHAPE_CACHE_CAP {
+        if self.variants(text, style).is_none() {
+            if self.entries >= CANVAS_SHAPE_CACHE_CAP {
                 self.lines.clear();
+                self.entries = 0;
             }
             let line = self.shape(window, text, style);
-            self.lines.insert(
-                Arc::from(text),
-                ShapeVariants {
+            self.lines
+                .entry(Arc::from(text))
+                .or_default()
+                .entry(style)
+                .or_insert_with(|| ShapeVariants {
                     full: line,
                     truncated: Vec::new(),
-                },
-            );
+                });
+            self.entries += 1;
         }
-        &self.lines[text].full
+        &self.lines[text][&style].full
+    }
+
+    /// The cached variants for `text` at `style`, if a line was shaped for
+    /// this exact pair before.
+    fn variants(&self, text: &str, style: ShapeStyle) -> Option<&ShapeVariants> {
+        self.lines.get(text).and_then(|styles| styles.get(&style))
     }
 
     /// The widest line for `text` at `style` that fits `available`, falling
     /// back to the cached full line when it already fits. A truncation is
-    /// cached per available width, so an overflowing label re-runs the
-    /// binary search only when its width changed.
+    /// cached per available width within the (text, style) entry, so an
+    /// overflowing label re-runs the binary search only when its width
+    /// changed at that style.
     fn fitted(
         &mut self,
         window: &Window,
@@ -162,21 +174,28 @@ impl CanvasShapes {
         }
         let key = available.to_bits();
         let cached = self
-            .lines
-            .get_mut(text)
+            .variants_mut(text, style)
             .and_then(|variants| variants.truncated.iter().position(|(bits, _)| *bits == key));
         if let Some(position) = cached {
-            return &self.lines[text].truncated[position].1;
+            return &self.lines[text][&style].truncated[position].1;
         }
-        if let Some(variants) = self.lines.get_mut(text)
+        if let Some(variants) = self.variants_mut(text, style)
             && variants.truncated.len() >= TRUNCATED_VARIANTS_CAP
         {
             variants.truncated.clear();
         }
         let line = self.truncate(window, text, style, available);
-        let variants = self.lines.get_mut(text).expect("full() inserted the text");
+        let variants = self
+            .variants_mut(text, style)
+            .expect("full() inserted the text");
         variants.truncated.push((key, line));
         &variants.truncated.last().expect("just pushed").1
+    }
+
+    fn variants_mut(&mut self, text: &str, style: ShapeStyle) -> Option<&mut ShapeVariants> {
+        self.lines
+            .get_mut(text)
+            .and_then(|styles| styles.get_mut(&style))
     }
 
     /// The widest prefix of `text` — through the ellipsis — that fits

@@ -3938,6 +3938,44 @@ fn canvas_repaints_reuse_their_shaped_text(cx: &mut gpui_kit::TestAppContext) {
     finish_service(runtime);
 }
 
+/// A zoom change re-projects every label at a new font size, so the repaint
+/// must run the shaper again: the cache keys by style, and a hit here would
+/// paint the previous zoom's glyphs inside the new bounds — every card's
+/// text at the stale scale while its geometry scales correctly.
+#[gpui_kit::test]
+fn canvas_zoom_repaints_shape_their_labels_again(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    add_node(&view, cx, NodeKind::Gain);
+    render(cx);
+    settle_panels(cx);
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    let baseline = census_shapes(&view, cx);
+    assert!(baseline > 0, "the first paint shaped the cards' labels");
+    view.update(cx, |shell, cx| {
+        shell.graph_view.camera.zoom = 1.5;
+        shell.graph_view.camera.adjusted = true;
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert!(
+        census_shapes(&view, cx) > baseline,
+        "a zoom change must re-shape the labels at the new size"
+    );
+    // And the cache still absorbs an unchanged repaint at the new zoom.
+    let zoomed = census_shapes(&view, cx);
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(
+        census_shapes(&view, cx),
+        zoomed,
+        "an unchanged repaint at the new zoom must shape nothing new"
+    );
+    finish_service(runtime);
+}
+
 /// == cached panel keys (issues #117/#118) ==
 /// One cached-path frame: notified views re-render, unnotified cached
 /// subtrees replay their paint. `render` (the `render_frame` helper above)
