@@ -8,14 +8,15 @@ use moiren_engine::recorder::{RecordingState, RecordingStatus};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
-/// Encoded-output preference. WAV is lossless; MP3 is CBR 256 kbps, mono or
-/// stereo only. The format is resolved when a recording starts, so changing
-/// it never disturbs a running session.
+/// Encoded-output preference. WAV and FLAC are lossless; MP3 is CBR 256
+/// kbps, mono or stereo only. The format is resolved when a recording starts,
+/// so changing it never disturbs a running session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum RecordingFormat {
     #[default]
     Wav,
     Mp3,
+    Flac,
 }
 
 impl RecordingFormat {
@@ -24,6 +25,7 @@ impl RecordingFormat {
         match self {
             RecordingFormat::Wav => "wav",
             RecordingFormat::Mp3 => "mp3",
+            RecordingFormat::Flac => "flac",
         }
     }
 }

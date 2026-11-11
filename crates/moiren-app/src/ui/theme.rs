@@ -173,8 +173,15 @@ pub mod card {
     pub const RECORD_BODY_H: f32 = 56.;
     /// One transport glyph slot on the recording strip.
     pub const REC_BTN: f32 = 18.;
+    /// Gap between the transport slots.
+    pub const REC_BTN_GAP: f32 = 6.;
     /// The status dot beside the phase word.
-    pub const REC_DOT: f32 = 6.;
+    pub const REC_DOT: f32 = 7.;
+    /// The strip's status line and live duration, one step above the generic
+    /// card hint so the session state reads at a glance.
+    pub const REC_STATUS_SIZE: f32 = super::TEXT_CAPTION;
+    /// The strip's output file name.
+    pub const REC_FILE_SIZE: f32 = super::TEXT_XS;
     /// Base distance from the card top to the first port anchor; taller
     /// bodies push the port rail down instead of overlapping the meter.
     pub const PORT_Y: f32 = 80.;

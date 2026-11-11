@@ -823,6 +823,22 @@ fn recorder_library_spawn_paints_strip_and_inspector_without_panicking(
             moiren_engine::recorder::Mp3Mode::Vbr { quality: 3 }
         );
     });
+    // FLAC mounts its own knob group: the level stepper walks 0..=8 and
+    // persists like every other preference-level setting.
+    cx.update(|window, cx| window.click("recorder-format-flac", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.recording_format(),
+            crate::service::RecordingFormat::Flac
+        );
+        assert_eq!(shell.recording_flac().level, 5);
+    });
+    cx.update(|window, cx| window.click("recorder-flac-level-up", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.recording_flac().level, 6);
+    });
     // Starting without a native backend surfaces the fallback error instead
     // of panicking; the recording domain entry keeps the node usable.
     cx.update(|window, cx| window.click("recorder-start", cx));

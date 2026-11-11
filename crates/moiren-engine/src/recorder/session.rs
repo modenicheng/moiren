@@ -180,6 +180,22 @@ impl RecorderReader {
         spawn_recording(self, mp3)
     }
 
+    /// Like `record_wav_now`, encoded losslessly to FLAC with the caller's
+    /// compression level. Up to eight channels; the sample rate must fit
+    /// STREAMINFO's 20 bits.
+    #[cfg(feature = "flac")]
+    pub fn record_flac_now(
+        mut self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+        encoding: super::flac::FlacEncoding,
+    ) -> io::Result<RecordingSession> {
+        let flac =
+            super::flac::FlacRecording::create(path, self.channel_count(), sample_rate, encoding)?;
+        self.skip_queued();
+        spawn_recording(self, flac)
+    }
+
     /// Control-side variant for custom destinations. All subsequent writes,
     /// seeks and flushes belong exclusively to the recording worker.
     pub fn record_with_writer<W: io::Write + io::Seek + Send + 'static>(

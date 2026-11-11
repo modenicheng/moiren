@@ -282,6 +282,36 @@ fn managed_record_mp3_now_writes_and_finalizes_a_real_file() {
 }
 
 #[test]
+#[cfg(feature = "flac")]
+#[cfg_attr(miri, ignore = "requires filesystem access outside Miri isolation")]
+fn managed_record_flac_now_writes_and_finalizes_a_real_file() {
+    let (project, recorder, _, _) = recording_project();
+    let host =
+        EngineHost::<f64>::open(HostConfig::default(), project, FakeBackend::default()).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    let reader = observer.recorder_reader(recorder).unwrap();
+    let file = TemporaryFile::with_extension("flac");
+    let session = reader
+        .record_flac_now(&file.0, 48_000, Default::default())
+        .unwrap();
+    wait_recording(&session, |s| s.status().written_frames > 0);
+    let summary = session.finish().unwrap();
+    assert!(summary.written_frames > 0);
+    let mut decoded = claxon::FlacReader::open(&file.0).unwrap();
+    // The independent decoder accepts the patched STREAMINFO. How many frames
+    // the fake backend drains before finish is racy; a short final capture
+    // pads to FLAC's 16-frame floor, so the file carries at least what the
+    // session reported.
+    let total = decoded.streaminfo().samples.unwrap_or(0);
+    assert!(total >= summary.written_frames);
+    assert!(decoded.samples().next().is_some());
+    assert_eq!(reader.is_recording(), Some(false));
+}
+
+#[test]
 #[cfg_attr(miri, ignore = "requires filesystem access outside Miri isolation")]
 fn record_wav_now_discards_preroll_and_records_from_the_call() {
     let (project, recorder, _, _) = recording_project();

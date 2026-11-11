@@ -5,7 +5,8 @@
 //! bars must be painted by the hot layer at the frame the canvas prepaint
 //! published.
 use super::*;
-use crate::ui::pages::graph::graph_canvas::CanvasFrame;
+use crate::service::RecordingPhase;
+use crate::ui::pages::graph::graph_canvas::{CanvasFrame, RecordingLayout};
 use crate::ui::shell::hot::{HotLayerView, HotSurface};
 use crate::ui::shell::panel::{ArcSnapshot, CachedPanel, PanelHost};
 use std::rc::Rc;
@@ -600,14 +601,14 @@ fn paint_recording_durations(
     // A card drag hides the dragged entities from this overlay;
     // paint_dragged_entities owns their pixels.
     let dragging = shell.graph_gestures.node_drag.is_some();
-    let live: Vec<(moiren_core::graph::NodeId, u64)> = {
+    let live: Vec<(moiren_core::graph::NodeId, u64, RecordingPhase)> = {
         let state = shell.state.read(cx);
         state
             .snapshot
             .recordings
             .iter()
             .filter(|entry| !entry.phase.is_terminal())
-            .map(|entry| (entry.node, entry.recorded_secs))
+            .map(|entry| (entry.node, entry.recorded_secs, entry.phase))
             .collect()
     };
     if live.is_empty() {
@@ -634,18 +635,22 @@ fn paint_recording_durations(
                     continue;
                 }
                 // Same rule as the meter tracks: a later card overlapping the
-                // strip would be cut into by this overlay's opaque paint.
+                // strip would be cut into by this overlay's opaque paint. The
+                // dot joins the duration slot: the blink repaints over it.
                 let covered = frame.world.nodes[index + 1..]
                     .iter()
                     .zip(&frame.nodes[index + 1..])
-                    .any(|(_, later)| later.card.intersects(&strip.duration.bounds));
+                    .any(|(_, later)| {
+                        later.card.intersects(&strip.duration.bounds)
+                            || later.card.intersects(&strip.dot)
+                    });
                 if covered {
                     continue;
                 }
-                let Some(secs) = live
+                let Some((secs, phase)) = live
                     .iter()
-                    .find(|(entry, _)| *entry == id)
-                    .map(|(_, secs)| *secs)
+                    .find(|(entry, _, _)| *entry == id)
+                    .map(|(_, secs, phase)| (*secs, *phase))
                 else {
                     continue;
                 };
@@ -666,11 +671,57 @@ fn paint_recording_durations(
                             },
                             cx,
                         );
+                        if phase == RecordingPhase::Recording {
+                            paint_recording_dot_blink(
+                                frame,
+                                strip,
+                                crate::ui::pages::graph::graph_canvas_view::Paint {
+                                    shapes: &mut shapes,
+                                    window,
+                                },
+                            );
+                        }
                     });
                 }
             }
         },
     );
+}
+
+/// The recording blink: the strip's status dot dims for half of every
+/// second, the camera/DAW convention for "tape is rolling". It rides this
+/// overlay's 1 Hz snapshot frames — no frame demand of its own — and reads
+/// the wall clock so the phase never depends on paint timing. The dimming
+/// quad goes over the cached dot rather than erasing it, so the blink works
+/// over any card face (fault wash included).
+fn paint_recording_dot_blink(
+    frame: &CanvasFrame,
+    strip: &RecordingLayout,
+    paint: crate::ui::pages::graph::graph_canvas_view::Paint<'_>,
+) {
+    let crate::ui::pages::graph::graph_canvas_view::Paint { shapes: _, window } = paint;
+    let half_second = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.subsec_millis() < 500)
+        .unwrap_or(true);
+    if half_second {
+        return;
+    }
+    let dot = frame.window_rect(strip.dot);
+    window.paint_quad(PaintQuad {
+        bounds: dot,
+        corner_radii: (f32::from(dot.size.width) / 2.).into(),
+        // Mostly-opaque card surface over the red dot: the dot reads dimmed,
+        // never gone, and no erase of the cached strip is needed.
+        background: gpui_kit::Hsla {
+            a: 0.72,
+            ..crate::ui::theme::SURFACE
+        }
+        .into(),
+        border_widths: 0f32.into(),
+        border_color: crate::ui::theme::controls::TRANSPARENT,
+        border_style: BorderStyle::default(),
+    });
 }
 
 fn paint_graph_meter_frame(

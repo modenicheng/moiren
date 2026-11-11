@@ -15,11 +15,15 @@ use crate::{
     sample::ProcessingSample,
 };
 
+#[cfg(feature = "flac")]
+mod flac;
 #[cfg(feature = "mp3")]
 mod mp3;
 mod session;
 mod sink;
 mod wav;
+#[cfg(feature = "flac")]
+pub use flac::{FLAC_MAX_LEVEL, FlacEncoding, FlacRecording};
 #[cfg(feature = "mp3")]
 pub use mp3::{MP3_BITRATE_KBPS, Mp3Encoding, Mp3Mode, Mp3Recording};
 pub use session::{

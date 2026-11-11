@@ -12,7 +12,7 @@ flexi_logger = { workspace = true }
 log = { workspace = true }
 gpui-kit = "0.7.3"
 moiren-core = { path = "../moiren-core" }
-moiren-engine = { path = "../moiren-engine", features = ["mp3"] }
+moiren-engine = { path = "../moiren-engine", features = ["mp3", "flac"] }
 moiren-signal = { path = "../moiren-signal" }
 raw-window-handle = "0.6"
 # Compile-time embedded translations; locale switch is process-global and

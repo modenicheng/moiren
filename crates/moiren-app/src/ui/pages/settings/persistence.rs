@@ -29,6 +29,11 @@ impl StudioShell {
         self.preferences.values.recording_mp3
     }
 
+    /// FLAC knobs applied to the next FLAC recording start.
+    pub(crate) fn recording_flac(&self) -> moiren_engine::recorder::FlacEncoding {
+        self.preferences.values.recording_flac
+    }
+
     pub(crate) fn recording_output_directory(&self) -> std::path::PathBuf {
         self.preferences
             .values

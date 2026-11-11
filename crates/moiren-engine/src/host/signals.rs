@@ -8,6 +8,8 @@ use std::{
     },
 };
 
+#[cfg(feature = "flac")]
+use crate::recorder::FlacRecording;
 #[cfg(feature = "mp3")]
 use crate::recorder::Mp3Recording;
 use crate::{
@@ -209,6 +211,24 @@ impl ManagedRecorderReader {
             Mp3Recording::create(path, source.reader().channel_count(), sample_rate, encoding)?;
         source.reader().skip_queued();
         spawn_recording(source, mp3)
+    }
+
+    /// Like `record_wav_now`, encoded losslessly to FLAC with the caller's
+    /// compression level (up to eight channels, STREAMINFO-rate sample rates
+    /// only). The same lease and ordering rules apply: encoder creation
+    /// failures return the reader unclaimed.
+    #[cfg(feature = "flac")]
+    pub fn record_flac_now(
+        &self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+        encoding: crate::recorder::FlacEncoding,
+    ) -> io::Result<RecordingSession> {
+        let mut source = self.claim()?;
+        let flac =
+            FlacRecording::create(path, source.reader().channel_count(), sample_rate, encoding)?;
+        source.reader().skip_queued();
+        spawn_recording(source, flac)
     }
 
     fn claim(&self) -> io::Result<RecorderLease> {

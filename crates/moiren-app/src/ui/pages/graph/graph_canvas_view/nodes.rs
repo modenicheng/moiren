@@ -957,7 +957,7 @@ pub(in crate::ui) fn paint_recording_strip(
             Label {
                 text: &recording.file_name,
                 family: theme::FONT_UI,
-                color: theme::TEXT_FAINT,
+                color: theme::TEXT_MUTED,
                 right_aligned: false,
                 weight: FontWeight::NORMAL,
             },
@@ -971,39 +971,37 @@ pub(in crate::ui) fn paint_recording_strip(
     // Transport slots: which carry an affordance follows the same
     // availability the hit test consults, so paint and pointer never drift.
     let slots = [
-        (
-            &layout.record,
-            RecordAction::Record,
-            "player-record",
-            theme::DANGER,
-        ),
-        (
-            &layout.pause,
-            RecordAction::Pause,
-            "player-pause",
-            theme::TEXT_MUTED,
-        ),
-        (
-            &layout.stop,
-            RecordAction::Stop,
-            "player-stop",
-            theme::TEXT_MUTED,
-        ),
+        (&layout.record, RecordAction::Record),
+        (&layout.pause, RecordAction::Pause),
+        (&layout.stop, RecordAction::Stop),
     ];
-    for (bounds, action, icon, color) in slots {
+    for (bounds, action) in slots {
         let Some(affordance) = action.available(recording.phase) else {
             continue;
         };
         let bounds = frame.window_rect(*bounds);
-        rounded(bounds, theme::SURFACE_4, theme::RADIUS_SM * scale, window);
+        // The record affordance is the one loud element on the strip: a red
+        // wash under the red glyph marks the card's armed state. Everything
+        // else stays neutral.
+        let background = if affordance == RecordAction::Record {
+            theme::DANGER_WASH
+        } else {
+            theme::SURFACE_4
+        };
+        rounded(bounds, background, theme::RADIUS_SM * scale, window);
         let glyph = match affordance {
-            RecordAction::Record => icon,
+            RecordAction::Record => "player-record",
             RecordAction::Pause => "player-pause",
             RecordAction::Resume => "player-play",
             RecordAction::Stop => "player-stop",
         };
         let glyph_px = px(10. * scale);
         let inset = (bounds.size.width - glyph_px) / 2.;
+        let color = if affordance == RecordAction::Record {
+            theme::DANGER
+        } else {
+            theme::TEXT_MUTED
+        };
         let _ = window.paint_svg(
             Bounds {
                 origin: bounds.origin + point(inset, inset),
@@ -1037,7 +1035,7 @@ pub(in crate::ui) fn paint_recording_duration(
             family: theme::FONT_UI,
             color: theme::TEXT_MUTED,
             right_aligned: true,
-            weight: FontWeight::NORMAL,
+            weight: FontWeight::SEMIBOLD,
         },
         Paint {
             shapes: &mut *shapes,

@@ -26,13 +26,15 @@ pub enum ActionIcon {
     ChevronDown,
     Play,
     Stop,
+    Record,
+    Pause,
 }
 
 impl ActionIcon {
     /// Every variant, so the asset regression test can enumerate all request
     /// sites instead of chasing scattered call sites.
     #[cfg(test)]
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 21] = [
         Self::Plus,
         Self::Settings,
         Self::Graph,
@@ -52,6 +54,8 @@ impl ActionIcon {
         Self::ChevronDown,
         Self::Play,
         Self::Stop,
+        Self::Record,
+        Self::Pause,
     ];
 
     /// The asset path is a literal: every toolbar rebuild used to pay a
@@ -77,6 +81,8 @@ impl ActionIcon {
             Self::ChevronDown => "icons/chevron-down.svg",
             Self::Play => "icons/player-play.svg",
             Self::Stop => "icons/player-stop.svg",
+            Self::Record => "icons/player-record.svg",
+            Self::Pause => "icons/player-pause.svg",
         }
     }
 
