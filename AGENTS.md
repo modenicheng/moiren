@@ -38,6 +38,18 @@ Use Rust's `#[test]` harness and descriptive `snake_case` test names. Add regres
 
 Prepare graphs, buffers, and signal bindings off the audio thread. Real-time processing must avoid heap allocation/deallocation and blocking; reclaim retired plans on the control side. Keep logical topology separate from prepared execution plans and platform transports.
 
+### Adding a node kind (checklist)
+
+`NodeKind` is a closed enum; its exhaustive matches are the safety net that turns a missed touchpoint into a compile error. Adding a variant means updating all of the following (each verified against the tree, 2026-11-11):
+
+1. `moiren-core`: the `NodeKind` enum and `initial_ports()` port layout in `crates/moiren-core/src/graph/model.rs`.
+2. `moiren-engine`: the `Binding<S>` enum in `crates/moiren-engine/src/compiler/bindings.rs`, a `bind_*` constructor on `NodeBindings`, and the exhaustive `validate` match in the same file.
+3. `moiren-engine`: the `NodeKind` lowering match in `crates/moiren-engine/src/compiler/plan.rs`.
+4. `moiren-engine`: the parallel `NodeConfig` enum in `crates/moiren-engine/src/host/project.rs`.
+5. `moiren-app`: the `GraphNodeKind` enum and its bidirectional `From` impls in `crates/moiren-app/src/project/graph.rs`.
+
+Keep the enum closed; do not replace it with a runtime registry — the exhaustive-match compile-time guarantee is worth more to an RT system than removing the boilerplate (2026-11-09 audit E-1).
+
 ## Commit & Pull Request Guidelines
 
 Follow history: `feat:`, `fix:`, `refactor:`, `test:`, or `chore:`, optionally scoped, e.g. `feat(engine): add compressor processor`. Keep commits focused; stage only relevant paths. PRs should describe behavior, reference applicable issues/design notes, report validation, and include screenshots for UI changes. Require passing CI before merging.

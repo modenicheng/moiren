@@ -1,6 +1,10 @@
 //! Copy bounded latest windows between the lifecycle-owned host directory and
 //! the stable application topics, running the spectrum transform on the way.
 //! Demand still decides whether RT meters run.
+//!
+//! Deliberate layering, not duplication (2026-11-09 audit X-1): the engine bus
+//! publishes RT observations, this app-side bus relays them to the UI, and the
+//! shared types stay single-sourced from `moiren_engine`.
 use super::*;
 use crate::service::signals::{SpectrumShape, SpectrumTopic};
 use moiren_core::graph::NodeKind;
