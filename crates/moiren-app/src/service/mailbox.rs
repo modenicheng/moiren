@@ -451,14 +451,9 @@ mod tests {
     #[test]
     fn compatibility_reader_preserves_typed_subscription_for_dispatch() {
         let mut context = ServiceContext::default();
+        let topic = u32_topic(&mut context);
         let (handle, mailbox) =
             ServiceMailbox::with_snapshot(std::thread::current(), snapshot(&context));
-        let topic = handle
-            .try_snapshot()
-            .unwrap()
-            .signal_topics
-            .tone_output
-            .clone();
         let mut ticket = handle.subscribe_topic(topic, Default::default()).unwrap();
         assert_eq!(mailbox.try_request(), None);
         assert_eq!(
@@ -472,5 +467,62 @@ mod tests {
             handle.try_snapshot().unwrap().consumed_request_id,
             RequestId(1)
         );
+    }
+
+    /// A plain stream topic on the service bus for subscription-machinery
+    /// tests: the meter levels no longer ride the app bus, so tests mint
+    /// their own payload.
+    fn u32_topic(context: &mut ServiceContext) -> moiren_signal::Topic<StreamBlockU32> {
+        context
+            .signals
+            .bus()
+            .register_stream_block(
+                "mailbox/test",
+                moiren_signal::BlockInit {
+                    header: 0_u32,
+                    element: 0_u32,
+                    capacity: 2,
+                },
+                2,
+            )
+            .unwrap()
+    }
+
+    type StreamBlockU32 = moiren_signal::StreamBlock<u32, u32>;
+
+    #[test]
+    fn topic_subscriptions_share_the_ordinary_queue_capacity_and_exit_gate() {
+        let mut context = ServiceContext::default();
+        let topic = u32_topic(&mut context);
+        let (handle, _mailbox) =
+            ServiceMailbox::with_snapshot(std::thread::current(), snapshot(&context));
+        for _ in 0..64 {
+            handle.try_request(AppRequest::RefreshCatalog).unwrap();
+        }
+        assert!(matches!(
+            handle.subscribe_topic(topic.clone(), Default::default()),
+            Err(DispatchError::Busy)
+        ));
+        handle.request_exit();
+        assert!(matches!(
+            handle.subscribe_topic(topic, Default::default()),
+            Err(DispatchError::Exiting)
+        ));
+    }
+
+    #[test]
+    fn exiting_service_disconnects_pending_tickets_without_hiding_shutdown() {
+        let mut context = ServiceContext::default();
+        let topic = u32_topic(&mut context);
+        let (handle, mailbox) =
+            ServiceMailbox::with_snapshot(std::thread::current(), snapshot(&context));
+        let mut ticket = handle.subscribe_topic(topic, Default::default()).unwrap();
+        handle.request_exit();
+        assert!(mailbox.exit_requested());
+        drop(mailbox);
+        assert!(matches!(
+            ticket.try_take(),
+            Err(SubscriptionDeliveryError::Disconnected)
+        ));
     }
 }

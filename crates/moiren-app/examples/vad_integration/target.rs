@@ -573,7 +573,7 @@ impl LiveSession<'_> {
             confirmed_revision: self.revision,
             ..Default::default()
         });
-        let topic = loop {
+        let source = loop {
             self.require_running(
                 "no_clients_waiting_for_gain_topic",
                 report,
@@ -587,39 +587,20 @@ impl LiveSession<'_> {
                     .nodes()
                     .iter()
                     .find(|node| node.kind() == NodeKind::Gain)
-                && let Some(topic) = snapshot.signal_topics.node_levels.get(&node.id())
+                && let Some(source) = snapshot.signal_topics.node_levels.get(&node.id())
             {
-                break topic.clone();
+                break source.clone();
             }
             ensure!(
                 Instant::now() < subscription_deadline,
-                "Gain signal topic not published"
+                "Gain level source not published"
             );
             thread::sleep(Duration::from_millis(5));
         };
-        let mut ticket = self
-            .handle
-            .subscribe_topic(topic, Default::default())
-            .map_err(|error| anyhow::anyhow!("Gain signal subscribe: {error:?}"))?;
-        let mut subscriber = loop {
-            self.require_running(
-                "no_clients_subscribing_gain",
-                report,
-                shared,
-                subscription_deadline,
-            )?;
-            if let Some(subscriber) = ticket
-                .try_take()
-                .map_err(|error| anyhow::anyhow!("Gain subscription: {error:?}"))?
-            {
-                break subscriber;
-            }
-            ensure!(
-                Instant::now() < subscription_deadline,
-                "Gain subscriber not delivered"
-            );
-            thread::sleep(Duration::from_millis(5));
-        };
+        // Levels are read through the registry's lease (decision D-4 route
+        // B): subscribing is immediate, and the service's registry round
+        // binds the engine subscription underneath.
+        let lease = source.subscribe();
         let hold_started = Instant::now();
         let hold_deadline = (hold_started + duration + Duration::from_secs(5)).min(self.deadline);
         if soak_seconds > 0 {
@@ -635,20 +616,21 @@ impl LiveSession<'_> {
                 .expect("initialized hold evidence");
             hold.observed_wall_ms = elapsed.as_millis();
             let mut header = None;
-            // Level topics are FIFO stream blocks: drain the queued windows
-            // and validate each; the freshest header feeds the hold timeline.
-            while let Some(window) = subscriber.next() {
-                if window.header().frame_end > window.header().frame_start {
-                    ensure!(
-                        window.elements().len() == 2
-                            && window
-                                .elements()
-                                .iter()
-                                .all(|level| level.peak.is_finite() && level.rms.is_finite()),
-                        "invalid stereo Gain signal window"
-                    );
-                    header = Some(*window.header());
-                }
+            // Engine topics supersede: read the newest window and validate
+            // it; the freshest header feeds the hold timeline.
+            if let Some((read_header, valid)) = lease.read_latest(|_epoch, window| {
+                (
+                    *window.header(),
+                    window.header().frame_end > window.header().frame_start
+                        && window.elements().len() == 2
+                        && window
+                            .elements()
+                            .iter()
+                            .all(|level| level.peak.is_finite() && level.rms.is_finite()),
+                )
+            }) {
+                ensure!(valid, "invalid stereo Gain signal window");
+                header = Some(read_header);
             }
             if let Some(timeline_header) = header {
                 hold.timeline.observe(timeline_header)?;

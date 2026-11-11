@@ -18,6 +18,9 @@ mod parameters;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use self::meters::LevelRegistry;
+pub use self::meters::{LevelLease, LevelSource};
+
 type Factory<S> = dyn Fn(AudioLatencyProfile, &AudioSettings) -> Result<Box<dyn EngineBackend<S>>, host::BackendError>
     + Send
     + Sync;
@@ -123,7 +126,11 @@ pub struct ManagedDriver {
     /// Trailing-edge debounce for the automatic apply of structure edits.
     /// Armed only while an owner runs: a stopped session never auto-starts.
     auto_apply_deadline: Option<Instant>,
-    meters: Option<meters::MeterBridge>,
+    /// The spectrum relay. Levels are not relayed since decision D-4
+    /// route B: the level subscription registry lives on the
+    /// [`ServiceContext`](super::ServiceContext) and the UI reads its
+    /// leases directly.
+    spectra: Option<meters::SpectrumBridge>,
     #[cfg(windows)]
     professional_observations: Option<
         Arc<
@@ -181,7 +188,7 @@ impl ManagedDriver {
             exiting: false,
             apply: false,
             apply_audio_settings: None,
-            meters: None,
+            spectra: None,
             #[cfg(windows)]
             professional_observations: None,
             #[cfg(windows)]

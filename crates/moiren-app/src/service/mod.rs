@@ -30,11 +30,10 @@ pub use graph::{
     clock_master, default_label, validate_node_state,
 };
 pub use latency::AudioLatencyProfile;
-pub use managed::ManagedDriver;
+use managed::LevelRegistry;
+pub use managed::{LevelLease, LevelSource, ManagedDriver};
 pub use moiren_engine::audio_config::*;
-pub use signals::{
-    LevelTopic, SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket,
-};
+pub use signals::{SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
 
@@ -127,6 +126,10 @@ pub struct ServiceContext {
     catalog_epoch: u64,
     pub control: ControlSummary,
     signals: signals::SignalService,
+    /// The level subscription registry (decision D-4 route B): holds the
+    /// engine's level subscriptions directly against the leases the UI
+    /// holds, replacing the relay's copy machinery.
+    levels: LevelRegistry,
     /// Whether the active session routes its levels into the tone topic
     /// instead of the physical monitor pair. The meter bridge resolves it
     /// from the running host graph and retires it with the owner.
@@ -141,6 +144,8 @@ pub struct ServiceContext {
 }
 impl Default for ServiceContext {
     fn default() -> Self {
+        let signals = signals::SignalService::new().expect("fixed application signal topics");
+        let levels = LevelRegistry::new(&signals.topics);
         Self {
             exports: ExportService::default(),
             loaded_project: None,
@@ -156,7 +161,8 @@ impl Default for ServiceContext {
             catalog_error: None,
             catalog_epoch: 0,
             control: ControlSummary::default(),
-            signals: signals::SignalService::new().expect("fixed application signal topics"),
+            signals,
+            levels,
             tone_session: false,
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),

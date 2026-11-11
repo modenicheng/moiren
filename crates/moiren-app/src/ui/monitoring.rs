@@ -8,21 +8,16 @@ use std::time::{Duration, Instant};
 
 use moiren_core::graph::NodeId;
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
-use moiren_signal::{PublisherStatus, Subscriber, SubscriptionOptions, Topic, TopicLifecycle};
 use rust_i18n::t;
 
 use crate::service::{
-    AppHandle, AppSnapshot, InputSelection, LevelTopic, SessionGeneration, SessionPhase,
+    AppHandle, AppSnapshot, InputSelection, LevelLease, LevelSource, SessionGeneration,
+    SessionPhase,
 };
 
 /// A complete window must keep arriving; a retained value is not proof that
 /// the audio thread or publisher is still advancing.
 const STALE_AFTER: Duration = Duration::from_millis(500);
-
-/// Queued depth for level subscriptions: sixteen windows hold ~67 ms of the
-/// 240 Hz publication stream, covering both display-rate readers and the
-/// slower control-side pump without dropping intermediate peaks.
-const LEVEL_WINDOW_DEPTH: usize = 16;
 
 /// The last tick of the shared meter scale, kept in lockstep with the final
 /// `FaderScale::ANCHORS` entry (a test pins the two together). Below the tick
@@ -118,21 +113,25 @@ pub struct MeterSubscriptions {
     pub output: Option<[ChannelLevel; 2]>,
     pub input_status: MeterStatus,
     pub output_status: MeterStatus,
-    handle: AppHandle,
     session: Option<(SessionGeneration, InputSelection)>,
     settings: MeterDisplayPreferences,
     input_subscription: Option<MeterSubscription>,
     output_subscription: Option<MeterSubscription>,
 }
 
+impl Default for MeterSubscriptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeterSubscriptions {
-    pub fn new(handle: AppHandle) -> Self {
+    pub fn new() -> Self {
         Self {
             input: None,
             output: None,
             input_status: MeterStatus::Stopped,
             output_status: MeterStatus::Stopped,
-            handle,
             session: None,
             settings: MeterDisplayPreferences::default(),
             input_subscription: None,
@@ -229,8 +228,8 @@ impl MeterSubscriptions {
                 self.clear();
                 self.session = Some((snapshot.generation, spec.source.clone()));
             }
-            // Which topics the running session feeds is a published fact
-            // resolved by the service's meter bridge from the active host
+            // Which tap the running session feeds is a published fact
+            // resolved by the service's meter registry from the active host
             // graph — a tone session has no observable input at all.
             let (input_topic, output_topic) = if snapshot.tone_session {
                 (None, &snapshot.signal_topics.tone_output)
@@ -245,14 +244,14 @@ impl MeterSubscriptions {
                 self.input = None;
                 self.input_status = MeterStatus::Hidden;
             } else if let Some(topic) = input_topic {
-                ensure_subscription(&mut self.input_subscription, &self.handle, topic);
+                ensure_subscription(&mut self.input_subscription, topic);
             } else {
                 self.input_subscription = None;
                 self.input = None;
                 self.input_status = MeterStatus::NotAvailable;
             }
             if output_visible {
-                ensure_subscription(&mut self.output_subscription, &self.handle, output_topic);
+                ensure_subscription(&mut self.output_subscription, output_topic);
             } else {
                 self.output_subscription = None;
                 self.output = None;
@@ -309,16 +308,12 @@ impl MeterSubscriptions {
     }
 }
 
-fn ensure_subscription(
-    subscription: &mut Option<MeterSubscription>,
-    handle: &AppHandle,
-    topic: &Topic<LevelTopic>,
-) {
+fn ensure_subscription(subscription: &mut Option<MeterSubscription>, topic: &LevelSource) {
     if subscription
         .as_ref()
         .is_none_or(|current| current.topic != *topic)
     {
-        *subscription = Some(MeterSubscription::new(handle.clone(), topic.clone(), 2));
+        *subscription = Some(MeterSubscription::new(topic.clone(), 2));
     }
 }
 
@@ -339,13 +334,19 @@ fn stereo_display(display: Option<&[DisplayLevel]>) -> Option<[DisplayLevel; 2]>
 }
 
 struct MeterSubscription {
-    topic: Topic<LevelTopic>,
-    /// The level topic's subscription, latched once at construction: the
-    /// meter path has no demand gating left — visibility is the caller's
-    /// visible set, and the demand wrapper it used was hardcoded to "always
-    /// wants" (design 17 deletions).
-    ticket: Option<crate::service::SubscriptionTicket<LevelTopic>>,
-    subscriber: Option<Subscriber<LevelTopic>>,
+    /// The stable subscription point this meter reads from (identity of
+    /// the demand key).
+    topic: LevelSource,
+    /// This consumer's lease on the source: it holds this reader's engine
+    /// subscription and counts toward the source's demand. Level windows
+    /// are read through it directly — the relay's copy into an application
+    /// topic is gone (decision D-4 route B).
+    lease: Option<LevelLease>,
+    /// The epoch of the installed engine subscription the lease reported
+    /// last. The registry bumps the epoch when it re-subscribes (another
+    /// node, a replaced owner generation), and a renewed engine topic
+    /// restarts sequence numbering, so the fences reset with it.
+    subscription_epoch: u64,
     sequence_fence: u64,
     last_delivery: Option<Instant>,
     last_window: Option<(u64, u64)>,
@@ -530,15 +531,15 @@ struct MeterPoll {
 }
 
 impl TopicSubscription for MeterSubscription {
-    /// The level topic plus the node's channel width: the pair a window
+    /// The level source plus the node's channel width: the pair a window
     /// must match, so either changing mid-session rebuilds in place.
-    type Topic = (Topic<LevelTopic>, usize);
+    type Topic = (LevelSource, usize);
     /// The display preferences the ballistics follow, applied before every
     /// poll.
     type Context = MeterDisplayPreferences;
 
-    fn build(handle: AppHandle, topic: &Self::Topic, settings: &MeterDisplayPreferences) -> Self {
-        let mut this = Self::new(handle, topic.0.clone(), topic.1);
+    fn build(_handle: AppHandle, topic: &Self::Topic, settings: &MeterDisplayPreferences) -> Self {
+        let mut this = Self::new(topic.0.clone(), topic.1);
         this.settings = *settings;
         this
     }
@@ -574,12 +575,18 @@ impl MeterSubscription {
         self.ballistics.iter().all(|channel| channel.at_rest())
     }
 
-    fn new(handle: AppHandle, topic: Topic<LevelTopic>, channels: usize) -> Self {
-        let mut this = Self {
-            sequence_fence: topic.stats().attempts,
-            ticket: None,
-            subscriber: None,
+    fn new(topic: LevelSource, channels: usize) -> Self {
+        // The lease arms the demand (and later the engine subscription)
+        // immediately; no mailbox round-trip is involved any more.
+        let lease = topic.subscribe();
+        Self {
             topic,
+            lease: Some(lease),
+            subscription_epoch: 0,
+            // A fresh lease cannot replay an old window: the engine gates
+            // retained values by activation generation, so anything from
+            // before this lease's demand burst is filtered on the bus side.
+            sequence_fence: 0,
             last_delivery: None,
             last_window: None,
             levels: None,
@@ -589,121 +596,108 @@ impl MeterSubscription {
             ballistics: Vec::new(),
             display: None,
             last_poll_published: false,
-        };
-        match handle.subscribe_topic(
-            this.topic.clone(),
-            SubscriptionOptions {
-                stream_depth: Some(LEVEL_WINDOW_DEPTH),
-            },
-        ) {
-            Ok(ticket) => this.ticket = Some(ticket),
-            Err(_) => {
-                this.status = MeterStatus::Error(MeterFault::SubscribeFailed);
-            }
         }
-        this
     }
 
-    /// Drains every queued window; reports whether a new publication was
-    /// accepted and whether the raw reading moved. Every drained window
-    /// contributes its peak and its RMS share, so intermediate windows
-    /// between display reads are never lost.
+    /// Reads the newest engine window through the lease — the engine topic
+    /// supersedes, so windows published between two reads collapse into the
+    /// newest — and folds it exactly as the relay-era drain did. Reports
+    /// whether a new publication was accepted and whether the raw reading
+    /// moved.
     fn poll_windows(&mut self, now: Instant) -> MeterPoll {
         let mut raw_changed = false;
-        let status = self.topic.status();
-        if status.lifecycle == TopicLifecycle::Closed
-            || status.publisher == PublisherStatus::NoPublisher
-        {
+        if !self.topic.publisher_present() {
             raw_changed |= self.levels.is_some();
             self.levels = None;
             self.last_delivery = None;
-            self.sequence_fence = self.topic.stats().attempts;
+            self.subscription_epoch = 0;
+            self.sequence_fence = 0;
+            self.last_window = None;
             self.status = MeterStatus::NoPublisher;
             return MeterPoll {
                 published: false,
                 raw_changed,
             };
         }
-        if let Some(ticket) = self.ticket.as_mut() {
-            match ticket.try_take() {
-                Ok(Some(subscriber)) => {
-                    self.ticket = None;
-                    self.subscriber = Some(subscriber);
+        // Split the borrows for the in-place read: the lease reads the
+        // engine slot under its lock while the fold below mutates only the
+        // payload fields.
+        let MeterSubscription {
+            lease,
+            subscription_epoch,
+            sequence_fence,
+            last_window,
+            last_delivery,
+            levels,
+            channels,
+            status,
+            settings,
+            ballistics,
+            display,
+            ..
+        } = self;
+        let channels = *channels;
+        let settings = *settings;
+        let accepted = lease.as_ref().and_then(|lease| {
+            lease.read_latest(|epoch, window| {
+                // A renewed engine subscription restarts sequence numbering:
+                // fresh fences, exactly as the relay's re-subscription did.
+                if epoch != *subscription_epoch {
+                    *subscription_epoch = epoch;
+                    *sequence_fence = 0;
+                    *last_window = None;
                 }
-                Ok(None) => {}
-                Err(error) => {
-                    self.ticket = None;
-                    raw_changed |= self.levels.is_some();
-                    self.levels = None;
-                    self.status = MeterStatus::Error(MeterFault::TakeFailed(error.to_string()));
-                    return MeterPoll {
-                        published: false,
-                        raw_changed,
-                    };
+                let meta = window.meta();
+                let header = *window.header();
+                let elements = window.elements();
+                if !valid_level_window(
+                    channels,
+                    meta.sequence,
+                    *sequence_fence,
+                    header,
+                    elements,
+                    *last_window,
+                ) {
+                    return None;
                 }
-            }
-        }
-        let Some(subscriber) = self.subscriber.as_mut() else {
-            self.status = MeterStatus::Waiting;
-            return MeterPoll {
-                published: false,
-                raw_changed,
-            };
-        };
-        let mut published = false;
-        while let Some(window) = subscriber.next() {
-            let meta = window.meta();
-            let header = *window.header();
-            let elements = window.elements();
-            if !valid_level_window(
-                self.channels,
-                meta.sequence,
-                self.sequence_fence,
-                header,
-                elements,
-                self.last_window,
-            ) {
-                continue;
-            }
-            self.sequence_fence = meta.sequence;
-            self.last_window = Some((header.timeline_epoch, header.frame_end));
-            self.last_delivery = Some(now);
-            self.status = MeterStatus::Live;
-            published = true;
-            match self.levels.as_deref_mut() {
-                Some(levels) => {
-                    for (level, element) in levels.iter_mut().zip(elements) {
-                        raw_changed |= element.peak > level.peak || element.rms != level.rms;
-                        level.peak = level.peak.max(element.peak);
-                        level.rms = element.rms;
+                *sequence_fence = meta.sequence;
+                *last_window = Some((header.timeline_epoch, header.frame_end));
+                *last_delivery = Some(now);
+                *status = MeterStatus::Live;
+                match levels.as_deref_mut() {
+                    Some(levels) => {
+                        for (level, element) in levels.iter_mut().zip(elements) {
+                            raw_changed |= element.peak > level.peak || element.rms != level.rms;
+                            level.peak = level.peak.max(element.peak);
+                            level.rms = element.rms;
+                        }
+                    }
+                    None => {
+                        *levels = Some(elements.to_vec().into_boxed_slice());
+                        raw_changed = true;
                     }
                 }
-                None => {
-                    self.levels = Some(elements.to_vec().into_boxed_slice());
-                    raw_changed = true;
+                let duration = window_secs(header);
+                sync_ballistics(ballistics, display, channels);
+                for (channel, element) in ballistics.iter_mut().zip(elements) {
+                    channel.settings = settings;
+                    channel.ingest(*element, duration, now);
                 }
-            }
-            let duration = window_secs(header);
-            sync_ballistics(&mut self.ballistics, &mut self.display, self.channels);
-            for (channel, element) in self.ballistics.iter_mut().zip(elements) {
-                channel.ingest(*element, duration, now);
-            }
-        }
-        if published {
+                Some(())
+            })
+        });
+        if accepted.is_some() {
             return MeterPoll {
                 published: true,
                 raw_changed,
             };
         }
-        if self
-            .last_delivery
-            .is_some_and(|last| now.saturating_duration_since(last) >= STALE_AFTER)
-        {
-            raw_changed |= self.levels.is_some();
-            self.levels = None;
-            self.status = MeterStatus::Stale;
-        } else if self.last_delivery.is_none() {
-            self.status = MeterStatus::Waiting;
+        if last_delivery.is_some_and(|last| now.saturating_duration_since(last) >= STALE_AFTER) {
+            raw_changed |= levels.is_some();
+            *levels = None;
+            *status = MeterStatus::Stale;
+        } else if last_delivery.is_none() {
+            *status = MeterStatus::Waiting;
         }
         MeterPoll {
             published: false,
@@ -1165,7 +1159,7 @@ mod tests {
                 .filter(|snapshot| snapshot.phase == SessionPhase::Running)
         });
 
-        let mut meters = MeterSubscriptions::new(handle.clone());
+        let mut meters = MeterSubscriptions::new();
         // Fresh demand must wake once the first windows land (Waiting → Live,
         // no reading → first window): the new-subscription path stays loud.
         wait_until(Duration::from_secs(3), || {

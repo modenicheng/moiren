@@ -779,13 +779,17 @@ impl ManagedDriver {
             }
         }
     }
-    /// Pump the meter bridge from the owner's observer.
+    /// Pump the meter surfaces from the owner's observer: the spectrum
+    /// relay, then the level subscription registry.
     fn poll_meters(&mut self, c: &mut ServiceContext) {
         let Some(owner) = self.owner.as_ref() else {
             return;
         };
-        if let Some(meters) = &mut self.meters {
-            meters.poll(c, &owner.observer);
+        if let Some(spectra) = &mut self.spectra {
+            spectra.poll(c, &owner.observer);
+        }
+        if let Some(tone) = c.levels.poll(&owner.observer, &mut c.signals.topics) {
+            c.tone_session = tone;
         }
     }
     /// Stop and retire the owner once the requested run limit elapsed.
