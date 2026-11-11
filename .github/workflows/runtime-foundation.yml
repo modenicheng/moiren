@@ -106,6 +106,13 @@ jobs:
           pkgs=()
           for p in $PKGS; do pkgs+=(-p "$p"); done
           cargo +stable test --locked "${pkgs[@]}"
+      # The MP3 recorder sink is feature-gated so Miri suites never build the
+      # bundled LAME C sources; run its tests whenever the engine is touched.
+      - name: Test recorder MP3 sink
+        if: contains(needs.changes.outputs.pkgs, 'moiren-engine')
+        run: |
+          cargo +stable test --locked -p moiren-engine --features mp3 --lib recorder
+          cargo +stable test --locked -p moiren-engine --features mp3 --test host recording
       - name: Test native-owner realtime contracts
         if: needs.changes.outputs.rtcheck == 'true'
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
@@ -165,6 +172,7 @@ jobs:
           for pkg in $LINT_PKGS; do
             pkgs+=(-p "$pkg")
             case "$pkg" in
+              moiren-engine) features+=(moiren-engine/mp3) ;;
               moiren-windows-audio) features+=(moiren-windows-audio/vad-probe) ;;
               moiren-app) features+=(moiren-app/vad-integration-probe) ;;
             esac

@@ -102,11 +102,14 @@ pub enum AppRequest {
         gain: f64,
         pan: f64,
     },
-    /// Begin recording `node` into `directory`; the file name is derived from
-    /// the start time, never chosen by the caller.
+    /// Begin recording `node` into `directory` in `format`; the file name is
+    /// derived from the start time, never chosen by the caller.
     StartRecording {
         node: moiren_core::graph::NodeId,
         directory: std::path::PathBuf,
+        format: super::RecordingFormat,
+        /// MP3 knobs, read when `format` is `Mp3`; ignored for WAV.
+        mp3: moiren_engine::recorder::Mp3Encoding,
     },
     PauseRecording {
         node: moiren_core::graph::NodeId,

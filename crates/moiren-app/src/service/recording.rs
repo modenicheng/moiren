@@ -5,7 +5,28 @@
 //! seconds) so publishing stays at 1 Hz while a recording runs.
 use moiren_core::graph::NodeId;
 use moiren_engine::recorder::{RecordingState, RecordingStatus};
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
+
+/// Encoded-output preference. WAV is lossless; MP3 is CBR 256 kbps, mono or
+/// stereo only. The format is resolved when a recording starts, so changing
+/// it never disturbs a running session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RecordingFormat {
+    #[default]
+    Wav,
+    Mp3,
+}
+
+impl RecordingFormat {
+    /// Extension of the generated recording file name.
+    pub fn extension(self) -> &'static str {
+        match self {
+            RecordingFormat::Wav => "wav",
+            RecordingFormat::Mp3 => "mp3",
+        }
+    }
+}
 
 /// Discrete lifecycle of one node's recording. Terminal phases keep their
 /// entry until the next start replaces it, so the file name stays visible.
@@ -324,18 +345,22 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 pub fn recording_file_path(
     directory: &std::path::Path,
     parts: DateTimeParts,
+    format: RecordingFormat,
     exists: impl Fn(&std::path::Path) -> bool,
 ) -> PathBuf {
     let stamp = format!(
         "{:04}{:02}{:02}-{:02}{:02}{:02}",
         parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second
     );
-    let base = directory.join(format!("moiren-rec-{stamp}.wav"));
+    let base = directory.join(format!("moiren-rec-{stamp}.{}", format.extension()));
     if !exists(&base) {
         return base;
     }
     for suffix in 2..=99_u32 {
-        let candidate = directory.join(format!("moiren-rec-{stamp}-{suffix}.wav"));
+        let candidate = directory.join(format!(
+            "moiren-rec-{stamp}-{suffix}.{}",
+            format.extension()
+        ));
         if !exists(&candidate) {
             return candidate;
         }
@@ -375,10 +400,12 @@ mod tests {
 
     #[test]
     fn file_name_has_no_spaces_and_stamps_start_time() {
-        let path =
-            recording_file_path(PathBuf::from("D:/My Recordings").as_path(), parts(), |_| {
-                false
-            });
+        let path = recording_file_path(
+            PathBuf::from("D:/My Recordings").as_path(),
+            parts(),
+            RecordingFormat::Wav,
+            |_| false,
+        );
         assert_eq!(
             path,
             PathBuf::from("D:/My Recordings/moiren-rec-20261111-150405.wav")
@@ -389,19 +416,25 @@ mod tests {
 
     #[test]
     fn same_second_collisions_take_numeric_suffixes() {
-        let first = recording_file_path(Path::new("out"), parts(), |_| false);
+        let first = recording_file_path(Path::new("out"), parts(), RecordingFormat::Wav, |_| false);
         let taken = [first];
-        let second = recording_file_path(Path::new("out"), parts(), |candidate| {
-            taken.iter().any(|p| p.as_path() == candidate)
-        });
+        let second = recording_file_path(
+            Path::new("out"),
+            parts(),
+            RecordingFormat::Wav,
+            |candidate| taken.iter().any(|p| p.as_path() == candidate),
+        );
         assert_eq!(
             second,
             PathBuf::from("out/moiren-rec-20261111-150405-2.wav")
         );
         let taken = [taken[0].clone(), second];
-        let third = recording_file_path(Path::new("out"), parts(), |candidate| {
-            taken.iter().any(|p| p.as_path() == candidate)
-        });
+        let third = recording_file_path(
+            Path::new("out"),
+            parts(),
+            RecordingFormat::Wav,
+            |candidate| taken.iter().any(|p| p.as_path() == candidate),
+        );
         assert_eq!(third, PathBuf::from("out/moiren-rec-20261111-150405-3.wav"));
     }
 
@@ -415,7 +448,7 @@ mod tests {
             minute: 4,
             second: 5,
         };
-        let path = recording_file_path(Path::new("out"), narrow, |_| false);
+        let path = recording_file_path(Path::new("out"), narrow, RecordingFormat::Wav, |_| false);
         assert_eq!(path, PathBuf::from("out/moiren-rec-20260102-030405.wav"));
     }
 

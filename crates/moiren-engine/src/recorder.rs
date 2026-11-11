@@ -15,12 +15,19 @@ use crate::{
     sample::ProcessingSample,
 };
 
+#[cfg(feature = "mp3")]
+mod mp3;
+mod session;
+mod sink;
 mod wav;
-pub use wav::{
+#[cfg(feature = "mp3")]
+pub use mp3::{MP3_BITRATE_KBPS, Mp3Encoding, Mp3Mode, Mp3Recording};
+pub use session::{
     RecordingError, RecordingSession, RecordingState, RecordingStatus, RecordingSummary,
-    WavRecording,
 };
-pub(crate) use wav::{RecordingSource, spawn_recording};
+pub(crate) use session::{RecordingSource, spawn_recording};
+pub use sink::RecordingSink;
+pub use wav::WavRecording;
 
 #[cfg(test)]
 mod tests;

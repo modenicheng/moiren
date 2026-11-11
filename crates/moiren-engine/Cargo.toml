@@ -13,6 +13,11 @@ moiren-signal = { path = "../moiren-signal" }
 rtrb = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+mp3lame-encoder = { version = "0.3.0", optional = true }
+
+[features]
+# Lossy recording sink; bundles the LAME C sources and builds them with cc.
+mp3 = ["dep:mp3lame-encoder"]
 
 [dev-dependencies]
 anyhow = { workspace = true }

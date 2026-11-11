@@ -751,6 +751,103 @@ fn inspector_hosts_the_headline_visualization_for_eq_and_dynamics(
 }
 
 #[gpui_kit::test]
+fn recorder_library_spawn_paints_strip_and_inspector_without_panicking(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    // The recorder template sits below the fold of the default library
+    // viewport; scroll the library panel to reveal it.
+    render(cx);
+    cx.update(|window, cx| {
+        window.scroll(
+            "node-library-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-1200.))),
+            cx,
+        )
+    });
+    render(cx);
+    cx.update(|window, cx| window.click("add-Recorder", cx));
+    let id = wait_for(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        render(cx);
+        view.update(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state
+                .snapshot
+                .graph
+                .graph
+                .nodes()
+                .iter()
+                .find(|node| node.kind() == NodeKind::Recorder)
+                .map(|node| node.id())
+        })
+    });
+    // The spawn selects the node, so the inspector mounts the recorder
+    // controls (transport, format selector, directory, buffer) immediately.
+    render(cx);
+    cx.update(|window, _| {
+        assert!(window.find("recorder-start").visible());
+        assert!(window.find("recorder-format-wav").visible());
+        assert!(window.find("recorder-format-mp3").visible());
+        assert!(window.find("recorder-directory").visible());
+    });
+    // Switching the format preference must repaint the selector, persist, and
+    // mount the encoding knobs: bitrate ladder for CBR, quality for VBR.
+    cx.update(|window, cx| window.click("recorder-format-mp3", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.recording_format(),
+            crate::service::RecordingFormat::Mp3
+        );
+        assert_eq!(shell.recording_mp3().bitrate_kbps, 256);
+    });
+    cx.update(|window, cx| window.click("recorder-mp3-bitrate-up", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.recording_mp3().bitrate_kbps, 320);
+    });
+    cx.update(|window, cx| window.click("recorder-mp3-vbr", cx));
+    render(cx);
+    cx.update(|window, _| assert!(window.find("recorder-mp3-quality-up").visible()));
+    cx.update(|window, cx| window.click("recorder-mp3-quality-up", cx));
+    render(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.recording_mp3().mode,
+            moiren_engine::recorder::Mp3Mode::Vbr { quality: 3 }
+        );
+    });
+    // Starting without a native backend surfaces the fallback error instead
+    // of panicking; the recording domain entry keeps the node usable.
+    cx.update(|window, cx| window.click("recorder-start", cx));
+    wait_for(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        Some(view.update(cx, |shell, cx| {
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .recordings
+                .iter()
+                .any(|entry| {
+                    entry.node == id
+                        && matches!(entry.phase, crate::service::RecordingPhase::Failed)
+                })
+        }))
+    });
+    render(cx);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn builtin_library_creation_opens_real_inspector_controls_and_updates_candidate_state(
     cx: &mut gpui_kit::TestAppContext,
 ) {

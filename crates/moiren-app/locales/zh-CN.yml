@@ -1703,3 +1703,30 @@ _version: 2
 "Choose the recording output directory":
   en: Choose the recording output directory
   zh-CN: 选择录制输出目录
+"WAV":
+  en: WAV
+  zh-CN: WAV
+"MP3":
+  en: MP3
+  zh-CN: MP3
+"Bitrate":
+  en: Bitrate
+  zh-CN: 比特率
+"CBR":
+  en: CBR
+  zh-CN: CBR
+"VBR":
+  en: VBR
+  zh-CN: VBR
+"VBR quality":
+  en: VBR quality
+  zh-CN: VBR 质量
+"0 is best.":
+  en: 0 is best.
+  zh-CN: 0 最佳。
+"Applies to the next recording.":
+  en: Applies to the next recording.
+  zh-CN: 应用于下一次录制。
+"%{kbps} kbps":
+  en: "%{kbps} kbps"
+  zh-CN: "%{kbps} kbps"
