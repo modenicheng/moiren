@@ -1,5 +1,4 @@
 use moiren_core::graph::NodeId;
-use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
 use moiren_engine::spectrum::SpectrumWindow;
 use moiren_signal::{
     BlockInit, Bus, BusConfig, PumpBudget, PumpReport, RegisterError, Shape, StreamBlock,
@@ -13,17 +12,13 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-/// Level windows stream FIFO: superseding delivery would drop the three of
-/// four windows published at 240 Hz that a 60 Hz display never reads, losing
-/// their peaks. Sixteen queued slots hold ~67 ms of backlog for slower readers.
-const LEVEL_STREAM_DEPTH: usize = 16;
+use super::managed::LevelSource;
 
 /// Spectrum windows stream too, so the relay never overwrites a window the
 /// display has not drained; a display only needs the newest frame to look
 /// right, so four slots (~40 ms at the default hop cadence) are plenty.
 const SPECTRUM_STREAM_DEPTH: usize = 4;
 
-pub type LevelTopic = StreamBlock<AudioWindow, ChannelLevel>;
 pub type SpectrumTopic = StreamBlock<SpectrumWindow, f32>;
 
 /// The shape a spectrum topic is registered for: one publication carries
@@ -49,13 +44,17 @@ impl SpectrumShape {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignalTopics {
-    pub node_levels: BTreeMap<NodeId, Topic<LevelTopic>>,
+    /// One stable level source per node of the running project: the UI's
+    /// subscription point, holding the engine subscription directly
+    /// (decision D-4 route B — the relay's level topics are gone, only the
+    /// stable identity survives).
+    pub node_levels: BTreeMap<NodeId, LevelSource>,
     /// One topic per spectrum analyzer node of the running graph, at the
     /// shape its active configuration publishes.
     pub node_spectra: BTreeMap<NodeId, Topic<SpectrumTopic>>,
-    pub monitor_input: Topic<LevelTopic>,
-    pub monitor_output: Topic<LevelTopic>,
-    pub tone_output: Topic<LevelTopic>,
+    pub monitor_input: LevelSource,
+    pub monitor_output: LevelSource,
+    pub tone_output: LevelSource,
 }
 
 pub(crate) struct SignalService {
@@ -74,11 +73,14 @@ impl SignalService {
         self.bus.create_host(131)
     }
     pub fn new() -> Result<Self, RegisterError> {
-        let mut bus = Bus::new(BusConfig {
+        let bus = Bus::new(BusConfig {
             max_topics: 131,
             ..BusConfig::default()
         })?;
-        let topics = SignalTopics::register(&mut bus)?;
+        // Level meters no longer register application topics (route B): the
+        // fixed taps are plain subscription points without a bus behind
+        // them, and per-node taps are minted by the registry on sync.
+        let topics = SignalTopics::new();
         Ok(Self {
             bus,
             topics,
@@ -91,6 +93,13 @@ impl SignalService {
 
     pub fn execute(&mut self, request: SubscriptionRequest) {
         request(&mut self.bus);
+    }
+
+    /// The service bus, for tests that need a real topic to exercise the
+    /// typed subscription machinery with.
+    #[cfg(test)]
+    pub(crate) fn bus(&mut self) -> &mut Bus {
+        &mut self.bus
     }
 
     pub fn pump_if_due(&mut self, now: Instant) -> Option<PumpReport> {
@@ -107,8 +116,8 @@ impl SignalService {
         self.copy_budget = (256 * 1024)
             .max(report.required_copy_bytes)
             .min(1024 * 1024);
-        // The service loop uses this deadline for both the compatibility
-        // bridge relay and this bus pump; no demand leaves idle waits intact.
+        // The service loop uses this deadline for the spectrum relay and
+        // this bus pump; no demand leaves idle waits intact.
         self.next_poll = now + Duration::from_millis(1);
         Some(report)
     }
@@ -121,96 +130,18 @@ impl SignalService {
 }
 
 impl SignalTopics {
-    fn register(bus: &mut Bus) -> Result<Self, RegisterError> {
-        let initial = BlockInit {
-            header: AudioWindow {
-                timeline_epoch: 0,
-                frame_start: 0,
-                frame_end: 0,
-                sample_rate: 0.0,
-            },
-            element: ChannelLevel {
-                peak: 0.0,
-                rms: 0.0,
-            },
-            capacity: 2,
-        };
-        Ok(Self {
+    fn new() -> Self {
+        Self {
             node_levels: Default::default(),
             node_spectra: Default::default(),
-            monitor_input: bus.register_stream_block(
-                "monitor/input/output/level",
-                initial,
-                LEVEL_STREAM_DEPTH,
-            )?,
-            monitor_output: bus.register_stream_block(
-                "monitor/output/level",
-                initial,
-                LEVEL_STREAM_DEPTH,
-            )?,
-            tone_output: bus.register_stream_block(
-                "tone/output/level",
-                initial,
-                LEVEL_STREAM_DEPTH,
-            )?,
-        })
+            monitor_input: LevelSource::new(),
+            monitor_output: LevelSource::new(),
+            tone_output: LevelSource::new(),
+        }
     }
 }
 
 impl SignalService {
-    pub(super) fn prepare_node_levels(
-        &mut self,
-        graph: &moiren_core::graph::LogicalGraph,
-    ) -> Result<(), String> {
-        let removed: Vec<_> = self
-            .topics
-            .node_levels
-            .keys()
-            .filter(|id| graph.get_node(**id).is_err())
-            .copied()
-            .collect();
-        for id in removed {
-            // Unregister before forgetting the topic: a refused close (the
-            // bridge still leasing the publisher) must retry next time
-            // instead of leaking the topic until the owner retires.
-            let topic = self.topics.node_levels[&id].clone();
-            self.bus
-                .unregister(&topic)
-                .map_err(|error| error.to_string())?;
-            self.topics.node_levels.remove(&id);
-        }
-        for node in graph.nodes() {
-            if self.topics.node_levels.contains_key(&node.id()) {
-                continue;
-            }
-            let topic = self
-                .bus
-                .register_stream_block(
-                    &format!("node/{:?}/level", node.id()),
-                    BlockInit {
-                        header: AudioWindow {
-                            timeline_epoch: 0,
-                            frame_start: 0,
-                            frame_end: 0,
-                            sample_rate: 0.,
-                        },
-                        element: ChannelLevel { peak: 0., rms: 0. },
-                        capacity: node.channels(),
-                    },
-                    LEVEL_STREAM_DEPTH,
-                )
-                .map_err(|error| error.to_string())?;
-            self.topics.node_levels.insert(node.id(), topic);
-        }
-        Ok(())
-    }
-
-    pub(super) fn clear_node_levels(&mut self) {
-        for topic in std::mem::take(&mut self.topics.node_levels).into_values() {
-            let _ = self.bus.unregister(&topic);
-        }
-    }
-
     /// Register one spectrum topic per analyzer node at the shape its
     /// running configuration publishes. A node whose shape changed (FFT
     /// size, channel count) or that left the graph is unregistered first:
@@ -344,10 +275,22 @@ fn deliver_subscription<P: Shape>(
 mod tests {
     use super::*;
 
-    fn fixture() -> (Bus, SignalTopics) {
+    /// A real stream topic on the test bus: the typed subscription
+    /// machinery is payload-agnostic, so a plain u32 topic exercises it.
+    fn fixture() -> (Bus, Topic<StreamBlock<u32, u32>>) {
         let mut bus = Bus::new(BusConfig::default()).unwrap();
-        let topics = SignalTopics::register(&mut bus).unwrap();
-        (bus, topics)
+        let topic = bus
+            .register_stream_block(
+                "test/ticket",
+                BlockInit {
+                    header: 0_u32,
+                    element: 0_u32,
+                    capacity: 2,
+                },
+                2,
+            )
+            .unwrap();
+        (bus, topic)
     }
 
     #[test]
@@ -356,8 +299,11 @@ mod tests {
         let now = Instant::now();
         assert!(service.pump_if_due(now).is_none());
         assert!(service.wait_duration(now).is_none());
-        let (mut ticket, request) =
-            subscription_request(service.topics.tone_output.clone(), Default::default());
+        let topic = {
+            let bus = service.bus();
+            bus.register_stream_value("test/pump", 0_u32, 2).unwrap()
+        };
+        let (mut ticket, request) = subscription_request(topic.clone(), Default::default());
         service.execute(request);
         let subscriber = ticket.try_take().unwrap().unwrap();
         let report = service.pump_if_due(now).unwrap();
@@ -386,32 +332,29 @@ mod tests {
 
     #[test]
     fn cancellation_before_service_execution_skips_receiver_preparation() {
-        let (mut bus, topics) = fixture();
-        let analysis = bus
-            .subscribe(&topics.tone_output, Default::default())
-            .unwrap();
-        let generation = topics.tone_output.demand_snapshot().generation;
+        let (mut bus, topic) = fixture();
+        let analysis = bus.subscribe(&topic, Default::default()).unwrap();
+        let generation = topic.demand_snapshot().generation;
         let baseline = bus.budget_used();
-        let (ticket, request) =
-            subscription_request(topics.tone_output.clone(), Default::default());
+        let (ticket, request) = subscription_request(topic.clone(), Default::default());
         drop(ticket);
         request(&mut bus);
-        assert_eq!(topics.tone_output.business_subscribers(), 1);
-        assert_eq!(topics.tone_output.demand_snapshot().generation, generation);
+        assert_eq!(topic.business_subscribers(), 1);
+        assert_eq!(topic.demand_snapshot().generation, generation);
         assert_eq!(bus.budget_used(), baseline);
         drop(analysis);
-        assert_eq!(topics.tone_output.business_subscribers(), 0);
+        assert_eq!(topic.business_subscribers(), 0);
         assert!(!bus.has_business_demand());
     }
 
     #[test]
     fn cancellation_during_construction_discards_subscriber_before_response() {
-        let (mut bus, topics) = fixture();
+        let (mut bus, topic) = fixture();
         let (sender, receiver) = mpsc::sync_channel(1);
         let cancelled = AtomicBool::new(false);
         deliver_subscription(
             &mut bus,
-            &topics.tone_output,
+            &topic,
             Default::default(),
             sender,
             &cancelled,
@@ -426,43 +369,38 @@ mod tests {
 
     #[test]
     fn dropping_delivered_ticket_releases_pending_response_demand() {
-        let (mut bus, topics) = fixture();
-        let analysis = bus
-            .subscribe(&topics.tone_output, Default::default())
-            .unwrap();
-        let generation = topics.tone_output.demand_snapshot().generation;
-        let (ticket, request) =
-            subscription_request(topics.tone_output.clone(), Default::default());
+        let (mut bus, topic) = fixture();
+        let analysis = bus.subscribe(&topic, Default::default()).unwrap();
+        let generation = topic.demand_snapshot().generation;
+        let (ticket, request) = subscription_request(topic.clone(), Default::default());
         request(&mut bus);
-        assert_eq!(topics.tone_output.business_subscribers(), 2);
+        assert_eq!(topic.business_subscribers(), 2);
         drop(ticket);
-        assert_eq!(topics.tone_output.business_subscribers(), 1);
-        assert_eq!(topics.tone_output.demand_snapshot().generation, generation);
+        assert_eq!(topic.business_subscribers(), 1);
+        assert_eq!(topic.demand_snapshot().generation, generation);
         drop(analysis);
-        assert_eq!(topics.tone_output.business_subscribers(), 0);
+        assert_eq!(topic.business_subscribers(), 0);
         assert!(!bus.has_business_demand());
     }
 
     #[test]
     fn taking_subscriber_transfers_ownership_out_of_ticket() {
-        let (mut bus, topics) = fixture();
-        let (mut ticket, request) =
-            subscription_request(topics.tone_output.clone(), Default::default());
+        let (mut bus, topic) = fixture();
+        let (mut ticket, request) = subscription_request(topic.clone(), Default::default());
         assert!(ticket.try_take().unwrap().is_none());
         request(&mut bus);
         let subscriber = ticket.try_take().unwrap().unwrap();
         drop(ticket);
-        assert_eq!(topics.tone_output.business_subscribers(), 1);
+        assert_eq!(topic.business_subscribers(), 1);
         drop(subscriber);
-        assert_eq!(topics.tone_output.business_subscribers(), 0);
+        assert_eq!(topic.business_subscribers(), 0);
         assert!(!bus.has_business_demand());
     }
 
     #[test]
     fn ticket_cancelled_after_construction_releases_only_its_own_demand() {
-        let (mut bus, topics) = fixture();
-        let topic = &topics.tone_output;
-        let analysis = bus.subscribe(topic, Default::default()).unwrap();
+        let (mut bus, topic) = fixture();
+        let analysis = bus.subscribe(&topic, Default::default()).unwrap();
         let generation = topic.demand_snapshot().generation;
         let (sender, receiver) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -474,15 +412,18 @@ mod tests {
         let (resume_tx, resume_rx) = mpsc::sync_channel(1);
         std::thread::scope(|threads| {
             let worker_bus = &mut bus;
+            let worker_topic = topic.clone();
             let worker = threads.spawn(move || {
                 deliver_subscription(
                     worker_bus,
-                    topic,
+                    &worker_topic,
                     Default::default(),
                     sender,
                     &cancelled,
                     || {
-                        constructed_tx.send(topic.business_subscribers()).unwrap();
+                        constructed_tx
+                            .send(worker_topic.business_subscribers())
+                            .unwrap();
                         resume_rx.recv_timeout(Duration::from_secs(2)).unwrap();
                     },
                 );
@@ -505,15 +446,14 @@ mod tests {
 
     #[test]
     fn disconnected_response_send_releases_constructed_demand_once() {
-        let (mut bus, topics) = fixture();
-        let topic = &topics.tone_output;
-        let analysis = bus.subscribe(topic, Default::default()).unwrap();
+        let (mut bus, topic) = fixture();
+        let analysis = bus.subscribe(&topic, Default::default()).unwrap();
         let generation = topic.demand_snapshot().generation;
         let (sender, receiver) = mpsc::sync_channel(1);
         let cancelled = AtomicBool::new(false);
         deliver_subscription(
             &mut bus,
-            topic,
+            &topic,
             Default::default(),
             sender,
             &cancelled,
@@ -536,23 +476,19 @@ mod tests {
 
         let mut bus = Bus::new(BusConfig {
             max_topics: 4,
-            ..Default::default()
+            ..BusConfig::default()
         })
         .unwrap();
-        let topics = SignalTopics::register(&mut bus).unwrap();
         let now = Instant::now();
+        let topic = bus.register_stream_value("test/ingress", 0_u32, 2).unwrap();
         let mut service = SignalService {
             bus,
-            topics,
+            topics: SignalTopics::new(),
             spectrum_shapes: Default::default(),
             next_poll: now,
             copy_budget: 256 * 1024,
             poll_timer: Default::default(),
         };
-        let topic = service
-            .bus
-            .register_stream_value("test/ingress", 0_u32, 2)
-            .unwrap();
         let subscriber = service.bus.subscribe(&topic, Default::default()).unwrap();
         let (control, mut host) = service.bus.create_host(1).unwrap();
         let key = control.new_binding().unwrap();

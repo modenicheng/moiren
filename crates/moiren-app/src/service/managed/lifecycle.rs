@@ -11,9 +11,9 @@ impl ManagedDriver {
             self.owner.is_some(),
             self.cleaning,
         );
-        self.meters = None;
+        self.spectra = None;
         c.tone_session = false;
-        c.signals.clear_node_levels();
+        c.levels.retire(&mut c.signals.topics);
         c.signals.clear_node_spectra();
         c.active_latency_profile = None;
         c.active_audio_settings = None;
@@ -232,7 +232,11 @@ impl ManagedDriver {
                     let control = host.control();
                     let generation = c.core.generation();
                     c.graph.preparing(generation, preparation.revision);
-                    self.meters = meters::MeterBridge::new(c).ok();
+                    self.spectra = meters::SpectrumBridge::new(c).ok();
+                    // A fresh owner carries a fresh engine bus: every level
+                    // lease's stale subscription unwinds, and the per-node
+                    // taps re-sync from the first registry round.
+                    c.levels.retire(&mut c.signals.topics);
                     self.owner = Some(Owner {
                         host,
                         control,

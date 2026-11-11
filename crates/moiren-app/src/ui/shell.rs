@@ -341,7 +341,7 @@ impl StudioShell {
             },
         )
         .detach();
-        let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
+        let meters = MeterSubscriptions::new();
         let preferences = crate::project::load_preferences().unwrap_or_default();
         let density = match preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,

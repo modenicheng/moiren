@@ -1021,16 +1021,13 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
         assert!(Instant::now() < deadline);
         rig.tick();
     }
-    let topic = rig.c.signals.topics.node_levels[&gain].clone();
-    assert_eq!(topic.business_subscribers(), 0);
+    let source = rig.c.signals.topics.node_levels[&gain].clone();
+    assert_eq!(source.business_subscribers(), 0);
     assert_eq!(
         rig.c.signals.topics.node_levels[&pan].business_subscribers(),
         0
     );
-    let (mut ticket, request) =
-        crate::service::signals::subscription_request(topic.clone(), Default::default());
-    rig.c.signals.execute(request);
-    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    let lease = source.subscribe();
     rig.request(AppRequest::EditGraph(GraphEdit::SetMixer {
         node: gain,
         state: crate::service::MixerState {
@@ -1041,17 +1038,13 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
     rig.request(AppRequest::ApplyGraph);
     loop {
         rig.tick();
-        rig.c.signals.pump_if_due(Instant::now());
         let mut matched = false;
-        while let Some(window) = subscriber.next() {
-            if window.header().frame_end > window.header().frame_start
+        lease.read_latest(|_epoch, window| {
+            matched |= window.header().frame_end > window.header().frame_start
                 && window.elements().iter().all(|level| {
                     (level.peak - 0.5).abs() < 0.00001 && (level.rms - 0.5).abs() < 0.00001
-                })
-            {
-                matched = true;
-            }
-        }
+                });
+        });
         if matched {
             break;
         }
@@ -1065,8 +1058,8 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
         rig.c.signals.topics.node_levels[&pan].business_subscribers(),
         0
     );
-    drop(subscriber);
-    assert_eq!(topic.business_subscribers(), 0);
+    drop(lease);
+    assert_eq!(source.business_subscribers(), 0);
 }
 
 /// A running rig with a spectrum analyzer spliced between the pan and the
@@ -1141,7 +1134,7 @@ fn spectrum_bridge_relays_fft_windows_only_on_demand() {
         rig.tick();
     }
     assert_eq!(
-        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        rig.driver.spectra.as_ref().unwrap().demanded_spectra(),
         0,
         "no subscriber, no engine-side FFT demand"
     );
@@ -1160,14 +1153,14 @@ fn spectrum_bridge_relays_fft_windows_only_on_demand() {
         assert_eq!(bins.len(), 2 * 4097);
         (bins[0] - 1.).abs() < 0.02 && (bins[4097] - 1.).abs() < 0.02 && bins[2048].abs() < 1e-3
     });
-    assert_eq!(rig.driver.meters.as_ref().unwrap().demanded_spectra(), 1);
+    assert_eq!(rig.driver.spectra.as_ref().unwrap().demanded_spectra(), 1);
     drop(subscriber);
     assert_eq!(topic.business_subscribers(), 0);
     for _ in 0..5 {
         rig.tick();
     }
     assert_eq!(
-        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        rig.driver.spectra.as_ref().unwrap().demanded_spectra(),
         0,
         "dropping the last subscriber releases the engine subscription"
     );
@@ -1208,11 +1201,11 @@ fn fft_resize_reregisters_the_spectrum_topic() {
     assert_eq!(rig.c.signals.topics.node_spectra.len(), 1);
 }
 
-/// A topic only closes once no publisher leases it. The bridge must let go
-/// of a departed node's slot — and activate a table without it — before
-/// asking the bus to unregister, or every later poll fails the same way.
+/// A departing node's tap must leave the registry (and the snapshot's
+/// node map) without a trace and without an error, so the UI's resolve
+/// drops the subscription instead of chasing a dead tap.
 #[test]
-fn removing_a_node_closes_its_level_topic_without_stalling_the_bridge() {
+fn removing_a_node_closes_its_level_tap_without_stalling_the_registry() {
     let mut rig = Rig::new();
     rig.start();
     rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
@@ -1999,33 +1992,114 @@ fn stop_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
 #[test]
 fn legacy_meter_subscription_receives_managed_host_audio_windows() {
     let mut r = Rig::new();
-    let (mut ticket, request) =
-        signals::subscription_request(r.c.signals.topics.tone_output.clone(), Default::default());
-    r.c.signals.execute(request);
-    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    // Demand exists before the session: the lease counts, and the
+    // registry binds the engine subscription on the first poll with an
+    // owner.
+    let lease = r.c.signals.topics.tone_output.subscribe();
     r.start();
     r.wait(|r| {
         r.driver
-            .meters
+            .spectra
             .as_ref()
             .is_some_and(|_| r.state.last_sample.load(Ordering::SeqCst) != 0)
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         r.tick();
-        r.c.signals.pump_if_due(Instant::now());
         let mut delivered = false;
-        while let Some(window) = subscriber.next() {
+        lease.read_latest(|_epoch, window| {
             assert_eq!(window.elements()[0].peak, 1.0);
             assert_eq!(window.elements()[0].rms, 1.0);
             assert!(window.header().frame_end > window.header().frame_start);
             delivered = true;
-        }
+        });
         if delivered {
             break;
         }
         assert!(Instant::now() < deadline, "managed meter did not publish");
     }
+}
+
+/// Decision D-4 route B regression (the deleted relay gate's semantic on
+/// the direct path): a UI lease reads the engine's windows with no relay
+/// copy in between, keeps receiving them across a graph hot swap, releases
+/// the engine demand completely when dropped, and a re-shown lease picks
+/// fresh windows immediately while a sibling lease kept the topic warm.
+#[test]
+fn direct_level_lease_delivers_windows_across_hot_swap_and_hide_show() {
+    let mut rig = Rig::new();
+    rig.start();
+    let sink = rig.node(NodeKind::Sink);
+    rig.wait(|rig| rig.c.signals.topics.node_levels.contains_key(&sink));
+    let source = rig.c.signals.topics.node_levels[&sink].clone();
+    let mut lease = source.subscribe();
+    rig.wait(|rig| rig.c.levels.demanded_levels() == 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let last_frame_end = loop {
+        rig.tick();
+        if let Some(header) = lease.read_latest(|_epoch, window| *window.header()) {
+            assert!(header.timeline_epoch != 0);
+            assert!(header.frame_end > header.frame_start);
+            break header.frame_end;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "direct lease received no windows"
+        );
+    };
+    // A sibling lease stands in for an independent analysis reader.
+    let analysis = source.subscribe();
+    assert_eq!(source.business_subscribers(), 2);
+    // Graph hot swap: the plan rebuilds in place, and the window stream
+    // must not stall (this continuity is why the relay existed).
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        rig.tick();
+        if lease
+            .read_latest(|_epoch, window| window.header().frame_end > last_frame_end)
+            .unwrap_or(false)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "windows stalled across the hot swap: {:?}",
+            rig.c.graph.snapshot().last_error
+        );
+    }
+    // Hide: dropping the lease releases its engine subscription outright.
+    drop(lease);
+    rig.wait(|rig| rig.c.levels.demanded_levels() == 1);
+    assert_eq!(source.business_subscribers(), 1);
+    // Show again: the fresh lease must reach windows without a generation
+    // reset, and the frames keep advancing past everything seen before.
+    lease = source.subscribe();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        rig.tick();
+        if lease
+            .read_latest(|_epoch, window| window.header().frame_end > last_frame_end)
+            .unwrap_or(false)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "re-shown lease received no windows"
+        );
+    }
+    drop(lease);
+    drop(analysis);
+    rig.wait(|rig| rig.c.levels.demanded_levels() == 0);
+    assert_eq!(source.business_subscribers(), 0);
 }
 
 #[test]
@@ -2245,7 +2319,7 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         }))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(8);
-    let topic = loop {
+    let source = loop {
         if let Some(snapshot) = handle.try_snapshot()
             && snapshot.phase == SessionPhase::Running
         {
@@ -2254,14 +2328,9 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         assert!(Instant::now() < deadline, "service did not start");
         std::thread::sleep(Duration::from_millis(1));
     };
-    let mut ticket = handle.subscribe_topic(topic, Default::default()).unwrap();
-    let mut subscriber = loop {
-        if let Some(subscriber) = ticket.try_take().unwrap() {
-            break subscriber;
-        }
-        assert!(Instant::now() < deadline, "subscription did not arrive");
-        std::thread::sleep(Duration::from_millis(1));
-    };
+    // The registry binds the engine subscription on its first poll; the
+    // lease reads the newest window directly (one copy, no relay).
+    let lease = source.subscribe();
     let mut ages = Vec::new();
     let mut sequences = Vec::new();
     let mut observed_windows = 0;
@@ -2273,16 +2342,23 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
     for frame in 0..150 {
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
         next += period;
-        let mut received = false;
-        while let Some(window) = subscriber.next() {
-            received = true;
-            observed_windows += 1;
-            assert_eq!(window.header().frame_end - window.header().frame_start, 200);
-            latest_frame_end = Some(window.header().frame_end);
-            if frame >= 30 {
-                sequences.push(window.meta().sequence);
-            }
-        }
+        let received = lease
+            .read_latest(|_epoch, window| {
+                observed_windows += 1;
+                assert_eq!(window.header().frame_end - window.header().frame_start, 200);
+                (
+                    window.header().frame_end,
+                    frame >= 30,
+                    window.meta().sequence,
+                )
+            })
+            .map(|(frame_end, counted, sequence)| {
+                latest_frame_end = Some(frame_end);
+                if counted {
+                    sequences.push(sequence);
+                }
+            })
+            .is_some();
         if frame >= 30 {
             missing_updates += usize::from(!received);
             let read_at = Instant::now();
@@ -3035,22 +3111,23 @@ fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_row
 #[test]
 fn zero_signal_demand_still_applies_controls_retires_and_restarts() {
     let mut r = Rig::new();
-    let topic = r.c.signals.topics.tone_output.clone();
+    let source = r.c.signals.topics.tone_output.clone();
     r.start();
     r.request(AppRequest::SetGainPan {
         gain: 0.008,
         pan: 0.5,
     });
     r.wait(|r| r.c.control.accepted_pending == 0 && r.c.control.last_result.is_some());
-    assert_eq!(topic.business_subscribers(), 0);
-    assert_eq!(topic.stats().attempts, 0);
+    assert_eq!(source.business_subscribers(), 0);
+    assert_eq!(r.c.levels.demanded_levels(), 0);
     r.request(AppRequest::Stop);
     r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Idle);
-    assert_eq!(topic.stats().attempts, 0);
+    assert_eq!(r.c.levels.demanded_levels(), 0);
     assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
-    // A clean retirement leaves the signal bus reusable for the next session.
+    // A clean retirement leaves the level registry reusable for the next
+    // session.
     r.start();
     r.wait(|r| r.c.core.phase() == SessionPhase::Running);
-    assert_eq!(topic.business_subscribers(), 0);
-    assert_eq!(topic.stats().attempts, 0);
+    assert_eq!(source.business_subscribers(), 0);
+    assert_eq!(r.c.levels.demanded_levels(), 0);
 }
