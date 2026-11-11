@@ -2,7 +2,7 @@
 use super::{CaptureError, CaptureReport};
 use crate::StopSignal;
 use crate::clock_bridge::{BridgeObserver, ClockSource};
-use crate::owner::{WaitOutcome, wait_for_handles};
+use crate::win32_raii::{WaitOutcome, wait_for_handles};
 use std::{
     os::windows::io::{AsRawHandle, OwnedHandle as StdHandle},
     sync::{

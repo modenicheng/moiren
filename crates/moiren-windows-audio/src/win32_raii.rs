@@ -1,3 +1,6 @@
+//! Win32/COM RAII toolbox shared by every native transport: apartment and
+//! audio-client stream lifetimes, kernel handle and task-memory ownership,
+//! MMCSS registration, WASAPI packet leases and bounded handle waits.
 pub use crate::process_loopback::ProcessIdentity;
 use std::{marker::PhantomData, rc::Rc};
 use windows::{

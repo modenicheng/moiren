@@ -511,7 +511,7 @@ impl Drop for VadSession {
 fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
     // Match the physical paths' scheduling class: this thread paces bounded
     // PCM IO against native deadlines. Registration failure is non-fatal.
-    let _mmcss = crate::owner::Mmcss::audio();
+    let _mmcss = crate::win32_raii::Mmcss::audio();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match config {
         WorkerConfig::Playback {
             control,

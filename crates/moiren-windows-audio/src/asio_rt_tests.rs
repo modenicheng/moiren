@@ -1,4 +1,12 @@
 //! Compile the real callback into the allocator-instrumented test executable.
+//!
+//! Ownership: this file is not part of any `moiren-windows-audio` build target
+//! (no `mod` declaration in the crate mounts it), so `cargo test -p
+//! moiren-windows-audio` never runs it. It is shadow-compiled exclusively by
+//! the rt-check allocation harness through the `#[path]` include in
+//! `tools/rt-check/tests/professional_rt.rs`; it lives next to `asio/` so that
+//! relative mount stays short and callback changes land in the same review.
+//! Run it with `cargo test --locked --manifest-path tools/rt-check/Cargo.toml`.
 use moiren_engine::host::BackendError;
 
 #[path = "asio/abi.rs"]

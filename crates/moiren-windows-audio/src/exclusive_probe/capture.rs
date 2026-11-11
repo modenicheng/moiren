@@ -2,9 +2,9 @@
 use super::WindowReport;
 use crate::{
     capture_packet::borrow_capture_packet,
-    owner::{LeaseFallback, OwnedHandle, PacketLease, Process},
     process_loopback::{activation::activate, capture_format, process_loopback_stream_flags},
     stats::{CaptureStats, SILENT, analyze_f32},
+    win32_raii::{LeaseFallback, OwnedHandle, PacketLease, Process},
 };
 use anyhow::Context;
 use std::time::{Duration, Instant};

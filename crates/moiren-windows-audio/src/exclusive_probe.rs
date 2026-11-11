@@ -2,9 +2,9 @@
 //! A positive result means process audio was observed, not selective takeover.
 use crate::{
     catalog::{ApiFailure, FormatSnapshot},
-    owner::{Apartment, Process, Streaming},
     process_loopback::{ProcessIdentity, inspect_process},
     stats::CaptureSummary,
+    win32_raii::{Apartment, Process, Streaming},
 };
 use anyhow::Context;
 use serde::Serialize;

@@ -7,7 +7,7 @@ use crate::{
     Activation, ActivationGate, SessionDuration,
     capture::{CaptureError, CaptureReport, CaptureStatus},
     latency::{CallbackObservation, LatencyRecorder, TelemetryMode, clock::QpcClock},
-    owner::{Mmcss, Streaming},
+    win32_raii::{Mmcss, Streaming},
 };
 use std::{
     os::windows::io::OwnedHandle,

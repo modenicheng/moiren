@@ -3,10 +3,10 @@ use super::{unexpected, write_silence};
 use crate::{
     capture_packet::borrow_capture_packet,
     clock::ClockPoint,
-    owner::{LeaseFallback, PacketLease},
     physical::{DemandRecord, EndpointReport},
     probe::PacketRecord,
     stats::{CaptureStats, SILENT, analyze_f32},
+    win32_raii::{LeaseFallback, PacketLease},
 };
 use std::time::{Duration, Instant};
 use windows::{

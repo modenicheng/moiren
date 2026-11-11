@@ -4,8 +4,8 @@ use crate::{
     capture::CaptureError,
     capture_packet::borrow_capture_packet,
     clock_bridge::{CaptureIngress, CapturePacket},
-    owner::{LeaseFallback, PacketLease},
     stats::SILENT,
+    win32_raii::{LeaseFallback, PacketLease},
 };
 use windows::Win32::Media::Audio::IAudioCaptureClient;
 

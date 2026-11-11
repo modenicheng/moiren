@@ -10,7 +10,7 @@ use crate::negotiation::{
     exclusive_frames_duration, friendly_name, initialize_exclusive, initialize_legacy_shared,
     parse_descriptor, shared_engine_periods,
 };
-use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
+use crate::win32_raii::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
     audio_config::{BUFFER_SIZES, SampleFormat},
     host::BackendError,
@@ -123,7 +123,7 @@ pub(super) fn resolve_endpoint(
         ));
     }
     let id = api("GetId", unsafe { device.GetId() })?;
-    api("endpoint ID", crate::owner::take_string(id))
+    api("endpoint ID", crate::win32_raii::take_string(id))
 }
 
 pub struct WasapiStream {

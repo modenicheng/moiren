@@ -1,6 +1,6 @@
 use crate::{
     negotiation::{StageError, friendly_name},
-    owner::{Process, TaskMemory, take_string},
+    win32_raii::{Process, TaskMemory, take_string},
 };
 use serde::Serialize;
 use std::{
@@ -119,7 +119,7 @@ pub struct CatalogSnapshot {
 
 /// Worker-side COM apartment is released before this owned DTO returns.
 pub fn owned_snapshot() -> Result<CatalogSnapshot> {
-    let _apartment = crate::owner::Apartment::new()?;
+    let _apartment = crate::win32_raii::Apartment::new()?;
     snapshot()
 }
 

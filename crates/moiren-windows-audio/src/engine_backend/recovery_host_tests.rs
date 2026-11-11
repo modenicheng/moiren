@@ -1,5 +1,14 @@
 //! End-to-end recovery with the real supervisor, native owner and rendering pump.
 //! Only NativeStream is fake: this harness must never activate ASIO or WASAPI.
+//!
+//! Ownership: this file is not part of any `moiren-windows-audio` build target
+//! (no `mod` declaration in the crate mounts it), so `cargo test -p
+//! moiren-windows-audio` never runs it. It is shadow-compiled exclusively by
+//! the rt-check allocation harness through the `#[path]` include in
+//! `tools/rt-check/tests/professional_rt.rs`; it lives next to `engine_backend`
+//! so that relative mount stays short and recovery changes land in the same
+//! review. Run it with
+//! `cargo test --locked --manifest-path tools/rt-check/Cargo.toml`.
 use crate::bridge::{RingSink, Tone};
 use crate::native::{
     NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
