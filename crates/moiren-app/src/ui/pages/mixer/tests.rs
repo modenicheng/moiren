@@ -2041,6 +2041,120 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
     finish_service(runtime);
 }
 
+/// The hot layer repaints every strip's channel labels ("L"/"R") every
+/// display frame, but the label texts are static: the shared (text, size)
+/// shaping cache must shape each distinct label exactly once and replay it
+/// while the meter frames keep painting (audit A-2, the last HC-8 residual).
+#[gpui_kit::test]
+fn mixer_channel_labels_share_one_shape_per_text_across_meter_frames(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    use std::collections::BTreeSet;
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::shell::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    // The fixed session is the stereo chain, so every strip spells "L"/"R".
+    assert!(
+        snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .all(|node| node.channels() == 2),
+        "the fixed test session must stay stereo for the label set below"
+    );
+    let expected: BTreeSet<String> = ["L", "R"].into_iter().map(String::from).collect();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // Warm up until every demanded node is observed and the labels have
+    // flowed through the cache.
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            let surface = shell.mixer.frame.read(cx).surface();
+            let surface = surface.borrow();
+            shell.metering.node_meter_points.borrow().iter().all(|&id| {
+                shell
+                    .state
+                    .read(cx)
+                    .node_meters
+                    .channel_levels(id)
+                    .is_some()
+            }) && surface.painted_labels() == expected
+        })
+    });
+    let (shapes_held, paints_held) = view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer.frame.read(cx).surface();
+        let (shapes, entries) = surface.borrow().label_shape_stats();
+        assert_eq!(entries, shapes, "one entry per distinct label");
+        (shapes, shell.trace.borrow().meter_paints)
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer.frame.read(cx).surface();
+        let surface = surface.borrow();
+        let (shapes, entries) = surface.label_shape_stats();
+        assert_eq!(
+            shapes, shapes_held,
+            "held frames must replay the shaped labels instead of reshaping"
+        );
+        assert_eq!(
+            entries, shapes,
+            "each shaper run inserted exactly one distinct label"
+        );
+        assert_eq!(
+            surface.painted_labels(),
+            expected,
+            "the labels kept painting through the cache"
+        );
+        assert!(
+            shell.trace.borrow().meter_paints > paints_held,
+            "held frames actually painted the meter layer"
+        );
+    });
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     cx: &mut TestAppContext,

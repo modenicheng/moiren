@@ -6,6 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rust_i18n::t;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 pub struct FaderScale;
@@ -133,6 +134,121 @@ pub(super) fn paint_text(
         None,
     );
     let _ = line.paint(origin, px(10.), align, width, window, cx);
+}
+
+/// The hot layer's static label shaping cache, shared across strips and
+/// keyed by (text, font size): the strip meters' "L"/"R"/channel-number
+/// labels repaint every display frame, but their texts come from a tiny
+/// fixed population, so keying turns per-frame shaping into lookups forever
+/// — the same text-keyed move the strip readouts made with the mixer page's
+/// `ReadoutShapes` cache (audit A-2, the HC-8 residual). The key carries the
+/// font size because label call sites shape at their own sizes; the font
+/// family, weight and color are compile-time constants of the shared
+/// painter above, and any future parameterization must join the key.
+#[derive(Default)]
+pub(crate) struct LabelShapes {
+    /// Shaped lines grouped by font size (raw `f32` bits): the inner maps
+    /// look up by `&str`, so a hit never allocates.
+    lines: HashMap<u32, HashMap<String, gpui_kit::ShapedLine>>,
+    /// Test census: real shaper runs and the texts painted through the
+    /// cache.
+    #[cfg(feature = "gpui-test")]
+    census: LabelCensus,
+}
+
+#[cfg(feature = "gpui-test")]
+#[derive(Default)]
+struct LabelCensus {
+    shapes: usize,
+    painted: std::collections::BTreeSet<String>,
+}
+
+/// Far above the honest label population (the fixed L/R pair, one number per
+/// channel, one "{channels} ch" per channel count); a pathological feed that
+/// exceeds it clears the cache and pays reshapes again instead of growing
+/// without bound.
+const LABEL_SHAPE_CACHE_CAP: usize = 512;
+
+impl LabelShapes {
+    /// Paint `text` through the cache: shape only on a (text, size) miss,
+    /// then paint exactly like the free [`paint_text`]. The signature mirrors
+    /// that free painter one receiver wider.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_text(
+        &mut self,
+        text: &str,
+        origin: Point<Pixels>,
+        font_size: f32,
+        align: TextAlign,
+        width: Option<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        #[cfg(feature = "gpui-test")]
+        self.census.painted.insert(text.to_owned());
+        let Some(line) = self.line(text, font_size, window) else {
+            return;
+        };
+        let _ = line.paint(origin, px(10.), align, width, window, cx);
+    }
+
+    /// The shaped line for `(text, font_size)`, running the shaper only on a
+    /// cache miss.
+    fn line(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        window: &mut Window,
+    ) -> Option<&gpui_kit::ShapedLine> {
+        let size = font_size.to_bits();
+        if !self
+            .lines
+            .get(&size)
+            .is_some_and(|lines| lines.contains_key(text))
+        {
+            let entries: usize = self.lines.values().map(HashMap::len).sum();
+            if entries >= LABEL_SHAPE_CACHE_CAP {
+                self.lines.clear();
+            }
+            let line = window.text_system().shape_line(
+                text.to_owned().into(),
+                px(font_size),
+                &[TextRun {
+                    len: text.len(),
+                    font: font(theme::FONT_MONO),
+                    color: theme::TEXT_FAINT,
+                    ..Default::default()
+                }],
+                None,
+            );
+            self.lines
+                .entry(size)
+                .or_default()
+                .insert(text.to_owned(), line);
+            #[cfg(feature = "gpui-test")]
+            {
+                self.census.shapes += 1;
+            }
+        }
+        self.lines.get(&size).and_then(|lines| lines.get(text))
+    }
+}
+
+#[cfg(all(test, feature = "gpui-test"))]
+impl LabelShapes {
+    /// How many shaper runs the cache has needed, and how many distinct
+    /// (text, size) entries it holds. Every run inserts exactly one entry,
+    /// so the pair pins "one shape per distinct label, everything else is a
+    /// lookup".
+    pub(crate) fn stats(&self) -> (usize, usize) {
+        let entries: usize = self.lines.values().map(HashMap::len).sum();
+        (self.census.shapes, entries)
+    }
+
+    /// The distinct texts painted through the cache so far.
+    pub(crate) fn painted(&self) -> std::collections::BTreeSet<String> {
+        self.census.painted.clone()
+    }
 }
 
 /// Shared wheel/double-click commit for one computed value: writes the
