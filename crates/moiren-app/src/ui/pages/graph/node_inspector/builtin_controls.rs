@@ -335,9 +335,39 @@ fn channel_mapper_controls(
     view
 }
 
-/// The recorder's detail surface: session state, duration, the output file,
-/// the directory control, and the buffer — the card strip carries the quick
-/// transport, this column carries everything else.
+/// The recorder's detail surface: the session header (the card strip's
+/// status line, mirrored), the transport, the output directory, the format
+/// with its encoding knobs, and the buffer. The card carries the quick
+/// transport; this column carries everything else. Every control keeps its
+/// hit-test id, so tests and the paint agree.
+///
+/// The step rows share one rhythm with the builtin field rows: label left,
+/// value and the ± steppers right.
+fn recorder_step_row(
+    key: &'static str,
+    label_text: impl Into<SharedString>,
+    value: String,
+    down: ActionButton,
+    up: ActionButton,
+) -> Stateful<Div> {
+    div()
+        .id(key)
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACE_1_5))
+        .child(label(label_text))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_1))
+                .child(down)
+                .child(detail("", value))
+                .child(up),
+        )
+}
+
 /// FLAC encoding knobs: one compression level walking the 0 (fastest)
 /// through 8 (best) presets. Preference-level setting applied to the next
 /// start, never to a running session.
@@ -355,59 +385,50 @@ fn recorder_flac_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> St
             });
         }
     };
-    let mut section = div()
+    div()
         .id("recorder-flac")
         .flex()
         .flex_col()
-        .gap(px(theme::SPACE_2));
-    section = section.child(detail(
-        &t!("Compression level"),
-        t!(
-            "%{level} of %{max}",
-            level = flac.level,
-            max = FLAC_MAX_LEVEL
-        )
-        .to_string(),
-    ));
-    section = section.child(
-        div()
-            .id("recorder-flac-level-hint")
-            .text_size(px(theme::TEXT_SM))
-            .text_color(theme::TEXT_MUTED)
-            .child(t!("0 is fastest, 8 is smallest.").to_owned()),
-    );
-    let steps = div()
-        .id("recorder-flac-steps")
-        .flex()
-        .flex_row()
-        .gap(px(theme::SPACE_2))
-        .child(
+        .gap(px(theme::SPACE_1_5))
+        .child(recorder_step_row(
+            "recorder-flac-level",
+            t!("Compression level"),
+            t!(
+                "%{level} of %{max}",
+                level = flac.level,
+                max = FLAC_MAX_LEVEL
+            )
+            .to_string(),
             button("recorder-flac-level-down", "\u{2212}")
                 .disabled(flac.level == 0)
                 .on_click(persist(FlacEncoding {
                     level: flac.level.saturating_sub(1),
                 })),
-        )
-        .child(
             button("recorder-flac-level-up", "+")
                 .disabled(flac.level == FLAC_MAX_LEVEL)
                 .on_click(persist(FlacEncoding {
                     level: (flac.level + 1).min(FLAC_MAX_LEVEL),
                 })),
-        );
-    section = section.child(steps).child(
-        div()
-            .id("recorder-flac-apply-hint")
-            .text_size(px(theme::TEXT_SM))
-            .text_color(theme::TEXT_MUTED)
-            .child(t!("Applies to the next recording.").to_owned()),
-    );
-    section
+        ))
+        .child(
+            div()
+                .id("recorder-flac-level-hint")
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::TEXT_MUTED)
+                .child(t!("0 is fastest, 8 is smallest.").to_owned()),
+        )
+        .child(
+            div()
+                .id("recorder-flac-apply-hint")
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::TEXT_MUTED)
+                .child(t!("Applies to the next recording.").to_owned()),
+        )
 }
 
-/// MP3 encoding knobs: rate-control mode plus the matching bitrate ladder or
-/// VBR quality stepper. Preference-level settings applied to the next start,
-/// never to a running session.
+/// MP3 encoding knobs: the rate-control mode as one segmented selector, then
+/// the matching bitrate ladder or VBR quality stepper. Preference-level
+/// settings applied to the next start, never to a running session.
 fn recorder_mp3_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> Stateful<Div> {
     use moiren_engine::recorder::{MP3_BITRATE_KBPS, Mp3Encoding, Mp3Mode};
 
@@ -422,50 +443,47 @@ fn recorder_mp3_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> Sta
             });
         }
     };
-    let mut section = div()
-        .id("recorder-mp3")
-        .flex()
-        .flex_col()
-        .gap(px(theme::SPACE_2));
-    let mut mode_row = div()
-        .id("recorder-mp3-mode")
-        .flex()
-        .flex_row()
-        .gap(px(theme::SPACE_2));
-    mode_row = mode_row.child(
-        button("recorder-mp3-cbr", t!("CBR"))
-            .variant(if matches!(mp3.mode, Mp3Mode::Cbr) {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Secondary
-            })
-            .on_click(persist(Mp3Encoding {
-                mode: Mp3Mode::Cbr,
-                ..mp3
-            })),
-    );
     let quality = match mp3.mode {
         Mp3Mode::Vbr { quality } => quality,
         Mp3Mode::Cbr => 2,
     };
+    let mut section = div()
+        .id("recorder-mp3")
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_1_5));
+    let mut mode_row = div().id("recorder-mp3-mode").flex().gap(px(theme::SPACE_1));
     mode_row = mode_row.child(
-        button("recorder-mp3-vbr", t!("VBR"))
-            .variant(if matches!(mp3.mode, Mp3Mode::Vbr { .. }) {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Secondary
-            })
-            .on_click(persist(Mp3Encoding {
-                mode: Mp3Mode::Vbr { quality },
-                ..mp3
-            })),
+        div().flex_1().child(
+            button("recorder-mp3-cbr", t!("CBR"))
+                .variant(if matches!(mp3.mode, Mp3Mode::Cbr) {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Secondary
+                })
+                .full_width()
+                .on_click(persist(Mp3Encoding {
+                    mode: Mp3Mode::Cbr,
+                    ..mp3
+                })),
+        ),
+    );
+    mode_row = mode_row.child(
+        div().flex_1().child(
+            button("recorder-mp3-vbr", t!("VBR"))
+                .variant(if matches!(mp3.mode, Mp3Mode::Vbr { .. }) {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Secondary
+                })
+                .full_width()
+                .on_click(persist(Mp3Encoding {
+                    mode: Mp3Mode::Vbr { quality },
+                    ..mp3
+                })),
+        ),
     );
     section = section.child(mode_row);
-    let mut steps = div()
-        .id("recorder-mp3-steps")
-        .flex()
-        .flex_row()
-        .gap(px(theme::SPACE_2));
     match mp3.mode {
         Mp3Mode::Cbr => {
             let index = MP3_BITRATE_KBPS
@@ -473,62 +491,56 @@ fn recorder_mp3_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> Sta
                 .position(|&kbps| kbps == mp3.bitrate_kbps)
                 .unwrap_or_default();
             let top = MP3_BITRATE_KBPS.len() - 1;
-            section = section.child(detail(
-                &t!("Bitrate"),
+            section = section.child(recorder_step_row(
+                "recorder-mp3-bitrate",
+                t!("Bitrate"),
                 t!("%{kbps} kbps", kbps = mp3.bitrate_kbps).to_string(),
+                button("recorder-mp3-bitrate-down", "\u{2212}")
+                    .disabled(index == 0)
+                    .on_click(persist(Mp3Encoding {
+                        bitrate_kbps: MP3_BITRATE_KBPS[index.saturating_sub(1)],
+                        ..mp3
+                    })),
+                button("recorder-mp3-bitrate-up", "+")
+                    .disabled(index == top)
+                    .on_click(persist(Mp3Encoding {
+                        bitrate_kbps: MP3_BITRATE_KBPS[(index + 1).min(top)],
+                        ..mp3
+                    })),
             ));
-            steps = steps
-                .child(
-                    button("recorder-mp3-bitrate-down", "\u{2212}")
-                        .disabled(index == 0)
-                        .on_click(persist(Mp3Encoding {
-                            bitrate_kbps: MP3_BITRATE_KBPS[index.saturating_sub(1)],
-                            ..mp3
-                        })),
-                )
-                .child(
-                    button("recorder-mp3-bitrate-up", "+")
-                        .disabled(index == top)
-                        .on_click(persist(Mp3Encoding {
-                            bitrate_kbps: MP3_BITRATE_KBPS[(index + 1).min(top)],
-                            ..mp3
-                        })),
-                );
         }
         Mp3Mode::Vbr { quality } => {
-            section = section
-                .child(detail(&t!("VBR quality"), quality.to_string()))
-                .child(
-                    div()
-                        .id("recorder-mp3-quality-hint")
-                        .text_size(px(theme::TEXT_SM))
-                        .text_color(theme::TEXT_MUTED)
-                        .child(t!("0 is best.").to_owned()),
-                );
-            steps = steps
-                .child(
-                    button("recorder-mp3-quality-down", "\u{2212}")
-                        .disabled(quality == 0)
-                        .on_click(persist(Mp3Encoding {
-                            mode: Mp3Mode::Vbr {
-                                quality: quality.saturating_sub(1),
-                            },
-                            ..mp3
-                        })),
-                )
-                .child(
-                    button("recorder-mp3-quality-up", "+")
-                        .disabled(quality == 9)
-                        .on_click(persist(Mp3Encoding {
-                            mode: Mp3Mode::Vbr {
-                                quality: (quality + 1).min(9),
-                            },
-                            ..mp3
-                        })),
-                );
+            section = section.child(recorder_step_row(
+                "recorder-mp3-quality",
+                t!("VBR quality"),
+                quality.to_string(),
+                button("recorder-mp3-quality-down", "\u{2212}")
+                    .disabled(quality == 0)
+                    .on_click(persist(Mp3Encoding {
+                        mode: Mp3Mode::Vbr {
+                            quality: quality.saturating_sub(1),
+                        },
+                        ..mp3
+                    })),
+                button("recorder-mp3-quality-up", "+")
+                    .disabled(quality == 9)
+                    .on_click(persist(Mp3Encoding {
+                        mode: Mp3Mode::Vbr {
+                            quality: (quality + 1).min(9),
+                        },
+                        ..mp3
+                    })),
+            ));
+            section = section.child(
+                div()
+                    .id("recorder-mp3-quality-hint")
+                    .text_size(px(theme::TEXT_SM))
+                    .text_color(theme::TEXT_MUTED)
+                    .child(t!("0 is best.").to_owned()),
+            );
         }
     }
-    section = section.child(steps).child(
+    section = section.child(
         div()
             .id("recorder-mp3-apply-hint")
             .text_size(px(theme::TEXT_SM))
@@ -552,16 +564,55 @@ fn recorder_controls(
     let sample_rate = snapshot.audio_settings.processing.sample_rate as usize;
     let this = cx.entity();
     view = view.child(heading(t!("Recorder")));
+    // Session header: the card strip's status line, mirrored. The dot's
+    // color is the phase's one-word summary; the clock is the live datum.
+    let (dot, word) = match phase {
+        None => (theme::TEXT_FAINT, theme::TEXT_MUTED),
+        Some(RecordingPhase::Recording) => (theme::DANGER, theme::TEXT),
+        Some(RecordingPhase::Paused) => (theme::WARNING, theme::WARNING),
+        Some(RecordingPhase::Stopping) => (theme::WARNING, theme::TEXT_MUTED),
+        Some(RecordingPhase::Finished) => (theme::TEXT_FAINT, theme::TEXT_MUTED),
+        Some(RecordingPhase::Failed) => (theme::DANGER, theme::DANGER),
+    };
+    let mut status = div()
+        .id("recorder-status")
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACE_3))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_2))
+                .child(
+                    div()
+                        .w(px(theme::card::REC_DOT + 1.))
+                        .h(px(theme::card::REC_DOT + 1.))
+                        .rounded_full()
+                        .bg(dot),
+                )
+                .child(
+                    div()
+                        .text_size(px(theme::TEXT_MD))
+                        .text_color(word)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(crate::ui::presentation::recording_phase_text(phase)),
+                ),
+        );
     if let Some(entry) = session {
-        view = view
-            .child(detail(
-                &t!("Status"),
-                crate::ui::presentation::recording_phase_text(Some(entry.phase)),
-            ))
-            .child(detail(
-                &t!("Duration"),
-                crate::ui::presentation::recording_duration_text(entry.recorded_secs),
-            ));
+        status = status.child(
+            div()
+                .text_size(px(theme::TEXT_MD))
+                .text_color(theme::TEXT)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(crate::ui::presentation::recording_duration_text(
+                    entry.recorded_secs,
+                )),
+        );
+    }
+    view = view.child(status);
+    if let Some(entry) = session {
         if !entry.path.as_os_str().is_empty() {
             view = view.child(detail(&t!("File"), entry.path.display().to_string()));
         }
@@ -583,7 +634,9 @@ fn recorder_controls(
             );
         }
     }
-    // Transport mirror: the same requests the card's strip dispatches.
+    // Transport mirror: the same requests the card's strip dispatches. The
+    // icons put the transport's vocabulary where the eye already looks for
+    // it; the destructive stop wears the danger skin.
     let transport = |request: AppRequest| {
         let this = this.clone();
         move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
@@ -597,8 +650,6 @@ fn recorder_controls(
     let mut row = div()
         .id("recorder-transport")
         .flex()
-        .flex_row()
-        .flex_wrap()
         .gap(px(theme::SPACE_2));
     if !live {
         // The inspector renders inside the shell's own update; reading the
@@ -609,115 +660,120 @@ fn recorder_controls(
         let mp3 = shell.recording_mp3();
         let flac = shell.recording_flac();
         row = row.child(
-            button("recorder-start", t!("Start recording")).on_click(transport(
-                AppRequest::StartRecording {
-                    node: id,
-                    directory,
-                    format,
-                    mp3,
-                    flac,
-                },
-            )),
+            div().flex_1().child(
+                button("recorder-start", t!("Start recording"))
+                    .variant(ButtonVariant::Primary)
+                    .icon(ActionIcon::Record)
+                    .full_width()
+                    .on_click(transport(AppRequest::StartRecording {
+                        node: id,
+                        directory,
+                        format,
+                        mp3,
+                        flac,
+                    })),
+            ),
         );
     }
     if phase == Some(RecordingPhase::Recording) {
         row = row.child(
-            button("recorder-pause", t!("Pause recording"))
-                .on_click(transport(AppRequest::PauseRecording { node: id })),
+            div().flex_1().child(
+                button("recorder-pause", t!("Pause recording"))
+                    .icon(ActionIcon::Pause)
+                    .full_width()
+                    .on_click(transport(AppRequest::PauseRecording { node: id })),
+            ),
         );
     }
     if phase == Some(RecordingPhase::Paused) {
         row = row.child(
-            button("recorder-resume", t!("Resume recording"))
-                .on_click(transport(AppRequest::ResumeRecording { node: id })),
+            div().flex_1().child(
+                button("recorder-resume", t!("Resume recording"))
+                    .variant(ButtonVariant::Primary)
+                    .icon(ActionIcon::Play)
+                    .full_width()
+                    .on_click(transport(AppRequest::ResumeRecording { node: id })),
+            ),
         );
     }
     if live {
         row = row.child(
-            button("recorder-stop", t!("Stop recording"))
-                .on_click(transport(AppRequest::StopRecording { node: id })),
+            div().flex_1().child(
+                button("recorder-stop", t!("Stop recording"))
+                    .variant(ButtonVariant::Danger)
+                    .icon(ActionIcon::Stop)
+                    .full_width()
+                    .on_click(transport(AppRequest::StopRecording { node: id })),
+            ),
         );
     }
     view = view.child(row);
     // Output directory: a machine-level preference, resolved at start time.
-    view = view
-        .child(detail(
-            &t!("Output directory"),
-            shell.recording_output_directory().display().to_string(),
-        ))
-        .child(
-            button("recorder-directory", t!("Change directory…")).on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |shell, cx| shell.change_recording_directory(cx));
-                }
-            }),
-        );
+    // The path needs the column's whole width to wrap legibly, so the change
+    // action stays on its own row beneath it.
+    view = view.child(detail(
+        &t!("Output directory"),
+        shell.recording_output_directory().display().to_string(),
+    ));
+    view = view.child(
+        button("recorder-directory", t!("Change directory…")).on_click({
+            let this = this.clone();
+            move |_, _, cx| {
+                this.update(cx, |shell, cx| shell.change_recording_directory(cx));
+            }
+        }),
+    );
     // Format: like the directory, a machine-level preference resolved at
-    // start time. The selected button reflects what the next file uses.
+    // start time. One segmented selector; the selected option carries the
+    // primary skin, and the encoding knobs mount beneath it.
     let format = shell.recording_format();
-    let mut format_row = div()
-        .id("recorder-format")
-        .flex()
-        .flex_row()
-        .gap(px(theme::SPACE_2));
-    format_row = format_row.child(
-        button("recorder-format-wav", t!("WAV"))
-            .variant(if format == crate::service::RecordingFormat::Wav {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Secondary
-            })
-            .on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |shell, cx| {
-                        shell.preferences.values.recording_format =
-                            crate::service::RecordingFormat::Wav;
-                        shell.save_preferences_quiet(cx);
-                        cx.notify();
-                    });
-                }
-            }),
-    );
-    format_row = format_row.child(
-        button("recorder-format-mp3", t!("MP3"))
-            .variant(if format == crate::service::RecordingFormat::Mp3 {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Secondary
-            })
-            .on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |shell, cx| {
-                        shell.preferences.values.recording_format =
-                            crate::service::RecordingFormat::Mp3;
-                        shell.save_preferences_quiet(cx);
-                        cx.notify();
-                    });
-                }
-            }),
-    );
-    format_row = format_row.child(
-        button("recorder-format-flac", t!("FLAC"))
-            .variant(if format == crate::service::RecordingFormat::Flac {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Secondary
-            })
-            .on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |shell, cx| {
-                        shell.preferences.values.recording_format =
-                            crate::service::RecordingFormat::Flac;
-                        shell.save_preferences_quiet(cx);
-                        cx.notify();
-                    });
-                }
-            }),
-    );
+    let mut format_row = div().id("recorder-format").flex().gap(px(theme::SPACE_1));
+    for (key, selected, next_format) in [
+        (
+            "recorder-format-wav",
+            format == crate::service::RecordingFormat::Wav,
+            crate::service::RecordingFormat::Wav,
+        ),
+        (
+            "recorder-format-mp3",
+            format == crate::service::RecordingFormat::Mp3,
+            crate::service::RecordingFormat::Mp3,
+        ),
+        (
+            "recorder-format-flac",
+            format == crate::service::RecordingFormat::Flac,
+            crate::service::RecordingFormat::Flac,
+        ),
+    ] {
+        let label = match next_format {
+            crate::service::RecordingFormat::Wav => t!("WAV"),
+            crate::service::RecordingFormat::Mp3 => t!("MP3"),
+            crate::service::RecordingFormat::Flac => t!("FLAC"),
+        };
+        let this = this.clone();
+        format_row = format_row.child(
+            div().flex_1().child(
+                button(key, label)
+                    .variant(if selected {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Secondary
+                    })
+                    .full_width()
+                    .on_click(
+                        move |_: &gpui_kit::ClickEvent,
+                              _: &mut gpui_kit::Window,
+                              cx: &mut gpui_kit::App| {
+                            this.update(cx, |shell, cx| {
+                                shell.preferences.values.recording_format = next_format;
+                                shell.save_preferences_quiet(cx);
+                                cx.notify();
+                            });
+                        },
+                    ),
+            ),
+        );
+    }
     view = view.child(format_row);
     // Encoding knobs apply to the next encoded start, like the format itself.
     if format == crate::service::RecordingFormat::Mp3 {
@@ -730,40 +786,34 @@ fn recorder_controls(
     // session would be revoked by the reconfiguration, so the steps lock
     // while one runs.
     let second = sample_rate.max(1);
-    view = view
-        .child(detail(
-            &t!("Buffer"),
-            t!("%{frames} frames", frames = settings.capacity_frames).to_string(),
-        ))
-        .child(
-            button("recorder-expand", t!("Add 1 second"))
-                .disabled(live)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::SetBuiltin {
-                        node: id,
-                        state: crate::service::BuiltinState::Recorder(RecorderSettings {
-                            capacity_frames: settings
-                                .capacity_frames
-                                .saturating_add(second)
-                                .min(RecorderSettings::MAX_CAPACITY_FRAMES),
-                        }),
-                    },
-                )),
-        )
-        .child(
-            button("recorder-shrink", t!("Remove 1 second"))
-                .disabled(live)
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::SetBuiltin {
-                        node: id,
-                        state: crate::service::BuiltinState::Recorder(RecorderSettings {
-                            capacity_frames: settings.capacity_frames.saturating_sub(second).max(1),
-                        }),
-                    },
-                )),
-        );
+    view = view.child(recorder_step_row(
+        "recorder-buffer",
+        t!("Buffer"),
+        t!("%{frames} frames", frames = settings.capacity_frames).to_string(),
+        button("recorder-shrink", "\u{2212}")
+            .disabled(live)
+            .on_click(edit(
+                cx.entity(),
+                GraphEdit::SetBuiltin {
+                    node: id,
+                    state: crate::service::BuiltinState::Recorder(RecorderSettings {
+                        capacity_frames: settings.capacity_frames.saturating_sub(second).max(1),
+                    }),
+                },
+            )),
+        button("recorder-expand", "+").disabled(live).on_click(edit(
+            cx.entity(),
+            GraphEdit::SetBuiltin {
+                node: id,
+                state: crate::service::BuiltinState::Recorder(RecorderSettings {
+                    capacity_frames: settings
+                        .capacity_frames
+                        .saturating_add(second)
+                        .min(RecorderSettings::MAX_CAPACITY_FRAMES),
+                }),
+            },
+        )),
+    ));
     if live {
         view = view.child(label(t!("The buffer is fixed while a recording runs.")));
     }

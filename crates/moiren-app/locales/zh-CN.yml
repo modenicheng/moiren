@@ -620,12 +620,6 @@ _version: 2
 "Buffer":
   en: Buffer
   zh-CN: 缓冲
-"Add 1 second":
-  en: Add 1 second
-  zh-CN: 增加 1 秒
-"Remove 1 second":
-  en: Remove 1 second
-  zh-CN: 减少 1 秒
 "Level meter":
   en: Level meter
   zh-CN: 电平表
@@ -1670,9 +1664,6 @@ _version: 2
 "Saved":
   en: Saved
   zh-CN: 已保存
-"Duration":
-  en: Duration
-  zh-CN: 时长
 "File":
   en: File
   zh-CN: 文件
