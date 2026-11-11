@@ -49,11 +49,12 @@ remain unchanged. This is evidence collection, not a silence fix.
 
 ## Target and evidence
 
-The verified SSH guest is `DRIVER-TEST`, Windows 11, build `10.0.26200`, at
-`192.168.111.128`. Use the dedicated key and account:
+The verified SSH guest is `DRIVER-TEST`, Windows 11, build `10.0.26200`
+(connection details live in the local access configuration and are not
+recorded here). Connect with the dedicated key and account:
 
 ```powershell
-ssh -i C:\Users\cheng\.ssh\moiren-test -o BatchMode=yes wdkremoteuser@192.168.111.128
+ssh -i <local-key-path> -o BatchMode=yes <driver-test-user>@<driver-test-host>
 ```
 
 The supplied `.1` address did not accept this key in the preceding access check;
