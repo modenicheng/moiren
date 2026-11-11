@@ -120,15 +120,33 @@ pub struct ExportService {
     /// Probe-only observations, never consulted for native action authority.
     #[cfg(feature = "vad-integration-probe")]
     pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,
+    /// Content token for the snapshot publisher: bumped by every mutation
+    /// that can change the statuses/reconcile projections. The service loop
+    /// compares this instead of rebuilding those projections every round,
+    /// so each mutating path here and in `runtime` must keep its bump in
+    /// step with the writes it performs.
+    state_epoch: u64,
 }
 
 impl ExportService {
+    /// Content token advanced by every statuses/reconcile input mutation.
+    pub(super) fn state_epoch(&self) -> u64 {
+        self.state_epoch
+    }
+    fn mark_changed(&mut self) {
+        self.state_epoch = self.state_epoch.wrapping_add(1);
+    }
+
     pub fn set_authorizations(&mut self, values: &[ExportAuthorization]) -> Result<(), String> {
         validate_export_authorizations(values)?;
-        self.authorizations = values
+        let authorizations = values
             .iter()
             .map(|value| (value.endpoint_id, value.allow_default))
-            .collect();
+            .collect::<BTreeMap<_, _>>();
+        if authorizations != self.authorizations {
+            self.authorizations = authorizations;
+            self.mark_changed();
+        }
         Ok(())
     }
 
@@ -139,16 +157,29 @@ impl ExportService {
     /// Only a real lifecycle adapter may report availability and observations.
     /// Enabling a project export never calls this method or grants default use.
     pub fn set_available(&mut self, available: bool) {
+        // The retirement below is idempotent, so an unchanged value is a
+        // no-op and must not churn the content token.
+        if self.available == available {
+            return;
+        }
         if !available {
             #[cfg(feature = "vad-integration-probe")]
-            self.native_stamps.clear();
+            if !self.native_stamps.is_empty() {
+                self.native_stamps.clear();
+                self.mark_changed();
+            }
             for observation in self.observations.values_mut() {
                 // Keep actual resource/gate observations until the adapter
                 // closes them, but recovery must establish fresh admission.
-                observation.active_revision = None;
+                if observation.active_revision.is_some() {
+                    observation.active_revision = None;
+                }
             }
         }
         self.available = available;
+        // One token advance covers the availability flip (which already
+        // changes every projected resource state) and any retirement above.
+        self.mark_changed();
     }
 
     pub fn observe(&mut self, observation: ExportObservation) -> Result<(), String> {
@@ -179,9 +210,20 @@ impl ExportService {
         }
         // A newer unstamped observation must not inherit a previous raw stamp.
         #[cfg(feature = "vad-integration-probe")]
-        self.native_stamps.remove(&observation.intent.endpoint_id);
+        {
+            if self
+                .native_stamps
+                .remove(&observation.intent.endpoint_id)
+                .is_some()
+            {
+                self.mark_changed();
+            }
+        }
         self.observations
             .insert(observation.intent.endpoint_id, observation);
+        // The insert always lands: stale generations are rejected above, so
+        // this observation carries new content.
+        self.mark_changed();
         Ok(())
     }
 

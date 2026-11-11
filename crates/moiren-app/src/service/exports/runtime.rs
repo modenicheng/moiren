@@ -2,7 +2,7 @@
 //! Only the adapter's atomic admission invalidation runs on the service pump.
 use super::reconcile::same_resource;
 use super::*;
-use crate::service::{CompletionPermit, GraphSnapshot, JobPool, JobPriority};
+use crate::service::{CompletionPermit, JobPool, JobPriority};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -152,7 +152,10 @@ impl Runtime {
         // Every completion replaces probe evidence, including missing endpoints
         // and failed polls. Control dispatch retains its existing stamp policy.
         #[cfg(feature = "vad-integration-probe")]
-        service.native_stamps.clear();
+        if !service.native_stamps.is_empty() {
+            service.native_stamps.clear();
+            service.mark_changed();
+        }
         if std::mem::take(&mut self.shutdown_in_flight) {
             // Even a failed retirement attempt must permit closing the owning
             // file. Its cleanup revokes every endpoint, including unknown keys.
@@ -163,12 +166,17 @@ impl Runtime {
             Err(error) => {
                 self.healthy.clear();
                 self.ready.clear();
-                service.windows_names.clear();
+                if !service.windows_names.is_empty() {
+                    service.windows_names.clear();
+                    service.mark_changed();
+                }
                 self.revoke();
                 return vec![error];
             }
         };
-        service.windows_names.clear();
+        // Rebuilt from the batch and swapped only on real change, so a
+        // content-equal observation batch never churns the content token.
+        let mut windows_names = std::collections::BTreeMap::new();
         self.native_empty = batch
             .observations
             .iter()
@@ -182,7 +190,9 @@ impl Runtime {
             if native.resource == ExportResourceState::Absent {
                 // Confirmed absence needs no tombstone on the app side. A
                 // future desired export is reconciled as a fresh CREATE.
-                service.observations.remove(&id);
+                if service.observations.remove(&id).is_some() {
+                    service.mark_changed();
+                }
                 continue;
             }
             if let Some(stamp) = native.snapshot {
@@ -194,7 +204,7 @@ impl Runtime {
                 && name.native_identity == [stamp[0], stamp[1], stamp[2]]
                 && name.error.is_none()
             {
-                service.windows_names.insert(id, name.clone());
+                windows_names.insert(id, name.clone());
             }
             #[cfg(feature = "vad-integration-probe")]
             let native_stamp = native.snapshot.filter(|_| {
@@ -224,18 +234,28 @@ impl Runtime {
                 errors.push(error);
             } else {
                 #[cfg(feature = "vad-integration-probe")]
-                if let Some(stamp) = native_stamp {
+                if let Some(stamp) = native_stamp
+                    && service.native_stamps.get(&id) != Some(&stamp)
+                {
                     service.native_stamps.insert(id, stamp);
+                    service.mark_changed();
                 }
             }
+        }
+        if windows_names != service.windows_names {
+            service.windows_names = windows_names;
+            service.mark_changed();
         }
         errors
     }
 
+    /// Projects execution state into the service's export observations. The
+    /// driver poll supplies only the active revision (all `project` reads),
+    /// not the deep graph snapshot.
     pub fn project(
         &mut self,
         service: &mut ExportService,
-        graph: &GraphSnapshot,
+        active_revision: Option<u64>,
         active: &[ExportIntent],
         basis: Option<[u64; 5]>,
     ) {
@@ -247,15 +267,18 @@ impl Runtime {
                 .map_or(0, |a| a.authorize(basis.map(|b| b[3])));
             self.basis = basis;
         }
+        let mut projected = false;
         for observation in service.observations.values_mut() {
-            observation.active_revision = None;
+            // The settled steady state re-derives the same admission every
+            // poll; write (and advance the content token) only on change.
+            let mut next = (None, observation.intent.binding);
             if observation.resource == ExportResourceState::Present
                 && self.ready.contains(&observation.intent.endpoint_id)
                 && let Some(intent) = active.iter().find(|i| {
                     i.enabled && i.binding.is_some() && same_resource(i, &observation.intent)
                 })
                 && let Some(basis) = basis
-                && graph.active_revision == Some(basis[3])
+                && active_revision == Some(basis[3])
                 && observation.allow_default
                     == service
                         .authorizations
@@ -263,16 +286,25 @@ impl Runtime {
                         .copied()
                         .unwrap_or(false)
             {
-                observation.intent.binding = intent.binding;
-                observation.active_revision = Some(basis[3]);
+                next = (Some(basis[3]), intent.binding);
             }
+            if observation.active_revision != next.0 || observation.intent.binding != next.1 {
+                observation.active_revision = next.0;
+                observation.intent.binding = next.1;
+                projected = true;
+            }
+        }
+        if projected {
+            service.mark_changed();
         }
     }
 
     pub fn work(
         &mut self,
         service: &ExportService,
-        graph: &GraphSnapshot,
+        exports: &[ExportIntent],
+        candidate_revision: u64,
+        active_revision: Option<u64>,
         drained: bool,
     ) -> Option<Work> {
         if self.adapter.is_none()
@@ -282,7 +314,7 @@ impl Runtime {
         {
             return None;
         }
-        let plan = service.reconcile(graph);
+        let plan = service.reconcile_for(exports, candidate_revision, active_revision);
         let actions = plan
             .actions
             .into_iter()
@@ -292,8 +324,7 @@ impl Runtime {
                     open: true,
                 } => {
                     self.basis.is_some()
-                        && graph
-                            .exports
+                        && exports
                             .iter()
                             .find(|intent| intent.endpoint_id == *endpoint_id)
                             .is_some_and(|intent| {

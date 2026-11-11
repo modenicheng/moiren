@@ -211,6 +211,15 @@ impl ServiceMailbox {
     pub fn exit_requested(&self) -> bool {
         self.exit.load(Ordering::Acquire)
     }
+    /// The snapshot the publish dedup compares against. The service loop
+    /// reads it to skip rebuilds whose content cannot have changed.
+    pub(crate) fn last_published(&self) -> Arc<AppSnapshot> {
+        self.last_published
+            .borrow()
+            .as_ref()
+            .expect("the publisher always holds a snapshot")
+            .clone()
+    }
     pub fn try_request(&self) -> Option<AppRequest> {
         let queued = self.next_payload()?;
         match queued.payload {

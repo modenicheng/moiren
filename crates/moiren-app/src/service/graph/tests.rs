@@ -1560,3 +1560,113 @@ fn preparation_failures_name_the_node_they_came_from() {
             .is_ok()
     );
 }
+
+/// The light revision accessors mirror the snapshot fields they replace, so
+/// poll paths can read one field without paying the snapshot deep copy.
+#[test]
+fn revision_accessors_mirror_the_snapshot_fields() {
+    let mut service = ServiceGraph::default();
+    let gain = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Gain)
+        .map(|node| node.id())
+        .unwrap();
+    assert_eq!(
+        service.candidate_revision(),
+        service.snapshot().candidate_revision
+    );
+    assert_eq!(
+        service.active_revision(),
+        service.snapshot().active_revision
+    );
+    assert_eq!(
+        service.pending_revision(),
+        service.snapshot().pending_revision
+    );
+
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 2.0,
+        })
+        .unwrap();
+    assert_eq!(
+        service.candidate_revision(),
+        service.snapshot().candidate_revision
+    );
+
+    service.preparing(SessionGeneration(1), service.candidate_revision());
+    assert_eq!(
+        service.pending_revision(),
+        Some(service.candidate_revision())
+    );
+    service.confirmed(SessionGeneration(1), service.candidate_revision());
+    assert_eq!(
+        service.active_revision(),
+        Some(service.candidate_revision())
+    );
+    assert_eq!(service.pending_revision(), None);
+    assert_eq!(
+        (service.active_revision(), service.pending_revision()),
+        (
+            service.snapshot().active_revision,
+            service.snapshot().pending_revision
+        )
+    );
+}
+
+/// The publisher's content token must move only on real content change: the
+/// driver re-projects confirmations and stops every round while an owner
+/// exists, and a settled session re-reports the same revision.
+#[test]
+fn settled_lifecycle_projections_do_not_advance_the_state_epoch() {
+    let mut service = ServiceGraph::default();
+    let gain = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Gain)
+        .map(|node| node.id())
+        .unwrap();
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.5,
+        })
+        .unwrap();
+    let revision = service.candidate_revision();
+    service.preparing(SessionGeneration(1), revision);
+    let prepared = service.state_epoch();
+    assert_ne!(prepared, 0, "pending projection moves the token");
+    service.preparing(SessionGeneration(1), revision);
+    assert_eq!(
+        service.state_epoch(),
+        prepared,
+        "re-projecting the same pending state is content-neutral"
+    );
+
+    service.confirmed(SessionGeneration(1), revision);
+    let settled = service.state_epoch();
+    assert_ne!(settled, prepared);
+    service.confirmed(SessionGeneration(1), revision);
+    service.confirmed(SessionGeneration(1), revision);
+    assert_eq!(
+        service.state_epoch(),
+        settled,
+        "steady re-confirmation must not churn the token"
+    );
+
+    service.stopped();
+    let stopped = service.state_epoch();
+    assert_ne!(stopped, settled, "the active revision actually cleared");
+    service.stopped();
+    assert_eq!(
+        service.state_epoch(),
+        stopped,
+        "repeated stop projections are content-neutral"
+    );
+}
