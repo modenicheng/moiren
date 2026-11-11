@@ -9,7 +9,13 @@ pub struct ServiceCore {
     phase: SessionPhase,
     error: Option<String>,
     running_since: Option<Instant>,
+    /// Content token for the snapshot publisher: bumped by every mutation of
+    /// the published fields (generation, phase, owner, desired, error). All
+    /// writes live in this file, so each method keeps its bump in step with
+    /// the writes it performs.
+    state_epoch: u64,
 }
+#[derive(PartialEq)]
 enum DesiredIntent {
     Session(SessionSpec),
     // Graph resource bindings are typed in EngineProject, not physical IDs in
@@ -33,10 +39,18 @@ impl Default for ServiceCore {
             phase: SessionPhase::Idle,
             error: None,
             running_since: None,
+            state_epoch: 0,
         }
     }
 }
 impl ServiceCore {
+    /// Content token advanced by every published-field mutation below.
+    pub fn state_epoch(&self) -> u64 {
+        self.state_epoch
+    }
+    fn bump(&mut self) {
+        self.state_epoch = self.state_epoch.wrapping_add(1);
+    }
     /// Managed graph updates keep the same service owner identity. Session
     /// controls may update run limits/defaults without pretending it restarted.
     pub(crate) fn managed_desired(&mut self, spec: SessionSpec) -> Result<(), DispatchError> {
@@ -50,7 +64,11 @@ impl ServiceCore {
         if self.desired.is_none() {
             self.restart_managed_graph(summary)?;
         } else {
-            self.desired = Some(self.graph_intent(summary)?);
+            let intent = self.graph_intent(summary)?;
+            if self.desired.as_ref() != Some(&intent) {
+                self.desired = Some(intent);
+                self.bump();
+            }
         }
         Ok(())
     }
@@ -68,6 +86,8 @@ impl ServiceCore {
         } else {
             SessionPhase::Starting
         };
+        // The generation advanced: a real content change.
+        self.bump();
         Ok(())
     }
     fn graph_intent(&self, summary: Option<SessionSpec>) -> Result<DesiredIntent, DispatchError> {
@@ -95,28 +115,41 @@ impl ServiceCore {
         if self.generation != generation || self.desired.is_none() || self.check_open().is_err() {
             return;
         }
+        // Projected every service round while an owner exists; the settled
+        // steady state re-reports the same facts and must not advance the
+        // content token.
+        let mut changed = self.owner != Some(generation) || self.error != error;
         self.owner = Some(generation);
         self.error = error;
         if running {
             if self.running_since.is_none() {
                 self.running_since = Some(Instant::now());
+                changed = true;
             }
+            changed |= self.phase != SessionPhase::Running;
             self.phase = SessionPhase::Running;
         } else {
-            self.running_since = None;
-            self.phase = if self.error.is_some() {
+            let phase = if self.error.is_some() {
                 SessionPhase::Failed
             } else {
                 SessionPhase::Starting
             };
+            changed |= self.running_since.is_some() || self.phase != phase;
+            self.running_since = None;
+            self.phase = phase;
+        }
+        if changed {
+            self.bump();
         }
     }
     pub fn update_gain_pan(&mut self, gain: f64, pan: f64) {
         if valid_gain_pan(gain, pan)
             && let Some(DesiredIntent::Session(spec)) = self.desired.as_mut()
+            && (spec.gain != gain || spec.pan != pan)
         {
             spec.gain = gain;
             spec.pan = pan;
+            self.bump();
         }
     }
     pub fn start(&mut self, spec: SessionSpec) -> Result<SessionGeneration, DispatchError> {
@@ -130,6 +163,8 @@ impl ServiceCore {
         } else {
             SessionPhase::Starting
         };
+        // The generation advanced: a real content change.
+        self.bump();
         Ok(self.generation)
     }
     pub fn stop(&mut self) -> Result<SessionGeneration, DispatchError> {
@@ -142,6 +177,8 @@ impl ServiceCore {
         } else {
             SessionPhase::Idle
         };
+        // The generation advanced: a real content change.
+        self.bump();
         Ok(self.generation)
     }
     fn advance(&mut self) -> Result<(), DispatchError> {
@@ -171,6 +208,7 @@ impl ServiceCore {
             return false;
         }
         self.owner = Some(g);
+        self.bump();
         true
     }
     /// Test-orchestration primitive for the session lifecycle: transitions an
@@ -187,6 +225,7 @@ impl ServiceCore {
         }
         self.phase = SessionPhase::Running;
         self.running_since = Some(Instant::now());
+        self.bump();
         true
     }
     pub fn owner_reaped(&mut self, g: SessionGeneration) -> bool {
@@ -204,6 +243,8 @@ impl ServiceCore {
                 SessionPhase::Idle
             };
         }
+        // The owned generation always clears here: a real content change.
+        self.bump();
         true
     }
     pub fn failed(&mut self, g: SessionGeneration, error: String) -> bool {
@@ -217,20 +258,28 @@ impl ServiceCore {
         } else {
             SessionPhase::Failed
         };
+        // Session failure is an event, not a per-round projection; the
+        // publish-side dedup absorbs any content-equivalent repeat.
+        self.bump();
         true
     }
     pub fn begin_exit(&mut self) {
         if self.phase == SessionPhase::Exited {
             return;
         }
+        let changed = self.desired.is_some() || self.phase != SessionPhase::Exiting;
         self.desired = None;
         self.phase = SessionPhase::Exiting;
+        if changed {
+            self.bump();
+        }
     }
     pub fn finish_exit(&mut self) -> bool {
         if self.phase != SessionPhase::Exiting || self.owner.is_some() {
             return false;
         }
         self.phase = SessionPhase::Exited;
+        self.bump();
         true
     }
     pub fn phase(&self) -> SessionPhase {

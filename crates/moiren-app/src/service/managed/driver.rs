@@ -153,7 +153,6 @@ impl ServiceDriver for ManagedDriver {
     }
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
         self.poll_completions(c, budget);
-        update_vad_catalog(c);
         self.poll_catalog(pool);
         if let Some(deadline) = self.auto_apply_deadline
             && deadline <= Instant::now()
@@ -179,6 +178,10 @@ impl ServiceDriver for ManagedDriver {
         }
         self.publish_resume_notice(c);
         self.poll_exports(c, pool);
+        // One catalog reconciliation per poll, after every input it reads has
+        // settled: the second of the former two calls ran after `poll_exports`
+        // and saw the same resource/name evidence, so a single trailing call
+        // lands on the identical end-of-poll catalog state.
         update_vad_catalog(c);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
@@ -206,7 +209,15 @@ impl ServiceDriver for ManagedDriver {
 mod vad_catalog_tests;
 
 fn update_vad_catalog(context: &mut ServiceContext) {
-    let statuses = context.exports.statuses(&context.graph.snapshot());
+    // The export projection reads only the export list and the active
+    // revision, so borrow the graph snapshot instead of deep-copying it
+    // into `statuses(&GraphSnapshot)`.
+    let statuses = {
+        let graph = context.graph.snapshot_ref();
+        context
+            .exports
+            .statuses_for(&graph.exports, graph.active_revision)
+    };
     let live_exports = statuses
         .iter()
         .filter(|status| status.resource != super::super::ExportResourceState::Absent)
@@ -229,7 +240,7 @@ fn update_vad_catalog(context: &mut ServiceContext) {
     if owned != context.catalog.vad_endpoints {
         let mut catalog = (*context.catalog).clone();
         catalog.vad_endpoints = owned;
-        context.catalog = Arc::new(catalog);
+        context.replace_catalog(catalog);
     }
 }
 
@@ -265,7 +276,7 @@ impl ManagedDriver {
                             catalog
                                 .vad_endpoints
                                 .extend(c.catalog.vad_endpoints.clone());
-                            c.catalog = Arc::new(catalog);
+                            c.replace_catalog(catalog);
                             c.catalog_error = None;
                             if self.automatic_startup {
                                 self.automatic_startup = false;
@@ -376,7 +387,24 @@ impl ManagedDriver {
         }
     }
     fn poll_exports(&mut self, c: &mut ServiceContext, pool: &mut JobPool) {
-        let mut graph = c.graph.snapshot();
+        // Only the export list and revisions are consulted; borrowing them
+        // avoids the full graph snapshot deep copy on every poll. The export
+        // list itself is cloned unless the exiting path clears it anyway.
+        let (mut exports, candidate_revision, active_revision) = {
+            let graph = c.graph.snapshot_ref();
+            let pending_is_none = graph.pending_revision.is_none();
+            let active_revision = graph.active_revision;
+            let exports = if !self.exiting {
+                graph.exports.clone()
+            } else {
+                Vec::new()
+            };
+            (
+                exports,
+                graph.candidate_revision,
+                (active_revision, pending_is_none),
+            )
+        };
         let active = self
             .owner
             .as_ref()
@@ -385,8 +413,8 @@ impl ManagedDriver {
             let host = owner.observer.read();
             (host.state.execution == ExecutionState::Running
                 && host.state.active_revision == Some(owner.active_revision.0)
-                && graph.active_revision == Some(owner.active_revision.1)
-                && graph.pending_revision.is_none()
+                && active_revision.0 == Some(owner.active_revision.1)
+                && active_revision.1
                 && !self.apply
                 && owner.document == self.document
                 && !self.exiting)
@@ -399,17 +427,15 @@ impl ManagedDriver {
                 ])
         });
         self.exports_runtime
-            .project(&mut c.exports, &graph, &active, basis);
+            .project(&mut c.exports, active_revision.0, &active, basis);
         if self.exiting {
-            graph.exports.clear();
+            exports.clear();
         } else {
             // Unapplied candidate changes cannot replace a resource still used
             // by the current Engine owner. Retirement also waits for its reap.
             for intent in &active {
-                graph
-                    .exports
-                    .retain(|i| i.endpoint_id != intent.endpoint_id);
-                graph.exports.push(intent.clone());
+                exports.retain(|i| i.endpoint_id != intent.endpoint_id);
+                exports.push(intent.clone());
             }
         }
         // Reconciliation retains every export leased by the current owner.
@@ -420,7 +446,13 @@ impl ManagedDriver {
             self.exports_runtime
                 .shutdown_work(drained && self.owner.is_none())
         } else {
-            self.exports_runtime.work(&c.exports, &graph, drained)
+            self.exports_runtime.work(
+                &c.exports,
+                &exports,
+                candidate_revision,
+                active_revision.0,
+                drained,
+            )
         };
         if let Some(work) = work
             && let Ok(completion) = self.queue().port().try_reserve()
@@ -545,7 +577,7 @@ impl ManagedDriver {
             // clears pending; periodic projection only restores settled state.
             if snapshot.state.active_revision == Some(owner.active_revision.0)
                 && (owner.active_apply_id == owner.latest_apply_id
-                    || c.graph.snapshot().pending_revision != Some(owner.active_revision.1))
+                    || c.graph.pending_revision() != Some(owner.active_revision.1))
             {
                 c.graph.confirmed(owner.generation, owner.active_revision.1);
             }
@@ -607,7 +639,7 @@ impl ManagedDriver {
             // the observer before enqueue cannot identify a same-structure edit:
             // older queued commands may advance that basis before acceptance.
             if owner.document == self.document
-                && (values.is_empty() || c.graph.snapshot().candidate_revision == revision)
+                && (values.is_empty() || c.graph.candidate_revision() == revision)
             {
                 self.confirm_parameters = Some(ApplyConfirmation {
                     id: apply_id,
@@ -615,7 +647,7 @@ impl ManagedDriver {
                     host_revision,
                 });
                 self.confirmation_values = values.into();
-            } else if c.graph.snapshot().pending_revision == Some(revision) {
+            } else if c.graph.pending_revision() == Some(revision) {
                 c.graph.clear_pending();
             }
         }
