@@ -338,6 +338,7 @@ impl HotSurface for GraphMeters {
         };
         shell.update(cx, |shell, cx| {
             paint_graph_meter_frame(frame, shell, window, cx);
+            paint_recording_durations(frame, shell, window, cx);
             paint_dragged_entities(frame, shell, window, cx);
             paint_connection_ghost(frame, shell, window, cx);
             paint_box_select_band(frame, shell, window, cx);
@@ -420,6 +421,16 @@ fn paint_dragged_entities(
                         }
                     })
                 };
+                // A live session's duration follows its dragged card.
+                let recorded_secs = {
+                    let state = shell.state.read(cx);
+                    state
+                        .snapshot
+                        .recordings
+                        .iter()
+                        .find(|entry| entry.node == id && !entry.phase.is_terminal())
+                        .map(|entry| entry.recorded_secs)
+                };
                 // The curve borrows the subscription table, which the paint
                 // below cannot hold across its `cx`: copy it into the
                 // shell's scratch buffer, exactly as the meter frame does
@@ -461,6 +472,18 @@ fn paint_dragged_entities(
                     },
                     cx,
                 );
+                if let (Some(strip), Some(secs)) = (&layout.recording, recorded_secs) {
+                    crate::ui::pages::graph::graph_canvas_view::paint_recording_duration(
+                        frame,
+                        strip,
+                        secs,
+                        crate::ui::pages::graph::graph_canvas_view::Paint {
+                            shapes: &mut shapes,
+                            window,
+                        },
+                        cx,
+                    );
+                }
             }
         },
     );
@@ -561,6 +584,93 @@ fn paint_box_select_band(
         border_color: theme::controls::FOCUS,
         border_style: BorderStyle::default(),
     });
+}
+
+/// Live recording durations over recorder cards: read from the last
+/// published snapshot at paint time, like the meter bars. The values are
+/// quantized to whole seconds upstream, so this text moves at 1 Hz — it
+/// rides the frames the snapshot publisher already schedules while a
+/// session runs and adds no frame demand of its own.
+fn paint_recording_durations(
+    frame: &CanvasFrame,
+    shell: &mut StudioShell,
+    window: &mut Window,
+    cx: &mut Context<StudioShell>,
+) {
+    // A card drag hides the dragged entities from this overlay;
+    // paint_dragged_entities owns their pixels.
+    let dragging = shell.graph_gestures.node_drag.is_some();
+    let live: Vec<(moiren_core::graph::NodeId, u64)> = {
+        let state = shell.state.read(cx);
+        state
+            .snapshot
+            .recordings
+            .iter()
+            .filter(|entry| !entry.phase.is_terminal())
+            .map(|entry| (entry.node, entry.recorded_secs))
+            .collect()
+    };
+    if live.is_empty() {
+        return;
+    }
+    let overlays = shell.graph_view.overlays.rects();
+    window.with_content_mask(
+        Some(ContentMask {
+            bounds: frame.bounds,
+        }),
+        |window| {
+            for (index, node) in frame.world.nodes.iter().enumerate() {
+                let Some(id) = node.node_id else {
+                    continue;
+                };
+                if dragging && shell.selection.nodes.contains(&id) {
+                    continue;
+                }
+                let layout = &frame.nodes[index];
+                let Some(strip) = layout.recording.as_ref() else {
+                    continue;
+                };
+                if !layout.card.intersects(&frame.viewport()) {
+                    continue;
+                }
+                // Same rule as the meter tracks: a later card overlapping the
+                // strip would be cut into by this overlay's opaque paint.
+                let covered = frame.world.nodes[index + 1..]
+                    .iter()
+                    .zip(&frame.nodes[index + 1..])
+                    .any(|(_, later)| later.card.intersects(&strip.duration.bounds));
+                if covered {
+                    continue;
+                }
+                let Some(secs) = live
+                    .iter()
+                    .find(|(entry, _)| *entry == id)
+                    .map(|(_, secs)| *secs)
+                else {
+                    continue;
+                };
+                let pieces = crate::ui::pages::graph::graph_canvas::carve(
+                    frame.window_rect(layout.card),
+                    &overlays,
+                );
+                for piece in pieces {
+                    window.with_content_mask(Some(ContentMask { bounds: piece }), |window| {
+                        let mut shapes = shell.graph_view.shapes.borrow_mut();
+                        crate::ui::pages::graph::graph_canvas_view::paint_recording_duration(
+                            frame,
+                            strip,
+                            secs,
+                            crate::ui::pages::graph::graph_canvas_view::Paint {
+                                shapes: &mut shapes,
+                                window,
+                            },
+                            cx,
+                        );
+                    });
+                }
+            }
+        },
+    );
 }
 
 fn paint_graph_meter_frame(

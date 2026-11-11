@@ -572,6 +572,7 @@ pub(crate) fn page(
             on_port_up: interactions::port_up(&this),
             on_knob_down: interactions::knob_down(&this, &world),
             on_chip: interactions::chip(&this, &world),
+            on_record: interactions::record(&this, &world),
             on_badge: interactions::badge(&this, &world),
             on_knob_wheel: interactions::knob_wheel(&this, &world),
             on_expand: interactions::expand(&this, &world),

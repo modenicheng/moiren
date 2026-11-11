@@ -86,6 +86,21 @@ pub struct ChipLayout {
     pub chevron: Bounds<f32>,
 }
 
+/// A recorder card's session strip: the status line (dot, phase word, and
+/// the hot-layer duration slot on its right), the output file name, and the
+/// three transport slots. Slot rects always exist; which carry affordances
+/// follows `RecordAction::available` in both the paint and the hit test.
+#[derive(Debug, Clone)]
+pub struct RecordingLayout {
+    pub dot: Bounds<f32>,
+    pub status: TextLayout,
+    pub duration: TextLayout,
+    pub file_name: TextLayout,
+    pub record: Bounds<f32>,
+    pub pause: Bounds<f32>,
+    pub stop: Bounds<f32>,
+}
+
 /// Design 18 card anatomy: header (icon, name, status glyphs), tint rail,
 /// per-kind body, meter strip, port rails with channel hints. World-space
 /// units; [`NodeLayout::project`] scales everything with the camera.
@@ -102,6 +117,7 @@ pub struct NodeLayout {
     pub meter: MeterLayout,
     pub knobs: Vec<KnobLayout>,
     pub chip: Option<ChipLayout>,
+    pub recording: Option<RecordingLayout>,
     pub matrix: Option<Bounds<f32>>,
     pub rack: Option<Bounds<f32>>,
     pub curve: Option<Bounds<f32>>,
@@ -241,6 +257,38 @@ impl NodeLayout {
             origin: point(node.x + theme::card::RAIL_W + padding, body_top),
             size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
         });
+        let recording = node.recording.as_ref().map(|_| {
+            let left = node.x + theme::card::RAIL_W + padding;
+            let inner = width - theme::card::RAIL_W - 2. * padding;
+            let status_w = (inner * 0.42).max(48.);
+            let button_y = body_top + 32.;
+            let button = |offset: f32| Bounds {
+                origin: point(left + offset, button_y),
+                size: size(theme::card::REC_BTN, theme::card::REC_BTN),
+            };
+            RecordingLayout {
+                dot: Bounds {
+                    origin: point(left, body_top + 3.),
+                    size: size(theme::card::REC_DOT, theme::card::REC_DOT),
+                },
+                status: TextLayout::new(
+                    left + theme::card::REC_DOT + 6.,
+                    body_top,
+                    status_w,
+                    theme::card::HINT_SIZE,
+                ),
+                duration: TextLayout::new(
+                    left + theme::card::REC_DOT + 6. + status_w,
+                    body_top,
+                    inner - status_w - theme::card::REC_DOT - 6.,
+                    theme::card::HINT_SIZE,
+                ),
+                file_name: TextLayout::new(left, body_top + 16., inner, 11.),
+                record: button(0.),
+                pause: button(theme::card::REC_BTN + 6.),
+                stop: button(2. * (theme::card::REC_BTN + 6.)),
+            }
+        });
         let rack = (!node.rack_stages.is_empty()).then(|| Bounds {
             origin: point(node.x + theme::card::RAIL_W + padding, body_top),
             size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
@@ -304,6 +352,7 @@ impl NodeLayout {
             meter,
             knobs,
             chip,
+            recording,
             matrix,
             rack,
             curve,
@@ -341,6 +390,15 @@ impl NodeLayout {
                 icon: camera.project_rect(chip.icon),
                 label: chip.label.project(camera),
                 chevron: camera.project_rect(chip.chevron),
+            }),
+            recording: self.recording.as_ref().map(|strip| RecordingLayout {
+                dot: camera.project_rect(strip.dot),
+                status: strip.status.project(camera),
+                duration: strip.duration.project(camera),
+                file_name: strip.file_name.project(camera),
+                record: camera.project_rect(strip.record),
+                pause: camera.project_rect(strip.pause),
+                stop: camera.project_rect(strip.stop),
             }),
             matrix: self.matrix.map(|bounds| camera.project_rect(bounds)),
             rack: self.rack.map(|bounds| camera.project_rect(bounds)),
@@ -449,6 +507,31 @@ impl NodeLayout {
                     let mut chevron = chip.chevron;
                     shift(&mut chevron);
                     chevron
+                },
+            }),
+            recording: self.recording.as_ref().map(|strip| RecordingLayout {
+                dot: {
+                    let mut dot = strip.dot;
+                    shift(&mut dot);
+                    dot
+                },
+                status: text(&strip.status),
+                duration: text(&strip.duration),
+                file_name: text(&strip.file_name),
+                record: {
+                    let mut record = strip.record;
+                    shift(&mut record);
+                    record
+                },
+                pause: {
+                    let mut pause = strip.pause;
+                    shift(&mut pause);
+                    pause
+                },
+                stop: {
+                    let mut stop = strip.stop;
+                    shift(&mut stop);
+                    stop
                 },
             }),
             matrix: self.matrix.map(|mut bounds| {

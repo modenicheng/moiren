@@ -1052,3 +1052,123 @@ fn translated_layout_matches_the_projection_of_the_moved_node() {
         assert_close(shifted.scale, moved.scale);
     }
 }
+
+#[test]
+fn recorder_strip_lays_out_status_line_name_and_transport_slots() {
+    let mut recorder = node("rec", "Recorder", "48kHz L/R").at(32., 80.);
+    recorder.recording = Some(super::CardRecording {
+        phase: Some(crate::service::RecordingPhase::Recording),
+        file_name: "moiren-rec-20261111-150405.wav".into(),
+    });
+    let layout = NodeLayout::new(&recorder);
+    let strip = layout.recording.as_ref().expect("recorder card strip");
+    // The status line leads with the dot, the duration text closes the same
+    // line, and the file name takes the row below.
+    assert!(strip.status.bounds.origin.x > strip.dot.origin.x);
+    assert!(strip.duration.bounds.origin.x > strip.status.bounds.origin.x);
+    assert!(
+        strip.duration.bounds.origin.y < strip.file_name.bounds.origin.y,
+        "the file name sits under the status line"
+    );
+    // Three side-by-side transport slots, one stride apart.
+    let stride = theme::card::REC_BTN + 6.;
+    assert_close(strip.pause.origin.x - strip.record.origin.x, stride);
+    assert_close(strip.stop.origin.x - strip.pause.origin.x, stride);
+    assert_eq!(
+        strip.record.size,
+        size(theme::card::REC_BTN, theme::card::REC_BTN)
+    );
+}
+
+#[test]
+fn transport_hits_follow_the_phase_availability() {
+    use super::RecordAction;
+    use crate::service::RecordingPhase;
+
+    /// The frame plus the window-space centers of the three transport slots.
+    type SlotCenters = (CanvasFrame, (f32, f32), (f32, f32), (f32, f32));
+
+    fn frame_with(phase: Option<RecordingPhase>) -> SlotCenters {
+        let mut recorder = node("rec", "Recorder", "48kHz L/R").at(32., 80.);
+        recorder.recording = Some(super::CardRecording {
+            phase,
+            file_name: "f.wav".into(),
+        });
+        let frame = CanvasFrame::new(
+            Arc::new(CanvasWorld::new(vec![recorder], Vec::new())),
+            Camera::default(),
+            viewport(),
+        );
+        let strip = frame.nodes[0].recording.clone().expect("strip");
+        let (record, pause, stop) = {
+            let center = |bounds: Bounds<f32>| {
+                (
+                    f32::from(frame.bounds.origin.x) + bounds.origin.x + bounds.size.width / 2.,
+                    f32::from(frame.bounds.origin.y) + bounds.origin.y + bounds.size.height / 2.,
+                )
+            };
+            (
+                center(strip.record),
+                center(strip.pause),
+                center(strip.stop),
+            )
+        };
+        (frame, record, pause, stop)
+    }
+
+    // Idle: only the record affordance exists.
+    let (frame, record, pause, stop) = frame_with(None);
+    assert_eq!(
+        frame.hit_test(record),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Record,
+        })
+    );
+    assert_eq!(frame.hit_test(pause), Some(HitTarget::Node("rec")));
+    assert_eq!(frame.hit_test(stop), Some(HitTarget::Node("rec")));
+
+    // Running: pause and stop; the record slot goes dark.
+    let (frame, record, pause, stop) = frame_with(Some(RecordingPhase::Recording));
+    assert_eq!(frame.hit_test(record), Some(HitTarget::Node("rec")));
+    assert_eq!(
+        frame.hit_test(pause),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Pause,
+        })
+    );
+    assert_eq!(
+        frame.hit_test(stop),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Stop,
+        })
+    );
+
+    // Paused: the pause slot flips to resume.
+    let (frame, _, pause, _) = frame_with(Some(RecordingPhase::Paused));
+    assert_eq!(
+        frame.hit_test(pause),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Resume,
+        })
+    );
+
+    // Stopping: nothing is offered; every slot falls through to the card.
+    let (frame, record, pause, stop) = frame_with(Some(RecordingPhase::Stopping));
+    assert_eq!(frame.hit_test(record), Some(HitTarget::Node("rec")));
+    assert_eq!(frame.hit_test(pause), Some(HitTarget::Node("rec")));
+    assert_eq!(frame.hit_test(stop), Some(HitTarget::Node("rec")));
+
+    // Terminal: record returns for a fresh file.
+    let (frame, record, _, _) = frame_with(Some(RecordingPhase::Finished));
+    assert_eq!(
+        frame.hit_test(record),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Record,
+        })
+    );
+}

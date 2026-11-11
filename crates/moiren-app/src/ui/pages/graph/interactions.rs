@@ -5,7 +5,7 @@
 //! gesture resolves canvas ids back to `NodeId`s) the projected world.
 
 use super::*;
-use crate::ui::pages::graph::graph_canvas::{CanvasFrame, CanvasWorld};
+use crate::ui::pages::graph::graph_canvas::{CanvasFrame, CanvasWorld, RecordAction};
 use crate::ui::pages::graph::graph_canvas_view::{
     CameraFitFn, SelectFn, WindowAppCallback, WindowAppFn, ZoomFn,
 };
@@ -129,6 +129,7 @@ pub(super) fn background_move(
                             | HitTarget::Knob { node: id, .. }
                             | HitTarget::Expand { node: id }
                             | HitTarget::Chip { node: id }
+                            | HitTarget::CardAction { node: id, .. }
                             | HitTarget::Badge { node: id } => id.to_owned(),
                             HitTarget::Port(port) => return frame.world.node_of_port(port),
                             HitTarget::Wire(_) => return None,
@@ -755,6 +756,44 @@ pub(super) fn chip(
                 node: node_id,
                 anchor,
             });
+            cx.notify();
+        })
+    })
+}
+
+/// A recorder card's transport slot: dispatches the phase's affordance. The
+/// start action resolves the output directory from the preferences at click
+/// time (the service thread never sees the preference store).
+pub(super) fn record(
+    this: &Entity<StudioShell>,
+    world: &std::sync::Arc<CanvasWorld>,
+) -> Rc<WindowAppCallback<(String, RecordAction)>> {
+    let this = this.clone();
+    let nodes = world.clone();
+    Rc::new(move |(id, action), window, cx| {
+        this.update(cx, |shell, cx| {
+            if shell.begin_pointer_session(window) {
+                return;
+            }
+            let Some(node_id) = resolve_node(&nodes, &id) else {
+                return;
+            };
+            // Like the chip, a transport press selects its card; the
+            // inspector follows the selection the action will change.
+            shell.selection.nodes.clear();
+            shell.selection.nodes.insert(node_id);
+            shell.selection.node = Some(node_id);
+            shell.selection.route = None;
+            let request = match action {
+                RecordAction::Record => AppRequest::StartRecording {
+                    node: node_id,
+                    directory: shell.recording_output_directory(),
+                },
+                RecordAction::Pause => AppRequest::PauseRecording { node: node_id },
+                RecordAction::Resume => AppRequest::ResumeRecording { node: node_id },
+                RecordAction::Stop => AppRequest::StopRecording { node: node_id },
+            };
+            shell.state.update(cx, |state, _| state.dispatch(request));
             cx.notify();
         })
     })

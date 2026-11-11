@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use gpui_kit::{Bounds, Pixels, Size, point, px, size};
 
-use super::{Camera, CanvasWorld, ConnectionCandidate, NodeLayout, WireCurve, WireGeometry};
+use super::{
+    Camera, CanvasWorld, ConnectionCandidate, NodeLayout, RecordAction, WireCurve, WireGeometry,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HitTarget<'a> {
@@ -20,6 +22,12 @@ pub enum HitTarget<'a> {
     /// A source/sink card's binding chip; opens the endpoint menu.
     Chip {
         node: &'a str,
+    },
+    /// A recorder card's transport slot; the action is the affordance the
+    /// phase offers at this position, so the click and the paint agree.
+    CardAction {
+        node: &'a str,
+        action: RecordAction,
     },
     /// A faulted card's "!" badge; opens the fault detail popover.
     Badge {
@@ -130,6 +138,31 @@ impl CanvasFrame {
                 .is_some_and(|chip| chip.bounds.contains(&point(local.0, local.1)))
             {
                 return Some(HitTarget::Chip { node: &node.id });
+            }
+            // Transport slots only hit while the phase offers them, exactly
+            // as the strip paints them; they win over the card beneath.
+            if let Some(strip) = layout.recording.as_ref()
+                && let Some(recording) = node.recording.as_ref()
+            {
+                let slot = |bounds: &Bounds<f32>, action: RecordAction| {
+                    bounds
+                        .contains(&point(local.0, local.1))
+                        .then(|| action.available(recording.phase))
+                        .flatten()
+                        .map(|action| HitTarget::CardAction {
+                            node: &node.id,
+                            action,
+                        })
+                };
+                if let Some(hit) = slot(&strip.record, RecordAction::Record) {
+                    return Some(hit);
+                }
+                if let Some(hit) = slot(&strip.pause, RecordAction::Pause) {
+                    return Some(hit);
+                }
+                if let Some(hit) = slot(&strip.stop, RecordAction::Stop) {
+                    return Some(hit);
+                }
             }
             // The "!" badge only exists on a faulted card, so the gate and
             // the paint agree; it wins over the card beneath it.
