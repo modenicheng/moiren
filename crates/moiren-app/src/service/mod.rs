@@ -12,6 +12,7 @@ mod latency;
 mod mailbox;
 mod managed;
 mod model;
+mod recording;
 #[cfg(test)]
 mod settings_tests;
 mod signals;
@@ -33,6 +34,9 @@ pub use latency::AudioLatencyProfile;
 use managed::LevelRegistry;
 pub use managed::{LevelLease, LevelSource, ManagedDriver};
 pub use moiren_engine::audio_config::*;
+pub use recording::{
+    DateTimeParts, RecordingCard, RecordingPhase, RecordingService, RecordingSnapshot,
+};
 pub use signals::{SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
@@ -119,6 +123,9 @@ pub struct ServiceContext {
     pub active_audio_settings: Option<AudioSettings>,
     pub graph: ServiceGraph,
     pub core: ServiceCore,
+    /// Runtime recording state per node; see [`recording`] for why it stays
+    /// out of the editable graph domain.
+    pub recordings: RecordingService,
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
     /// Content token for the snapshot publisher: bumped whenever the catalog
@@ -157,6 +164,7 @@ impl Default for ServiceContext {
             active_audio_settings: None,
             graph: ServiceGraph::default(),
             core: ServiceCore::default(),
+            recordings: RecordingService::default(),
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
             catalog_epoch: 0,
@@ -378,6 +386,13 @@ impl ServiceDriver for CoreDriver {
                 c.graph
                     .record_error("No native audio backend is configured");
             }
+            AppRequest::StartRecording { .. }
+            | AppRequest::PauseRecording { .. }
+            | AppRequest::ResumeRecording { .. }
+            | AppRequest::StopRecording { .. } => {
+                c.graph
+                    .record_error("No native audio backend is configured");
+            }
         }
     }
 }
@@ -385,7 +400,11 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     #[cfg(test)]
     c.snapshot_builds
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let graph = c.graph.snapshot();
+    let mut graph = c.graph.snapshot();
+    // Runtime card state rides the graph projection but never its editing
+    // domain: cards repaint on phase transitions only, and the ticking
+    // duration stays out of it entirely (graph-page keys must stay 1 Hz-free).
+    graph.recording = c.recordings.cards();
     AppSnapshot {
         loaded_project: c.loaded_project.clone(),
         exports: c.exports.statuses(&graph),
@@ -408,6 +427,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         phase: c.core.phase(),
         desired: c.core.desired().cloned(),
         error: c.core.error().map(str::to_owned),
+        recordings: c.recordings.snapshots(),
         catalog: c.catalog.clone(),
         catalog_error: c.catalog_error.clone(),
         control: c.control.clone(),
@@ -432,6 +452,7 @@ pub(crate) struct SnapshotRevision {
     core: u64,
     exports: u64,
     catalog: u64,
+    recordings: u64,
     /// Whole seconds of the session clock: the only snapshot input that
     /// advances on its own (the published elapsed is quantized to seconds,
     /// so the published content moves at 1 Hz at most).
@@ -445,6 +466,7 @@ pub(crate) fn snapshot_revision(c: &ServiceContext) -> SnapshotRevision {
         core: c.core.state_epoch(),
         exports: c.exports.state_epoch(),
         catalog: c.catalog_epoch,
+        recordings: c.recordings.state_epoch(),
         elapsed_secs: c.core.elapsed().as_secs(),
     }
 }

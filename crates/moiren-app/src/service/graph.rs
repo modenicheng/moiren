@@ -1,7 +1,8 @@
 //! The service owns the editable topology. Pages receive immutable projections;
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{
-    ExportIntent, InputSelection, RunLimit, SessionGeneration, SessionSpec, validate_exports,
+    ExportIntent, InputSelection, RecordingCard, RunLimit, SessionGeneration, SessionSpec,
+    validate_exports,
 };
 use moiren_core::graph::{EdgeId, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
 use moiren_core::protocol::ParamValue;
@@ -77,6 +78,10 @@ pub struct GraphSnapshot {
     /// engine is re-preparing these, so cards show the loading state. An
     /// edit failure or activation clears the set.
     pub preparing_nodes: Vec<NodeId>,
+    /// Discrete recording card state attached by the snapshot assembler:
+    /// phase and file name only. The ticking duration is deliberately absent
+    /// so graph-page keys stay free of per-second values.
+    pub recording: Vec<RecordingCard>,
 }
 impl GraphSnapshot {
     pub fn node(&self, id: NodeId) -> Option<&GraphNodeState> {
@@ -373,6 +378,7 @@ impl Default for ServiceGraph {
                 can_undo: false,
                 can_redo: false,
                 preparing_nodes: Vec::new(),
+                recording: Vec::new(),
             },
             journal: UndoJournal::default(),
             pending_generation: None,

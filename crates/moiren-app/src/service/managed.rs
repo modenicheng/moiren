@@ -15,6 +15,7 @@ mod driver;
 mod lifecycle;
 mod meters;
 mod parameters;
+mod recordings;
 #[cfg(test)]
 mod tests;
 
@@ -100,6 +101,9 @@ pub struct ManagedDriver {
     catalog_backend: Option<Arc<dyn CatalogBackend>>,
     host_config: HostConfig,
     owner: Option<Owner>,
+    /// Live recording sessions, one per recorder node at most; each reserves
+    /// its cleanup slot upfront (see `recordings::OwnedRecording`).
+    recording_sessions: BTreeMap<NodeId, recordings::OwnedRecording>,
     completions: Option<CompletionQueue<Completion>>,
     edits: Vec<PendingEdit>,
     parameters: Vec<PendingParameter>,
@@ -171,6 +175,7 @@ impl ManagedDriver {
                 ..Default::default()
             },
             owner: None,
+            recording_sessions: BTreeMap::new(),
             completions: None,
             edits: Vec::with_capacity(16),
             parameters: Vec::with_capacity(64),
