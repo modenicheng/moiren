@@ -176,6 +176,21 @@ impl ManagedRecorderReader {
         spawn_recording(source, wav)
     }
 
+    /// Like `record_wav`, but audio queued before this call is discarded, so
+    /// the file starts with capture observed after this call. The discard
+    /// waits out any in-flight observer block, which can park this thread for
+    /// up to one audio block; call it from a control-side service, never RT.
+    pub fn record_wav_now(
+        &self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+    ) -> io::Result<RecordingSession> {
+        let mut source = self.claim()?;
+        let wav = WavRecording::create(path, source.reader().channel_count(), sample_rate)?;
+        source.reader().skip_queued();
+        spawn_recording(source, wav)
+    }
+
     fn claim(&self) -> io::Result<RecorderLease> {
         let mut slot = self.slot.lock().unwrap_or_else(|p| p.into_inner());
         let (generation, endpoint) = slot

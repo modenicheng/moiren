@@ -247,6 +247,85 @@ fn managed_record_wav_writes_and_finalizes_a_real_file() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "requires filesystem access outside Miri isolation")]
+fn record_wav_now_discards_preroll_and_records_from_the_call() {
+    let (project, recorder, _, _) = recording_project();
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    let reader = observer.recorder_reader(recorder).unwrap();
+    // Preroll accumulates in the queue while the graph runs and nobody has
+    // started a file yet.
+    wait(&observer, |_| {
+        reader.queued_frames().is_some_and(|frames| frames >= 16)
+    });
+    // Freeze delivery so the only queued audio is the preroll above.
+    state.pause_audio.store(true, Ordering::SeqCst);
+    let file = TemporaryFile::new();
+    let session = reader.record_wav_now(&file.0, 48_000).unwrap();
+    wait_recording(&session, |s| {
+        let status = s.status();
+        status.state == RecordingState::Recording && !status.paused
+    });
+    // The discarded preroll never reaches the file: a frozen graph after the
+    // call contributes zero frames.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(session.status().written_frames, 0);
+    state.pause_audio.store(false, Ordering::SeqCst);
+    wait_recording(&session, |s| s.status().written_frames > 0);
+    let summary = session.finish().unwrap();
+    assert_wav(&std::fs::read(&file.0).unwrap(), summary.written_frames);
+}
+
+#[test]
+fn managed_session_pauses_skips_and_a_next_session_starts_clean() {
+    let (project, recorder, _, _) = recording_project();
+    let host =
+        EngineHost::<f64>::open(HostConfig::default(), project, FakeBackend::default()).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    let reader = observer.recorder_reader(recorder).unwrap();
+    let writer = SharedWriter::default();
+    let session = reader.record_with_writer(writer.clone(), 48_000).unwrap();
+    wait_recording(&session, |s| s.status().written_frames > 0);
+    session.pause();
+    wait_recording(&session, |s| s.status().paused);
+    let accepted_at_pause = session.status().stats.accepted_frames;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let paused = session.status();
+    assert_eq!(paused.state, RecordingState::Recording);
+    assert_eq!(
+        paused.stats.accepted_frames, accepted_at_pause,
+        "paused blocks are skipped, not accepted"
+    );
+    assert_eq!(paused.written_frames, accepted_at_pause);
+    // Stop from paused: the tail drain still finalizes the file.
+    session.stop();
+    wait_recording(&session, |s| s.status().state == RecordingState::Finished);
+    let summary = session.finish().unwrap();
+    assert_eq!(summary.written_frames, accepted_at_pause);
+    assert_wav(writer.0.lock().unwrap().get_ref(), summary.written_frames);
+    // The pause gate survives the handback; a fresh session must lift it when
+    // it starts capture, or nothing would ever be recorded again.
+    let second_writer = SharedWriter::default();
+    let second = reader
+        .record_with_writer(second_writer.clone(), 48_000)
+        .unwrap();
+    wait_recording(&second, |s| s.status().written_frames > 0);
+    let second_summary = second.finish().unwrap();
+    assert_wav(
+        second_writer.0.lock().unwrap().get_ref(),
+        second_summary.written_frames,
+    );
+}
+
+#[test]
 fn compatible_update_keeps_recording_worker_and_queue_active() {
     let (project, recorder, _, _) = recording_project();
     let host =

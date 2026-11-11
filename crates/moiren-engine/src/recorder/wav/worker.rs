@@ -13,7 +13,7 @@ use std::{
 };
 
 use super::{DRAIN_CHUNK_FRAMES, WavRecording};
-use crate::recorder::{RecorderReader, RecorderState, RecorderStats};
+use crate::recorder::{RecorderPause, RecorderReader, RecorderState, RecorderStats};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingState {
@@ -32,6 +32,9 @@ pub struct RecordingError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingStatus {
     pub state: RecordingState,
+    /// Capture gate reported alongside the run state: a paused session keeps
+    /// `Recording`, but `written_frames` stops advancing until it resumes.
+    pub paused: bool,
     pub written_frames: u64,
     pub stats: RecorderStats,
     pub error: Option<RecordingError>,
@@ -54,6 +57,7 @@ struct Shared {
 /// errors must be observed. A slow or blocked destination can delay joining.
 pub struct RecordingSession {
     shared: Arc<Shared>,
+    pause: RecorderPause,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -64,6 +68,18 @@ impl RecordingSession {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// Skip capture without finalizing the file: paused spans stay out of the
+    /// recording, so `written_frames` counts recorded audio only. The gate is
+    /// shared with the observer, so it takes effect on the next audio block.
+    pub fn pause(&self) {
+        self.pause.pause();
+    }
+
+    /// Resume after [`RecordingSession::pause`].
+    pub fn resume(&self) {
+        self.pause.resume();
     }
 
     pub fn stop(&self) {
@@ -129,6 +145,19 @@ impl RecorderReader {
         spawn_recording(self, wav)
     }
 
+    /// Like `record_wav`, but audio queued before this call is discarded, so
+    /// the file starts with capture observed after this call. The discard
+    /// stops acceptance and waits out any in-flight observer block first.
+    pub fn record_wav_now(
+        mut self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+    ) -> io::Result<RecordingSession> {
+        let wav = WavRecording::create(path, self.channel_count(), sample_rate)?;
+        self.skip_queued();
+        spawn_recording(self, wav)
+    }
+
     /// Control-side variant for custom destinations. All subsequent writes,
     /// seeks and flushes belong exclusively to the recording worker.
     pub fn record_with_writer<W: Write + Seek + Send + 'static>(
@@ -158,10 +187,14 @@ pub(crate) fn spawn_recording<T: RecordingSource, W: Write + Seek + Send + 'stat
     mut source: T,
     wav: WavRecording<W>,
 ) -> io::Result<RecordingSession> {
+    // The handle gates capture through the shared control block, so it stays
+    // usable while the worker owns the reader.
+    let pause = source.reader().pause_handle();
     let shared = Arc::new(Shared {
         stop: AtomicBool::new(false),
         status: Mutex::new(RecordingStatus {
             state: RecordingState::Recording,
+            paused: pause.is_paused(),
             written_frames: 0,
             stats: source.reader().stats(),
             error: None,
@@ -203,6 +236,7 @@ pub(crate) fn spawn_recording<T: RecordingSource, W: Write + Seek + Send + 'stat
         })?;
     Ok(RecordingSession {
         shared,
+        pause,
         worker: Some(worker),
     })
 }
@@ -213,7 +247,10 @@ fn run<T: RecordingSource, W: Write + Seek>(
     shared: &Shared,
 ) -> io::Result<u64> {
     if source.is_active() && !shared.stop.load(Ordering::Acquire) {
+        // A fresh session records from now: clear any pause gate a previous
+        // session on this reader left behind.
         source.reader().start();
+        source.reader().resume();
     }
     loop {
         let stopping = shared.stop.load(Ordering::Acquire)
@@ -230,6 +267,7 @@ fn run<T: RecordingSource, W: Write + Seek>(
             } else {
                 RecordingState::Recording
             };
+            status.paused = source.reader().is_paused();
             status.written_frames = wav.written_frames();
             status.stats = source.reader().stats();
         }
