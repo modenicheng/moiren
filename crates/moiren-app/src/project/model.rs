@@ -435,6 +435,7 @@ pub struct AppPreferences {
     /// Default recording output directory; `None` resolves to the user's
     /// Music folder at start time.
     pub recording_directory: Option<std::path::PathBuf>,
+    pub recording_format: crate::service::RecordingFormat,
     /// Recently opened project files, most recent first, for the session
     /// menu's quick switch.
     pub recent_projects: Vec<std::path::PathBuf>,
@@ -454,6 +455,7 @@ impl Default for AppPreferences {
             restore_last_project: false,
             last_project_path: None,
             recording_directory: None,
+            recording_format: Default::default(),
             recent_projects: Vec::new(),
         }
     }

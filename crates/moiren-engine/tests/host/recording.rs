@@ -149,11 +149,16 @@ struct TemporaryFile(PathBuf);
 
 impl TemporaryFile {
     fn new() -> Self {
+        Self::with_extension("wav")
+    }
+
+    fn with_extension(extension: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         Self(std::env::temp_dir().join(format!(
-            "moiren-managed-recording-{}-{}.wav",
+            "moiren-managed-recording-{}-{}.{}",
             std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
+            NEXT.fetch_add(1, Ordering::Relaxed),
+            extension
         )))
     }
 }
@@ -243,6 +248,34 @@ fn managed_record_wav_writes_and_finalizes_a_real_file() {
     wait_recording(&session, |s| s.status().written_frames > 0);
     let summary = session.finish().unwrap();
     assert_wav(&std::fs::read(&file.0).unwrap(), summary.written_frames);
+    assert_eq!(reader.is_recording(), Some(false));
+}
+
+#[test]
+#[cfg(feature = "mp3")]
+#[cfg_attr(miri, ignore = "requires filesystem access outside Miri isolation")]
+fn managed_record_mp3_now_writes_and_finalizes_a_real_file() {
+    let (project, recorder, _, _) = recording_project();
+    let host =
+        EngineHost::<f64>::open(HostConfig::default(), project, FakeBackend::default()).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    let reader = observer.recorder_reader(recorder).unwrap();
+    let file = TemporaryFile::with_extension("mp3");
+    let session = reader.record_mp3_now(&file.0, 48_000).unwrap();
+    wait_recording(&session, |s| s.status().written_frames > 0);
+    let summary = session.finish().unwrap();
+    assert!(summary.written_frames > 0);
+    let bytes = std::fs::read(&file.0).unwrap();
+    // LAME emits an in-band ID3v2 header; otherwise an MPEG frame sync leads.
+    let tagged = bytes.len() >= 3 && &bytes[..3] == b"ID3";
+    let synced = bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0;
+    assert!(tagged || synced, "not an MP3 stream: {:02x?}", &bytes[..4]);
+    // The fake backend only runs a few blocks before finish, so the file is
+    // the flush tail: at least one 256 kbps frame beyond any ID3 header.
+    assert!(bytes.len() > 400);
     assert_eq!(reader.is_recording(), Some(false));
 }
 

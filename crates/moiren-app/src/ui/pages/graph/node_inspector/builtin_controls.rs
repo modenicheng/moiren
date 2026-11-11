@@ -8,6 +8,7 @@ use rust_i18n::t;
 
 use super::*;
 use crate::service::{AppRequest, GraphEdit, RecordingPhase};
+use crate::ui::ButtonVariant;
 use moiren_core::graph::NodeKind;
 use moiren_engine::{
     meter::MeterSettings,
@@ -404,11 +405,13 @@ fn recorder_controls(
         // entity back here would double-lease and panic, so preferences
         // travel in through `shell`.
         let directory = shell.recording_output_directory();
+        let format = shell.recording_format();
         row = row.child(
             button("recorder-start", t!("Start recording")).on_click(transport(
                 AppRequest::StartRecording {
                     node: id,
                     directory,
+                    format,
                 },
             )),
         );
@@ -446,6 +449,53 @@ fn recorder_controls(
                 }
             }),
         );
+    // Format: like the directory, a machine-level preference resolved at
+    // start time. The selected button reflects what the next file uses.
+    let format = shell.recording_format();
+    let mut format_row = div()
+        .id("recorder-format")
+        .flex()
+        .flex_row()
+        .gap(px(theme::SPACE_2));
+    format_row = format_row.child(
+        button("recorder-format-wav", t!("WAV"))
+            .variant(if format == crate::service::RecordingFormat::Wav {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            })
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.preferences.values.recording_format =
+                            crate::service::RecordingFormat::Wav;
+                        shell.save_preferences_quiet(cx);
+                        cx.notify();
+                    });
+                }
+            }),
+    );
+    format_row = format_row.child(
+        button("recorder-format-mp3", t!("MP3"))
+            .variant(if format == crate::service::RecordingFormat::Mp3 {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            })
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.preferences.values.recording_format =
+                            crate::service::RecordingFormat::Mp3;
+                        shell.save_preferences_quiet(cx);
+                        cx.notify();
+                    });
+                }
+            }),
+    );
+    view = view.child(format_row);
     // Buffer: one second steps at the graph's processing rate. A live
     // session would be revoked by the reconfiguration, so the steps lock
     // while one runs.

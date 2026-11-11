@@ -149,9 +149,11 @@ impl ServiceDriver for ManagedDriver {
                     c.core.update_gain_pan(gain, pan);
                 }
             }
-            AppRequest::StartRecording { node, directory } => {
-                self.start_recording(c, node, directory)
-            }
+            AppRequest::StartRecording {
+                node,
+                directory,
+                format,
+            } => self.start_recording(c, node, directory, format),
             AppRequest::PauseRecording { node } => self.pause_recording(c, node),
             AppRequest::ResumeRecording { node } => self.resume_recording(c, node),
             AppRequest::StopRecording { node } => self.stop_recording(c, node),

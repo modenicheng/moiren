@@ -1,7 +1,9 @@
-//! File IO and finalization run on a dedicated control-side worker. The source
-//! owns the only consumer; no host directory lock is held while writing.
+//! Format-agnostic session worker. File IO and finalization run on a
+//! dedicated control-side thread; the source owns the only queue consumer and
+//! no host directory lock is held while writing. Sinks are chosen by the
+//! caller ([`crate::recorder::WavRecording`], `Mp3Recording`, …).
 use std::{
-    io::{self, Seek, Write},
+    io,
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
     sync::{
@@ -12,8 +14,12 @@ use std::{
     time::Duration,
 };
 
-use super::{DRAIN_CHUNK_FRAMES, WavRecording};
+use super::sink::RecordingSink;
 use crate::recorder::{RecorderPause, RecorderReader, RecorderState, RecorderStats};
+
+/// Frames pulled from the queue per worker iteration, bounding the scratch
+/// buffer and the time a custom destination can hold the loop.
+pub(crate) const DRAIN_CHUNK_FRAMES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingState {
@@ -51,7 +57,7 @@ struct Shared {
     status: Mutex<RecordingStatus>,
 }
 
-/// Owns a file worker, never an audio host. `stop` is nonblocking; `finish`
+/// Owns a recording worker, never an audio host. `stop` is nonblocking; `finish`
 /// waits for in-flight capture, drains the tail and reports finalization errors.
 /// Drop also stops and joins, so release this handle off RT. Use `finish` when
 /// errors must be observed. A slow or blocked destination can delay joining.
@@ -141,7 +147,7 @@ impl RecorderReader {
         path: impl AsRef<Path>,
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
-        let wav = WavRecording::create(path, self.channel_count(), sample_rate)?;
+        let wav = super::WavRecording::create(path, self.channel_count(), sample_rate)?;
         spawn_recording(self, wav)
     }
 
@@ -153,19 +159,32 @@ impl RecorderReader {
         path: impl AsRef<Path>,
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
-        let wav = WavRecording::create(path, self.channel_count(), sample_rate)?;
+        let wav = super::WavRecording::create(path, self.channel_count(), sample_rate)?;
         self.skip_queued();
         spawn_recording(self, wav)
     }
 
+    /// Like `record_wav_now`, encoded to CBR 256 kbps MP3. Mono or stereo
+    /// sessions only; the sample rate must be one LAME supports natively.
+    #[cfg(feature = "mp3")]
+    pub fn record_mp3_now(
+        mut self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+    ) -> io::Result<RecordingSession> {
+        let mp3 = super::mp3::Mp3Recording::create(path, self.channel_count(), sample_rate)?;
+        self.skip_queued();
+        spawn_recording(self, mp3)
+    }
+
     /// Control-side variant for custom destinations. All subsequent writes,
     /// seeks and flushes belong exclusively to the recording worker.
-    pub fn record_with_writer<W: Write + Seek + Send + 'static>(
+    pub fn record_with_writer<W: io::Write + io::Seek + Send + 'static>(
         self,
         writer: W,
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
-        let wav = WavRecording::from_writer(writer, self.channel_count(), sample_rate)?;
+        let wav = super::WavRecording::from_writer(writer, self.channel_count(), sample_rate)?;
         spawn_recording(self, wav)
     }
 }
@@ -183,13 +202,14 @@ impl<T: RecordingSource> Drop for SourceGuard<T> {
     }
 }
 
-pub(crate) fn spawn_recording<T: RecordingSource, W: Write + Seek + Send + 'static>(
+pub(crate) fn spawn_recording<T: RecordingSource, S: RecordingSink>(
     mut source: T,
-    wav: WavRecording<W>,
+    sink: S,
 ) -> io::Result<RecordingSession> {
     // The handle gates capture through the shared control block, so it stays
     // usable while the worker owns the reader.
     let pause = source.reader().pause_handle();
+    let channels = source.reader().channel_count();
     let shared = Arc::new(Shared {
         stop: AtomicBool::new(false),
         status: Mutex::new(RecordingStatus {
@@ -205,8 +225,20 @@ pub(crate) fn spawn_recording<T: RecordingSource, W: Write + Seek + Send + 'stat
     let worker = thread::Builder::new()
         .name("moiren-recording".into())
         .spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| run(&mut source.0, wav, &worker_shared)))
-                .unwrap_or_else(|_| Err(io::Error::other("recording destination panicked")));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let mut sink = sink;
+                // Channel counts are bounded by `builtin::MAX_CHANNELS`, so
+                // the interleaved scratch cannot overflow.
+                let mut scratch = vec![0.0; channels * DRAIN_CHUNK_FRAMES];
+                run(
+                    &mut source.0,
+                    &mut sink,
+                    channels,
+                    &mut scratch,
+                    &worker_shared,
+                )
+            }))
+            .unwrap_or_else(|_| Err(io::Error::other("recording destination panicked")));
             source.0.reader().stop();
             while !source.0.reader().is_quiescent() {
                 thread::park_timeout(Duration::from_millis(2));
@@ -241,9 +273,11 @@ pub(crate) fn spawn_recording<T: RecordingSource, W: Write + Seek + Send + 'stat
     })
 }
 
-fn run<T: RecordingSource, W: Write + Seek>(
+fn run<T: RecordingSource, S: RecordingSink>(
     source: &mut T,
-    mut wav: WavRecording<W>,
+    sink: &mut S,
+    channels: usize,
+    scratch: &mut [f32],
     shared: &Shared,
 ) -> io::Result<u64> {
     if source.is_active() && !shared.stop.load(Ordering::Acquire) {
@@ -259,7 +293,7 @@ fn run<T: RecordingSource, W: Write + Seek>(
         if stopping {
             source.reader().stop();
         }
-        let drained = wav.drain_frames(source.reader(), DRAIN_CHUNK_FRAMES);
+        let drained = drain_once(source, sink, channels, scratch);
         {
             let mut status = shared.status.lock().unwrap_or_else(|p| p.into_inner());
             status.state = if stopping {
@@ -268,7 +302,7 @@ fn run<T: RecordingSource, W: Write + Seek>(
                 RecordingState::Recording
             };
             status.paused = source.reader().is_paused();
-            status.written_frames = wav.written_frames();
+            status.written_frames = sink.written_frames();
             status.stats = source.reader().stats();
         }
         let drained = drained?;
@@ -282,9 +316,32 @@ fn run<T: RecordingSource, W: Write + Seek>(
             thread::park_timeout(Duration::from_millis(2));
         }
     }
-    let written_frames = wav.written_frames();
-    wav.finish()?;
+    let written_frames = sink.written_frames();
+    sink.finish()?;
     Ok(written_frames)
+}
+
+/// Pulls at most [`DRAIN_CHUNK_FRAMES`] queued frames into `scratch` and hands
+/// them to the sink. The result is produced before the caller updates status,
+/// mirroring the pre-sink drain error reporting order.
+fn drain_once<T: RecordingSource, S: RecordingSink>(
+    source: &mut T,
+    sink: &mut S,
+    channels: usize,
+    scratch: &mut [f32],
+) -> io::Result<usize> {
+    let want = source.reader().queued_frames().min(DRAIN_CHUNK_FRAMES);
+    if want == 0 {
+        return Ok(0);
+    }
+    let read = source
+        .reader()
+        .read_interleaved(&mut scratch[..want * channels]);
+    if read == 0 {
+        return Ok(0);
+    }
+    sink.write_interleaved(&scratch[..read * channels], channels)?;
+    Ok(read)
 }
 
 #[cfg(test)]

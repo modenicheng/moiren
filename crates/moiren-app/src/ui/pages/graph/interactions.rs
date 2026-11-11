@@ -788,6 +788,7 @@ pub(super) fn record(
                 RecordAction::Record => AppRequest::StartRecording {
                     node: node_id,
                     directory: shell.recording_output_directory(),
+                    format: shell.recording_format(),
                 },
                 RecordAction::Pause => AppRequest::PauseRecording { node: node_id },
                 RecordAction::Resume => AppRequest::ResumeRecording { node: node_id },

@@ -35,7 +35,8 @@ use managed::LevelRegistry;
 pub use managed::{LevelLease, LevelSource, ManagedDriver};
 pub use moiren_engine::audio_config::*;
 pub use recording::{
-    DateTimeParts, RecordingCard, RecordingPhase, RecordingService, RecordingSnapshot,
+    DateTimeParts, RecordingCard, RecordingFormat, RecordingPhase, RecordingService,
+    RecordingSnapshot,
 };
 pub use signals::{SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]

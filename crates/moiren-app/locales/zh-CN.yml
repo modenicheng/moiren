@@ -1703,3 +1703,9 @@ _version: 2
 "Choose the recording output directory":
   en: Choose the recording output directory
   zh-CN: 选择录制输出目录
+"WAV":
+  en: WAV
+  zh-CN: WAV
+"MP3":
+  en: MP3
+  zh-CN: MP3

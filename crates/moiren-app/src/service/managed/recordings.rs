@@ -21,6 +21,7 @@ impl ManagedDriver {
         c: &mut ServiceContext,
         node: NodeId,
         directory: std::path::PathBuf,
+        format: crate::service::RecordingFormat,
     ) {
         if c.recordings
             .phase(node)
@@ -67,12 +68,19 @@ impl ManagedDriver {
                 return;
             }
         };
-        let path = recording_file_path(&directory, local_date_time(), |p| p.exists());
+        let path = recording_file_path(&directory, local_date_time(), format, |p| p.exists());
         let file_name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        match reader.record_wav_now(&path, sample_rate) {
+        // Both entry points claim the lease, create the sink first (format
+        // errors return the reader without changing capture), discard the
+        // preroll queued since graph start, then spawn the worker.
+        let started = match format {
+            crate::service::RecordingFormat::Wav => reader.record_wav_now(&path, sample_rate),
+            crate::service::RecordingFormat::Mp3 => reader.record_mp3_now(&path, sample_rate),
+        };
+        match started {
             Ok(session) => {
                 c.recordings
                     .begin(node, file_name, path.clone(), sample_rate);

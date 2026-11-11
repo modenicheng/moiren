@@ -8,6 +8,8 @@ use std::{
     },
 };
 
+#[cfg(feature = "mp3")]
+use crate::recorder::Mp3Recording;
 use crate::{
     meter::signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
     recorder::{
@@ -189,6 +191,21 @@ impl ManagedRecorderReader {
         let wav = WavRecording::create(path, source.reader().channel_count(), sample_rate)?;
         source.reader().skip_queued();
         spawn_recording(source, wav)
+    }
+
+    /// Like `record_wav_now`, encoded to CBR 256 kbps MP3 (mono or stereo,
+    /// LAME-native sample rates only). The same lease and ordering rules
+    /// apply: encoder creation failures return the reader unclaimed.
+    #[cfg(feature = "mp3")]
+    pub fn record_mp3_now(
+        &self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+    ) -> io::Result<RecordingSession> {
+        let mut source = self.claim()?;
+        let mp3 = Mp3Recording::create(path, source.reader().channel_count(), sample_rate)?;
+        source.reader().skip_queued();
+        spawn_recording(source, mp3)
     }
 
     fn claim(&self) -> io::Result<RecorderLease> {

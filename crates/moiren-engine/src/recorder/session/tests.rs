@@ -1,9 +1,9 @@
 use super::*;
 use crate::recorder::{
-    recorder,
+    WavRecording, recorder,
     tests::{observe, settings},
 };
-use std::io::Cursor;
+use std::io::{Cursor, Seek, Write};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
