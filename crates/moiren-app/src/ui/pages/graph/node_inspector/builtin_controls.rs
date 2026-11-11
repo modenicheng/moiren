@@ -28,6 +28,7 @@ pub(super) fn builtin_controls(
     node: &moiren_core::graph::Node,
     state: &crate::service::BuiltinState,
     snapshot: &crate::service::AppSnapshot,
+    shell: &StudioShell,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let mut view = div()
@@ -52,7 +53,7 @@ pub(super) fn builtin_controls(
             view = channel_mapper_controls(view, id, node, settings, cx);
         }
         crate::service::BuiltinState::Recorder(settings) => {
-            view = recorder_controls(view, id, settings, snapshot, cx);
+            view = recorder_controls(view, id, settings, snapshot, shell, cx);
         }
         crate::service::BuiltinState::Meter(settings) => {
             view = meter_controls(view, id, settings, cx);
@@ -341,6 +342,7 @@ fn recorder_controls(
     id: moiren_core::graph::NodeId,
     settings: &RecorderSettings,
     snapshot: &crate::service::AppSnapshot,
+    shell: &StudioShell,
     cx: &Context<StudioShell>,
 ) -> Stateful<Div> {
     let session = snapshot.recordings.iter().find(|entry| entry.node == id);
@@ -398,7 +400,10 @@ fn recorder_controls(
         .flex_wrap()
         .gap(px(theme::SPACE_2));
     if !live {
-        let directory = cx.entity().read(cx).recording_output_directory();
+        // The inspector renders inside the shell's own update; reading the
+        // entity back here would double-lease and panic, so preferences
+        // travel in through `shell`.
+        let directory = shell.recording_output_directory();
         row = row.child(
             button("recorder-start", t!("Start recording")).on_click(transport(
                 AppRequest::StartRecording {
@@ -431,11 +436,7 @@ fn recorder_controls(
     view = view
         .child(detail(
             &t!("Output directory"),
-            cx.entity()
-                .read(cx)
-                .recording_output_directory()
-                .display()
-                .to_string(),
+            shell.recording_output_directory().display().to_string(),
         ))
         .child(
             button("recorder-directory", t!("Change directory…")).on_click({
