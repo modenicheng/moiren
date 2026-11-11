@@ -1,6 +1,7 @@
 //! Compact channel actions and the strip-specific balance control.
 
 use super::*;
+use crate::ui::editors::{EditableValueFamily, balance_text, mixer_edit, start_value_edit};
 use crate::ui::widgets::scroll_step::{ScrollGesture, scroll_gesture};
 
 fn control(button: impl IntoElement) -> Div {

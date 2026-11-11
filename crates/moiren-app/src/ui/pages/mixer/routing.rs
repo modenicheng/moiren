@@ -11,6 +11,7 @@
 //! up across the page.
 use super::*;
 use crate::service::GraphEdit;
+use crate::ui::editors::send_readout_gain;
 use crate::ui::widgets::anchored_popover;
 use crate::ui::widgets::fader::{SEND_BAR_H, send_bar};
 use crate::ui::widgets::occluding_page::{claim_presses, occluding_page};

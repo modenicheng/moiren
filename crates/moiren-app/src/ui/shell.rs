@@ -22,6 +22,9 @@ pub(crate) use crate::service::{
     AppHandle, AppRequest, ServiceRuntime, SessionPhase, start_service,
 };
 pub(crate) use pages::graph::graph_canvas::Camera;
+// The shared slider/click-to-type editing kernel (private import: shell is a
+// consumer, not a forwarding station, for it).
+use crate::ui::editors;
 
 /// Presentation survives hiding independently of the service/audio lifetime.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -987,7 +990,7 @@ impl Render for StudioShell {
                 let shell = cx.entity();
                 move |_, _, cx| {
                     shell.update(cx, |shell, cx| {
-                        if mixer::commit_active_editor(shell, cx) {
+                        if editors::commit_active_editor(shell, cx) {
                             cx.notify();
                         }
                         shell.status_dismiss_outside(cx);
@@ -1082,7 +1085,7 @@ impl StudioShell {
     /// consumes this single walk so a new slot family cannot land in one
     /// enumeration site and keep its drags un-cancellable — the same
     /// single-walk rule as [`Self::text_input_entities`].
-    fn slider_slots(&self) -> impl Iterator<Item = &mixer::SliderSlot> {
+    fn slider_slots(&self) -> impl Iterator<Item = &editors::SliderSlot> {
         self.mixer
             .presentation
             .faders

@@ -1,6 +1,6 @@
 use super::*;
 use crate::service::{CompressorParameter, CompressorState, GraphEdit, GraphSnapshot};
-use crate::ui::shell::mixer::{
+use crate::ui::editors::{
     SliderDispatch, SliderEdit, SliderSlot, commit_closure, sync_slider_range,
 };
 use crate::ui::widgets::fader::SliderBehavior;
