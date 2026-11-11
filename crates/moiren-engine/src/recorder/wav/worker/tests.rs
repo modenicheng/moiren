@@ -108,6 +108,33 @@ fn worker_finalizes_after_source_disconnect_without_explicit_stop() {
 }
 
 #[test]
+fn paused_session_skips_spans_and_resumes_into_the_same_file() {
+    let (mut recorder, reader) = recorder(1, settings(16)).unwrap();
+    let destination = Destination::default();
+    let session = reader
+        .record_with_writer(destination.clone(), 48_000)
+        .unwrap();
+    observe::<f32>(&mut recorder, &[&[1.0, 2.0]]);
+    wait_for(&session, |status| status.written_frames == 2);
+    session.pause();
+    wait_for(&session, |status| status.paused);
+    // Paused blocks reach neither the file nor the counters.
+    observe::<f32>(&mut recorder, &[&[9.0, 9.5, 9.75]]);
+    let paused = session.status();
+    assert_eq!(paused.state, RecordingState::Recording);
+    assert_eq!(paused.written_frames, 2);
+    assert_eq!(paused.stats.accepted_frames, 2);
+    assert_eq!(paused.stats.dropped_frames, 0);
+    session.resume();
+    wait_for(&session, |status| !status.paused);
+    observe::<f32>(&mut recorder, &[&[3.0]]);
+    wait_for(&session, |status| status.written_frames == 3);
+    let summary = session.finish().unwrap();
+    assert_eq!(summary.written_frames, 3);
+    assert_wav(&destination, &[1.0, 2.0, 3.0]);
+}
+
+#[test]
 fn worker_latches_data_failure_stops_capture_and_reports_finish_error() {
     let (mut recorder, reader) = recorder(1, settings(8)).unwrap();
     let destination = Destination::default();

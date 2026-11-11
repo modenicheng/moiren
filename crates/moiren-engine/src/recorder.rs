@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
+use std::time::Duration;
 
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,10 @@ pub struct RecorderStats {
 struct RecorderControl {
     state: AtomicU8,
     active: AtomicBool,
+    // Independent of `state`: a paused recorder keeps its Recording state so
+    // a worker session keeps running, while the observer skips frames without
+    // counting them as drops. Paused spans are simply not recorded.
+    paused: AtomicBool,
     accepted_frames: AtomicU64,
     read_frames: AtomicU64,
     dropped_frames: AtomicU64,
@@ -100,6 +105,27 @@ pub struct RecorderReader {
     control: Arc<RecorderControl>,
 }
 
+/// Pause control that stays usable while a recording worker owns the reader:
+/// the gate lives in the shared control block, so it flips atomics only and
+/// never touches the leased queue. See [`RecorderReader::pause`].
+pub struct RecorderPause {
+    control: Arc<RecorderControl>,
+}
+
+impl RecorderPause {
+    pub fn pause(&self) {
+        self.control.paused.store(true, Ordering::SeqCst);
+    }
+
+    pub fn resume(&self) {
+        self.control.paused.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.control.paused.load(Ordering::Acquire)
+    }
+}
+
 /// Allocate a float32 SPSC queue off the audio thread. Both endpoints must also
 /// be dropped off that thread, since the final endpoint reclaims the ring.
 pub fn recorder(
@@ -123,6 +149,7 @@ pub fn recorder(
     let control = Arc::new(RecorderControl {
         state: AtomicU8::new(RecorderState::Recording as u8),
         active: AtomicBool::new(false),
+        paused: AtomicBool::new(false),
         accepted_frames: AtomicU64::new(0),
         read_frames: AtomicU64::new(0),
         dropped_frames: AtomicU64::new(0),
@@ -169,6 +196,61 @@ impl RecorderReader {
                 .state
                 .store(RecorderState::Stopped as u8, Ordering::SeqCst);
         }
+    }
+
+    /// Gate capture while a recording session keeps running: the state stays
+    /// `Recording`, but the observer skips frames without counting them as
+    /// drops. An in-flight observer call may still publish one complete block.
+    pub fn pause(&self) {
+        if !self.rx.is_abandoned() {
+            self.control.paused.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Lift a [`RecorderReader::pause`] gate. Capture resumes with the next
+    /// observer call that sees this command.
+    pub fn resume(&self) {
+        self.control.paused.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.control.paused.load(Ordering::Acquire)
+    }
+
+    /// A control-side gate that outlives a reader lease: while a recording
+    /// worker owns this reader, pause commands travel through the shared
+    /// control block instead of the reader itself.
+    pub fn pause_handle(&self) -> RecorderPause {
+        RecorderPause {
+            control: Arc::clone(&self.control),
+        }
+    }
+
+    /// Discard everything queued so a file starts with audio observed after
+    /// this call: stop acceptance, wait out any in-flight observer block, then
+    /// drain. A later `start()` resumes capture, so nothing between the drain
+    /// and the resume can reach a destination.
+    pub fn skip_queued(&mut self) {
+        self.stop();
+        while !self.is_quiescent() {
+            std::thread::park_timeout(Duration::from_millis(2));
+        }
+        self.clear();
+    }
+
+    /// Drain queued frames on the consumer side. Only complete frames are in
+    /// the queue, so this commits whole blocks and keeps `read_frames` honest.
+    fn clear(&mut self) {
+        let sample_count = self.rx.slots();
+        if sample_count == 0 {
+            return;
+        }
+        let chunk = self
+            .rx
+            .read_chunk(sample_count)
+            .expect("reserved consumer data");
+        chunk.commit_all();
+        add_frames(&self.control.read_frames, sample_count / self.channels);
     }
 
     /// Nonblocking query: capture is disabled and no observer can still publish
@@ -257,6 +339,11 @@ impl<S: ProcessingSample> RtObserver<S> for Recorder {
         self.control.active.store(true, Ordering::SeqCst);
         let _activity = ObserverActivity(&self.control.active);
         if self.control.state.load(Ordering::SeqCst) != RecorderState::Recording as u8 {
+            return;
+        }
+        if self.control.paused.load(Ordering::SeqCst) {
+            // Paused frames are neither recorded nor overflow loss; skipping
+            // them here keeps the pause gap out of the file and the counters.
             return;
         }
         let input = inputs.get(0).expect("validated recorder input");

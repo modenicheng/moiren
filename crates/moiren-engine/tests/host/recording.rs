@@ -247,6 +247,124 @@ fn managed_record_wav_writes_and_finalizes_a_real_file() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "requires filesystem access outside Miri isolation")]
+fn record_wav_now_discards_preroll_and_records_from_the_call() {
+    let (project, recorder, _, _) = recording_project();
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    let reader = observer.recorder_reader(recorder).unwrap();
+    // Preroll accumulates in the queue while the graph runs and nobody has
+    // started a file yet.
+    wait(&observer, |_| {
+        reader.queued_frames().is_some_and(|frames| frames >= 16)
+    });
+    // Freeze delivery so the only queued audio is the preroll above.
+    state.pause_audio.store(true, Ordering::SeqCst);
+    let file = TemporaryFile::new();
+    let session = reader.record_wav_now(&file.0, 48_000).unwrap();
+    wait_recording(&session, |s| {
+        let status = s.status();
+        status.state == RecordingState::Recording && !status.paused
+    });
+    // The discarded preroll never reaches the file: a frozen graph after the
+    // call contributes zero frames.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(session.status().written_frames, 0);
+    state.pause_audio.store(false, Ordering::SeqCst);
+    wait_recording(&session, |s| s.status().written_frames > 0);
+    let summary = session.finish().unwrap();
+    assert_wav(&std::fs::read(&file.0).unwrap(), summary.written_frames);
+}
+
+#[test]
+fn managed_session_pauses_skips_and_a_next_session_starts_clean() {
+    let (project, recorder, _, _) = recording_project();
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    let reader = observer.recorder_reader(recorder).unwrap();
+    let writer = SharedWriter::default();
+    let session = reader.record_with_writer(writer.clone(), 48_000).unwrap();
+    wait_recording(&session, |s| s.status().written_frames > 0);
+    session.pause();
+    wait_recording(&session, |s| s.status().paused);
+    // The pause flag lands asynchronously against the audio callback: a
+    // block that already passed the gate can still be accepted afterwards.
+    // Freeze the fake audio thread and wait for two identical, fully
+    // drained snapshots; nothing is in flight, so the value is final.
+    state.pause_audio.store(true, Ordering::SeqCst);
+    let accepted_at_pause = {
+        let deadline = Instant::now() + TIMEOUT;
+        let mut previous: Option<u64> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let status = session.status();
+            let drained = status.stats.accepted_frames == status.stats.read_frames
+                && status.written_frames == status.stats.read_frames;
+            if drained && previous == Some(status.stats.accepted_frames) {
+                break status.stats.accepted_frames;
+            }
+            previous = Some(status.stats.accepted_frames);
+            assert!(
+                Instant::now() < deadline,
+                "recording never settled while frozen: {:?}",
+                status
+            );
+        }
+    };
+    // While paused, flowing audio contributes nothing. Whether a callback
+    // completes inside a bounded window depends on the runner's speed under
+    // Miri, so flow as many as come and let the counters speak: the pause
+    // gate must hold whatever flowed. The skip semantics themselves have
+    // deterministic coverage in the wav worker suite.
+    let frame_before = observer.snapshot().timeline.map(|t| t.frame);
+    state.pause_audio.store(false, Ordering::SeqCst);
+    let flow_deadline = Instant::now() + std::time::Duration::from_millis(150);
+    while Instant::now() < flow_deadline
+        && observer.snapshot().timeline.map(|t| t.frame) == frame_before
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    state.pause_audio.store(true, Ordering::SeqCst);
+    wait_recording(&session, |s| {
+        let status = s.status();
+        status.stats.accepted_frames == accepted_at_pause
+            && status.written_frames == accepted_at_pause
+    });
+    // Stop from paused: the tail drain still finalizes the file.
+    session.stop();
+    wait_recording(&session, |s| s.status().state == RecordingState::Finished);
+    let summary = session.finish().unwrap();
+    assert_eq!(summary.written_frames, accepted_at_pause);
+    assert_wav(writer.0.lock().unwrap().get_ref(), summary.written_frames);
+    // The pause gate survives the handback; a fresh session must lift it when
+    // it starts capture, or nothing would ever be recorded again.
+    state.pause_audio.store(false, Ordering::SeqCst);
+    let second_writer = SharedWriter::default();
+    let second = reader
+        .record_with_writer(second_writer.clone(), 48_000)
+        .unwrap();
+    wait_recording(&second, |s| {
+        let status = s.status();
+        status.written_frames > 0 && !status.paused
+    });
+    let second_summary = second.finish().unwrap();
+    assert_wav(
+        second_writer.0.lock().unwrap().get_ref(),
+        second_summary.written_frames,
+    );
+}
+
+#[test]
 fn compatible_update_keeps_recording_worker_and_queue_active() {
     let (project, recorder, _, _) = recording_project();
     let host =
