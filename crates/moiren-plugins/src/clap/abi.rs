@@ -82,8 +82,8 @@ pub struct ClapPluginFactory {
 }
 
 /// The host side of the contract. This host implements no host extensions:
-/// `get_extension` returns null, and restart/callback requests land in an
-/// atomic counter the control side drains opportunistically.
+/// `get_extension` returns null, and restart/callback requests are legal
+/// no-ops for this host revision (see the host callbacks in `mod.rs`).
 #[repr(C)]
 pub struct ClapHost {
     pub clap_version: ClapVersion,
