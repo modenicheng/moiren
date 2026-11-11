@@ -234,6 +234,7 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
+            shell.autosave.path = None;
             shell.preferences.path = None;
             shell.preferences.values.export_authorizations.clear();
             shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
@@ -339,6 +340,7 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
+            shell.autosave.path = None;
             shell.preferences.path = None;
             shell.preferences.values.export_authorizations.clear();
             shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
@@ -560,6 +562,7 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
+            shell.autosave.path = None;
             shell.preferences.path = None;
             shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
             shell.devices.device_tab = devices::DeviceTab::Exports;
