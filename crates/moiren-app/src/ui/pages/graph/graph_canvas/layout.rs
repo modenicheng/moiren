@@ -29,6 +29,14 @@ impl TextLayout {
             line_height: self.line_height * camera.zoom,
         }
     }
+
+    /// Canvas-space shift. Projection is affine, so translating a projected
+    /// layout equals projecting the moved node — this is how the hot layer
+    /// paints a dragged card without re-projecting anything (audit A-1).
+    fn translated(mut self, dx: f32, dy: f32) -> Self {
+        self.bounds.origin += point(dx, dy);
+        self
+    }
 }
 
 /// Where a card's level meter strip sits and which way it runs. The hot
@@ -351,6 +359,119 @@ impl NodeLayout {
             output: self.output.map(|anchor| camera.world_to_canvas(anchor)),
             output_hint: self.output_hint.as_ref().map(|hint| hint.project(camera)),
             scale: camera.zoom,
+        }
+    }
+
+    /// The projected layout of the same card shifted by a canvas-space
+    /// offset — the hot layer's view of a dragged card. Projection is
+    /// affine, so this equals [`Self::project`] of the node at its moved
+    /// world position; every field is listed explicitly so a layout field
+    /// added later cannot silently escape the drag offset.
+    pub fn translated(&self, dx: f32, dy: f32) -> Self {
+        let shift = |bounds: &mut Bounds<f32>| bounds.origin += point(dx, dy);
+        let text = |text: &TextLayout| text.clone().translated(dx, dy);
+        let anchor = |anchor: &(f32, f32)| (anchor.0 + dx, anchor.1 + dy);
+        Self {
+            card: {
+                let mut card = self.card;
+                shift(&mut card);
+                card
+            },
+            rail: {
+                let mut rail = self.rail;
+                shift(&mut rail);
+                rail
+            },
+            icon: {
+                let mut icon = self.icon;
+                shift(&mut icon);
+                icon
+            },
+            title: text(&self.title),
+            badge: {
+                let mut badge = self.badge;
+                shift(&mut badge);
+                badge
+            },
+            expand: {
+                let mut expand = self.expand;
+                shift(&mut expand);
+                expand
+            },
+            body: {
+                let mut body = self.body;
+                shift(&mut body);
+                body
+            },
+            detail: text(&self.detail),
+            meter: match self.meter {
+                MeterLayout::Horizontal { bounds } => MeterLayout::Horizontal {
+                    bounds: {
+                        let mut bounds = bounds;
+                        shift(&mut bounds);
+                        bounds
+                    },
+                },
+                MeterLayout::Vertical { bounds } => MeterLayout::Vertical {
+                    bounds: {
+                        let mut bounds = bounds;
+                        shift(&mut bounds);
+                        bounds
+                    },
+                },
+            },
+            knobs: self
+                .knobs
+                .iter()
+                .map(|knob| KnobLayout {
+                    dial: {
+                        let mut dial = knob.dial;
+                        shift(&mut dial);
+                        dial
+                    },
+                    label: text(&knob.label),
+                    value: text(&knob.value),
+                })
+                .collect(),
+            chip: self.chip.as_ref().map(|chip| ChipLayout {
+                bounds: {
+                    let mut bounds = chip.bounds;
+                    shift(&mut bounds);
+                    bounds
+                },
+                icon: {
+                    let mut icon = chip.icon;
+                    shift(&mut icon);
+                    icon
+                },
+                label: text(&chip.label),
+                chevron: {
+                    let mut chevron = chip.chevron;
+                    shift(&mut chevron);
+                    chevron
+                },
+            }),
+            matrix: self.matrix.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            rack: self.rack.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            curve: self.curve.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            spectrum: self.spectrum.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            inputs: self.inputs.iter().map(anchor).collect(),
+            input_hints: self.input_hints.iter().map(text).collect(),
+            output: self.output.map(|a| anchor(&a)),
+            output_hint: self.output_hint.as_ref().map(text),
+            scale: self.scale,
         }
     }
 }

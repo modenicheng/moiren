@@ -8,8 +8,8 @@ use gpui_kit::*;
 use rust_i18n::t;
 
 use super::graph_canvas::{
-    Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, KnobControl,
-    OverlayRects, PortDirection, PortTarget, WireCurve,
+    Camera, CanvasFrame, CanvasNode, CanvasWire, CanvasWorld, ConnectionCandidate, DragGuides,
+    HitTarget, KnobControl, OverlayRects, PortDirection, PortTarget, WireCurve, WireGeometry,
 };
 use crate::ui::monitoring::{DisplayLevel, SpectrumCurve};
 use crate::ui::observe::TestObserve;
@@ -17,6 +17,11 @@ use crate::ui::shared_frame::SharedFrame;
 use crate::ui::theme;
 
 mod nodes;
+
+pub(in crate::ui) use nodes::{CanvasShapesHandle, Paint};
+pub(in crate::ui) use nodes::{
+    paint_fault_banner, paint_fault_tooltip, paint_meter_bars, paint_node, paint_spectrum_body,
+};
 
 // The callback aliases ride `pub(in crate::ui)` so the window-side page
 // builders can name them when they construct [`CanvasCallbacks`] fields.
@@ -78,10 +83,6 @@ struct LiveReaders<'a> {
 /// page's hot layer can repaint bars over the cached canvas between cache
 /// rebuilds, exactly like the canvas painted them.
 pub(in crate::ui) type PreparedFrame = SharedFrame<CanvasFrame>;
-
-pub(in crate::ui) use nodes::{
-    paint_fault_banner, paint_fault_tooltip, paint_meter_bars, paint_spectrum_body,
-};
 
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
@@ -154,11 +155,11 @@ fn paint_grid(frame: &CanvasFrame, window: &mut Window) {
 }
 
 /// The snap alignment guides (item F): world-space vertical/horizontal
-/// lines painted above the grid while a card drag is aligned.
-fn paint_snap_guides(frame: &CanvasFrame, window: &mut Window) {
-    let Some(guides) = frame.world.guides else {
-        return;
-    };
+/// lines painted above the grid while a card drag is aligned. The guides
+/// ride the rebuild capture, not the cached world: the world is reused
+/// across drag rebuilds, and the guide value changes only when the snap
+/// target does (audit A-1).
+fn paint_snap_guides(frame: &CanvasFrame, guides: DragGuides, window: &mut Window) {
     let viewport = frame.viewport();
     if let Some(x) = guides.x {
         let left = frame.camera.world_to_canvas((x, 0.)).0;
@@ -186,61 +187,104 @@ fn paint_snap_guides(frame: &CanvasFrame, window: &mut Window) {
     }
 }
 
+/// One wire between its endpoints, shared by the cached canvas and the hot
+/// layer's dragged-entity paint so both stroke identically.
+pub(in crate::ui) fn paint_wire(
+    frame: &CanvasFrame,
+    wire: &CanvasWire,
+    geometry: &WireGeometry,
+    origin: (f32, f32),
+    selected: bool,
+    connected: bool,
+    window: &mut Window,
+) {
+    let width = ((if selected {
+        2.8
+    } else if connected {
+        2.
+    } else {
+        1.6
+    }) * frame.camera.zoom)
+        .max(if selected { 1.8 } else { 0.75 });
+    if selected && let Ok(halo) = geometry.stroke(width + 5., origin) {
+        window.paint_path(halo, theme::halo(theme::controls::FOCUS));
+    }
+    if let Ok(path) = geometry.stroke(width, origin) {
+        window.paint_path(
+            path,
+            if selected {
+                theme::TEXT
+            } else {
+                wire.tint.unwrap_or(theme::controls::FOCUS)
+            },
+        );
+    }
+}
+
+/// The gesture and selection capture the cached canvas paint closure replays
+/// between rebuilds: the selection's canvas-id identity, the selected wire,
+/// the snap guides, and the dragged entities the cached canvas freezes out
+/// (they paint through the hot layer at the live drag offset — audit A-1).
+/// The page captures these at rebuild time; the key guarantees a rebuild
+/// whenever any of them changes.
+pub struct CanvasPaintState {
+    pub selected_nodes: std::rc::Rc<Vec<String>>,
+    pub selected_wire: Option<std::rc::Rc<str>>,
+    pub guides: DragGuides,
+    pub drag_hidden: Vec<moiren_core::graph::NodeId>,
+}
+
 fn paint_canvas_layer(
     frame: &CanvasFrame,
-    selected_nodes: &[String],
-    selected_wire: Option<&str>,
+    state: &CanvasPaintState,
     readers: LiveReaders<'_>,
-    connection: Option<(PortTarget, (f32, f32))>,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let CanvasPaintState {
+        selected_nodes,
+        selected_wire,
+        guides,
+        drag_hidden,
+    } = state;
+    let Paint { shapes, window } = paint;
     window.with_content_mask(
         Some(ContentMask {
             bounds: frame.bounds,
         }),
         |window| {
             paint_grid(frame, window);
-            paint_snap_guides(frame, window);
+            paint_snap_guides(frame, *guides, window);
             let origin = (
                 f32::from(frame.bounds.origin.x),
                 f32::from(frame.bounds.origin.y),
             );
             for (wire, geometry) in frame.world.wires.iter().zip(&frame.wires) {
-                let selected = selected_wire == Some(wire.id.as_str());
+                // The dragged selection's wires move with the cards: the
+                // hot layer paints them live at the drag offset, so the
+                // cached canvas leaves them out of its frozen paint.
+                if drag_hidden.contains(&wire.src) || drag_hidden.contains(&wire.dst) {
+                    continue;
+                }
+                let selected = selected_wire.as_deref() == Some(wire.id.as_str());
                 let connected = selected_nodes
                     .iter()
                     .any(|node| node == &wire.source || node == &wire.destination);
-                let width = ((if selected {
-                    2.8
-                } else if connected {
-                    2.
-                } else {
-                    1.6
-                }) * frame.camera.zoom)
-                    .max(if selected { 1.8 } else { 0.75 });
-                if selected && let Ok(halo) = geometry.stroke(width + 5., origin) {
-                    window.paint_path(halo, theme::halo(theme::controls::FOCUS));
-                }
-                if let Ok(path) = geometry.stroke(width, origin) {
-                    window.paint_path(
-                        path,
-                        if selected {
-                            theme::TEXT
-                        } else {
-                            wire.tint.unwrap_or(theme::controls::FOCUS)
-                        },
-                    );
-                }
+                paint_wire(frame, wire, geometry, origin, selected, connected, window);
             }
             for (node, layout) in frame.world.nodes.iter().zip(&frame.nodes) {
+                // A dragged card paints through the hot layer at its live
+                // offset; the cached canvas freezes it out (audit A-1).
+                if node.node_id.is_some_and(|id| drag_hidden.contains(&id)) {
+                    continue;
+                }
                 if layout.card.intersects(&frame.viewport()) {
                     let spectrum = node
                         .spectrum
                         .then(|| node.node_id.and_then(|id| (readers.spectrum)(id, cx)))
                         .flatten();
                     let meters = node.node_id.and_then(|id| (readers.levels)(id, cx));
-                    nodes::paint_node(
+                    paint_node(
                         frame,
                         node,
                         layout,
@@ -249,13 +293,13 @@ fn paint_canvas_layer(
                             meters: meters.as_ref(),
                             spectrum: spectrum.as_ref().map(NodeSpectrumReading::curve),
                         },
-                        window,
+                        Paint {
+                            shapes: &mut *shapes,
+                            window: &mut *window,
+                        },
                         cx,
                     );
                 }
-            }
-            if let Some((port, cursor)) = connection {
-                paint_connection_drag(frame, port, cursor, window);
             }
         },
     );
@@ -264,8 +308,10 @@ fn paint_canvas_layer(
 /// The connection drag's ghost line and hover verdict: the line snaps to
 /// the resolved candidate port when the drop would land (port or body),
 /// colors itself by the verdict, and rings the target so the release is
-/// never a surprise (design 18 A3).
-fn paint_connection_drag(
+/// never a surprise (design 18 A3). Painted by the hot layer per frame —
+/// the drag's cursor must not ride the panel key, so the cached canvas
+/// never sees it (audit A-1).
+pub(in crate::ui) fn paint_connection_drag(
     frame: &CanvasFrame,
     port: PortTarget,
     cursor: (f32, f32),
@@ -425,6 +471,9 @@ pub(in crate::ui) fn node_drag_preview(
         node.height() + PREVIEW_PORT_PAD * 2.,
     );
     let world = Arc::new(CanvasWorld::new(vec![node], Vec::new()));
+    // The preview paints per frame while a template drag moves; its ghost
+    // card's labels shape once and replay from their own small cache.
+    let shapes: CanvasShapesHandle = Default::default();
     canvas(
         move |bounds, _, _| {
             CanvasFrame::new(
@@ -436,16 +485,23 @@ pub(in crate::ui) fn node_drag_preview(
                 bounds,
             )
         },
-        |_, frame, window, cx| {
-            nodes::paint_node(
-                &frame,
-                &frame.world.nodes[0],
-                &frame.nodes[0],
-                false,
-                NodeLive::default(),
-                window,
-                cx,
-            );
+        {
+            let shapes = shapes.clone();
+            move |_, frame, window, cx| {
+                let mut shapes = shapes.borrow_mut();
+                paint_node(
+                    &frame,
+                    &frame.world.nodes[0],
+                    &frame.nodes[0],
+                    false,
+                    NodeLive::default(),
+                    Paint {
+                        shapes: &mut shapes,
+                        window,
+                    },
+                    cx,
+                );
+            }
         },
     )
     .w(px(size.0))
@@ -513,11 +569,11 @@ fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElemen
 pub fn graph_canvas_view(
     world: Arc<CanvasWorld>,
     camera: Camera,
-    selected_nodes: &[String],
-    selected_wire: Option<&str>,
+    state: CanvasPaintState,
     callbacks: CanvasCallbacks,
     prepared: PreparedFrame,
     overlays: &OverlayRects,
+    shapes: CanvasShapesHandle,
 ) -> impl IntoElement {
     let CanvasCallbacks {
         on_drop_node,
@@ -543,10 +599,10 @@ pub fn graph_canvas_view(
         on_delete,
         on_cancel,
     } = callbacks;
-    let selected_nodes = selected_nodes.to_vec();
-    let selected_wire = selected_wire.map(str::to_owned);
     // The painter and the release path only need the head and the port it
-    // pulls from; the picked-up input already shaped the world.
+    // pulls from; the picked-up input already shaped the world. The ghost
+    // line itself paints through the hot layer, which reads the drag's live
+    // cursor — the cached paint closure is only rebuilt on key changes.
     let connection = connection.map(|(port, cursor, _)| (port, cursor));
     // The left handler moves `focus`; keep one clone for the right handler,
     // which must also focus the canvas so right-button drags keep keys alive.
@@ -571,16 +627,18 @@ pub fn graph_canvas_view(
                     }
                 },
                 move |_, frame, window, cx| {
+                    let mut shapes = shapes.borrow_mut();
                     paint_canvas_layer(
                         &frame,
-                        &selected_nodes,
-                        selected_wire.as_deref(),
+                        &state,
                         LiveReaders {
                             levels: node_levels.as_ref(),
                             spectrum: node_spectrum.as_ref(),
                         },
-                        connection,
-                        window,
+                        Paint {
+                            shapes: &mut shapes,
+                            window,
+                        },
                         cx,
                     );
                 },

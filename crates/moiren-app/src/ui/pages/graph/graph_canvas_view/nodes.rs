@@ -1,3 +1,8 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use gpui_kit::{
     App, Axis, BorderStyle, Bounds, ContentMask, Font, FontWeight, Hsla, PaintQuad, Path,
     PathBuilder, Pixels, ShapedLine, TextAlign, TextRun, TransformationMatrix, Window, font, point,
@@ -12,45 +17,211 @@ use super::super::graph_canvas::{
 use crate::ui::monitoring::{REST_DB, SPECTRUM_NOMINAL_SPAN_HZ, SpectrumCurve};
 use crate::ui::theme;
 
-fn shape_text(
-    window: &Window,
-    text: &str,
-    font_size: f32,
-    font: Font,
-    color: Hsla,
-    available: f32,
-) -> ShapedLine {
-    let shape = |text: &str| {
-        window.text_system().shape_line(
-            text.to_owned().into(),
-            px(font_size),
-            &run(text, font.clone(), color),
-            None,
-        )
-    };
-    let original = shape(text);
-    if f32::from(original.width()) <= available {
-        return original;
-    }
-    let boundaries = text
-        .char_indices()
-        .map(|(index, _)| index)
-        .chain(std::iter::once(text.len()))
-        .collect::<Vec<_>>();
-    let mut lower = 0;
-    let mut upper = boundaries.len();
-    let mut best = shape("");
-    while lower < upper {
-        let middle = lower + (upper - lower) / 2;
-        let candidate = shape(&format!("{}…", &text[..boundaries[middle]]));
-        if f32::from(candidate.width()) <= available {
-            best = candidate;
-            lower = middle + 1;
-        } else {
-            upper = middle;
+/// The canvas painters' shaping style: everything [`shape_line`] reads. The
+/// cache keys hash this verbatim, so the fields are stored bit-exact.
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+struct ShapeStyle {
+    size_bits: u32,
+    family: &'static str,
+    weight_bits: u32,
+    color: [u32; 4],
+}
+
+impl ShapeStyle {
+    fn new(font_size: f32, family: &'static str, weight: FontWeight, color: Hsla) -> Self {
+        Self {
+            size_bits: font_size.to_bits(),
+            family,
+            weight_bits: weight.0.to_bits(),
+            color: [
+                color.h.to_bits(),
+                color.s.to_bits(),
+                color.l.to_bits(),
+                color.a.to_bits(),
+            ],
         }
     }
-    best
+
+    fn font(&self) -> Font {
+        Font {
+            weight: FontWeight(f32::from_bits(self.weight_bits)),
+            ..font(self.family)
+        }
+    }
+
+    fn color(&self) -> Hsla {
+        let [h, s, l, a] = self.color.map(f32::from_bits);
+        Hsla { h, s, l, a }
+    }
+}
+
+/// One text's shaped variants: the full line plus, per available width that
+/// actually forced a truncation, the fitted line. Most labels never
+/// overflow, so the truncation list stays empty; an overflowing label
+/// reflows only when its width really changed (audit A-1: "宽度没变就不重排").
+struct ShapeVariants {
+    full: ShapedLine,
+    truncated: Vec<(u32, ShapedLine)>,
+}
+
+/// The canvas text shaping cache (audit A-1). Card paints shape 2-6 labels
+/// each, and the cached canvas re-paints on every rebuild while the hot
+/// layer paints every frame — without a cache the same (text, style) lines
+/// re-shape, and overflowing titles re-run the truncation binary search, on
+/// every display frame. Keyed first by the exact text, then by style, so
+/// the same label at two zooms or two colors costs two entries and one
+/// lookup forever after. Far above the honest population of card labels;
+/// exceeding the cap clears the cache rather than growing without bound.
+#[derive(Default)]
+pub(in crate::ui) struct CanvasShapes {
+    lines: HashMap<Arc<str>, ShapeVariants>,
+    /// Test census: real shaper runs (full lines and truncation probes).
+    #[cfg(feature = "gpui-test")]
+    pub(in crate::ui) shapes: usize,
+}
+
+/// Far above the honest text population (every card's labels at the zooms
+/// the session actually uses); a pathological feed clears the cache and
+/// pays reshapes again instead of growing without bound.
+const CANVAS_SHAPE_CACHE_CAP: usize = 4096;
+
+/// Shell-owned handle shared by the cached canvas paint and the hot layer's
+/// paints, so a label shaped once is reused by both.
+pub(in crate::ui) type CanvasShapesHandle = Rc<RefCell<CanvasShapes>>;
+
+/// One paint session: the shaping cache shared with the sibling hot layer
+/// plus the window the painter draws into. Painters take it as one bundle —
+/// the argument set otherwise outgrows the lint budget — and destructure it
+/// once; interior painters re-borrow per sub-paint.
+pub(in crate::ui) struct Paint<'a> {
+    pub(in crate::ui) shapes: &'a mut CanvasShapes,
+    pub(in crate::ui) window: &'a mut Window,
+}
+
+/// Far above the honest truncation widths per text (zoom steps); same
+/// cap-and-clear policy as the outer map.
+const TRUNCATED_VARIANTS_CAP: usize = 32;
+
+impl CanvasShapes {
+    fn shape(&mut self, window: &Window, text: &str, style: ShapeStyle) -> ShapedLine {
+        #[cfg(feature = "gpui-test")]
+        {
+            self.shapes += 1;
+        }
+        window.text_system().shape_line(
+            text.to_owned().into(),
+            px(f32::from_bits(style.size_bits)),
+            &[TextRun {
+                len: text.len(),
+                font: style.font(),
+                color: style.color(),
+                ..TextRun::default()
+            }],
+            None,
+        )
+    }
+
+    /// The shaped line for `text` at `style`, running the shaper only on a
+    /// cache miss. The returned line borrows the cache; paint it before the
+    /// next lookup.
+    fn full(&mut self, window: &Window, text: &str, style: ShapeStyle) -> &ShapedLine {
+        if !self.lines.contains_key(text) {
+            if self.lines.len() >= CANVAS_SHAPE_CACHE_CAP {
+                self.lines.clear();
+            }
+            let line = self.shape(window, text, style);
+            self.lines.insert(
+                Arc::from(text),
+                ShapeVariants {
+                    full: line,
+                    truncated: Vec::new(),
+                },
+            );
+        }
+        &self.lines[text].full
+    }
+
+    /// The widest line for `text` at `style` that fits `available`, falling
+    /// back to the cached full line when it already fits. A truncation is
+    /// cached per available width, so an overflowing label re-runs the
+    /// binary search only when its width changed.
+    fn fitted(
+        &mut self,
+        window: &Window,
+        text: &str,
+        style: ShapeStyle,
+        available: f32,
+    ) -> &ShapedLine {
+        // Sized first, without holding the cache borrow across the miss
+        // path's mutations (a full-line lookup on the hit path is one map
+        // probe, never a shaper run).
+        let overflows = f32::from(self.full(window, text, style).width()) > available;
+        if !overflows {
+            return self.full(window, text, style);
+        }
+        let key = available.to_bits();
+        let cached = self
+            .lines
+            .get_mut(text)
+            .and_then(|variants| variants.truncated.iter().position(|(bits, _)| *bits == key));
+        if let Some(position) = cached {
+            return &self.lines[text].truncated[position].1;
+        }
+        if let Some(variants) = self.lines.get_mut(text)
+            && variants.truncated.len() >= TRUNCATED_VARIANTS_CAP
+        {
+            variants.truncated.clear();
+        }
+        let line = self.truncate(window, text, style, available);
+        let variants = self.lines.get_mut(text).expect("full() inserted the text");
+        variants.truncated.push((key, line));
+        &variants.truncated.last().expect("just pushed").1
+    }
+
+    /// The widest prefix of `text` — through the ellipsis — that fits
+    /// `available`, by binary search over character boundaries. One shaper
+    /// run per candidate; the census counts each so tests can watch the
+    /// cache absorb them.
+    fn truncate(
+        &mut self,
+        window: &Window,
+        text: &str,
+        style: ShapeStyle,
+        available: f32,
+    ) -> ShapedLine {
+        #[cfg_attr(not(feature = "gpui-test"), allow(unused_mut))]
+        let mut shape = |probe: &str| {
+            #[cfg(feature = "gpui-test")]
+            {
+                self.shapes += 1;
+            }
+            window.text_system().shape_line(
+                probe.to_owned().into(),
+                px(f32::from_bits(style.size_bits)),
+                &run(probe, style.font(), style.color()),
+                None,
+            )
+        };
+        let boundaries = text
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(text.len()))
+            .collect::<Vec<_>>();
+        let mut lower = 0;
+        let mut upper = boundaries.len();
+        let mut best = shape("");
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2;
+            let candidate = shape(&format!("{}…", &text[..boundaries[middle]]));
+            if f32::from(candidate.width()) <= available {
+                best = candidate;
+                lower = middle + 1;
+            } else {
+                upper = middle;
+            }
+        }
+        best
+    }
 }
 
 fn run(text: &str, font: Font, color: Hsla) -> [TextRun; 1] {
@@ -64,7 +235,7 @@ fn run(text: &str, font: Font, color: Hsla) -> [TextRun; 1] {
 
 struct Label<'a> {
     text: &'a str,
-    family: &'a str,
+    family: &'static str,
     color: Hsla,
     right_aligned: bool,
     weight: FontWeight,
@@ -74,19 +245,15 @@ fn paint_label(
     frame: &CanvasFrame,
     layout: &TextLayout,
     label: Label<'_>,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let rect = frame.window_rect(layout.bounds);
-    let line = shape_text(
+    let line = shapes.fitted(
         window,
         label.text,
-        layout.font_size,
-        Font {
-            weight: label.weight,
-            ..font(label.family)
-        },
-        label.color,
+        ShapeStyle::new(layout.font_size, label.family, label.weight, label.color),
         layout.bounds.size.width,
     );
     let left = if label.right_aligned {
@@ -274,9 +441,10 @@ fn paint_knob(
     layout: &KnobLayout,
     knob: &CardKnob,
     scale: f32,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let dial = frame.window_rect(layout.dial);
     let center = (
         f32::from(dial.origin.x) + f32::from(dial.size.width) / 2.,
@@ -328,7 +496,10 @@ fn paint_knob(
             right_aligned: false,
             weight: FontWeight::NORMAL,
         },
-        window,
+        Paint {
+            shapes: &mut *shapes,
+            window: &mut *window,
+        },
         cx,
     );
     paint_label(
@@ -341,7 +512,10 @@ fn paint_knob(
             right_aligned: false,
             weight: FontWeight::NORMAL,
         },
-        window,
+        Paint {
+            shapes: &mut *shapes,
+            window: &mut *window,
+        },
         cx,
     );
 }
@@ -480,16 +654,14 @@ fn paint_anchored_text(
     color: Hsla,
     anchor: (f32, f32),
     right_aligned: bool,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
-    let line = shape_text(
+    let Paint { shapes, window } = paint;
+    let line = shapes.full(
         window,
         text,
-        font_size,
-        font(theme::FONT_UI),
-        color,
-        f32::MAX,
+        ShapeStyle::new(font_size, theme::FONT_UI, FontWeight::NORMAL, color),
     );
     let width = f32::from(line.width());
     let left = if right_aligned {
@@ -522,9 +694,10 @@ pub(in crate::ui) fn paint_spectrum_body(
     detail: &str,
     tint: Hsla,
     curve: Option<SpectrumCurve<'_>>,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let Some(bounds) = layout.spectrum else {
         return;
     };
@@ -593,7 +766,10 @@ pub(in crate::ui) fn paint_spectrum_body(
             theme::TEXT_FAINT,
             (x_of(hz), top + height - label_size - 4. * scale),
             false,
-            window,
+            Paint {
+                shapes: &mut *shapes,
+                window: &mut *window,
+            },
             cx,
         );
     }
@@ -603,7 +779,10 @@ pub(in crate::ui) fn paint_spectrum_body(
         theme::TEXT_FAINT,
         (left + width - 4. * scale, top + 3. * scale),
         true,
-        window,
+        Paint {
+            shapes: &mut *shapes,
+            window: &mut *window,
+        },
         cx,
     );
     // The curve: a straight polyline through the grid points — the trace
@@ -660,9 +839,10 @@ fn paint_binding_chip(
     chip: &BindingChip,
     tint: Hsla,
     scale: f32,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let bounds = frame.window_rect(layout.bounds);
     window.paint_quad(PaintQuad {
         bounds,
@@ -702,7 +882,10 @@ fn paint_binding_chip(
             right_aligned: false,
             weight: FontWeight::NORMAL,
         },
-        window,
+        Paint {
+            shapes: &mut *shapes,
+            window: &mut *window,
+        },
         cx,
     );
     let _ = window.paint_svg(
@@ -754,9 +937,10 @@ fn paint_rack_chain(
     stages: &[&'static str],
     tint: Hsla,
     scale: f32,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let grid = frame.window_rect(bounds);
     let icon = 14. * scale;
     let stride = 20. * scale;
@@ -777,15 +961,15 @@ fn paint_rack_chain(
     }
     if stages.len() > shown {
         let label = format!("+{}", stages.len() - shown);
-        let line = shape_text(
+        let line = shapes.fitted(
             window,
             &label,
-            theme::TEXT_XS * scale,
-            Font {
-                weight: FontWeight::NORMAL,
-                ..font(theme::FONT_MONO)
-            },
-            theme::TEXT_FAINT,
+            ShapeStyle::new(
+                theme::TEXT_XS * scale,
+                theme::FONT_MONO,
+                FontWeight::NORMAL,
+                theme::TEXT_FAINT,
+            ),
             40. * scale,
         );
         let _ = line.paint(
@@ -809,7 +993,8 @@ fn paint_rack_chain(
 /// disc with a white glyph. The rect is camera-projected, so the badge
 /// reads at every zoom like the outline does. Hit-tested as
 /// `HitTarget::Badge`; clicking opens the fault detail popover.
-fn paint_fault_badge(frame: &CanvasFrame, badge: &Bounds<f32>, window: &mut Window, cx: &mut App) {
+fn paint_fault_badge(frame: &CanvasFrame, badge: &Bounds<f32>, paint: Paint<'_>, cx: &mut App) {
+    let Paint { shapes, window } = paint;
     const GLYPH: f32 = theme::card::BADGE_SIZE * 0.72;
     let bounds = frame.window_rect(*badge);
     window.paint_quad(PaintQuad {
@@ -820,15 +1005,15 @@ fn paint_fault_badge(frame: &CanvasFrame, badge: &Bounds<f32>, window: &mut Wind
         border_color: theme::DANGER,
         border_style: BorderStyle::default(),
     });
-    let glyph = shape_text(
+    let glyph = shapes.fitted(
         window,
         "!",
-        GLYPH,
-        Font {
-            weight: FontWeight::SEMIBOLD,
-            ..font(theme::FONT_UI)
-        },
-        theme::controls::ON_ACCENT,
+        ShapeStyle::new(
+            GLYPH,
+            theme::FONT_UI,
+            FontWeight::SEMIBOLD,
+            theme::controls::ON_ACCENT,
+        ),
         GLYPH,
     );
     let left =
@@ -850,15 +1035,25 @@ fn paint_fault_badge(frame: &CanvasFrame, badge: &Bounds<f32>, window: &mut Wind
 pub(in crate::ui) fn paint_fault_tooltip(
     frame: &CanvasFrame,
     index: usize,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let node = &frame.world.nodes[index];
     if node.faults.is_empty() {
         return;
     }
     let card = frame.window_rect(frame.nodes[index].card);
-    paint_fault_banner(&node.faults, card, frame.bounds, window, cx);
+    paint_fault_banner(
+        &node.faults,
+        card,
+        frame.bounds,
+        Paint {
+            shapes: &mut *shapes,
+            window: &mut *window,
+        },
+        cx,
+    );
 }
 
 /// The fault banner: a window-pixel panel hung below `anchor`, flipping
@@ -870,9 +1065,10 @@ pub(in crate::ui) fn paint_fault_banner(
     faults: &[CardFault],
     anchor: Bounds<Pixels>,
     clip: Bounds<Pixels>,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     const PAD: f32 = 8.;
     const GAP: f32 = 6.;
     const ICON: f32 = 14.;
@@ -884,29 +1080,36 @@ pub(in crate::ui) fn paint_fault_banner(
     let mut lines: Vec<(ShapedLine, bool)> = Vec::new();
     for fault in faults {
         lines.push((
-            shape_text(
-                window,
-                &t!(fault.cause.as_str()),
-                theme::TEXT_SM,
-                Font {
-                    weight: FontWeight::SEMIBOLD,
-                    ..font(theme::FONT_UI)
-                },
-                theme::DANGER,
-                MAX_LINE,
-            ),
+            shapes
+                .fitted(
+                    window,
+                    &t!(fault.cause.as_str()),
+                    ShapeStyle::new(
+                        theme::TEXT_SM,
+                        theme::FONT_UI,
+                        FontWeight::SEMIBOLD,
+                        theme::DANGER,
+                    ),
+                    MAX_LINE,
+                )
+                .clone(),
             true,
         ));
         if let Some(hint) = &fault.hint {
             lines.push((
-                shape_text(
-                    window,
-                    &t!(hint.as_str()),
-                    theme::TEXT_SM,
-                    font(theme::FONT_UI),
-                    theme::TEXT,
-                    MAX_LINE,
-                ),
+                shapes
+                    .fitted(
+                        window,
+                        &t!(hint.as_str()),
+                        ShapeStyle::new(
+                            theme::TEXT_SM,
+                            theme::FONT_UI,
+                            FontWeight::NORMAL,
+                            theme::TEXT,
+                        ),
+                        MAX_LINE,
+                    )
+                    .clone(),
                 false,
             ));
         }
@@ -985,9 +1188,10 @@ fn paint_port(
     tint: Hsla,
     scale: f32,
     port: PortPaint<'_>,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let radius = 4. * scale;
     let bounds = frame.window_rect(Bounds {
         origin: point(port.anchor.0 - radius, port.anchor.1 - radius),
@@ -1016,7 +1220,10 @@ fn paint_port(
                 right_aligned: port.hint_right,
                 weight: FontWeight::NORMAL,
             },
-            window,
+            Paint {
+                shapes: &mut *shapes,
+                window: &mut *window,
+            },
             cx,
         );
     }
@@ -1032,15 +1239,16 @@ fn paint_port(
 /// for a fault, which additionally tints the surface with the faint danger
 /// wash and pins the "!" badge. Fault details surface in
 /// [`paint_fault_tooltip`] on hover and in the fault popover via the badge.
-pub(super) fn paint_node(
+pub(in crate::ui) fn paint_node(
     frame: &CanvasFrame,
     node: &CanvasNode,
     layout: &NodeLayout,
     selected: bool,
     live: super::NodeLive<'_>,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let Paint { shapes, window } = paint;
     let tint = node.tint();
     let card = frame.window_rect(layout.card);
     let radius = theme::card::RADIUS * layout.scale;
@@ -1105,7 +1313,10 @@ pub(super) fn paint_node(
                 right_aligned: false,
                 weight: FontWeight::SEMIBOLD,
             },
-            window,
+            Paint {
+                shapes: &mut *shapes,
+                window: &mut *window,
+            },
             cx,
         );
         let _ = window.paint_svg(
@@ -1117,18 +1328,47 @@ pub(super) fn paint_node(
             cx,
         );
         if node.faulted {
-            paint_fault_badge(frame, &layout.badge, window, cx);
+            paint_fault_badge(
+                frame,
+                &layout.badge,
+                Paint {
+                    shapes: &mut *shapes,
+                    window: &mut *window,
+                },
+                cx,
+            );
         }
         // Body: knobs where the kind exposes its main control, else the
         // detail line. States never touch the body — a faulted or
         // preparing card keeps every control usable under its outline.
         if !node.knobs.is_empty() {
             for (knob, knob_layout) in node.knobs.iter().zip(&layout.knobs) {
-                paint_knob(frame, knob_layout, knob, layout.scale, window, cx);
+                paint_knob(
+                    frame,
+                    knob_layout,
+                    knob,
+                    layout.scale,
+                    Paint {
+                        shapes: &mut *shapes,
+                        window: &mut *window,
+                    },
+                    cx,
+                );
             }
         } else if let Some(chip) = node.binding.as_ref().zip(layout.chip.as_ref()) {
             let (chip, chip_layout) = chip;
-            paint_binding_chip(frame, chip_layout, chip, tint, layout.scale, window, cx);
+            paint_binding_chip(
+                frame,
+                chip_layout,
+                chip,
+                tint,
+                layout.scale,
+                Paint {
+                    shapes: &mut *shapes,
+                    window: &mut *window,
+                },
+                cx,
+            );
         } else if let (Some(matrix), Some(bounds)) = (&node.matrix, layout.matrix) {
             paint_matrix_preview(frame, bounds, matrix, tint, layout.scale, window);
         } else if let (Some(bounds), false) = (layout.rack, node.rack_stages.is_empty()) {
@@ -1138,11 +1378,25 @@ pub(super) fn paint_node(
                 &node.rack_stages,
                 tint,
                 layout.scale,
-                window,
+                Paint {
+                    shapes: &mut *shapes,
+                    window: &mut *window,
+                },
                 cx,
             );
         } else if layout.spectrum.is_some() {
-            paint_spectrum_body(frame, layout, &node.detail, tint, live.spectrum, window, cx);
+            paint_spectrum_body(
+                frame,
+                layout,
+                &node.detail,
+                tint,
+                live.spectrum,
+                Paint {
+                    shapes: &mut *shapes,
+                    window: &mut *window,
+                },
+                cx,
+            );
         } else if let (Some(spec), Some(bounds)) = (&node.curve, layout.curve) {
             paint_curve_thumb(frame, bounds, spec, layout.scale, window);
         } else {
@@ -1156,7 +1410,10 @@ pub(super) fn paint_node(
                     right_aligned: false,
                     weight: FontWeight::NORMAL,
                 },
-                window,
+                Paint {
+                    shapes: &mut *shapes,
+                    window: &mut *window,
+                },
                 cx,
             );
         }
@@ -1200,7 +1457,10 @@ pub(super) fn paint_node(
                     .iter()
                     .any(|wire| wire.dst_port == port.id),
             },
-            window,
+            Paint {
+                shapes: &mut *shapes,
+                window: &mut *window,
+            },
             cx,
         );
     }
@@ -1222,7 +1482,10 @@ pub(super) fn paint_node(
                 hint_right: true,
                 occupied: false,
             },
-            window,
+            Paint {
+                shapes: &mut *shapes,
+                window: &mut *window,
+            },
             cx,
         );
     }

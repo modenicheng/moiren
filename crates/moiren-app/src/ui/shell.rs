@@ -237,10 +237,9 @@ pub struct StudioShell {
     /// was a pan.
     /// Snap alignment guides for the in-flight card drag; painted by the
     /// canvas layer, cleared when the gesture ends.
-    /// The snap offset the in-flight card drag has baked into
-    /// `node_positions` so far; the threshold measures against the drag's
-    /// free path by undoing it, so a snapped card lets go once the cursor
-    /// leaves the threshold. Zero outside a drag.
+    /// The card drag's live world-space offset: painted by the hot layer
+    /// during the gesture and committed into `node_positions` at release,
+    /// so no pointer report has to rebuild the page. Zero outside a drag.
     /// Active card-knob value drag: node, control, press y, press value.
     pub(crate) matrix: matrix::MatrixPageState,
     /// The inspector column and node library's shell-owned state groups
@@ -473,6 +472,13 @@ impl StudioShell {
                 canvas_size: None,
                 hovered_node: None,
                 spectrum_scratch: Vec::new(),
+                world_cache: None,
+                #[cfg(feature = "gpui-test")]
+                world_builds: 0,
+                selected_ids: None,
+                selected_wire: None,
+                live_readers: None,
+                shapes: Default::default(),
             },
             matrix: matrix::MatrixPageState::default(),
             mixer: mixer::MixerPageState {
@@ -482,6 +488,7 @@ impl StudioShell {
                 scroll: ScrollHandle::new(),
                 dock_scroll: ScrollHandle::new(),
                 hovered_strip: None,
+                shapes: Default::default(),
             },
             #[cfg(feature = "gpui-test")]
             trace: Default::default(),

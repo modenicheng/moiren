@@ -175,6 +175,9 @@ pub(crate) struct MixerPageState {
     pub(crate) scroll: ScrollHandle,
     pub(crate) dock_scroll: ScrollHandle,
     pub(crate) hovered_strip: Option<moiren_core::graph::NodeId>,
+    /// The hovered strip's fault banner shapes from this cache, the same
+    /// text-keyed policy the graph page's tooltip uses (audit A-1).
+    pub(in crate::ui) shapes: crate::ui::pages::graph::graph_canvas_view::CanvasShapesHandle,
 }
 
 fn strip_body(

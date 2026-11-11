@@ -22,6 +22,11 @@ pub(crate) struct MeterTrace {
     /// Graph meter-frame overlay paints; on a healthy page these advance per
     /// animation frame while `graph_renders` stays flat.
     pub graph_meter_paints: usize,
+    /// Graph gesture-overlay paints (a card drag's moved entities or a
+    /// connection drag's ghost); these advance per animation frame while a
+    /// gesture holds, and `graph_renders` must stay flat with them (audit
+    /// A-1).
+    pub graph_gesture_paints: usize,
     /// StudioShell root renders; on a healthy page this stays flat while
     /// meter animation frames flow.
     pub shell_renders: usize,
@@ -31,7 +36,17 @@ pub(crate) struct MeterTrace {
     active: bool,
     frames: Vec<(f64, f64, usize)>,
     dropped: usize,
-    sample_counts: (usize, usize, usize, usize, usize, usize, usize, usize),
+    sample_counts: (
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    ),
     level_changes: usize,
     previous_levels: Option<u64>,
 }
@@ -52,6 +67,7 @@ impl MeterTrace {
             self.shell_renders,
             self.graph_renders,
             self.graph_meter_paints,
+            self.graph_gesture_paints,
         );
         self.level_changes = 0;
         self.previous_levels = None;
@@ -115,6 +131,7 @@ impl MeterTrace {
                 "shell_renders": self.shell_renders - self.sample_counts.5,
                 "graph_renders": self.graph_renders - self.sample_counts.6,
                 "graph_meter_paints": self.graph_meter_paints - self.sample_counts.7,
+                "graph_gesture_paints": self.graph_gesture_paints - self.sample_counts.8,
                 "level_changes": self.level_changes,
             }))?,
         )?;

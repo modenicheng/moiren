@@ -3520,7 +3520,10 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
     // Single-px steps away from the target: within the 6 screen px
     // threshold the card stays pinned on the alignment, then it lets go
     // and follows the free path again — a snapped card must not re-match
-    // the same target on every sub-threshold step.
+    // the same target on every sub-threshold step. Positions are frozen
+    // during the drag (audit A-1): the dragged card's live left edge reads
+    // stored x plus the gesture offset.
+    let stored_x = view.read_with(cx, |shell, _| shell.graph_view.node_positions[&second].0);
     for step in 1..=12u32 {
         let at = point(px(anchor.0 + raw_dx * zoom + step as f32), px(anchor.1));
         cx.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::default());
@@ -3531,7 +3534,7 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
                     .drag_guides
                     .expect("still within the threshold");
                 assert!(guides.x.is_some(), "guides={guides:?}");
-                let left = shell.graph_view.node_positions[&second].0;
+                let left = stored_x + shell.graph_gestures.node_drag_offset.0;
                 assert!(
                     (left - first_right).abs() < 0.1,
                     "pinned on the alignment: left={left}"
@@ -3552,13 +3555,386 @@ fn dragging_off_a_snap_target_releases_past_the_threshold(cx: &mut gpui_kit::Tes
             "guides={:?}",
             shell.graph_gestures.drag_guides
         );
-        let left = shell.graph_view.node_positions[&second].0;
+        let left = stored_x + shell.graph_gestures.node_drag_offset.0;
         let expected = first_right + (12. - 4.) / zoom;
         assert!(
             (left - expected).abs() < 0.5,
             "free path: left={left} expected={expected}"
         );
+        // The stored positions have not moved mid-drag; the offset commits
+        // at release.
+        assert!(
+            (shell.graph_view.node_positions[&second].0 - stored_x).abs() < 0.001,
+            "positions stay frozen during the drag"
+        );
     });
+    cx.simulate_mouse_up(
+        point(px(anchor.0 + raw_dx * zoom + 12.), px(anchor.1)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    view.update(cx, |shell, _| {
+        let left = shell.graph_view.node_positions[&second].0;
+        let expected = first_right + (12. - 4.) / zoom;
+        assert!(
+            (left - expected).abs() < 0.5,
+            "release commits the offset: left={left} expected={expected}"
+        );
+        assert_eq!(
+            shell.graph_gestures.node_drag_offset,
+            (0., 0.),
+            "the offset resets with the gesture"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// == audit A-1: gesture frames must not rebuild the cached page ==
+/// One cache-isolated frame (the helpers below refresh the whole window,
+/// which rebuilds every panel regardless of the caches).
+fn census_shapes(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
+    view.read_with(cx, |shell, _| shell.graph_view.shapes.borrow().shapes)
+}
+
+fn gesture_paints(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
+    view.read_with(cx, |shell, _| shell.trace.borrow().graph_gesture_paints)
+}
+
+/// A card drag paints the dragged selection through the hot layer at the
+/// gesture's live offset: the page key freezes for the whole drag (positions
+/// commit only at release), so drag frames replay the cached canvas while
+/// the gesture overlay paints — exactly one rebuild at drag start (the
+/// cached canvas hides the dragged entities), zero through the moves, one at
+/// release (the offset commits and the cached canvas paints the settled
+/// cards).
+#[gpui_kit::test]
+fn node_drag_frames_rebuild_nothing_and_paint_through_the_hot_layer(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    let node = add_node(&view, cx, NodeKind::Gain);
+    view.update(cx, |shell, cx| {
+        shell.graph_view.node_positions.insert(node, (400., 300.));
+        cx.notify();
+    });
+    render(cx);
+    let frame = canvas_frame(&view, cx);
+    let index = frame
+        .world
+        .nodes
+        .iter()
+        .position(|card| card.node_id == Some(node))
+        .expect("projected card");
+    let grab = node_position(&frame, index);
+    // Alt bypasses snapping so the drag never crosses a snap target (a
+    // guide transition legitimately rebuilds — it is not a gesture frame).
+    let alt = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+    render(cx);
+    let baseline_renders = view.read_with(cx, |shell, _| shell.trace.borrow().graph_renders);
+    let stored = view.read_with(cx, |shell, _| shell.graph_view.node_positions[&node]);
+    let baseline_rebuilds = controls_rebuilds(&view, cx);
+    let baseline_paints = gesture_paints(&view, cx);
+    for step in 1..=6u32 {
+        cx.simulate_mouse_move(
+            point(
+                px(f32::from(grab.x) + step as f32 * 8.),
+                px(f32::from(grab.y) + step as f32 * 5.),
+            ),
+            Some(MouseButton::Left),
+            alt,
+        );
+        cached_frame(cx);
+    }
+    let offset = view.read_with(cx, |shell, _| shell.graph_gestures.node_drag_offset);
+    let mid_rebuilds = controls_rebuilds(&view, cx);
+    let mid_paints = gesture_paints(&view, cx);
+    let mid_positions = view.read_with(cx, |shell, _| shell.graph_view.node_positions[&node]);
+    assert!(
+        offset.0.abs() > 1. || offset.1.abs() > 1.,
+        "the drag carries a live offset: {offset:?}"
+    );
+    assert_eq!(
+        mid_rebuilds, baseline_rebuilds,
+        "drag frames must not rebuild the cached page"
+    );
+    assert!(
+        mid_paints >= baseline_paints + 6,
+        "the gesture overlay must paint per drag frame"
+    );
+    assert_eq!(
+        mid_positions, stored,
+        "positions stay frozen during the drag"
+    );
+    cx.simulate_mouse_up(
+        point(px(f32::from(grab.x) + 48.), px(f32::from(grab.y) + 30.)),
+        MouseButton::Left,
+        alt,
+    );
+    cached_frame(cx);
+    view.read_with(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_gestures.node_drag_offset,
+            (0., 0.),
+            "the offset resets with the gesture"
+        );
+        let committed = shell.graph_view.node_positions[&node];
+        assert!(
+            (committed.0 - (stored.0 + offset.0)).abs() < 0.01
+                && (committed.1 - (stored.1 + offset.1)).abs() < 0.01,
+            "release commits the offset: {committed:?} vs {:?}",
+            (stored.0 + offset.0, stored.1 + offset.1)
+        );
+        assert!(
+            shell.trace.borrow().graph_renders > baseline_renders,
+            "the release must repaint the cached canvas at the settled cards"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// A connection drag paints its ghost and verdict through the hot layer from
+/// the drag's live cursor: the key carries the drag's identity, not its
+/// cursor, so the moves cost no rebuilds. Picking an edge up off its input
+/// drops that wire from the cached world exactly once (at drag start) and
+/// puts it back at release; releasing on the same input leaves the edge
+/// untouched.
+#[gpui_kit::test]
+fn connection_drag_frames_rebuild_nothing_and_paint_through_the_hot_layer(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
+        shell.graph_view.camera = Camera {
+            pan_x: 50.,
+            pan_y: 90.,
+            zoom: 0.89,
+            adjusted: true,
+        };
+        cx.notify();
+    });
+    settle_panels(cx);
+    let edge_before = view.read_with(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        let edge = &graph.edges()[0];
+        (
+            edge.id(),
+            edge.src(),
+            edge.dst(),
+            edge.dst_port(),
+            graph.edges().len(),
+        )
+    });
+    let frame = canvas_frame(&view, cx);
+    let (destination_index, input_index) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        let destination = graph
+            .nodes()
+            .iter()
+            .find(|node| node.inputs().iter().any(|port| port.id() == edge_before.3))
+            .unwrap();
+        let input_index = destination
+            .inputs()
+            .iter()
+            .position(|port| port.id() == edge_before.3)
+            .unwrap();
+        let destination_index = frame
+            .world
+            .nodes
+            .iter()
+            .position(|card| card.id == format!("{:?}", destination.id()))
+            .unwrap();
+        (destination_index, input_index)
+    });
+    let grab = frame.bounds.origin
+        + point(
+            px(frame.nodes[destination_index].inputs[input_index].0),
+            px(frame.nodes[destination_index].inputs[input_index].1),
+        );
+    let worlds_before_down = view.read_with(cx, |shell, _| shell.graph_view.world_builds);
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+    render(cx);
+    // Absorb the retained-frame bookkeeping the drag-start render can spend
+    // one frame later, so the measured window starts settled.
+    for _ in 0..3 {
+        cached_frame(cx);
+    }
+    let baseline_rebuilds = controls_rebuilds(&view, cx);
+    let baseline_paints = gesture_paints(&view, cx);
+    let baseline_worlds = view.read_with(cx, |shell, _| shell.graph_view.world_builds);
+    // The picked-up edge is out of the cached world already.
+    assert_eq!(
+        baseline_worlds,
+        worlds_before_down + 1,
+        "the detached drag must re-project the world exactly once at start"
+    );
+    // The shared frame is the one the cached canvas painted: it must carry
+    // the world with the picked-up wire dropped.
+    let shared_wires = view.read_with(cx, |shell, _| {
+        shell
+            .graph_view
+            .canvas_frame
+            .read()
+            .map(|frame| frame.world.wires.len())
+    });
+    assert_eq!(
+        shared_wires,
+        Some(edge_before.4 - 1),
+        "the picked-up edge must not paint from the cached canvas"
+    );
+    for step in 1..=5u32 {
+        cx.simulate_mouse_move(
+            point(
+                px(f32::from(grab.x) + step as f32 * 24.),
+                px(f32::from(grab.y) - step as f32 * 18.),
+            ),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cached_frame(cx);
+    }
+    let mid_rebuilds = controls_rebuilds(&view, cx);
+    let mid_paints = gesture_paints(&view, cx);
+    let mid_worlds = view.read_with(cx, |shell, _| shell.graph_view.world_builds);
+    assert_eq!(
+        mid_rebuilds, baseline_rebuilds,
+        "connection drag frames must not rebuild the cached page"
+    );
+    assert!(
+        mid_paints >= baseline_paints + 5,
+        "the ghost must paint per connection drag frame"
+    );
+    assert_eq!(
+        mid_worlds, baseline_worlds,
+        "the world stays cached while only the cursor moves"
+    );
+    cx.simulate_mouse_up(grab, MouseButton::Left, Modifiers::default());
+    cached_frame(cx);
+    view.read_with(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph.graph;
+        assert_eq!(
+            graph.edges().len(),
+            edge_before.4,
+            "releasing on the detached input keeps the edge"
+        );
+        assert!(
+            graph
+                .edges()
+                .iter()
+                .any(|edge| edge.src() == edge_before.1 && edge.dst() == edge_before.2),
+            "the picked-up edge survives the drag"
+        );
+        assert_eq!(
+            shell.graph_view.world_builds,
+            baseline_worlds + 1,
+            "release puts the wire back with one re-projection"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// Pan frames change only the camera: the page key changes (the cached
+/// canvas must repaint at the shifted camera) but the world — the expensive
+/// projection — must come back from the cache until something it contains
+/// actually moves.
+#[gpui_kit::test]
+fn pan_frames_reuse_the_cached_world(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        shell.chrome.sidebar_open = false;
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    render(cx);
+    settle_panels(cx);
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    let baseline = view.read_with(cx, |shell, _| {
+        let trace = shell.trace.borrow();
+        (shell.graph_view.world_builds, trace.graph_renders)
+    });
+    for step in 1..=5u32 {
+        view.update(cx, |shell, cx| {
+            shell
+                .graph_view
+                .camera
+                .pan_by(step as f32 * 12., step as f32 * 7.);
+            cx.notify();
+        });
+        cached_frame(cx);
+    }
+    view.read_with(cx, |shell, _| {
+        let trace = shell.trace.borrow();
+        assert_eq!(
+            shell.graph_view.world_builds, baseline.0,
+            "pan frames must not re-project the world"
+        );
+        assert!(
+            trace.graph_renders > baseline.1,
+            "the cached canvas still repaints at the shifted camera"
+        );
+    });
+    // Something the world contains moved: the cache must give way.
+    let node = view.read_with(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.nodes()[0].id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.graph_view.node_positions.insert(node, (999., 999.));
+        cx.notify();
+    });
+    cached_frame(cx);
+    view.read_with(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_view.world_builds,
+            baseline.0 + 1,
+            "a position change must re-project the world"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// The canvas painters' text shaping cache absorbs a full repaint: a
+/// rebuild re-paints every visible card's labels at the same zoom, and none
+/// of them may run the shaper again (audit A-1 — the same lines used to
+/// re-shape, overflowing titles re-running the truncation binary search, on
+/// every display frame).
+#[gpui_kit::test]
+fn canvas_repaints_reuse_their_shaped_text(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    add_node(&view, cx, NodeKind::Gain);
+    render(cx);
+    settle_panels(cx);
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    let baseline = census_shapes(&view, cx);
+    assert!(baseline > 0, "the first paint shaped the cards' labels");
+    // A selection change forces a genuine rebuild: the cached canvas
+    // re-paints every visible card at the same zoom.
+    let node = view.read_with(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.nodes()[0].id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.selection.nodes.insert(node);
+        shell.selection.node = Some(node);
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert_eq!(
+        census_shapes(&view, cx),
+        baseline,
+        "a repaint at the same zoom must shape nothing new"
+    );
     finish_service(runtime);
 }
 
