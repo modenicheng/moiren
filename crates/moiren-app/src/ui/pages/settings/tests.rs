@@ -178,3 +178,47 @@ fn settings_page_rebuilds_on_global_draft_but_not_device_draft(cx: &mut TestAppC
     );
     finish_service(runtime);
 }
+
+/// The audio actions are the last block of the scrolled column, so the
+/// scroll viewport must be the page area (not its content height — a
+/// `flex_1` viewport inside the scroll region's non-flex root used to grow
+/// to the content, scroll nowhere, and paint the overflow under whatever
+/// followed the page), and the actions must come into view at the scroll's
+/// end.
+#[gpui_kit::test]
+fn settings_scroll_viewport_fits_the_page_and_scrolls_actions_into_view(cx: &mut TestAppContext) {
+    let (_view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(640.)));
+    open_settings(cx);
+    let page = cx.update(|window, _| window.find("settings-page").bounds());
+    let viewport = cx.update(|window, _| window.find("settings-scroll").bounds());
+    let page_bottom = page.origin.y + page.size.height;
+    assert_eq!(
+        viewport.origin.y, page.origin.y,
+        "the scroll viewport must start at the page's top"
+    );
+    assert_eq!(
+        viewport.origin.y + viewport.size.height,
+        page_bottom,
+        "the scroll viewport must end at the page's bottom, not at the content's"
+    );
+    let before = cx.update(|window, _| window.find("settings-save").bounds());
+    assert!(
+        before.origin.y >= page_bottom,
+        "a short window must push the actions below the fold, got {before:?}"
+    );
+    cx.update(|window, cx| {
+        window.scroll(
+            "settings-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-4000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    });
+    let save = cx.update(|window, _| window.find("settings-save").bounds());
+    assert!(
+        save.origin.y >= viewport.origin.y && save.origin.y + save.size.height <= page_bottom,
+        "the scrolled-to-end actions must sit inside the viewport, got {save:?}"
+    );
+    finish_service(runtime);
+}

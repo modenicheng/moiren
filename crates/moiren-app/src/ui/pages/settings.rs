@@ -249,51 +249,63 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .child(nav),
                 )
                 .child(
-                    div()
+                    div().flex_1().min_w_0().min_h_0().flex().flex_col().child(
+                        scroll_region(
+                            "scrollbar-settings-scroll",
+                            &shell.settings.scroll,
+                            ScrollbarAxis::Vertical,
+                            div()
+                                .id("settings-scroll")
+                                // Sized by percentage, not `flex_1`: the
+                                // scroll region's root is not a flex
+                                // container, so a flex factor is ignored
+                                // and the viewport grows to its content —
+                                // nothing scrolls and the overflow paints
+                                // past the page.
+                                .w_full()
+                                .h_full()
+                                .track_scroll(&shell.settings.scroll)
+                                .restrict_scroll_to_axis()
+                                .overflow_y_scroll()
+                                .on_scroll_wheel(notify_owner(this.clone()))
+                                .px(px(theme::SPACE_4))
+                                .py(px(theme::SPACE_6))
+                                // A fixed reading measure, centered: on wide
+                                // windows the section content holds together
+                                // as one block instead of rows drifting
+                                // apart across the workspace.
+                                .child(
+                                    div().flex().justify_center().child(
+                                        div()
+                                            .w(px(COLUMN_WIDTH))
+                                            .max_w_full()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(theme::SPACE_4))
+                                            .child(content)
+                                            // The page's actions are the last
+                                            // block of the scrolled column, not
+                                            // a bar pinned over it — scrolled
+                                            // cards used to show through the
+                                            // bar's transparent fill.
+                                            .when(
+                                                shell.settings.editor.section == Section::Audio,
+                                                |column| {
+                                                    column.child(fields::actions(
+                                                        shell,
+                                                        Editor::Global,
+                                                        cx,
+                                                    ))
+                                                },
+                                            ),
+                                    ),
+                                )
+                                .gpui_test_observe(),
+                        )
                         .flex_1()
                         .min_w_0()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            scroll_region(
-                                "scrollbar-settings-scroll",
-                                &shell.settings.scroll,
-                                ScrollbarAxis::Vertical,
-                                div()
-                                    .id("settings-scroll")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .track_scroll(&shell.settings.scroll)
-                                    .restrict_scroll_to_axis()
-                                    .overflow_y_scroll()
-                                    .on_scroll_wheel(notify_owner(this.clone()))
-                                    .px(px(theme::SPACE_4))
-                                    .py(px(theme::SPACE_6))
-                                    // A fixed reading measure, centered: on wide
-                                    // windows the section content holds together
-                                    // as one block instead of rows drifting
-                                    // apart across the workspace.
-                                    .child(
-                                        div().flex().justify_center().child(
-                                            div()
-                                                .w(px(COLUMN_WIDTH))
-                                                .max_w_full()
-                                                .flex()
-                                                .flex_col()
-                                                .gap(px(theme::SPACE_4))
-                                                .child(content),
-                                        ),
-                                    )
-                                    .gpui_test_observe(),
-                            )
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0(),
-                        )
-                        .when(shell.settings.editor.section == Section::Audio, |column| {
-                            column.child(footer(shell, Editor::Global, cx))
-                        }),
+                        .min_h_0(),
+                    ),
                 )
                 .into_any_element(),
         )
