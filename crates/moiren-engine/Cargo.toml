@@ -14,10 +14,18 @@ rtrb = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 mp3lame-encoder = { version = "0.3.0", optional = true }
+flacenc = { version = "0.5.1", optional = true, default-features = false }
+# Independent FLAC decoder used only by the feature-gated sink tests; optional
+# because dev-dependencies cannot be, and the feature keeps it out of default
+# builds.
+claxon = { version = "0.4.3", optional = true }
 
 [features]
 # Lossy recording sink; bundles the LAME C sources and builds them with cc.
 mp3 = ["dep:mp3lame-encoder"]
+# Lossless recording sink; pure Rust. claxon rides along for the round-trip
+# tests inside the feature.
+flac = ["dep:flacenc", "dep:claxon"]
 
 [dev-dependencies]
 anyhow = { workspace = true }

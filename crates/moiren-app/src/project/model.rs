@@ -437,6 +437,7 @@ pub struct AppPreferences {
     pub recording_directory: Option<std::path::PathBuf>,
     pub recording_format: crate::service::RecordingFormat,
     pub recording_mp3: moiren_engine::recorder::Mp3Encoding,
+    pub recording_flac: moiren_engine::recorder::FlacEncoding,
     /// Recently opened project files, most recent first, for the session
     /// menu's quick switch.
     pub recent_projects: Vec<std::path::PathBuf>,
@@ -458,6 +459,7 @@ impl Default for AppPreferences {
             recording_directory: None,
             recording_format: Default::default(),
             recording_mp3: Default::default(),
+            recording_flac: Default::default(),
             recent_projects: Vec::new(),
         }
     }
@@ -510,6 +512,12 @@ impl AppPreferences {
             return Err(PersistenceError::invalid(
                 "recording_mp3",
                 "bitrate must sit on the LAME ladder and VBR quality within 0..=9",
+            ));
+        }
+        if !self.recording_flac.valid() {
+            return Err(PersistenceError::invalid(
+                "recording_flac",
+                "compression level must be 0 through 8",
             ));
         }
         if self.recent_projects.len() > RECENT_PROJECT_LIMIT {

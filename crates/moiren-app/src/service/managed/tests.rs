@@ -3152,6 +3152,7 @@ fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
         directory: directory.clone(),
         format: crate::service::RecordingFormat::Wav,
         mp3: Default::default(),
+        flac: Default::default(),
     });
     rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
     // A second start while live is ignored; the first file keeps running.
@@ -3160,6 +3161,7 @@ fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
         directory,
         format: crate::service::RecordingFormat::Wav,
         mp3: Default::default(),
+        flac: Default::default(),
     });
     rig.tick();
     assert_eq!(
@@ -3218,6 +3220,7 @@ fn mp3_recording_start_finalizes_a_playable_file_through_the_service_domain() {
             bitrate_kbps: 192,
             mode: moiren_engine::recorder::Mp3Mode::Vbr { quality: 4 },
         },
+        flac: Default::default(),
     });
     rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
     rig.request(AppRequest::StopRecording { node: recorder });
@@ -3244,5 +3247,50 @@ fn mp3_recording_start_finalizes_a_playable_file_through_the_service_domain() {
     let tagged = bytes.len() >= 3 && &bytes[..3] == b"ID3";
     let synced = bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0;
     assert!(tagged || synced, "not an MP3 stream");
+    let _ = std::fs::remove_file(&snapshot.path);
+}
+
+#[test]
+fn flac_recording_start_finalizes_a_playable_file_through_the_service_domain() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Recorder,
+        channels: 2,
+    }));
+    rig.wait(|r| {
+        let graph = r.c.graph.snapshot_ref();
+        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
+    });
+    let recorder = rig.node(NodeKind::Recorder);
+    rig.request(AppRequest::StartRecording {
+        node: recorder,
+        directory: std::env::temp_dir(),
+        format: crate::service::RecordingFormat::Flac,
+        mp3: Default::default(),
+        // An off-default level proves the setting rides the request into the
+        // encoder; level 0 also exercises the smallest block preset.
+        flac: moiren_engine::recorder::FlacEncoding { level: 0 },
+    });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
+    rig.request(AppRequest::StopRecording { node: recorder });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
+    let snapshot = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .expect("a terminal recording keeps its entry");
+    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+    assert!(
+        snapshot.file_name.ends_with(".flac"),
+        "{}",
+        snapshot.file_name
+    );
+    // The file opens with the FLAC stream marker; decode-level verification
+    // lives with the engine sink's own round-trip tests.
+    let bytes = std::fs::read(&snapshot.path).unwrap();
+    assert!(bytes.starts_with(b"fLaC"), "not a FLAC stream");
     let _ = std::fs::remove_file(&snapshot.path);
 }

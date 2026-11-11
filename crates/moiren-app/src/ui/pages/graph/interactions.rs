@@ -790,6 +790,7 @@ pub(super) fn record(
                     directory: shell.recording_output_directory(),
                     format: shell.recording_format(),
                     mp3: shell.recording_mp3(),
+                    flac: shell.recording_flac(),
                 },
                 RecordAction::Pause => AppRequest::PauseRecording { node: node_id },
                 RecordAction::Resume => AppRequest::ResumeRecording { node: node_id },

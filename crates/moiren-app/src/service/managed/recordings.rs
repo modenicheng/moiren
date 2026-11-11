@@ -23,6 +23,7 @@ impl ManagedDriver {
         directory: std::path::PathBuf,
         format: crate::service::RecordingFormat,
         mp3: moiren_engine::recorder::Mp3Encoding,
+        flac: moiren_engine::recorder::FlacEncoding,
     ) {
         if c.recordings
             .phase(node)
@@ -80,6 +81,9 @@ impl ManagedDriver {
         let started = match format {
             crate::service::RecordingFormat::Wav => reader.record_wav_now(&path, sample_rate),
             crate::service::RecordingFormat::Mp3 => reader.record_mp3_now(&path, sample_rate, mp3),
+            crate::service::RecordingFormat::Flac => {
+                reader.record_flac_now(&path, sample_rate, flac)
+            }
         };
         match started {
             Ok(session) => {

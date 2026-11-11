@@ -107,12 +107,13 @@ jobs:
           for p in $PKGS; do pkgs+=(-p "$p"); done
           cargo +stable test --locked "${pkgs[@]}"
       # The MP3 recorder sink is feature-gated so Miri suites never build the
-      # bundled LAME C sources; run its tests whenever the engine is touched.
-      - name: Test recorder MP3 sink
+      # bundled LAME C sources; run their tests whenever the engine is
+      # touched. FLAC is pure Rust but rides the same steps.
+      - name: Test recorder encoded sinks
         if: contains(needs.changes.outputs.pkgs, 'moiren-engine')
         run: |
-          cargo +stable test --locked -p moiren-engine --features mp3 --lib recorder
-          cargo +stable test --locked -p moiren-engine --features mp3 --test host recording
+          cargo +stable test --locked -p moiren-engine --features mp3,flac --lib recorder
+          cargo +stable test --locked -p moiren-engine --features mp3,flac --test host recording
       - name: Test native-owner realtime contracts
         if: needs.changes.outputs.rtcheck == 'true'
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
@@ -172,7 +173,7 @@ jobs:
           for pkg in $LINT_PKGS; do
             pkgs+=(-p "$pkg")
             case "$pkg" in
-              moiren-engine) features+=(moiren-engine/mp3) ;;
+              moiren-engine) features+=(moiren-engine/mp3,moiren-engine/flac) ;;
               moiren-windows-audio) features+=(moiren-windows-audio/vad-probe) ;;
               moiren-app) features+=(moiren-app/vad-integration-probe) ;;
             esac

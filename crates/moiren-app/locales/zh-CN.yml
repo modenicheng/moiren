@@ -1730,3 +1730,15 @@ _version: 2
 "%{kbps} kbps":
   en: "%{kbps} kbps"
   zh-CN: "%{kbps} kbps"
+"FLAC":
+  en: FLAC
+  zh-CN: FLAC
+"Compression level":
+  en: Compression level
+  zh-CN: 压缩等级
+"%{level} of %{max}":
+  en: "%{level} of %{max}"
+  zh-CN: "%{level} / %{max}"
+"0 is fastest, 8 is smallest.":
+  en: 0 is fastest, 8 is smallest.
+  zh-CN: 0 最快，8 体积最小。

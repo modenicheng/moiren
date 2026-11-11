@@ -338,6 +338,73 @@ fn channel_mapper_controls(
 /// The recorder's detail surface: session state, duration, the output file,
 /// the directory control, and the buffer — the card strip carries the quick
 /// transport, this column carries everything else.
+/// FLAC encoding knobs: one compression level walking the 0 (fastest)
+/// through 8 (best) presets. Preference-level setting applied to the next
+/// start, never to a running session.
+fn recorder_flac_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> Stateful<Div> {
+    use moiren_engine::recorder::{FLAC_MAX_LEVEL, FlacEncoding};
+
+    let flac = shell.recording_flac();
+    let persist = |next: FlacEncoding| {
+        let this = this.clone();
+        move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+            this.update(cx, |shell, cx| {
+                shell.preferences.values.recording_flac = next;
+                shell.save_preferences_quiet(cx);
+                cx.notify();
+            });
+        }
+    };
+    let mut section = div()
+        .id("recorder-flac")
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_2));
+    section = section.child(detail(
+        &t!("Compression level"),
+        t!(
+            "%{level} of %{max}",
+            level = flac.level,
+            max = FLAC_MAX_LEVEL
+        )
+        .to_string(),
+    ));
+    section = section.child(
+        div()
+            .id("recorder-flac-level-hint")
+            .text_size(px(theme::TEXT_SM))
+            .text_color(theme::TEXT_MUTED)
+            .child(t!("0 is fastest, 8 is smallest.").to_owned()),
+    );
+    let steps = div()
+        .id("recorder-flac-steps")
+        .flex()
+        .flex_row()
+        .gap(px(theme::SPACE_2))
+        .child(
+            button("recorder-flac-level-down", "\u{2212}")
+                .disabled(flac.level == 0)
+                .on_click(persist(FlacEncoding {
+                    level: flac.level.saturating_sub(1),
+                })),
+        )
+        .child(
+            button("recorder-flac-level-up", "+")
+                .disabled(flac.level == FLAC_MAX_LEVEL)
+                .on_click(persist(FlacEncoding {
+                    level: (flac.level + 1).min(FLAC_MAX_LEVEL),
+                })),
+        );
+    section = section.child(steps).child(
+        div()
+            .id("recorder-flac-apply-hint")
+            .text_size(px(theme::TEXT_SM))
+            .text_color(theme::TEXT_MUTED)
+            .child(t!("Applies to the next recording.").to_owned()),
+    );
+    section
+}
+
 /// MP3 encoding knobs: rate-control mode plus the matching bitrate ladder or
 /// VBR quality stepper. Preference-level settings applied to the next start,
 /// never to a running session.
@@ -540,6 +607,7 @@ fn recorder_controls(
         let directory = shell.recording_output_directory();
         let format = shell.recording_format();
         let mp3 = shell.recording_mp3();
+        let flac = shell.recording_flac();
         row = row.child(
             button("recorder-start", t!("Start recording")).on_click(transport(
                 AppRequest::StartRecording {
@@ -547,6 +615,7 @@ fn recorder_controls(
                     directory,
                     format,
                     mp3,
+                    flac,
                 },
             )),
         );
@@ -630,10 +699,32 @@ fn recorder_controls(
                 }
             }),
     );
+    format_row = format_row.child(
+        button("recorder-format-flac", t!("FLAC"))
+            .variant(if format == crate::service::RecordingFormat::Flac {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            })
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.preferences.values.recording_format =
+                            crate::service::RecordingFormat::Flac;
+                        shell.save_preferences_quiet(cx);
+                        cx.notify();
+                    });
+                }
+            }),
+    );
     view = view.child(format_row);
-    // Encoding knobs apply to the next MP3 start, like the format itself.
+    // Encoding knobs apply to the next encoded start, like the format itself.
     if format == crate::service::RecordingFormat::Mp3 {
         view = view.child(recorder_mp3_controls(shell, &this));
+    }
+    if format == crate::service::RecordingFormat::Flac {
+        view = view.child(recorder_flac_controls(shell, &this));
     }
     // Buffer: one second steps at the graph's processing rate. A live
     // session would be revoked by the reconfiguration, so the steps lock
