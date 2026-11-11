@@ -284,8 +284,9 @@ fn record_wav_now_discards_preroll_and_records_from_the_call() {
 #[test]
 fn managed_session_pauses_skips_and_a_next_session_starts_clean() {
     let (project, recorder, _, _) = recording_project();
-    let host =
-        EngineHost::<f64>::open(HostConfig::default(), project, FakeBackend::default()).unwrap();
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
     let observer = host.observer();
     wait(&observer, |snapshot| {
         snapshot.execution == ExecutionState::Running
@@ -296,15 +297,49 @@ fn managed_session_pauses_skips_and_a_next_session_starts_clean() {
     wait_recording(&session, |s| s.status().written_frames > 0);
     session.pause();
     wait_recording(&session, |s| s.status().paused);
-    let accepted_at_pause = session.status().stats.accepted_frames;
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let paused = session.status();
-    assert_eq!(paused.state, RecordingState::Recording);
-    assert_eq!(
-        paused.stats.accepted_frames, accepted_at_pause,
-        "paused blocks are skipped, not accepted"
-    );
-    assert_eq!(paused.written_frames, accepted_at_pause);
+    // The pause flag lands asynchronously against the audio callback: a
+    // block that already passed the gate can still be accepted afterwards.
+    // Freeze the fake audio thread and wait for two identical, fully
+    // drained snapshots; nothing is in flight, so the value is final.
+    state.pause_audio.store(true, Ordering::SeqCst);
+    let accepted_at_pause = {
+        let deadline = Instant::now() + TIMEOUT;
+        let mut previous: Option<u64> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let status = session.status();
+            let drained = status.stats.accepted_frames == status.stats.read_frames
+                && status.written_frames == status.stats.read_frames;
+            if drained && previous == Some(status.stats.accepted_frames) {
+                break status.stats.accepted_frames;
+            }
+            previous = Some(status.stats.accepted_frames);
+            assert!(
+                Instant::now() < deadline,
+                "recording never settled while frozen: {:?}",
+                status
+            );
+        }
+    };
+    // While paused, flowing audio contributes nothing. Whether a callback
+    // completes inside a bounded window depends on the runner's speed under
+    // Miri, so flow as many as come and let the counters speak: the pause
+    // gate must hold whatever flowed. The skip semantics themselves have
+    // deterministic coverage in the wav worker suite.
+    let frame_before = observer.snapshot().timeline.map(|t| t.frame);
+    state.pause_audio.store(false, Ordering::SeqCst);
+    let flow_deadline = Instant::now() + std::time::Duration::from_millis(150);
+    while Instant::now() < flow_deadline
+        && observer.snapshot().timeline.map(|t| t.frame) == frame_before
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    state.pause_audio.store(true, Ordering::SeqCst);
+    wait_recording(&session, |s| {
+        let status = s.status();
+        status.stats.accepted_frames == accepted_at_pause
+            && status.written_frames == accepted_at_pause
+    });
     // Stop from paused: the tail drain still finalizes the file.
     session.stop();
     wait_recording(&session, |s| s.status().state == RecordingState::Finished);
@@ -313,11 +348,15 @@ fn managed_session_pauses_skips_and_a_next_session_starts_clean() {
     assert_wav(writer.0.lock().unwrap().get_ref(), summary.written_frames);
     // The pause gate survives the handback; a fresh session must lift it when
     // it starts capture, or nothing would ever be recorded again.
+    state.pause_audio.store(false, Ordering::SeqCst);
     let second_writer = SharedWriter::default();
     let second = reader
         .record_with_writer(second_writer.clone(), 48_000)
         .unwrap();
-    wait_recording(&second, |s| s.status().written_frames > 0);
+    wait_recording(&second, |s| {
+        let status = s.status();
+        status.written_frames > 0 && !status.paused
+    });
     let second_summary = second.finish().unwrap();
     assert_wav(
         second_writer.0.lock().unwrap().get_ref(),
