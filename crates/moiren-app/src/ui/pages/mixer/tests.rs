@@ -3608,6 +3608,31 @@ fn add_node(
     })
 }
 
+/// Opens a strip's input dropdown and waits until it registers in a completed
+/// frame. One click + one frame is an assumption, not a guarantee: springs and
+/// the meter pump run on real time while the test clock parks, so the strip
+/// layout can shift between the click's own frames and the press can land
+/// beside the button's hitbox — eaten silently, with the dropdown never
+/// opening. Re-issuing the click is idempotent (the open handler only ever
+/// sets the same popover), so click until the dropdown registers, bounded.
+fn open_input_dropdown(cx: &mut VisualTestContext, node: NodeId) {
+    wait_until(Duration::from_secs(2), || {
+        cx.update(|window, cx| {
+            window.click(SharedString::from(format!("input-add-{node:?}")), cx);
+            window.render_frame(cx);
+            window
+                .try_find(SharedString::from(format!("input-popover-{node:?}")))
+                .is_some()
+        })
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{node:?}")))
+            .bounds();
+    });
+}
+
 /// The I/O block's whole point: every strip carries the same height, and the
 /// Sends head folds the list on every strip at once, so the meters below
 /// stay aligned however the routing differs.
@@ -3704,15 +3729,7 @@ fn input_dropdown_connects_at_the_free_port_and_the_row_swaps_to_remove(cx: &mut
     });
     // Open the dropdown and check the source: the edge lands on the Gain's
     // only input port, and the list stays open.
-    cx.update(|window, cx| {
-        window.click(SharedString::from(format!("input-add-{gain:?}")), cx);
-    });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window
-            .find(SharedString::from(format!("input-popover-{gain:?}")))
-            .bounds();
-    });
+    open_input_dropdown(cx, gain);
     cx.update(|window, cx| {
         window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
     });
@@ -3772,15 +3789,7 @@ fn input_dropdown_closes_on_an_outside_press(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(1440.), px(900.)));
     show_mixer(&view, cx);
     let gain = add_node(&view, cx, NodeKind::Gain, 2);
-    cx.update(|window, cx| {
-        window.click(SharedString::from(format!("input-add-{gain:?}")), cx);
-    });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window
-            .find(SharedString::from(format!("input-popover-{gain:?}")))
-            .bounds();
-    });
+    open_input_dropdown(cx, gain);
     // A press over the first strip's fader area — anywhere off the dropdown
     // box — dismisses it.
     let first = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
@@ -3841,15 +3850,7 @@ fn input_dropdown_rows_go_dead_at_the_port_cap(cx: &mut TestAppContext) {
         )
     });
     assert!(sources.len() >= 2, "two candidates with outputs are needed");
-    cx.update(|window, cx| {
-        window.click(SharedString::from(format!("input-add-{bus:?}")), cx);
-    });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window
-            .find(SharedString::from(format!("input-popover-{bus:?}")))
-            .bounds();
-    });
+    open_input_dropdown(cx, bus);
     let first = sources[0];
     cx.update(|window, cx| {
         window.click(SharedString::from(format!("input-pop-row-{first:?}")), cx);
@@ -3952,16 +3953,7 @@ fn input_dropdown_rows_go_dead_for_loops_and_channel_mismatches(cx: &mut TestApp
             .map(|node| node.id())
             .expect("default session has a source")
     });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click(SharedString::from(format!("input-add-{bus:?}")), cx);
-    });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window
-            .find(SharedString::from(format!("input-popover-{bus:?}")))
-            .bounds();
-    });
+    open_input_dropdown(cx, bus);
     let feeds = |view: &Entity<StudioShell>, cx: &mut VisualTestContext, from: NodeId| {
         view.update(cx, |shell, cx| {
             let graph = &shell.state.read(cx).snapshot.graph;
