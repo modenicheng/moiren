@@ -100,6 +100,30 @@ fn flac_sink_round_trips_stereo_and_mono_across_a_short_tail() {
 }
 
 #[test]
+fn flac_sink_pads_a_sub_minimum_tail_instead_of_writing_an_invalid_frame() {
+    // FLAC's smallest legal block is 16 frames; a shorter final capture
+    // must still decode. The tail pads with silence, and the real frames
+    // come back bit-exact ahead of the padding.
+    let file = TemporaryFile::new();
+    let mut flac = FlacRecording::create(&file.0, 2, 48_000, FlacEncoding { level: 0 }).unwrap();
+    let block: Vec<f32> = (0..5 * 2).map(|i| (i as f32 % 8.) / 8. - 0.5).collect();
+    flac.write_interleaved(&block, 2).unwrap();
+    assert_eq!(flac.written_frames(), 5);
+    flac.finish().unwrap();
+    let mut decoded = claxon::FlacReader::open(&file.0).unwrap();
+    assert_eq!(
+        decoded.streaminfo().samples,
+        Some(SPEC_MIN_BLOCK_FRAMES as u64)
+    );
+    let samples: Vec<i32> = decoded.samples().map(|sample| sample.unwrap()).collect();
+    assert_eq!(samples.len(), SPEC_MIN_BLOCK_FRAMES * 2);
+    for (got, &expected) in samples.iter().zip(block.iter()) {
+        assert_eq!(*got, quantize(expected));
+    }
+    assert!(samples[10..].iter().all(|&sample| sample == 0));
+}
+
+#[test]
 fn flac_sink_level_presets_reach_the_stream() {
     // Level 0 uses 1152-frame blocks; 4608 frames are exactly four blocks,
     // so the stream's block-size range pins the preset that was used.

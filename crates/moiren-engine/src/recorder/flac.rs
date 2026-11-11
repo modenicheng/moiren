@@ -34,6 +34,9 @@ const STREAMINFO_PREFIX: [u8; 8] = [0x66, 0x4c, 0x61, 0x43, 0x80, 0x00, 0x00, 0x
 const STREAMINFO_BYTES: usize = 34;
 /// Byte offset of the STREAMINFO block inside the file.
 const STREAMINFO_OFFSET: u64 = 8;
+/// The FLAC format's smallest legal block. A final capture shorter than
+/// this pads with silence rather than emitting a frame decoders reject.
+const SPEC_MIN_BLOCK_FRAMES: usize = 16;
 
 /// The top compression level. Levels 0..=8 follow libFLAC's convention of
 /// "bigger number, slower and smaller", mapped onto our own block-size and
@@ -240,6 +243,16 @@ impl<W: Write + Seek> FlacRecording<W> {
             self.fill_and_encode(&block)?;
         }
         if flush_tail && !self.pending.is_empty() {
+            // FLAC's smallest legal block is 16 frames, and flacenc encodes
+            // whatever is filled without checking that floor, so a shorter
+            // final capture would emit a frame decoders reject. Pad with
+            // silence: STREAMINFO, MD5, and the frame data all describe the
+            // padded stream, and no captured audio is lost.
+            let frames = self.pending.len() / self.channels;
+            if frames < SPEC_MIN_BLOCK_FRAMES {
+                self.pending
+                    .resize(SPEC_MIN_BLOCK_FRAMES * self.channels, 0);
+            }
             let tail = std::mem::take(&mut self.pending);
             self.fill_and_encode(&tail)?;
         }
