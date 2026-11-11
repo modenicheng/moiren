@@ -45,8 +45,10 @@ jobs:
           else
             # Pushes to main always validate the whole workspace.
             {
-              echo 'pkgs=moiren-core moiren-signal moiren-engine moiren-windows-audio moiren-app'
-              echo 'lint_pkgs=moiren-core moiren-signal moiren-engine moiren-windows-audio moiren-app'
+              echo 'pkgs=moiren-core moiren-signal moiren-plugins moiren-engine moiren-windows-audio moiren-app'
+              echo 'lint_pkgs=moiren-core moiren-signal moiren-plugins moiren-engine moiren-windows-audio moiren-app'
+              # moiren-plugins stays out of Miri: its tests spawn rustc and
+              # load real dylibs (see detect-changes.sh).
               echo 'miri_pkgs=moiren-core moiren-signal moiren-engine moiren-windows-audio'
               echo 'rtcheck=true'
               echo 'vad=true'

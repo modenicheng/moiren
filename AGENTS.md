@@ -7,10 +7,11 @@ Moiren is a Rust 2024 workspace for Windows real-time audio:
 - `crates/moiren-core`: editable `LogicalGraph` topology and control protocol.
 - `crates/moiren-engine`: DSP, graph compilation, buffers, and runtime execution.
 - `crates/moiren-signal`: typed, bounded Latest/Stream signals.
+- `crates/moiren-plugins`: VST2/VST3/CLAP plugin hosting (ABI declarations, dispatch wrappers, and host orchestration).
 - `crates/moiren-windows-audio`: the professional audio backend (WASAPI Shared/Exclusive and ASIO), engine-backed capture/render, VAD support, clock adaptation, and probes.
 - `crates/moiren-app`: application service, CLI, and gpui desktop UI.
 
-Each crate uses `src/` for sources, `tests/` for integration tests, and optional `examples/` for demonstrations. The desktop UI is gpui-kit (Rust, no markup language); UI code lives in `crates/moiren-app/src/ui/` with Tabler icon SVGs under `crates/moiren-app/assets/icons/`; architecture notes in `docs/`; shared logos in `assets/logos/`.
+Each crate uses `src/` for sources, `tests/` for integration tests, and optional `examples/` for demonstrations. The C++ VAD driver host lives in `driver/`, the rt-check harness and audio-hack-lab in `tools/`, and support scripts in `scripts/`. The desktop UI is gpui-kit (Rust, no markup language); UI code lives in `crates/moiren-app/src/ui/` with Tabler icon SVGs under `crates/moiren-app/assets/icons/`; architecture notes in `docs/`; shared logos in `assets/logos/`.
 
 ## Build, Test, and Development Commands
 

@@ -5,7 +5,9 @@
 #   pkgs       workspace crates to check/test, including every downstream
 #              dependent (dependents must re-test when a dependency moves)
 #   lint_pkgs  crates whose own code changed (cargo clippy targets)
-#   miri_pkgs  pkgs minus moiren-app; gates the miri_suites matrix entries
+#   miri_pkgs  pkgs minus moiren-app and moiren-plugins; gates the
+#              miri_suites matrix entries (plugin tests spawn rustc and load
+#              real dylibs, either of which aborts Miri)
 #   rtcheck    the standalone rt-check harness (path-depends on core/engine/audio)
 #   vad        the C++ VAD driver host suites
 #   any        true when any surface above applies; gates the test job
@@ -49,10 +51,11 @@ fi
 
 # Canonical workspace order; the dependency closure below walks it so every
 # crate is resolved before its dependents.
-ORDER=(moiren-core moiren-signal moiren-engine moiren-windows-audio moiren-app)
+ORDER=(moiren-core moiren-signal moiren-plugins moiren-engine moiren-windows-audio moiren-app)
 declare -A direct=(
   [moiren-core]=false
   [moiren-signal]=false
+  [moiren-plugins]=false
   [moiren-engine]=false
   [moiren-windows-audio]=false
   [moiren-app]=false
@@ -68,6 +71,7 @@ while IFS= read -r f; do
     # docs keep testing the crate they document.
     crates/moiren-core/*) direct[moiren-core]=true ;;
     crates/moiren-signal/*) direct[moiren-signal]=true ;;
+    crates/moiren-plugins/*) direct[moiren-plugins]=true ;;
     crates/moiren-engine/*) direct[moiren-engine]=true ;;
     crates/moiren-windows-audio/*) direct[moiren-windows-audio]=true ;;
     crates/moiren-app/*) direct[moiren-app]=true ;;
@@ -106,7 +110,8 @@ any_true() {
 declare -A closure
 closure[moiren-core]=${direct[moiren-core]}
 closure[moiren-signal]=${direct[moiren-signal]}
-if any_true "${direct[moiren-engine]}" "${closure[moiren-core]}" "${closure[moiren-signal]}"; then
+closure[moiren-plugins]=${direct[moiren-plugins]}
+if any_true "${direct[moiren-engine]}" "${closure[moiren-core]}" "${closure[moiren-signal]}" "${closure[moiren-plugins]}"; then
   closure[moiren-engine]=true; else closure[moiren-engine]=false; fi
 if any_true "${direct[moiren-windows-audio]}" "${closure[moiren-engine]}"; then
   closure[moiren-windows-audio]=true; else closure[moiren-windows-audio]=false; fi
@@ -124,7 +129,9 @@ for p in "${ORDER[@]}"; do
   if [ "${direct[$p]}" = true ]; then lint_pkgs+=("$p"); fi
   if [ "${closure[$p]}" = true ]; then
     pkgs+=("$p")
-    if [ "$p" != moiren-app ]; then miri_pkgs+=("$p"); fi
+    # moiren-app needs the desktop stack Miri cannot run; moiren-plugins
+    # tests spawn rustc and load real dylibs, either of which aborts Miri.
+    if [ "$p" != moiren-app ] && [ "$p" != moiren-plugins ]; then miri_pkgs+=("$p"); fi
   fi
 done
 
