@@ -102,6 +102,21 @@ pub enum AppRequest {
         gain: f64,
         pan: f64,
     },
+    /// Begin recording `node` into `directory`; the file name is derived from
+    /// the start time, never chosen by the caller.
+    StartRecording {
+        node: moiren_core::graph::NodeId,
+        directory: std::path::PathBuf,
+    },
+    PauseRecording {
+        node: moiren_core::graph::NodeId,
+    },
+    ResumeRecording {
+        node: moiren_core::graph::NodeId,
+    },
+    StopRecording {
+        node: moiren_core::graph::NodeId,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceRow {
@@ -165,6 +180,9 @@ pub struct AppSnapshot {
     pub phase: SessionPhase,
     pub desired: Option<SessionSpec>,
     pub error: Option<String>,
+    /// Runtime recording state per recorder node. Durations are quantized to
+    /// whole seconds so recording itself cannot push publishing past 1 Hz.
+    pub recordings: Vec<super::RecordingSnapshot>,
     pub catalog: Arc<DeviceCatalog>,
     /// Refresh failure retains the last successful rows without changing the
     /// session phase/error. A successful refresh clears this owned diagnostic.
@@ -215,6 +233,7 @@ impl PartialEq for AppSnapshot {
             && self.phase == other.phase
             && self.desired == other.desired
             && self.error == other.error
+            && self.recordings == other.recordings
             && self.catalog_error == other.catalog_error
             && self.control == other.control
             && self.signal_topics == other.signal_topics

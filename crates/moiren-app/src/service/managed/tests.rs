@@ -3131,3 +3131,62 @@ fn zero_signal_demand_still_applies_controls_retires_and_restarts() {
     assert_eq!(source.business_subscribers(), 0);
     assert_eq!(r.c.levels.demanded_levels(), 0);
 }
+
+#[test]
+fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Recorder,
+        channels: 2,
+    }));
+    rig.wait(|r| {
+        let graph = r.c.graph.snapshot_ref();
+        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
+    });
+    let recorder = rig.node(NodeKind::Recorder);
+    let directory = std::env::temp_dir();
+
+    rig.request(AppRequest::StartRecording {
+        node: recorder,
+        directory: directory.clone(),
+    });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
+    // A second start while live is ignored; the first file keeps running.
+    rig.request(AppRequest::StartRecording {
+        node: recorder,
+        directory,
+    });
+    rig.tick();
+    assert_eq!(
+        rig.c.recordings.phase(recorder),
+        Some(RecordingPhase::Recording)
+    );
+
+    rig.request(AppRequest::PauseRecording { node: recorder });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Paused));
+    rig.request(AppRequest::ResumeRecording { node: recorder });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
+    rig.request(AppRequest::StopRecording { node: recorder });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
+
+    let snapshot = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .expect("a terminal recording keeps its entry");
+    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+    assert!(
+        snapshot.file_name.starts_with("moiren-rec-") && !snapshot.file_name.contains(' '),
+        "unexpected file name: {}",
+        snapshot.file_name
+    );
+    assert!(
+        snapshot.path.exists(),
+        "{} was not finalized",
+        snapshot.path.display()
+    );
+    let _ = std::fs::remove_file(&snapshot.path);
+}

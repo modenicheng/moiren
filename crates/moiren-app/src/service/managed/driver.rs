@@ -149,6 +149,12 @@ impl ServiceDriver for ManagedDriver {
                     c.core.update_gain_pan(gain, pan);
                 }
             }
+            AppRequest::StartRecording { node, directory } => {
+                self.start_recording(c, node, directory)
+            }
+            AppRequest::PauseRecording { node } => self.pause_recording(c, node),
+            AppRequest::ResumeRecording { node } => self.resume_recording(c, node),
+            AppRequest::StopRecording { node } => self.stop_recording(c, node),
         }
     }
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
@@ -178,6 +184,9 @@ impl ServiceDriver for ManagedDriver {
         }
         self.publish_resume_notice(c);
         self.poll_exports(c, pool);
+        // Recording workers finalize on their own threads; this folds their
+        // statuses into the domain and queues terminal sessions for cleanup.
+        self.poll_recordings(c);
         // One catalog reconciliation per poll, after every input it reads has
         // settled: the second of the former two calls ran after `poll_exports`
         // and saw the same resource/name evidence, so a single trailing call
@@ -194,6 +203,7 @@ impl ServiceDriver for ManagedDriver {
     fn is_drained(&self) -> bool {
         self.auto_apply_deadline.is_none()
             && self.owner.is_none()
+            && self.recording_sessions.is_empty()
             && self.cleaning == 0
             && !self.catalog.is_running()
             && self.exports_runtime.is_drained()

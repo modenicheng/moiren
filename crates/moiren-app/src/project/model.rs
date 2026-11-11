@@ -432,6 +432,9 @@ pub struct AppPreferences {
     pub audio: AudioSettings,
     pub restore_last_project: bool,
     pub last_project_path: Option<std::path::PathBuf>,
+    /// Default recording output directory; `None` resolves to the user's
+    /// Music folder at start time.
+    pub recording_directory: Option<std::path::PathBuf>,
     /// Recently opened project files, most recent first, for the session
     /// menu's quick switch.
     pub recent_projects: Vec<std::path::PathBuf>,
@@ -450,6 +453,7 @@ impl Default for AppPreferences {
             audio: AudioSettings::default(),
             restore_last_project: false,
             last_project_path: None,
+            recording_directory: None,
             recent_projects: Vec::new(),
         }
     }
@@ -487,6 +491,14 @@ impl AppPreferences {
         {
             return Err(PersistenceError::invalid(
                 "last_project_path",
+                "must be a nonempty path without NUL",
+            ));
+        }
+        if let Some(path) = &self.recording_directory
+            && (path.as_os_str().is_empty() || path.to_string_lossy().contains('\0'))
+        {
+            return Err(PersistenceError::invalid(
+                "recording_directory",
                 "must be a nonempty path without NUL",
             ));
         }
