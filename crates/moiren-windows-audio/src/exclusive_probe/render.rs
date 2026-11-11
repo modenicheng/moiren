@@ -7,7 +7,7 @@ use crate::{
         endpoint_data_flow, exclusive_format_supported, exclusive_frames_duration,
         initialize_exclusive,
     },
-    owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
+    win32_raii::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
 };
 use anyhow::Context;
 use std::{

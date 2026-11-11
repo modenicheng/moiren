@@ -3,10 +3,10 @@ use super::{EndpointReport, RenderSummary};
 use crate::{
     catalog::{ApiFailure, FormatSnapshot},
     negotiation::endpoint_data_flow,
-    owner::{
+    stats::CaptureStats,
+    win32_raii::{
         Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory, current_shared_mode_engine_period,
     },
-    stats::CaptureStats,
 };
 use std::time::{Duration, Instant};
 use windows::{

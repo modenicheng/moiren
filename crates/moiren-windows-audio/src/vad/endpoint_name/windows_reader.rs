@@ -1,7 +1,7 @@
 //! Bounded read-only MMDevice/topology/PnP identity resolution.
 
 use super::{Candidate, EndpointNameReader, ObserverClock, select};
-use crate::{owner::Apartment, vad::DeviceInterface};
+use crate::{vad::DeviceInterface, win32_raii::Apartment};
 use std::mem::size_of;
 use windows::{
     Win32::{

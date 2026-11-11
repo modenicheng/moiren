@@ -3,9 +3,9 @@ use super::{CaptureReport, PacketRecord, activation::activate};
 use crate::{
     capture_packet::borrow_capture_packet,
     catalog::ApiFailure,
-    owner::{LeaseFallback, Mmcss, OwnedHandle, PacketLease, Process, Streaming},
     process_loopback::process_loopback_stream_flags,
     stats::{CaptureStats, SILENT, analyze_f32},
+    win32_raii::{LeaseFallback, Mmcss, OwnedHandle, PacketLease, Process, Streaming},
 };
 use std::time::{Duration, Instant};
 use windows::{

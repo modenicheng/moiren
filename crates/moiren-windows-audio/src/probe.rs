@@ -1,8 +1,8 @@
 //! Opt-in Process Loopback probe; reports contain statistics and no PCM payload.
 use crate::{
     catalog::{self, ApiFailure, CatalogSnapshot, FormatSnapshot},
-    owner::{Apartment, Process, ProcessIdentity},
     stats::CaptureSummary,
+    win32_raii::{Apartment, Process, ProcessIdentity},
 };
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -1,6 +1,6 @@
 //! One manual-reset event releases all prepared owners; stop wins every race.
 use super::StopSignal;
-use crate::owner::{WaitOutcome, wait_for_handles};
+use crate::win32_raii::{WaitOutcome, wait_for_handles};
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{

@@ -55,8 +55,8 @@ mod negotiation {
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/owner.rs"]
 mod professional_owner;
 #[cfg(windows)]
-#[path = "../../../crates/moiren-windows-audio/src/owner.rs"]
-mod windows_owner;
+#[path = "../../../crates/moiren-windows-audio/src/win32_raii.rs"]
+mod win32_raii_owner;
 // The library's bridge references engine_backend::observations; mirror the
 // module path so the shadow-compiled file compiles unchanged.
 mod engine_backend {
@@ -64,11 +64,19 @@ mod engine_backend {
 }
 
 // Mirror the library's shared native helpers without replacing the workers
-// whose private realtime paths this harness measures.
+// whose private realtime paths this harness measures. `mod owner` keeps the
+// engine-side name the harness code and `recovery_host_tests.rs` resolve;
+// `mod win32_raii` mirrors the library's Win32 RAII module (formerly `owner`,
+// now `src/win32_raii.rs`) so shadow-compiled sources resolve
+// `crate::win32_raii::Mmcss`/`TaskMemory` here too.
 mod owner {
     pub(crate) use super::professional_owner::*;
     #[cfg(windows)]
-    pub(crate) use super::windows_owner::{Mmcss, TaskMemory};
+    pub(crate) use super::win32_raii_owner::{Mmcss, TaskMemory};
+}
+#[cfg(windows)]
+mod win32_raii {
+    pub(crate) use super::owner::*;
 }
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/recovery.rs"]
 mod recovery;

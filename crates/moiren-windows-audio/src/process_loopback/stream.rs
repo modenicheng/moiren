@@ -6,7 +6,7 @@ use crate::{
         CaptureError, CaptureReport, CaptureSource, CaptureStatus, PreparedCapture,
         wasapi::{Startup, api, handle, start_owner, stream},
     },
-    owner::{Apartment, OwnedHandle},
+    win32_raii::{Apartment, OwnedHandle},
 };
 use std::{
     os::windows::io::OwnedHandle as StdHandle,
