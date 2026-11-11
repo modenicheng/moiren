@@ -1,8 +1,8 @@
 # Moiren 前端设计与协作要求
 
-本文件面向后续修改 Moiren UI 的开发者和设计会话，集中记录公共设计要求、资源入口、数据语义与协作约束。更新日期：2026-10-16。
+本文件面向后续修改 Moiren UI 的开发者和设计会话，集中记录公共设计要求、资源入口、数据语义与协作约束。更新日期：2026-11-11。
 
-**2026-10-14 UI 框架迁移完成：Slint 已完全移除，桌面 UI 改为 gpui-kit 0.7.3（纯 Rust）。** 下文的 Slint 组件/断点描述是历史设计参考；现行实现见 `crates/moiren-app/src/ui/`（theme.rs 令牌、widgets/ 组件、pages/ 页面、window.rs 壳）。设计令牌与配色语义已 1:1 移植。Slint 时代的验收方式作废，headless 测试用 `cargo test -p moiren-app --features gpui-test`。
+**2026-10-14 UI 框架迁移完成：Slint 已完全移除，桌面 UI 改为 gpui-kit 0.7.3（纯 Rust）。** 下文的 Slint 组件/断点描述是历史设计参考；现行实现见 `crates/moiren-app/src/ui/`（theme.rs 令牌、widgets/ 组件、pages/ 页面、shell.rs 壳）。设计令牌与配色语义已 1:1 移植。Slint 时代的验收方式作废，headless 测试用 `cargo test -p moiren-app --features gpui-test`。
 
 **2026-10-15 应用框架接入：Graph、Mixer、Matrix、Devices 和 Settings 共用 gpui 组件与服务快照。** 页面按工作站需求重新组织，不直接复制 Figma。服务拥有候选 LogicalGraph，支持真实拓扑事务、编译启动、Gain / Balance / Mono / Swap、输入与输出观测，以及项目和偏好保存。当前音频驱动的运行范围仍是单 Source、单 Sink 的双声道图；多设备候选可以编辑，应用时会明确报告运行限制。具体接线与验证见 [应用前端接入](docs/designs/13-application-frontend-integration.md)。
 
@@ -441,7 +441,7 @@ Slint 文件检查与原生 UI 验证可参考下面的历史接入文档，执�
 
 | 路径 | 用途 |
 | --- | --- |
-| [src/ui/window.rs](crates/moiren-app/src/ui/window.rs) 与 [src/ui/window/](crates/moiren-app/src/ui/window/) | 公共 shell、各工作区、Settings、项目文件操作与 native capture |
+| [src/ui/shell.rs](crates/moiren-app/src/ui/shell.rs) 与 [src/ui/shell/](crates/moiren-app/src/ui/shell/) | 公共 shell、各工作区、Settings、项目文件操作与 native capture |
 | [src/ui/theme.rs](crates/moiren-app/src/ui/theme.rs) 与 [src/ui/theme/controls.rs](crates/moiren-app/src/ui/theme/controls.rs) | 共享语义令牌、字体与密度 |
 | [src/ui/widgets/](crates/moiren-app/src/ui/widgets/) | 按钮、导航、图标与真实电平组件 |
 | [src/ui/state.rs](crates/moiren-app/src/ui/state.rs) | 服务快照投影、候选资源、请求与确认反馈 |

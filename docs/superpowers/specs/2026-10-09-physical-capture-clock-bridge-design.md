@@ -4,7 +4,7 @@
 
 ## 决策与范围
 
-沿用 [Windows 集成计划](../../plans/2026-10-08-windows-integration-plan.md) 的 W07 + W09 顺序。先实现单物理输入与单 Shared 输出，随后分别实施 Process Loopback、多输入/输出与恢复。直接复用 sample ring 的透传不能补偿独立设备漂移；将设备放进 Graph 会破坏现有 owner 边界。因此采用独立 Capture owner + backend Clock Bridge + `RtAudioSource<f32>`。
+沿用 Windows 集成计划（已随 docs/plans 清退移除，见 git 历史）的 W07 + W09 顺序。先实现单物理输入与单 Shared 输出，随后分别实施 Process Loopback、多输入/输出与恢复。直接复用 sample ring 的透传不能补偿独立设备漂移；将设备放进 Graph 会破坏现有 owner 边界。因此采用独立 Capture owner + backend Clock Bridge + `RtAudioSource<f32>`。
 
 输出维持现有原生 48 kHz stereo f32 Render 主时钟。输入支持原生 44.1/48 kHz、mono/stereo f32；mono 明确复制到左右声道。拒绝其他 PCM、声道 mask 和采样率，不修改设备格式、系统音量、默认设备或其他应用 session。首版 SRC 使用连续相位线性插值，是功能基线，尚不满足专业音频重采样质量要求。
 

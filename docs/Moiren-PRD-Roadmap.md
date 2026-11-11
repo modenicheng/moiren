@@ -1,7 +1,7 @@
 # Moiren 需求文档与功能规划
 
 > 状态：Draft / 当前讨论基线  
-> 更新日期：2026-10-27（增补 Audio File Player Node 与 VAD ASIO 接口规划）
+> 更新日期：2026-11-11（§11.2 VAD 修订注记；2026-10-27 增补 Audio File Player Node 与 VAD ASIO 接口规划）
 > 文档目标：统一产品需求、功能边界、架构约束与开发顺序。本文优先采用最近一次已收敛设计；尚未验证或仍有争议内容统一标为“待定”。
 
 ---
@@ -682,6 +682,8 @@ Discord / OBS / Game
 ### 11.2 开发顺序
 
 首版不开发 VAD。
+
+> 2026-11-11 修订：ACX VAD 内核驱动已作为独立工作线交付（`driver/vad/`，gate 状态见 `driver/vad/STATUS.md`）；本节其余 Virtual Endpoint 能力（Dynamic Endpoint、Virtual Capture / Playback Endpoint、Bus 导出）仍按下列顺序后置。
 
 核心稳定后再进入：
 
