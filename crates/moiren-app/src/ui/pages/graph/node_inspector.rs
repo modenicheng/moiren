@@ -2,10 +2,10 @@ use rust_i18n::t;
 
 use super::*;
 use crate::service::{GraphEdit, InputSelection};
-use crate::ui::presentation::{db_text, dbfs_text, step_db};
-use crate::ui::shell::mixer::{
+use crate::ui::editors::{
     EditableValueFamily, fader_readout_gain, gain_db_text, reset_clip_on_click, start_value_edit,
 };
+use crate::ui::presentation::{db_text, dbfs_text, step_db};
 use crate::ui::widgets::fader::hslider;
 use controls::*;
 use moiren_core::graph::NodeKind;

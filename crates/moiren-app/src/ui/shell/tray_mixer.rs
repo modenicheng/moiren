@@ -2,9 +2,10 @@
 //! strips (sources, buses, sinks) without opening the main window.
 //!
 //! Faders reuse the main mixer's rows verbatim, so both share the identical
-//! perceptual value space and edit path (see `mixer::model`): drag Changes
-//! dispatch coalesced, the release's final value always lands, and the wheel
-//! and double-click gestures edit immediately, as do mute/solo clicks.
+//! perceptual value space and edit path (see `crate::ui::editors`): drag
+//! Changes dispatch coalesced, the release's final value always lands, and
+//! the wheel and double-click gestures edit immediately, as do mute/solo
+//! clicks.
 //!
 //! The strips are a cached panel ([`TrayPanel`]) and the live meter bars a
 //! hot surface ([`FlyoutMeters`]) over them — the same two-tier split as the
@@ -20,13 +21,13 @@ use std::sync::Arc;
 use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::hot::{HotLayerView, HotSurface, MeterTracks};
-use super::mixer::{
-    SliderSlot, fader_readout_gain, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click,
-    strip_subtitle, sync_faders,
-};
+use super::mixer::{node_kind_color, strip_subtitle};
 use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
 use crate::service::{GraphNodeState, GraphSnapshot};
+use crate::ui::editors::{
+    SliderSlot, fader_readout_gain, fader_rows, mixer_edit, reset_clip_on_click, sync_faders,
+};
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::presentation::db_text;
 use crate::ui::shared_frame::SharedFrame;

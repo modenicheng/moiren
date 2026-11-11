@@ -7,6 +7,7 @@ mod branding;
 // stops it from linking into ordinary application builds.
 #[cfg(feature = "component-gallery")]
 mod component_gallery;
+mod editors;
 pub mod monitoring;
 mod observe;
 mod pages;

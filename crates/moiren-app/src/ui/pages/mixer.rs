@@ -10,17 +10,15 @@ mod model;
 pub(crate) mod page;
 mod routing;
 pub(crate) mod strip_controls;
-use crate::ui::widgets::fader::{FaderScale, fader, ruler};
-// Slider-sync machinery is shared with the compressor parameter sliders
-// (window::graph::compressor), so the slot type, edit type and the
-// coalesced sync/commit entry points are visible across the window.
-use model::StripDrag;
-pub(crate) use model::{
-    EditableValueFamily, InputPopover, MixerPresentation, SliderDispatch, SliderEdit, SliderSlot,
-    balance_text, commit_active_editor, commit_closure, fader_readout_gain, fader_rows,
-    gain_db_text, mixer_edit, reset_clip_on_click, send_readout_gain, start_value_edit,
-    sync_faders, sync_slider_range,
+use crate::ui::editors::{
+    EditableValueFamily, fader_readout_gain, gain_db_text, reset_clip_on_click, start_value_edit,
 };
+use crate::ui::widgets::fader::{FaderScale, fader, ruler};
+// The slider/click-to-type editing kernel shared with the graph inspector
+// and the tray flyout lives in `crate::ui::editors`; this page consumes it
+// like any other surface and only re-exports its own presentation model.
+use model::StripDrag;
+pub(crate) use model::{InputPopover, MixerPresentation};
 
 impl StudioShell {
     pub(crate) fn update_node_meters(&mut self, visible: bool, cx: &mut Context<Self>) -> bool {

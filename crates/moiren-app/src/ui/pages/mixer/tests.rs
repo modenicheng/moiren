@@ -1,6 +1,6 @@
 use super::super::{Page, WorkspaceView};
-use super::fader_readout_gain;
 use super::model::reorder;
+use crate::ui::editors::fader_readout_gain;
 use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{
     finish_service, settle_panels, shell_with_state, test_shell, wait_until,
