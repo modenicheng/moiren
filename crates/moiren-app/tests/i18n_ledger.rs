@@ -132,7 +132,7 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "Maximize window",
     "Close window",
     // Inspector sliders: `label_text:` fields in
-    // src/ui/pages/graph/node_inspector.rs.
+    // src/ui/pages/graph/node_inspector/{builtin_controls,builtin_fields}.rs.
     "Frequency",
     "Gain",
     "Q",
