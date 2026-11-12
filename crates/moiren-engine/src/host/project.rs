@@ -302,12 +302,6 @@ impl EngineProject {
         Ok(())
     }
 
-    pub fn has_output(&self) -> bool {
-        self.nodes
-            .values()
-            .any(|config| matches!(config, NodeConfig::Output(_)))
-    }
-
     pub fn edit(
         &mut self,
         edit: impl FnOnce(&mut Self) -> Result<(), ProjectError>,

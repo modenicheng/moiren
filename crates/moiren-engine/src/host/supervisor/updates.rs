@@ -66,10 +66,7 @@ impl<S: ProcessingSample> Supervisor<S> {
             return;
         };
         self.preparing = None;
-        let eligible = !self.closing()
-            && completion.basis == self.basis()
-            && !self.unavailable()
-            && self.project.has_output();
+        let eligible = !self.closing() && completion.basis == self.basis() && !self.unavailable();
         if !eligible {
             if let Ok(ready) = completion.result {
                 self.cleanup(Cleanup::Discard {
