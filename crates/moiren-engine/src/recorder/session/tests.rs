@@ -94,6 +94,69 @@ fn worker_drains_while_running_and_finish_preserves_queued_tail() {
 }
 
 #[test]
+fn rebindable_session_continues_one_file_across_reader_swaps() {
+    let (mut first, reader) = recorder(1, settings(16)).unwrap();
+    let destination = Destination::default();
+    let wav = WavRecording::from_writer(destination.clone(), 1, 48_000).unwrap();
+    // `record_rebindable` is a `_now` entry point: capture observed after
+    // the call is what lands in the file.
+    let session = reader.record_rebindable(wav).unwrap();
+    observe::<f32>(&mut first, &[&[1.0, 2.0]]);
+    wait_for(&session, |status| status.written_frames == 2);
+    // The orchestrator pauses across the swap: paused spans must stay out
+    // of the file even though the reader changes underneath.
+    session.pause();
+    wait_for(&session, |status| status.paused);
+    // The owning engine retires: the worker drains the tail and parks
+    // instead of finalizing while the rebind slot stays open.
+    drop(first);
+    std::thread::sleep(Duration::from_millis(50));
+    let parked = session.status();
+    assert_eq!(parked.state, RecordingState::Recording);
+    assert_eq!(parked.written_frames, 2);
+    // A mismatched replacement is refused without touching the file.
+    let (_, narrow) = recorder(2, settings(16)).unwrap();
+    assert_eq!(
+        session.reattach(narrow),
+        Err(ReattachError::ChannelMismatch {
+            expected: 1,
+            got: 2
+        })
+    );
+    // The replacement owner's queued preroll is discarded at install; the
+    // pause gate propagates onto the fresh reader, so the paused span that
+    // follows the swap never reaches the file.
+    let (mut second, replacement) = recorder(1, settings(16)).unwrap();
+    observe::<f32>(&mut second, &[&[9.0]]);
+    session.reattach(replacement).unwrap();
+    assert!(session.status().paused, "the gate survives the swap");
+    observe::<f32>(&mut second, &[&[9.5]]);
+    session.resume();
+    wait_for(&session, |status| !status.paused);
+    observe::<f32>(&mut second, &[&[3.0, 4.0]]);
+    wait_for(&session, |status| status.written_frames == 4);
+    let summary = session.finish().unwrap();
+    assert_eq!(summary.written_frames, 4);
+    assert_wav(&destination, &[1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn closed_rebind_slot_finalizes_without_a_replacement() {
+    let (mut first, reader) = recorder(1, settings(8)).unwrap();
+    let destination = Destination::default();
+    let wav = WavRecording::from_writer(destination.clone(), 1, 48_000).unwrap();
+    let session = reader.record_rebindable(wav).unwrap();
+    observe::<f32>(&mut first, &[&[0.5]]);
+    wait_for(&session, |status| status.written_frames == 1);
+    drop(first);
+    // No replacement will come: the closed slot lets the worker finalize.
+    session.close_rebind();
+    wait_for(&session, |status| status.state == RecordingState::Finished);
+    assert_eq!(session.finish().unwrap().written_frames, 1);
+    assert_wav(&destination, &[0.5]);
+}
+
+#[test]
 fn worker_finalizes_after_source_disconnect_without_explicit_stop() {
     let (mut recorder, reader) = recorder(1, settings(8)).unwrap();
     observe::<f64>(&mut recorder, &[&[0.25, -0.5]]);
@@ -192,12 +255,12 @@ struct RevocableSource {
 }
 
 impl RecordingSource for RevocableSource {
-    fn reader(&mut self) -> &mut RecorderReader {
-        &mut self.reader
+    fn reader(&mut self) -> Option<&mut RecorderReader> {
+        Some(&mut self.reader)
     }
 
-    fn is_active(&self) -> bool {
-        self.active.load(Ordering::Acquire)
+    fn finished(&mut self) -> bool {
+        !self.active.load(Ordering::Acquire) || self.reader.state() != RecorderState::Recording
     }
 }
 
@@ -352,7 +415,7 @@ fn unstarted_worker_guard_settles_inflight_capture_before_returning_source() {
     let (returned_tx, returned_rx) = std::sync::mpsc::sync_channel(1);
     let guard_owner = std::thread::spawn(move || {
         // Thread spawn failure drops this guard without ever entering run().
-        drop(SourceGuard(reader));
+        drop(SourceGuard(Box::new(reader)));
         returned_tx.send(()).unwrap();
     });
     let premature = returned_rx.recv_timeout(Duration::from_millis(100)).is_ok();

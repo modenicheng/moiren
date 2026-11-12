@@ -26,10 +26,14 @@ impl ManagedDriver {
         }
         self.edits.clear();
         self.clear_parameters(c);
-        // Recording workers keep running without the host, but engine-owned
-        // leases end here: stop every session, dispose on the cleanup lane,
-        // and settle the domain so no entry hangs in a live phase.
-        self.retire_recordings(c);
+        // Recording workers keep running without the host. An owner swap
+        // parks every session on its open file for the rebind poll; only
+        // the exit path stops them and settles the domain.
+        if self.exiting {
+            self.retire_recordings(c);
+        } else {
+            self.detach_recordings(c);
+        }
         if let Some(owner) = self.owner.take() {
             let Owner {
                 host,

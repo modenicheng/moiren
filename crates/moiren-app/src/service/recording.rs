@@ -36,6 +36,9 @@ impl RecordingFormat {
 pub enum RecordingPhase {
     Recording,
     Paused,
+    /// The engine owner that fed this session went away; the file stays
+    /// open and continues automatically once the replacement owner runs.
+    Rebinding,
     Stopping,
     Finished,
     Failed,
@@ -189,6 +192,32 @@ impl RecordingService {
         });
     }
 
+    /// The feeding owner retired: the live worker parks with its file open
+    /// until the replacement owner hands over a fresh reader.
+    pub fn set_rebinding(&mut self, node: NodeId) {
+        self.update(node, |entry| {
+            if matches!(
+                entry.phase,
+                RecordingPhase::Recording | RecordingPhase::Paused
+            ) {
+                entry.phase = RecordingPhase::Rebinding;
+                return true;
+            }
+            false
+        });
+    }
+
+    /// A replacement reader arrived and capture resumed.
+    pub fn set_rebound(&mut self, node: NodeId) {
+        self.update(node, |entry| {
+            if entry.phase == RecordingPhase::Rebinding {
+                entry.phase = RecordingPhase::Recording;
+                return true;
+            }
+            false
+        });
+    }
+
     /// Fold one worker status refresh into the entry. Only quantized or
     /// discrete values are stored, so unchanged seconds do not republish.
     pub fn observe(&mut self, node: NodeId, status: &RecordingStatus) {
@@ -204,6 +233,13 @@ impl RecordingService {
                 RecordingState::Stopping => RecordingPhase::Stopping,
                 RecordingState::Finished => RecordingPhase::Finished,
                 RecordingState::Failed => RecordingPhase::Failed,
+            };
+            // A rebinding entry keeps its waiting phase across the paused
+            // observations; a terminal worker state still ends it.
+            let phase = if entry.phase == RecordingPhase::Rebinding && !phase.is_terminal() {
+                RecordingPhase::Rebinding
+            } else {
+                phase
             };
             let recorded_secs = if entry.sample_rate > 0 {
                 status.written_frames / u64::from(entry.sample_rate)

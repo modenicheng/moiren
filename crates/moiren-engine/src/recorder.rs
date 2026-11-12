@@ -27,7 +27,8 @@ pub use flac::{FLAC_MAX_LEVEL, FlacEncoding, FlacRecording};
 #[cfg(feature = "mp3")]
 pub use mp3::{MP3_BITRATE_KBPS, Mp3Encoding, Mp3Mode, Mp3Recording};
 pub use session::{
-    RecordingError, RecordingSession, RecordingState, RecordingStatus, RecordingSummary,
+    ReattachError, RecordingError, RecordingSession, RecordingState, RecordingStatus,
+    RecordingSummary,
 };
 pub(crate) use session::{RecordingSource, spawn_recording};
 pub use sink::RecordingSink;

@@ -3183,6 +3183,89 @@ fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
 }
 
 #[test]
+fn recording_survives_owner_swaps_and_continues_the_same_file() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Recorder,
+        channels: 2,
+    }));
+    rig.wait(|r| {
+        let graph = r.c.graph.snapshot_ref();
+        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
+    });
+    let recorder = rig.node(NodeKind::Recorder);
+    rig.request(AppRequest::StartRecording {
+        node: recorder,
+        directory: std::env::temp_dir(),
+        format: crate::service::RecordingFormat::Wav,
+        mp3: Default::default(),
+        flac: Default::default(),
+    });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
+    let first = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .unwrap();
+    // Tape a first span from the initial owner.
+    rig.wait(|r| {
+        r.c.recordings
+            .snapshots()
+            .into_iter()
+            .find(|snapshot| snapshot.node == recorder)
+            .is_some_and(|snapshot| snapshot.recorded_secs >= 1)
+    });
+
+    // A transport-level change swaps the owner: the session parks on its
+    // open file (Rebinding) and continues automatically once the
+    // replacement owner runs.
+    let generation = rig.c.core.generation();
+    let mut settings = AudioSettings::default();
+    settings.processing.block_frames = 512;
+    rig.request(AppRequest::SetAudioSettings(settings));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running
+            && r.c.core.generation() != generation
+            && r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording)
+    });
+
+    // The file is the same one and keeps growing across the swap.
+    let resumed = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .unwrap();
+    assert_eq!(resumed.path, first.path);
+    assert_eq!(resumed.file_name, first.file_name);
+    rig.wait(|r| {
+        r.c.recordings
+            .snapshots()
+            .into_iter()
+            .find(|snapshot| snapshot.node == recorder)
+            .is_some_and(|snapshot| snapshot.recorded_secs >= 2)
+    });
+
+    rig.request(AppRequest::StopRecording { node: recorder });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
+    let snapshot = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .expect("a terminal recording keeps its entry");
+    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+    assert!(snapshot.path.exists(), "{}", snapshot.path.display());
+    let _ = std::fs::remove_file(&snapshot.path);
+}
+
+#[test]
 fn mp3_recording_start_finalizes_a_playable_file_through_the_service_domain() {
     let mut rig = Rig::new();
     rig.start();

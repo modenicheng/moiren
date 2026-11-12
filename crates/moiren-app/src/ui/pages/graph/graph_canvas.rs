@@ -149,6 +149,9 @@ impl RecordAction {
             (Self::Stop, Some(RecordingPhase::Recording | RecordingPhase::Paused)) => {
                 Some(Self::Stop)
             }
+            // A rebinding session has no live reader to pause, but the file
+            // can still be finalized.
+            (Self::Stop, Some(RecordingPhase::Rebinding)) => Some(Self::Stop),
             _ => None,
         }
     }

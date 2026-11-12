@@ -145,6 +145,7 @@ pub(crate) fn recording_phase_text(phase: Option<crate::service::RecordingPhase>
         None => t!("Ready"),
         Some(RecordingPhase::Recording) => t!("Recording"),
         Some(RecordingPhase::Paused) => t!("Paused"),
+        Some(RecordingPhase::Rebinding) => t!("Reconnecting"),
         Some(RecordingPhase::Stopping) => t!("Stopping"),
         Some(RecordingPhase::Finished) => t!("Saved"),
         Some(RecordingPhase::Failed) => t!("Failed"),

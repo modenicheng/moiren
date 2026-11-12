@@ -570,7 +570,9 @@ fn recorder_controls(
         None => (theme::TEXT_FAINT, theme::TEXT_MUTED),
         Some(RecordingPhase::Recording) => (theme::DANGER, theme::TEXT),
         Some(RecordingPhase::Paused) => (theme::WARNING, theme::WARNING),
-        Some(RecordingPhase::Stopping) => (theme::WARNING, theme::TEXT_MUTED),
+        Some(RecordingPhase::Rebinding) | Some(RecordingPhase::Stopping) => {
+            (theme::WARNING, theme::TEXT_MUTED)
+        }
         Some(RecordingPhase::Finished) => (theme::TEXT_FAINT, theme::TEXT_MUTED),
         Some(RecordingPhase::Failed) => (theme::DANGER, theme::DANGER),
     };
