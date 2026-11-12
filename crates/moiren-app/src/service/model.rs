@@ -177,6 +177,9 @@ pub struct AppSnapshot {
     pub phase: SessionPhase,
     pub desired: Option<SessionSpec>,
     pub error: Option<String>,
+    /// The live owner is waiting for audio resources: not a failure — the
+    /// session stays intended and resumes when the devices return.
+    pub waiting: bool,
     /// Runtime recording state per recorder node. Durations are quantized to
     /// whole seconds so recording itself cannot push publishing past 1 Hz.
     pub recordings: Vec<super::RecordingSnapshot>,

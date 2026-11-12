@@ -1004,6 +1004,12 @@ _version: 2
 "Failed":
   en: Failed
   zh-CN: 失败
+"Waiting for devices":
+  en: Waiting for devices
+  zh-CN: 等待设备
+"Waiting for audio devices to return":
+  en: Waiting for audio devices to return
+  zh-CN: 等待音频设备回来后自动恢复
 "Exiting":
   en: Exiting
   zh-CN: 正在退出
@@ -1562,9 +1568,6 @@ _version: 2
 "Engine realtime clock; no hardware master":
   en: Engine realtime clock; no hardware master
   zh-CN: 引擎实时时钟；无硬件主时钟
-"No output device in the graph":
-  en: No output device in the graph
-  zh-CN: 图中没有输出设备
 "XRUN statistics":
   en: XRUN statistics
   zh-CN: XRUN 统计

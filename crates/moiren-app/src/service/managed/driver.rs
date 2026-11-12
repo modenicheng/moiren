@@ -541,6 +541,7 @@ impl ManagedDriver {
             return;
         };
         let running = snapshot.state.execution == ExecutionState::Running;
+        c.active_execution = Some(snapshot.state.execution);
         let error = if snapshot.state.execution == ExecutionState::WaitingForResources {
             match &snapshot.state.update {
                 UpdateState::Blocked { reason, .. } => Some(format!("{reason:?}")),
