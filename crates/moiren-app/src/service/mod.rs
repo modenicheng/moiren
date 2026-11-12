@@ -229,12 +229,7 @@ impl ServiceContext {
                 .replace_with_exports(restored.graph, restored.nodes, restored.exports)?;
         } else if let Some(spec) = document.session_spec().map_err(|error| error.to_string())? {
             let mut candidate = ServiceGraph::default();
-            // The early-demo run limit is no longer honored (design 23 §7):
-            // the migrated bindings start like any other graph.
-            candidate.configure_session(&SessionSpec {
-                limit: RunLimit::UntilStopped,
-                ..spec
-            })?;
+            candidate.configure_session(&spec)?;
             let candidate = candidate.snapshot();
             self.graph.replace(candidate.graph, candidate.nodes)?;
         }
@@ -359,9 +354,6 @@ impl ServiceDriver for CoreDriver {
             }
             AppRequest::Start(s) => {
                 let _ = c.core.start(s);
-            }
-            AppRequest::Stop => {
-                let _ = c.core.stop();
             }
             AppRequest::SetGainPan { gain, pan } => c.control.pending_gain_pan = Some((gain, pan)),
             AppRequest::RefreshCatalog => {}
@@ -680,7 +672,6 @@ mod snapshot_publish_tests {
                 endpoint_id: "probe-input".into(),
             },
             output_endpoint_id: "probe-output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.0,
             pan: 0.0,
             max_block_frames: 64,
@@ -718,7 +709,6 @@ mod snapshot_publish_tests {
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "render".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.0,
             pan: 0.0,
             max_block_frames: 256,
@@ -990,7 +980,9 @@ mod snapshot_publish_tests {
         assert!(oracle(&c, &published), "fresh active settings: agree");
         let published = snapshot(&c);
         assert!(small_snapshot_inputs_match(&c, &published));
-        c.core.stop().expect("stop validates");
+        // Advancing the intent generation retires the active-settings slot:
+        // the published snapshot filters it as stale.
+        c.core.start(probe_session()).expect("spec validates");
         assert!(
             oracle(&c, &published),
             "stale active settings filtered: agree"

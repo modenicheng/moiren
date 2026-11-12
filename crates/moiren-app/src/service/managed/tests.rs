@@ -74,43 +74,26 @@ fn virtual_only_apply_runs_without_physical_session_selectors() {
             && r.c.graph.snapshot().active_revision.is_some()
     });
     assert!(rig.c.core.desired().is_none());
-    rig.request(AppRequest::Stop);
-    rig.wait(|r| r.driver.cleaning == 0 && r.c.core.phase() == SessionPhase::Idle);
-    assert!(
-        rig.c
-            .exports
-            .statuses(&rig.c.graph.snapshot())
-            .iter()
-            .all(|status| { status.resource == ExportResourceState::Present && !status.gate_open })
-    );
-    rig.request(AppRequest::ApplyGraph);
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
 }
 
 #[test]
-fn virtual_to_physical_apply_preserves_explicit_run_limit() {
+fn virtual_to_physical_apply_keeps_the_session_intent_across_owner_swaps() {
     let (mut rig, _) = export_rig();
     rig.request(AppRequest::Start(SessionSpec {
         source: InputSelection::Tone {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
-        limit: RunLimit::Seconds(12),
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
     }));
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
     assert!(rig.c.core.desired().is_none());
-    assert_eq!(rig.c.core.run_limit(), Some(RunLimit::Seconds(12)));
     let generation = rig.c.core.generation();
     rig.request(AppRequest::EditGraph(GraphEdit::SetExports(Vec::new())));
     rig.request(AppRequest::ApplyGraph);
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running && r.c.core.generation() != generation);
-    assert_eq!(rig.c.core.run_limit(), Some(RunLimit::Seconds(12)));
-    rig.driver.owner.as_mut().unwrap().started = Some(Instant::now() - Duration::from_secs(13));
-    rig.tick();
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle && r.driver.cleaning == 0);
 }
 
 fn export_rig() -> (Rig, Arc<super::super::exports::runtime::tests::FakeAdapter>) {
@@ -134,7 +117,7 @@ fn export_rig() -> (Rig, Arc<super::super::exports::runtime::tests::FakeAdapter>
 }
 
 #[test]
-fn export_presence_does_not_open_gate_until_engine_confirms_and_stop_retains_it() {
+fn export_presence_does_not_open_gate_until_engine_confirms_and_exit_revokes_it() {
     let (mut rig, adapter) = export_rig();
     rig.wait(|r| {
         r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Present
@@ -160,25 +143,16 @@ fn export_presence_does_not_open_gate_until_engine_confirms_and_stop_retains_it(
             .iter()
             .any(|(kind, r, _)| kind == "open" && *r == Some(revision))
     );
-    rig.request(AppRequest::Stop);
+    rig.c.core.begin_exit();
+    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
     assert_eq!(
         adapter.revision.load(Ordering::Acquire),
         0,
-        "Stop invalidates pending gate jobs immediately"
+        "Exit invalidates pending gate jobs immediately"
     );
     rig.wait(|r| {
-        r.driver.cleaning == 0 && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+        r.driver.is_drained() && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
     });
-    assert_eq!(
-        rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
-        ExportResourceState::Present
-    );
-    let calls = adapter.calls.lock().unwrap();
-    assert!(
-        calls
-            .iter()
-            .all(|(kind, _, thread)| kind != "remove" && thread == "app-prepare")
-    );
 }
 
 #[test]
@@ -386,41 +360,27 @@ fn unapplied_export_unbinding_and_removal_keep_confirmed_resources() {
 }
 
 #[test]
-fn stop_and_exit_revoke_a_pending_gate_dispatch_without_blocking_pump() {
-    for exiting in [false, true] {
-        let (mut rig, adapter) = export_rig();
-        adapter.hold_open.store(true, Ordering::Release);
-        rig.request(AppRequest::ApplyGraph);
-        rig.wait(|_| adapter.open_entered.load(Ordering::Acquire));
-        let started = Instant::now();
-        if exiting {
-            rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
-        } else {
-            rig.request(AppRequest::Stop);
-        }
-        assert!(started.elapsed() < Duration::from_millis(500));
-        assert_eq!(adapter.revision.load(Ordering::Acquire), 0);
-        adapter.hold_open.store(false, Ordering::Release);
-        if exiting {
-            rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
-        } else {
-            rig.wait(|r| r.driver.cleaning == 0 && r.pool.is_idle());
-            assert_eq!(
-                rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
-                ExportResourceState::Present
-            );
-            assert!(!rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
-        }
-        assert!(
-            adapter
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(kind, _, _)| kind != "open")
-        );
-        assert_eq!(rig.c.graph.snapshot().last_error, None);
-    }
+fn exit_revokes_a_pending_gate_dispatch_without_blocking_pump() {
+    let (mut rig, adapter) = export_rig();
+    adapter.hold_open.store(true, Ordering::Release);
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|_| adapter.open_entered.load(Ordering::Acquire));
+    let started = Instant::now();
+    rig.c.core.begin_exit();
+    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(adapter.revision.load(Ordering::Acquire), 0);
+    adapter.hold_open.store(false, Ordering::Release);
+    rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(kind, _, _)| kind != "open")
+    );
+    assert_eq!(rig.c.graph.snapshot().last_error, None);
 }
 
 #[test]
@@ -654,14 +614,11 @@ fn nondefault_f32_and_f64_settings_support_export_admission_after_confirmation()
             rig.c.exports.statuses(&rig.c.graph.snapshot())[0].active_revision,
             rig.c.graph.snapshot().active_revision
         );
-        rig.request(AppRequest::Stop);
+        rig.c.core.begin_exit();
+        rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
         rig.wait(|r| {
-            r.driver.cleaning == 0 && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+            r.driver.is_drained() && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
         });
-        assert_eq!(
-            rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
-            ExportResourceState::Present
-        );
     }
 }
 
@@ -769,7 +726,6 @@ fn invalid_start_candidate_keeps_the_confirmed_export_admission() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
-        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -875,7 +831,8 @@ fn audio_settings_are_draft_until_apply_and_restart_reaps_previous_owner() {
     assert_ne!(rig.c.core.generation(), first_generation);
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 2);
     assert_eq!(rig.state.stops.load(Ordering::SeqCst), 1);
-    rig.request(AppRequest::Stop);
+    rig.c.core.begin_exit();
+    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
     assert_eq!(rig.c.active_audio_settings, None);
     rig.wait(|r| r.driver.is_drained());
 }
@@ -921,7 +878,6 @@ fn start_session_block_size_matches_requested_and_confirmed_processing() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
-        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 512,
@@ -1395,12 +1351,14 @@ fn failed_auto_apply_keeps_audio_running_and_the_next_edit_retries() {
 fn clearing_the_primary_source_binding_fails_on_the_node_and_repairs_cleanly() {
     let mut rig = Rig::new();
     rig.start();
-    rig.request(AppRequest::Stop);
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle);
     let source = rig.node(NodeKind::Source);
     rig.request(AppRequest::EditGraph(GraphEdit::ClearBinding(source)));
     rig.request(AppRequest::ApplyGraph);
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Failed);
+    // The always-on session keeps running: the rejection lands on the node
+    // it names instead of stopping audio.
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running && !r.c.graph.snapshot().faults.is_empty()
+    });
     let snapshot = rig.c.graph.snapshot();
     assert!(
         snapshot
@@ -1417,7 +1375,7 @@ fn clearing_the_primary_source_binding_fails_on_the_node_and_repairs_cleanly() {
             && fault.cause == "The Source node is not bound to an input source"
     }));
     // The repair clears the fault group on the next successful edit, and
-    // the following start runs the repaired graph.
+    // the following apply runs the repaired graph.
     rig.request(AppRequest::EditGraph(GraphEdit::BindSource {
         node: source,
         source: InputSelection::Tone {
@@ -1533,7 +1491,6 @@ impl Rig {
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.0,
             pan: 0.0,
             max_block_frames: 256,
@@ -1965,7 +1922,7 @@ fn loaded_document_equal_node_ids_cannot_control_previous_project() {
 }
 
 #[test]
-fn stop_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
+fn exit_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
     let mut r = Rig::new();
     r.start();
     r.state.block_update.store(true, Ordering::SeqCst);
@@ -1975,9 +1932,10 @@ fn stop_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
     }));
     r.request(AppRequest::ApplyGraph);
     r.wait(|r| r.state.prepares.load(Ordering::SeqCst) >= 2);
-    r.request(AppRequest::Stop);
+    r.c.core.begin_exit();
+    r.driver.begin_exit(&mut r.c, &mut r.pool);
     assert_eq!(r.c.active_latency_profile, None);
-    r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Idle);
+    r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Exiting);
     assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
     assert!(
         r.state
@@ -2184,7 +2142,7 @@ fn profile_selection_waits_until_apply_and_replaces_the_host() {
 }
 
 #[test]
-fn unavailable_resources_report_diagnostics_and_stop_cancels_host() {
+fn unavailable_resources_report_diagnostics_and_exit_drains_the_host() {
     let mut r = Rig::new();
     r.state.unavailable.store(true, Ordering::SeqCst);
     r.request(AppRequest::Start(SessionSpec {
@@ -2192,7 +2150,6 @@ fn unavailable_resources_report_diagnostics_and_stop_cancels_host() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "missing".into(),
-        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -2201,7 +2158,8 @@ fn unavailable_resources_report_diagnostics_and_stop_cancels_host() {
     assert_ne!(r.c.core.phase(), SessionPhase::Running);
     assert_eq!(r.c.graph.snapshot().active_revision, None);
     assert_eq!(r.c.active_latency_profile, None);
-    r.request(AppRequest::Stop);
+    r.c.core.begin_exit();
+    r.driver.begin_exit(&mut r.c, &mut r.pool);
     r.wait(|r| r.driver.is_drained());
     assert_eq!(r.state.starts.load(Ordering::SeqCst), 0);
 }
@@ -2239,7 +2197,6 @@ fn initial_resource_recovery_restores_confirmed_revision_and_phase() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
-        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -2310,7 +2267,6 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 0.5,
             pan: 0.0,
             // The processing capacity must use a supported block size; the
@@ -2446,7 +2402,6 @@ fn service_exit_joins_managed_host_and_preserves_retained_observer_diagnostics()
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 0.0,
             pan: 0.0,
             max_block_frames: 256,
@@ -2596,7 +2551,6 @@ fn backend_factory_panic_is_a_failed_snapshot_and_service_can_exit() {
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 0.0,
             pan: 0.0,
             max_block_frames: 256,
@@ -2681,7 +2635,38 @@ fn undo_restored_candidates_rebuild_after_the_debounce() {
 }
 
 #[test]
-fn undo_after_stop_restores_the_candidate_without_restarting_audio() {
+fn auto_apply_reopens_a_failed_session_once_the_fault_is_repaired() {
+    let mut rig = Rig::new();
+    // No owner and an unbound default graph: the automatic apply fails on
+    // the nodes instead of opening a host.
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    let deadline = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < deadline {
+        rig.tick();
+    }
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Failed);
+    assert!(rig.driver.owner.is_none());
+    // Repairing the bindings is itself a structural edit: the always-on
+    // auto-apply re-opens the session without an explicit request.
+    rig.request(AppRequest::EditGraph(GraphEdit::BindSource {
+        node: rig.node(NodeKind::Source),
+        source: InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+    }));
+    rig.request(AppRequest::EditGraph(GraphEdit::BindOutput {
+        node: rig.node(NodeKind::Sink),
+        endpoint_id: "output".into(),
+    }));
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    assert!(rig.driver.owner.is_some());
+}
+
+#[test]
+fn undo_on_a_running_session_restores_the_candidate_and_reapplies_it() {
     let mut rig = Rig::new();
     rig.start();
     rig.wait(|rig| {
@@ -2695,18 +2680,19 @@ fn undo_after_stop_restores_the_candidate_without_restarting_audio() {
     rig.wait(|rig| {
         rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
     });
-    rig.request(AppRequest::Stop);
-    rig.wait(|r| r.driver.cleaning == 0 && r.c.core.phase() == SessionPhase::Idle);
-    let starts = rig.state.starts.load(Ordering::SeqCst);
     rig.request(AppRequest::UndoGraph);
-    // Drain any debounce window: the candidate restores, audio stays off.
+    // Drain the debounce window: the candidate restores and auto-applies,
+    // keeping the always-on session on the restored graph.
     let deadline = Instant::now() + Duration::from_millis(400);
     while Instant::now() < deadline {
         rig.tick();
     }
-    assert_eq!(rig.c.graph.snapshot().nodes.len(), nodes_before);
-    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
-    assert_eq!(rig.state.starts.load(Ordering::SeqCst), starts);
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().nodes.len() == nodes_before
+            && rig.c.graph.snapshot().active_revision
+                == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
 }
 
 /// Catalog fake driving `with_catalog`: rows or a sticky failure, never a session.
@@ -2773,13 +2759,12 @@ fn catalog_rig(catalog: Arc<FakeCatalog>, automatic_startup: bool) -> Rig {
 }
 
 #[test]
-fn automatic_startup_uses_catalog_defaults_once_and_stop_stays_authoritative() {
+fn automatic_startup_uses_catalog_defaults_once_and_catalog_refreshes_do_not_restart() {
     let mut rig = catalog_rig(Arc::new(FakeCatalog::filled()), true);
     rig.tick();
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
     let desired = rig.c.core.desired().expect("default session").clone();
     assert_eq!(desired.gain, 0.0);
-    assert_eq!(desired.limit, crate::service::RunLimit::UntilStopped);
     assert_eq!(
         desired.source,
         crate::service::InputSelection::Physical {
@@ -2787,13 +2772,11 @@ fn automatic_startup_uses_catalog_defaults_once_and_stop_stays_authoritative() {
         }
     );
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
-    rig.request(AppRequest::Stop);
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle && r.driver.is_drained());
     let generation = rig.c.core.generation();
     rig.request(AppRequest::RefreshCatalog);
     rig.wait(|r| r.c.catalog_error.is_none() && r.c.catalog.outputs.len() == 1);
     assert_eq!(rig.c.core.generation(), generation);
-    assert!(rig.c.core.desired().is_none());
+    assert!(rig.c.core.desired().is_some());
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
 }
 
@@ -2861,7 +2844,6 @@ fn loading_a_legacy_document_migrates_the_session_block_size() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
-        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 512,
@@ -3056,14 +3038,17 @@ fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
 }
 
 #[test]
-fn explicit_requests_before_the_catalog_cancel_automatic_resume() {
+fn explicit_apply_before_the_catalog_cancels_automatic_resume() {
     let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), restored_document(|_| {}));
-    rig.request(AppRequest::Stop);
+    rig.request(AppRequest::ApplyGraph);
     rig.tick();
-    rig.wait(|r| r.c.catalog.outputs.len() == 1 && !r.driver.catalog.is_running());
+    rig.wait(|r| {
+        r.c.catalog.outputs.len() == 1
+            && !r.driver.catalog.is_running()
+            && r.c.core.phase() == SessionPhase::Running
+    });
     assert!(!rig.driver.automatic_resume);
-    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
-    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -3089,7 +3074,6 @@ fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_row
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
-        limit: crate::service::RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -3109,7 +3093,7 @@ fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_row
 }
 
 #[test]
-fn zero_signal_demand_still_applies_controls_retires_and_restarts() {
+fn zero_signal_demand_still_applies_controls_and_retires_across_owner_swaps() {
     let mut r = Rig::new();
     let source = r.c.signals.topics.tone_output.clone();
     r.start();
@@ -3120,16 +3104,17 @@ fn zero_signal_demand_still_applies_controls_retires_and_restarts() {
     r.wait(|r| r.c.control.accepted_pending == 0 && r.c.control.last_result.is_some());
     assert_eq!(source.business_subscribers(), 0);
     assert_eq!(r.c.levels.demanded_levels(), 0);
-    r.request(AppRequest::Stop);
-    r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Idle);
+    // A transport-level change swaps the owner: the level registry retires
+    // with the old owner and rebinds cleanly on the replacement.
+    let generation = r.c.core.generation();
+    let mut settings = AudioSettings::default();
+    settings.processing.block_frames = 512;
+    r.request(AppRequest::SetAudioSettings(settings));
+    r.request(AppRequest::ApplyGraph);
+    r.wait(|r| r.c.core.phase() == SessionPhase::Running && r.c.core.generation() != generation);
     assert_eq!(r.c.levels.demanded_levels(), 0);
     assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
-    // A clean retirement leaves the level registry reusable for the next
-    // session.
-    r.start();
-    r.wait(|r| r.c.core.phase() == SessionPhase::Running);
     assert_eq!(source.business_subscribers(), 0);
-    assert_eq!(r.c.levels.demanded_levels(), 0);
 }
 
 #[test]

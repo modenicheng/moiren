@@ -4,7 +4,7 @@ use moiren_engine::audio_config::{AudioSettings, ProcessingSettings};
 use serde::{Deserialize, Serialize};
 
 use super::{ExportDocument, GraphDocument, PersistenceError};
-use crate::service::{AudioLatencyProfile, InputSelection, RunLimit, SessionSpec};
+use crate::service::{AudioLatencyProfile, InputSelection, SessionSpec};
 
 pub const PROJECT_VERSION: u32 = 2;
 pub const PREFERENCES_VERSION: u32 = 2;
@@ -161,10 +161,23 @@ impl ProjectDocument {
 pub struct SessionDocument {
     pub source: SourceDocument,
     pub output_endpoint_id: String,
-    pub limit: RunLimitDocument,
+    /// Legacy run limit, retired with the always-on run model: any value is
+    /// accepted on load and dropped; new documents never serialize it.
+    #[serde(default, skip_serializing, deserialize_with = "ignore_legacy")]
+    pub limit: (),
     pub gain: f64,
     pub pan: f64,
     pub max_block_frames: usize,
+}
+
+/// Consume any legacy value so `deny_unknown_fields` still accepts old
+/// documents carrying the retired run-limit field.
+fn ignore_legacy<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(())
 }
 
 impl From<&SessionSpec> for SessionDocument {
@@ -172,7 +185,7 @@ impl From<&SessionSpec> for SessionDocument {
         Self {
             source: (&spec.source).into(),
             output_endpoint_id: spec.output_endpoint_id.clone(),
-            limit: spec.limit.into(),
+            limit: (),
             gain: spec.gain,
             pan: spec.pan,
             max_block_frames: spec.max_block_frames,
@@ -191,12 +204,6 @@ impl SessionDocument {
                 "must be in 1..=4096",
             ));
         }
-        if matches!(self.limit, RunLimitDocument::Seconds(n) if !(1..=600).contains(&n)) {
-            return Err(PersistenceError::invalid(
-                "session.limit",
-                "duration must be in 1..=600 seconds",
-            ));
-        }
         Ok(())
     }
 
@@ -205,7 +212,6 @@ impl SessionDocument {
         Ok(SessionSpec {
             source: self.source.to_selection(),
             output_endpoint_id: self.output_endpoint_id.clone(),
-            limit: self.limit.into(),
             gain: self.gain,
             pan: self.pan,
             max_block_frames: self.max_block_frames,
@@ -277,31 +283,6 @@ impl SourceDocument {
             Self::Tone { frequency_hz } => InputSelection::Tone {
                 frequency_hz: *frequency_hz,
             },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunLimitDocument {
-    UntilStopped,
-    Seconds(u16),
-}
-
-impl From<RunLimit> for RunLimitDocument {
-    fn from(value: RunLimit) -> Self {
-        match value {
-            RunLimit::UntilStopped => Self::UntilStopped,
-            RunLimit::Seconds(seconds) => Self::Seconds(seconds),
-        }
-    }
-}
-
-impl From<RunLimitDocument> for RunLimit {
-    fn from(value: RunLimitDocument) -> Self {
-        match value {
-            RunLimitDocument::UntilStopped => Self::UntilStopped,
-            RunLimitDocument::Seconds(seconds) => Self::Seconds(seconds),
         }
     }
 }

@@ -128,7 +128,8 @@ pub struct ManagedDriver {
     /// mute) per node; diffs against the candidate drive live submissions.
     strip_live: BTreeMap<NodeId, (f64, bool)>,
     /// Trailing-edge debounce for the automatic apply of structure edits.
-    /// Armed only while an owner runs: a stopped session never auto-starts.
+    /// Always armed on a structural change: the session is always-on, so a
+    /// graph without a running owner re-opens through the same path.
     auto_apply_deadline: Option<Instant>,
     /// The spectrum relay. Levels are not relayed since decision D-4
     /// route B: the level subscription registry lives on the

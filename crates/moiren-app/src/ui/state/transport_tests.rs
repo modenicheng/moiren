@@ -1,6 +1,7 @@
 //! Transport control tests: Start is start-by-graph (design 23 §4.2). The
-//! UI keeps no validation of its own — the phase decides Apply or Stop, and
-//! the service's verdict is the only one.
+//! UI keeps no validation of its own — the idle/failed phases dispatch
+//! Apply, a running session has no stop action, and the service's verdict
+//! is the only one.
 
 use super::*;
 use crate::service::ServiceMailbox;
@@ -24,7 +25,7 @@ fn ui_with_phase(phase: SessionPhase) -> (UiState, ServiceMailbox) {
 }
 
 #[test]
-fn transport_toggles_dispatch_apply_and_stop_by_phase() {
+fn transport_toggles_dispatch_apply_and_running_is_left_alone() {
     for phase in [SessionPhase::Idle, SessionPhase::Failed] {
         let (mut state, mailbox) = ui_with_phase(phase);
         state.toggle_transport();
@@ -36,11 +37,11 @@ fn transport_toggles_dispatch_apply_and_stop_by_phase() {
 
         publish_phase(&mut state, &mailbox, SessionPhase::Running);
         state.toggle_transport();
-        assert_eq!(mailbox.try_request(), Some(AppRequest::Stop));
+        assert_eq!(mailbox.try_request(), None, "always-on: no stop request");
 
         publish_phase(&mut state, &mailbox, SessionPhase::Starting);
         state.toggle_transport();
-        assert_eq!(mailbox.try_request(), Some(AppRequest::Stop));
+        assert_eq!(mailbox.try_request(), None);
     }
 }
 

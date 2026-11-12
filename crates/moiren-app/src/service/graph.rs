@@ -1,8 +1,7 @@
 //! The service owns the editable topology. Pages receive immutable projections;
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{
-    ExportIntent, InputSelection, RecordingCard, RunLimit, SessionGeneration, SessionSpec,
-    validate_exports,
+    ExportIntent, InputSelection, RecordingCard, SessionGeneration, SessionSpec, validate_exports,
 };
 use moiren_core::graph::{EdgeId, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
 use moiren_core::protocol::ParamValue;
@@ -908,6 +907,11 @@ impl ServiceGraph {
         spec.validate().map_err(|e| format!("{e:?}"))?;
         let preparation = self.preparation();
         let (source, output) = preparation.primary_io_nodes()?;
+        // The legacy session summary binds both endpoints; a one-sided graph
+        // cannot carry it (the always-on graph path has no such requirement).
+        let (Some(source), Some(output)) = (source, output) else {
+            return Err("The graph needs a Source node and a Sink node".into());
+        };
         let mut next = self.snapshot.clone();
         for state in &mut next.nodes {
             if state.id == source {
@@ -942,42 +946,43 @@ impl ServiceGraph {
     }
     /// Only legacy sessions have a two-endpoint summary. The managed host uses
     /// the validated EngineProject for virtual or mixed graph resource intent.
+    /// A project paced by the virtual clock (no physical master output), a
+    /// one-sided graph, or one whose primary IO is a virtual export boundary
+    /// has no summary at all.
     pub(crate) fn managed_session_spec(
         &self,
         current: Option<&SessionSpec>,
-        limit: Option<RunLimit>,
     ) -> Result<Option<SessionSpec>, String> {
         let prep = self.preparation();
         let (source, output) = prep.primary_io_nodes()?;
+        if clock_master(&prep.graph, &prep.exports).is_none() {
+            return Ok(None);
+        }
+        let (Some(source), Some(output)) = (source, output) else {
+            return Ok(None);
+        };
         if prep.exports.iter().any(|export| {
             export.enabled
                 && matches!(export.binding, Some(node) if node == source || node == output)
         }) {
             return Ok(None);
         }
-        let mut summary = self.session_spec(current)?;
-        if let Some(limit) = limit {
-            summary.limit = limit;
-        }
-        Ok(Some(summary))
+        Ok(Some(self.session_spec(current)?))
     }
     pub fn session_spec(&self, current: Option<&SessionSpec>) -> Result<SessionSpec, String> {
         let prep = self.preparation();
         let (source, output) = prep.primary_io_nodes()?;
-        let source = self
-            .snapshot
-            .node(source)
+        let source = source
+            .and_then(|node| self.snapshot.node(node))
             .and_then(|s| s.source.clone())
             .ok_or("Choose an input resource")?;
-        let output_endpoint_id = self
-            .snapshot
-            .node(output)
+        let output_endpoint_id = output
+            .and_then(|node| self.snapshot.node(node))
             .and_then(|s| s.output_endpoint_id.clone())
             .ok_or("Choose an output device")?;
         let mut spec = current.cloned().unwrap_or(SessionSpec {
             source: source.clone(),
             output_endpoint_id: output_endpoint_id.clone(),
-            limit: RunLimit::UntilStopped,
             gain: 1.0,
             pan: 0.0,
             max_block_frames: 256,

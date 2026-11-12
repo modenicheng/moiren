@@ -36,7 +36,6 @@ fn v1_migration_preserves_physical_selectors_and_never_infers_exports() {
             endpoint_id: "virtual-looking opaque capture".into(),
         },
         output_endpoint_id: "unchanged opaque output".into(),
-        limit: RunLimit::UntilStopped,
         gain: 0.25,
         pan: 0.0,
         max_block_frames: 256,

@@ -15,9 +15,7 @@ use moiren_engine::{
 };
 
 use super::*;
-use crate::service::{
-    BuiltinState, GraphEdit, InputSelection, RunLimit, ServiceGraph, SessionSpec,
-};
+use crate::service::{BuiltinState, GraphEdit, InputSelection, ServiceGraph, SessionSpec};
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
@@ -578,11 +576,36 @@ fn session(source: InputSelection) -> SessionSpec {
     SessionSpec {
         source,
         output_endpoint_id: "{stable-output-identity}".into(),
-        limit: RunLimit::Seconds(90),
         gain: 0.35,
         pan: -0.25,
         max_block_frames: 512,
     }
+}
+
+#[test]
+fn legacy_run_limit_field_loads_and_is_dropped_on_resave() {
+    let directory = TestDirectory::new();
+    let path = directory.file("legacy-limit.moiren");
+    let spec = session(InputSelection::Physical {
+        endpoint_id: "{input-device}".into(),
+    });
+    let document = ProjectDocument::new("Legacy limit", &spec);
+    // Hand-write the retired run-limit field the way pre-always-on
+    // documents stored it; loading must tolerate and drop it.
+    let mut json = serde_json::to_value(&document).unwrap();
+    json["session"]
+        .as_object_mut()
+        .unwrap()
+        .insert("limit".into(), serde_json::json!({"until_stopped": null}));
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let restored = load_project(&path).unwrap();
+    assert_eq!(restored.session_spec().unwrap(), Some(spec));
+    save_project(&path, &restored).unwrap();
+    let resaved = serde_json::to_value(&restored).unwrap();
+    assert!(
+        resaved["session"].get("limit").is_none(),
+        "the retired field never serializes back"
+    );
 }
 
 #[test]

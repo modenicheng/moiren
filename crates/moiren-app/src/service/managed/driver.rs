@@ -12,7 +12,8 @@ impl ServiceDriver for ManagedDriver {
                     self.exports_runtime.revoke();
                     // Eligibility is fixed before native exposure. Drain the
                     // owner before the lifecycle worker replaces its resource;
-                    // resuming requires a fresh Apply and Engine confirmation.
+                    // the session stays intended, so the next poll re-opens
+                    // the host under the new authorizations.
                     if self.owner.as_ref().is_some_and(|owner| {
                         owner.exports.iter().any(|intent| {
                             intent.enabled
@@ -20,10 +21,13 @@ impl ServiceDriver for ManagedDriver {
                                     != c.exports.allow_default(intent.endpoint_id)
                         })
                     }) {
-                        self.apply = false;
-                        self.apply_audio_settings = None;
-                        let _ = c.core.stop();
+                        self.apply_audio_settings
+                            .get_or_insert_with(|| c.audio_settings.clone());
+                        if let Ok(summary) = c.graph.managed_session_spec(c.core.desired()) {
+                            let _ = c.core.restart_managed_graph(summary);
+                        }
                         self.retire(c);
+                        self.apply = true;
                     }
                 }
             }
@@ -76,14 +80,6 @@ impl ServiceDriver for ManagedDriver {
                 self.apply_audio_settings = Some(c.audio_settings.clone());
                 self.apply = true;
             }
-            AppRequest::Stop => {
-                self.cancel_startup_automation();
-                self.apply = false;
-                self.apply_audio_settings = None;
-                self.auto_apply_deadline = None;
-                let _ = c.core.stop();
-                self.retire(c);
-            }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
                     self.exports_runtime.revoke();
@@ -109,19 +105,18 @@ impl ServiceDriver for ManagedDriver {
                     if let Some(node) = edited_strip {
                         self.sync_effective_strip_parameters(c, node);
                     }
-                    if structural && self.owner.is_some() {
+                    if structural {
                         self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
                     }
                 }
             }
             // A restored candidate is a structural change riding the same
             // trailing debounce as structural edits, so bursts of undo steps
-            // coalesce into one atomic plan swap. A stopped session only
-            // records the restored candidate and never restarts audio.
+            // coalesce into one atomic plan swap.
             AppRequest::UndoGraph | AppRequest::RedoGraph => {
                 let back = matches!(request, AppRequest::UndoGraph);
                 let stepped = if back { c.graph.undo() } else { c.graph.redo() };
-                if stepped && self.owner.is_some() {
+                if stepped {
                     self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
                 }
             }
@@ -184,7 +179,6 @@ impl ServiceDriver for ManagedDriver {
             self.pump_parameters(c, budget);
             self.finish_apply_confirmation(c, &snapshot);
             self.poll_meters(c);
-            self.poll_run_limit(c);
         }
         self.publish_resume_notice(c);
         self.poll_exports(c, pool);
@@ -595,7 +589,12 @@ impl ManagedDriver {
             {
                 c.graph.confirmed(owner.generation, owner.active_revision.1);
             }
-        } else {
+        } else if owner.started.is_some()
+            && snapshot.state.execution != ExecutionState::WaitingForResources
+        {
+            // The engine ran and then went dormant on its own (a fault), and
+            // it is not waiting for resources: the always-on session keeps
+            // its intent, but this owner's settled projection is gone.
             c.active_latency_profile = None;
             c.active_audio_settings = None;
             c.graph.stopped();
@@ -804,21 +803,6 @@ impl ManagedDriver {
         }
         if let Some(tone) = c.levels.poll(&owner.observer, &mut c.signals.topics) {
             c.tone_session = tone;
-        }
-    }
-    /// Stop and retire the owner once the requested run limit elapsed.
-    fn poll_run_limit(&mut self, c: &mut ServiceContext) {
-        let Some(owner) = self.owner.as_ref() else {
-            return;
-        };
-        if let Some(RunLimit::Seconds(seconds)) = c.core.run_limit()
-            && owner
-                .started
-                .is_some_and(|t| t.elapsed() >= Duration::from_secs(u64::from(seconds)))
-        {
-            let _ = c.core.stop();
-            self.retire(c);
-            self.apply = false;
         }
     }
 }

@@ -7,7 +7,6 @@ fn session() -> SessionSpec {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "render".into(),
-        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -79,6 +78,8 @@ fn active_audio_settings_require_running_current_owner() {
         snapshot(&context).active_audio_settings,
         Some(AudioSettings::default())
     );
-    context.core.stop().unwrap();
+    // A newer intent generation retires the snapshot: the active settings
+    // ride the owner identity, not the context slot.
+    context.core.start(session()).unwrap();
     assert_eq!(snapshot(&context).active_audio_settings, None);
 }

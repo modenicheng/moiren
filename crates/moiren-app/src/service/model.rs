@@ -2,11 +2,6 @@ use moiren_core::protocol::ControlReply;
 use std::{sync::Arc, time::Duration};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SessionGeneration(pub u64);
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunLimit {
-    UntilStopped,
-    Seconds(u16),
-}
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputSelection {
     Physical { endpoint_id: String },
@@ -33,7 +28,6 @@ impl InputSelection {
 pub struct SessionSpec {
     pub source: InputSelection,
     pub output_endpoint_id: String,
-    pub limit: RunLimit,
     pub gain: f64,
     pub pan: f64,
     pub max_block_frames: usize,
@@ -44,7 +38,6 @@ impl SessionSpec {
         if !endpoint_valid(&self.output_endpoint_id)
             || !valid_gain_pan(self.gain, self.pan)
             || !(1..=4096).contains(&self.max_block_frames)
-            || matches!(self.limit,RunLimit::Seconds(n) if !(1..=600).contains(&n))
         {
             return Err(DispatchError::InvalidConfig);
         }
@@ -96,7 +89,6 @@ pub enum AppRequest {
     },
     ApplyGraph,
     Start(SessionSpec),
-    Stop,
     RefreshCatalog,
     SetGainPan {
         gain: f64,

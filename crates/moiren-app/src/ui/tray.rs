@@ -29,13 +29,11 @@ pub struct TrayAnchor {
 pub enum TrayAction {
     ShowWindow,
     ShowMixer(TrayAnchor),
-    StopSession,
     ExitApp,
 }
 
 struct TrayHandle {
     _icon: TrayIcon,
-    stop_item: MenuItem,
 }
 
 impl TrayHandle {
@@ -43,10 +41,9 @@ impl TrayHandle {
         // Menu labels resolve once at startup; a mid-run locale switch keeps
         // the tray in the startup language until the app relaunches.
         let show = MenuItem::with_id("show", t!("Show Moiren"), true, None);
-        let stop = MenuItem::with_id("stop", t!("Stop Session"), true, None);
         let exit = MenuItem::with_id("exit", t!("Exit"), true, None);
         let menu = Menu::new();
-        menu.append_items(&[&show, &stop, &exit])
+        menu.append_items(&[&show, &exit])
             .map_err(|e| anyhow::anyhow!("tray menu: {e}"))?;
 
         let icon = tray_icon::Icon::from_rgba(branding::tray_rgba(theme).to_vec(), 32, 32)
@@ -59,10 +56,7 @@ impl TrayHandle {
             .with_menu_on_left_click(false)
             .build()
             .map_err(|e| anyhow::anyhow!("tray icon build: {e}"))?;
-        Ok(Self {
-            _icon: tray,
-            stop_item: stop,
-        })
+        Ok(Self { _icon: tray })
     }
 }
 
@@ -73,7 +67,6 @@ pub struct AppTray {
     actions: mpsc::Receiver<TrayAction>,
     theme: TrayTheme,
     theme_check: Instant,
-    session_active: std::cell::Cell<Option<bool>>,
 }
 
 impl AppTray {
@@ -88,7 +81,6 @@ impl AppTray {
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             let action = match event.id.0.as_str() {
                 "show" => TrayAction::ShowWindow,
-                "stop" => TrayAction::StopSession,
                 "exit" => TrayAction::ExitApp,
                 _ => return,
             };
@@ -124,7 +116,6 @@ impl AppTray {
             actions: rx,
             theme,
             theme_check: Instant::now(),
-            session_active: std::cell::Cell::new(None),
         })
     }
 
@@ -154,13 +145,6 @@ impl AppTray {
             drained.push(action);
         }
         drained
-    }
-
-    /// Enable/disable the stop item with the session state.
-    pub fn set_session_active(&self, active: bool) {
-        if self.session_active.replace(Some(active)) != Some(active) {
-            self._handle.stop_item.set_enabled(active);
-        }
     }
 }
 
