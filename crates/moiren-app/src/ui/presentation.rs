@@ -196,7 +196,7 @@ pub(crate) fn format_short_text(rate: u32, depth: Option<Cow<'static, str>>) -> 
 pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     match snapshot.phase {
         SessionPhase::Idle => t!("Idle"),
-        SessionPhase::Starting => t!("Starting"),
+        SessionPhase::Starting => starting_phase_text(snapshot),
         SessionPhase::Running => t!("Running"),
         SessionPhase::Stopping => t!("Stopping"),
         // Waiting for resources is not a verdict: the session stays
@@ -206,6 +206,51 @@ pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
         SessionPhase::Exiting => t!("Exiting"),
         SessionPhase::Exited => t!("Exited"),
     }
+}
+
+/// The Starting label carries the live native-open progress (issue #105):
+/// "Starting audio (2/3): Speakers" — the endpoint id resolves through the
+/// device catalog, falling back to the bare phase word when no progress (or
+/// no endpoint still opening) exists.
+fn starting_phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
+    let Some(progress) = snapshot.starting_progress.as_ref() else {
+        return t!("Starting");
+    };
+    match progress
+        .endpoint
+        .as_deref()
+        .map(|endpoint| device_label(snapshot, endpoint))
+    {
+        Some(device) => t!(
+            "Starting audio (%{opened} of %{total}): %{device}",
+            opened = progress.opened,
+            total = progress.total,
+            device = device
+        )
+        .into_owned()
+        .into(),
+        None => t!(
+            "Starting audio (%{opened} of %{total})",
+            opened = progress.opened,
+            total = progress.total
+        )
+        .into_owned()
+        .into(),
+    }
+}
+
+/// Catalog row name for a service-side endpoint id; unknown ids render as
+/// themselves so a stale catalog never blanks the status detail.
+fn device_label(snapshot: &AppSnapshot, endpoint: &str) -> String {
+    snapshot
+        .catalog
+        .inputs
+        .iter()
+        .chain(&snapshot.catalog.outputs)
+        .chain(&snapshot.catalog.asio_drivers)
+        .find(|row| row.endpoint_id == endpoint)
+        .map(|row| row.name.clone())
+        .unwrap_or_else(|| endpoint.to_owned())
 }
 
 /// Settings page used to render this directly; the live control-feedback path
@@ -588,8 +633,9 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{db_text, db_text_bare, dbfs_text, step_db};
+    use super::{db_text, db_text_bare, dbfs_text, phase_text, step_db};
     use crate::i18n::{ENGLISH, zh};
+    use crate::service::{AppSnapshot, DeviceRow, StartingProgress};
     use moiren_engine::node::DeviceMode;
 
     #[test]
@@ -686,5 +732,72 @@ mod tests {
         );
         assert_eq!(super::format_short_text(96_000, None), "96.0 kHz");
         assert_eq!(super::format_short_text(0, None), "—", "no invented rate");
+    }
+    /// The Starting phase carries live native-open progress (issue #105): the
+    /// counter form without a pending endpoint, the device-name form with one
+    /// (resolved through the catalog rows), and the bare word when the service
+    /// has no progress. Both shipped locales must resolve the parameterized
+    /// keys like every other literal.
+    #[test]
+    fn starting_phase_text_renders_live_open_progress() {
+        let mut context = crate::service::ServiceContext::default();
+        context.catalog = std::sync::Arc::new(crate::service::DeviceCatalog {
+            outputs: vec![DeviceRow {
+                endpoint_id: "{speakers}".into(),
+                name: "Speakers".into(),
+            }],
+            ..Default::default()
+        });
+        context
+            .core
+            .restart_managed_graph(None)
+            .expect("test core accepts a managed restart");
+        let mut snapshot: AppSnapshot = crate::service::snapshot(&context);
+        assert_eq!(phase_text(&snapshot), "Starting");
+
+        snapshot.starting_progress = Some(StartingProgress {
+            opened: 2,
+            total: 3,
+            endpoint: None,
+        });
+        assert_eq!(phase_text(&snapshot), "Starting audio (2 of 3)");
+
+        snapshot.starting_progress = Some(StartingProgress {
+            opened: 1,
+            total: 3,
+            endpoint: Some("{speakers}".into()),
+        });
+        assert_eq!(phase_text(&snapshot), "Starting audio (1 of 3): Speakers");
+
+        // An endpoint missing from the catalog renders its id, never a blank.
+        snapshot.starting_progress = Some(StartingProgress {
+            opened: 0,
+            total: 3,
+            endpoint: Some("{unknown}".into()),
+        });
+        assert_eq!(phase_text(&snapshot), "Starting audio (0 of 3): {unknown}");
+
+        // The parameterized keys resolve in Simplified Chinese as well.
+        assert_eq!(
+            rust_i18n::t!(
+                "Starting audio (%{opened} of %{total}): %{device}",
+                locale = crate::i18n::SIMPLIFIED_CHINESE,
+                opened = 2,
+                total = 3,
+                device = "Speakers"
+            )
+            .to_string(),
+            "正在启动音频（2/3）：Speakers"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Starting audio (%{opened} of %{total})",
+                locale = crate::i18n::SIMPLIFIED_CHINESE,
+                opened = 2,
+                total = 3
+            )
+            .to_string(),
+            "正在启动音频（2/3）"
+        );
     }
 }

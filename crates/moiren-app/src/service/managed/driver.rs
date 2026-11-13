@@ -252,6 +252,25 @@ fn update_vad_catalog(context: &mut ServiceContext) {
     }
 }
 
+/// Project the backend's live prepare progress (issue #105) into the
+/// snapshot's Starting detail: shown only while the owner that published it
+/// is still preparing, cleared on every other execution state so a stale
+/// record never outlives its prepare.
+#[cfg(windows)]
+fn starting_progress(
+    progress: Option<moiren_windows_audio::engine_backend::ProfessionalPrepareProgress>,
+    owner_generation: u64,
+    execution: ExecutionState,
+) -> Option<super::StartingProgress> {
+    let progress = progress?;
+    (progress.owner_generation == owner_generation && execution == ExecutionState::Preparing)
+        .then_some(super::StartingProgress {
+            opened: progress.groups_opened,
+            total: progress.groups_total,
+            endpoint: progress.endpoint,
+        })
+}
+
 impl ManagedDriver {
     /// Drain owner-reaping and catalog-refresh completions from the cleanup
     /// worker.
@@ -463,6 +482,20 @@ impl ManagedDriver {
                 generation,
                 observation,
             });
+        // Live open progress rides the same 1 Hz cadence: it only matters
+        // while the owner with the same generation is actually preparing,
+        // and any other phase clears the detail.
+        c.starting_progress = starting_progress(
+            self.professional_observations.as_ref().and_then(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.snapshot_progress())
+            }),
+            snapshot.state.owner_generation,
+            snapshot.state.execution,
+        );
         // Absent endpoints surface as node faults: the stream runs silent and
         // revives automatically when the device returns, so the badge
         // explains the silence. Recording on the refresh cadence keeps the
@@ -822,5 +855,52 @@ fn project_fault(error: &moiren_engine::host::ProjectError) -> super::GraphFault
         subject,
         cause,
         hint: hint.map(str::to_string),
+    }
+}
+
+#[cfg(all(test, windows))]
+mod starting_progress_tests {
+    use super::starting_progress;
+    use moiren_engine::host::ExecutionState;
+    use moiren_windows_audio::engine_backend::ProfessionalPrepareProgress;
+
+    fn progress(generation: u64, opened: usize) -> Option<ProfessionalPrepareProgress> {
+        Some(ProfessionalPrepareProgress {
+            owner_generation: generation,
+            groups_total: 3,
+            groups_opened: opened,
+            endpoint: (opened < 3).then(|| "{opening}".to_owned()),
+        })
+    }
+
+    #[test]
+    fn progress_projects_only_while_its_owner_prepares() {
+        use super::super::StartingProgress;
+        assert_eq!(
+            starting_progress(progress(7, 1), 7, ExecutionState::Preparing),
+            Some(StartingProgress {
+                opened: 1,
+                total: 3,
+                endpoint: Some("{opening}".into()),
+            })
+        );
+        // Any other execution state clears the detail.
+        for execution in [
+            ExecutionState::Dormant,
+            ExecutionState::Running,
+            ExecutionState::WaitingForResources,
+        ] {
+            assert_eq!(
+                starting_progress(progress(7, 1), 7, execution),
+                None,
+                "{execution:?} must not show starting progress"
+            );
+        }
+        // A stale record from another owner generation never projects.
+        assert_eq!(
+            starting_progress(progress(6, 2), 7, ExecutionState::Preparing),
+            None
+        );
+        assert_eq!(starting_progress(None, 7, ExecutionState::Preparing), None);
     }
 }
