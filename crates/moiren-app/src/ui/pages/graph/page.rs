@@ -204,6 +204,12 @@ impl WorldCache {
 pub(crate) struct GraphViewState {
     pub(crate) camera: Camera,
     pub(crate) node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+    /// Presentation-tier source classes (OBS-style split): the class a node
+    /// was created under, kept for tone and unbound nodes whose live binding
+    /// cannot re-derive it. Bound nodes ignore this and follow their binding
+    /// (see [`super::binding_choices::effective_source_class`]).
+    pub(crate) source_classes:
+        std::collections::HashMap<moiren_core::graph::NodeId, super::node_catalog::SourceClass>,
     pub(crate) focus: FocusHandle,
     pub(crate) context_menu: Option<super::ContextMenu>,
     pub(crate) binding_menu: Option<super::BindingMenu>,

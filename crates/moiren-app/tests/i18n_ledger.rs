@@ -57,6 +57,7 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "Matrix",
     // Node library cards: `NodeTemplate::title` in src/ui/pages/graph/node_catalog.rs.
     "Physical input",
+    "Virtual device",
     "Application audio",
     "Tone generator",
     "Gain",
@@ -81,6 +82,7 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "DESTINATIONS",
     // Node library card body: `NodeTemplate::description`.
     "WASAPI capture endpoint",
+    "VAD virtual capture endpoint",
     "Process loopback source",
     "Prepared sine-wave source",
     "Adjust linear amplitude",

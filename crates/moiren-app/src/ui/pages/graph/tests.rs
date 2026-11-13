@@ -911,6 +911,199 @@ fn builtin_library_creation_opens_real_inspector_controls_and_updates_candidate_
     finish_service(runtime);
 }
 
+/// Publishes the deterministic class catalog: two input rows (one physical,
+/// one owned by a VAD export) and one process. Replaces the tables so the
+/// assertions hold regardless of the host machine's real devices.
+fn publish_class_catalog(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
+    publish_snapshot(view, cx, |snapshot| {
+        let catalog = Arc::make_mut(&mut snapshot.catalog);
+        catalog.inputs = vec![
+            crate::service::DeviceRow {
+                endpoint_id: "probe-mic".into(),
+                name: "Probe mic".into(),
+            },
+            crate::service::DeviceRow {
+                endpoint_id: "probe-vad".into(),
+                name: "Probe VAD".into(),
+            },
+        ];
+        catalog.vad_endpoints.insert(
+            moiren_engine::node::VirtualEndpointId::from_bytes([0x42; 16]),
+            "probe-vad".into(),
+        );
+        catalog.processes = vec![crate::service::ProcessRow {
+            pid: 42,
+            creation_time_100ns: 7,
+            name: "Player".into(),
+        }];
+    });
+}
+
+/// Clicks a library card and waits for the spawned Source node (the one
+/// beyond the rig's own sources), selected with its inspector mounted.
+fn spawn_source_template(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    card: &str,
+) -> moiren_core::graph::NodeId {
+    use moiren_core::graph::NodeKind;
+    let before: Vec<_> = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .filter(|node| node.kind() == NodeKind::Source)
+            .map(|node| node.id())
+            .collect()
+    });
+    cx.update(|window, cx| window.click(gpui_kit::SharedString::from(card), cx));
+    wait_for(Duration::from_secs(3), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        render(cx);
+        view.update(cx, |shell, cx| {
+            let spawned: Vec<_> = shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .graph
+                .nodes()
+                .iter()
+                .filter(|node| node.kind() == NodeKind::Source && !before.contains(&node.id()))
+                .map(|node| node.id())
+                .collect();
+            (spawned.len() == 1).then(|| spawned[0])
+        })
+    })
+}
+
+/// The OBS-style split's full chain (2026-11-13): clicking the Virtual
+/// device card spawns a Source node, auto-selects it, mounts its inspector,
+/// and the picker offers only virtual rows — never physical, process, or
+/// tone entries. Binding the VAD row lands a physical binding to the owned
+/// endpoint, and clearing pins the class so the node stays virtual.
+#[gpui_kit::test]
+fn virtual_device_template_spawns_a_class_filtered_source_picker(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    render(cx);
+    let id = spawn_source_template(&view, cx, "add-Virtual device");
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_view.source_classes.get(&id),
+            Some(&super::node_catalog::SourceClass::Virtual)
+        );
+    });
+    publish_class_catalog(&view, cx);
+    cx.update(|window, _| {
+        assert!(
+            window.find("bind-input-probe-vad").visible(),
+            "the owned endpoint row is offered"
+        );
+        assert!(
+            window.try_find("bind-input-probe-mic").is_none(),
+            "physical rows stay out of the virtual class"
+        );
+        assert!(
+            window.try_find("bind-process-42").is_none(),
+            "processes stay out of the virtual class"
+        );
+        assert!(
+            window.try_find("bind-tone").is_none(),
+            "the generator belongs to tone nodes only"
+        );
+        assert!(window.find("refresh").visible());
+    });
+    // Picking the VAD row binds the node to the owned endpoint as an
+    // ordinary physical capture.
+    cx.update(|window, cx| window.click("bind-input-probe-vad", cx));
+    wait_for_graph(&view, cx, |graph| {
+        matches!(
+            graph.node(id).and_then(|entry| entry.source.clone()),
+            Some(crate::service::InputSelection::Physical { endpoint_id })
+                if endpoint_id == "probe-vad"
+        )
+    });
+    // The service's ack carries its own catalog; re-pin the deterministic
+    // one BEFORE the clear too — the pin reads the live snapshot's vad map,
+    // and a real-machine catalog there would misread the class.
+    publish_class_catalog(&view, cx);
+    cx.update(|window, cx| window.click("unbind", cx));
+    wait_for_graph(&view, cx, |graph| {
+        graph.node(id).is_some_and(|entry| entry.source.is_none())
+    });
+    publish_class_catalog(&view, cx);
+    cx.update(|window, _| {
+        assert!(
+            window.find("bind-input-probe-vad").visible(),
+            "clearing keeps the node in the virtual class"
+        );
+        assert!(window.try_find("bind-input-probe-mic").is_none());
+    });
+    finish_service(runtime);
+}
+
+/// The physical and tone templates keep their own picker classes: a
+/// physical node lists mic rows (never the VAD row, processes, or tone),
+/// and a tone node offers the generator alone.
+#[gpui_kit::test]
+fn physical_and_tone_templates_keep_their_own_picker_classes(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    render(cx);
+
+    let physical = spawn_source_template(&view, cx, "add-Physical input");
+    publish_class_catalog(&view, cx);
+    cx.update(|window, _| {
+        assert!(window.find("bind-input-probe-mic").visible());
+        assert!(
+            window.try_find("bind-input-probe-vad").is_none(),
+            "owned endpoints stay out of the physical class"
+        );
+        assert!(window.try_find("bind-process-42").is_none());
+        assert!(window.try_find("bind-tone").is_none());
+    });
+
+    // The tone template's follow-up BindSource edit must settle before the
+    // catalog pin, or its ack republishes the real catalog over it.
+    let tone = spawn_source_template(&view, cx, "add-Tone generator");
+    wait_for_graph(&view, cx, |graph| {
+        matches!(
+            graph.node(tone).and_then(|entry| entry.source.clone()),
+            Some(crate::service::InputSelection::Tone { .. })
+        )
+    });
+    publish_class_catalog(&view, cx);
+    cx.update(|window, _| {
+        assert!(window.find("bind-tone").visible());
+        assert!(window.find("unbind").visible());
+        assert!(
+            window.try_find("bind-input-probe-mic").is_none(),
+            "the tone class offers the generator only"
+        );
+        assert!(window.try_find("bind-input-probe-vad").is_none());
+    });
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_view.source_classes.get(&physical),
+            Some(&super::node_catalog::SourceClass::Physical)
+        );
+        assert_eq!(
+            shell.graph_view.source_classes.get(&tone),
+            Some(&super::node_catalog::SourceClass::Tone)
+        );
+    });
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn channel_mapper_inspector_edits_a_weighted_matrix_candidate(cx: &mut gpui_kit::TestAppContext) {
     use moiren_core::graph::NodeKind;
@@ -3208,7 +3401,9 @@ fn binding_menu_and_inspector_list_the_same_source_choices(cx: &mut gpui_kit::Te
         let expected = view.read_with(cx, |shell, cx| {
             let snapshot = &shell.state.read(cx).snapshot;
             let entry = snapshot.graph.node(source).expect("source entry");
-            super::binding_choices::source_choices(snapshot, entry)
+            let stored = shell.graph_view.source_classes.get(&source).copied();
+            let class = super::binding_choices::effective_source_class(snapshot, entry, stored);
+            super::binding_choices::source_choices(snapshot, entry, class)
         });
         assert!(!expected.is_empty());
         cx.update(|window, _| {
@@ -3262,8 +3457,10 @@ fn binding_menu_and_inspector_list_the_same_source_choices(cx: &mut gpui_kit::Te
         Some("Refresh sources")
     );
     // Clearing the binding shrinks both lists the same way: the Clear
-    // entry disappears and the tone generator leads.
+    // entry disappears and the tone generator leads. A UI clear pins the
+    // presented class first, so the tone node keeps offering the generator.
     view.update(cx, |shell, cx| {
+        shell.pin_source_class_before_clear(source, cx);
         shell.state.update(cx, |state, _| {
             state.dispatch(crate::service::AppRequest::EditGraph(
                 crate::service::GraphEdit::ClearBinding(source),

@@ -17,6 +17,7 @@ pub(super) fn source_section(
     mut view: Stateful<Div>,
     snapshot: &crate::service::AppSnapshot,
     entry: &crate::service::GraphNodeState,
+    stored: Option<super::node_catalog::SourceClass>,
     id: moiren_core::graph::NodeId,
     cx: &Context<StudioShell>,
 ) -> Stateful<Div> {
@@ -37,8 +38,43 @@ pub(super) fn source_section(
             .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
     ));
     // The one shared choice list (issue #119): the same ordered entries
-    // the chip menu offers, rendered as this panel's pick buttons.
-    for choice in binding_choices::source_choices(snapshot, entry) {
+    // the chip menu offers, rendered as this panel's pick buttons. The
+    // class filter (2026-11-13 split) narrows it to this node's class.
+    let class = binding_choices::effective_source_class(snapshot, entry, stored);
+    let choices = binding_choices::source_choices(snapshot, entry, class);
+    let has_resources = choices.iter().any(|choice| {
+        matches!(
+            choice.target,
+            binding_choices::BindingTarget::Input { .. }
+                | binding_choices::BindingTarget::PlaybackExport { .. }
+                | binding_choices::BindingTarget::Process { .. }
+                | binding_choices::BindingTarget::Tone { .. }
+        )
+    });
+    if !has_resources {
+        // Literal `t!` keys per class keep the i18n ledger's two-way check
+        // working (a runtime-key lookup would need a dynamic exception).
+        let empty_copy = match class {
+            super::node_catalog::SourceClass::Physical => {
+                t!("No physical input is available. Connect or enable a device, then refresh.")
+                    .to_string()
+            }
+            super::node_catalog::SourceClass::Virtual => {
+                t!("No virtual device exists yet. Create one on the Devices page, then refresh.")
+                    .to_string()
+            }
+            super::node_catalog::SourceClass::Application => {
+                t!("No application is producing audio right now.").to_string()
+            }
+            // The tone generator is itself the class's resource, so this
+            // arm is unreachable; it exists to keep the match exhaustive.
+            super::node_catalog::SourceClass::Tone => String::new(),
+        };
+        if !empty_copy.is_empty() {
+            view = view.child(label(empty_copy));
+        }
+    }
+    for choice in choices {
         let is_tone = matches!(choice.target, binding_choices::BindingTarget::Tone { .. });
         view = view.child(binding_choice_button(cx.entity(), choice));
         // The bound tone's frequency editor rides directly under the
@@ -274,6 +310,9 @@ fn binding_choice_button(
             this.update(cx, |shell, cx| {
                 match choice.action.clone() {
                     binding_choices::BindingAction::Edit(edit) => {
+                        if let GraphEdit::ClearBinding(node) = &edit {
+                            shell.pin_source_class_before_clear(*node, cx);
+                        }
                         shell
                             .state
                             .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));

@@ -73,6 +73,7 @@ fn project_presentation_waits_for_service_and_maps_sparse_document_ids(
         node_id: 42,
         x: -80.,
         y: 120.,
+        source_class: None,
     });
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let (view, cx) = shell_with_state(cx, state);

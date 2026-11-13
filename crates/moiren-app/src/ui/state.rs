@@ -17,13 +17,19 @@ use crate::service::{
     RequestId, SessionPhase,
 };
 
+/// Whether an endpoint id names one of our own virtual (VAD) endpoints, as
+/// identified by the driver host's ownership map — never by display name.
+pub(crate) fn is_virtual_endpoint(catalog: &DeviceCatalog, endpoint_id: &str) -> bool {
+    catalog.vad_endpoints.values().any(|id| id == endpoint_id)
+}
+
 /// Whether an endpoint id names an input row the backend currently offers:
 /// present among its rows and (on WASAPI) not owned by one of our VAD
 /// exports, which are hidden from every selector.
 fn backend_offers_input(catalog: &DeviceCatalog, backend: AudioBackend, endpoint_id: &str) -> bool {
     match backend {
         AudioBackend::Wasapi => {
-            !catalog.vad_endpoints.values().any(|id| id == endpoint_id)
+            !is_virtual_endpoint(catalog, endpoint_id)
                 && catalog
                     .inputs
                     .iter()
@@ -44,7 +50,7 @@ fn backend_offers_output(
 ) -> bool {
     match backend {
         AudioBackend::Wasapi => {
-            !catalog.vad_endpoints.values().any(|id| id == endpoint_id)
+            !is_virtual_endpoint(catalog, endpoint_id)
                 && catalog
                     .outputs
                     .iter()
@@ -66,6 +72,21 @@ pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<
             .cloned()
             .collect(),
         AudioBackend::Asio => catalog.asio_drivers.clone(),
+    }
+}
+
+/// The virtual-device class's capture rows: input rows whose endpoint one of
+/// our VAD exports owns. They are WASAPI MMDevices, so an ASIO session does
+/// not offer them (it lists its drivers under the physical class instead).
+pub(crate) fn virtual_input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<DeviceRow> {
+    match backend {
+        AudioBackend::Wasapi => catalog
+            .inputs
+            .iter()
+            .filter(|row| is_virtual_endpoint(catalog, &row.endpoint_id))
+            .cloned()
+            .collect(),
+        AudioBackend::Asio => Vec::new(),
     }
 }
 

@@ -416,7 +416,7 @@ impl CanvasWorld {
             };
             let detail = detail_string(logical.kind(), state, &channels);
             let (icon, tint) = (
-                super::node_catalog::kind_icon(logical.kind(), state.source.as_ref()),
+                super::node_catalog::card_icon(snapshot, logical.kind(), state.source.as_ref()),
                 super::node_catalog::kind_tint(logical.kind()),
             );
             let mut card = node(&key, &crate::ui::presentation::display_label(state), detail)

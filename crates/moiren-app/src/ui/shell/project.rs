@@ -107,6 +107,12 @@ impl StudioShell {
                     node_id: index as u64,
                     x,
                     y,
+                    source_class: self
+                        .graph_view
+                        .source_classes
+                        .get(&node.id())
+                        .copied()
+                        .map(Into::into),
                 });
             }
         }
@@ -350,6 +356,7 @@ impl StudioShell {
                 })?;
         }
         self.graph_view.node_positions.clear();
+        self.graph_view.source_classes.clear();
         self.graph_view.pending_node_spawn = None;
         self.inspector.node_name_editing = None;
         self.inspector.compressor = graph::CompressorControls::default();
@@ -367,6 +374,9 @@ impl StudioShell {
                     self.graph_view
                         .node_positions
                         .insert(*id, (position.x, position.y));
+                    if let Some(class) = position.source_class {
+                        self.graph_view.source_classes.insert(*id, class.into());
+                    }
                 }
             }
         }

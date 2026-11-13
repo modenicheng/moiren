@@ -209,7 +209,11 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             cx,
         ));
     if node.kind() == NodeKind::Source {
-        view = sections::source_section(view, snapshot, entry, id, cx);
+        // The class filter's stored half: which template created this node
+        // (or what a restored project remembered). The live binding can
+        // still override it — see `effective_source_class`.
+        let stored = shell.graph_view.source_classes.get(&id).copied();
+        view = sections::source_section(view, snapshot, entry, stored, id, cx);
     }
     if node.kind() == NodeKind::Sink {
         view = sections::sink_section(view, snapshot, entry, id, cx);
@@ -385,6 +389,11 @@ impl StudioShell {
         }
         let graph = self.state.read(cx).snapshot.graph.clone();
         self.selection.nodes.retain(|id| graph.node(*id).is_some());
+        // Class entries are spawn/project intent; retired nodes release
+        // theirs like the selection does.
+        self.graph_view
+            .source_classes
+            .retain(|id, _| graph.node(*id).is_some());
         if let Some(id) = self.selection.node {
             if graph.node(id).is_some() {
                 self.selection.nodes.insert(id);
