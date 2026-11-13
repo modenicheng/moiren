@@ -46,8 +46,11 @@ ran. The repaired abort separates dispatch request from bound instance, waits
 only when an instance is retained, and otherwise drains the exact trace,
 archives evidence/XML, and retires the exact never-run task once only after
 confirmed trace-stopped evidence. Its failed run/external-recovery receipts are
-archived on the host; bounded remote cleanup and the next create-only attempt
-remain pending. This does not change VAD driver qualification or defaults.
+archived on the host. The November13 exact-member cleanup deletes only the
+archived35-file run/sidecars after same-boot identity, owner/task absence,
+`QUERY4201` and hash checks; readonly readback confirms absence. A fresh
+create-only repaired-source diagnostic remains next. This does not change VAD
+driver qualification or defaults.
 
 ### Earlier implementation and verification receipts
 

@@ -152,13 +152,16 @@ Archive:
 `etwmode-failed-run-archive\removal613-etwmode-02-failed-run-evidence.zip`,
 65417bytes, SHA256
 `E5E4706A049BDA30A0FF10DA829D957DC50059BAA14E07ECA18A8D0B262EF608`. The ZIP
-and every member length/SHA256 are read back. Remote deletion remains pending;
-the archive receipt intentionally records `RemoteDeleted:false`.
+and every member length/SHA256 are read back. The November13 bounded cleanup
+then verifies the same boot/host/SID, empty owners/tasks, `QUERY4201`, exact
+35-file/182378-byte membership and every pinned length/SHA256 before deleting
+only those files, their verified-empty directories and the run directory. A
+fresh readonly query finds no run, sidecars, owners or exact-nonce task. The
+receipt retains `NativePassed:false` and `Qualified:false`; reusable tools were
+not changed by this scratch cleanup.
 
-Next is an exact-hash, membership-checked cleanup of only this run/sidecars,
-followed by readonly absence, no-task/QUERY4201 and unchanged reusable-tool
-readback. A fresh create-only diagnostic still requires repaired-source pins
-and review/deployment; no default or latency claim is promoted.
+Next is a fresh create-only diagnostic using independently reviewed
+repaired-source pins; no default or latency claim is promoted.
 
 ## Remaining work and user action
 
