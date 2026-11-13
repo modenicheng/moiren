@@ -381,7 +381,7 @@ fn prepared_virtual_owner_waits_for_activation_and_returns_engine_to_control() {
     }
     let returned = owner.stop_and_join();
     assert!(returned.error.is_none());
-    assert_eq!(returned.engine.timeline(), 40);
+    assert_eq!(returned.engine.as_ref().unwrap().timeline(), 40);
 }
 
 #[test]
@@ -408,5 +408,5 @@ fn cancellation_before_activation_does_not_execute_a_graph_block() {
         .unwrap_or_else(|_| panic!("virtual attachment failed"));
     cancel.cancel();
     assert_eq!(owner.activate(), Err(BackendError::Cancelled));
-    assert_eq!(owner.stop_and_join().engine.timeline(), 0);
+    assert_eq!(owner.stop_and_join().engine.as_ref().unwrap().timeline(), 0);
 }

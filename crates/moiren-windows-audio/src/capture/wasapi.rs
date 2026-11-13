@@ -101,6 +101,25 @@ impl CaptureSession {
             .join()
             .map_err(|_| CaptureError::WorkerPanicked)
     }
+    /// Bounded variant of [`CaptureSession::join`] (issue #105 teardown
+    /// bound): a worker wedged in its COM wind-down past `deadline` is
+    /// detached — its apartment unwinds on that thread when the call
+    /// finally returns — and the loss of the report is reported as an
+    /// error instead of parking the retirement lane forever.
+    pub fn join_within(
+        mut self,
+        deadline: std::time::Instant,
+    ) -> Result<CaptureReport, CaptureError> {
+        let worker = self.worker.take().expect("owned capture worker");
+        while !worker.is_finished() {
+            if std::time::Instant::now() >= deadline {
+                drop(worker);
+                return Err(CaptureError::TeardownTimeout);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        worker.join().map_err(|_| CaptureError::WorkerPanicked)
+    }
 }
 impl Drop for CaptureSession {
     fn drop(&mut self) {

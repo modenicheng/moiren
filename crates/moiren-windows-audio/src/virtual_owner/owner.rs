@@ -450,7 +450,11 @@ impl<S: ProcessingSample> BackendOwner<S> for VirtualOwner<S> {
         exit.clock_trace.emit();
         let mut error = exit.error;
         for capture in self.captures.drain(..) {
-            if let Err(failure) = capture.join() {
+            // The loopback captures' COM wind-down shares the native
+            // teardown bound (issue #105): a wedged worker detaches instead
+            // of parking the retirement lane.
+            let deadline = std::time::Instant::now() + crate::NATIVE_TEARDOWN_DEADLINE;
+            if let Err(failure) = capture.join_within(deadline) {
                 error.get_or_insert_with(|| BackendError::Failed(failure.to_string()));
             }
         }
@@ -458,7 +462,7 @@ impl<S: ProcessingSample> BackendOwner<S> for VirtualOwner<S> {
             error.get_or_insert(failure);
         }
         OwnerReturn {
-            engine: exit.engine,
+            engine: Some(exit.engine),
             error,
         }
     }

@@ -217,7 +217,10 @@ impl<S: ProcessingSample> PreparedTransport<S> for Transport {
                 if let Some(error) = &error {
                     *driver_status.lock().unwrap() = OwnerStatus::Failed(error.clone());
                 }
-                OwnerReturn { engine, error }
+                OwnerReturn {
+                    engine: Some(engine),
+                    error,
+                }
             })
             .unwrap();
         while self.0.hold_attach.load(Ordering::SeqCst) {

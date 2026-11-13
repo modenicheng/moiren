@@ -31,6 +31,8 @@ pub enum CaptureError {
     WorkerSpawn { code: Option<i32> },
     #[error("capture worker panicked")]
     WorkerPanicked,
+    #[error("capture worker did not finish teardown within its deadline")]
+    TeardownTimeout,
     #[error(transparent)]
     LatencyBudget(#[from] crate::latency::LatencyBudgetError),
     #[error("capture startup channel closed before preparation completed")]
