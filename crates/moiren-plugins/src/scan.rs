@@ -78,6 +78,15 @@ pub fn default_directories() -> Vec<PathBuf> {
 }
 
 fn scan_directory(directory: &Path, outcome: &mut ScanOutcome) {
+    // A file root is one candidate, not a directory to skip: Windows single
+    // -file VST3 modules (a bare `.vst3` file, e.g. Analog Obsession FIVER)
+    // and explicitly named VST2 DLLs arrive here when a caller configures
+    // them as scan paths. `read_dir` on a file fails, which would otherwise
+    // silently drop it.
+    if directory.is_file() {
+        collect_file(directory, outcome);
+        return;
+    }
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(_) => return,

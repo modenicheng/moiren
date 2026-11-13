@@ -91,7 +91,8 @@ pub const BUS_TYPE_MAIN: i32 = 0;
 
 // SymbolicSampleSizes / ProcessModes.
 pub const SYMBOLIC_SAMPLE_SIZE_32: i32 = 0;
-pub const PROCESS_MODE_REALTIME: i32 = 0;
+/// VST3 `ProcessModes`: kOffline = 0, kRealtime = 1, kPrefetch = 2.
+pub const PROCESS_MODE_REALTIME: i32 = 1;
 
 // ParameterInfo flags.
 pub const PARAM_CAN_AUTOMATE: i32 = 1 << 0;
