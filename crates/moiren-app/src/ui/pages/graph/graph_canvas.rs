@@ -343,10 +343,17 @@ fn rack_stage_icon(processor: &moiren_engine::rack::RackProcessor) -> &'static s
 }
 
 impl CanvasWorld {
-    /// The service snapshot is the only topology authority. Positions are presentation only.
+    /// The service snapshot is the only topology authority. Positions and
+    /// source classes are presentation only — the class table is what a
+    /// source node *is* (see [`super::node_catalog::SourceClass`]); the
+    /// binding contributes only the chip's wired-to text.
     pub fn positioned(
         snapshot: &AppSnapshot,
         positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+        source_classes: &std::collections::HashMap<
+            moiren_core::graph::NodeId,
+            super::node_catalog::SourceClass,
+        >,
     ) -> Self {
         use moiren_core::graph::NodeKind;
         let graph = &snapshot.graph;
@@ -415,8 +422,15 @@ impl CanvasWorld {
                 t!("%{channels} ch", channels = logical.channels()).into_owned()
             };
             let detail = detail_string(logical.kind(), state, &channels);
+            let source_class = (logical.kind() == NodeKind::Source).then(|| {
+                super::binding_choices::effective_source_class(
+                    snapshot,
+                    state,
+                    source_classes.get(&id).copied(),
+                )
+            });
             let (icon, tint) = (
-                super::node_catalog::card_icon(snapshot, logical.kind(), state.source.as_ref()),
+                super::node_catalog::kind_icon(logical.kind(), source_class),
                 super::node_catalog::kind_tint(logical.kind()),
             );
             let mut card = node(&key, &crate::ui::presentation::display_label(state), detail)

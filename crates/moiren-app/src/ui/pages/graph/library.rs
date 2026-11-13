@@ -5,7 +5,6 @@ use crate::service::{GraphEdit, InputSelection, RequestId};
 use crate::ui::pages::graph::node_catalog::NodeTemplate;
 use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
-use moiren_core::graph::{NodeId, NodeKind};
 
 #[derive(Clone)]
 pub(crate) struct PendingNodeSpawn {
@@ -327,29 +326,6 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
 }
 
 impl StudioShell {
-    /// A source picker's Clear action must not change which class the node
-    /// presents afterwards: pin the class it presents right now — usually
-    /// re-derived from the binding being cleared — so e.g. a cleared tone
-    /// node still offers the tone generator instead of falling to the
-    /// physical default. No-op for non-source nodes.
-    pub(super) fn pin_source_class_before_clear(&mut self, node: NodeId, cx: &App) {
-        let snapshot = self.state.read(cx).snapshot.clone();
-        if snapshot
-            .graph
-            .graph
-            .get_node(node)
-            .is_ok_and(|n| n.kind() != NodeKind::Source)
-        {
-            return;
-        }
-        let Some(entry) = snapshot.graph.node(node) else {
-            return;
-        };
-        let stored = self.graph_view.source_classes.get(&node).copied();
-        let class = super::binding_choices::effective_source_class(&snapshot, entry, stored);
-        self.graph_view.source_classes.insert(node, class);
-    }
-
     fn spawn_template_at_center(&mut self, template: NodeTemplate, cx: &mut Context<Self>) {
         let center = self
             .graph_view

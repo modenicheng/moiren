@@ -66,9 +66,6 @@ fn row(this: Entity<StudioShell>, choice: BindingChoice) -> impl IntoElement {
             this.update(cx, |shell, cx| {
                 match choice.action.clone() {
                     BindingAction::Edit(edit) => {
-                        if let crate::service::GraphEdit::ClearBinding(node) = &edit {
-                            shell.pin_source_class_before_clear(*node, cx);
-                        }
                         shell
                             .state
                             .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));

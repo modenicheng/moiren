@@ -28,6 +28,7 @@ fn canvas_frame(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> Canva
         let world = CanvasWorld::positioned(
             &shell.state.read(cx).snapshot,
             &shell.graph_view.node_positions,
+            &shell.graph_view.source_classes,
         );
         CanvasFrame::new(std::sync::Arc::new(world), shell.graph_view.camera, bounds)
     })
@@ -1022,6 +1023,58 @@ fn virtual_device_template_spawns_a_class_filtered_source_picker(
         );
         assert!(window.find("refresh").visible());
     });
+    // The card icon is identity-driven, not binding-driven: the node wears
+    // the virtual glyph while unbound.
+    let frame = canvas_frame(&view, cx);
+    let card = frame
+        .world
+        .nodes
+        .iter()
+        .find(|node| node.node_id == Some(id))
+        .expect("spawned card");
+    assert_eq!(card.icon, Some(super::node_catalog::VIRTUAL_DEVICE_ICON));
+    // Undo removes the spawn, redo restores it — with the template class
+    // intact, because class entries outlive their node (ids never repeat).
+    // The spawn is the only journal entry so far, so one step each way.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::UndoGraph);
+        });
+    });
+    wait_for_graph(&view, cx, |graph| graph.node(id).is_none());
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_view.source_classes.get(&id),
+            Some(&super::node_catalog::SourceClass::Virtual),
+            "undo keeps the class entry for the redo to restore"
+        );
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::RedoGraph);
+        });
+    });
+    wait_for_graph(&view, cx, |graph| graph.node(id).is_some());
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_view.source_classes.get(&id),
+            Some(&super::node_catalog::SourceClass::Virtual),
+            "redo restores the spawn with its template class"
+        );
+    });
+    // The undo dropped the selection with the node and the redo does not
+    // bring it back — select the card again like a user would before
+    // driving its inspector.
+    view.update(cx, |shell, cx| {
+        shell.selection.nodes.clear();
+        shell.selection.nodes.insert(id);
+        shell.selection.node = Some(id);
+        cx.notify();
+    });
+    render(cx);
+    // The undo/redo acks carried the service's real catalog again; re-pin
+    // the deterministic one so the virtual row is there to pick.
+    publish_class_catalog(&view, cx);
     // Picking the VAD row binds the node to the owned endpoint as an
     // ordinary physical capture.
     cx.update(|window, cx| window.click("bind-input-probe-vad", cx));
@@ -1032,10 +1085,8 @@ fn virtual_device_template_spawns_a_class_filtered_source_picker(
                 if endpoint_id == "probe-vad"
         )
     });
-    // The service's ack carries its own catalog; re-pin the deterministic
-    // one BEFORE the clear too — the pin reads the live snapshot's vad map,
-    // and a real-machine catalog there would misread the class.
-    publish_class_catalog(&view, cx);
+    // Clearing the binding never re-classes the node: the stored identity
+    // governs, so the cleared node keeps offering the virtual rows.
     cx.update(|window, cx| window.click("unbind", cx));
     wait_for_graph(&view, cx, |graph| {
         graph.node(id).is_some_and(|entry| entry.source.is_none())
@@ -1099,6 +1150,79 @@ fn physical_and_tone_templates_keep_their_own_picker_classes(cx: &mut gpui_kit::
         assert_eq!(
             shell.graph_view.source_classes.get(&tone),
             Some(&super::node_catalog::SourceClass::Tone)
+        );
+    });
+    finish_service(runtime);
+}
+
+/// The render sync materializes a class for source nodes that arrived
+/// without one (the default rig, pre-split projects), and the stored class
+/// then survives binding changes the picker never offered — the shape an
+/// undo or an older project restore produces. The binding names where the
+/// node is wired; it never re-classes it.
+#[gpui_kit::test]
+fn materialized_classes_survive_binding_changes_the_picker_never_offered(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    render(cx);
+    let source = view.update(cx, |shell, cx| {
+        let snapshot = &shell.state.read(cx).snapshot;
+        let id = snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .expect("default rig source")
+            .id();
+        shell.selection.node = Some(id);
+        shell.chrome.inspector_open = true;
+        cx.notify();
+        id
+    });
+    settle_panels(cx);
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_view.source_classes.get(&source),
+            Some(&super::node_catalog::SourceClass::Tone),
+            "the rig's tone-bound source materializes as a tone node"
+        );
+    });
+    // A direct rebind to a physical endpoint — the kind of state an undo
+    // step or a pre-split project carries — must not re-class the node.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::BindSource {
+                    node: source,
+                    source: crate::service::InputSelection::Physical {
+                        endpoint_id: "legacy-mic".into(),
+                    },
+                },
+            ));
+        });
+    });
+    wait_for_graph(&view, cx, |graph| {
+        matches!(
+            graph.node(source).and_then(|entry| entry.source.clone()),
+            Some(crate::service::InputSelection::Physical { endpoint_id })
+                if endpoint_id == "legacy-mic"
+        )
+    });
+    view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.graph_view.source_classes.get(&source),
+            Some(&super::node_catalog::SourceClass::Tone),
+            "a rebind never re-classes a materialized node"
+        );
+    });
+    cx.update(|window, _| {
+        assert!(
+            window.find("bind-tone").visible(),
+            "the tone picker outlives the rebind"
         );
     });
     finish_service(runtime);
@@ -2861,6 +2985,7 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
         let world = CanvasWorld::positioned(
             &shell.state.read(cx).snapshot,
             &shell.graph_view.node_positions,
+            &shell.graph_view.source_classes,
         );
         let card = crate::ui::pages::graph::graph_canvas::NodeLayout::new(&world.nodes[0]).card;
         (
@@ -3457,10 +3582,10 @@ fn binding_menu_and_inspector_list_the_same_source_choices(cx: &mut gpui_kit::Te
         Some("Refresh sources")
     );
     // Clearing the binding shrinks both lists the same way: the Clear
-    // entry disappears and the tone generator leads. A UI clear pins the
-    // presented class first, so the tone node keeps offering the generator.
+    // entry disappears and the tone generator leads. The rig's source was
+    // materialized as a tone node by the render sync, and clearing never
+    // re-classes it — the stored class is the identity, not the binding.
     view.update(cx, |shell, cx| {
-        shell.pin_source_class_before_clear(source, cx);
         shell.state.update(cx, |state, _| {
             state.dispatch(crate::service::AppRequest::EditGraph(
                 crate::service::GraphEdit::ClearBinding(source),
