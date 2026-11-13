@@ -8,8 +8,8 @@ mod recovery;
 
 #[cfg(windows)]
 pub use observations::{
-    ProfessionalObservationSnapshot, ProfessionalObservations, ProfessionalStreamObservation,
-    StreamEndpoint,
+    ProfessionalObservationSnapshot, ProfessionalObservations, ProfessionalPrepareProgress,
+    ProfessionalStreamObservation, StreamEndpoint,
 };
 
 use crate::asio::{AsioOptions, AsioStream};
@@ -21,7 +21,7 @@ use crate::virtual_owner::{
     VirtualPreparedTransport,
 };
 use crate::wasapi::{WasapiOptions, WasapiStream, resolve_endpoint};
-use absence::{AbsenceMonitor, AbsentDevice, AbsentEntry};
+use absence::{AbsenceMonitor, AbsentDevice, AbsentEntry, StuckOpens};
 use moiren_core::graph::NodeId;
 use moiren_engine::{
     audio_config::{AudioBackend, SAMPLE_RATES, SampleFormat},
@@ -35,10 +35,14 @@ use moiren_engine::{
     sample::ProcessingSample,
 };
 use observations::Counters;
-use owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn};
+use owner::{AuxiliaryOwner, Opening, StreamFactory, Transport, WorkerRequest};
 use recovery::RecoveryMonitor;
 use rtrb::RingBuffer;
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use validation::select_clock;
 
 /// Preparation budget charged per native IO node: 32 bytes per capacity
@@ -49,6 +53,15 @@ const NATIVE_IO_BUDGET_BYTES_PER_FRAME: usize = 32;
 /// headroom above the capacity-scaled estimate.
 const NATIVE_IO_BUDGET_FIXED_MARGIN_BYTES: usize = 131_072;
 
+/// Deadline for one native group open (issue #105 decision D1): healthy
+/// devices negotiate in well under a second per stage, while a wedged
+/// endpoint can block for a minute — this bound converts that hang into a
+/// null-stream degradation instead of a frozen session start.
+const OPEN_DEADLINE: Duration = Duration::from_secs(10);
+/// How often the parallel handshake collector re-checks cancellation while
+/// waiting for open settlements.
+const OPEN_POLL_SLICE: Duration = Duration::from_millis(20);
+
 #[cfg(test)]
 #[path = "engine_backend/tests.rs"]
 mod virtual_tests;
@@ -57,11 +70,21 @@ mod validation;
 mod virtual_io;
 use validation::validate;
 
+/// Re-resolves one absent device to its native id (`None` = missing from
+/// enumeration right now); production asks the enumerator/registry.
+type AbsenceProbe = Arc<dyn Fn(&AbsentDevice) -> Option<String> + Send + Sync>;
+
 pub struct ProfessionalBackend<S: ProcessingSample> {
     observations: ProfessionalObservations,
     recovery: RecoveryMonitor,
     absence: AbsenceMonitor,
-    absence_probe: Arc<dyn Fn(&AbsentDevice) -> bool + Send + Sync>,
+    absence_probe: AbsenceProbe,
+    /// Endpoints whose open was abandoned past the deadline in this backend
+    /// instance's session (D3): re-prepares keep them as null streams until
+    /// the device is observed missing or the user applies again.
+    stuck: Arc<StuckOpens>,
+    /// Per-group open deadline; production uses [`OPEN_DEADLINE`].
+    open_timeout: Duration,
     virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
     virtual_clock: Arc<dyn VirtualClockFactory>,
     marker: PhantomData<S>,
@@ -72,7 +95,9 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             observations: ProfessionalObservations::default(),
             recovery: RecoveryMonitor::default(),
             absence: AbsenceMonitor::default(),
-            absence_probe: Arc::new(system_endpoint_present),
+            absence_probe: Arc::new(system_endpoint_resolve),
+            stuck: Arc::default(),
+            open_timeout: OPEN_DEADLINE,
             virtual_provider: None,
             virtual_clock: Arc::new(QpcClockFactory),
             marker: PhantomData,
@@ -91,13 +116,19 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         self.virtual_clock = clock;
         self
     }
-    /// Replace the absent-device return probe (tests flip device presence
-    /// without touching the enumerator or the registry).
+    /// Shorten the native open deadline (tests bound abandoned-open
+    /// behavior without sleeping for the production bound).
     #[cfg(test)]
-    pub(crate) fn with_absence_probe(
-        mut self,
-        probe: Arc<dyn Fn(&AbsentDevice) -> bool + Send + Sync>,
-    ) -> Self {
+    pub(crate) fn with_open_timeout(mut self, timeout: Duration) -> Self {
+        self.open_timeout = timeout;
+        self
+    }
+    /// Replace the absent-device return probe (tests flip device presence
+    /// without touching the enumerator or the registry). The probe resolves
+    /// the selector to its native id — `None` means the device is missing
+    /// from enumeration right now.
+    #[cfg(test)]
+    pub(crate) fn with_absence_probe(mut self, probe: AbsenceProbe) -> Self {
         self.absence_probe = probe;
         self
     }
@@ -112,6 +143,19 @@ struct Direction {
     /// catalog row. Distinct from the native open id an ASIO group
     /// canonicalizes to.
     endpoint: String,
+    /// The selector the graph bound; absence and stuck watches re-resolve
+    /// it to detect the device's return.
+    selector: EndpointSelector,
+}
+
+/// One endpoint that prepares without a native stream: the device is missing
+/// from enumeration, or its previous open is still marked stuck (D3).
+struct AbsentPending {
+    direction: Direction,
+    input: bool,
+    /// The native id a stuck endpoint last resolved to; `None` for endpoints
+    /// that were absent at resolve time.
+    native_id: Option<String>,
 }
 struct Group {
     id: String,
@@ -208,27 +252,24 @@ trait NativeDevices {
     fn factory(&self, group: &Group, rate: u32) -> Result<StreamFactory, BackendError>;
 }
 
-/// The production return probe: re-resolves one absent device without any
-/// side effects. WASAPI asks the enumerator; ASIO checks the registry.
-fn system_endpoint_present(device: &AbsentDevice) -> bool {
+/// The production return probe: re-resolve one absent device to its native
+/// id without any side effects. WASAPI asks the enumerator; ASIO checks the
+/// registry. `None` reports the device missing from enumeration right now.
+fn system_endpoint_resolve(device: &AbsentDevice) -> Option<String> {
     match device.backend {
-        AudioBackend::Wasapi => {
-            matches!(
-                resolve_endpoint(&device.selector, device.input),
-                Ok(Some(_))
-            )
-        }
+        AudioBackend::Wasapi => resolve_endpoint(&device.selector, device.input)
+            .ok()
+            .flatten(),
         AudioBackend::Asio => match &device.selector {
-            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => matches!(
-                (|| -> Result<bool, BackendError> {
-                    let id = canonical_asio_driver_id(endpoint_id.as_str())?;
-                    Ok(crate::asio::list_drivers()?
-                        .iter()
-                        .any(|driver| driver.id == id))
-                })(),
-                Ok(true)
-            ),
-            EndpointSelector::FollowDefault(_) => false,
+            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => (|| {
+                let id = canonical_asio_driver_id(endpoint_id.as_str()).ok()?;
+                crate::asio::list_drivers()
+                    .ok()?
+                    .iter()
+                    .any(|driver| driver.id == id)
+                    .then_some(id)
+            })(),
+            EndpointSelector::FollowDefault(_) => None,
         },
     }
 }
@@ -280,7 +321,19 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
             })
             .or_else(|| {
                 let probe = self.absence_probe.clone();
-                self.absence.poll(move |device| probe(device))
+                let stuck = self.stuck.clone();
+                // A device that enumerates has "returned" — unless its open
+                // was abandoned past the deadline and it has not been seen
+                // missing since (D3). The first observation of a missing
+                // endpoint clears that verdict: a re-plug re-created the
+                // device instance, so the next sighting may open promptly.
+                self.absence.poll(move |device| match probe(device) {
+                    Some(id) => !stuck.is_stuck(device.backend, &id),
+                    None => {
+                        stuck.clear(device.backend, device.native_id.as_deref());
+                        false
+                    }
+                })
             })
     }
     fn prepare(
@@ -355,7 +408,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             self.observations.clone(),
         ));
         let mut groups: Vec<Group> = Vec::new();
-        let mut absent: Vec<(Direction, bool, EndpointSelector)> = Vec::new();
+        let mut absent: Vec<AbsentPending> = Vec::new();
         let mut processes = Vec::new();
         for (&node, config) in &request.project.nodes {
             if cancel.is_cancelled() {
@@ -431,18 +484,48 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                         device.backend.title(),
                         if input { "input" } else { "output" },
                     );
-                    absent.push((
-                        Direction {
+                    absent.push(AbsentPending {
+                        direction: Direction {
                             node,
                             device,
                             endpoint,
+                            selector: selector.clone(),
                         },
                         input,
-                        selector.clone(),
-                    ));
+                        native_id: None,
+                    });
                     continue;
                 }
                 Resolved::Native(id) => {
+                    // A present endpoint whose previous open never settled:
+                    // keep the stuck verdict (D3) instead of hanging another
+                    // bounded open on every re-prepare.
+                    if self.stuck.is_stuck(device.backend, &id) {
+                        let endpoint = match selector {
+                            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
+                                endpoint_id.clone()
+                            }
+                            EndpointSelector::FollowDefault(_) => id.clone(),
+                        };
+                        log::info!(
+                            target: "moiren::audio::professional",
+                            "stuck native device prepares as a null stream: node={:?} backend={} endpoint={endpoint:?} direction={}",
+                            node,
+                            device.backend.title(),
+                            if input { "input" } else { "output" },
+                        );
+                        absent.push(AbsentPending {
+                            direction: Direction {
+                                node,
+                                device,
+                                endpoint,
+                                selector: selector.clone(),
+                            },
+                            input,
+                            native_id: Some(id),
+                        });
+                        continue;
+                    }
                     let endpoint = match selector {
                         EndpointSelector::PinnedEndpoint { endpoint_id, .. } => endpoint_id.clone(),
                         // A followed default resolves to a concrete native id, which
@@ -457,6 +540,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 node,
                 device,
                 endpoint,
+                selector: selector.clone(),
             };
             if let Some(group) = groups.iter_mut().find(|g| {
                 g.id == id
@@ -519,13 +603,6 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         let recovery = self
             .recovery
             .register(request.owner_generation, asio_configurations, rate);
-        let clock = select_clock(
-            &request,
-            &absent
-                .iter()
-                .map(|(direction, _, _)| direction.node)
-                .collect::<Vec<_>>(),
-        )?;
         let (mut virtual_sessions, virtual_sinks, virtual_observations) = virtual_io::prepare(
             &request,
             self.virtual_provider.as_deref(),
@@ -534,20 +611,21 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             cancel,
         )?;
         transport.streams.extend(virtual_observations);
-        if matches!(clock, ProjectClock::Physical(_)) {
-            transport.sinks.extend(&virtual_sinks);
-            if !virtual_sessions.is_empty() {
-                transport
-                    .auxiliaries
-                    .push(Box::new(virtual_io::VirtualAuxiliary(std::mem::take(
-                        &mut virtual_sessions,
-                    ))));
-            }
+        // Open every native group concurrently (issue #105): all workers
+        // park before activation and each owns its COM apartment, so the
+        // serialization was never load-bearing. Total startup latency is the
+        // maximum of the open deadlines instead of their sum, and one slow
+        // device no longer delays every other device's start.
+        struct PendingOpen {
+            group: Group,
+            counters: Arc<Counters>,
+            capture_rx: Option<rtrb::Consumer<crate::native::StereoFrame>>,
+            capture_clock: Option<Arc<CaptureWriteClock>>,
+            render_tx: Option<rtrb::Producer<crate::native::StereoFrame>>,
+            opening: Opening,
         }
+        let mut pending: Vec<PendingOpen> = Vec::with_capacity(groups.len());
         for group in groups {
-            if cancel.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
             let counters = Arc::new(Counters::default());
             let (capture_tx, capture_rx, capture_clock) = if group.input.is_some() {
                 let (tx, rx) = RingBuffer::new(capacity);
@@ -587,18 +665,159 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 group.output.as_ref().map(|direction| direction.device),
                 group.master(),
             );
-            let (worker, info) = spawn(worker_request, cancel)?;
-            transport.workers.push(worker);
-            log::info!(
-                target: "moiren::audio::professional",
-                "native device group opened: backend={} endpoint={:?} actual_rate={} actual_format={:?} actual_channels={} actual_buffer_frames={}",
-                group.backend.title(),
-                group.id,
-                info.sample_rate,
-                info.format,
-                info.channels,
-                info.buffer_frames,
-            );
+            pending.push(PendingOpen {
+                group,
+                counters,
+                capture_rx,
+                capture_clock,
+                render_tx,
+                opening: owner::start_worker(worker_request)?,
+            });
+        }
+        let deadline = Instant::now() + self.open_timeout;
+        /// One group whose handshake settled: the negotiated metadata plus
+        /// the ring ends the bindings will consume.
+        struct OpenedGroup {
+            group: Group,
+            counters: Arc<Counters>,
+            capture_rx: Option<rtrb::Consumer<crate::native::StereoFrame>>,
+            capture_clock: Option<Arc<CaptureWriteClock>>,
+            render_tx: Option<rtrb::Producer<crate::native::StereoFrame>>,
+            info: NativeStreamInfo,
+        }
+        let mut settled: Vec<OpenedGroup> = Vec::with_capacity(pending.len());
+        let groups_total = pending.len();
+        if groups_total > 0 {
+            self.observations
+                .publish_progress(request.owner_generation, groups_total, 0, None);
+        }
+        while !pending.is_empty() {
+            if cancel.is_cancelled() {
+                for open in pending {
+                    open.opening.abandon();
+                }
+                return Err(BackendError::Cancelled);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                // Deadline: every still-unsettled group degrades to a null
+                // stream (D2) and is marked stuck for this session (D3).
+                for open in pending {
+                    log::warn!(
+                        target: "moiren::audio::professional",
+                        "native open timed out after {:?}: backend={} endpoint={:?} node(s)={:?} — preparing a null stream; the endpoint is skipped until it is seen missing or the session is re-applied",
+                        self.open_timeout,
+                        open.group.backend.title(),
+                        open.group.id,
+                        open.group
+                            .input
+                            .iter()
+                            .chain(&open.group.output)
+                            .map(|direction| direction.node)
+                            .collect::<Vec<_>>(),
+                    );
+                    self.stuck.mark(open.group.backend, &open.group.id);
+                    let native_id = open.group.id.clone();
+                    let input = open.group.input.clone();
+                    let output = open.group.output.clone();
+                    // Every node of the group keeps its binding as a null
+                    // stream — a timed-out duplex group degrades both sides.
+                    for (direction, input) in input
+                        .into_iter()
+                        .map(|direction| (direction, true))
+                        .chain(output.into_iter().map(|direction| (direction, false)))
+                    {
+                        absent.push(AbsentPending {
+                            direction,
+                            input,
+                            native_id: Some(native_id.clone()),
+                        });
+                    }
+                    open.opening.abandon();
+                }
+                break;
+            }
+            let slice = OPEN_POLL_SLICE.min(deadline - now);
+            let open = &mut pending[0];
+            match open.opening.settle(slice) {
+                Some(Ok(info)) => {
+                    let open = pending.remove(0);
+                    log::info!(
+                        target: "moiren::audio::professional",
+                        "native device group opened: backend={} endpoint={:?} actual_rate={} actual_format={:?} actual_channels={} actual_buffer_frames={}",
+                        open.group.backend.title(),
+                        open.group.id,
+                        info.sample_rate,
+                        info.format,
+                        info.channels,
+                        info.buffer_frames,
+                    );
+                    let PendingOpen {
+                        group,
+                        counters,
+                        capture_rx,
+                        capture_clock,
+                        render_tx,
+                        opening,
+                    } = open;
+                    transport.workers.push(opening.into_worker());
+                    settled.push(OpenedGroup {
+                        group,
+                        counters,
+                        capture_rx,
+                        capture_clock,
+                        render_tx,
+                        info,
+                    });
+                    self.observations.publish_progress(
+                        request.owner_generation,
+                        groups_total,
+                        settled.len(),
+                        pending.first().map(|next| next.group.id.clone()),
+                    );
+                }
+                Some(Err(error)) => {
+                    // A hard open failure fails the whole preparation exactly
+                    // as before: settled workers unwind through the dropped
+                    // transport, unsettled ones are abandoned.
+                    for open in pending.drain(..) {
+                        open.opening.abandon();
+                    }
+                    return Err(error);
+                }
+                None => {
+                    // Fair rotation: poll the next unsettled group.
+                    pending.rotate_left(1);
+                }
+            }
+        }
+        self.observations.clear_progress(request.owner_generation);
+        let clock = select_clock(
+            &request,
+            &absent
+                .iter()
+                .map(|pending| pending.direction.node)
+                .collect::<Vec<_>>(),
+        )?;
+        if matches!(clock, ProjectClock::Physical(_)) {
+            transport.sinks.extend(&virtual_sinks);
+            if !virtual_sessions.is_empty() {
+                transport
+                    .auxiliaries
+                    .push(Box::new(virtual_io::VirtualAuxiliary(std::mem::take(
+                        &mut virtual_sessions,
+                    ))));
+            }
+        }
+        for OpenedGroup {
+            group,
+            counters,
+            capture_rx,
+            capture_clock,
+            render_tx,
+            info,
+        } in settled
+        {
             for direction in group.input.iter().chain(&group.output) {
                 if direction.device.sample_format != SampleFormat::Native
                     && direction.device.sample_format != info.format
@@ -668,7 +887,12 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         // itself writes it during every render.
         let mut absent_entries = Vec::with_capacity(absent.len());
         let mut absent_virtual_sinks = Vec::new();
-        for (direction, input, selector) in absent {
+        for pending in absent {
+            let AbsentPending {
+                direction,
+                input,
+                native_id,
+            } = pending;
             if input {
                 bindings
                     .bind_source(
@@ -699,9 +923,10 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 node: direction.node,
                 configuration: request.project.nodes[&direction.node].clone(),
                 device: AbsentDevice {
-                    selector,
+                    selector: direction.selector,
                     backend: direction.device.backend,
                     input,
+                    native_id,
                 },
             });
         }

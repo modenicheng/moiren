@@ -12,7 +12,7 @@ use crate::{
 pub const SAMPLE_RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
 pub const BUFFER_SIZES: [u32; 7] = [64, 128, 256, 512, 1024, 2048, 4096];
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioBackend {
     #[default]

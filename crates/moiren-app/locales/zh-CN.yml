@@ -1010,6 +1010,12 @@ _version: 2
 "Starting":
   en: Starting
   zh-CN: 正在启动
+"Starting audio (%{opened} of %{total})":
+  en: "Starting audio (%{opened} of %{total})"
+  zh-CN: "正在启动音频（%{opened}/%{total}）"
+"Starting audio (%{opened} of %{total}): %{device}":
+  en: "Starting audio (%{opened} of %{total}): %{device}"
+  zh-CN: "正在启动音频（%{opened}/%{total}）：%{device}"
 "Running":
   en: Running
   zh-CN: 运行中
