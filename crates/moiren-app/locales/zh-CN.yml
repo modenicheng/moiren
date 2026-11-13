@@ -857,6 +857,9 @@ _version: 2
 "Physical input":
   en: Physical input
   zh-CN: 物理输入
+"Virtual device":
+  en: Virtual device
+  zh-CN: 虚拟设备
 "Application audio":
   en: Application audio
   zh-CN: 应用音频
@@ -887,9 +890,21 @@ _version: 2
 "WASAPI capture endpoint":
   en: WASAPI capture endpoint
   zh-CN: WASAPI 采集端点
+"VAD virtual capture endpoint":
+  en: VAD virtual capture endpoint
+  zh-CN: VAD 虚拟捕获端点
 "Process loopback source":
   en: Process loopback source
   zh-CN: 进程回环音源
+"No physical input is available. Connect or enable a device, then refresh.":
+  en: No physical input is available. Connect or enable a device, then refresh.
+  zh-CN: 当前没有可用的物理输入。连接或启用设备后刷新。
+"No virtual device exists yet. Create one on the Devices page, then refresh.":
+  en: No virtual device exists yet. Create one on the Devices page, then refresh.
+  zh-CN: 还没有虚拟设备。请先在设备页创建一个，然后刷新。
+"No application is producing audio right now.":
+  en: No application is producing audio right now.
+  zh-CN: 当前没有应用在播放音频。
 "Prepared sine-wave source":
   en: Prepared sine-wave source
   zh-CN: 预置正弦波音源

@@ -634,12 +634,49 @@ fn every_session_source_round_trips_with_presentation_state() {
             node_id: 0,
             x: -30.0,
             y: 55.0,
+            source_class: None,
         });
         save_project(&path, &document).unwrap();
         let restored = load_project(&path).unwrap();
         assert_eq!(restored, document);
         assert_eq!(restored.session_spec().unwrap(), Some(spec));
     }
+}
+
+/// The presentation-tier source class (OBS-style split) survives a save and
+/// an open unchanged, and older documents without the field still parse.
+#[test]
+fn layout_source_class_round_trips_and_stays_optional() {
+    let directory = TestDirectory::new();
+    let path = directory.file("classes.moiren");
+    let mut document = ProjectDocument::new(
+        "Classes",
+        &session(InputSelection::Tone {
+            frequency_hz: 440.0,
+        }),
+    );
+    document.layout.nodes.push(NodeLayout {
+        node_id: 0,
+        x: 0.0,
+        y: 0.0,
+        source_class: Some(SourceClassDocument::Virtual),
+    });
+    save_project(&path, &document).unwrap();
+    let restored = load_project(&path).unwrap();
+    assert_eq!(restored, document);
+    assert_eq!(
+        restored.layout.nodes[0].source_class,
+        Some(SourceClassDocument::Virtual)
+    );
+    // A pre-split document carries no field and reads as unclassified.
+    let mut legacy = serde_json::to_value(&document).unwrap();
+    legacy["layout"]["nodes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("source_class");
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let restored = load_project(&path).unwrap();
+    assert_eq!(restored.layout.nodes[0].source_class, None);
 }
 
 #[test]

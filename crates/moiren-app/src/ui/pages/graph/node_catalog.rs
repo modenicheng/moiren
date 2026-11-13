@@ -6,6 +6,7 @@ use crate::ui::theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeTemplate {
     Input,
+    VirtualDevice,
     Application,
     Tone,
     Gain,
@@ -22,6 +23,49 @@ pub enum NodeTemplate {
     Rack,
     Bus,
     Output,
+}
+
+/// Which kind of capture resource a Source node presents, OBS-style: the
+/// library spawns a node per class, and its pickers list only that class's
+/// resources (2026-11-13 decision — template splitting, not dropdown
+/// grouping). A binding/UI-layer concept only: every class is still one
+/// `NodeKind::Source`, and the live binding re-derives the class so a
+/// restored project keeps filtering without stored presentation state
+/// wherever it is bound. `Tone` keeps the generator's own picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceClass {
+    /// Microphones and line-in endpoints the active backend offers
+    /// (WASAPI capture endpoints, or ASIO drivers under ASIO).
+    Physical,
+    /// App-owned virtual (VAD) endpoints — playback exports and their
+    /// Windows device rows.
+    Virtual,
+    /// Per-process loopback capture.
+    Application,
+    /// The prepared sine-wave generator.
+    Tone,
+}
+
+impl From<SourceClass> for crate::project::SourceClassDocument {
+    fn from(class: SourceClass) -> Self {
+        match class {
+            SourceClass::Physical => Self::Physical,
+            SourceClass::Virtual => Self::Virtual,
+            SourceClass::Application => Self::Application,
+            SourceClass::Tone => Self::Tone,
+        }
+    }
+}
+
+impl From<crate::project::SourceClassDocument> for SourceClass {
+    fn from(class: crate::project::SourceClassDocument) -> Self {
+        match class {
+            crate::project::SourceClassDocument::Physical => SourceClass::Physical,
+            crate::project::SourceClassDocument::Virtual => SourceClass::Virtual,
+            crate::project::SourceClassDocument::Application => SourceClass::Application,
+            crate::project::SourceClassDocument::Tone => SourceClass::Tone,
+        }
+    }
 }
 
 /// The single NodeKind presentation registry (issue #122): every surface
@@ -104,9 +148,32 @@ pub(crate) fn kind_icon(
     }
 }
 
+/// The icon name every virtual-device surface wears (template card, VAD-bound
+/// source cards).
+pub(crate) const VIRTUAL_DEVICE_ICON: &str = "repeat";
+
+/// The canvas card icon: like [`kind_icon`], except a Source bound to one of
+/// our virtual (VAD) endpoints wears the virtual-device glyph — the binding
+/// is an ordinary physical endpoint id, so only the catalog can tell the two
+/// apart.
+pub(crate) fn card_icon(
+    snapshot: &crate::service::AppSnapshot,
+    kind: NodeKind,
+    source: Option<&crate::service::InputSelection>,
+) -> &'static str {
+    if kind == NodeKind::Source
+        && let Some(crate::service::InputSelection::Physical { endpoint_id }) = source
+        && crate::ui::state::is_virtual_endpoint(&snapshot.catalog, endpoint_id)
+    {
+        return VIRTUAL_DEVICE_ICON;
+    }
+    kind_icon(kind, source)
+}
+
 impl NodeTemplate {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Input,
+        Self::VirtualDevice,
         Self::Application,
         Self::Tone,
         Self::Gain,
@@ -128,6 +195,7 @@ impl NodeTemplate {
     pub fn title(self) -> &'static str {
         match self {
             Self::Input => "Physical input",
+            Self::VirtualDevice => "Virtual device",
             Self::Application => "Application audio",
             Self::Tone => "Tone generator",
             Self::Gain => "Gain",
@@ -147,9 +215,21 @@ impl NodeTemplate {
         }
     }
 
+    /// The source class a node created from this template presents; only
+    /// source templates carry one.
+    pub fn source_class(self) -> Option<SourceClass> {
+        match self {
+            Self::Input => Some(SourceClass::Physical),
+            Self::VirtualDevice => Some(SourceClass::Virtual),
+            Self::Application => Some(SourceClass::Application),
+            Self::Tone => Some(SourceClass::Tone),
+            _ => None,
+        }
+    }
+
     pub fn group(self) -> &'static str {
         match self {
-            Self::Input | Self::Application | Self::Tone => "SOURCES",
+            Self::Input | Self::VirtualDevice | Self::Application | Self::Tone => "SOURCES",
             Self::Gain
             | Self::Balance
             | Self::Compressor
@@ -168,6 +248,7 @@ impl NodeTemplate {
     pub fn description(self) -> &'static str {
         match self {
             Self::Input => "WASAPI capture endpoint",
+            Self::VirtualDevice => "VAD virtual capture endpoint",
             Self::Application => "Process loopback source",
             Self::Tone => "Prepared sine-wave source",
             Self::Gain => "Adjust linear amplitude",
@@ -189,7 +270,7 @@ impl NodeTemplate {
 
     pub fn kind(self) -> Option<NodeKind> {
         Some(match self {
-            Self::Input | Self::Application | Self::Tone => NodeKind::Source,
+            Self::Input | Self::VirtualDevice | Self::Application | Self::Tone => NodeKind::Source,
             Self::Gain => NodeKind::Gain,
             Self::Balance => NodeKind::Pan,
             Self::Compressor => NodeKind::Compressor,
@@ -210,6 +291,7 @@ impl NodeTemplate {
     pub fn icon(self) -> &'static str {
         match self {
             Self::Input => "mic",
+            Self::VirtualDevice => "repeat",
             Self::Application => "app",
             Self::Tone => "wave",
             Self::Recorder => "radio",
@@ -250,6 +332,7 @@ mod tests {
         assert!(NodeTemplate::Gain.matches("GAIN"));
         assert!(NodeTemplate::Input.matches("source"));
         assert!(NodeTemplate::Application.matches("process"));
+        assert!(NodeTemplate::VirtualDevice.matches("vad"));
         assert!(!NodeTemplate::Output.matches("compressor"));
         assert!(NodeTemplate::Bus.matches("  "));
     }
@@ -262,6 +345,44 @@ mod tests {
             Some(NodeKind::SpectrumAnalyzer)
         );
         assert_eq!(NodeTemplate::Gain.kind(), Some(NodeKind::Gain));
+    }
+
+    /// The OBS-style split (2026-11-13): every source template carries a
+    /// class, no other template does, and the three device classes plus the
+    /// generator each have exactly one template.
+    #[test]
+    fn source_templates_map_one_to_one_onto_classes() {
+        let classes: Vec<_> = NodeTemplate::ALL
+            .into_iter()
+            .filter_map(NodeTemplate::source_class)
+            .collect();
+        for class in [
+            SourceClass::Physical,
+            SourceClass::Virtual,
+            SourceClass::Application,
+            SourceClass::Tone,
+        ] {
+            assert_eq!(
+                classes.iter().filter(|&&c| c == class).count(),
+                1,
+                "{class:?} must have exactly one template"
+            );
+        }
+        assert_eq!(
+            NodeTemplate::Input.source_class(),
+            Some(SourceClass::Physical)
+        );
+        assert_eq!(
+            NodeTemplate::VirtualDevice.source_class(),
+            Some(SourceClass::Virtual)
+        );
+        assert_eq!(
+            NodeTemplate::Application.source_class(),
+            Some(SourceClass::Application)
+        );
+        assert_eq!(NodeTemplate::Tone.source_class(), Some(SourceClass::Tone));
+        assert_eq!(NodeTemplate::Gain.source_class(), None);
+        assert_eq!(NodeTemplate::VirtualDevice.kind(), Some(NodeKind::Source));
     }
 
     #[test]
