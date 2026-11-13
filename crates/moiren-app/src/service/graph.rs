@@ -1,7 +1,8 @@
 //! The service owns the editable topology. Pages receive immutable projections;
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{
-    ExportIntent, InputSelection, RecordingCard, SessionGeneration, SessionSpec, validate_exports,
+    ExportIntent, InputSelection, PluginAssignment, PluginLibrary, RecordingCard,
+    SessionGeneration, SessionSpec, validate_exports,
 };
 use moiren_core::graph::{EdgeId, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
 use moiren_core::protocol::ParamValue;
@@ -30,6 +31,9 @@ pub struct GraphNodeState {
     pub builtin: BuiltinState,
     pub source: Option<InputSelection>,
     pub output_endpoint_id: Option<String>,
+    /// The Plugin node's assignment, resolved against the service's plugin
+    /// library at preparation time; `None` on every other kind.
+    pub plugin: Option<PluginAssignment>,
     /// User-chosen card tint as an index into the fixed theme palette
     /// (see [`NODE_TINT_COUNT`]); `None` keeps the category tint.
     pub tint: Option<u8>,
@@ -234,6 +238,14 @@ pub enum GraphEdit {
         node: NodeId,
         endpoint_id: String,
     },
+    /// Assign a Plugin node's plugin (resolved by stable id against the
+    /// service's plugin library at preparation time) or clear the
+    /// assignment. Assignment is structural: it rebuilds the node's
+    /// processor.
+    BindPlugin {
+        node: NodeId,
+        assignment: Option<PluginAssignment>,
+    },
     BindExport {
         endpoint_id: moiren_engine::node::VirtualEndpointId,
         node: Option<NodeId>,
@@ -258,6 +270,7 @@ impl GraphEdit {
             Self::SetBuiltin { node, .. } => Some(format!("builtin:{node:?}")),
             Self::SetLabel { node, .. } => Some(format!("label:{node:?}")),
             Self::SetNodeTint { node, .. } => Some(format!("tint:{node:?}")),
+            Self::BindPlugin { node, .. } => Some(format!("plugin:{node:?}")),
             _ => None,
         }
     }
@@ -304,6 +317,10 @@ pub struct GraphPreparation {
     pub graph: LogicalGraph,
     pub nodes: Vec<GraphNodeState>,
     pub revision: u64,
+    /// The plugin library Plugin-node assignments resolve against; the
+    /// lifecycle caller stamps the service's current snapshot in before
+    /// translating to an engine project.
+    pub plugins: std::sync::Arc<PluginLibrary>,
 }
 pub struct ServiceGraph {
     snapshot: GraphSnapshot,
@@ -361,6 +378,7 @@ impl Default for ServiceGraph {
                     frequency_hz: 440.0,
                 }),
                 output_endpoint_id: None,
+                plugin: None,
                 tint: None,
             })
             .collect();
@@ -545,6 +563,7 @@ fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubject {
         | GraphEdit::SetSwap { node: id, .. }
         | GraphEdit::BindSource { node: id, .. }
         | GraphEdit::BindOutput { node: id, .. }
+        | GraphEdit::BindPlugin { node: id, .. }
         | GraphEdit::AddBusInput(id)
         | GraphEdit::RemoveBusInput { node: id, .. } => node(id),
         GraphEdit::Connect {
@@ -609,6 +628,7 @@ fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &LogicalGraph) ->
         | GraphEdit::SetBuiltin { .. }
         | GraphEdit::BindSource { .. }
         | GraphEdit::BindOutput { .. }
+        | GraphEdit::BindPlugin { .. }
         | GraphEdit::ClearBinding(_) => true,
         GraphEdit::SetSend { edge, params } => previous
             .get_edge(*edge)
@@ -665,6 +685,22 @@ pub fn validate_node_state(
     {
         return Err("Only Sink nodes can bind a valid output device".into());
     }
+    if let Some(plugin) = &state.plugin {
+        if kind != NodeKind::Plugin {
+            return Err("Only Plugin nodes can carry a plugin assignment".into());
+        }
+        // Library keys are short printable composites; the bound is generous.
+        if plugin.id.trim().is_empty() || plugin.id.len() > 1024 || plugin.id.contains('\0') {
+            return Err("The plugin assignment id is invalid".into());
+        }
+        if plugin
+            .preset
+            .as_ref()
+            .is_some_and(|preset| preset.len() > 16 * 1024 * 1024)
+        {
+            return Err("The plugin preset is too large".into());
+        }
+    }
     Ok(())
 }
 impl ServiceGraph {
@@ -701,6 +737,7 @@ impl ServiceGraph {
             graph: self.snapshot.graph.clone(),
             nodes: self.snapshot.nodes.clone(),
             revision: self.snapshot.candidate_revision,
+            plugins: super::plugins::empty_library(),
         }
     }
     pub fn record_error(&mut self, error: impl ToString) {
@@ -884,6 +921,7 @@ impl ServiceGraph {
             graph: graph.clone(),
             nodes: nodes.clone(),
             revision: 0,
+            plugins: super::plugins::empty_library(),
         }
         .validate_state()?;
         let revision = self

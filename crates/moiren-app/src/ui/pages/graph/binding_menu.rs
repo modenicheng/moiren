@@ -76,6 +76,11 @@ fn row(this: Entity<StudioShell>, choice: BindingChoice) -> impl IntoElement {
                     BindingAction::Refresh => shell
                         .state
                         .update(cx, |state, _| state.dispatch(AppRequest::RefreshCatalog)),
+                    // The list re-renders from the replaced plugin library
+                    // once the sandboxed scan lands.
+                    BindingAction::ScanPlugins => shell
+                        .state
+                        .update(cx, |state, _| state.dispatch(AppRequest::ScanPlugins)),
                 }
                 cx.notify();
             })

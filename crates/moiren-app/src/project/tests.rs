@@ -420,6 +420,7 @@ fn compressor_properties_restore_and_prepare_the_saved_values() {
         graph,
         nodes,
         revision: 1,
+        plugins: crate::service::empty_library(),
     };
     let sink_id = project_graph
         .graph
@@ -1097,4 +1098,77 @@ fn a_missing_autosave_leaves_startup_fresh_when_restore_is_disabled() {
     let startup = StartupDocuments::load_at(&preferences_path).unwrap();
     assert!(startup.project.is_none());
     assert!(load_autosave_at(directory.file("autosave.moiren.json")).is_none());
+}
+
+#[test]
+fn plugin_assignments_round_trip_through_graph_documents() {
+    let mut service = crate::service::ServiceGraph::default();
+    service
+        .edit(crate::service::GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin_node = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let assignment = crate::service::PluginAssignment {
+        id: "CLAP|org.example.gain|C:/plugins/gain.clap".into(),
+        preset: Some(vec![1, 2, 3, 4]),
+    };
+    service
+        .edit(crate::service::GraphEdit::BindPlugin {
+            node: plugin_node,
+            assignment: Some(assignment.clone()),
+        })
+        .unwrap();
+    // Snapshot -> document -> JSON -> document -> graph keeps the
+    // assignment byte-for-byte, and an unassigned plugin node round-trips
+    // without inventing one.
+    let document = GraphDocument::from_snapshot(&service.snapshot()).unwrap();
+    let json = serde_json::to_value(&document).unwrap();
+    let restored: GraphDocument = serde_json::from_value(json).unwrap();
+    let (graph, nodes) = restored.restore().unwrap();
+    // Restore mints fresh node ids; the single Plugin node carries the
+    // assignment byte-for-byte.
+    let restored_id = graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    assert_eq!(
+        nodes
+            .iter()
+            .find(|state| state.id == restored_id)
+            .unwrap()
+            .plugin,
+        Some(assignment)
+    );
+    // Older documents without the field load as unassigned.
+    let mut legacy = serde_json::to_value(&document).unwrap();
+    for node in legacy["nodes"].as_array_mut().unwrap() {
+        node.as_object_mut().unwrap().remove("plugin");
+    }
+    let legacy: GraphDocument = serde_json::from_value(legacy).unwrap();
+    let (graph, nodes) = legacy.restore().unwrap();
+    let legacy_id = graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    assert!(
+        nodes
+            .iter()
+            .find(|state| state.id == legacy_id)
+            .unwrap()
+            .plugin
+            .is_none()
+    );
 }

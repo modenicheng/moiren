@@ -261,10 +261,37 @@ impl GraphPreparation {
                     })?,
                 NodeKind::Bus => NodeConfig::Bus,
                 NodeKind::Plugin => {
-                    return Err(PreparationFailure::at(
-                        node.id(),
-                        format!("plugin node {node:?} has no plugin assignment yet"),
-                    ));
+                    // The assignment resolves against the service's current
+                    // plugin library: preparation instantiates through the
+                    // existing moiren-plugins host (engine-side
+                    // NodeConfig::Plugin lowering), never a new one.
+                    let Some(assignment) = &state.plugin else {
+                        return Err(PreparationFailure::at(
+                            node.id(),
+                            "The Plugin node has no plugin assigned",
+                        ));
+                    };
+                    let Some(entry) = self.plugins.get(&assignment.id) else {
+                        return Err(PreparationFailure::at(
+                            node.id(),
+                            "The assigned plugin is missing from the library; scan plugins",
+                        ));
+                    };
+                    if entry.descriptor.channels() as usize != node.channels() {
+                        return Err(PreparationFailure::at(
+                            node.id(),
+                            format!(
+                                "The plugin needs {} channels but the node has {}",
+                                entry.descriptor.channels(),
+                                node.channels()
+                            ),
+                        ));
+                    }
+                    NodeConfig::Plugin(moiren_engine::processor::PluginSettings {
+                        descriptor: entry.descriptor.clone(),
+                        parameters: entry.parameters.clone(),
+                        preset: assignment.preset.clone(),
+                    })
                 }
             };
             project.nodes.insert(node.id(), config);

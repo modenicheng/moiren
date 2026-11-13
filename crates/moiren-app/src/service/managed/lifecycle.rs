@@ -69,7 +69,10 @@ impl ManagedDriver {
         // Any apply — automatic or explicit — consumes the pending auto-apply
         // deadline; a structural edit during this apply re-arms it.
         self.auto_apply_deadline = None;
-        let preparation = c.graph.preparation();
+        let mut preparation = c.graph.preparation();
+        // Plugin assignments resolve against the service's current library;
+        // an id that vanished since assignment fails at its node.
+        preparation.plugins = c.plugins.clone();
         let virtual_transport_ready = self.exports_runtime.adapter.is_some();
         c.exports.set_available(virtual_transport_ready);
         if !virtual_transport_ready

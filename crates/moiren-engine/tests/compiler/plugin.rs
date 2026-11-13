@@ -70,12 +70,8 @@ fn fixture_settings() -> PluginSettings {
 fn plugin_preset_is_restored_into_the_instance() {
     // Capture a state chunk from a live fixture instance whose gain was
     // moved off the default, exactly like a preset capture would.
-    let mut capture = moiren_plugins::instantiate(
-        &fixture_settings().descriptor,
-        48_000.0,
-        256,
-    )
-    .expect("fixture instantiation");
+    let mut capture = moiren_plugins::instantiate(&fixture_settings().descriptor, 48_000.0, 256)
+        .expect("fixture instantiation");
     let frames = 1;
     let inputs = vec![vec![0.0f32; frames]; 2];
     let mut outputs = vec![vec![0.0f32; frames]; 2];
@@ -136,7 +132,10 @@ fn plugin_preset_is_restored_into_the_instance() {
     let report = reader.read_interleaved(&mut output).unwrap();
     assert!(report.transferred_frames > 0);
     for sample in &output[..report.transferred_frames * 2] {
-        assert!((sample - 0.5).abs() < 1e-6, "preset gain not applied: {sample}");
+        assert!(
+            (sample - 0.5).abs() < 1e-6,
+            "preset gain not applied: {sample}"
+        );
     }
 }
 

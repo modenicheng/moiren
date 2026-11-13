@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{PersistenceError, SourceDocument};
 use crate::service::{
-    BuiltinState, CompressorState, GraphNodeState, GraphSnapshot, MixerState, validate_node_state,
+    BuiltinState, CompressorState, GraphNodeState, GraphSnapshot, MixerState, PluginAssignment,
+    validate_node_state,
 };
 
 const MAX_PROJECT_NODES: usize = 4096;
@@ -50,6 +51,9 @@ pub struct GraphNodeDocument {
     pub tint: Option<u8>,
     pub source: Option<SourceDocument>,
     pub output_endpoint_id: Option<String>,
+    /// The Plugin node's assignment; absence keeps the node unassigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginAssignment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +185,7 @@ impl GraphDocument {
                     builtin: state.builtin.resolved(node.kind()),
                     source: state.source.as_ref().map(Into::into),
                     output_endpoint_id: state.output_endpoint_id.clone(),
+                    plugin: state.plugin.clone(),
                 })
             })
             .collect::<Result<Vec<_>, PersistenceError>>()?;
@@ -313,6 +318,7 @@ impl GraphDocument {
                 builtin: node.builtin.clone(),
                 source: node.source.as_ref().map(SourceDocument::to_selection),
                 output_endpoint_id: node.output_endpoint_id.clone(),
+                plugin: node.plugin.clone(),
             };
             validate_node_state(&state, node.kind.into(), input_channels, node.channels)
                 .map_err(|error| PersistenceError::invalid(&field, error))?;
@@ -391,6 +397,7 @@ impl GraphDocument {
                 builtin: node.builtin.resolved(node.kind.into()),
                 source: node.source.as_ref().map(SourceDocument::to_selection),
                 output_endpoint_id: node.output_endpoint_id.clone(),
+                plugin: node.plugin.clone(),
             })
             .collect();
         Ok((restored, nodes))

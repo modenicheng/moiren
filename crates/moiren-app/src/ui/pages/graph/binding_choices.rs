@@ -27,6 +27,9 @@ use super::node_catalog::SourceClass;
 pub(crate) enum BindingAction {
     Edit(GraphEdit),
     Refresh,
+    /// Kick a sandboxed plugin scan; the list re-renders from the replaced
+    /// library when the scan lands.
+    ScanPlugins,
 }
 
 /// What one choice binds. Also the stable identity both surfaces derive
@@ -42,6 +45,8 @@ pub(crate) enum BindingTarget {
     Refresh,
     Output { endpoint_id: String },
     MicrophoneExport { endpoint_id: String },
+    Plugin { id: String },
+    ScanPlugins,
 }
 
 impl BindingTarget {
@@ -60,6 +65,8 @@ impl BindingTarget {
             Self::MicrophoneExport { endpoint_id } => {
                 format!("bind-microphone-export-{endpoint_id}").into()
             }
+            Self::Plugin { id } => format!("bind-plugin-{id}").into(),
+            Self::ScanPlugins => "scan-plugins".into(),
         }
     }
 }
@@ -91,6 +98,7 @@ pub(crate) fn choices(
             source_choices(snapshot, entry, class)
         }
         NodeKind::Sink => sink_choices(snapshot, entry),
+        NodeKind::Plugin => plugin_choices(snapshot, entry),
         _ => return None,
     })
 }
@@ -267,6 +275,47 @@ pub(crate) fn source_choices(
         label: t!("Refresh sources").to_string(),
         current: false,
         action: BindingAction::Refresh,
+    });
+    choices
+}
+
+/// The plugin picker's ordered list: clear (only when something is
+/// assigned), the library's plugins, and the sandboxed rescan action.
+pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> Vec<BindingChoice> {
+    let id = entry.id;
+    let mut choices = Vec::new();
+    if entry.plugin.is_some() {
+        choices.push(BindingChoice {
+            target: BindingTarget::Clear,
+            label: t!("Clear binding").to_string(),
+            current: false,
+            action: BindingAction::Edit(GraphEdit::ClearBinding(id)),
+        });
+    }
+    for (plugin_id, label) in snapshot.plugins.picker_rows() {
+        choices.push(BindingChoice {
+            target: BindingTarget::Plugin {
+                id: plugin_id.clone(),
+            },
+            label,
+            current: entry
+                .plugin
+                .as_ref()
+                .is_some_and(|assignment| assignment.id == plugin_id),
+            action: BindingAction::Edit(GraphEdit::BindPlugin {
+                node: id,
+                assignment: Some(crate::service::PluginAssignment {
+                    id: plugin_id,
+                    preset: None,
+                }),
+            }),
+        });
+    }
+    choices.push(BindingChoice {
+        target: BindingTarget::ScanPlugins,
+        label: t!("Scan plugin folders").to_string(),
+        current: false,
+        action: BindingAction::ScanPlugins,
     });
     choices
 }

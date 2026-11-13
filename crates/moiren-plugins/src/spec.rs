@@ -80,7 +80,12 @@ impl PluginDescriptor {
     /// different files distinct. Keys survive rescans as long as the module
     /// does not move.
     pub fn stable_id(&self) -> String {
-        format!("{}|{}|{}", self.format.label(), self.id, self.path.display())
+        format!(
+            "{}|{}|{}",
+            self.format.label(),
+            self.id,
+            self.path.display()
+        )
     }
 }
 

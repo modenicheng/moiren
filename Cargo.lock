@@ -4570,6 +4570,7 @@ dependencies = [
  "log",
  "moiren-core",
  "moiren-engine",
+ "moiren-plugins",
  "moiren-signal",
  "moiren-windows-audio",
  "raw-window-handle",
