@@ -24,7 +24,9 @@ impl AuxiliaryOwner for VirtualAuxiliary {
     fn status(&self) -> OwnerStatus {
         self.0.status()
     }
-    fn join(&mut self) -> Result<(), BackendError> {
+    fn join(&mut self, _deadline: std::time::Instant) -> Result<(), BackendError> {
+        // Software-backed boundary sessions stop cooperatively (event
+        // driven, no driver release); no teardown hang mode is known.
         self.0.stop_and_join()
     }
 }

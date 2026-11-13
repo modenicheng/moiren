@@ -105,43 +105,68 @@ fn reclaim<S: ProcessingSample>(job: Cleanup<S>) -> Reclaimed {
             let returned = owner.stop_and_join();
             signal_hub.clear_readers(owner_generation);
             drop(pending_readers);
-            let mut engine = returned.engine;
-            while let Some(mut plan) = engine.take_pending_plan() {
-                if let Some(control) = controls
-                    .iter_mut()
-                    .find(|control| control.identity().0 == plan.revision())
-                {
-                    candidate(&mut plan, control, &mut replies);
-                }
-            }
-            while let Some(mut plan) = plans.poll_retired() {
-                if let Some(control) = controls
-                    .iter_mut()
-                    .find(|control| control.identity().0 == plan.revision())
-                {
-                    retire(&mut plan, control, &mut replies);
-                }
-            }
-            if let Some(control) = controls
-                .iter_mut()
-                .find(|control| control.identity().0 == engine.revision())
-            {
-                loop {
-                    drain(control, &mut replies);
-                    if engine.retire_controls() == 0 {
-                        drain(control, &mut replies);
-                        break;
+            let mut error = returned.error;
+            match returned.engine {
+                Some(mut engine) => {
+                    while let Some(mut plan) = engine.take_pending_plan() {
+                        if let Some(control) = controls
+                            .iter_mut()
+                            .find(|control| control.identity().0 == plan.revision())
+                        {
+                            candidate(&mut plan, control, &mut replies);
+                        }
                     }
+                    while let Some(mut plan) = plans.poll_retired() {
+                        if let Some(control) = controls
+                            .iter_mut()
+                            .find(|control| control.identity().0 == plan.revision())
+                        {
+                            retire(&mut plan, control, &mut replies);
+                        }
+                    }
+                    if let Some(control) = controls
+                        .iter_mut()
+                        .find(|control| control.identity().0 == engine.revision())
+                    {
+                        loop {
+                            drain(control, &mut replies);
+                            if engine.retire_controls() == 0 {
+                                drain(control, &mut replies);
+                                break;
+                            }
+                        }
+                    }
+                    drop(engine);
+                }
+                None => {
+                    // A wedged native owner kept the runtime past its
+                    // teardown deadline. Its plans cannot be walked, but the
+                    // port-side retired plans and control ports still drain
+                    // and drop; the loss surfaces as a fault even when the
+                    // owner itself reported none.
+                    while let Some(mut plan) = plans.poll_retired() {
+                        if let Some(control) = controls
+                            .iter_mut()
+                            .find(|control| control.identity().0 == plan.revision())
+                        {
+                            retire(&mut plan, control, &mut replies);
+                        }
+                    }
+                    error.get_or_insert_with(|| {
+                        BackendError::Failed(
+                            "native owner did not return the engine within its teardown deadline"
+                                .into(),
+                        )
+                    });
                 }
             }
             for control in &mut controls {
                 drain(control, &mut replies);
             }
-            drop(engine);
             drop(plans);
             drop(controls);
             drop(signals);
-            returned.error
+            error
         }
         Cleanup::Retired(mut plan, mut control) => {
             retire(&mut plan, &mut control, &mut replies);

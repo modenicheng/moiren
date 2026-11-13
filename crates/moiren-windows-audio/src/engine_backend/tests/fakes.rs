@@ -186,6 +186,11 @@ pub(super) struct Faults {
     pub wrong_rate: bool,
     pub wrong_format: bool,
     pub wrong_period: bool,
+    /// `stop()` blocks on the teardown gate — a wedged driver release.
+    pub hang_stop: bool,
+    /// `wait()` blocks on the teardown gate from the first call — a worker
+    /// wedged mid-run.
+    pub hang_wait: bool,
 }
 
 /// One-shot release latch: fake factories block on [`Gate::wait`] like a
@@ -231,6 +236,8 @@ pub(super) struct FakeNativeDevices {
     /// When set, every stream open joins this barrier first: proves group
     /// opens actually run concurrently (a serial wave would time out).
     pub open_barrier: Option<Arc<std::sync::Barrier>>,
+    /// Releases the `hang_stop`/`hang_wait` injections.
+    pub teardown_gate: Gate,
 }
 impl NativeDevices for FakeNativeDevices {
     fn resolve(
@@ -267,6 +274,7 @@ impl NativeDevices for FakeNativeDevices {
         let hangs = self.hang.contains(&group.id);
         let hang_gate = self.hang_gate.clone();
         let open_barrier = self.open_barrier.clone();
+        let teardown_gate = self.teardown_gate.clone();
         let device = group
             .input
             .as_ref()
@@ -309,6 +317,7 @@ impl NativeDevices for FakeNativeDevices {
                 info,
                 probe,
                 faults,
+                teardown_gate,
             }))
         }))
     }
@@ -317,6 +326,7 @@ struct FakeNative {
     info: NativeStreamInfo,
     probe: Arc<NativeProbe>,
     faults: Faults,
+    teardown_gate: Gate,
 }
 impl NativeStream for FakeNative {
     fn info(&self) -> NativeStreamInfo {
@@ -328,6 +338,9 @@ impl NativeStream for FakeNative {
     }
     fn stop(&mut self) -> Result<(), BackendError> {
         self.probe.stopped.fetch_add(1, Ordering::AcqRel);
+        if self.faults.hang_stop {
+            self.teardown_gate.wait();
+        }
         if self.faults.stop {
             Err(native_error("stop"))
         } else {
@@ -346,6 +359,9 @@ impl NativeStream for FakeNative {
         self.faults.recover.then_some(NativeRecoveryRequest::Reset)
     }
     fn wait(&mut self, _: Duration) -> Result<bool, BackendError> {
+        if self.faults.hang_wait {
+            self.teardown_gate.wait();
+        }
         if self.faults.wait {
             return Err(native_error("wait"));
         }

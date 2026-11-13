@@ -116,6 +116,28 @@ fn lifecycle_cleanup_failure_remains_observable_after_closed() {
 }
 
 #[test]
+fn lifecycle_closes_when_a_wedged_owner_keeps_the_engine() {
+    // Bounded teardown (issue #105): an owner abandoned past its teardown
+    // deadline cannot hand the runtime back. The host still closes, the
+    // retirement drains the port-side plans, and the loss surfaces as a
+    // cleanup fault rather than parking close forever.
+    let backend = FakeBackend::default();
+    backend.0.lose_engine.store(true, Ordering::SeqCst);
+    let host = EngineHost::<f64>::open(HostConfig::default(), project().0, backend).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    drop(host);
+    assert_eq!(observer.snapshot().host, HostState::Closed);
+    assert!(
+        matches!(&observer.snapshot().cleanup_error, Some(error) if error.to_string().contains("engine")),
+        "the missing engine is reported: {:?}",
+        observer.snapshot().cleanup_error
+    );
+}
+
+#[test]
 fn lifecycle_owner_released_inside_edit_closes_without_self_join() {
     let host = EngineHost::<f64>::open(
         HostConfig::default(),

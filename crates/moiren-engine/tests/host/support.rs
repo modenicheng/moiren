@@ -45,6 +45,9 @@ pub struct State {
     pub fail_owner: AtomicBool,
     pub pause_audio: AtomicBool,
     pub fail_stop: AtomicBool,
+    /// The owner's stop keeps the runtime, like a wedged native owner
+    /// abandoned past its teardown deadline.
+    pub lose_engine: AtomicBool,
     pub events: Mutex<VecDeque<ResourceEvent>>,
     pub drops: Mutex<Vec<String>>,
 }
@@ -205,7 +208,10 @@ impl<S: ProcessingSample> PreparedTransport<S> for Transport {
                 if let Some(error) = &error {
                     *driver_status.lock().unwrap() = OwnerStatus::Failed(error.clone());
                 }
-                OwnerReturn { engine, error }
+                OwnerReturn {
+                    engine: Some(engine),
+                    error,
+                }
             })
             .unwrap();
         while self.0.hold_attach.load(Ordering::SeqCst) {
@@ -254,6 +260,9 @@ impl<S: ProcessingSample> BackendOwner<S> for Owner<S> {
         let mut result = self.thread.join().unwrap();
         if self.state.fail_stop.load(Ordering::SeqCst) {
             result.error = Some(BackendError::Failed("injected stop failure".into()));
+        }
+        if self.state.lose_engine.load(Ordering::SeqCst) {
+            result.engine = None;
         }
         self.state.stops.fetch_add(1, Ordering::SeqCst);
         result

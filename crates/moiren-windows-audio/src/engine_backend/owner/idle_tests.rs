@@ -262,7 +262,9 @@ impl Fixture {
     fn finish(&mut self) {
         self.state.cancel();
         self.probe.resume();
-        self.worker.join().unwrap();
+        self.worker
+            .join_within(Instant::now() + Duration::from_secs(5))
+            .unwrap();
     }
 }
 
