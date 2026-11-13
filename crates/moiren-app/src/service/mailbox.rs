@@ -394,7 +394,7 @@ mod tests {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
         let guard = handle.enqueue_id.lock().unwrap();
         assert_eq!(
-            handle.try_request_tracked(AppRequest::Stop),
+            handle.try_request_tracked(AppRequest::UndoGraph),
             Err(DispatchError::Busy)
         );
         drop(guard);
@@ -405,12 +405,12 @@ mod tests {
             );
         }
         assert_eq!(
-            handle.try_request_tracked(AppRequest::Stop),
+            handle.try_request_tracked(AppRequest::UndoGraph),
             Err(DispatchError::Busy)
         );
         assert_eq!(mailbox.try_request(), Some(AppRequest::RefreshCatalog));
         assert_eq!(
-            handle.try_request_tracked(AppRequest::Stop),
+            handle.try_request_tracked(AppRequest::UndoGraph),
             Ok(RequestId(65))
         );
         for _ in 1..REQUEST_CAPACITY {
@@ -421,7 +421,7 @@ mod tests {
             handle.try_snapshot().unwrap().consumed_request_id,
             RequestId(64)
         );
-        assert_eq!(mailbox.try_request(), Some(AppRequest::Stop));
+        assert_eq!(mailbox.try_request(), Some(AppRequest::UndoGraph));
         let before_publish = handle.try_snapshot().unwrap();
         assert_eq!(before_publish.consumed_request_id, RequestId(64));
         mailbox.publish((*before_publish).clone());
@@ -431,7 +431,7 @@ mod tests {
         );
         handle.request_exit();
         assert_eq!(
-            handle.try_request_tracked(AppRequest::Stop),
+            handle.try_request_tracked(AppRequest::UndoGraph),
             Err(DispatchError::Exiting)
         );
     }
@@ -440,7 +440,7 @@ mod tests {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
         *handle.enqueue_id.lock().unwrap() = u64::MAX;
         assert_eq!(
-            handle.try_request_tracked(AppRequest::Stop),
+            handle.try_request_tracked(AppRequest::UndoGraph),
             Err(DispatchError::RequestIdExhausted)
         );
         assert_eq!(mailbox.try_request(), None);

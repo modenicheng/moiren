@@ -295,9 +295,12 @@ impl UiState {
     /// rejected graph reports its faults on the nodes they name. There is no
     /// UI-side validation to shadow the service's verdict or to grey the
     /// button over.
+    ///
+    /// The run model is always-on: there is no stop action, so the toggle can
+    /// only (re-)apply the graph while the session is idle or has failed. A
+    /// running session ignores it.
     pub fn toggle_transport(&mut self) {
         match self.snapshot.phase {
-            SessionPhase::Running | SessionPhase::Starting => self.dispatch(AppRequest::Stop),
             SessionPhase::Idle | SessionPhase::Failed => self.dispatch(AppRequest::ApplyGraph),
             _ => {}
         }

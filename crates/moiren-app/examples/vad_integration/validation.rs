@@ -402,14 +402,6 @@ impl Observation {
         );
         Ok(())
     }
-
-    pub fn require_silence(&self) -> anyhow::Result<()> {
-        ensure!(
-            self.matching_frames == 0 && self.silent_frames >= REQUIRED_FRAMES,
-            "need {REQUIRED_FRAMES} actual silent capture frames: {self:?}"
-        );
-        Ok(())
-    }
 }
 
 pub(super) fn start_clients(
@@ -491,17 +483,6 @@ mod tests {
                 .is_err()
         );
         assert_eq!(SECOND_SIGNAL.map(|v| v * 0.5), SECOND_EXPECTED);
-    }
-
-    #[test]
-    fn stop_silence_needs_samples_not_absence_or_previous_signal() {
-        let mut progress = Observation::default();
-        assert!(progress.require_silence().is_err());
-        progress
-            .observe(&[0.0; 2].repeat(REQUIRED_FRAMES as usize), [0.0; 2])
-            .unwrap();
-        progress.require_silence().unwrap();
-        assert!(progress.observe(&EXPECTED, [0.0; 2]).is_err());
     }
 
     #[test]

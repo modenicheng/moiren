@@ -89,13 +89,6 @@ pub(super) async fn capture(
     });
     settle(shell, false, cx).await?;
     save(cx, directory.join("mixer-muted-controls.png"));
-    shell.update(cx, |shell, cx| {
-        shell
-            .state
-            .update(cx, |state, _| state.dispatch(AppRequest::Stop))
-    });
-    settle(shell, false, cx).await?;
-    save(cx, directory.join("mixer-unknown.png"));
 
     let mut graph = ServiceGraph::default();
     graph

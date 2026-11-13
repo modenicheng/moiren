@@ -1128,8 +1128,8 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         use crate::service::{
-            AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceRuntime,
-            SessionPhase, SessionSpec, test_backend::FakeBackend,
+            AppRequest, GraphEdit, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase,
+            SessionSpec, test_backend::FakeBackend,
         };
         use crate::ui::{finish_service, wait_for, wait_until};
 
@@ -1147,7 +1147,6 @@ mod tests {
                     endpoint_id: "input".into(),
                 },
                 output_endpoint_id: "output".into(),
-                limit: RunLimit::UntilStopped,
                 gain: 1.,
                 pan: 0.,
                 max_block_frames: 256,

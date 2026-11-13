@@ -20,15 +20,7 @@ enum DesiredIntent {
     Session(SessionSpec),
     // Graph resource bindings are typed in EngineProject, not physical IDs in
     // the legacy two-endpoint summary. Keep lifecycle intent independently.
-    Graph { limit: RunLimit },
-}
-impl DesiredIntent {
-    fn limit(&self) -> RunLimit {
-        match self {
-            Self::Session(spec) => spec.limit,
-            Self::Graph { limit } => *limit,
-        }
-    }
+    Graph,
 }
 impl Default for ServiceCore {
     fn default() -> Self {
@@ -96,13 +88,8 @@ impl ServiceCore {
                 spec.validate()?;
                 Ok(DesiredIntent::Session(spec))
             }
-            None => Ok(DesiredIntent::Graph {
-                limit: self.run_limit().unwrap_or(RunLimit::UntilStopped),
-            }),
+            None => Ok(DesiredIntent::Graph),
         }
-    }
-    pub(crate) fn run_limit(&self) -> Option<RunLimit> {
-        self.desired.as_ref().map(DesiredIntent::limit)
     }
     /// A managed host can wait for resources and later recover without a new
     /// user request. Keep its intent/identity while projecting actual execution.
@@ -162,20 +149,6 @@ impl ServiceCore {
             SessionPhase::Stopping
         } else {
             SessionPhase::Starting
-        };
-        // The generation advanced: a real content change.
-        self.bump();
-        Ok(self.generation)
-    }
-    pub fn stop(&mut self) -> Result<SessionGeneration, DispatchError> {
-        self.check_open()?;
-        self.advance()?;
-        self.desired = None;
-        self.error = None;
-        self.phase = if self.owner.is_some() {
-            SessionPhase::Stopping
-        } else {
-            SessionPhase::Idle
         };
         // The generation advanced: a real content change.
         self.bump();
@@ -310,7 +283,7 @@ impl ServiceCore {
 mod tests {
     use super::*;
     #[test]
-    fn graph_intent_retains_identity_until_restart_and_stop_revokes_it() {
+    fn graph_intent_retains_identity_until_restart_and_exit_revokes_it() {
         let mut c = ServiceCore::default();
         c.managed_graph_desired(None).unwrap();
         let first = c.generation();
@@ -330,33 +303,33 @@ mod tests {
         c.managed_execution(first, true, None);
         assert_eq!(c.owner_generation(), None);
         c.managed_execution(next, true, None);
-        c.stop().unwrap();
+        // Only exit revokes the intent: the session has no stop path.
+        c.begin_exit();
         c.managed_execution(next, true, None);
-        assert_eq!(c.phase(), SessionPhase::Stopping);
+        assert_eq!(c.phase(), SessionPhase::Exiting);
         c.owner_reaped(next);
-        assert_eq!(c.phase(), SessionPhase::Idle);
+        assert_eq!(c.phase(), SessionPhase::Exiting);
     }
     #[test]
-    fn graph_intent_preserves_explicit_run_limit_and_exit_cannot_restart() {
+    fn session_intent_survives_restart_and_exit_cannot_restart() {
         let mut c = ServiceCore::default();
         c.start(SessionSpec {
             source: InputSelection::Tone {
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "physical-output".into(),
-            limit: RunLimit::Seconds(12),
             gain: 1.0,
             pan: 0.0,
             max_block_frames: 256,
         })
         .unwrap();
+        assert!(c.desired().is_some());
         c.managed_graph_desired(None).unwrap();
-        assert_eq!(c.run_limit(), Some(RunLimit::Seconds(12)));
+        // A graph intent replaces the legacy summary; only the lifecycle
+        // identity matters from here on.
+        assert!(c.desired().is_none());
         c.restart_managed_graph(None).unwrap();
-        assert_eq!(c.run_limit(), Some(RunLimit::Seconds(12)));
-        c.stop().unwrap();
-        c.managed_graph_desired(None).unwrap();
-        assert_eq!(c.run_limit(), Some(RunLimit::UntilStopped));
+        assert!(c.desired().is_none());
         c.begin_exit();
         assert_eq!(c.managed_graph_desired(None), Err(DispatchError::Exiting));
         assert_eq!(c.restart_managed_graph(None), Err(DispatchError::Exiting));
@@ -368,10 +341,20 @@ mod tests {
             generation: SessionGeneration(u64::MAX),
             ..ServiceCore::default()
         };
-        assert_eq!(c.stop(), Err(DispatchError::GenerationExhausted));
+        assert_eq!(
+            c.start(SessionSpec {
+                source: InputSelection::Tone {
+                    frequency_hz: 440.0,
+                },
+                output_endpoint_id: "physical-output".into(),
+                gain: 1.0,
+                pan: 0.0,
+                max_block_frames: 256,
+            }),
+            Err(DispatchError::GenerationExhausted)
+        );
         c.begin_exit();
         assert_eq!(c.phase(), SessionPhase::Exiting);
         assert!(!c.may_activate(SessionGeneration(u64::MAX)));
-        assert_eq!(c.stop(), Err(DispatchError::Exiting));
     }
 }

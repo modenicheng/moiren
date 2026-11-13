@@ -28,13 +28,13 @@ fn full_ordinary_mailbox_cannot_hide_exit() {
     let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
     while handle.try_request(AppRequest::RefreshCatalog).is_ok() {}
     assert_eq!(
-        handle.try_request(AppRequest::Stop),
+        handle.try_request(AppRequest::UndoGraph),
         Err(DispatchError::Busy)
     );
     handle.request_exit();
     assert!(mailbox.exit_requested());
     assert_eq!(
-        handle.try_request(AppRequest::Stop),
+        handle.try_request(AppRequest::UndoGraph),
         Err(DispatchError::Exiting)
     );
 }

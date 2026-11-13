@@ -122,10 +122,7 @@ impl ManagedDriver {
                 || o.exports != preparation.exports
                 || stranded_virtual_transport
         }) {
-            if let Ok(summary) = c
-                .graph
-                .managed_session_spec(c.core.desired(), c.core.run_limit())
-            {
+            if let Ok(summary) = c.graph.managed_session_spec(c.core.desired()) {
                 let _ = c.core.restart_managed_graph(summary);
             }
             self.retire(c);
@@ -187,10 +184,7 @@ impl ManagedDriver {
                 }
             }
         } else if self.cleaning == 0 && !self.exiting {
-            let mut summary = match c
-                .graph
-                .managed_session_spec(c.core.desired(), c.core.run_limit())
-            {
+            let mut summary = match c.graph.managed_session_spec(c.core.desired()) {
                 Ok(summary) => summary,
                 Err(error) => {
                     c.core.failed(c.core.generation(), error.clone());

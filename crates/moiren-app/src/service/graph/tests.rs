@@ -214,6 +214,53 @@ fn default_project_resolves_processing_rate_and_profile_buffers() {
 }
 
 #[test]
+fn capture_only_and_empty_graphs_prepare_without_a_sink_or_summary() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    let mut service = ServiceGraph::default();
+    let (source, _, _, sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+        })
+        .unwrap();
+    service.edit(GraphEdit::RemoveNode(sink)).unwrap();
+    let preparation = service.preparation();
+    // An output-free graph is a valid always-on project: it prepares for the
+    // virtual clock and carries no two-endpoint legacy summary.
+    preparation
+        .configured_engine_project(
+            256,
+            &AudioSettings::default(),
+            AudioLatencyProfile::Compatible,
+        )
+        .unwrap();
+    assert_eq!(
+        preparation.primary_io_nodes().unwrap(),
+        (Some(source), None)
+    );
+    assert_eq!(
+        service.managed_session_spec(None).unwrap(),
+        None,
+        "a virtual-clock project has no legacy summary"
+    );
+    // Dropping the input side as well still prepares: an empty graph runs.
+    service.edit(GraphEdit::RemoveNode(source)).unwrap();
+    let preparation = service.preparation();
+    preparation
+        .configured_engine_project(
+            256,
+            &AudioSettings::default(),
+            AudioLatencyProfile::Compatible,
+        )
+        .unwrap();
+    assert_eq!(preparation.primary_io_nodes().unwrap(), (None, None));
+    assert_eq!(service.managed_session_spec(None).unwrap(), None);
+}
+
+#[test]
 fn configured_project_resolves_each_endpoint_and_preserves_clock_roles() {
     use crate::service::{
         AudioBackend, AudioLatencyProfile, AudioSettings, SampleFormat, StreamSettings,
@@ -642,7 +689,9 @@ fn render(service: &ServiceGraph) -> Vec<f32> {
         runtime::EngineConfig,
     };
     let preparation = service.preparation();
-    let (input, sink) = preparation.primary_io_nodes().expect("io nodes");
+    let (Some(input), Some(sink)) = preparation.primary_io_nodes().expect("io nodes") else {
+        panic!("io nodes");
+    };
     let (writer, mut output) = audio_bridge(2, 32, 8 * 1024 * 1024).unwrap();
     let mut bindings = moiren_engine::compiler::NodeBindings::new();
     bindings

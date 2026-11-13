@@ -1,6 +1,6 @@
 use moiren_core::graph::{NodeId, NodeKind};
 
-use super::{AudioBackend, DeviceCatalog, GraphSnapshot, InputSelection, RunLimit, SessionSpec};
+use super::{AudioBackend, DeviceCatalog, GraphSnapshot, InputSelection, SessionSpec};
 
 /// A restored Source or Sink whose physical device is absent from the
 /// catalog, so it cannot take part in the resumed session.
@@ -124,7 +124,6 @@ pub(super) fn default_session_for_backend(
             endpoint_id: input.clone(),
         },
         output_endpoint_id: output.clone(),
-        limit: RunLimit::UntilStopped,
         gain: 0.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -155,11 +154,10 @@ mod tests {
     }
 
     #[test]
-    fn default_session_is_muted_and_has_no_demo_time_limit() {
+    fn default_session_is_muted_and_follows_the_default_endpoints() {
         let session = default_session_for_backend(&fixture(), AudioBackend::Wasapi).unwrap();
         assert_eq!(session.gain, 0.0);
         assert_eq!(session.pan, 0.0);
-        assert_eq!(session.limit, RunLimit::UntilStopped);
         assert_eq!(
             session.source,
             InputSelection::Physical {

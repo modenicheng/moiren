@@ -944,7 +944,6 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             let spec = crate::service::SessionSpec {
                 source: crate::service::InputSelection::Tone { frequency_hz: 440. },
                 output_endpoint_id: "fixture-output".into(),
-                limit: crate::service::RunLimit::UntilStopped,
                 gain: 0.,
                 pan: 0.,
                 max_block_frames: 256,

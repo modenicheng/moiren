@@ -1070,8 +1070,8 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
     use std::sync::atomic::Ordering;
 
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec, test_backend::FakeBackend,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
+        test_backend::FakeBackend,
     };
     // A real running session keeps every published snapshot in the Running
     // phase, so the demand can be exercised in every direction (a crafted
@@ -1089,7 +1089,6 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -1154,8 +1153,8 @@ fn inspector_observation_readout_follows_meter_status_changes(cx: &mut gpui_kit:
     use std::sync::atomic::Ordering;
 
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec, test_backend::FakeBackend,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
+        test_backend::FakeBackend,
     };
     use crate::ui::monitoring::MeterStatus;
     use crate::ui::pages::graph::observation_snapshot;
@@ -1177,7 +1176,6 @@ fn inspector_observation_readout_follows_meter_status_changes(cx: &mut gpui_kit:
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -1325,8 +1323,7 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
 #[gpui_kit::test]
 fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -1342,7 +1339,6 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -1592,8 +1588,7 @@ fn graph_box_select_runs_frames_and_applies_hits_while_everything_rests(
 #[gpui_kit::test]
 fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit::TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -1609,7 +1604,6 @@ fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -2150,8 +2144,7 @@ fn collapsed_library_rail_keeps_spawning_and_the_handle_stays_visible(
 #[gpui_kit::test]
 fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -2167,7 +2160,6 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -2286,8 +2278,7 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -2304,7 +2295,6 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -2397,8 +2387,8 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use crate::service::{
-        AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceGraph,
-        ServiceRuntime, SessionPhase, SessionSpec,
+        AppRequest, GraphEdit, InputSelection, ManagedDriver, ServiceGraph, ServiceRuntime,
+        SessionPhase, SessionSpec,
     };
     use moiren_core::graph::NodeKind;
     use std::sync::atomic::Ordering;
@@ -2480,7 +2470,6 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -2605,8 +2594,7 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -2622,7 +2610,6 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,

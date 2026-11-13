@@ -489,17 +489,9 @@ impl Desktop {
                             eprintln!("Moiren tray mixer: {error}");
                         }
                     }
-                    super::super::tray::TrayAction::StopSession => {
-                        self.state.update(cx, |state, _| {
-                            state.dispatch(AppRequest::Stop);
-                        })
-                    }
                     super::super::tray::TrayAction::ExitApp => cx.quit(),
                 }
             }
-        }
-        if let Some(tray) = self.tray.as_ref() {
-            tray.set_session_active(self.state.read(cx).snapshot.phase == SessionPhase::Running);
         }
         self.dismiss_flyout_on_focus_loss(cx);
         if let Some(shell) = self.shell.clone() {
