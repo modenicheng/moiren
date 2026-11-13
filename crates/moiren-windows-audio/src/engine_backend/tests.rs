@@ -585,6 +585,82 @@ fn virtual_master_runs_native_capture_as_follower_and_retains_actual_failure() {
 }
 
 #[test]
+fn capture_only_project_runs_on_the_virtual_clock_without_a_provider() {
+    let mut project = virtual_project(2, 48_000);
+    replace_with_physical_capture(&mut project);
+    // Drop the virtual microphone sink: a capture-only project with no
+    // outputs at all, paced purely by the QPC fallback clock.
+    let sink = *project.nodes.keys().last().unwrap();
+    project.nodes.remove(&sink);
+    project.graph.remove_node(sink).unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    // A provider is only an admission requirement for virtual endpoints, so
+    // the capture-only project validates without one.
+    assert_eq!(
+        validate(&request(&project, &host), false),
+        Ok((48_000, ProjectClock::VirtualRealtime))
+    );
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory(probe.clone())));
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| native.probe.started.load(Ordering::Acquire) == 1);
+    wait_until(|| owner.timeline().is_some_and(|t| t.frame >= 256));
+    owner.cancel();
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert!(returned.engine.timeline() >= 256);
+    assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.master_groups.load(Ordering::Acquire), 0);
+    assert_eq!(native.probe.stopped.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.released.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.dropped.load(Ordering::Acquire), 1);
+    // The capture native session is the only joined resource: no virtual
+    // boundary sessions exist to prepare.
+    assert_sessions_joined(&probe, 0);
+}
+
+#[test]
+fn empty_project_runs_on_the_virtual_clock_without_native_devices() {
+    let mut project = EngineProject::default();
+    project.processing.engine.processing_sr = 48_000.0;
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    assert_eq!(
+        validate(&request(&project, &host), false),
+        Ok((48_000, ProjectClock::VirtualRealtime))
+    );
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory(probe.clone())));
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| owner.timeline().is_some_and(|t| t.frame >= 256));
+    owner.cancel();
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert!(returned.engine.timeline() >= 256);
+    assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+    assert_sessions_joined(&probe, 0);
+}
+
+#[test]
 fn physical_master_protects_the_virtual_microphone_across_plan_updates() {
     let mut project = virtual_project(2, 48_000);
     let virtual_sink = *project.nodes.keys().last().unwrap();

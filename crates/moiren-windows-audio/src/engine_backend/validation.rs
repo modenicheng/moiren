@@ -29,7 +29,6 @@ pub(super) fn validate(
     }
     let mut virtual_ids = Vec::new();
     let mut physical_outputs = Vec::new();
-    let mut outputs = 0;
     let mut io_count = 0;
     for (&node, config) in &project.nodes {
         let (channels, device, virtual_id) = match config {
@@ -47,7 +46,6 @@ pub(super) fn validate(
                 )
             }
             NodeConfig::Output(output) => {
-                outputs += 1;
                 let virtual_id = match output.target {
                     OutputTarget::VirtualMicrophone { endpoint_id } => Some(endpoint_id),
                     OutputTarget::Physical(_) => {
@@ -111,9 +109,9 @@ pub(super) fn validate(
             "professional Engine block must be 1..4096 frames",
         ));
     }
-    if outputs == 0 || io_count > 64 {
+    if io_count > 64 {
         return Err(unsupported(
-            "professional backend needs an output and at most 64 IO nodes",
+            "professional backend allows at most 64 IO nodes",
         ));
     }
     let clock = if physical_outputs.is_empty() {

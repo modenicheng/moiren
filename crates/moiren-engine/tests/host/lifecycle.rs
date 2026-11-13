@@ -21,19 +21,18 @@ fn lifecycle_open_runs_and_drop_joins_with_handles_alive() {
 }
 
 #[test]
-fn lifecycle_no_output_is_dormant_without_preparation() {
+fn lifecycle_output_free_project_still_runs_the_transport() {
     let backend = FakeBackend::default();
     let state = backend.0.clone();
     let host =
         EngineHost::<f64>::open(HostConfig::default(), EngineProject::default(), backend).unwrap();
     wait(&host.observer(), |snapshot| {
-        snapshot.host == HostState::Open
+        snapshot.execution == ExecutionState::Running
+            && snapshot.timeline.is_some_and(|timeline| timeline.frame > 0)
     });
-    assert_eq!(state.prepares.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        host.observer().snapshot().execution,
-        ExecutionState::Dormant
-    );
+    assert!(state.prepares.load(Ordering::SeqCst) >= 1);
+    assert_eq!(state.sources.load(Ordering::SeqCst), 0);
+    assert_eq!(state.sinks.load(Ordering::SeqCst), 0);
 }
 
 #[test]

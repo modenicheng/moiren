@@ -81,7 +81,7 @@ fn resources_lost_owner_is_reclaimed_and_recovers_in_new_epoch() {
 }
 
 #[test]
-fn resources_removing_output_releases_owner_and_keeps_project_dormant() {
+fn resources_removing_output_swaps_the_transport_and_keeps_running() {
     let backend = FakeBackend::default();
     let state = backend.0.clone();
     let (project, _, _, output) = project();
@@ -96,19 +96,23 @@ fn resources_removing_output_releases_owner_and_keeps_project_dormant() {
             Ok(())
         })
         .unwrap();
+    // Removing the only output changes the IO set, so the transport swaps;
+    // the graph itself keeps running under the replacement owner.
+    wait(&host.observer(), |snapshot| {
+        snapshot.execution == ExecutionState::Running
+            && snapshot.active_revision == Some(2)
+            && snapshot.timeline.is_some_and(|timeline| timeline.frame > 0)
+    });
     assert!(matches!(
         receipt.wait(TIMEOUT),
         EditOutcome::Activated {
             graph_revision: 2,
-            plan_revision: None
+            plan_revision: Some(2)
         }
     ));
-    assert_eq!(
-        host.observer().snapshot().execution,
-        ExecutionState::Dormant
-    );
     assert!(!host.observer().project().nodes.contains_key(&output));
     assert_eq!(state.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(state.attaches.load(Ordering::SeqCst), 2);
 }
 
 #[test]

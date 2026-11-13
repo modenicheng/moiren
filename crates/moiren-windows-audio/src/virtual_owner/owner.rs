@@ -156,11 +156,10 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                 .map(|&node| bindings.node(node))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| BackendError::Unsupported("virtual sink bindings changed".into()))?;
-            if protected.is_empty()
-                || protected
-                    .iter()
-                    .enumerate()
-                    .any(|(index, sink)| protected[..index].contains(sink))
+            if protected
+                .iter()
+                .enumerate()
+                .any(|(index, sink)| protected[..index].contains(sink))
                 || engine
                     .plan_snapshot()
                     .sink_processors()
