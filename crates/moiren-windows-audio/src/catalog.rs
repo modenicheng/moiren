@@ -8,10 +8,8 @@ use std::{
     hash::{Hash, Hasher},
 };
 use windows::{
-    Win32::{
-        Media::Audio::{Endpoints::IAudioEndpointVolume, *},
-        System::Com::{CLSCTX_ALL, CoCreateInstance},
-    },
+    Win32::Media::Audio::{Endpoints::IAudioEndpointVolume, *},
+    Win32::System::Com::{CLSCTX_ALL, CoCreateInstance},
     core::{Interface, Result},
 };
 
@@ -249,6 +247,132 @@ fn endpoint(device: &IMMDevice, flow: &'static str) -> Result<EndpointSnapshot> 
     }
 }
 
+/// Deadline for the whole per-endpoint probe wave (issue #105): one wedged
+/// endpoint's `Activate`/`GetMixFormat`/session enumeration must not stall
+/// the catalog refresh — and the automatic startup waiting behind it —
+/// forever. Healthy endpoints answer in well under a second.
+const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Tests shrink the wave so a hung probe bounds the test, not the suite.
+fn probe_deadline() -> std::time::Duration {
+    if cfg!(test) {
+        std::time::Duration::from_millis(300)
+    } else {
+        PROBE_DEADLINE
+    }
+}
+
+/// A stuck endpoint keeps its row so the device stays visible and selectable;
+/// only its unknown fields stay `None` and the failure joins its errors.
+fn bare_endpoint(id: String, flow: &'static str, errors: Vec<ApiFailure>) -> EndpointSnapshot {
+    EndpointSnapshot {
+        id,
+        name: None,
+        flow,
+        mix_format: None,
+        default_period_100ns: None,
+        minimum_period_100ns: None,
+        volume_scalar: None,
+        muted: None,
+        sessions: Vec::new(),
+        errors,
+    }
+}
+
+fn not_responding(id: String, flow: &'static str) -> EndpointSnapshot {
+    bare_endpoint(
+        id,
+        flow,
+        vec![ApiFailure {
+            stage: "endpoint probe".to_owned(),
+            hresult: format!("no response within {:?}", probe_deadline()),
+        }],
+    )
+}
+
+/// One endpoint's full probe, apartment-private on whichever thread runs it.
+type EndpointProbe =
+    std::sync::Arc<dyn Fn(&str, &'static str) -> Result<EndpointSnapshot> + Send + Sync>;
+
+/// Probe each enumerated endpoint on its own thread with its own apartment
+/// and a shared deadline. Threads that miss the deadline are abandoned — the
+/// OS call unwinds on that thread when it finally returns — and their rows
+/// are recorded as not responding instead of blocking the snapshot.
+fn collect_endpoints(
+    ids: Vec<(String, &'static str)>,
+    probe: EndpointProbe,
+) -> Vec<EndpointSnapshot> {
+    let total = ids.len();
+    let (sender, receiver) = std::sync::mpsc::channel::<(String, Result<EndpointSnapshot>)>();
+    let mut spawned = 0usize;
+    for (id, flow) in &ids {
+        let sender = sender.clone();
+        let id = id.clone();
+        let flow = *flow;
+        let probe = probe.clone();
+        if std::thread::Builder::new()
+            .name("moiren-catalog-probe".to_owned())
+            .spawn(move || {
+                let probed = probe(&id, flow);
+                let _ = sender.send((id, probed));
+            })
+            .is_err()
+        {
+            // Thread spawn failed: nothing will report for this row.
+            continue;
+        }
+        spawned += 1;
+    }
+    drop(sender);
+    let deadline = std::time::Instant::now() + probe_deadline();
+    let mut snapshots = Vec::with_capacity(total);
+    let mut received: Vec<String> = Vec::with_capacity(total);
+    while received.len() < spawned {
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            break;
+        };
+        match receiver.recv_timeout(remaining) {
+            Ok((id, Ok(snapshot))) => {
+                received.push(id);
+                snapshots.push(snapshot);
+            }
+            Ok((id, Err(error))) => {
+                let flow = ids
+                    .iter()
+                    .find(|(candidate, _)| *candidate == id)
+                    .map(|(_, flow)| *flow)
+                    .unwrap_or("render");
+                received.push(id.clone());
+                snapshots.push(bare_endpoint(
+                    id,
+                    flow,
+                    vec![ApiFailure::new("endpoint probe", error)],
+                ));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    for (id, flow) in ids {
+        if !received.contains(&id) {
+            snapshots.push(not_responding(id, flow));
+        }
+    }
+    snapshots
+}
+
+/// One endpoint's full probe: apartment-private COM on whichever thread runs
+/// it, so a hung activation only ever blocks its own probe thread.
+fn probe_endpoint(id: &str, flow: &'static str) -> Result<EndpointSnapshot> {
+    unsafe {
+        let _apartment = crate::win32_raii::Apartment::new()?;
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let device = enumerator.GetDevice(&windows::core::HSTRING::from(id))?;
+        endpoint(&device, flow)
+    }
+}
+
 pub fn snapshot() -> Result<CatalogSnapshot> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =
@@ -258,6 +382,7 @@ pub fn snapshot() -> Result<CatalogSnapshot> {
             endpoints: Vec::new(),
             errors: Vec::new(),
         };
+        let mut ids: Vec<(String, &'static str)> = Vec::new();
         for (flow, name) in [(eRender, "render"), (eCapture, "capture")] {
             for (role, role_name) in [
                 (eConsole, "console"),
@@ -284,17 +409,20 @@ pub fn snapshot() -> Result<CatalogSnapshot> {
             }
             let devices = enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)?;
             for index in 0..devices.GetCount()? {
-                if let Some(item) = record(
-                    "endpoint snapshot",
+                // Only the cheap identity read stays on the caller thread;
+                // the activation-prone probe work moves to bounded threads.
+                if let Some(id) = record(
+                    "endpoint enumeration",
                     &mut result.errors,
                     devices
                         .Item(index)
-                        .and_then(|device| endpoint(&device, name)),
+                        .and_then(|device| device.GetId().and_then(take_string)),
                 ) {
-                    result.endpoints.push(item);
+                    ids.push((id, name));
                 }
             }
         }
+        result.endpoints = collect_endpoints(ids, std::sync::Arc::new(probe_endpoint));
         result.endpoints.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(result)
     }
@@ -347,4 +475,80 @@ pub fn changes(before: &CatalogSnapshot, after: &CatalogSnapshot, pid: u32) -> V
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn healthy(id: &str, flow: &'static str) -> Result<EndpointSnapshot> {
+        Ok(bare_endpoint(id.to_owned(), flow, Vec::new()))
+    }
+
+    fn snapshot_row<'a>(snapshots: &'a [EndpointSnapshot], id: &str) -> &'a EndpointSnapshot {
+        snapshots
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("missing row for {id}"))
+    }
+
+    #[test]
+    fn a_hung_endpoint_probe_returns_within_the_deadline_and_keeps_its_row() {
+        let started = std::time::Instant::now();
+        let snapshots = collect_endpoints(
+            vec![
+                ("{healthy}".into(), "render"),
+                ("{wedged}".into(), "render"),
+            ],
+            std::sync::Arc::new(|id: &str, flow: &'static str| {
+                if id == "{wedged}" {
+                    // A probe that never settles, like an Activate stuck in
+                    // the driver.
+                    loop {
+                        std::thread::sleep(Duration::from_secs(60));
+                    }
+                }
+                healthy(id, flow)
+            }),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "collection must not wait for the wedged probe"
+        );
+        let healthy_row = snapshot_row(&snapshots, "{healthy}");
+        assert!(healthy_row.errors.is_empty());
+        let wedged = snapshot_row(&snapshots, "{wedged}");
+        assert_eq!(wedged.flow, "render");
+        assert_eq!(wedged.errors.len(), 1);
+        assert_eq!(wedged.errors[0].stage, "endpoint probe");
+        assert!(wedged.errors[0].hresult.contains("no response"));
+    }
+
+    #[test]
+    fn a_failing_probe_reports_the_api_failure_on_its_row() {
+        let snapshots = collect_endpoints(
+            vec![("{failing}".into(), "capture")],
+            std::sync::Arc::new(|_id: &str, _flow: &'static str| {
+                Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005_u32 as i32, // E_FAIL: any recorded API failure shape
+                )))
+            }),
+        );
+        let row = snapshot_row(&snapshots, "{failing}");
+        assert_eq!(row.flow, "capture");
+        assert_eq!(row.errors.len(), 1);
+        assert_eq!(row.errors[0].stage, "endpoint probe");
+        assert_eq!(row.errors[0].hresult, "0x80004005");
+    }
+
+    #[test]
+    fn spawn_failure_leaves_the_row_not_responding_instead_of_hanging() {
+        // Zero spawnable ids cannot happen through snapshot(), but an empty
+        // wave must return immediately rather than wait out the deadline.
+        let started = std::time::Instant::now();
+        let snapshots = collect_endpoints(Vec::new(), std::sync::Arc::new(healthy));
+        assert!(snapshots.is_empty());
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
 }

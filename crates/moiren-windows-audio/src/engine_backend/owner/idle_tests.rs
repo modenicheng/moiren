@@ -244,6 +244,7 @@ impl Fixture {
                 recovery: None,
             },
             &CancellationToken::default(),
+            Duration::from_secs(10),
         )
         .unwrap();
         Self {

@@ -96,7 +96,27 @@ fn native_devices_absent(faults: Faults, absent: Vec<String>) -> FakeNativeDevic
         probe: Arc::default(),
         faults,
         absent,
+        hang: Vec::new(),
+        hang_gate: Gate::default(),
+        open_barrier: None,
     }
+}
+
+/// A fake whose `hang` endpoints block their stream open on the returned
+/// gate until the test releases it — the wedged-driver shape of issue #105.
+fn native_devices_hanging(faults: Faults, hang: Vec<String>) -> (FakeNativeDevices, Gate) {
+    let gate = Gate::default();
+    (
+        FakeNativeDevices {
+            probe: Arc::default(),
+            faults,
+            absent: Vec::new(),
+            hang,
+            hang_gate: gate.clone(),
+            open_barrier: None,
+        },
+        gate,
+    )
 }
 
 fn physical_device(role: ClockRole) -> DeviceOptions {
@@ -1009,6 +1029,54 @@ fn absent_stream_project(
     (project, source, sink)
 }
 
+/// The same duplex shape on WASAPI devices: two distinct endpoints resolve
+/// to two independent groups (the ASIO variant is single-session by
+/// validation), which is the layout the concurrent open wave exercises.
+fn wasapi_stream_project(
+    capture_endpoint: &str,
+    sink_endpoint: &str,
+) -> (EngineProject, NodeId, NodeId) {
+    let mut project = EngineProject::default();
+    project.processing.engine.processing_sr = 96_000.0;
+    let source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+    project
+        .graph
+        .connect(
+            project.graph.get_node(source).unwrap().outputs()[0].id(),
+            project.graph.get_node(sink).unwrap().inputs()[0].id(),
+            Default::default(),
+        )
+        .unwrap();
+    let follower = DeviceOptions {
+        backend: AudioBackend::Wasapi,
+        hardware_sample_rate: Some(96_000),
+        ..physical_device(ClockRole::Follower)
+    };
+    let master = DeviceOptions {
+        backend: AudioBackend::Wasapi,
+        hardware_sample_rate: Some(96_000),
+        ..physical_device(ClockRole::Master)
+    };
+    project.nodes.insert(
+        source,
+        NodeConfig::Input(InputConfig {
+            source: InputSource::Physical(endpoint(capture_endpoint)),
+            channels: 2,
+            device: follower,
+        }),
+    );
+    project.nodes.insert(
+        sink,
+        NodeConfig::Output(OutputConfig {
+            target: OutputTarget::Physical(endpoint(sink_endpoint)),
+            channels: 2,
+            device: master,
+        }),
+    );
+    (project, source, sink)
+}
+
 #[test]
 fn absent_capture_prepares_a_silent_null_stream() {
     // A missing device keeps its graph binding: the source binds constant
@@ -1094,7 +1162,7 @@ fn a_returning_absent_endpoint_publishes_a_resource_event() {
     let native = native_devices_absent(Default::default(), vec!["{missing-input}".into()]);
     let backend = ProfessionalBackend::<f64>::new()
         .unwrap()
-        .with_absence_probe(Arc::new(|_| true));
+        .with_absence_probe(Arc::new(|_| Some("{returned}".into())));
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
     let (host, _rt) = bus.create_host(8).unwrap();
     let cancel = CancellationToken::default();
@@ -1114,4 +1182,282 @@ fn a_returning_absent_endpoint_publishes_a_resource_event() {
         backend.poll_resource().is_none(),
         "the entry released with its event"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Bounded opens, abandonment, and the stuck-endpoint degradation (issue #105)
+// ---------------------------------------------------------------------------
+
+use std::time::{Duration, Instant};
+
+fn wedged_output_backend() -> ProfessionalBackend<f64> {
+    ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_open_timeout(Duration::from_millis(200))
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory(Arc::default())))
+}
+
+#[test]
+fn a_timed_out_open_degrades_to_a_null_stream_and_runs_the_rest() {
+    // D2: the wedged master output prepares as a discard-sink null stream,
+    // the session starts on the QPC fallback clock with the healthy capture
+    // worker live, and the transport stays fully usable.
+    let (project, source, sink) = wasapi_stream_project("native", "{wedged-output}");
+    let (native, gate) = native_devices_hanging(Faults::default(), vec!["{wedged-output}".into()]);
+    let backend = wedged_output_backend();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let started = Instant::now();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .expect("a wedged open prepares as a null stream");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "prepare must respect the open deadline"
+    );
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| owner.timeline().is_some_and(|t| t.frame >= 256));
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    let wedged = streams
+        .iter()
+        .find(|stream| stream.node == sink)
+        .expect("wedged sink keeps its observation");
+    assert!(wedged.absent);
+    assert_eq!(
+        wedged.endpoint,
+        StreamEndpoint::Physical("{wedged-output}".into())
+    );
+    assert_eq!(wedged.actual.buffer_frames, 0);
+    assert_eq!(native.probe.started.load(Ordering::Acquire), 1);
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.node == source && !stream.absent),
+        "the healthy capture prepares normally"
+    );
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+    gate.open();
+}
+
+#[test]
+fn a_late_open_success_self_cleans_without_activation_or_failure() {
+    // The abandoned worker's OS call finally returns: the fence keeps it out
+    // of the run loop, its stream unwinds on its own thread, and the shared
+    // run state never records a failure.
+    let (project, _source, _sink) = wasapi_stream_project("native", "{wedged-output}");
+    let (native, gate) = native_devices_hanging(Faults::default(), vec!["{wedged-output}".into()]);
+    let backend = wedged_output_backend();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    // The settled capture stream drops with the unattached transport; the
+    // abandoned wedged stream drops on its own thread once the gate opens.
+    drop(prepared);
+    wait_until(|| native.probe.dropped.load(Ordering::Acquire) == 1);
+    gate.open();
+    wait_until(|| native.probe.dropped.load(Ordering::Acquire) == 2);
+    assert_eq!(native.probe.started.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn cancellation_during_a_hanging_open_returns_promptly() {
+    // Stop/graph edits/app exit cancel the prepare while an open hangs: the
+    // wait must return immediately instead of joining the blocked worker.
+    let (project, _source, _sink) = wasapi_stream_project("native", "{wedged-output}");
+    let (native, gate) = native_devices_hanging(Faults::default(), vec!["{wedged-output}".into()]);
+    let backend = wedged_output_backend();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let cancel_timer = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        cancel_timer.cancel();
+    });
+    let started = Instant::now();
+    let result = backend.prepare_with_native(request(&project, &host), &cancel, &native);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancel must not wait for the wedged open"
+    );
+    assert_eq!(result.err(), Some(BackendError::Cancelled));
+    gate.open();
+}
+
+#[test]
+fn stuck_endpoints_skip_reopens_until_the_device_is_seen_missing() {
+    // D3: within one backend instance (one applied session) a timed-out
+    // endpoint is not re-opened on re-prepare and the absence watch does not
+    // report it back while it still enumerates; observing it missing clears
+    // the verdict, and the next sighting emits the recovery event so the
+    // following prepare opens the real stream again.
+    let (project, _source, sink) = wasapi_stream_project("native", "{wedged-output}");
+    let (native, gate) = native_devices_hanging(Faults::default(), vec!["{wedged-output}".into()]);
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_open_timeout(Duration::from_millis(200));
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    // First prepare: the healthy capture opens, the wedged master times out
+    // (both factory invocations are counted; the wedged one was abandoned).
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .expect("the timed-out master prepares as a null stream");
+    drop(prepared);
+    gate.open();
+    wait_until(|| native.probe.dropped.load(Ordering::Acquire) == 2);
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 2);
+
+    // Re-prepare with the same backend: the stuck endpoint is skipped — no
+    // second open attempt, so no second bounded hang.
+    let started = Instant::now();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .expect("the stuck endpoint prepares as a null stream again");
+    assert!(
+        started.elapsed() < Duration::from_millis(150),
+        "the stuck endpoint must not re-open"
+    );
+    drop(prepared);
+    assert_eq!(
+        native.probe.opened.load(Ordering::Acquire),
+        3,
+        "only the healthy capture opened again"
+    );
+
+    // The device still enumerates: the watch must not report it back.
+    let present = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let probe_present = present.clone();
+    let backend = backend.with_absence_probe(Arc::new(move |_| {
+        probe_present
+            .load(Ordering::Acquire)
+            .then(|| "{wedged-output}".to_owned())
+    }));
+    assert!(
+        backend.poll_resource().is_none(),
+        "a stuck endpoint that still enumerates has not returned"
+    );
+
+    // Re-plug cycle: missing once clears the verdict, present again emits
+    // the recovery event for the wedged node. The watch probes at most once
+    // per second, so each transition waits out the throttle interval.
+    present.store(false, Ordering::Release);
+    assert!(backend.poll_resource().is_none());
+    std::thread::sleep(Duration::from_millis(1100));
+    assert!(
+        backend.poll_resource().is_none(),
+        "the missing observation clears the stuck verdict without an event"
+    );
+    present.store(true, Ordering::Release);
+    std::thread::sleep(Duration::from_millis(1100));
+    let event = backend
+        .poll_resource()
+        .expect("the re-plugged endpoint reports its return");
+    assert_eq!(event.node, sink);
+    assert_eq!(event.configuration, project.nodes[&sink]);
+    assert!(event.available);
+
+    // The recovery re-prepare opens the real stream: the gate is open, so
+    // the open settles and both groups run natively.
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .expect("the recovered endpoint opens for real");
+    assert_eq!(
+        native.probe.opened.load(Ordering::Acquire),
+        5,
+        "the cleared endpoint is opened again"
+    );
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| native.probe.started.load(Ordering::Acquire) == 2);
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+}
+
+#[test]
+fn group_opens_run_concurrently() {
+    // Two groups whose opens rendezvous on a barrier: a serial wave could
+    // never satisfy both inside one deadline, so success proves bounded
+    // parallelism (total latency is the max, not the sum).
+    let (project, _source, _sink) = wasapi_stream_project("{parallel-capture}", "{parallel-sink}");
+    let native = FakeNativeDevices {
+        probe: Arc::default(),
+        faults: Faults::default(),
+        absent: Vec::new(),
+        hang: Vec::new(),
+        hang_gate: Gate::default(),
+        open_barrier: Some(Arc::new(std::sync::Barrier::new(2))),
+    };
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_open_timeout(Duration::from_millis(500));
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let started = Instant::now();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .expect("both rendezvous opens settle concurrently");
+    assert!(
+        started.elapsed() < Duration::from_millis(450),
+        "a serial wave would blow the deadline on the barrier"
+    );
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 2);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| native.probe.started.load(Ordering::Acquire) == 2);
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+}
+
+#[test]
+fn prepare_progress_counts_settled_groups_during_the_open() {
+    // While one group hangs, the observations channel carries live progress:
+    // total groups, how many settled, and the endpoint still opening.
+    let (project, _source, _sink) = wasapi_stream_project("native", "{wedged-output}");
+    let (native, gate) = native_devices_hanging(Faults::default(), vec!["{wedged-output}".into()]);
+    let backend = wedged_output_backend();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let observations = backend.observations();
+    let mut progress_seen = None;
+    std::thread::scope(|scope| {
+        let backend = &backend;
+        let native = &native;
+        let host = &host;
+        let project = &project;
+        let cancel = &cancel;
+        scope.spawn(move || {
+            let prepared = backend
+                .prepare_with_native(request(project, host), cancel, native)
+                .unwrap();
+            drop(prepared);
+        });
+        // The healthy capture settles quickly; the wedged output holds the
+        // wave open until its deadline. Sample the live progress in between.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while progress_seen.is_none() && Instant::now() < deadline {
+            if let Some(progress) = observations.snapshot_progress()
+                && progress.groups_opened == 1
+            {
+                progress_seen = Some(progress);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    gate.open();
+    let progress = progress_seen.expect("the open wave publishes progress");
+    assert_eq!(progress.owner_generation, 7);
+    assert_eq!(progress.groups_total, 2);
+    assert_eq!(progress.groups_opened, 1);
+    assert_eq!(progress.endpoint.as_deref(), Some("{wedged-output}"));
+    assert!(observations.snapshot_progress().is_none());
 }

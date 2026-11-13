@@ -187,6 +187,27 @@ pub(super) struct Faults {
     pub wrong_format: bool,
     pub wrong_period: bool,
 }
+
+/// One-shot release latch: fake factories block on [`Gate::wait`] like a
+/// wedged driver open until the test opens (or never opens) the gate.
+#[derive(Clone, Default)]
+pub(super) struct Gate(Arc<(Mutex<bool>, std::sync::Condvar)>);
+impl Gate {
+    pub fn wait(&self) {
+        let (lock, cvar) = &*self.0;
+        let mut opened = lock.lock().unwrap();
+        while !*opened {
+            opened = cvar.wait(opened).unwrap();
+        }
+    }
+    pub fn open(&self) {
+        let (lock, cvar) = &*self.0;
+        let mut opened = lock.lock().unwrap();
+        *opened = true;
+        cvar.notify_all();
+    }
+}
+
 #[derive(Default)]
 pub(super) struct NativeProbe {
     pub opened: AtomicUsize,
@@ -203,6 +224,13 @@ pub(super) struct FakeNativeDevices {
     /// Endpoints that report absence at resolve time, driving the null-stream
     /// preparation path.
     pub absent: Vec<String>,
+    /// Endpoints whose stream open blocks on `hang_gate` before returning —
+    /// a wedged driver activation.
+    pub hang: Vec<String>,
+    pub hang_gate: Gate,
+    /// When set, every stream open joins this barrier first: proves group
+    /// opens actually run concurrently (a serial wave would time out).
+    pub open_barrier: Option<Arc<std::sync::Barrier>>,
 }
 impl NativeDevices for FakeNativeDevices {
     fn resolve(
@@ -236,6 +264,9 @@ impl NativeDevices for FakeNativeDevices {
             .fetch_add(usize::from(group.master()), Ordering::AcqRel);
         let probe = self.probe.clone();
         let faults = self.faults;
+        let hangs = self.hang.contains(&group.id);
+        let hang_gate = self.hang_gate.clone();
+        let open_barrier = self.open_barrier.clone();
         let device = group
             .input
             .as_ref()
@@ -265,6 +296,12 @@ impl NativeDevices for FakeNativeDevices {
         };
         Ok(Box::new(move || {
             probe.opened.fetch_add(1, Ordering::AcqRel);
+            if let Some(barrier) = &open_barrier {
+                barrier.wait();
+            }
+            if hangs {
+                hang_gate.wait();
+            }
             if faults.open {
                 return Err(native_error("open"));
             }
