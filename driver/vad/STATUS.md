@@ -2,7 +2,7 @@
 
 This file is the canonical owner of VAD run and gate status; the other
 `docs/vad-*.md` records are dated evidence logs and link here for the current
-verdict. Status updated 2026-11-08.
+verdict. Status updated 2026-11-13.
 
 ## Direct remote target amendment - 2026-11-07
 
