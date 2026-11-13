@@ -710,6 +710,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         ),
                         source: None,
                         output_endpoint_id: None,
+                        plugin: None,
                         tint: None,
                     });
                     shell.graph_view.node_positions.insert(id, (420., 230.));

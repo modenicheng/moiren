@@ -140,6 +140,41 @@ pub(super) fn sink_section(
     view
 }
 
+/// The plugin picker section: the shared choice list over the service's
+/// plugin library (the same entries the chip menu offers), plus the
+/// library's scan failures so exclusions are visible, never silent.
+pub(super) fn plugin_section(
+    mut view: Stateful<Div>,
+    snapshot: &crate::service::AppSnapshot,
+    entry: &crate::service::GraphNodeState,
+    cx: &Context<StudioShell>,
+) -> Stateful<Div> {
+    let assigned = entry
+        .plugin
+        .as_ref()
+        .and_then(|assignment| snapshot.plugins.get(&assignment.id))
+        .map(|plugin| plugin.descriptor.name.clone());
+    view = view.child(heading(t!("Plugin"))).child(label(
+        assigned.unwrap_or_else(|| t!("Not assigned · choose a plugin").into()),
+    ));
+    for choice in binding_choices::plugin_choices(snapshot, entry) {
+        view = view.child(binding_choice_button(cx.entity(), choice));
+    }
+    if snapshot.plugins.failures.is_empty() {
+        view = view.child(label(t!(
+            "%{count} plugin(s) in the library",
+            count = snapshot.plugins.len()
+        )));
+    } else {
+        view = view.child(label(t!(
+            "%{count} plugin(s), %{failed} excluded by failed scans",
+            count = snapshot.plugins.len(),
+            failed = snapshot.plugins.failures.len()
+        )));
+    }
+    view
+}
+
 pub(super) fn gain_section(
     mut view: Stateful<Div>,
     shell: &StudioShell,
@@ -320,6 +355,11 @@ fn binding_choice_button(
                         shell
                             .state
                             .update(cx, |state, _| state.dispatch(AppRequest::RefreshCatalog));
+                    }
+                    binding_choices::BindingAction::ScanPlugins => {
+                        shell
+                            .state
+                            .update(cx, |state, _| state.dispatch(AppRequest::ScanPlugins));
                     }
                 }
                 cx.notify();

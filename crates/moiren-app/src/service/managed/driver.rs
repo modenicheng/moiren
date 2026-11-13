@@ -52,6 +52,7 @@ impl ServiceDriver for ManagedDriver {
                 c.set_audio_settings(settings);
             }
             AppRequest::RefreshCatalog => self.catalog.request(),
+            AppRequest::ScanPlugins => self.plugin_scan.request(),
             AppRequest::Start(spec) => {
                 self.cancel_startup_automation();
                 self.auto_apply_deadline = None;
@@ -159,6 +160,7 @@ impl ServiceDriver for ManagedDriver {
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
         self.poll_completions(c, budget);
         self.poll_catalog(pool);
+        self.poll_plugin_scan(pool);
         if let Some(deadline) = self.auto_apply_deadline
             && deadline <= Instant::now()
         {
@@ -204,6 +206,7 @@ impl ServiceDriver for ManagedDriver {
             && self.recording_sessions.is_empty()
             && self.cleaning == 0
             && !self.catalog.is_running()
+            && !self.plugin_scan.running
             && self.exports_runtime.is_drained()
             && self
                 .completions
@@ -293,6 +296,27 @@ impl ManagedDriver {
                         self.cleaning,
                     );
                     c.core.owner_reaped(generation);
+                }
+                Completion::PluginScan(result) => {
+                    self.plugin_scan.running = false;
+                    match result {
+                        Ok(library) => {
+                            log::info!(
+                                target: "moiren::audio::service",
+                                "plugin scan completed: {} plugin(s), {} failure(s)",
+                                library.len(),
+                                library.failures.len(),
+                            );
+                            c.replace_plugins(library);
+                        }
+                        Err(error) => {
+                            log::error!(
+                                target: "moiren::audio::service",
+                                "plugin scan failed: {error}"
+                            );
+                            c.graph.record_error(error.to_string());
+                        }
+                    }
                 }
                 Completion::Catalog(result) => {
                     self.catalog.finished();
@@ -439,6 +463,36 @@ impl ManagedDriver {
             pool,
             Completion::Catalog,
         );
+    }
+    /// Submit the requested sandboxed plugin scan on the prepare lane. The
+    /// job spawns one scanner subprocess per standard root and waits out
+    /// their deadlines, so it never runs on the service thread.
+    fn poll_plugin_scan(&mut self, pool: &mut JobPool) {
+        if self.exiting || !self.plugin_scan.requested || self.plugin_scan.running {
+            return;
+        }
+        let completions = self
+            .completions
+            .get_or_insert_with(|| CompletionQueue::new(thread::current()));
+        let Ok(credit) = completions.port().try_reserve() else {
+            return;
+        };
+        let job: Job = Box::new(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                super::super::run_sandbox_scan,
+            ))
+            .unwrap_or_else(|_| {
+                Err(super::super::BackendError::new(
+                    "plugin-scan",
+                    "the scan worker panicked",
+                ))
+            });
+            credit.send_or_dispose(Completion::PluginScan(result), drop);
+        });
+        if pool.try_submit_owned(JobPriority::Prepare, job).is_ok() {
+            self.plugin_scan.running = true;
+            self.plugin_scan.requested = false;
+        }
     }
     /// Publish native and professional observations, filtered by the running
     /// owner generation. Refreshes are tick-batched at 1 Hz: the raw counters

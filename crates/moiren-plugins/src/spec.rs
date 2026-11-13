@@ -72,6 +72,21 @@ impl PluginDescriptor {
     pub fn channels(&self) -> u32 {
         self.output_channels
     }
+
+    /// Stable library key for one scanned plugin: the format, the
+    /// format-specific plugin id, and the module path, joined with `|`. Two
+    /// descriptors share a key only if the same plugin id lives in the same
+    /// binary file; the path component keeps duplicate installs of one id in
+    /// different files distinct. Keys survive rescans as long as the module
+    /// does not move.
+    pub fn stable_id(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.format.label(),
+            self.id,
+            self.path.display()
+        )
+    }
 }
 
 /// One parameter change to apply at the first frame of a `process` call.

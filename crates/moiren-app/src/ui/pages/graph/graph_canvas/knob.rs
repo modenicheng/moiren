@@ -279,6 +279,7 @@ mod tests {
             builtin: BuiltinState::None,
             source: None,
             output_endpoint_id: None,
+            plugin: None,
             tint: None,
         }
     }
