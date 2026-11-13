@@ -15,8 +15,8 @@ use crate::recorder::Mp3Recording;
 use crate::{
     meter::signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
     recorder::{
-        RecorderReader, RecorderStats, RecordingSession, RecordingSource, WavRecording,
-        spawn_recording,
+        RecorderReader, RecorderState, RecorderStats, RecordingSession, RecordingSource,
+        WavRecording, spawn_recording,
     },
     spectrum::{SpectrumSettings, SpectrumWindow},
 };
@@ -83,12 +83,18 @@ struct RecorderLease {
 }
 
 impl RecordingSource for RecorderLease {
-    fn reader(&mut self) -> &mut RecorderReader {
-        self.reader.as_mut().expect("lease owns the consumer")
+    fn reader(&mut self) -> Option<&mut RecorderReader> {
+        Some(self.reader.as_mut().expect("lease owns the consumer"))
     }
 
-    fn is_active(&self) -> bool {
-        self.alive.load(Ordering::Acquire)
+    fn finished(&mut self) -> bool {
+        // A revoked endpoint (its generation was replaced) finalizes like a
+        // plain reader that stopped or disconnected.
+        !self.alive.load(Ordering::Acquire)
+            || self
+                .reader
+                .as_ref()
+                .is_some_and(|reader| reader.state() != RecorderState::Recording)
     }
 }
 
@@ -163,7 +169,14 @@ impl ManagedRecorderReader {
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
         let mut source = self.claim()?;
-        let wav = WavRecording::create(path, source.reader().channel_count(), sample_rate)?;
+        let wav = WavRecording::create(
+            path,
+            source
+                .reader()
+                .expect("lease owns the consumer")
+                .channel_count(),
+            sample_rate,
+        )?;
         spawn_recording(source, wav)
     }
 
@@ -176,7 +189,14 @@ impl ManagedRecorderReader {
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
         let mut source = self.claim()?;
-        let wav = WavRecording::from_writer(writer, source.reader().channel_count(), sample_rate)?;
+        let wav = WavRecording::from_writer(
+            writer,
+            source
+                .reader()
+                .expect("lease owns the consumer")
+                .channel_count(),
+            sample_rate,
+        )?;
         spawn_recording(source, wav)
     }
 
@@ -190,8 +210,18 @@ impl ManagedRecorderReader {
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
         let mut source = self.claim()?;
-        let wav = WavRecording::create(path, source.reader().channel_count(), sample_rate)?;
-        source.reader().skip_queued();
+        let wav = WavRecording::create(
+            path,
+            source
+                .reader()
+                .expect("lease owns the consumer")
+                .channel_count(),
+            sample_rate,
+        )?;
+        source
+            .reader()
+            .expect("lease owns the consumer")
+            .skip_queued();
         spawn_recording(source, wav)
     }
 
@@ -207,9 +237,19 @@ impl ManagedRecorderReader {
         encoding: crate::recorder::Mp3Encoding,
     ) -> io::Result<RecordingSession> {
         let mut source = self.claim()?;
-        let mp3 =
-            Mp3Recording::create(path, source.reader().channel_count(), sample_rate, encoding)?;
-        source.reader().skip_queued();
+        let mp3 = Mp3Recording::create(
+            path,
+            source
+                .reader()
+                .expect("lease owns the consumer")
+                .channel_count(),
+            sample_rate,
+            encoding,
+        )?;
+        source
+            .reader()
+            .expect("lease owns the consumer")
+            .skip_queued();
         spawn_recording(source, mp3)
     }
 
@@ -225,10 +265,55 @@ impl ManagedRecorderReader {
         encoding: crate::recorder::FlacEncoding,
     ) -> io::Result<RecordingSession> {
         let mut source = self.claim()?;
-        let flac =
-            FlacRecording::create(path, source.reader().channel_count(), sample_rate, encoding)?;
-        source.reader().skip_queued();
+        let flac = FlacRecording::create(
+            path,
+            source
+                .reader()
+                .expect("lease owns the consumer")
+                .channel_count(),
+            sample_rate,
+            encoding,
+        )?;
+        source
+            .reader()
+            .expect("lease owns the consumer")
+            .skip_queued();
         spawn_recording(source, flac)
+    }
+
+    /// Claim this generation's raw reader for a rebindable session: the
+    /// caller feeds it to `RecordingSession::reattach` on later owners.
+    /// Follows the same lease rules as the `record_*` entry points: a busy
+    /// or stale claim fails without touching capture.
+    pub fn claim_reader(&self) -> io::Result<RecorderReader> {
+        let mut lease = self.claim()?;
+        // The empty lease keeps the slot marked leased; its Drop has no
+        // reader to return, so the consumer stays owned by the session.
+        Ok(lease.reader.take().expect("claim installs a reader"))
+    }
+
+    /// Rebindable variant of the `_now` entry points: the returned session
+    /// accepts readers from later owners via
+    /// [`crate::recorder::RecordingSession::reattach`]. `sink` builds the
+    /// destination from the channel count; creation failures return the
+    /// reader to the slot, like the plain entry points.
+    pub fn record_rebindable_now<S: crate::recorder::RecordingSink>(
+        &self,
+        sink: impl FnOnce(usize) -> io::Result<S>,
+    ) -> io::Result<RecordingSession> {
+        let mut lease = self.claim()?;
+        let sink = sink(
+            lease
+                .reader
+                .as_ref()
+                .expect("claim installs a reader")
+                .channel_count(),
+        )?;
+        let reader = lease.reader.take().expect("claim installs a reader");
+        // The empty lease keeps the slot marked leased; the consumer now
+        // belongs to the session.
+        drop(lease);
+        reader.record_rebindable(sink)
     }
 
     fn claim(&self) -> io::Result<RecorderLease> {

@@ -174,6 +174,7 @@ impl ServiceDriver for ManagedDriver {
             let snapshot = owner.observer.read();
             self.poll_observations(c, &snapshot, owner.generation);
             self.poll_execution(c, &snapshot);
+            self.poll_recording_rebinds(c, &snapshot);
             self.poll_edits(c);
             self.poll_parameters(c);
             self.pump_parameters(c, budget);

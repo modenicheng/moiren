@@ -15,3 +15,17 @@ pub trait RecordingSink: Send + 'static {
     /// Finalize the destination; called once after the last write.
     fn finish(&mut self) -> io::Result<()>;
 }
+
+impl RecordingSink for Box<dyn RecordingSink> {
+    fn write_interleaved(&mut self, samples: &[f32], channels: usize) -> io::Result<()> {
+        (**self).write_interleaved(samples, channels)
+    }
+
+    fn written_frames(&self) -> u64 {
+        (**self).written_frames()
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        (**self).finish()
+    }
+}

@@ -9,6 +9,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -54,6 +55,11 @@ pub struct RecordingSummary {
 
 struct Shared {
     stop: AtomicBool,
+    /// Session-level pause intent. The live gate travels with the current
+    /// reader, so the worker re-applies this flag whenever a rebind installs
+    /// a replacement reader.
+    pause_requested: AtomicBool,
+    current_pause: Mutex<Option<RecorderPause>>,
     status: Mutex<RecordingStatus>,
 }
 
@@ -63,11 +69,36 @@ struct Shared {
 /// errors must be observed. A slow or blocked destination can delay joining.
 pub struct RecordingSession {
     shared: Arc<Shared>,
-    pause: RecorderPause,
+    channels: usize,
+    rebind: Option<RebindHandle>,
     worker: Option<JoinHandle<()>>,
 }
 
+struct RebindHandle {
+    incoming: mpsc::Sender<RecorderReader>,
+    closed: Arc<AtomicBool>,
+}
+
+/// Why [`RecordingSession::reattach`] refused a replacement reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReattachError {
+    /// The session was created without the rebindable source.
+    NotRebindable,
+    /// The replacement carries a different channel count than the file.
+    ChannelMismatch { expected: usize, got: usize },
+    /// The worker is gone; the session already finalized.
+    Closed,
+}
+
 impl RecordingSession {
+    /// Wire a replacement channel into a freshly spawned session;
+    /// `RecordingSession` implements `Drop`, so the struct-update syntax is
+    /// unavailable.
+    fn with_rebind(mut self, handle: RebindHandle) -> Self {
+        self.rebind = Some(handle);
+        self
+    }
+
     pub fn status(&self) -> RecordingStatus {
         self.shared
             .status
@@ -80,12 +111,58 @@ impl RecordingSession {
     /// recording, so `written_frames` counts recorded audio only. The gate is
     /// shared with the observer, so it takes effect on the next audio block.
     pub fn pause(&self) {
-        self.pause.pause();
+        self.shared.pause_requested.store(true, Ordering::SeqCst);
+        if let Some(handle) = self
+            .shared
+            .current_pause
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            handle.pause();
+        }
     }
 
     /// Resume after [`RecordingSession::pause`].
     pub fn resume(&self) {
-        self.pause.resume();
+        self.shared.pause_requested.store(false, Ordering::SeqCst);
+        if let Some(handle) = self
+            .shared
+            .current_pause
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            handle.resume();
+        }
+    }
+
+    /// Hand the session a fresh reader from a replacement engine owner. The
+    /// queued preroll is discarded, so the file continues with audio observed
+    /// after the swap. Fails when the channel count changed; the caller then
+    /// stops the session so the file finalizes.
+    pub fn reattach(&self, reader: RecorderReader) -> Result<(), ReattachError> {
+        let Some(handle) = &self.rebind else {
+            return Err(ReattachError::NotRebindable);
+        };
+        if reader.channel_count() != self.channels {
+            return Err(ReattachError::ChannelMismatch {
+                expected: self.channels,
+                got: reader.channel_count(),
+            });
+        }
+        handle
+            .incoming
+            .send(reader)
+            .map_err(|_| ReattachError::Closed)
+    }
+
+    /// No further reattach will arrive: once the current reader drains, the
+    /// session finalizes instead of waiting for a replacement.
+    pub fn close_rebind(&self) {
+        if let Some(handle) = &self.rebind {
+            handle.closed.store(true, Ordering::SeqCst);
+        }
     }
 
     pub fn stop(&self) {
@@ -126,15 +203,71 @@ impl Drop for RecordingSession {
 }
 
 pub(crate) trait RecordingSource: Send + 'static {
-    fn reader(&mut self) -> &mut RecorderReader;
-    fn is_active(&self) -> bool {
-        true
-    }
+    /// The live reader, when one is attached. A rebindable source returns
+    /// `None` while it waits for its replacement reader.
+    fn reader(&mut self) -> Option<&mut RecorderReader>;
+    /// Whether the worker should finalize independently of an explicit stop:
+    /// a plain reader that stopped or disconnected, or a rebindable source
+    /// whose slot closed and whose reader drained.
+    fn finished(&mut self) -> bool;
 }
 
 impl RecordingSource for RecorderReader {
-    fn reader(&mut self) -> &mut RecorderReader {
-        self
+    fn reader(&mut self) -> Option<&mut RecorderReader> {
+        Some(self)
+    }
+
+    fn finished(&mut self) -> bool {
+        self.state() != RecorderState::Recording
+    }
+}
+
+/// A source that survives engine owner swaps: the worker drains the current
+/// reader's tail after a disconnect, then parks until the control side hands
+/// over the replacement. Paused spans and dropped-reader tails stay out of
+/// the file exactly like a plain session's.
+struct RebindSource {
+    current: Option<RecorderReader>,
+    incoming: mpsc::Receiver<RecorderReader>,
+    closed: Arc<AtomicBool>,
+    shared: Arc<Shared>,
+}
+
+impl RebindSource {
+    fn install(&mut self, mut next: RecorderReader) {
+        // A replacement starts clean: discard its preroll so the file
+        // continues with live audio observed after the swap.
+        next.skip_queued();
+        next.start();
+        let handle = next.pause_handle();
+        if self.shared.pause_requested.load(Ordering::SeqCst) {
+            handle.pause();
+        }
+        *self
+            .shared
+            .current_pause
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(handle);
+        self.current = Some(next);
+    }
+}
+
+impl RecordingSource for RebindSource {
+    fn reader(&mut self) -> Option<&mut RecorderReader> {
+        let drained_dead = self.current.as_ref().is_some_and(|reader| {
+            reader.state() == RecorderState::Disconnected && reader.queued_frames() == 0
+        });
+        if drained_dead || self.current.is_none() {
+            match self.incoming.try_recv() {
+                Ok(next) => self.install(next),
+                Err(_) => self.current = None,
+            }
+        }
+        self.current.as_mut()
+    }
+
+    fn finished(&mut self) -> bool {
+        self.closed.load(Ordering::SeqCst) && self.reader().is_none()
     }
 }
 
@@ -196,6 +329,35 @@ impl RecorderReader {
         spawn_recording(self, flac)
     }
 
+    /// Managed variant for recordings that must survive engine owner swaps:
+    /// the queued preroll is discarded like the `_now` entry points, and the
+    /// returned session accepts replacement readers via
+    /// [`RecordingSession::reattach`] instead of finalizing when its reader
+    /// disconnects.
+    pub fn record_rebindable<S: RecordingSink>(mut self, sink: S) -> io::Result<RecordingSession> {
+        self.skip_queued();
+        // Restart acceptance immediately so capture observed right after this
+        // call is recorded even before the worker's own start handshake.
+        self.start();
+        let channels = self.channel_count();
+        let stats = self.stats();
+        let (sender, incoming) = mpsc::channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let handle = RebindHandle {
+            incoming: sender,
+            closed: Arc::clone(&closed),
+        };
+        build_session(sink, channels, stats, None, move |shared| {
+            Box::new(RebindSource {
+                current: Some(self),
+                incoming,
+                closed,
+                shared,
+            })
+        })
+        .map(|session| session.with_rebind(handle))
+    }
+
     /// Control-side variant for custom destinations. All subsequent writes,
     /// seeks and flushes belong exclusively to the recording worker.
     pub fn record_with_writer<W: io::Write + io::Seek + Send + 'static>(
@@ -209,15 +371,10 @@ impl RecorderReader {
 }
 
 // This guard also stops capture if spawning fails or a custom writer panics.
-struct SourceGuard<T: RecordingSource>(T);
-impl<T: RecordingSource> Drop for SourceGuard<T> {
+struct SourceGuard(Box<dyn RecordingSource>);
+impl Drop for SourceGuard {
     fn drop(&mut self) {
-        self.0.reader().stop();
-        // Builder::spawn can fail before the worker body runs. Settle that
-        // path too, before a managed source returns its exclusive reader.
-        while !self.0.reader().is_quiescent() {
-            thread::park_timeout(Duration::from_millis(2));
-        }
+        settle_source(self.0.as_mut());
     }
 }
 
@@ -225,32 +382,57 @@ pub(crate) fn spawn_recording<T: RecordingSource, S: RecordingSink>(
     mut source: T,
     sink: S,
 ) -> io::Result<RecordingSession> {
-    // The handle gates capture through the shared control block, so it stays
-    // usable while the worker owns the reader.
-    let pause = source.reader().pause_handle();
-    let channels = source.reader().channel_count();
+    let channels = source
+        .reader()
+        .expect("a fresh source owns a reader")
+        .channel_count();
+    let stats = source
+        .reader()
+        .expect("a fresh source owns a reader")
+        .stats();
+    build_session(sink, channels, stats, None, move |_| Box::new(source))
+}
+
+/// Shared spawn body: the source factory receives the freshly built
+/// [`Shared`] block so a rebindable source can wire its swap-time pause
+/// propagation before the worker starts.
+fn build_session<S: RecordingSink>(
+    sink: S,
+    channels: usize,
+    initial_stats: RecorderStats,
+    rebind: Option<RebindHandle>,
+    source: impl FnOnce(Arc<Shared>) -> Box<dyn RecordingSource>,
+) -> io::Result<RecordingSession> {
     let shared = Arc::new(Shared {
         stop: AtomicBool::new(false),
+        pause_requested: AtomicBool::new(false),
+        current_pause: Mutex::new(None),
         status: Mutex::new(RecordingStatus {
             state: RecordingState::Recording,
-            paused: pause.is_paused(),
+            paused: false,
             written_frames: 0,
-            stats: source.reader().stats(),
+            stats: initial_stats,
             error: None,
         }),
     });
-    let mut source = SourceGuard(source);
+    let mut source = source(Arc::clone(&shared));
+    *shared
+        .current_pause
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = source.reader().map(|reader| reader.pause_handle());
     let worker_shared = Arc::clone(&shared);
+    let source = SourceGuard(source);
     let worker = thread::Builder::new()
         .name("moiren-recording".into())
         .spawn(move || {
+            let mut source = source;
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let mut sink = sink;
                 // Channel counts are bounded by `builtin::MAX_CHANNELS`, so
                 // the interleaved scratch cannot overflow.
                 let mut scratch = vec![0.0; channels * DRAIN_CHUNK_FRAMES];
                 run(
-                    &mut source.0,
+                    source.0.as_mut(),
                     &mut sink,
                     channels,
                     &mut scratch,
@@ -258,11 +440,8 @@ pub(crate) fn spawn_recording<T: RecordingSource, S: RecordingSink>(
                 )
             }))
             .unwrap_or_else(|_| Err(io::Error::other("recording destination panicked")));
-            source.0.reader().stop();
-            while !source.0.reader().is_quiescent() {
-                thread::park_timeout(Duration::from_millis(2));
-            }
-            let stats = source.0.reader().stats();
+            settle_source(source.0.as_mut());
+            let stats = source.0.as_mut().reader().map(|reader| reader.stats());
             // Return a leased reader before publishing terminal status. Observers
             // can rely on Finished/Failed to mean the queue is no longer claimed.
             drop(source);
@@ -270,7 +449,9 @@ pub(crate) fn spawn_recording<T: RecordingSource, S: RecordingSink>(
                 .status
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            status.stats = stats;
+            if let Some(stats) = stats {
+                status.stats = stats;
+            }
             match result {
                 Ok(written_frames) => {
                     status.written_frames = written_frames;
@@ -287,30 +468,41 @@ pub(crate) fn spawn_recording<T: RecordingSource, S: RecordingSink>(
         })?;
     Ok(RecordingSession {
         shared,
-        pause,
+        channels,
+        rebind,
         worker: Some(worker),
     })
 }
 
-fn run<T: RecordingSource, S: RecordingSink>(
-    source: &mut T,
+fn settle_source(source: &mut dyn RecordingSource) {
+    let Some(reader) = source.reader() else {
+        return;
+    };
+    reader.stop();
+    while !reader.is_quiescent() {
+        thread::park_timeout(Duration::from_millis(2));
+    }
+}
+
+fn run<S: RecordingSink>(
+    source: &mut dyn RecordingSource,
     sink: &mut S,
     channels: usize,
     scratch: &mut [f32],
     shared: &Shared,
 ) -> io::Result<u64> {
-    if source.is_active() && !shared.stop.load(Ordering::Acquire) {
+    if !shared.stop.load(Ordering::Acquire) {
         // A fresh session records from now: clear any pause gate a previous
         // session on this reader left behind.
-        source.reader().start();
-        source.reader().resume();
+        if let Some(reader) = source.reader() {
+            reader.start();
+            reader.resume();
+        }
     }
     loop {
-        let stopping = shared.stop.load(Ordering::Acquire)
-            || !source.is_active()
-            || source.reader().state() != RecorderState::Recording;
-        if stopping {
-            source.reader().stop();
+        let stopping = shared.stop.load(Ordering::Acquire) || source.finished();
+        if stopping && let Some(reader) = source.reader() {
+            reader.stop();
         }
         let drained = drain_once(source, sink, channels, scratch);
         {
@@ -320,16 +512,30 @@ fn run<T: RecordingSource, S: RecordingSink>(
             } else {
                 RecordingState::Recording
             };
-            status.paused = source.reader().is_paused();
+            // The session-level gate is authoritative: a rebindable source
+            // waiting for its replacement reports the intent, not the
+            // missing reader.
+            status.paused = shared.pause_requested.load(Ordering::SeqCst)
+                || source.reader().is_some_and(|reader| reader.is_paused());
+            if let Some(reader) = source.reader() {
+                status.stats = reader.stats();
+            }
             status.written_frames = sink.written_frames();
-            status.stats = source.reader().stats();
         }
         let drained = drained?;
         // Checking queue emptiness alone could lose a block already entering
         // observe(). The stop handshake proves that no later publication can
         // follow this final queue snapshot.
-        if stopping && source.reader().is_quiescent() && source.reader().queued_frames() == 0 {
-            break;
+        if stopping {
+            match source.reader() {
+                Some(reader) => {
+                    if reader.is_quiescent() && reader.queued_frames() == 0 {
+                        break;
+                    }
+                }
+                // No reader attached: nothing is in flight, finalize now.
+                None => break,
+            }
         }
         if drained == 0 {
             thread::park_timeout(Duration::from_millis(2));
@@ -343,19 +549,20 @@ fn run<T: RecordingSource, S: RecordingSink>(
 /// Pulls at most [`DRAIN_CHUNK_FRAMES`] queued frames into `scratch` and hands
 /// them to the sink. The result is produced before the caller updates status,
 /// mirroring the pre-sink drain error reporting order.
-fn drain_once<T: RecordingSource, S: RecordingSink>(
-    source: &mut T,
+fn drain_once<S: RecordingSink>(
+    source: &mut dyn RecordingSource,
     sink: &mut S,
     channels: usize,
     scratch: &mut [f32],
 ) -> io::Result<usize> {
-    let want = source.reader().queued_frames().min(DRAIN_CHUNK_FRAMES);
+    let Some(reader) = source.reader() else {
+        return Ok(0);
+    };
+    let want = reader.queued_frames().min(DRAIN_CHUNK_FRAMES);
     if want == 0 {
         return Ok(0);
     }
-    let read = source
-        .reader()
-        .read_interleaved(&mut scratch[..want * channels]);
+    let read = reader.read_interleaved(&mut scratch[..want * channels]);
     if read == 0 {
         return Ok(0);
     }

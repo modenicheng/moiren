@@ -1658,6 +1658,9 @@ _version: 2
 "Paused":
   en: Paused
   zh-CN: 已暂停
+"Reconnecting":
+  en: Reconnecting
+  zh-CN: 续接中
 "Saved":
   en: Saved
   zh-CN: 已保存

@@ -10,6 +10,29 @@ struct Rig {
     state: Arc<State>,
 }
 
+/// Poll the recording worker's written-frame counter until it passes
+/// `beyond`, returning the observed value. Realtime-render independent, so
+/// loaded CI runners cannot starve the assertion.
+fn wait_written_frames(rig: &mut Rig, recorder: NodeId, beyond: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let frames = rig
+            .driver
+            .recording_sessions
+            .get(&recorder)
+            .map(|recording| recording.session.status().written_frames)
+            .unwrap_or(0);
+        if frames > beyond {
+            return frames;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "written_frames stuck at {frames} (beyond {beyond})"
+        );
+        rig.tick();
+    }
+}
+
 #[test]
 fn virtual_only_apply_runs_without_physical_session_selectors() {
     let mut rig = Rig::new();
@@ -3180,6 +3203,85 @@ fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
         snapshot.path.display()
     );
     let _ = std::fs::remove_file(&snapshot.path);
+}
+
+#[test]
+fn recording_survives_owner_swaps_and_continues_the_same_file() {
+    // A private directory: parallel recording tests share the temp root and
+    // second-resolution file names, so a neighbor's cleanup could race this
+    // test's final existence assertion.
+    let directory = std::env::temp_dir().join("moiren-rebind-continuity-test");
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut rig = Rig::new();
+    rig.start();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Recorder,
+        channels: 2,
+    }));
+    rig.wait(|r| {
+        let graph = r.c.graph.snapshot_ref();
+        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
+    });
+    let recorder = rig.node(NodeKind::Recorder);
+    rig.request(AppRequest::StartRecording {
+        node: recorder,
+        directory: directory.clone(),
+        format: crate::service::RecordingFormat::Wav,
+        mp3: Default::default(),
+        flac: Default::default(),
+    });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
+    let first = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .unwrap();
+    // Tape a first span from the initial owner. Anchoring on written-frame
+    // growth instead of recorded seconds keeps the test honest on loaded
+    // runners where the realtime renderer is starved.
+    let first_frames = wait_written_frames(&mut rig, recorder, 0);
+
+    // A transport-level change swaps the owner: the session parks on its
+    // open file (Rebinding) and continues automatically once the
+    // replacement owner runs.
+    let generation = rig.c.core.generation();
+    let mut settings = AudioSettings::default();
+    settings.processing.block_frames = 512;
+    rig.request(AppRequest::SetAudioSettings(settings));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running
+            && r.c.core.generation() != generation
+            && r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording)
+    });
+
+    // The file is the same one and keeps growing across the swap.
+    let resumed = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .unwrap();
+    assert_eq!(resumed.path, first.path);
+    assert_eq!(resumed.file_name, first.file_name);
+    wait_written_frames(&mut rig, recorder, first_frames);
+
+    rig.request(AppRequest::StopRecording { node: recorder });
+    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
+    let snapshot = rig
+        .c
+        .recordings
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.node == recorder)
+        .expect("a terminal recording keeps its entry");
+    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+    assert!(snapshot.path.exists(), "{}", snapshot.path.display());
+    let _ = std::fs::remove_file(&snapshot.path);
+    let _ = std::fs::remove_dir(&directory);
 }
 
 #[test]
