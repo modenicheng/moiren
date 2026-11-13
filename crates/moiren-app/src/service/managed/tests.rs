@@ -3207,6 +3207,11 @@ fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
 
 #[test]
 fn recording_survives_owner_swaps_and_continues_the_same_file() {
+    // A private directory: parallel recording tests share the temp root and
+    // second-resolution file names, so a neighbor's cleanup could race this
+    // test's final existence assertion.
+    let directory = std::env::temp_dir().join("moiren-rebind-continuity-test");
+    std::fs::create_dir_all(&directory).unwrap();
     let mut rig = Rig::new();
     rig.start();
     rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
@@ -3220,7 +3225,7 @@ fn recording_survives_owner_swaps_and_continues_the_same_file() {
     let recorder = rig.node(NodeKind::Recorder);
     rig.request(AppRequest::StartRecording {
         node: recorder,
-        directory: std::env::temp_dir(),
+        directory: directory.clone(),
         format: crate::service::RecordingFormat::Wav,
         mp3: Default::default(),
         flac: Default::default(),
@@ -3276,6 +3281,7 @@ fn recording_survives_owner_swaps_and_continues_the_same_file() {
     assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
     assert!(snapshot.path.exists(), "{}", snapshot.path.display());
     let _ = std::fs::remove_file(&snapshot.path);
+    let _ = std::fs::remove_dir(&directory);
 }
 
 #[test]
