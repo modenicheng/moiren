@@ -96,6 +96,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
                     input_frames: 32,
                     output_frames: 64,
                 }),
+                absent: false,
             }],
         },
     });

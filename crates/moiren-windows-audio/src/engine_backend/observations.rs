@@ -57,6 +57,10 @@ pub struct ProfessionalStreamObservation {
     pub engine_busy_100ns: u64,
     pub engine_peak_block_100ns: u64,
     pub driver_latency: Option<NativeLatency>,
+    /// The endpoint's device is missing: the stream is a silent null stream
+    /// binding, not a native worker, and returns automatically once the
+    /// device comes back.
+    pub absent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,6 +250,7 @@ mod tests {
             engine_busy_100ns: 0,
             engine_peak_block_100ns: 0,
             driver_latency: None,
+            absent: false,
         };
         observations.publish(1, vec![(stream.clone(), old.clone())]);
         observations.publish(2, vec![(stream, fresh.clone())]);

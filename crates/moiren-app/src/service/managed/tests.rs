@@ -2958,22 +2958,23 @@ fn restored_project_resumes_with_its_own_bindings_once_the_catalog_arrives() {
 }
 
 #[test]
-fn resume_strips_offline_secondary_sources_and_reports_once_running() {
+fn resume_keeps_offline_secondary_sources_in_the_graph() {
     let document = restored_document(|graph| {
         add_physical_source(graph, "Unplugged mic", "missing-input");
     });
     let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
-    let before = rig.c.graph.snapshot().candidate_revision;
+    let before = rig.c.graph.snapshot();
     rig.tick();
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running && settled(r));
     let snapshot = rig.c.graph.snapshot();
-    assert!(
-        snapshot
-            .nodes
-            .iter()
-            .all(|node| node.label != "Unplugged mic"),
-        "the offline source leaves so the rest of the graph can run"
+    // The absent device stays bound to its node: the backend runs it as a
+    // silent null stream instead of the session dropping topology, so the
+    // saved document keeps the node across sessions.
+    assert_eq!(
+        snapshot.candidate_revision, before.candidate_revision,
+        "resume edits nothing"
     );
+    assert_eq!(snapshot.graph.nodes().len(), before.graph.nodes().len());
     assert_eq!(
         snapshot
             .graph
@@ -2981,51 +2982,13 @@ fn resume_strips_offline_secondary_sources_and_reports_once_running() {
             .iter()
             .filter(|node| node.kind() == NodeKind::Source)
             .count(),
-        1
-    );
-    assert_eq!(
-        snapshot.candidate_revision,
-        before + 1,
-        "one strip, one edit"
+        2
     );
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
-    // The notice lands only after activation, which clears the fault group.
-    rig.wait(|r| !r.c.graph.snapshot().faults.is_empty());
-    let faults = rig.c.graph.snapshot().faults;
-    assert_eq!(faults.len(), 1);
-    assert_eq!(faults[0].subject, GraphSubject::Graph);
-    assert!(
-        faults[0].cause.contains("'Unplugged mic' (input)"),
-        "{}",
-        faults[0].cause
-    );
-    assert!(
-        faults[0]
-            .hint
-            .as_deref()
-            .is_some_and(|hint| hint.contains("undo"))
-    );
-    rig.tick();
-    rig.tick();
-    assert_eq!(
-        rig.c.graph.snapshot().faults.len(),
-        1,
-        "periodic confirmation must not clear the published notice"
-    );
-    // The strip is an ordinary journaled edit: undo brings the node back.
-    rig.request(AppRequest::UndoGraph);
-    assert!(
-        rig.c
-            .graph
-            .snapshot()
-            .nodes
-            .iter()
-            .any(|node| node.label == "Unplugged mic")
-    );
 }
 
 #[test]
-fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
+fn resume_keeps_the_last_offline_source_and_starts_anyway() {
     let document = restored_document(|graph| {
         let source = graph
             .snapshot()
@@ -3045,8 +3008,9 @@ fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
     let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
     let before = rig.c.graph.snapshot();
     rig.tick();
-    // The apply still goes out: a real host parks in WaitingForResources
-    // and recovers when the device returns, which stripping would forfeit.
+    // The apply still goes out: a real backend prepares the absent input
+    // as a silent null stream and the session runs degraded until the
+    // device returns.
     rig.wait(|r| r.state.starts.load(Ordering::SeqCst) == 1);
     let snapshot = rig.c.graph.snapshot();
     assert_eq!(snapshot.candidate_revision, before.candidate_revision);
@@ -3057,7 +3021,6 @@ fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
             endpoint_id: "missing-input".into()
         })
     );
-    assert!(rig.driver.resume_notice.is_none());
 }
 
 #[test]

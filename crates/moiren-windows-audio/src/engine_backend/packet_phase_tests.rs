@@ -1,5 +1,6 @@
 //! Exercise production preparation without a native device or a second Engine.
 use super::super::{Group, NativeDevices, ProfessionalBackend};
+use super::Resolved;
 use super::{request, virtual_project};
 use crate::engine_backend::owner::StreamFactory;
 use crate::virtual_owner::{
@@ -103,7 +104,7 @@ impl NativeDevices for NoNativeDevices {
         _: &EndpointSelector,
         _: DeviceOptions,
         _: bool,
-    ) -> Result<String, BackendError> {
+    ) -> Result<Resolved, BackendError> {
         panic!("virtual-only preparation must not resolve native devices");
     }
     fn factory(&self, _: &Group, _: u32) -> Result<StreamFactory, BackendError> {
