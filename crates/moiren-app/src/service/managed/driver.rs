@@ -181,7 +181,6 @@ impl ServiceDriver for ManagedDriver {
             self.finish_apply_confirmation(c, &snapshot);
             self.poll_meters(c);
         }
-        self.publish_resume_notice(c);
         self.poll_exports(c, pool);
         // Recording workers finalize on their own threads; this folds their
         // statuses into the domain and queues terminal sessions for cleanup.
@@ -323,77 +322,16 @@ impl ManagedDriver {
     fn cancel_startup_automation(&mut self) {
         self.automatic_startup = false;
         self.automatic_resume = false;
-        self.resume_notice = None;
     }
     /// Startup resume of a restored project. The restored graph already
     /// carries its device bindings, so unlike automatic startup nothing is
-    /// rebound to the catalog defaults. IO nodes whose devices are offline
-    /// leave through the ordinary journaled edit, so undo restores them,
-    /// and the rest of the graph starts.
+    /// rebound to the catalog defaults. IO nodes whose devices are absent
+    /// stay in the graph: the backend prepares them as silent null streams
+    /// and reports the degradation, so the node returns by itself once the
+    /// device is back.
     fn resume_restored(&mut self, c: &mut ServiceContext) {
-        let snapshot = c.graph.snapshot();
-        let mut stripped = Vec::new();
-        for io in startup::strippable_offline_io(&snapshot, &c.catalog) {
-            match c.graph.edit(GraphEdit::RemoveNode(io.node)) {
-                Ok(_) => stripped.push(io),
-                Err(error) => log::warn!(
-                    target: "moiren::audio::service",
-                    "resume kept offline node {:?} ({}): {error}",
-                    io.node,
-                    io.label
-                ),
-            }
-        }
-        if !stripped.is_empty() {
-            let names = stripped
-                .iter()
-                .map(|io| {
-                    let role = match io.kind {
-                        moiren_core::graph::NodeKind::Source => "input",
-                        _ => "output",
-                    };
-                    format!("'{}' ({role})", io.label)
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            log::warn!(
-                target: "moiren::audio::service",
-                "resuming without {} offline device node(s): {names}",
-                stripped.len()
-            );
-            let (nodes, devices) = if stripped.len() == 1 {
-                ("node", "its device is")
-            } else {
-                ("nodes", "their devices are")
-            };
-            self.resume_notice = Some(super::GraphFault {
-                subject: super::GraphSubject::Graph,
-                cause: format!(
-                    "Resumed without {} {nodes} because {devices} offline: {names}",
-                    stripped.len()
-                ),
-                hint: Some(
-                    "Reconnect the device, then undo (Ctrl+Z) to restore the removed node.".into(),
-                ),
-            });
-        }
         self.apply_audio_settings = Some(c.audio_settings.clone());
         self.apply = true;
-    }
-    /// The stripped-device notice waits until the resumed session has fully
-    /// activated: activation clears the fault group, so a notice recorded
-    /// earlier would vanish before anyone saw it.
-    fn publish_resume_notice(&mut self, c: &mut ServiceContext) {
-        if self.resume_notice.is_none() || self.owner.is_none() {
-            return;
-        }
-        let graph = c.graph.snapshot();
-        if graph.pending_revision.is_none()
-            && graph.active_revision == Some(graph.candidate_revision)
-            && let Some(notice) = self.resume_notice.take()
-        {
-            c.graph.record_fault(notice);
-        }
     }
     fn poll_exports(&mut self, c: &mut ServiceContext, pool: &mut JobPool) {
         // Only the export list and revisions are consulted; borrowing them
@@ -525,6 +463,34 @@ impl ManagedDriver {
                 generation,
                 observation,
             });
+        // Absent endpoints surface as node faults: the stream runs silent and
+        // revives automatically when the device returns, so the badge
+        // explains the silence. Recording on the refresh cadence keeps the
+        // fault visible across fault-group clears; record_fault dedupes.
+        if let Some(observations) = &c.professional_observations {
+            for stream in observations
+                .observation
+                .streams
+                .iter()
+                .filter(|stream| stream.absent)
+            {
+                let endpoint = match &stream.endpoint {
+                    moiren_windows_audio::engine_backend::StreamEndpoint::Physical(id) => {
+                        id.clone()
+                    }
+                    _ => continue,
+                };
+                c.graph.record_fault(super::GraphFault {
+                    subject: super::GraphSubject::Node(stream.node),
+                    cause: format!(
+                        "The device for this {} is absent ('{endpoint}'); \
+                         the stream runs silent until it returns",
+                        if stream.input { "input" } else { "output" },
+                    ),
+                    hint: Some("Reconnect the device; audio resumes automatically.".into()),
+                });
+            }
+        }
     }
     #[cfg(not(windows))]
     fn poll_observations(

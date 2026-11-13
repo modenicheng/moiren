@@ -125,6 +125,7 @@ fn virtual_observation(
             engine_busy_100ns: 0,
             engine_peak_block_100ns: 0,
             driver_latency: None,
+            absent: false,
         },
         Arc::default(),
     )

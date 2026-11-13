@@ -517,6 +517,7 @@ fn observation_snapshot_exposes_native_metadata_fields() {
         engine_busy_100ns: 0,
         engine_peak_block_100ns: 0,
         driver_latency: None,
+        absent: false,
     };
     assert_eq!(observation.node, node);
     assert!(observation.input);

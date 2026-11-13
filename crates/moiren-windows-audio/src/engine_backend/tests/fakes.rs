@@ -200,6 +200,9 @@ pub(super) struct NativeProbe {
 pub(super) struct FakeNativeDevices {
     pub probe: Arc<NativeProbe>,
     pub faults: Faults,
+    /// Endpoints that report absence at resolve time, driving the null-stream
+    /// preparation path.
+    pub absent: Vec<String>,
 }
 impl NativeDevices for FakeNativeDevices {
     fn resolve(
@@ -207,9 +210,15 @@ impl NativeDevices for FakeNativeDevices {
         selector: &EndpointSelector,
         _: DeviceOptions,
         _: bool,
-    ) -> Result<String, BackendError> {
+    ) -> Result<Resolved, BackendError> {
         match selector {
-            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => Ok(endpoint_id.clone()),
+            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
+                if self.absent.iter().any(|id| id == endpoint_id) {
+                    Ok(Resolved::Absent)
+                } else {
+                    Ok(Resolved::Native(endpoint_id.clone()))
+                }
+            }
             _ => Err(unsupported("fake requires pinned identity")),
         }
     }
