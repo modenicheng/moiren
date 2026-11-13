@@ -317,6 +317,76 @@ fn quitting_flushes_a_dirty_document_into_the_autosave_file(cx: &mut gpui_kit::T
 }
 
 #[gpui_kit::test]
+fn remembering_a_project_file_empties_the_stale_recovery_slot(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    let autosave_file = std::env::temp_dir().join(format!(
+        "moiren-autosave-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    view.update(cx, |shell, _| {
+        shell.autosave.path = Some(autosave_file.clone());
+    });
+    // A stale autosave from an earlier editing session sits in the slot.
+    view.update(cx, |shell, cx| {
+        let document = shell.project_document(cx).unwrap();
+        crate::project::save_autosave_at(&autosave_file, &document).unwrap();
+    });
+    assert!(crate::project::load_autosave_at(&autosave_file).is_some());
+    // Opening or saving the project (both end in remember_project_file)
+    // must empty the slot before the next launch can restore from it.
+    view.update(cx, |shell, cx| {
+        shell.remember_project_file(cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        crate::project::load_autosave_at(&autosave_file).is_none(),
+        "remembering the project file must empty the recovery slot"
+    );
+    // A clean quit right after writes nothing back: the state is already
+    // persisted at its source.
+    let flush = view.update(cx, |shell, cx| shell.autosave_flush(cx));
+    assert!(flush.is_none(), "the persisted state needs no quit flush");
+    assert!(crate::project::load_autosave_at(&autosave_file).is_none());
+    let _ = std::fs::remove_file(&autosave_file);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn an_in_flight_stale_write_cannot_resurrect_the_cleared_slot(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    let autosave_file = std::env::temp_dir().join(format!(
+        "moiren-autosave-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    view.update(cx, |shell, _| {
+        shell.autosave.path = Some(autosave_file.clone());
+    });
+    // Remember the project while an autosave write is still in flight:
+    // the removal must chain behind the write, so the older document
+    // lands first and then the file is gone for good.
+    view.update(cx, |shell, cx| {
+        shell.graph_view.camera.pan_x = 96.0;
+        shell.autosave_write_now(cx);
+        shell.remember_project_file(cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        crate::project::load_autosave_at(&autosave_file).is_none(),
+        "the chained removal must follow the in-flight write"
+    );
+    let _ = std::fs::remove_file(&autosave_file);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn project_menu_lists_recents_and_closes_on_outside_press_and_escape(
     cx: &mut gpui_kit::TestAppContext,
 ) {

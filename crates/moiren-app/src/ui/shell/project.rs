@@ -303,9 +303,16 @@ impl StudioShell {
 
     /// The project file the working state came from becomes the restore
     /// target and the top of the quick-switch list: preferences remember it
-    /// (for `restore_last_project` and the session menu's recents), and the
-    /// autosave fingerprint restarts because the state is already on disk.
+    /// (for `restore_last_project` and the session menu's recents). The
+    /// recovery slot empties and the autosave fingerprint restarts from the
+    /// persisted state — the slot may only ever hold the unsaved delta of
+    /// the current working state, so the next launch can never restore one
+    /// session's content under another session's project path.
     fn remember_project_file(&mut self, cx: &mut Context<Self>) {
+        // The slot goes before the preferences write lands: a crash in
+        // between falls back to the project file, never to a stale slot.
+        self.autosave_clear(cx);
+        self.autosave.stamp = autosave::AutosaveStamp::capture(self, cx);
         let mut changed = false;
         if let Some(path) = self.project_io.path.clone() {
             if self.preferences.values.last_project_path.as_ref() != Some(&path) {
@@ -317,7 +324,6 @@ impl StudioShell {
         if changed {
             self.save_preferences_quiet(cx);
         }
-        self.autosave.stamp = autosave::AutosaveStamp::capture(self, cx);
     }
 
     pub(crate) fn apply_project_presentation(
