@@ -4,9 +4,7 @@ use crate::service::test_backend as meter_backend;
 mod mixer_states;
 
 fn meter_service() -> anyhow::Result<ServiceRuntime> {
-    use crate::service::{
-        GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceGraph, SessionSpec,
-    };
+    use crate::service::{GraphEdit, InputSelection, ManagedDriver, ServiceGraph, SessionSpec};
     use moiren_core::graph::NodeKind;
     let backend = meter_backend::FakeBackend::default();
     backend
@@ -63,7 +61,6 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
         .try_request(AppRequest::Start(SessionSpec {
             source: InputSelection::Tone { frequency_hz: 440. },
             output_endpoint_id: "capture-output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 0.75,
             pan: 0.,
             max_block_frames: 256,

@@ -363,8 +363,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
 #[gpui_kit::test]
 fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -380,7 +379,6 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -526,8 +524,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -544,7 +541,6 @@ fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut Te
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -617,7 +613,6 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
             snapshot.desired = Some(crate::service::SessionSpec {
                 source: crate::service::InputSelection::Tone { frequency_hz: 440. },
                 output_endpoint_id: "output".into(),
-                limit: crate::service::RunLimit::UntilStopped,
                 gain: 1.,
                 pan: 0.,
                 max_block_frames: 256,
@@ -1610,8 +1605,7 @@ fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut T
 #[gpui_kit::test]
 fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -1628,7 +1622,6 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -1705,8 +1698,8 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
 #[gpui_kit::test]
 fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceRuntime,
-        SessionPhase, SessionSpec,
+        AppRequest, GraphEdit, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase,
+        SessionSpec,
     };
     use std::sync::{Arc, atomic::Ordering};
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -1723,7 +1716,6 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -1876,8 +1868,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
 #[gpui_kit::test]
 fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use crate::ui::presentation::dbfs_text;
     use std::sync::atomic::Ordering;
@@ -1895,7 +1886,6 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
@@ -2048,8 +2038,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
 #[gpui_kit::test]
 fn mixer_channel_labels_share_one_shape_per_text_across_meter_frames(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::collections::BTreeSet;
     use std::sync::atomic::Ordering;
@@ -2066,7 +2055,6 @@ fn mixer_channel_labels_share_one_shape_per_text_across_meter_frames(cx: &mut Te
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
             max_block_frames: 256,
