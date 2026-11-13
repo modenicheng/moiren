@@ -117,7 +117,9 @@ fn crashed_scanner_maps_to_the_typed_crash_error() {
         .expect_err("the crashing scanner must not report")
         .1;
     set_hook("MOIREN_SCANNER_TEST_CRASH", None);
-    assert_eq!(error, SandboxError::Crashed(Some(0xC0DE)));
+    // One-byte code: POSIX truncates exit statuses to the low 8 bits, so
+    // the constant reads identically on every platform.
+    assert_eq!(error, SandboxError::Crashed(Some(0x5C)));
 }
 
 #[test]

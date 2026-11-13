@@ -25,8 +25,10 @@ use moiren_plugins::{
     scan,
 };
 
-/// The exit code of the deliberate test crash; the suite matches it.
-const TEST_CRASH_EXIT_CODE: i32 = 0xC0DE;
+/// The exit code of the deliberate test crash; the suite matches it. Kept
+/// inside one byte: POSIX exit statuses truncate to the low 8 bits, so a
+/// wider "distinctive" code would read differently across platforms.
+const TEST_CRASH_EXIT_CODE: i32 = 0x5C;
 
 fn main() {
     let mut arguments = env::args_os().skip(1);
