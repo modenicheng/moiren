@@ -1,6 +1,8 @@
 //! Recovery autosave: the working document is rewritten to a user-owned
 //! autosave file once edits settle, and restored on the next launch. Manual
-//! "Save project" keeps writing the external file the user chose.
+//! "Save project" keeps writing the external file the user chose; explicit
+//! persistence empties the slot so it can never hold another session's
+//! state.
 
 use std::collections::BTreeMap;
 use std::future::poll_fn;
@@ -65,23 +67,48 @@ impl AutosaveStamp {
 
 /// Serialized hand-off between background writes and their UI-thread
 /// completion watcher, so writes chain and shutdown can await the newest.
+/// Each completion may be awaited by several tasks at once (the UI watcher
+/// and the next chained link), so every waiter is woken and the result is
+/// handed to all of them.
 #[derive(Default)]
 pub(crate) struct AutosaveWriteCompletion {
     result: Option<Result<(), String>>,
-    waiter: Option<Waker>,
+    completed: bool,
+    waiters: Vec<Waker>,
 }
 
 async fn await_completion(completion: Arc<Mutex<AutosaveWriteCompletion>>) -> Result<(), String> {
     poll_fn(move |cx| {
         let mut completion = completion.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(result) = completion.result.take() {
-            Poll::Ready(result)
+        if completion.completed {
+            Poll::Ready(completion.result.clone().unwrap_or(Ok(())))
         } else {
-            completion.waiter = Some(cx.waker().clone());
+            completion.waiters.push(cx.waker().clone());
             Poll::Pending
         }
     })
     .await
+}
+
+/// Publishes a finished result and wakes everyone parked on it.
+fn complete(
+    publish: &Mutex<AutosaveWriteCompletion>,
+    result: Result<(), String>,
+) -> impl Iterator<Item = Waker> + '_ {
+    let mut completion = publish.lock().unwrap_or_else(|p| p.into_inner());
+    completion.result = Some(result);
+    completion.completed = true;
+    std::mem::take(&mut completion.waiters).into_iter()
+}
+
+/// Best-effort removal of the recovery slot; a missing file is the goal
+/// state, anything else is reported like a failed autosave write.
+fn discard_slot_file(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!("Moiren autosave: clearing the slot failed: {error}"),
+    }
 }
 
 impl StudioShell {
@@ -172,12 +199,7 @@ impl StudioShell {
                 if let Err(error) = &result {
                     eprintln!("Moiren autosave: {error}");
                 }
-                let waiter = {
-                    let mut completion = publish.lock().unwrap_or_else(|p| p.into_inner());
-                    completion.result = Some(result);
-                    completion.waiter.take()
-                };
-                if let Some(waiter) = waiter {
+                for waiter in complete(&publish, result) {
                     waiter.wake();
                 }
             })
@@ -203,6 +225,35 @@ impl StudioShell {
             });
         })
         .detach();
+    }
+
+    /// Explicit persistence empties the recovery slot: the working state
+    /// now equals its on-disk source, so there is no unsaved delta to
+    /// recover, and a stale slot from an earlier session must not survive
+    /// into the next launch (where the autosave outranks the last saved
+    /// project). The removal runs once immediately and once more behind
+    /// any in-flight write, so an older document landing after the call
+    /// cannot resurrect the slot.
+    pub(super) fn autosave_clear(&mut self, cx: &App) {
+        let Some(path) = self.autosave.path.clone() else {
+            return;
+        };
+        discard_slot_file(&path);
+        let previous = self.autosave.write.clone();
+        let completion = Arc::new(Mutex::new(AutosaveWriteCompletion::default()));
+        let publish = completion.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Some(previous) = previous {
+                    await_completion(previous).await.ok();
+                }
+                discard_slot_file(&path);
+                for waiter in complete(&publish, Ok(())) {
+                    waiter.wake();
+                }
+            })
+            .detach();
+        self.autosave.write = Some(completion);
     }
 
     /// Synchronous quit-time write of unsaved changes; the returned task is
