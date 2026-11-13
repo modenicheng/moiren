@@ -85,6 +85,14 @@ function Assert-RemovalDecodeStoppedSession($Session) {
         $receipt.EtlPath -cne $native.EtlPath){
         throw 'Exact retained successful Start/Enable and confirmed closed STOP receipt required; no pending/foreign trace.'
     }
+    # The initial DTO remains caller-visible; closed decoding must not accept a
+    # replaced mode or silently strip flags from the original raw STOP payload.
+    if($readback.Initial.LogFileMode -isnot [uint32] -or
+        $readback.Initial.LogFileMode -ne [Moiren.RemovalTraceNativeV1.Api]::RequestedLogFileMode -or
+        ($null -ne $receipt.Snapshot -and
+            $receipt.Snapshot.LogFileMode -ne [Moiren.RemovalTraceNativeV1.Api]::RequestedLogFileMode)){
+        throw 'Closed decode requires the exact explicitly requested native trace mode.'
+    }
     return $receipt
 }
 

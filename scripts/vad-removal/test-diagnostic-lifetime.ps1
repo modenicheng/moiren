@@ -80,7 +80,7 @@ function New-RemovalSafetyAudit {
 function Write-LifetimeTraceBuffer([IntPtr]$Pointer){
     $v=[Runtime.InteropServices.Marshal]::PtrToStructure($Pointer,[type][Moiren.RemovalTraceQueryV1.Properties])
     $w=$v.Wnode;$w.HistoricalContext=[uint64]701;$w.Guid=$script:fixture.Guid;$w.ClientContext=1;$v.Wnode=$w
-    $v.LogFileMode=1;$v.MaximumFileSize=16
+    $v.LogFileMode=0x00400001;$v.MaximumFileSize=16
     [Runtime.InteropServices.Marshal]::StructureToPtr($v,$Pointer,$false)
     foreach($entry in @(@{Offset=$v.LoggerNameOffset;Text=$script:fixture.TraceName},@{Offset=$v.LogFileNameOffset;Text=$script:fixture.EtlPath})){
         $bytes=[Text.Encoding]::Unicode.GetBytes($entry.Text+[char]0)

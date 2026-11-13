@@ -10,6 +10,7 @@ the caller. Neither transport success nor user reboot confirmation is a native
 audio/driver qualification or permission to reboot.
 """
 import base64
+from contextlib import ExitStack, contextmanager
 import datetime
 import hashlib
 import json
@@ -22,11 +23,13 @@ import stat
 import subprocess
 import threading
 import time
+import uuid
 
 TIMEOUT_SECONDS = 120.0
 MAX_DOWNLOAD = 68157440
 MAX_JSON = 1048576
 STDERR_CAP = 65536
+MAX_SCRIPT_BYTES = 8192
 TARGET = 'moiren-lan'
 HOST = 'LAPTOP-NP49RG6H'
 SID = 'S-1-5-21-3080296863-1242338503-1346362208-1001'
@@ -279,6 +282,15 @@ class _Owner:
             _write_all(self.process.stdin, payload)
         except Exception:
             self.fail('stdin_write')
+        else:
+            # Every production receiver consumes a finite frame without EOF.
+            # Closing SSH stdin immediately can lose a buffered Windows tail;
+            # keep this same pipe until the original process or both readers
+            # settle. A failed write still closes so a short frame can refuse.
+            while not self.exited_confirmed and not (
+                    self.stdout.eof and self.stdout.done.is_set() and
+                    self.stderr.eof and self.stderr.done.is_set()):
+                time.sleep(0.005)
         finally:
             try:
                 self.process.stdin.close()
@@ -448,7 +460,58 @@ def _pin_stream(path, stream):
     return {'Path': str(path), 'Bytes': count, 'Sha256': digest.hexdigest().upper()}
 
 
+def _script_frame(script, payload):
+    if not isinstance(script, str) or not isinstance(payload, bytes):
+        _reject('Text script and binary payload required')
+    try:
+        raw = script.encode('utf-8', errors='strict')
+    except UnicodeError:
+        _reject('Strict UTF8 transport script required')
+    if not 0 < len(raw) <= MAX_SCRIPT_BYTES:
+        _reject('Transport script length out of range')
+    # Read only the script prefix. A fresh OpenStandardInput in the original
+    # script must see every remaining payload byte, including arbitrary binary.
+    loader = r"""
+$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
+$transportLength=__LENGTH__
+if($transportLength-lt1-or$transportLength-gt8192){throw 'Transport script length out of range'}
+$transportInput=[Console]::OpenStandardInput()
+$transportBytes=New-Object byte[] $transportLength
+$transportOffset=0
+while($transportOffset-lt$transportLength){
+ $transportCount=$transportInput.Read($transportBytes,$transportOffset,$transportLength-$transportOffset)
+ if($transportCount-le0){throw 'Transport script input became short'}
+ $transportOffset+=$transportCount
+}
+$transportHasher=[Security.Cryptography.SHA256]::Create()
+try{$transportHash=[BitConverter]::ToString($transportHasher.ComputeHash($transportBytes)).Replace('-','')}
+finally{$transportHasher.Dispose()}
+if($transportHash-cne'__SHA__'){throw 'Transport script SHA256 differs'}
+$transportText=[Text.UTF8Encoding]::new($false,$true).GetString($transportBytes)
+& ([ScriptBlock]::Create($transportText))
+""".replace('__LENGTH__', str(len(raw))).replace('__SHA__', hashlib.sha256(raw).hexdigest().upper())
+    encoded = base64.b64encode(loader.encode('utf-16-le')).decode('ascii')
+    command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + encoded
+    if len(command) >= 8191:
+        _reject('Encoded SSH command exceeds reviewed cmd.exe bound')
+    return command, raw + payload
+
+
 def _run(script, output, cap, log_prefix, intent, payload, validator, *, timeout_seconds=None):
+    command, framed_input = _script_frame(script, payload)
+    return _run_argv(_ssh_argv(command), output, cap, log_prefix, intent, framed_input,
+                     validator, timeout_seconds=timeout_seconds)
+
+
+def _ssh_argv(command):
+    if not isinstance(command, str) or len(command) >= 8191:
+        _reject('Bounded fixed SSH command required')
+    return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+            '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5',
+            '-o', 'ServerAliveCountMax=2', TARGET, command]
+
+
+def _run_argv(argv, output, cap, log_prefix, intent, payload, validator, *, timeout_seconds=None):
     timeout_seconds = TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 600:
         _reject('Finite typed outer deadline must be in (0, 600] seconds')
@@ -476,13 +539,6 @@ def _run(script, output, cap, log_prefix, intent, payload, validator, *, timeout
                    StderrCap=STDERR_CAP, DeadlineSeconds=owner._timeout_seconds,
                    StartedUtc=datetime.datetime.now(datetime.timezone.utc).isoformat())))
         _durable(intent_file)
-        encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
-        command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + encoded
-        if len(command) >= 30000:
-            _reject('Encoded SSH command exceeds reviewed Windows command bound')
-        argv = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
-                '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5',
-                '-o', 'ServerAliveCountMax=2', TARGET, command]
         owner.start(argv, payload)
         if not owner.setup_refused:
             owner.observe()
@@ -505,6 +561,180 @@ def _run(script, output, cap, log_prefix, intent, payload, validator, *, timeout
 
 def _ps(value):
     return "'" + value.replace("'", "''") + "'"
+
+
+@contextmanager
+def _held_file(path, cap):
+    path = _local_path(path)
+    _check_path(path)
+    if os.name == 'nt':
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        create = kernel.CreateFileW
+        create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        create.restype = wintypes.HANDLE
+        handle = create(str(path), 0x80000000, 1, None, 3, 0x00200000, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)
+        except BaseException:
+            close = kernel.CloseHandle
+            close.argtypes, close.restype = (wintypes.HANDLE,), wintypes.BOOL
+            close(handle)
+            raise
+        try:
+            stream = os.fdopen(fd, 'rb')
+        except BaseException:
+            os.close(fd)
+            raise
+    else:
+        stream = path.open('rb')
+    with stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= cap:
+            _reject('Bounded regular handoff input required')
+        current = os.stat(path, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            _reject('Handoff pathname no longer identifies original file')
+        yield stream
+
+
+def _settled_call(operation, *args, **kwargs):
+    try:
+        return operation(*args, **kwargs)
+    except BaseException as error:
+        owner = getattr(error, 'owner', None)
+        while owner is not None and not owner.closed:
+            try:
+                owner.observe()
+            except Exception:
+                pass
+            if not owner.closed:
+                time.sleep(0.01)
+        raise
+
+
+def _file_command(script):
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + encoded
+    return _ssh_argv(command)
+
+
+def _invoke_file_command(helper, request):
+    script = r"""
+$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
+if($env:COMPUTERNAME-cne'LAPTOP-NP49RG6H'-or[Security.Principal.WindowsIdentity]::GetCurrent().User.Value-cne'S-1-5-21-3080296863-1242338503-1346362208-1001'){throw 'Wrong file handoff host/SID'}
+$pins=@(__PINS__);$locks=New-Object 'Collections.Generic.List[object]'
+try{
+foreach($p in $pins){
+ if(-not$p.Path.StartsWith('D:\MoirenTest\',[StringComparison]::Ordinal)-or[IO.Path]::GetFullPath($p.Path)-cne$p.Path){throw 'Noncanonical handoff path'}
+ $part=$p.Path;while($part){if(([IO.File]::Exists($part)-or[IO.Directory]::Exists($part))-and(([IO.File]::GetAttributes($part)-band[IO.FileAttributes]::ReparsePoint)-ne0)){throw 'Reparse handoff path'};$part=[IO.Path]::GetDirectoryName($part)}
+ $s=[IO.File]::Open($p.Path,'Open','Read','Read');$locks.Add($s)
+ if($s.Length-ne$p.Bytes-or$s.Length-lt1-or$s.Length-gt1048576){throw 'Handoff length pin differs'}
+ $h=[Security.Cryptography.SHA256]::Create();try{$sha=[BitConverter]::ToString($h.ComputeHash($s)).Replace('-','')}finally{$h.Dispose()}
+ if($sha-cne$p.Sha256){throw 'Handoff SHA256 pin differs'}
+}
+& $pins[0].Path -RequestPath $pins[1].Path
+}finally{foreach($s in $locks){$s.Dispose()}}
+"""
+    pins = ','.join('@{Path=' + _ps(pin['Path']) + ';Bytes=[long]' + str(pin['Bytes']) +
+                    ';Sha256=' + _ps(pin['Sha256']) + '}' for pin in (helper, request))
+    return _file_command(script.replace('__PINS__', pins))
+
+
+def _sftp_quote(path):
+    value = str(path).replace('\\', '/')
+    if any(character in value for character in ('\r', '\n', '\x00', '"')):
+        _reject('Literal bounded SFTP batch path required')
+    return '"' + value + '"'
+
+
+def invoke_file_handoff(operation, arguments, output, cap, log_prefix, validator, *,
+                        file_handoff, user_reboot_confirmed, payload=None, timeout_seconds=None):
+    """Explicit file-only opt-in. Upload attempts and helpers never relaunch."""
+    _confirmation(user_reboot_confirmed)
+    if operation not in ('Entry', 'Download', 'Finalize') or not isinstance(arguments, dict):
+        _reject('Explicit file handoff operation required')
+    if not isinstance(file_handoff, dict) or set(file_handoff) != {
+            'HelperPath', 'ExpectedHelperSha256', 'RemoteParent'}:
+        _reject('Independent helper pin and explicit staging parent required')
+    expected = _sha(file_handoff['ExpectedHelperSha256'])
+    parent = _remote_path(file_handoff['RemoteParent'])
+    helper_path = _local_path(file_handoff['HelperPath'])
+    if helper_path.name != 'vad-delivery-remote.ps1':
+        _reject('Exact independently pinned file helper required')
+    if payload is not None:
+        _json_object(payload)
+    prefix, output = _local_path(log_prefix), _local_path(output)
+    # All inputs stay held until each exact child and its pumps settle, even
+    # after an observation failure. There is no fallback to the stdin protocol.
+    with ExitStack() as locks:
+        helper_stream = locks.enter_context(_held_file(helper_path, MAX_JSON))
+        raw_helper = helper_stream.read(MAX_JSON + 1)
+        if not raw_helper or hashlib.sha256(raw_helper).hexdigest().upper() != expected:
+            _reject('Independent local helper SHA256 differs')
+        attempt = Path(str(prefix) + '.file-handoff')
+        _check_path(attempt)
+        attempt.mkdir(exist_ok=False, parents=True)
+        remote = _remote_path(parent + '\\handoff-' + uuid.uuid4().hex)
+        helper_pin = {'Path': remote + '\\vad-delivery-remote.ps1', 'Bytes': len(raw_helper), 'Sha256': expected}
+        request = {'SchemaVersion': 1, 'Operation': operation, 'Arguments': arguments,
+                   'PayloadPin': None}
+        staged = [(helper_path, helper_pin['Path'])]
+        if payload is not None:
+            payload_path = attempt / 'payload.json'
+            with _new_file(payload_path) as stream:
+                _write_all(stream, payload)
+                _durable(stream)
+            locks.enter_context(_held_file(payload_path, MAX_JSON))
+            request['PayloadPin'] = {'Path': remote + '\\payload.json', 'Bytes': len(payload),
+                                     'Sha256': hashlib.sha256(payload).hexdigest().upper()}
+            staged.append((payload_path, request['PayloadPin']['Path']))
+        request_path = attempt / 'request.json'
+        request_raw = _encoded(request)
+        if len(request_raw) > MAX_JSON:
+            _reject('File handoff request exceeds cap')
+        with _new_file(request_path) as stream:
+            _write_all(stream, request_raw)
+            _durable(stream)
+        locks.enter_context(_held_file(request_path, MAX_JSON))
+        request_pin = {'Path': remote + '\\request.json', 'Bytes': len(request_raw),
+                       'Sha256': hashlib.sha256(request_raw).hexdigest().upper()}
+        staged.append((request_path, request_pin['Path']))
+        check = _REMOTE_COMMON + '\n$p=' + _ps(parent) + r""";Assert-LiteralPath $p
+if(-not[IO.Directory]::Exists($p)){throw 'Existing normal staging parent required'}
+[Console]::Write('{"StageParentChecked":true}')
+"""
+        def check_result(path, stream):
+            stream.seek(0)
+            result = _json_object(stream.read(MAX_JSON + 1))
+            if result != {'StageParentChecked': True}:
+                _reject('Original staging parent check differs')
+            return result
+        _settled_call(_run_argv, _file_command(check), attempt / 'parent.stdout', MAX_JSON,
+                      attempt / 'parent', {'Operation': 'FileStageParent', 'Path': parent},
+                      b'', check_result)
+        batch = 'mkdir ' + _sftp_quote(remote) + '\n'
+        batch += ''.join('put ' + _sftp_quote(local) + ' ' + _sftp_quote(target) + '\n'
+                         for local, target in staged)
+        batch_path = attempt / 'upload.batch'
+        with _new_file(batch_path) as stream:
+            _write_all(stream, batch.encode('utf-8'))
+            _durable(stream)
+        locks.enter_context(_held_file(batch_path, MAX_JSON))
+        argv = ['sftp', '-b', str(batch_path), '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', TARGET]
+        _settled_call(_run_argv, argv, attempt / 'sftp.stdout', MAX_JSON, attempt / 'sftp',
+                      {'Operation': 'FileStageUpload', 'RemoteDirectory': remote,
+                       'HelperPin': helper_pin, 'RequestPin': request_pin}, b'', _pin_stream)
+        return _settled_call(_run_argv, _invoke_file_command(helper_pin, request_pin), output, cap,
+                             prefix, {'Operation': 'File' + operation, 'HelperPin': helper_pin,
+                                      'RequestPin': request_pin}, b'', validator,
+                             timeout_seconds=timeout_seconds)
 
 
 _REMOTE_COMMON = r"""
@@ -535,12 +765,16 @@ function Read-Hash([string]$Path){
 
 
 def download_file(remote_path: str, destination: Path, *, user_reboot_confirmed: bool,
-                  cap: int, log_prefix: Path):
+                  cap: int, log_prefix: Path, file_handoff=None):
     """Download one exact file to a create-new destination; never overwrite/retry."""
     _confirmation(user_reboot_confirmed)
     remote_path = _remote_path(remote_path)
     if type(cap) is not int or not 1 <= cap <= MAX_DOWNLOAD:
         _reject('Download cap must be an integer in 1..68157440')
+    if file_handoff is not None:
+        return invoke_file_handoff('Download', {'RemotePath': remote_path, 'Cap': cap},
+                                   destination, cap, log_prefix, _pin_stream,
+                                   file_handoff=file_handoff, user_reboot_confirmed=True)
     script = _REMOTE_COMMON + r"""
 $path=__PATH__;Assert-LiteralPath $path
 $inputFile=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
@@ -562,7 +796,8 @@ try{
 
 def finalize_delivery(remote_run: str, host_receipt: bytes, local_ack_sha256: str,
                       finalizer_path: str, finalizer_sha256: str, *,
-                      dependency_pins, user_reboot_confirmed: bool, log_prefix: Path):
+                      dependency_pins, user_reboot_confirmed: bool, log_prefix: Path,
+                      file_handoff=None):
     """Upload one immutable receipt and invoke only the independently pinned finalizer.
 
     stdin is a known finite byte count, not ReadToEnd. A failed upload/finalize
@@ -574,6 +809,18 @@ def finalize_delivery(remote_run: str, host_receipt: bytes, local_ack_sha256: st
     dependencies = _dependencies(finalizer_path, dependency_pins)
     _json_object(host_receipt)
     receipt_sha = hashlib.sha256(host_receipt).hexdigest().upper()
+    if file_handoff is not None:
+        def validate_file(path, stream):
+            _pin_stream(path, stream)
+            stream.seek(0)
+            return _json_object(stream.read(MAX_JSON + 1))
+
+        return invoke_file_handoff('Finalize', {
+            'RemoteRun': remote_run, 'LocalAckSha256': local_ack_sha256,
+            'FinalizerPath': finalizer_path, 'FinalizerSha256': finalizer_sha256,
+            'DependencyPins': dependencies}, Path(str(log_prefix) + '.stdout.log'),
+            MAX_JSON, log_prefix, validate_file, file_handoff=file_handoff,
+            payload=host_receipt, user_reboot_confirmed=True)
     upload = _remote_path(remote_run + '.delivery-host.json')
     script = _REMOTE_COMMON + r"""
 $run=__RUN__;$upload=__UPLOAD__;$finalizer=__FINALIZER__

@@ -59,6 +59,14 @@ function New-Fixture {
  $task=[pscustomobject]@{Spec=[pscustomobject]@{RunDirectory=$managedDir;Nonce=$nonce;Path=('\Moiren-Removal613-'+$nonce);Sid='S-1-5-21-3080296863-1242338503-1346362208-1001';SessionId=7}
   RegistrationAttempted=$false;RegistrationKnown=$false;DispatchAttempted=$false;RetirementAttempted=$false;Retired=$false;Error=$null;Closed=$false
   Scheduler=$null;Folder=$null;TaskDefinition=$null;RegisteredTask=$null;RegisteredXml=$null}
+ $task|Add-Member NoteProperty RunningTask $null
+ $task|Add-Member NoteProperty InstanceGuid $null
+ $task|Add-Member NoteProperty WorkerBindingKnown $false
+ $task|Add-Member NoteProperty WorkerBindingError $null
+ $task|Add-Member NoteProperty WorkerProcess $null
+ $task|Add-Member NoteProperty WorkerReceipt $null
+ $task|Add-Member NoteProperty WorkerPid $null
+ $task|Add-Member NoteProperty DispatchUtc $null
  $args=@('live-vad','--artifact-dir',(Join-Path $managedDir 'artifacts'),'--seconds','8')
  $config=[pscustomobject]@{SchemaVersion=1;Nonce=$nonce;RunDirectory=$managedDir;SessionId=7;Sid=$task.Spec.Sid
   ControllerPid=$self.Id;ControllerCreationUtcTicks=$self.StartTime.ToUniversalTime().Ticks
@@ -100,7 +108,7 @@ function Make-Stopped($Owner){
  if($n.TraceOwned){$null=$script:RemovalNativeBridges.TryGetValue($n,[ref]$b)}else{$b=Make-Owned $Owner}
  $v=New-Object Moiren.RemovalTraceQueryV1.Session
  $v.SessionName=$n.Session;$v.LogFileName=$n.EtlPath;$v.SessionGuid=$n.SessionGuid;$v.Handle=$n.Handle
- $v.ClientContext=1;$v.LogFileMode=1;$v.MaximumFileSize=16
+ $v.ClientContext=1;$v.LogFileMode=0x00400001;$v.MaximumFileSize=16
  $b.BeginStopQuery();$b.CaptureStopQuery([uint32]0);$b.CaptureStopQuerySnapshot($v);$b.BeginStop();$b.CaptureStop([uint32]0);$b.CaptureFinal($v)
  $Owner.RetainedTrace.StopAttempted=$true;$Owner.RetainedTrace.StoppedReceipt=$n.StopReceipt
 }
@@ -241,6 +249,30 @@ Case 'never-dispatched-retirement-needs-original-abort-evidence-but-no-fresh-bef
   $o.AbortEvidencePin=Read-RemovalDecodeFile $path 1048576
   $o.ReadyFixture=$false;$o.TimedOut=$true;$o.RetainedInputs.Changed=$true
   Assert-RemovalNativeOperation -Resource $t -Operation TaskRetireUnstarted
+ }finally{Close-Fixture $o}
+}
+Case 'dispatched-never-run-retirement-needs-exact-failed-dispatch-and-stopped-trace' {
+ $o=New-Fixture
+ try{Initialize-RemovalNativeContext $o;$null=Make-Owned $o;$t=$o.RetainedManaged.TaskOwner
+  Assert-RemovalNativeOperation -Resource $t -Operation TaskRegister;Seal-Task $o;Make-Stopped $o
+  $t.DispatchAttempted=$true;$t.DispatchUtc=[DateTimeOffset]::UtcNow.ToString('o');$t.Error='RunEx failed'
+  $t.RunningTask=[pscustomobject]@{Path=$t.Spec.Path;InstanceGuid=$null}
+  $o.RetainedManaged.Error='RunEx failed'
+  $path=Join-Path $o.OriginalDirectory 'abort-evidence.json'
+  [IO.File]::WriteAllText($path,(@{Stage='BeforeAbortTaskRetirement';Nonce=$o.Nonce;TaskPath=$t.Spec.Path;TraceStopped=$true}|ConvertTo-Json))
+  $o.AbortEvidencePin=Read-RemovalDecodeFile $path 1048576
+  Reject {Assert-RemovalNativeOperation -Resource $t -Operation TaskRetireDispatchedNeverRun}
+  function Get-RemovalTaskObservation($Task){
+   return [ordered]@{State=3;Instances=0;LastTaskResult=267011;LastRunKnown=$false;NeverRun=$true;Error=$null}
+  }
+  $o.RetainedManaged.ProbeOwner=[pscustomobject]@{AdmissionAttempted=$true}
+  Reject {Assert-RemovalNativeOperation -Resource $t -Operation TaskRetireDispatchedNeverRun}
+  $o.RetainedManaged.ProbeOwner=$null
+  $o.RetainedManaged.LastResult=[pscustomobject]@{fixture='reported-worker'}
+  Reject {Assert-RemovalNativeOperation -Resource $t -Operation TaskRetireDispatchedNeverRun}
+  $o.RetainedManaged.LastResult=$null
+  Assert-RemovalNativeOperation -Resource $t -Operation TaskRetireDispatchedNeverRun
+  Reject {Assert-RemovalNativeOperation -Resource $t -Operation TaskRetireDispatchedNeverRun}
  }finally{Close-Fixture $o}
 }
 Case 'task-config-change-never-strands-original-trace-stop' {

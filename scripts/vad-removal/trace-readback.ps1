@@ -1,9 +1,13 @@
 #requires -Version 5.1
 # Pure snapshot policy; obtaining actual native snapshots is a separate boundary.
 Set-StrictMode -Version 2
+. (Join-Path $PSScriptRoot 'trace-native.ps1')
 
 function New-RemovalTraceReadback {
     param([Parameter(Mandatory=$true)]$Trace)
+    # Compile definitions only; this shares the requested mode with the native
+    # owner without performing any ETW operation or acquiring native authority.
+    Initialize-RemovalTraceNative
     [pscustomobject]@{Trace=$Trace;Initial=$null;Latest=$null;Final=$null;Attempted=$false;Invalid=$false
         FinalCountersKnown=$false;Lossless=$false;Error=$null}
 }
@@ -24,7 +28,8 @@ function Assert-RemovalTraceSnapshot($Owner,$Snapshot,[switch]$Stopped) {
         $Snapshot.Handle -isnot [uint64] -or $Snapshot.Handle -eq 0 -or
         $Snapshot.Handle -ne $Owner.Trace.Handle -or $Snapshot.SessionGuid -ne $Owner.Trace.SessionGuid -or
         $Snapshot.LogFileName -cne $Owner.Trace.EtlPath -or $Snapshot.ClientContext -ne 1 -or
-        $Snapshot.LogFileMode -ne 1 -or $Snapshot.MaximumFileSize -ne 16){throw 'Native trace session/output/clock/mode/cap differs.'}
+        $Snapshot.LogFileMode -ne [Moiren.RemovalTraceNativeV1.Api]::RequestedLogFileMode -or
+        $Snapshot.MaximumFileSize -ne 16){throw 'Native trace session/output/clock/mode/cap differs.'}
     if(-not$Stopped){
       $p=$Snapshot.Provider
       if($null -eq $p -or $p.Guid -isnot [Guid] -or $p.Guid -ne [Guid]'7dc75ba9-8274-4eae-a42d-b4c74e0209d2' -or

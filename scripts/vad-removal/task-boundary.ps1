@@ -277,6 +277,8 @@ function Get-RemovalTaskObservation($Owner) {
         $last=$Owner.RegisteredTask.LastRunTime
         $now=[DateTimeOffset]::UtcNow
         $r.ObservedUtc=$now.ToString('o')
+        $r.NeverRun=($last -is [DateTime] -and ($last -eq [DateTime]::MinValue -or
+            $last -eq [DateTime]'1899-12-30T00:00:00'))
         if($Owner.DispatchAttempted -and $null -ne $Owner.InstanceGuid -and $last -is [DateTime]){
             $dispatch=[DateTimeOffset]::Parse($Owner.DispatchUtc,[Globalization.CultureInfo]::InvariantCulture)
             $lastUtc=$last.ToUniversalTime()
@@ -420,4 +422,69 @@ function Remove-RemovalUnstartedTask {
         if(-not$absent){throw 'Never-run task absence unconfirmed; retain original owner, never retry.'}
         $Owner.Retired=$true
     } catch {$Owner.RetirementError='Never-run retirement failed/unknown: '+$_.Exception.Message;throw}
+}
+
+function Remove-RemovalDispatchedNeverRunTask {
+    param([Parameter(Mandatory=$true,Position=0)]$Owner)
+    $ErrorActionPreference='Stop';Assert-RemovalTaskHost
+    Assert-RemovalTaskCleanupApproval $Owner 'TaskRetireDispatchedNeverRun'
+    if($Owner.RetirementAttempted -or $Owner.Retired -or -not$Owner.RegistrationAttempted -or
+        -not$Owner.RegistrationKnown -or -not$Owner.DispatchAttempted -or $Owner.Error -isnot [string] -or
+        -not$Owner.Error -or $null -ne $Owner.InstanceGuid -or
+        ($null -ne $Owner.RunningTask -and $Owner.RunningTask.InstanceGuid -is [string] -and
+            $Owner.RunningTask.InstanceGuid -match '^\{[a-fA-F0-9-]{36}\}$') -or
+        $Owner.WorkerBindingKnown -or $Owner.WorkerBindingError -or $null -ne $Owner.WorkerProcess -or
+        $null -ne $Owner.WorkerReceipt -or $null -ne $Owner.WorkerPid -or $null -eq $Owner.Folder){
+        throw 'Exact failed dispatch with no retained instance/worker required.'
+    }
+    Assert-RemovalTaskDefinition $Owner.Spec $Owner.RegisteredTask
+    $task=$Owner.Folder.GetTask($Owner.Spec.Name)
+    Assert-RemovalTaskDefinition $Owner.Spec $task
+    $state=Get-RemovalTaskObservation $Owner
+    if($null -eq $state -or $state.Error -or $state.State -ne 3 -or $state.Instances -ne 0 -or
+        $state.LastTaskResult -ne 267011 -or $state.LastRunKnown -or -not$state.NeverRun){
+        throw 'Fresh exact never-run scheduler observation required.'
+    }
+    # LastRunKnown=false also covers an old historical run. Task Scheduler uses
+    # its 1899 epoch (and PowerShell fixtures may use MinValue) when no run
+    # exists; only that retained-object sentinel authorizes this deletion.
+    $neverRun=$true
+    foreach($current in @($task,$Owner.RegisteredTask)){
+        if($null -eq $current.LastRunTime -or $current.LastRunTime -isnot [DateTime] -or
+            ($current.LastRunTime -ne [DateTime]::MinValue -and
+             $current.LastRunTime -ne [DateTime]'1899-12-30T00:00:00')){
+            $neverRun=$false
+        }
+        if($current.Xml -cne $Owner.RegisteredXml -or $current.State -ne 3 -or
+            $current.GetInstances(0).Count -ne 0 -or $current.LastTaskResult -ne 267011){
+            throw 'Exact task changed/busy before dispatch-failure retirement.'
+        }
+    }
+    if(-not$neverRun){throw 'Scheduler has prior run evidence for this exact task; no retirement.'}
+    $path=Join-Path $Owner.Spec.RunDirectory 'retired-task.xml';Assert-RemovalTaskPath $path
+    $bytes=([Text.UTF8Encoding]::new($false,$true)).GetBytes($Owner.RegisteredXml)
+    if($bytes.Length -eq 0 -or $bytes.Length -gt 1048576){throw 'Bounded original task XML required.'}
+    $file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try{$expected=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','')}finally{$sha.Dispose()}
+    $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    if((Get-Item -LiteralPath $path).Length -ne $bytes.Length -or $actual -cne $expected){
+        throw 'Original dispatch-failed task XML readback differs.'
+    }
+    $Owner.RetiredXmlPath=$path;$Owner.RetiredXmlSha256=$actual
+    # Retain delete intent before the one COM deletion. Its unknown result is
+    # never retried; preserve the task, folder, and archived XML for audit.
+    $Owner.RetirementAttempted=$true
+    try {
+        $Owner.Folder.DeleteTask($Owner.Spec.Name,0)
+        $absent=$false
+        try{$null=$Owner.Folder.GetTask($Owner.Spec.Name)}catch{
+            $errorValue=$_.Exception
+            while($null -ne $errorValue.InnerException){$errorValue=$errorValue.InnerException}
+            if($errorValue -is [Runtime.InteropServices.COMException] -and $errorValue.HResult -eq -2147024894){$absent=$true}else{throw}
+        }
+        if(-not$absent){throw 'Dispatch-failed task absence unconfirmed; retain original owner, never retry.'}
+        $Owner.Retired=$true
+    } catch {$Owner.RetirementError='Dispatch-failed never-run retirement failed/unknown: '+$_.Exception.Message;throw}
 }

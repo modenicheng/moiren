@@ -199,7 +199,7 @@ Case 'worker-binding-checks-real-creation-session-image-and-commandline' {
 Case 'task-observation-rejects-unrun-stale-and-unknown-dispatch' {
  $s=Spec;$o=Owner $s (FakeTask $s);Start-RemovalTaskOnce $o
  $state=Get-RemovalTaskObservation $o
- Check (-not$state.LastRunKnown) 'Never-run scheduler task accepted'
+ Check ($state.NeverRun-and-not$state.LastRunKnown) 'Never-run scheduler task accepted'
  $o.RegisteredTask.LastTaskResult=1;$o.RegisteredTask.LastRunTime=[DateTime]::Now.AddMinutes(-1)
  $state=Get-RemovalTaskObservation $o;Check (-not$state.LastRunKnown) 'Stale task run accepted'
  $o.RegisteredTask.LastRunTime=[DateTime]::Now;$o.InstanceGuid=$null

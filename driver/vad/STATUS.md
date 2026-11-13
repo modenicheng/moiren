@@ -18,6 +18,39 @@ device prerequisites. The hit snapshot is not a WTS lock-state verdict.
 
 ## Reused tools and naming contract - 2026-11-08
 
+### Current postboot checkpoint
+
+The [postboot diagnostic receipt](../../docs/validation/2026-11-08-postboot-diagnostic.md)
+supersedes older pending-reboot/preflight/publication statements below. The
+user-completed boot2026-11-08T13:26:07.5Zand full fresh tool/signature/catalog/
+safety admission pass against frozen613. Published04686d6dCI42487741911fails
+one Windows release-fixture path normalization case; a test-only repair passes
+32local checks, not a new-head CI pass. PR26stays Draft; main is not merged.
+
+The first actual diagnostic fails at ETW readback/pre-STOP mode checks before
+task registration or audio/probe dispatch. Windows supplies a hybrid-shutdown
+default absent from the old exact mode. Independently reviewed failed-run
+recovery stops the exact original trace; the original entry writes its own
+failed terminal. Fresh readback sees no original owners/tasks, QUERY4201 for
+the stopped handle, and only the expected control bus. All68closed evidence/
+source members are archived with independent length/SHA verification. This is
+external failed-run recovery, not normal closure, native removal or audio PASS.
+Explicit-mode host tests pass296checks; independent review retains a P2for
+persistent abnormal config preventing owned cleanup, now being repaired before
+another native run. No further reboot is requested and all S0-S5 gates remain
+open. Reuse the one fixed dedicated OBS path; do not create more EXE trees.
+
+The explicit-mode rerun stalls after task registration because its sole `RunEx`
+returns no valid instance while scheduler state proves the exact task never
+ran. The repaired abort separates dispatch request from bound instance, waits
+only when an instance is retained, and otherwise drains the exact trace,
+archives evidence/XML, and retires the exact never-run task once only after
+confirmed trace-stopped evidence. Its failed run/external-recovery receipts are
+archived on the host; bounded remote cleanup and the next create-only attempt
+remain pending. This does not change VAD driver qualification or defaults.
+
+### Earlier implementation and verification receipts
+
 The later [original-controller release](../../docs/validation/2026-11-08-removal-original-release.md)
 uses the existing constructor CWT/InputJson, independently pinned strict
 manifest/ReviewedBundle and complete original source read handles. Only the

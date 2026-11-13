@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,7 @@ class TransportTests(unittest.TestCase):
         self.log = self.root / 'attempt'
         self.destination = self.root / 'download.zip'
         self.calls = []
+        self.inputs = []
 
     def tearDown(self):
         self.temp.cleanup()
@@ -79,6 +81,7 @@ class TransportTests(unittest.TestCase):
         def start(argv, **kwargs):
             self.assertTrue(Path(str(self.log) + '.intent.json').is_file(), 'Intent must precede Popen')
             self.calls.append((argv, kwargs))
+            self.inputs.append(process.stdin)
             return process
         return start
 
@@ -102,7 +105,9 @@ class TransportTests(unittest.TestCase):
         self.assertIn('BatchMode=yes', argv)
         self.assertIn('ConnectTimeout=10', argv)
         encoded = argv[-1].rsplit(' ', 1)[1]
-        return base64.b64decode(encoded).decode('utf-16-le')
+        loader = base64.b64decode(encoded).decode('utf-16-le')
+        length = int(re.search(r'\$transportLength=(\d+)', loader)[1])
+        return self.inputs[0].captured[:length].decode('utf-8')
 
     def test_unconfirmed_reboot_precedes_directory_and_file_creation(self):
         with mock.patch.object(M.subprocess, 'Popen', side_effect=AssertionError('No launch')):
@@ -170,6 +175,140 @@ class TransportTests(unittest.TestCase):
         intent = json.loads(Path(str(self.log) + '.intent.json').read_bytes())
         self.assertEqual(intent['DeadlineSeconds'], 600.0)
         self.assertEqual(M.TIMEOUT_SECONDS, 120.0)
+
+    def test_actual_diagnostic_bootstrap_fits_cmd_limit_and_frames_exact_binary_payload(self):
+        diagnostic_path = SOURCE.with_name('vad-diagnostic.py')
+        spec = importlib.util.spec_from_file_location('transport_diagnostic_fixture', diagnostic_path)
+        diagnostic = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(diagnostic)
+        payload = bytes(range(256)) * 3 + b'\x00\xff\r\n'
+        script = diagnostic._BOOTSTRAP.replace('__LENGTH__', str(len(payload))).replace(
+            '__CONFIG_SHA__', hashlib.sha256(payload).hexdigest().upper())
+        process = Process(b'framed')
+        with mock.patch.object(M.subprocess, 'Popen', self.factory(process)):
+            M._run(script, self.destination, 1000, self.log,
+                   {'Operation': 'DiagnosticEntry'}, payload, M._pin_stream)
+        command = self.calls[0][0][-1]
+        self.assertLess(len(command), 8191, 'Actual diagnostic bootstrap exceeds cmd.exe limit')
+        raw_script = script.encode('utf-8')
+        self.assertEqual(process.stdin.captured, raw_script + payload,
+                         'Frame must prepend only exact UTF8 script bytes without altering binary payload')
+        loader = base64.b64decode(command.split()[-1]).decode('utf-16-le')
+        self.assertIn(hashlib.sha256(raw_script).hexdigest().upper(), loader)
+        self.assertNotIn('ReadToEnd', loader)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_script_cap_and_strict_encoding_refuse_before_attempt_files(self):
+        for index, script in enumerate(('#' * 8193, '\u4e2d' * 2731, '', '\ud800', b'not text')):
+            with self.subTest(kind=type(script).__name__, length=len(script)):
+                case = self.root / str(index)
+                self.calls.clear()
+                with mock.patch.object(M.subprocess, 'Popen', self.factory(Process())):
+                    with self.assertRaises(M.DeliveryTransportError):
+                        M._run(script, case / 'output', 1000, case / 'attempt',
+                               {'Operation': 'DiagnosticEntry'}, b'', M._pin_stream)
+                self.assertEqual(len(self.calls), 0, 'Invalid script reached original Popen')
+                self.assertFalse(case.exists(), 'Invalid script created attempt files')
+
+    @unittest.skipUnless(os.name == 'nt', 'Harmless local PS5/PS7 stdin framing')
+    def test_actual_local_loader_preserves_remaining_binary_input(self):
+        payload = bytes(range(256)) * 15360 + b'\x00\xff\r\n'
+        script = r'''
+# UTF8 script content: __UNICODE__
+$inputStream=[Console]::OpenStandardInput();$outputStream=[Console]::OpenStandardOutput()
+$buffer=New-Object byte[] 4096;$remaining=__LENGTH__
+while($remaining-gt0){
+ $n=$inputStream.Read($buffer,0,[Math]::Min($remaining,$buffer.Length))
+ if($n-le0){throw 'Harmless payload became short'}
+ $outputStream.Write($buffer,0,$n);$remaining-=$n
+}
+$outputStream.Flush()
+'''.replace('__LENGTH__', str(len(payload))).replace('__UNICODE__', '\u4e2d\u6587')
+        script += '\n#' + 'x' * (5247 - len(script.encode('utf-8')) - 2)
+        self.assertEqual(len(script.encode('utf-8')), 5247)
+        for index, engine in enumerate(('powershell.exe', 'pwsh.exe')):
+            with self.subTest(engine=engine):
+                self.destination = self.root / ('binary-' + str(index))
+                self.log = self.root / ('binary-attempt-' + str(index))
+                children = []
+
+                def child(argv, **kwargs):
+                    self.assertLess(len(argv[-1]), 8191)
+                    # Exercise each engine directly: this isolates the loader's
+                    # stdin framing from cmd.exe's own native stdin forwarding.
+                    encoded = argv[-1].split()[-1]
+                    process = REAL_POPEN([engine, '-NoLogo', '-NoProfile',
+                                          '-NonInteractive', '-EncodedCommand', encoded], **kwargs)
+                    children.append(process)
+                    return process
+
+                with mock.patch.object(M.subprocess, 'Popen', child):
+                    result = M._run(script, self.destination, len(payload), self.log,
+                                    {'Operation': 'HarmlessLocalFrame'}, payload, M._pin_stream)
+                self.assertEqual(self.destination.read_bytes(), payload)
+                self.assertEqual(result['Sha256'], hashlib.sha256(payload).hexdigest().upper())
+                self.assertEqual(len(children), 1)
+                self.assertEqual(children[0].poll(), 0)
+
+    @unittest.skipUnless(os.name == 'nt', 'Harmless local PS5/PS7 loader refusals')
+    def test_actual_local_loader_refuses_short_or_corrupt_script_before_execution(self):
+        script = "[Console]::Write('SCRIPT_EXECUTED')"
+        process = Process()
+        with mock.patch.object(M.subprocess, 'Popen', self.factory(process)):
+            M._run(script, self.destination, 1000, self.log,
+                   {'Operation': 'HarmlessLocalFrame'}, b'', M._pin_stream)
+        command = self.calls[0][0][-1]
+        self.assertLess(len(command), 8191)
+        loader = base64.b64decode(command.split()[-1]).decode('utf-16-le')
+        raw = script.encode('utf-8')
+        for engine in ('powershell.exe', 'pwsh.exe'):
+            for name, frame, message in (('short', raw[:-1], 'Transport script input became short'),
+                                         ('hash', raw[:-1] + b' ', 'Transport script SHA256 differs')):
+                with self.subTest(engine=engine, mutation=name):
+                    child = REAL_POPEN([engine, '-NoLogo', '-NoProfile', '-NonInteractive',
+                                        '-EncodedCommand', command.split()[-1]], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    stdout, stderr = child.communicate(frame)
+                    self.assertNotEqual(child.returncode, 0, 'Unverified script executed')
+                    self.assertNotIn(b'SCRIPT_EXECUTED', stdout)
+                    self.assertIn(message, stderr.decode('utf-8', errors='replace'))
+        digest = hashlib.sha256(raw).hexdigest().upper()
+        self.assertIn(digest, loader, 'Loader lacks exact script hash')
+        invalid = b'\xff' + raw[1:]
+        invalid_loader = loader.replace(digest, hashlib.sha256(invalid).hexdigest().upper())
+        oversized_loader = re.sub(r'\$transportLength=\d+', '$transportLength=8193', loader)
+        self.assertNotEqual(oversized_loader, loader, 'Loader lacks explicit finite script length')
+        for engine in ('powershell.exe', 'pwsh.exe'):
+            for name, changed, frame in (('utf8', invalid_loader, invalid),
+                                         ('cap', oversized_loader, b'')):
+                with self.subTest(engine=engine, mutation=name):
+                    encoded = base64.b64encode(changed.encode('utf-16-le')).decode('ascii')
+                    child = REAL_POPEN([engine, '-NoLogo', '-NoProfile', '-NonInteractive',
+                                        '-EncodedCommand', encoded], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    stdout, stderr = child.communicate(frame)
+                    self.assertNotEqual(child.returncode, 0, name + ' script accepted')
+                    self.assertNotIn(b'SCRIPT_EXECUTED', stdout)
+                    if name == 'cap':
+                        self.assertIn(b'Transport script length out of range', stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Harmless local PS5/PS7 exact script cap')
+    def test_actual_local_loader_accepts_exact_script_byte_cap(self):
+        script = "[Console]::Write('EXACT_SCRIPT_CAP')\n#"
+        script += 'x' * (8192 - len(script.encode('utf-8')))
+        self.assertEqual(len(script.encode('utf-8')), 8192)
+        for index, engine in enumerate(('powershell.exe', 'pwsh.exe')):
+            with self.subTest(engine=engine):
+                self.destination = self.root / ('cap-' + str(index))
+                self.log = self.root / ('cap-attempt-' + str(index))
+
+                def child(argv, **kwargs):
+                    return REAL_POPEN([engine, *argv[-1].split()[1:]], **kwargs)
+
+                with mock.patch.object(M.subprocess, 'Popen', child):
+                    M._run(script, self.destination, 1000, self.log,
+                           {'Operation': 'HarmlessLocalFrame'}, b'', M._pin_stream)
+                self.assertEqual(self.destination.read_bytes(), b'EXACT_SCRIPT_CAP')
 
     def test_invalid_outer_deadlines_refuse_before_attempt_files(self):
         for seconds in (False, 0, -1, 601, math.inf, math.nan, '600'):
@@ -259,6 +398,103 @@ class TransportTests(unittest.TestCase):
         self.assertTrue(raised.exception.owner.exited_confirmed)
         self.assertIn('stdin_write', raised.exception.owner.errors)
 
+    def test_input_keeps_original_pipe_open_until_both_output_eofs(self):
+        written = M.threading.Event()
+
+        class ObservedInput(Input):
+            def write(self, data):
+                count = super().write(data)
+                written.set()
+                return count
+
+        process = Process()
+        process.stdin = ObservedInput()
+        owner = M._Owner(M._Output(io.BytesIO(), 1), M._Output(io.BytesIO(), 1),
+                         io.BytesIO(), io.BytesIO())
+        owner.process = process
+        thread = M.threading.Thread(target=owner._input, args=(b'exact frame',))
+        thread.start()
+        try:
+            self.assertTrue(written.wait(2), 'Original input pump never wrote the frame')
+            self.assertFalse(owner.input_done.wait(0.05),
+                             'stdin closed before original output readers reached EOF')
+            owner.stdout.eof = True
+            owner.stdout.done.set()
+            self.assertFalse(owner.input_done.wait(0.05),
+                             'One output EOF cannot authorize stdin close')
+            owner.stderr.eof = True
+            owner.stderr.done.set()
+            thread.join(2)
+            self.assertFalse(thread.is_alive(), 'Both original EOFs did not release stdin')
+            self.assertTrue(process.stdin.closed)
+            self.assertTrue(owner.input_done.is_set())
+            self.assertEqual(process.stdin.captured, b'exact frame')
+        finally:
+            owner.exited_confirmed = True
+            thread.join()
+
+    def test_original_confirmed_exit_releases_input_without_waiting_for_pipe_eof(self):
+        owner = M._Owner(M._Output(io.BytesIO(), 1), M._Output(io.BytesIO(), 1),
+                         io.BytesIO(), io.BytesIO())
+        owner.process = Process()
+        owner.exited_confirmed = True
+        owner._input(b'finite')
+        self.assertTrue(owner.process.stdin.closed)
+        self.assertTrue(owner.input_done.is_set())
+        self.assertFalse(owner.stdout.eof)
+        self.assertFalse(owner.stderr.eof)
+
+    @unittest.skipUnless(os.name == 'nt', 'Harmless Windows pipe EOF observation')
+    def test_actual_finite_child_receives_full_frame_without_early_stdin_eof(self):
+        payload = bytes(range(256)) * 15360 + b'\x00\xff\r\n'
+        script = "# harmless original frame\n[Console]::Write('unused')"
+        _, frame = M._script_frame(script, payload)
+        receiver = r'''
+import ctypes, hashlib, msvcrt, sys, time
+from ctypes import wintypes
+remaining=int(sys.argv[1]);digest=hashlib.sha256()
+while remaining:
+    block=sys.stdin.buffer.read(min(65536,remaining))
+    if not block:
+        raise SystemExit('FINITE_FRAME_SHORT')
+    digest.update(block);remaining-=len(block)
+peek=ctypes.WinDLL('kernel32',use_last_error=True).PeekNamedPipe
+peek.argtypes=(wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,
+               wintypes.LPVOID,wintypes.LPVOID,wintypes.LPVOID)
+peek.restype=wintypes.BOOL
+handle=msvcrt.get_osfhandle(sys.stdin.fileno())
+# This finite local receiver stays alive briefly after consuming its full
+# frame to make an early transport EOF observable. No EOF is needed to finish.
+until=time.monotonic()+0.15
+while time.monotonic()<until:
+    if not peek(handle,None,0,None,None,None):
+        raise SystemExit('EARLY_STDIN_EOF:'+str(ctypes.get_last_error()))
+    time.sleep(0.002)
+print(digest.hexdigest().upper())
+'''
+        children = []
+
+        def child(argv, **kwargs):
+            process = REAL_POPEN([sys.executable, '-B', '-c', receiver, str(len(frame))], **kwargs)
+            children.append(process)
+            return process
+
+        with mock.patch.object(M.subprocess, 'Popen', child):
+            try:
+                M._run(script, self.destination, 1000, self.log,
+                       {'Operation': 'HarmlessFiniteEofObservation'}, payload, M._pin_stream)
+            except M.DeliveryTransportError as error:
+                stderr = Path(str(self.log) + '.stderr.log').read_bytes()
+                self.assertIn(b'EARLY_STDIN_EOF:', stderr,
+                              'Harmless receiver failed for an unrelated reason')
+                self.assertTrue(error.owner.closed, 'Original early-EOF receiver was not settled')
+                self.fail('Original input closed before finite receiver finished: ' +
+                          stderr.decode('utf-8', errors='replace').strip())
+        self.assertEqual(self.destination.read_bytes().strip(),
+                         hashlib.sha256(frame).hexdigest().upper().encode('ascii'))
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0].poll(), 0)
+
     def test_validation_finishing_after_deadline_cannot_be_success(self):
         pin = M._pin_stream
 
@@ -341,10 +577,13 @@ class TransportTests(unittest.TestCase):
 
                 def child(argv, **kwargs):
                     self.calls.append((argv, kwargs))
+                    loader = base64.b64decode(argv[-1].split()[-1]).decode('utf-16-le')
+                    length = re.search(r'\$transportLength=(\d+)', loader)[1]
                     p = REAL_POPEN([sys.executable, '-c',
                         'import sys;sys.stderr.buffer.write(b"e"*200000);'
-                        'sys.stderr.buffer.flush();sys.stdin.buffer.read();'
-                        'sys.stdout.buffer.write(b"settled")'], **kwargs)
+                        'sys.stderr.buffer.flush();data=sys.stdin.buffer.read(int(sys.argv[1]));'
+                        'assert len(data)==int(sys.argv[1]);'
+                        'sys.stdout.buffer.write(b"settled")', length], **kwargs)
                     processes.append(p)
                     return p
 
@@ -368,7 +607,7 @@ class TransportTests(unittest.TestCase):
                     self.assertEqual(self.destination.read_bytes(), b'settled')
                 finally:
                     # RED cleanup supplies only the missing harmless pumps so
-                    # the very same child can see stdin EOF and exit naturally.
+                    # the same child receives its finite frame and exits.
                     # Never terminate/kill even a deliberately failing fixture.
                     if not owner.closed:
                         active = {thread._target for thread in owner.threads
@@ -428,10 +667,13 @@ class TransportTests(unittest.TestCase):
             return original_thread(*args, **kwargs)
 
         def child(argv, **kwargs):
+            loader = base64.b64decode(argv[-1].split()[-1]).decode('utf-16-le')
+            length = re.search(r'\$transportLength=(\d+)', loader)[1]
             p = REAL_POPEN([sys.executable, '-c',
                 'import sys;sys.stderr.buffer.write(b"e"*200000);'
-                'sys.stderr.buffer.flush();sys.stdin.buffer.read();'
-                'sys.stdout.buffer.write(b"settled")'], **kwargs)
+                'sys.stderr.buffer.flush();data=sys.stdin.buffer.read(int(sys.argv[1]));'
+                'assert len(data)==int(sys.argv[1]);'
+                'sys.stdout.buffer.write(b"settled")', length], **kwargs)
             processes.append(p)
             return p
 
@@ -611,15 +853,15 @@ raise AssertionError('sticky failure lost')
                                          user_reboot_confirmed=True, log_prefix=self.log,
                                          dependency_pins=DEPENDENCIES)
         self.assertEqual(result['Path'], 'target-ack')
-        self.assertEqual(p.stdin.captured, payload)
         script = self.script()
+        self.assertEqual(p.stdin.captured, script.encode('utf-8') + payload)
         self.assertIn(REMOTE_RUN + '.delivery-host.json', script)
         self.assertIn('CreateNew', script)
         self.assertIn('Confirm-RemovalRunDelivery', script)
         self.assertIn('ExpectedLocalAckSha256', script)
         self.assertIn(hashlib.sha256(payload).hexdigest().upper(), script)
         self.assertNotIn('ReadToEnd', script)
-        self.assertLess(len(self.calls[0][0][-1]), 30000)
+        self.assertLess(len(self.calls[0][0][-1]), 8191)
         self.assertNotIn(payload, Path(str(self.log) + '.intent.json').read_bytes())
 
     def test_finalize_rejects_malformed_or_nonobject_output_after_settlement(self):

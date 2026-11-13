@@ -14,6 +14,13 @@ Case 'closed-etl-decode-definitions-exist-without-tool-dispatch' {
 if(@($checks|Where-Object{-not$_.passed}).Count){$checks|ConvertTo-Json;Write-Output 'CHECKS=1 FAILED=1 TOOL_CALLS=0 ETW_CALLS=0';exit 1}
 . $library
 . (Join-Path $PSScriptRoot 'test-trace-decode-fixtures.ps1')
+Case 'decode-rechecks-exact-requested-mode-without-masking-old-or-additional-flags' {
+ foreach($mode in @([uint32]1,[uint32]0x00800001,[uint32]0x100,[uint32]0x00400101,[uint32]0x00c00001,[uint32]0x20400001)){
+  $f=New-Fixture;$f.Session.Readback.Initial.LogFileMode=$mode
+  Reject {New-Decode $f (New-ToolBoundary)}
+  Check ($f.Calls.Count-eq0) 'Changed initial mode reached decode tools.'
+ }
+}
 Case 'actual-managed-release-manifest-sourcehead-and-unique-exe-row-bind-relocated-probe' {
  $f=New-Fixture;$build=Set-ReleaseManifest $f
  $d=New-Decode $f (New-ToolBoundary);Invoke-RemovalTraceDecode $d|Out-Null
@@ -51,6 +58,9 @@ Case 'actual-retained-stop-and-real-finite-children-feed-existing-reader-without
  $f=New-Fixture;$d=New-Decode $f (New-ToolBoundary);Invoke-RemovalTraceDecode $d|Out-Null
  Check ($d.Completed-and-not$d.Failed-and$d.AssociationAvailable-and$d.ToolOwners.Count-eq2) ('Decode did not finish: '+($d.Errors-join';'))
  Check ([Object]::ReferenceEquals($d.StopReceipt,$f.Session.NativeOwner.StopReceipt)-and$d.RawTraceLoss.EventsLost-eq3-and$d.RawTraceLossKnown) 'Original STOP/raw loss provenance lost.'
+ Check ($f.Session.Readback.Initial.LogFileMode-eq[UInt32]0x00400001-and
+  $d.StopReceipt.Snapshot.LogFileMode-eq[UInt32]0x00400001-and
+  $f.Session.Readback.Final.LogFileMode-eq[UInt32]0x00400001) 'Explicit raw trace mode lost before closed decode.'
  Check (-not$d.Qualified-and-not$d.NativePassed-and-not$d.Analysis.qualified-and-not$d.Analysis.direct_removed_observed-and$d.Analysis.raw_trace_loss-ceq'unknown') 'Diagnostic association promoted cleanup/native/loss.'
  Check ($d.OutputPins.Count-eq7-and(Test-Path -LiteralPath $d.ReceiptPath)) 'Output receipt/pins missing.'
  Reject {Invoke-RemovalTraceDecode $d};Check ($f.Calls.Count-eq2) 'Repeated decode launched again.'

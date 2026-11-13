@@ -24,7 +24,7 @@ function Pin([string]$Path){@{Path=$Path;Bytes=(Get-Item -LiteralPath $Path).Len
 function Write-Buffer([IntPtr]$Pointer,[UInt64]$Handle,[UInt32]$Loss){
  $v=[Runtime.InteropServices.Marshal]::PtrToStructure($Pointer,[type][Moiren.RemovalTraceQueryV1.Properties])
  $w=$v.Wnode;$w.Guid=$script:fixture.State.Guid;$w.HistoricalContext=$Handle;$w.ClientContext=1;$v.Wnode=$w
- $v.LogFileMode=1;$v.MaximumFileSize=16;$v.EventsLost=$Loss
+ $v.LogFileMode=0x00400001;$v.MaximumFileSize=16;$v.EventsLost=$Loss
  [Runtime.InteropServices.Marshal]::StructureToPtr($v,$Pointer,$false)
  foreach($entry in @(@{Offset=$v.LoggerNameOffset;Text=$script:fixture.State.Session},@{Offset=$v.LogFileNameOffset;Text=$script:fixture.State.Etl})){
   $bytes=[Text.Encoding]::Unicode.GetBytes($entry.Text+[char]0)

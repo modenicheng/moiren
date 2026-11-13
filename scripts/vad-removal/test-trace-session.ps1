@@ -42,7 +42,7 @@ function Stop-RemovalNativeTrace {
 function QuerySnapshot($Owner) {
  @{SchemaVersion=[uint32]1;Complete=$true;QueryStatus=[uint32]0;SessionName=$Owner.Session
   SessionGuid=$Owner.SessionGuid;Handle=$Owner.Handle;LoggerId=[uint32]17;LogFileName=$Owner.EtlPath
-  ClientContext=[uint32]1;LogFileMode=[uint32]1;MaximumFileSize=[uint32]16;EventsLost=[uint32]$script:loss
+  ClientContext=[uint32]1;LogFileMode=[uint32]0x00400001;MaximumFileSize=[uint32]16;EventsLost=[uint32]$script:loss
   LogBuffersLost=[uint32]0;RealTimeBuffersLost=[uint32]0
   Provider=@{Guid=[Guid]'7dc75ba9-8274-4eae-a42d-b4c74e0209d2';Enabled=$true;LoggerId=[uint32]17
    Level=[uint32]4;EnableFlags=[uint32]15;Kind='ClassicWpp'}}

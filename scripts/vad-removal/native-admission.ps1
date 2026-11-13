@@ -221,6 +221,26 @@ function Assert-RemovalOperationRetirement($Context,[string]$Operation) {
     Assert-RemovalOperationTaskSeal $c
     if($Operation -ceq 'TaskRetireUnstarted'){
         if($task.DispatchAttempted){throw 'Never-dispatched original task required.'}
+    } elseif($Operation -ceq 'TaskRetireDispatchedNeverRun'){
+        if(-not$task.DispatchAttempted -or $task.Error -isnot [string] -or -not$task.Error -or
+            $null -ne $task.InstanceGuid -or
+            ($null -ne $task.RunningTask -and $task.RunningTask.InstanceGuid -is [string] -and
+                $task.RunningTask.InstanceGuid -match '^\{[a-fA-F0-9-]{36}\}$') -or
+            $task.WorkerBindingKnown -or $task.WorkerBindingError -or $null -ne $task.WorkerProcess -or
+            $null -ne $task.WorkerReceipt -or $null -ne $task.WorkerPid){
+            throw 'Exact retained failed dispatch with no child required.'
+        }
+        if($c.Managed.Error -isnot [string] -or -not$c.Managed.Error -or
+            $null -ne $c.Managed.ProbeOwner -or $null -ne $c.Managed.LastResult){
+            throw 'No worker/probe admission is required for dispatch-failure retirement.'
+        }
+        $state=Get-RemovalTaskObservation $task
+        if($null -eq $state -or $state.Error -or $state.State -ne 3 -or $state.Instances -ne 0 -or
+            $state.LastTaskResult -ne 267011 -or $state.LastRunKnown -or
+            (($state -isnot [Collections.IDictionary] -and $null -eq $state.PSObject.Properties['NeverRun']) -or
+                -not$state.NeverRun)){
+            throw 'Fresh scheduler evidence must prove this exact task never ran.'
+        }
     } else {
         if(-not$task.DispatchAttempted){throw 'Original dispatched task required.'}
         # Direct calls to RemoveOwnedTask must not bypass whole-chain terminal
@@ -338,7 +358,7 @@ function Assert-RemovalNativeOperation {
             if(-not$task.DispatchAttempted -or $c.Managed.Error -or $n.Failed -or $n.TraceStopped -or
                 -not(Test-RemovalTraceCaptureAdmission $c.Readback)){throw 'Original dispatched task and admitted trace required.'}
         }
-        {$_ -in @('TaskRetire','TaskRetireUnstarted','ManagedRetire')}{
+        {$_ -in @('TaskRetire','TaskRetireUnstarted','TaskRetireDispatchedNeverRun','ManagedRetire')}{
             if($task.Retired -or $task.RetirementAttempted -or -not$task.RegistrationKnown){throw 'Original task retirement already attempted/unknown.'}
             Assert-RemovalOperationRetirement $c $Operation
             $key=$Operation

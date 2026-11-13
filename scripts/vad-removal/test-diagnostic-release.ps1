@@ -24,7 +24,11 @@ function Import-ReleaseFixture([string]$File,[string[]]$Names){
 Import-ReleaseFixture 'test-trace-decode-fixtures.ps1' @('Pin','Write-Text')
 Import-ReleaseFixture 'test-run-inputs.ps1' @('Save-InputManifest','New-InputFixture')
 Import-ReleaseFixture 'test-diagnostic-lifetime.ps1' @('New-LifetimeSnapshot')
-$root=Join-Path $env:TEMP ('moiren-diagnostic-release-'+[Guid]::NewGuid().ToString('N'))
+function New-ReleaseFixtureRoot([string]$BasePath=$env:TEMP){
+    # CI TEMP may use a short name or dot segment; production accepts only the canonical spelling.
+    return [IO.Path]::GetFullPath((Join-Path $BasePath ('moiren-diagnostic-release-'+[Guid]::NewGuid().ToString('N'))))
+}
+$root=New-ReleaseFixtureRoot
 $null=[IO.Directory]::CreateDirectory($root)
 $script:ps1Root=$PSScriptRoot
 $script:RealReleaseLease=${function:New-RemovalDiagnosticLease}
@@ -124,6 +128,16 @@ function Set-ReleaseFixtureCollectorRepin($f){
         ObservationMode=$p.ObservationMode;ReadToolPinsJson=$p.ReadToolPinsJson}) -Compress
     Check ($p.ExecutionMode-ceq'RepositoryCollector') 'Fixture did not retain the misleading repository label.'
     Assert-RemovalPreflightSessionIdentity $p
+}
+Case 'fixture-root-normalizes-environment-path-without-weakening-production-guard' {
+    $base=[IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+    foreach($spelling in @(($base+'\.'),($base+'\unused\..'),($base+'\'))){
+        $candidate=New-ReleaseFixtureRoot $spelling
+        Check ($candidate-ceq[IO.Path]::GetFullPath($candidate)) 'Fixture retained a noncanonical environment path.'
+        Check ([IO.Path]::GetDirectoryName($candidate)-ceq$base) 'Fixture escaped its canonical temporary base.'
+        Assert-FiniteToolPath $candidate $false
+    }
+    Reject {Assert-FiniteToolPath (Join-Path ($base+'\.') 'not-canonical') $false}
 }
 Case 'collector-repin-on-original-preflight-refuses-before-readiness-dispatch' {
     $f=New-ReleaseFixture -Prepared

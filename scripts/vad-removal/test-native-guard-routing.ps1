@@ -63,6 +63,7 @@ foreach($entry in @(@{Entry='Register-RemovalTaskDefinition';Operation='TaskRegi
     @{Entry='Start-RemovalTaskOnce';Operation='TaskDispatch'},
     @{Entry='Remove-RemovalOwnedTask';Operation='TaskRetire'},
     @{Entry='Remove-RemovalUnstartedTask';Operation='TaskRetireUnstarted'},
+    @{Entry='Remove-RemovalDispatchedNeverRunTask';Operation='TaskRetireDispatchedNeverRun'},
     @{Entry='Complete-RemovalManagedTaskCleanup';Operation='ManagedRetire'})){
     Case ('production-entry-routes-before-resource-work-'+$entry.Operation) {
         Assert-Route {& $entry.Entry $resource} $resource $entry.Operation

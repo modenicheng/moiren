@@ -74,6 +74,7 @@ jobs:
         run: |
           python3 -B scripts/tests/vad-delivery.tests.py
           python3 -B scripts/tests/vad-delivery-transport.tests.py
+          python3 -B scripts/tests/vad-file-handoff.tests.py
           python3 -B scripts/tests/vad-diagnostic.tests.py
       - name: Test dedicated OBS path reuse and configuration ownership
         run: python3 scripts/tests/obs-reuse.tests.py

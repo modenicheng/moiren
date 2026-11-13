@@ -4,6 +4,7 @@
 # StartTrace/ControlTrace contracts:
 # https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew
 # https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew
+# https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants
 # Classic provider enablement is exclusive and can steal another session:
 # https://learn.microsoft.com/en-us/windows/win32/etw/configuring-and-starting-an-event-tracing-session
 Set-StrictMode -Version 2
@@ -69,6 +70,7 @@ namespace Moiren.RemovalTraceNativeV1 {
     // STOP, close a consumer handle, or adopt/alter a session by its name.
     public sealed class Owner {
         private bool startCaptured;
+        private bool captureConfigurationInvalid;
         private FinalSnapshot beforeStop;
         public string Session { get; private set; }
         public string EtlPath { get; private set; }
@@ -155,17 +157,28 @@ namespace Moiren.RemovalTraceNativeV1 {
                 throw new InvalidOperationException("Pre-STOP query output already captured or no attempt.");
             StopQueryStatus=status;
         }
-        private void AssertSession(FinalSnapshot snapshot) {
+        private void AssertIdentity(FinalSnapshot snapshot) {
             if(snapshot.Handle!=Handle || snapshot.SessionGuid!=SessionGuid ||
                 !String.Equals(snapshot.SessionName,Session,StringComparison.Ordinal) ||
-                !String.Equals(snapshot.LogFileName,EtlPath,StringComparison.Ordinal) ||
-                snapshot.ClientContext!=1 || snapshot.LogFileMode!=1 || snapshot.MaximumFileSize!=16)
-                throw new InvalidOperationException("Native session proof differs from retained owner/config.");
+                !String.Equals(snapshot.LogFileName,EtlPath,StringComparison.Ordinal))
+                throw new InvalidOperationException("Native session identity differs from retained owner.");
+        }
+        private bool HasRequestedConfiguration(FinalSnapshot snapshot) {
+            return snapshot.ClientContext==1 && snapshot.LogFileMode==Api.RequestedLogFileMode &&
+                snapshot.MaximumFileSize==16;
+        }
+        private void InvalidateCaptureConfiguration() {
+            // Configuration is capture evidence, not ownership. Retain exact
+            // identity for one STOP even if every query reports bad settings.
+            // This private latch cannot be cleared by public diagnostic flags.
+            captureConfigurationInvalid=true; RawTraceLoss="unknown";
+            Fail("Native capture clock/mode/cap differs; exact-owner cleanup only.");
         }
         internal void CaptureStopQuerySnapshot(object snapshot) {
             if(!StopQueryAttempted || StopQueryStatus!=0 || StopAttempted || beforeStop!=null)
                 throw new InvalidOperationException("No unused successful pre-STOP query capture.");
-            var copy=new FinalSnapshot(snapshot); AssertSession(copy); beforeStop=copy;
+            var copy=new FinalSnapshot(snapshot); AssertIdentity(copy); beforeStop=copy;
+            if(!HasRequestedConfiguration(copy)) InvalidateCaptureConfiguration();
         }
         internal void BeginStop() {
             if(!StopQueryAttempted || StopQueryStatus!=0 || beforeStop==null || StopAttempted)
@@ -186,7 +199,11 @@ namespace Moiren.RemovalTraceNativeV1 {
                 StopReceipt==null || StopReceipt.Status!=0 || !StopReceipt.StoppedConfirmed ||
                 StopReceipt.Snapshot!=null || StopReceipt.FinalCountersKnown)
                 throw new InvalidOperationException("No unused successful STOP payload capture.");
-            var copy=new FinalSnapshot(snapshot); AssertSession(copy);
+            var copy=new FinalSnapshot(snapshot); AssertIdentity(copy);
+            if(captureConfigurationInvalid || !HasRequestedConfiguration(copy)) {
+                InvalidateCaptureConfiguration();
+                throw new InvalidOperationException("Capture configuration failed; STOP is confirmed but final counters stay unknown.");
+            }
             if(copy.EventsLost<beforeStop.EventsLost || copy.LogBuffersLost<beforeStop.LogBuffersLost ||
                 copy.RealTimeBuffersLost<beforeStop.RealTimeBuffersLost)
                 throw new InvalidOperationException("STOP counters decreased from retained pre-STOP proof.");
@@ -214,6 +231,11 @@ namespace Moiren.RemovalTraceNativeV1 {
         public void CaptureFinal(object snapshot) { Owner.CaptureFinal(snapshot); }
     }
     public static class Api {
+        // evntrace.h: SEQUENTIAL | STOP_ON_HYBRID_SHUTDOWN. Explicit lifecycle
+        // avoids ETW choosing a session-0-dependent hybrid default at Start.
+        // Capture evidence requires this whole value, not a mask. Identity-only
+        // cleanup remains possible when Windows reports unexpected settings.
+        public const uint RequestedLogFileMode = 0x00400001;
         [DllImport("advapi32.dll", EntryPoint="StartTraceW", CharSet=CharSet.Unicode, ExactSpelling=true)]
         private static extern uint StartTrace(IntPtr handle,string name,IntPtr properties);
         [DllImport("advapi32.dll", ExactSpelling=true)]
@@ -285,7 +307,7 @@ function New-RemovalNativeProperties($Owner,[switch]$Start) {
         $v.LoggerNameOffset=[Moiren.RemovalTraceQueryV1.Reader]::PropertiesSize
         $v.LogFileNameOffset=$v.LoggerNameOffset+2048
         if($Start){
-            $w.ClientContext=1;$v.LogFileMode=1;$v.MaximumFileSize=16
+            $w.ClientContext=1;$v.LogFileMode=[Moiren.RemovalTraceNativeV1.Api]::RequestedLogFileMode;$v.MaximumFileSize=16
             $v.BufferSize=64;$v.MinimumBuffers=2;$v.MaximumBuffers=16;$v.FlushTimer=1
             foreach($entry in @(@{Offset=$v.LoggerNameOffset;Text=$Owner.Session},@{Offset=$v.LogFileNameOffset;Text=$Owner.EtlPath})){
                 $text=[Text.Encoding]::Unicode.GetBytes($entry.Text+[char]0)
@@ -406,11 +428,10 @@ function Start-RemovalNativeTrace {
     return $Owner
 }
 
-function Assert-RemovalNativeSession($Owner,$Snapshot) {
+function Assert-RemovalNativeSessionIdentity($Owner,$Snapshot) {
     if($Snapshot.Handle -ne $Owner.Handle -or $Snapshot.SessionGuid -ne $Owner.SessionGuid -or
-        $Snapshot.SessionName -cne $Owner.Session -or $Snapshot.LogFileName -cne $Owner.EtlPath -or
-        $Snapshot.ClientContext -ne 1 -or $Snapshot.LogFileMode -ne 1 -or $Snapshot.MaximumFileSize -ne 16){
-        throw 'Owned native handle/GUID/name/output/config changed; no by-name adoption.'
+        $Snapshot.SessionName -cne $Owner.Session -or $Snapshot.LogFileName -cne $Owner.EtlPath){
+        throw 'Owned native handle/GUID/name/output changed; no by-name adoption.'
     }
 }
 
@@ -429,7 +450,10 @@ function Stop-RemovalNativeTrace {
         $bridge.CaptureStopQuery($queryStatus)
         if($queryStatus -ne 0){throw 'Exact pre-STOP query failed; retained owner unresolved, no blind STOP/retry.'}
         $before=[Moiren.RemovalTraceQueryV1.Reader]::DecodeSession($p,[Moiren.RemovalTraceQueryV1.Reader]::BufferBytes)
-        Assert-RemovalNativeSession $Owner $before
+        Assert-RemovalNativeSessionIdentity $Owner $before
+        # The retained C# bridge separates ownership from capture settings.
+        # Bad settings latch failure/unknown counters without stranding this
+        # exact original handle; no public flag can supply STOP authority.
         $bridge.CaptureStopQuerySnapshot($before)
         [Runtime.InteropServices.Marshal]::FreeHGlobal($p);$p=[IntPtr]::Zero
         $p=New-RemovalNativeProperties $Owner
@@ -440,7 +464,7 @@ function Stop-RemovalNativeTrace {
         if($status -eq 2402){throw 'STOP returned ACTIVE_CONNECTIONS: stopping pending, exact owner retained; never retry.'}
         if($status -ne 0){throw 'STOP failed/unknown; exact owner retained, never retry/name-adopt.'}
         $final=[Moiren.RemovalTraceQueryV1.Reader]::DecodeSession($p,[Moiren.RemovalTraceQueryV1.Reader]::BufferBytes)
-        Assert-RemovalNativeSession $Owner $final
+        Assert-RemovalNativeSessionIdentity $Owner $final
         foreach($field in @('EventsLost','LogBuffersLost','RealTimeBuffersLost')){
             if($final.$field -lt $before.$field){throw 'STOP returned decreasing loss counters; final evidence untrusted.'}
         }

@@ -7,6 +7,7 @@ No target operation is attempted without explicit user reboot confirmation.
 """
 import argparse
 from contextlib import ExitStack
+from functools import partial
 import importlib.util
 import json
 import ntpath
@@ -144,7 +145,7 @@ try{
 """
 
 
-def launch_entry(config, terminal_path, *, user_reboot_confirmed, log_prefix):
+def launch_entry(config, terminal_path, *, user_reboot_confirmed, log_prefix, file_handoff=None):
     require(user_reboot_confirmed is True, 'user reboot confirmation required; no target access')
     DELIVERY.pin(config['ManifestPin'], DELIVERY.ACK_CAP)
     DELIVERY.canonical_run(terminal_path)
@@ -162,6 +163,10 @@ def launch_entry(config, terminal_path, *, user_reboot_confirmed, log_prefix):
         DELIVERY.pin(result, DELIVERY.ACK_CAP, terminal_path)
         return result
 
+    if file_handoff is not None:
+        return TRANSPORT.invoke_file_handoff('Entry', config,
+                    Path(str(log_prefix) + '.stdout.log'), DELIVERY.ACK_CAP, log_prefix, validate,
+                    file_handoff=file_handoff, user_reboot_confirmed=True, timeout_seconds=600.0)
     return TRANSPORT._run(script, Path(str(log_prefix) + '.stdout.log'), DELIVERY.ACK_CAP,
                           log_prefix, {'Operation': 'DiagnosticEntry', 'RunDirectory': config['RunDirectory'],
                                        'ManifestPin': config['ManifestPin']}, payload, validate,
@@ -198,7 +203,7 @@ def _terminal(value, config):
 
 def run_diagnostic(*, manifest_copy, expected_manifest_sha256, remote_manifest,
                    remote_run, powershell_pin, output_directory, user_reboot_confirmed,
-                   worker_session_id=0, launch=None, download=None, deliver=None):
+                   worker_session_id=0, launch=None, download=None, deliver=None, file_handoff=None):
     require(user_reboot_confirmed is True, 'user reboot confirmation required; no target access')
     config = prepare_config(manifest_copy=manifest_copy,
                             expected_manifest_sha256=expected_manifest_sha256,
@@ -206,9 +211,17 @@ def run_diagnostic(*, manifest_copy, expected_manifest_sha256, remote_manifest,
                             powershell_pin=powershell_pin, worker_session_id=worker_session_id)
     output = DELIVERY.safe_local(output_directory)
     output.mkdir(exist_ok=False)
-    launch = launch_entry if launch is None else launch
-    download = TRANSPORT.download_file if download is None else download
-    deliver = DELIVERY.deliver_run if deliver is None else deliver
+    if file_handoff is not None:
+        file_download = partial(TRANSPORT.download_file, file_handoff=file_handoff)
+        launch = partial(launch_entry, file_handoff=file_handoff) if launch is None else launch
+        download = file_download if download is None else download
+        if deliver is None:
+            deliver = partial(DELIVERY.deliver_run, download=file_download,
+                              finalize=partial(TRANSPORT.finalize_delivery, file_handoff=file_handoff))
+    else:
+        launch = launch_entry if launch is None else launch
+        download = TRANSPORT.download_file if download is None else download
+        deliver = DELIVERY.deliver_run if deliver is None else deliver
     terminal_path = remote_run + '.entry-terminal.json'
     terminal_pin = DELIVERY.retained_call(launch, config, terminal_path, user_reboot_confirmed=True,
                                           log_prefix=output / 'launch-entry')
@@ -276,8 +289,18 @@ def main(argv=None):
     parser.add_argument('--output-directory', type=Path, required=True)
     parser.add_argument('--worker-session-id', type=int, default=0)
     parser.add_argument('--user-reboot-confirmed', action='store_true')
+    parser.add_argument('--file-handoff-helper', type=Path)
+    parser.add_argument('--expected-file-handoff-helper-sha256')
+    parser.add_argument('--file-handoff-parent')
     args = parser.parse_args(argv)
     require(args.user_reboot_confirmed is True, 'user reboot confirmation required; no target access')
+    handoff_args = (args.file_handoff_helper, args.expected_file_handoff_helper_sha256, args.file_handoff_parent)
+    require(not any(value is not None for value in handoff_args) or all(value is not None for value in handoff_args),
+            'file handoff requires helper path, independent SHA256 and staging parent together')
+    file_handoff = None if args.file_handoff_helper is None else {
+        'HelperPath': str(args.file_handoff_helper),
+        'ExpectedHelperSha256': args.expected_file_handoff_helper_sha256,
+        'RemoteParent': args.file_handoff_parent}
     with ExitStack() as stack:
         stream = DELIVERY.open_input(stack, args.powershell_pin, DELIVERY.ACK_CAP)
         _, sha, raw = DELIVERY.read_stream(stream, DELIVERY.ACK_CAP, True)
@@ -288,7 +311,8 @@ def main(argv=None):
                                  expected_manifest_sha256=args.expected_manifest_sha256,
                                  remote_manifest=args.remote_manifest, remote_run=args.run_directory,
                                  powershell_pin=powershell, output_directory=args.output_directory,
-                                 user_reboot_confirmed=True, worker_session_id=args.worker_session_id)
+                                 user_reboot_confirmed=True, worker_session_id=args.worker_session_id,
+                                 file_handoff=file_handoff)
     print(json.dumps(receipt, separators=(',', ':'), allow_nan=False))
     return 0
 

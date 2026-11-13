@@ -11,7 +11,7 @@ function Snapshot {
  @{SchemaVersion=1;Complete=$true;QueryStatus=[uint32]0;SessionName='MoirenRemoval613Unit_02'
   SessionGuid=[Guid]'d10a5f71-f826-46bb-ae40-92027928c015';Handle=[uint64]0x123456780017
   LoggerId=[uint32]23;LogFileName='D:\MoirenTest\readback-fixture\trace.etl';ClientContext=[uint32]1
-  LogFileMode=[uint32]1;MaximumFileSize=[uint32]16;EventsLost=[uint32]0
+  LogFileMode=[uint32]0x00400001;MaximumFileSize=[uint32]16;EventsLost=[uint32]0
   LogBuffersLost=[uint32]0;RealTimeBuffersLost=[uint32]0
   Provider=@{Guid=[Guid]'7dc75ba9-8274-4eae-a42d-b4c74e0209d2';Enabled=$true;LoggerId=[uint32]23
    Level=[byte]4;EnableFlags=[uint32]15;Kind='ClassicWpp'}}
@@ -66,6 +66,20 @@ Case 'typed-native-scalars-cannot-be-replaced-with-coercible-strings' {
  foreach($field in @('SchemaVersion','Complete','QueryStatus','Handle','LoggerId','ClientContext','LogFileMode','MaximumFileSize','EventsLost','LogBuffersLost','RealTimeBuffersLost')){
   $trace,$owner=Fixture;$s=Snapshot;$s[$field]=[string]$s[$field]
   Reject {Confirm-RemovalTraceReadback $owner $s}
+ }
+}
+Case 'initial-refresh-and-final-raw-mode-reject-old-default-realtime-and-unknown-flags' {
+ foreach($mode in @([uint32]1,[uint32]0x00800001,[uint32]0x100,[uint32]0x00400101,[uint32]0x00c00001,[uint32]0x20400001)){
+  foreach($phase in @('initial','refresh','final')){
+   $trace,$owner=Fixture;$s=Snapshot;$s.LogFileMode=$mode
+   if($phase-ceq'initial'){Reject {Confirm-RemovalTraceReadback $owner $s}}
+   else{
+    Confirm-RemovalTraceReadback $owner (Snapshot)
+    if($phase-ceq'refresh'){Reject {Observe-RemovalTraceReadback $owner $s}}
+    else{$trace.TraceStopped=$true;Reject {Complete-RemovalTraceLoss $owner (StopReceipt $trace $s)}}
+   }
+   Check ($owner.Invalid-and-not$owner.FinalCountersKnown-and-not(Test-RemovalTraceCaptureAdmission $owner)) 'Wrong mode was masked or accepted.'
+  }
  }
 }
 Case 'classic-provider-native-uint32-level-is-accepted-without-string-coercion' {

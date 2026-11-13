@@ -155,7 +155,12 @@ function Save-RemovalControllerAbortEvidence($Owner) {
     $value=[ordered]@{SchemaVersion=1;Stage='BeforeAbortTaskRetirement';NativePassed=$false;Qualified=$false
         Nonce=$Owner.Nonce;Manifest=$Owner.RetainedInputs.ManifestPin;Before=$Owner.RetainedBefore.ReceiptPin
         TraceStopped=(Test-RemovalControllerTraceStopped $Owner);Errors=@($Owner.Errors.ToArray())
-        TaskPath=$(if($null -ne $managed){$managed.TaskOwner.Spec.Path}else{$null})}
+        TaskPath=$(if($null -ne $managed){$managed.TaskOwner.Spec.Path}else{$null})
+        DispatchState=$(if($null -eq $managed -or $null -eq $managed.TaskOwner){'NoTask'}
+            elseif($managed.TaskOwner.DispatchAttempted -and $null -ne $managed.TaskOwner.InstanceGuid){'InstanceBound'}
+            elseif($managed.TaskOwner.DispatchAttempted -and $managed.TaskOwner.Error){'DispatchRequestedNoInstance'}
+            elseif($managed.TaskOwner.DispatchAttempted){'DispatchRequested'}
+            else{'NotDispatched'})}
     $Owner.AbortEvidencePin=Write-RemovalControllerReceipt $Owner 'abort-evidence.json' $value
 }
 
@@ -166,7 +171,9 @@ function Observe-RemovalControllerAbort($Owner,[int]$ObservationMilliseconds=25)
         # Finish drains its original tools before refusing changed provenance.
         # Let that observation run even when root trace composition was altered.
         $finished=Observe-RemovalManagedFinish $Owner.RetainedFinish -ObservationMilliseconds $ObservationMilliseconds
-    } elseif($null -ne $managed -and $managed.TaskOwner.DispatchAttempted){
+    } elseif($null -ne $managed -and $managed.TaskOwner.DispatchAttempted -and
+        $null -ne $managed.TaskOwner.PSObject.Properties['InstanceGuid'] -and
+        $managed.TaskOwner.InstanceGuid -is [string]){
         Bind-RemovalControllerLifetime $Owner
         Assert-RemovalControllerSealedIdentity $Owner
         try{$managedObservation=Observe-RemovalManagedSession $managed}
@@ -203,6 +210,23 @@ function Observe-RemovalControllerAbort($Owner,[int]$ObservationMilliseconds=25)
         try{Stop-RemovalTraceSession $trace}catch{Add-RemovalControllerError $Owner $_.Exception.Message}
     }
     if(-not(Test-RemovalControllerTraceStopped $Owner)){$Owner.Phase='PendingTrace';return $false}
+    if($null -ne $managed -and $managed.TaskOwner.DispatchAttempted -and
+        ($null -eq $managed.TaskOwner.PSObject.Properties['InstanceGuid'] -or
+         $managed.TaskOwner.InstanceGuid -isnot [string])){
+        $task=$managed.TaskOwner
+        # RunEx either threw or returned an invalid instance. Drain the exact
+        # retained trace first; only confirmed STOP evidence may authorize the
+        # one deletion of this task proven never to have launched a worker.
+        if($task.Error -isnot [string] -or -not$task.Error){$Owner.Phase='PendingTaskIdentity';return $false}
+        $state=Get-RemovalTaskObservation $task
+        if($state.Error -or $state.Instances -ne 0 -or $state.State -ne 3 -or
+            $state.LastTaskResult -ne 267011 -or $state.LastRunKnown){$Owner.Phase='PendingTaskIdentity';return $false}
+        if($null -eq $Owner.AbortEvidencePin){Save-RemovalControllerAbortEvidence $Owner}
+        $null=Copy-RemovalDecodePin $Owner.AbortEvidencePin 1048576
+        if($task.RetirementAttempted){$Owner.Phase='PendingTaskRetirement';return $task.Retired}
+        Remove-RemovalDispatchedNeverRunTask $task
+        return $task.Retired
+    }
     if($null -eq $managed){return $true}
     $task=$managed.TaskOwner
     if(-not$task.RegistrationAttempted){return $true}

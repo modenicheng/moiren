@@ -102,7 +102,7 @@ Case 'actual-buffer-path-returns-exact-owned-session-and-classic-association' {
 }
 Case 'actual-native-buffer-query-composes-with-readback-policy' {
     . (Join-Path $PSScriptRoot 'trace-readback.ps1')
-    $b=New-Fixture;$r=Read-Fixture $b
+    $b=New-Fixture;$script:mock.Mode=[uint32]0x00400001;$r=Read-Fixture $b
     Check ($r.Complete -and $r.Provider.Level -is [uint32]) 'Actual query did not produce the native uint32 provider level.'
     $trace=[pscustomobject]@{
         Session=$script:mock.Name;EtlPath=$script:mock.Path

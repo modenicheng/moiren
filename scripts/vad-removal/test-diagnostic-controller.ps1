@@ -89,12 +89,17 @@ function Stop-RemovalTraceSession($Session){
  $Session.NativeOwner.StopReceipt=$Session.StoppedReceipt
 }
 function Get-RemovalDiagnosticArguments {param($Owner,$ArtifactDirectory)@('live-vad','--artifact-dir',$ArtifactDirectory,'--seconds','8')}
+function Get-RemovalTaskObservation($Owner){
+ [pscustomobject]@{State=3;Instances=0;LastTaskResult=267011;LastRunKnown=$false;NeverRun=$true;Error=$null}
+}
 function New-RemovalManagedSession {
  param($RunDirectory,$SourceDirectory,$Executable,$ExpectedSha256,$ProbeArguments,$SessionId,$Sid,$Nonce,$TraceSession)
  Event 'stage'
  [pscustomobject]@{RunDirectory=$RunDirectory;Error=$null;Terminal=$null;LastResult=$null
   TaskOwner=[pscustomobject]@{RegistrationAttempted=$false;RegistrationKnown=$false;DispatchAttempted=$false
-   WorkerBindingKnown=$false;Retired=$false;RetirementAttempted=$false;Error=$null;Spec=@{Path='\Moiren-Removal613-fixture'}}
+   InstanceGuid=$null;LastObservation=$null
+   WorkerBindingKnown=$false;Retired=$false;RetirementAttempted=$false;Error=$null
+   Spec=[pscustomobject]@{Path='\Moiren-Removal613-fixture'};Folder=$null}
   ProbeOwner=$null;TraceSession=$TraceSession;TraceReadback=$TraceSession.Readback}
 }
 function Register-RemovalTaskDefinition($Owner){
@@ -106,7 +111,12 @@ function Register-RemovalTaskDefinition($Owner){
 function Start-RemovalTaskOnce($Owner){
  if($script:f.BeforeRunRefused){throw 'Dispatch refused before RunEx.'}
  Event 'task-run';$Owner.DispatchAttempted=$true
- if($script:f.RunUnknown){$Owner.Error='RunEx result unknown.'}
+ if($script:f.RunUnknown){
+  $Owner.Error='RunEx result unknown.'
+  if($script:f.RunUnknownInstanceKnown){$Owner.InstanceGuid='{d5d7acdf-e49d-4134-ac20-3d965accb18c}'}
+  elseif($script:f.RunInvalidReturn){$Owner.RunningTask=[pscustomobject]@{Path='\Moiren-Removal613-fixture';InstanceGuid=$null}}
+ }
+ else{$Owner.InstanceGuid='{d5d7acdf-e49d-4134-ac20-3d965accb18c}'}
 }
 function Observe-RemovalManagedSession($Session){
  Event 'managed-observe'
@@ -149,10 +159,17 @@ function Remove-RemovalUnstartedTask($Owner){
  if($script:f.RetirementUnknown){throw 'Original retirement result unknown.'}
  $Owner.Retired=$true
 }
+function Remove-RemovalDispatchedNeverRunTask($Owner){
+ Event 'dispatched-never-run-retire'
+ if($Owner.Retired-or$Owner.RetirementAttempted){throw 'Original task retirement cannot repeat.'}
+ $Owner.RetirementAttempted=$true
+ if($script:f.RetirementUnknown){throw 'Original retirement result unknown.'}
+ $Owner.Retired=$true
+}
 function Fixture {
  $script:f=[pscustomobject]@{Events=(New-Object Collections.Generic.List[string]);BeforePending=$false;BeforeFailed=$false
   InputsChanged=$false;LeaseRefused=$false;TraceEnableFails=$false;TraceStartFailure=$false;TraceStartUnknown=$false
-  RegisterRefused=$false;RegisterUnknown=$false;RunUnknown=$false;BeforeRunRefused=$false
+  RegisterRefused=$false;RegisterUnknown=$false;RunUnknown=$false;RunUnknownInstanceKnown=$false;RunInvalidReturn=$false;BeforeRunRefused=$false
   ManagedPending=$false;FinishPending=$false;StopPending=$false;AfterPending=$false;AfterUnsafe=$false;AfterSaveFails=$false;RetirementUnknown=$false}
  $inputs=[pscustomobject]@{SourceDirectory=$PSScriptRoot;ManifestPin=@{Path='C:\fixture\manifest.json';Bytes=2;Sha256='A'*64}
   Pins=@{Tools=@{};Probe=@{File=@{Path='C:\fixture\e2e_latency_probe.exe';Sha256='B'*64}}}}
@@ -209,10 +226,20 @@ Case 'unknown-registration-keeps-original-lease-and-does-not-run-or-adopt-task' 
  Check (@($f.Events|Where-Object{$_-ceq'task-register'}).Count-eq1) 'Registration retried.'
 }
 Case 'unknown-runex-drains-original-session-and-never-reruns' {
- $o=Fixture;$f.RunUnknown=$true;$f.ManagedPending=$true;Start-RemovalDiagnosticController $o
+ $o=Fixture;$f.RunUnknown=$true;$f.RunUnknownInstanceKnown=$true;$f.ManagedPending=$true
+ Start-RemovalDiagnosticController $o
  for($i=0;$i-lt3;$i++){$r=Observe-RemovalDiagnosticController $o}
- Check ($r.NeedsObservation-and$o.Lease.Owned-and$o.ManagedSession.Error-and($f.Events-contains'managed-observe')) 'Unknown RunEx lost retained session or left admission open.'
+ Check ($r.NeedsObservation-and$o.Lease.Owned-and$o.ManagedSession.Error-and($f.Events-contains'managed-observe')) 'Bound unknown RunEx lost retained worker observation.'
  Check (@($f.Events|Where-Object{$_-ceq'task-run'}).Count-eq1-and-not($f.Events-contains'lease-release')) 'RunEx retried or unresolved owner released.'
+}
+Case 'known-never-run-runex-failure-retires-task-and-releases-controller' {
+ $o=Fixture;$f.RunUnknown=$true;$f.RunInvalidReturn=$true;Start-RemovalDiagnosticController $o;$r=Settle $o
+ Check ($r.Completed-and-not$r.Safe-and$o.ManagedSession.TaskOwner.Retired) 'Never-run RunEx task remained stranded.'
+ Check (@($f.Events|Where-Object{$_-ceq'dispatched-never-run-retire'}).Count-eq1-and
+  @($f.Events|Where-Object{$_-ceq'task-run'}).Count-eq1) 'Never-run RunEx cleanup repeated or retried dispatch.'
+ Check (([Array]::IndexOf($f.Events.ToArray(),'trace-stop')-lt[Array]::IndexOf($f.Events.ToArray(),'dispatched-never-run-retire'))-and
+  $o.TraceSession.NativeOwner.TraceStopped) 'Never-run RunEx task retired before exact trace STOP evidence.'
+ Check (-not($f.Events-contains'managed-observe')-and$o.Lease.Closed) 'Cleanup waited for an unlaunched worker.'
 }
 Case 'unsafe-after-audit-is-persisted-and-never-accepted-as-safe' {
  $o=Fixture;$f.AfterUnsafe=$true;Start-RemovalDiagnosticController $o;$r=Settle $o

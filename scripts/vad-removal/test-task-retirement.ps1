@@ -66,7 +66,7 @@ function Fixture {
  $native=[pscustomobject]@{TraceOwned=$true;TraceStopped=$true;StopReceipt=$stop};$stop.Owner=$native
  $readback=[pscustomobject]@{Trace=$native}
  $trace=[pscustomobject]@{NativeOwner=$native;Readback=$readback;StoppedReceipt=$stop;StopAttempted=$true}
- [pscustomobject]@{TaskOwner=$o;ProbeOwner=$probe;LastResult=$wr;TraceSession=$trace;TraceReadback=$readback;Terminal=@{Terminal=$true}}
+ [pscustomobject]@{TaskOwner=$o;ProbeOwner=$probe;LastResult=$wr;TraceSession=$trace;TraceReadback=$readback;Error=$null;Terminal=@{Terminal=$true}}
 }
 # Keep task definition, current scheduler observation and terminal composition
 # real. Only the external scheduler and probe-process observation are fixtures.
@@ -140,6 +140,54 @@ function Unstarted {
  $o.WorkerProcess=$null;$o.WorkerPid=$null;$o.WorkerCreationUtcTicks=$null
  $o.RegisteredTask.LastTaskResult=267011;$o.RegisteredTask.LastRunTime=[DateTime]::MinValue
  return $s
+}
+function DispatchedNeverRun {
+ $s=Fixture;$o=$s.TaskOwner
+ $o.DispatchAttempted=$true;$o.DispatchUtc=[DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+ $o.InstanceGuid=$null;$o.RunningTask=$null;$o.WorkerBindingKnown=$false;$o.WorkerBindingError=$null
+ $o.WorkerProcess=$null;$o.WorkerPid=$null;$o.WorkerCreationUtcTicks=$null
+ $o.Error='Task dispatch failed/unknown: retained exact intent.'
+ $o.RegisteredTask.LastTaskResult=267011;$o.RegisteredTask.LastRunTime=[DateTime]'1899-12-30'
+ $s.ProbeOwner=$null;$s.LastResult=$null;$s.Error='RunEx failed with no retained instance.'
+ return $s
+}
+Case 'dispatch-requested-never-run-task-has-distinct-verified-retirement' {
+ Check ($null-ne(Get-Command Remove-RemovalDispatchedNeverRunTask -ErrorAction SilentlyContinue)) 'Dispatched never-run cleanup is missing.'
+ $s=DispatchedNeverRun;Remove-RemovalDispatchedNeverRunTask $s.TaskOwner
+ Check ($s.TaskOwner.Retired-and$s.TaskOwner.Folder.DeleteCalls-eq1-and$s.TaskOwner.Folder.ArchivedBeforeDelete) 'Dispatched never-run XML/one-shot retirement missing.'
+}
+Case 'invalid-runex-return-without-bound-instance-can-still-be-proven-never-run' {
+ $s=DispatchedNeverRun
+ $s.TaskOwner.RunningTask=[pscustomobject]@{Path=$s.TaskOwner.Spec.Path;InstanceGuid=$null}
+ Remove-RemovalDispatchedNeverRunTask $s.TaskOwner
+ Check ($s.TaskOwner.Retired-and$s.TaskOwner.Folder.DeleteCalls-eq1) 'Invalid retained RunEx return was treated as worker admission.'
+}
+Case 'dispatched-never-run-retirement-refuses-admission-worker-or-run-evidence' {
+ foreach($mode in @('no-error','instance','worker-binding','worker','run-time','run-result','xml')){
+  $s=DispatchedNeverRun;$o=$s.TaskOwner
+  switch($mode){
+   'no-error'{$o.Error=$null}
+   'instance'{$o.InstanceGuid='{d5d7acdf-e49d-4134-ac20-3d965accb18c}'}
+   'worker-binding'{$o.WorkerBindingKnown=$true}
+   'worker'{$o.WorkerProcess=[pscustomobject]@{fixture='unknown-child'}}
+   'run-time'{$o.RegisteredTask.LastRunTime=[DateTime]::Now}
+   'run-result'{$o.RegisteredTask.LastTaskResult=1}
+   'xml'{$o.RegisteredTask.Xml='<foreign/>'}}
+  Reject {Remove-RemovalDispatchedNeverRunTask $o}
+  Check ($o.Folder.DeleteCalls-eq0) ('Unsafe dispatched never-run deletion: '+$mode)
+ }
+}
+Case 'unknown-dispatched-never-run-deletion-retains-original-intent-and-is-never-retried' {
+ $s=DispatchedNeverRun;$s.TaskOwner.Folder.DeleteThrows=$true
+ Reject {Remove-RemovalDispatchedNeverRunTask $s.TaskOwner}
+ Check ($s.TaskOwner.RetirementAttempted-and-not$s.TaskOwner.Retired-and$s.TaskOwner.RetirementError) 'Unknown dispatched never-run delete became absence.'
+ Reject {Remove-RemovalDispatchedNeverRunTask $s.TaskOwner}
+ Check ($s.TaskOwner.Folder.DeleteCalls-eq1) 'Dispatched never-run deletion retried.'
+}
+Case 'dispatched-never-run-archive-collision-refuses-without-overwrite-or-delete' {
+ $s=DispatchedNeverRun;$path=Join-Path $s.TaskOwner.Spec.RunDirectory 'retired-task.xml';[IO.File]::WriteAllText($path,'user-owned')
+ Reject {Remove-RemovalDispatchedNeverRunTask $s.TaskOwner}
+ Check ($s.TaskOwner.Folder.DeleteCalls-eq0-and[IO.File]::ReadAllText($path)-ceq'user-owned') 'Existing dispatch-failure evidence replaced or task deleted.'
 }
 Case 'known-created-never-dispatched-task-has-distinct-verified-retirement' {
  Check ($null-ne(Get-Command Remove-RemovalUnstartedTask -ErrorAction SilentlyContinue)) 'Never-dispatched cleanup is missing.'

@@ -8,6 +8,7 @@ import json
 import ntpath
 import os
 from pathlib import Path
+import re
 import tempfile
 import subprocess
 import unittest
@@ -298,13 +299,16 @@ class Handoff(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         argv = self.calls[0][0]
         self.assertEqual(argv[-2], 'moiren-lan')
-        script = base64.b64decode(argv[-1].split()[-1]).decode('utf-16-le')
+        self.assertLess(len(argv[-1]), 8191)
+        loader = base64.b64decode(argv[-1].split()[-1]).decode('utf-16-le')
+        length = int(re.search(r'\$transportLength=(\d+)', loader)[1])
+        script = process.stdin.captured[:length].decode('utf-8')
         self.assertLess(script.index('foreach($pin in $config.Sources)'), script.index('. $entry'))
         self.assertIn('FileShare]::Read', script)
         self.assertIn('Administrator', script)
         self.assertNotIn('RunAs', script)
         self.assertNotIn('Restart-Computer', script)
-        payload = json.loads(process.stdin.captured)
+        payload = json.loads(process.stdin.captured[length:])
         self.assertEqual(payload['Sources'], self.source)
 
     @unittest.skipUnless(os.name == 'nt', 'Actual bootstrap requires Windows PowerShell')

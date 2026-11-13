@@ -34,6 +34,52 @@ The canonical driver qualification verdict remains in
   accumulate build trees or binaries. If the optional historical VM is reused,
   its roughly 64 GB system disk remains a separate storage constraint.
 
+### 2026-11-08 postboot checkpoint - current status
+
+This checkpoint supersedes earlier "awaiting reboot/preflight" statements below.
+The user has rebooted the standalone remote computer. Its fresh boot is
+2026-11-08T13:26:07.5Z (21:26:07.5 Asia/Shanghai); the full original read-only
+preflight verifies the613package/signatures/catalog, rollback, tool pins and
+ordinary Limited Explorer identity. There are no admitted audio results yet.
+
+The first actual diagnostic fails before task registration or probe/audio
+launch: Windows adds a documented default ETW hybrid-shutdown mode, which the
+old exact-mode checks reject both at readback and before STOP. The original
+owner remains pending rather than inventing normal closure. A separately
+reviewed, exact-handle failed-run recovery stops that trace and ends only the
+failed controller; the original entry writes its own failed terminal. Fresh
+readback finds no original owners/tasks and QUERY4201 for the stopped handle.
+All68failed-run/source/adapter members are archived and independently read
+back on the host. This is failed-run evidence, not a normal diagnostic export.
+
+The narrow explicit-mode repair passes296focused mocked-boundary checks on
+PowerShell5.1/7; target rerun remains pending review/deployment. The published
+04686d6dCI is not green: its Windows fixture rejects a noncanonical TEMP root.
+The test-owned canonical-path repair passes16checks per interpreter without
+weakening production admission. Neither local repair is a new exact-head CI
+result. See [postboot evidence](validation/2026-11-08-postboot-diagnostic.md).
+
+The explicit-mode rerun reaches task registration but its retained `RunEx`
+returns no valid running instance. Scheduler identity proves the exact task
+never ran and no worker/probe admission exists; the old controller nevertheless
+waited for managed terminal forever. Abort now separates dispatch request from
+bound instance, confirms the original trace-stopped evidence first, and retires
+only the verified never-run task after archiving its exact XML, while an unknown
+bound instance remains retained pending real terminal evidence. The failed run
+and external-recovery receipts are archived/read back host-side; remote bounded
+cleanup and a fresh create-only rerun remain pending. This is infrastructure
+progress only, not native audio evidence.
+
+No additional reboot is requested. Continue directly over `moiren-lan`, reuse
+the one fixed dedicated OBS path, and keep the user's ordinary applications
+untouched. Unlock only for a test requiring visible desktop input. The user's
+next action is not another reboot or a VM setup; the agent owns the script
+repair, verified rerun, archival and bounded cleanup. Repeated naming means
+renaming one stable logical endpoint A to B and back to A, checking each actual
+remove/recreate and preserved project binding, not copying binaries or merely
+changing UI text. Native naming, matched waveform and stable calibrated latency
+acceptance remain open; no sub-10-ms result or device-limit fallback is proven.
+
 ### 2026-11-08 reusable test tools and user-owned reboot
 
 The [closed diagnostic export](validation/2026-11-08-removal-closed-export.md)

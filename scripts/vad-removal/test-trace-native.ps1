@@ -43,7 +43,7 @@ function New-Fixture {
             Check ($Name -ceq 'MoirenRemoval613diagnostic') 'Unexpected session name.'
             Check ($v.Wnode.BufferSize -eq [Moiren.RemovalTraceQueryV1.Reader]::BufferBytes -and
                 $v.Wnode.ClientContext -eq 1 -and $v.Wnode.Flags -eq 0x20000 -and
-                $v.LogFileMode -eq 1 -and $v.MaximumFileSize -eq 16 -and $v.EnableFlags -eq 0) 'Start configuration differs.'
+                $v.LogFileMode -eq 0x00400001 -and $v.MaximumFileSize -eq 16 -and $v.EnableFlags -eq 0) 'Start configuration differs.'
             Check ([Runtime.InteropServices.Marshal]::PtrToStringUni([IntPtr]::Add($Properties,[int]$v.LogFileNameOffset)) -ceq 'D:\owned\removal.etl') 'Start ETL string missing.'
             $raw=[BitConverter]::ToInt64([BitConverter]::GetBytes([UInt64]$script:mock.Handle),0)
             [Runtime.InteropServices.Marshal]::WriteInt64($Handle,$raw)
@@ -97,7 +97,7 @@ function Write-ReturnedProperties([IntPtr]$Pointer,[UInt64]$Handle,[UInt32]$Lost
     Check ($Handle -eq 701 -and $v.Wnode.Guid -ne [Guid]::Empty -and
         $v.Wnode.HistoricalContext -eq 0 -and $v.EventsLost -eq 0) 'QUERY/STOP input was seeded with expected output.'
     $w=$v.Wnode;$w.HistoricalContext=$Handle;$w.ClientContext=1;$v.Wnode=$w
-    $v.LogFileMode=1;$v.MaximumFileSize=16;$v.EventsLost=$Lost
+    $v.LogFileMode=0x00400001;$v.MaximumFileSize=16;$v.EventsLost=$Lost
     $v.LogBuffersLost=$script:mock.LogLost;$v.RealTimeBuffersLost=$script:mock.RealtimeLost
     [Runtime.InteropServices.Marshal]::StructureToPtr($v,$Pointer,$false)
     foreach($entry in @(@{Offset=$v.LoggerNameOffset;Text='MoirenRemoval613diagnostic'},@{Offset=$v.LogFileNameOffset;Text='D:\owned\removal.etl'})){
@@ -236,17 +236,57 @@ Case 'successful-stop-foreign-identity-or-counter-regression-is-not-final' {
     }
 }
 Case 'prestop-query-error-or-foreign-identity-never-stops-or-retries' {
-    foreach($mode in @('status','exception','guid')){
+    foreach($mode in @('status','exception','guid','handle','name','path')){
         $o=Started-Owner
         switch($mode){
             'status'{$script:mock.QueryStatus=4201}
             'exception'{$script:mock.QueryThrow=$true}
             'guid'{$script:mock.QueryMutation={param($p)$v=[Runtime.InteropServices.Marshal]::PtrToStructure($p,[type][Moiren.RemovalTraceQueryV1.Properties]);$w=$v.Wnode;$w.Guid=[Guid]::NewGuid();$v.Wnode=$w;[Runtime.InteropServices.Marshal]::StructureToPtr($v,$p,$false)}}
+            'handle'{$script:mock.QueryMutation={param($p)$v=[Runtime.InteropServices.Marshal]::PtrToStructure($p,[type][Moiren.RemovalTraceQueryV1.Properties]);$w=$v.Wnode;$w.HistoricalContext=702;$v.Wnode=$w;[Runtime.InteropServices.Marshal]::StructureToPtr($v,$p,$false)}}
+            'name'{$script:mock.QueryMutation={param($p)$v=[Runtime.InteropServices.Marshal]::PtrToStructure($p,[type][Moiren.RemovalTraceQueryV1.Properties]);[Runtime.InteropServices.Marshal]::WriteInt16($p,[int]$v.LoggerNameOffset,88)}}
+            'path'{$script:mock.QueryMutation={param($p)$v=[Runtime.InteropServices.Marshal]::PtrToStructure($p,[type][Moiren.RemovalTraceQueryV1.Properties]);[Runtime.InteropServices.Marshal]::WriteInt16($p,[int]$v.LogFileNameOffset,88)}}
         }
         $r=Stop-RemovalNativeTrace $o
         Check ($o.StopQueryAttempted -and -not $o.StopAttempted -and $null -eq $r.Status -and -not $r.StoppedConfirmed -and $o.TraceOwned -and $o.Failed) 'Failed query caused blind STOP/owner loss.'
         Reject {Stop-RemovalNativeTrace $o}
         Check (($script:mock.Calls -join ',') -ceq 'start,enumerate,enable,query') 'Failed query retried or stopped by name.'
+    }
+}
+Case 'prestop-config-refuses-evidence-not-owned-stop-and-final-mode-remains-strict' {
+    foreach($mode in @([UInt32]1,[UInt32]0x00800001,[UInt32]0x100,[UInt32]0x00400101,[UInt32]0x00c00001,[UInt32]0x20400001)){
+        foreach($phase in @('Query','Stop')){
+            $o=Started-Owner
+            $script:mock[$phase+'Mutation']={
+                param($p)
+                $v=[Runtime.InteropServices.Marshal]::PtrToStructure($p,[type][Moiren.RemovalTraceQueryV1.Properties])
+                $v.LogFileMode=$mode;[Runtime.InteropServices.Marshal]::StructureToPtr($v,$p,$false)
+            }
+            $r=Stop-RemovalNativeTrace $o
+            Check ($o.Failed-and-not$r.FinalCountersKnown-and$null-eq$r.Snapshot) 'Unexpected raw mode became trusted STOP evidence.'
+            if($phase-eq'Query'){
+                Check ($o.StopAttempted-and$r.StoppedConfirmed-and($script:mock.Calls-join',')-ceq'start,enumerate,enable,query,stop') 'Config-only mismatch blocked exact owned cleanup.'
+            } else {Check ($o.TraceStopped-and$r.StoppedConfirmed) 'Invalid final mode erased confirmed STOP status.'}
+            Check ($o.RawTraceLoss-ceq'unknown') 'Config mismatch acquired trusted raw counters.'
+            $calls=$script:mock.Calls.Count;Reject {Stop-RemovalNativeTrace $o}
+            Check ($script:mock.Calls.Count-eq$calls) 'Invalid mode retried cleanup.'
+        }
+    }
+}
+Case 'prestop-and-final-clock-or-cap-mismatch-keep-counters-unknown-with-exact-stop' {
+    foreach($field in @('ClientContext','MaximumFileSize')){
+        foreach($phase in @('Query','Stop')){
+            $o=Started-Owner
+            $script:mock[$phase+'Mutation']={
+                param($p)
+                $v=[Runtime.InteropServices.Marshal]::PtrToStructure($p,[type][Moiren.RemovalTraceQueryV1.Properties])
+                if($field-eq'ClientContext'){$w=$v.Wnode;$w.ClientContext=2;$v.Wnode=$w}else{$v.MaximumFileSize=17}
+                [Runtime.InteropServices.Marshal]::StructureToPtr($v,$p,$false)
+            }
+            $r=Stop-RemovalNativeTrace $o
+            Check ($o.TraceStopped-and$r.StoppedConfirmed-and$o.Failed-and-not$r.FinalCountersKnown-and
+                $null-eq$r.Snapshot-and$o.RawTraceLoss-ceq'unknown') 'Clock/cap mismatch blocked STOP or promoted counters.'
+            Check (($script:mock.Calls-join',')-ceq'start,enumerate,enable,query,stop') 'Cleanup did not use original exact operation chain.'
+        }
     }
 }
 Case 'complete-mock-boundary-required-and-owner-identity-is-readonly' {
@@ -277,7 +317,7 @@ Case 'actual-created-owner-and-retained-stop-receipt-compose-with-readback' {
     $snapshot=[pscustomobject]@{
         SchemaVersion=[UInt32]1;Complete=$true;QueryStatus=[UInt32]0
         SessionName=$o.Session;SessionGuid=$o.SessionGuid;Handle=$o.Handle;LoggerId=[UInt32]17
-        LogFileName=$o.EtlPath;ClientContext=[UInt32]1;LogFileMode=[UInt32]1;MaximumFileSize=[UInt32]16
+        LogFileName=$o.EtlPath;ClientContext=[UInt32]1;LogFileMode=[UInt32]0x00400001;MaximumFileSize=[UInt32]16
         EventsLost=[UInt32]3;LogBuffersLost=[UInt32]2;RealTimeBuffersLost=[UInt32]1
         Provider=[pscustomobject]@{Guid=[Guid]'7dc75ba9-8274-4eae-a42d-b4c74e0209d2';Enabled=$true
             LoggerId=[UInt32]17;Level=[UInt32]4;EnableFlags=[UInt32]15;Kind='ClassicWpp'}
@@ -298,7 +338,7 @@ Case 'returned-stop-counter-and-path-are-readonly-before-final-loss-policy' {
     $snapshot=[pscustomobject]@{
         SchemaVersion=[UInt32]1;Complete=$true;QueryStatus=[UInt32]0
         SessionName=$o.Session;SessionGuid=$o.SessionGuid;Handle=$o.Handle;LoggerId=[UInt32]17
-        LogFileName=$o.EtlPath;ClientContext=[UInt32]1;LogFileMode=[UInt32]1;MaximumFileSize=[UInt32]16
+        LogFileName=$o.EtlPath;ClientContext=[UInt32]1;LogFileMode=[UInt32]0x00400001;MaximumFileSize=[UInt32]16
         EventsLost=[UInt32]0;LogBuffersLost=[UInt32]0;RealTimeBuffersLost=[UInt32]0
         Provider=[pscustomobject]@{Guid=[Guid]'7dc75ba9-8274-4eae-a42d-b4c74e0209d2';Enabled=$true
             LoggerId=[UInt32]17;Level=[UInt32]4;EnableFlags=[UInt32]15;Kind='ClassicWpp'}
@@ -334,12 +374,13 @@ Case 'dispatcher-final-capture-is-stage-bound-one-shot-and-detached-from-decoded
         $o=$bridge.Owner
         $decoded=New-Object Moiren.RemovalTraceQueryV1.Session
         $decoded.SessionName=$o.Session;$decoded.LogFileName=$o.EtlPath;$decoded.SessionGuid=$o.SessionGuid
-        $decoded.Handle=[UInt64]701;$decoded.ClientContext=1;$decoded.LogFileMode=1;$decoded.MaximumFileSize=16
+        $decoded.Handle=[UInt64]701;$decoded.ClientContext=1;$decoded.LogFileMode=0x00400001;$decoded.MaximumFileSize=16
         $decoded.EventsLost=3;$decoded.LogBuffersLost=0;$decoded.RealTimeBuffersLost=0
         Reject {$bridge.CaptureFinal($decoded)}
         $bridge.BeginStart();$bridge.CaptureStart([UInt32]0,[UInt64]701)
         Reject {$bridge.CaptureStart([UInt32]183,[UInt64]702)}
-        $bridge.BeginStopQuery();$bridge.CaptureStopQuery([UInt32]0);$bridge.CaptureStopQuerySnapshot($decoded)
+        $bridge.BeginStopQuery();$bridge.CaptureStopQuery([UInt32]0)
+        $bridge.CaptureStopQuerySnapshot($decoded)
         Reject {$bridge.CaptureFinal($decoded)}
         $bridge.BeginStop();$bridge.CaptureStop($status)
         if($status -eq 0){
@@ -354,6 +395,37 @@ Case 'dispatcher-final-capture-is-stage-bound-one-shot-and-detached-from-decoded
             Check (-not $o.StopReceipt.FinalCountersKnown -and $null -eq $o.StopReceipt.Snapshot) 'Nonzero STOP status acquired final counters.'
         }
     }
+}
+Case 'dispatcher-config-failure-is-private-sticky-and-never-grants-foreign-identity-cleanup' {
+ foreach($phase in @('Query','Stop')){
+    foreach($field in @('LogFileMode','ClientContext','MaximumFileSize')){
+        $bridge=[Moiren.RemovalTraceNativeV1.Bridge]::new('MoirenRemoval613diagnostic','D:\owned\removal.etl',$null)
+        $o=$bridge.Owner;$decoded=New-Object Moiren.RemovalTraceQueryV1.Session
+        $decoded.SessionName=$o.Session;$decoded.LogFileName=$o.EtlPath;$decoded.SessionGuid=$o.SessionGuid
+        $decoded.Handle=[UInt64]701;$decoded.ClientContext=1;$decoded.LogFileMode=0x00400001;$decoded.MaximumFileSize=16
+        $bridge.BeginStart();$bridge.CaptureStart([UInt32]0,[UInt64]701)
+        $bridge.BeginStopQuery();$bridge.CaptureStopQuery([UInt32]0)
+        foreach($identity in @('SessionGuid','Handle','SessionName','LogFileName')){
+            $original=$decoded.$identity
+            switch($identity){'SessionGuid'{$decoded.$identity=[Guid]::NewGuid()};'Handle'{$decoded.$identity=702};default{$decoded.$identity+='foreign'}}
+            Reject {$bridge.CaptureStopQuerySnapshot($decoded)};$decoded.$identity=$original
+        }
+        $original=$decoded.$field
+        if($phase-eq'Query'){$decoded.$field=17}
+        $bridge.CaptureStopQuerySnapshot($decoded)
+        if($phase-eq'Query'){Check ($o.Failed-and$o.RawTraceLoss-ceq'unknown') 'Bridge did not latch configuration failure.'}
+        # Public diagnostic fields cannot erase the private configuration latch.
+        $o.Failed=$false;$decoded.$field=$original
+        $bridge.BeginStop();$bridge.CaptureStop([UInt32]0)
+        if($phase-eq'Stop'){$decoded.$field=17}
+        Reject {$bridge.CaptureFinal($decoded)}
+        $o.Failed=$false;$decoded.$field=$original
+        Reject {$bridge.CaptureFinal($decoded)}
+        Check ($o.TraceStopped-and$o.Failed-and-not$o.StopReceipt.FinalCountersKnown-and
+            $null-eq$o.StopReceipt.Snapshot-and$o.RawTraceLoss-ceq'unknown') 'Restored config/public flags promoted a failed capture.'
+        Reject {$bridge.BeginStop()};Reject {$bridge.CaptureStop([UInt32]0)}
+    }
+ }
 }
 Case 'default-native-start-refuses-before-attempt-or-import' {
     $o=New-RemovalNativeTrace -Session 'MoirenRemoval613diagnostic' -EtlPath 'D:\owned\removal.etl'
