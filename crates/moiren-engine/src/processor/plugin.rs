@@ -16,8 +16,9 @@ use crate::{
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
 
-/// Persisted configuration of one plugin node: what to load and the
-/// parameter table the scan collected by probing an instance.
+/// Persisted configuration of one plugin node: what to load, the parameter
+/// table the scan collected by probing an instance, and an optional state
+/// chunk to restore before the first block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginSettings {
     pub descriptor: moiren_plugins::spec::PluginDescriptor,
@@ -25,6 +26,11 @@ pub struct PluginSettings {
     /// table is derived from it, so it must match what a fresh instance
     /// reports (the probe guarantees that at scan time).
     pub parameters: Vec<moiren_plugins::spec::PluginParameterSpec>,
+    /// State chunk captured earlier from the same plugin; applied control
+    /// side right after instantiation. The app-side picker only assigns
+    /// plugins today, so this rides persisted projects until preset
+    /// capture/selection UI exists.
+    pub preset: Option<Vec<u8>>,
 }
 
 impl PluginSettings {
@@ -94,11 +100,14 @@ impl<S: ProcessingSample> PluginProcessor<S> {
         sample_rate: f64,
         max_block_frames: usize,
     ) -> Result<Self, moiren_plugins::PluginError> {
-        let instance = moiren_plugins::instantiate(
+        let mut instance = moiren_plugins::instantiate(
             &settings.descriptor,
             sample_rate,
             max_block_frames.max(1) as u32,
         )?;
+        if let Some(preset) = &settings.preset {
+            instance.load_state(preset)?;
+        }
         let channels = instance.descriptor().channels() as usize;
         let capacity = max_block_frames.max(1);
         let parameters = instance.parameters().to_vec();
