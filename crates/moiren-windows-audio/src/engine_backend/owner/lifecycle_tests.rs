@@ -38,7 +38,7 @@ impl AuxiliaryOwner for Auxiliary {
         false
     }
 
-    fn join(&mut self) -> Result<(), BackendError> {
+    fn join(&mut self, _deadline: std::time::Instant) -> Result<(), BackendError> {
         self.probe.joined.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }

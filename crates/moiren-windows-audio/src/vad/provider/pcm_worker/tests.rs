@@ -2157,7 +2157,7 @@ mod owner_reset_regression {
         // skipped period is repaid, not discarded (the discarded-skip design
         // ran a permanent frame deficit on both carriers at once).
         assert_eq!(
-            returned.engine.timeline(),
+            returned.engine.as_ref().unwrap().timeline(),
             ((total + 1) * ENGINE_FRAMES) as u64
         );
 
@@ -2324,7 +2324,7 @@ mod owner_reset_regression {
         let returned = owner.stop_and_join();
         assert!(returned.error.is_none());
         assert_eq!(
-            returned.engine.timeline(),
+            returned.engine.as_ref().unwrap().timeline(),
             (wall_periods * ENGINE_FRAMES) as u64,
             "every granted wall-clock period must render exactly once"
         );
