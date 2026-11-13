@@ -10,6 +10,29 @@ struct Rig {
     state: Arc<State>,
 }
 
+/// Poll the recording worker's written-frame counter until it passes
+/// `beyond`, returning the observed value. Realtime-render independent, so
+/// loaded CI runners cannot starve the assertion.
+fn wait_written_frames(rig: &mut Rig, recorder: NodeId, beyond: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let frames = rig
+            .driver
+            .recording_sessions
+            .get(&recorder)
+            .map(|recording| recording.session.status().written_frames)
+            .unwrap_or(0);
+        if frames > beyond {
+            return frames;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "written_frames stuck at {frames} (beyond {beyond})"
+        );
+        rig.tick();
+    }
+}
+
 #[test]
 fn virtual_only_apply_runs_without_physical_session_selectors() {
     let mut rig = Rig::new();
@@ -3210,14 +3233,10 @@ fn recording_survives_owner_swaps_and_continues_the_same_file() {
         .into_iter()
         .find(|snapshot| snapshot.node == recorder)
         .unwrap();
-    // Tape a first span from the initial owner.
-    rig.wait(|r| {
-        r.c.recordings
-            .snapshots()
-            .into_iter()
-            .find(|snapshot| snapshot.node == recorder)
-            .is_some_and(|snapshot| snapshot.recorded_secs >= 1)
-    });
+    // Tape a first span from the initial owner. Anchoring on written-frame
+    // growth instead of recorded seconds keeps the test honest on loaded
+    // runners where the realtime renderer is starved.
+    let first_frames = wait_written_frames(&mut rig, recorder, 0);
 
     // A transport-level change swaps the owner: the session parks on its
     // open file (Rebinding) and continues automatically once the
@@ -3243,13 +3262,7 @@ fn recording_survives_owner_swaps_and_continues_the_same_file() {
         .unwrap();
     assert_eq!(resumed.path, first.path);
     assert_eq!(resumed.file_name, first.file_name);
-    rig.wait(|r| {
-        r.c.recordings
-            .snapshots()
-            .into_iter()
-            .find(|snapshot| snapshot.node == recorder)
-            .is_some_and(|snapshot| snapshot.recorded_secs >= 2)
-    });
+    wait_written_frames(&mut rig, recorder, first_frames);
 
     rig.request(AppRequest::StopRecording { node: recorder });
     rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));

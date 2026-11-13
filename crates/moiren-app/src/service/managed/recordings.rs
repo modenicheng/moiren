@@ -11,7 +11,7 @@ use moiren_engine::recorder::{RecordingSession, RecordingState};
 /// its eventual drop, mirroring how the lifecycle owner reserves before it
 /// opens a host, so disposal never needs additional storage.
 pub(super) struct OwnedRecording {
-    session: RecordingSession,
+    pub(super) session: RecordingSession,
     cleanup: DeferredPermit,
     /// Set while the session parks between engine owners; the rebind poll
     /// clears it once the replacement owner's reader is attached.
