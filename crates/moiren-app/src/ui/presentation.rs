@@ -4,7 +4,7 @@
 use crate::service::{AppSnapshot, DispatchError, InputSelection, SessionPhase};
 #[cfg(windows)]
 use crate::service::{AudioBackend, SessionGeneration};
-use crate::ui::state::{UiFailure, input_rows, output_rows};
+use crate::ui::state::{UiFailure, input_rows, output_rows, virtual_input_rows};
 use rust_i18n::t;
 use std::borrow::Cow;
 
@@ -567,8 +567,15 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
         )
         .to_string(),
         InputSelection::Physical { endpoint_id } => {
+            // The bound-to text: physical rows first, then the virtual
+            // (VAD) rows a virtual-class source binds — naming where the
+            // node is wired never re-derives what it is.
             input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
                 .into_iter()
+                .chain(virtual_input_rows(
+                    &snapshot.catalog,
+                    snapshot.audio_settings.backend,
+                ))
                 .find(|row| row.endpoint_id == *endpoint_id)
                 .map(|row| row.name.clone())
                 .unwrap_or_else(|| t!("Unavailable input").into())

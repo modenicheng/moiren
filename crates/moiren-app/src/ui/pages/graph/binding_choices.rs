@@ -95,19 +95,22 @@ pub(crate) fn choices(
     })
 }
 
-/// The class a source node currently presents. The live binding is the
-/// truth: a process binding presents applications, a VAD endpoint presents
-/// virtual devices, any other physical endpoint presents physical inputs,
-/// and a tone binding presents the generator (the default rig's source
-/// never saw a template, yet its picker must keep offering the tone).
-/// Only unbound nodes fall back to the stored intent — the template they
-/// were created from — and legacy nodes without one present the physical
-/// class.
+/// The class a source node currently presents. The stored class is the
+/// single source of truth for what a source node *is*: once a node carries
+/// one (spawned from a template, restored from a project, or materialized
+/// by the render sync), the live binding can never re-class it — the
+/// binding only names *where* the node is wired. The binding-derived
+/// fallback below exists solely for nodes that predate the split (the
+/// default rig, older projects) on the frames before the render sync
+/// materializes their class, and it freezes the moment that happens.
 pub(crate) fn effective_source_class(
     snapshot: &AppSnapshot,
     entry: &GraphNodeState,
     stored: Option<SourceClass>,
 ) -> SourceClass {
+    if let Some(class) = stored {
+        return class;
+    }
     match entry.source.as_ref() {
         Some(InputSelection::Process { .. }) => SourceClass::Application,
         Some(InputSelection::Physical { endpoint_id }) => {
@@ -118,7 +121,7 @@ pub(crate) fn effective_source_class(
             }
         }
         Some(InputSelection::Tone { .. }) => SourceClass::Tone,
-        None => stored.unwrap_or(SourceClass::Physical),
+        None => SourceClass::Physical,
     }
 }
 
@@ -502,6 +505,33 @@ mod tests {
         assert!(choices.iter().any(|choice| choice.current));
     }
 
+    /// The bound-to text resolves a VAD endpoint through the virtual rows,
+    /// so a virtual-class source names its device instead of reading
+    /// "Unavailable input".
+    #[test]
+    fn source_name_resolves_virtual_endpoints() {
+        let snapshot = snapshot(AudioBackend::Wasapi);
+        assert_eq!(
+            crate::ui::presentation::source_name(
+                &snapshot,
+                &InputSelection::Physical {
+                    endpoint_id: "vad-endpoint".into(),
+                },
+            ),
+            "VAD device",
+            "owned endpoints resolve through the virtual rows"
+        );
+        assert_eq!(
+            crate::ui::presentation::source_name(
+                &snapshot,
+                &InputSelection::Physical {
+                    endpoint_id: "vanished".into(),
+                },
+            ),
+            "Unavailable input",
+        );
+    }
+
     /// The tone class keeps the generator picker; the physical class drops
     /// it — a tone node and a mic node no longer offer each other's
     /// resources (the OBS-style split).
@@ -522,12 +552,49 @@ mod tests {
         assert!(!labels(&physical).contains(&"Tone generator · 440 Hz"));
     }
 
-    /// The live binding re-derives the class; only tone and unbound nodes
-    /// consult the stored intent, and legacy nodes default to physical.
+    /// The stored class is the single source of truth for a source node's
+    /// presentation identity: once present, no binding — not even one from
+    /// another class, e.g. restored by undo or an older project — can
+    /// re-class the node. The binding only infers the class for nodes that
+    /// predate the split, until the render sync materializes it.
     #[test]
-    fn effective_class_follows_the_binding_then_the_stored_intent() {
+    fn effective_class_follows_the_stored_intent_before_the_binding() {
         let snapshot = snapshot(AudioBackend::Wasapi);
         let base = source_entry(&snapshot).clone();
+        for (source, stored) in [
+            (
+                Some(InputSelection::Physical {
+                    endpoint_id: "vad-endpoint".into(),
+                }),
+                SourceClass::Physical,
+            ),
+            (
+                Some(InputSelection::Physical {
+                    endpoint_id: "microphone".into(),
+                }),
+                SourceClass::Virtual,
+            ),
+            (
+                Some(InputSelection::Process {
+                    pid: 42,
+                    creation_time_100ns: 7,
+                }),
+                SourceClass::Tone,
+            ),
+        ] {
+            let entry = crate::service::GraphNodeState {
+                source: source.clone(),
+                ..base.clone()
+            };
+            // A live binding never overrides the stored identity.
+            assert_eq!(
+                effective_source_class(&snapshot, &entry, Some(stored)),
+                stored,
+                "binding {source:?} must not re-class a {stored:?} node"
+            );
+        }
+        // Absent classes infer once from the binding — the bootstrap for
+        // the default rig and pre-split projects.
         for (source, expected) in [
             (
                 Some(InputSelection::Physical {
@@ -548,38 +615,21 @@ mod tests {
                 }),
                 SourceClass::Application,
             ),
+            (
+                Some(InputSelection::Tone { frequency_hz: 440. }),
+                SourceClass::Tone,
+            ),
+            (None, SourceClass::Physical),
         ] {
             let entry = crate::service::GraphNodeState {
                 source: source.clone(),
                 ..base.clone()
             };
-            // A stored intent never overrides a live binding.
             assert_eq!(
-                effective_source_class(&snapshot, &entry, Some(SourceClass::Tone)),
+                effective_source_class(&snapshot, &entry, None),
                 expected,
-                "binding {source:?} must present {expected:?}"
+                "an absent class with binding {source:?} must bootstrap as {expected:?}"
             );
         }
-        let unbound = crate::service::GraphNodeState {
-            source: None,
-            ..base.clone()
-        };
-        assert_eq!(
-            effective_source_class(&snapshot, &unbound, Some(SourceClass::Virtual)),
-            SourceClass::Virtual
-        );
-        assert_eq!(
-            effective_source_class(&snapshot, &unbound, None),
-            SourceClass::Physical,
-            "legacy nodes without stored intent present the physical class"
-        );
-        let tone = crate::service::GraphNodeState {
-            source: Some(InputSelection::Tone { frequency_hz: 440. }),
-            ..base
-        };
-        assert_eq!(
-            effective_source_class(&snapshot, &tone, None),
-            SourceClass::Tone
-        );
     }
 }

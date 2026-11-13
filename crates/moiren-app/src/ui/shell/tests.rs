@@ -421,6 +421,7 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
         let world = pages::graph::graph_canvas::CanvasWorld::positioned(
             &shell.state.read(cx).snapshot,
             &shell.graph_view.node_positions,
+            &shell.graph_view.source_classes,
         );
         let wire = &world.wires[0];
         point(

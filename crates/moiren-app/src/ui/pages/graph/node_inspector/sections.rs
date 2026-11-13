@@ -310,9 +310,6 @@ fn binding_choice_button(
             this.update(cx, |shell, cx| {
                 match choice.action.clone() {
                     binding_choices::BindingAction::Edit(edit) => {
-                        if let GraphEdit::ClearBinding(node) = &edit {
-                            shell.pin_source_class_before_clear(*node, cx);
-                        }
                         shell
                             .state
                             .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
