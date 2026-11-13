@@ -199,6 +199,9 @@ pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
         SessionPhase::Starting => t!("Starting"),
         SessionPhase::Running => t!("Running"),
         SessionPhase::Stopping => t!("Stopping"),
+        // Waiting for resources is not a verdict: the session stays
+        // intended and resumes when the devices return.
+        SessionPhase::Failed if snapshot.waiting => t!("Waiting for devices"),
         SessionPhase::Failed => t!("Failed"),
         SessionPhase::Exiting => t!("Exiting"),
         SessionPhase::Exited => t!("Exited"),

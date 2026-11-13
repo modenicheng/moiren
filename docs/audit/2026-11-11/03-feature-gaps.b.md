@@ -36,6 +36,8 @@ issue #105（OPEN，引用 5304bde）所列六缺陷逐条在 e2ed3d6a 亲验仍
 - 工作量：L（采样率扩展 M；多通道 L）
 
 ### B-4 录制管线引擎完备但应用不可达；纯采集会话被拒 [P2] [NEW]
+> **2026-11-12 处置**：录音接线已随 #182-#186 落地；capture-only 已随 #188/#189 放开（时钟阶梯=物理 master 输出，否则 QPC 虚拟实时钟），本条关闭。
+
 - 引擎侧能力完整：有界环形（64 MiB 上限、accepted/read/dropped 计数，`engine/src/recorder.rs:37-90`）、f32 WAV 写入与 finalize 补写、drain 有界、IO 失败即 fail-fast（`recorder/wav.rs:91-183`）、host 侧 start/stop/record_wav API（`engine/src/host/signals.rs:124-169`）。
 - 但 `moiren-app` 全 crate 无任何 record_wav/RecordingSession/start 调用（rg 零命中）；UI 仅能调节点容量 "Add/Remove 1 second"（`ui/pages/graph/node_inspector.rs:856-884`）。录音到文件在产品内不存在——又一个"实现被憋住"。
 - 且 `validation.rs:114-118` 要求 `outputs > 0`：纯采集（无监听输出）会话直接被拒，field-recording/VAD 录入等场景无法表达；`ProjectClock::VirtualRealtime` 分支只在"有输出但全虚拟"时可达。

@@ -17,6 +17,7 @@ impl ManagedDriver {
         c.signals.clear_node_spectra();
         c.active_latency_profile = None;
         c.active_audio_settings = None;
+        c.active_execution = None;
         #[cfg(windows)]
         {
             if let Some(observations) = &self.professional_observations {

@@ -462,24 +462,14 @@ pub(super) fn sink_device_name(
     )
 }
 
-/// The clock source a start would use: the prospective master's device, the
-/// engine clock for a graph with outputs but no hardware master, `None`
-/// without any output at all.
+/// The clock source a start would use: the prospective master's device, or
+/// the engine clock — an output-free or virtual-only graph runs on it too.
 fn prospective_master_name(snapshot: &AppSnapshot) -> Option<String> {
     let graph = &snapshot.graph;
     match crate::service::clock_master(&graph.graph, &graph.exports) {
         Some(node) => sink_device_name(snapshot, node),
-        None => has_sink(snapshot).then(|| t!("Engine clock").into_owned()),
+        None => Some(t!("Engine clock").into_owned()),
     }
-}
-
-pub(super) fn has_sink(snapshot: &AppSnapshot) -> bool {
-    snapshot
-        .graph
-        .graph
-        .nodes()
-        .iter()
-        .any(|node| node.kind() == moiren_core::graph::NodeKind::Sink)
 }
 
 /// The XRUN item: count plus the share of rendered blocks, warning colored

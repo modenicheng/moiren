@@ -185,6 +185,11 @@ fn engine(shell: &StudioShell, cx: &Context<StudioShell>) -> Vec<AnyElement> {
             t!("Releasing audio devices…").into_owned(),
             theme::TEXT_MUTED,
         ),
+        SessionPhase::Failed if snapshot.waiting => (
+            theme::WARNING,
+            t!("Waiting for audio devices to return").into_owned(),
+            theme::TEXT_MUTED,
+        ),
         SessionPhase::Failed => (
             theme::DANGER,
             snapshot
@@ -320,10 +325,9 @@ fn clock(shell: &StudioShell, cx: &Context<StudioShell>) -> Vec<AnyElement> {
             super::sink_device_name(snapshot, node).unwrap_or_else(|| "—".into()),
             (!active).then(|| t!("Takes effect at the next start").into_owned().into()),
         )),
-        None if super::has_sink(snapshot) => {
-            rows.push(note(t!("Engine realtime clock; no hardware master")))
-        }
-        None => rows.push(note(t!("No output device in the graph"))),
+        // No physical master — virtual outputs, capture-only, or an empty
+        // graph: the engine's own realtime clock paces the timeline.
+        None => rows.push(note(t!("Engine realtime clock; no hardware master"))),
     }
     rows
 }

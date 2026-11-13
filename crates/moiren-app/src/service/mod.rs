@@ -142,6 +142,10 @@ pub struct ServiceContext {
     /// instead of the physical monitor pair. The meter bridge resolves it
     /// from the running host graph and retires it with the owner.
     pub tone_session: bool,
+    /// The live owner's engine execution state, refreshed every poll and
+    /// cleared with the owner. Powers the waiting-for-resources projection:
+    /// the session stays intended while devices are away.
+    pub active_execution: Option<moiren_engine::host::ExecutionState>,
     pending: VecDeque<(JobPriority, Job, DeferredPermit)>,
     slots: Arc<AtomicUsize>,
     /// Test observability for the snapshot publisher: counts every
@@ -173,6 +177,7 @@ impl Default for ServiceContext {
             signals,
             levels,
             tone_session: false,
+            active_execution: None,
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),
             #[cfg(test)]
@@ -420,6 +425,8 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         phase: c.core.phase(),
         desired: c.core.desired().cloned(),
         error: c.core.error().map(str::to_owned),
+        waiting: c.active_execution
+            == Some(moiren_engine::host::ExecutionState::WaitingForResources),
         recordings: c.recordings.snapshots(),
         catalog: c.catalog.clone(),
         catalog_error: c.catalog_error.clone(),
