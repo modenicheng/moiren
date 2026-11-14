@@ -286,21 +286,6 @@ impl LevelRegistry {
         }
     }
 
-    /// How many engine subscriptions the registry currently holds: the
-    /// demand the realtime window taps actually see.
-    #[cfg(all(test, not(target_os = "windows")))]
-    pub(crate) fn demanded_levels(&self) -> usize {
-        self.monitors
-            .iter()
-            .map(|slot| slot.source.held_subscriptions())
-            .sum::<usize>()
-            + self
-                .nodes
-                .values()
-                .map(|source| source.held_subscriptions())
-                .sum::<usize>()
-    }
-
     /// One registry round. The relay's per-slot loop runs here against the
     /// leases the UI holds; the copy to the app bus is gone, because the
     /// subscription lives where the reader is. Returns the tone-session
