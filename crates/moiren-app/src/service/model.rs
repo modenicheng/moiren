@@ -81,9 +81,10 @@ pub enum DispatchError {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
-    /// Test-only teardown hook for legacy managed-session tests. Production
-    /// shutdown remains exit-driven; the always-on architecture has no stop.
-    #[cfg(test)]
+    /// Probe/test-only teardown hook. The VAD integration example needs the
+    /// same deterministic teardown as service tests; production shutdown stays
+    /// exit-driven and normal builds still have no stop request.
+    #[cfg(any(test, feature = "vad-integration-probe"))]
     Stop,
     LoadProject(crate::project::ProjectDocument),
     /// Allocate in the service; project IDs and edits never grant fresh authority.

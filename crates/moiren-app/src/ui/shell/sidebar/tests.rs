@@ -78,7 +78,7 @@ fn device_override_cache_repaints_local_draft_error_and_discard_without_a_publis
             .editor
             .device_period_inputs()
             .next()
-            .map(|input| input.clone())
+            .cloned()
             .expect("the rendered override must own a period input")
     });
     cx.update(|window, cx| {

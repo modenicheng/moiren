@@ -486,7 +486,7 @@ impl ServiceDriver for CoreDriver {
                 c.graph
                     .record_error("No native audio backend is configured");
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "vad-integration-probe"))]
             AppRequest::Stop => {}
         }
     }

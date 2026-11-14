@@ -222,7 +222,7 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::PauseRecording { node } => self.pause_recording(c, node),
             AppRequest::ResumeRecording { node } => self.resume_recording(c, node),
             AppRequest::StopRecording { node } => self.stop_recording(c, node),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "vad-integration-probe"))]
             AppRequest::Stop => {
                 c.measured_process = None;
                 self.automatic_startup = false;

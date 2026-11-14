@@ -242,6 +242,19 @@ impl Evidence {
         !self.exports.is_empty() && self.exports.iter().all(|export| export.gate_open)
     }
 
+    pub fn stopped(&self, ids: &[String; 2], request: u64) -> bool {
+        self.phase == "idle"
+            && self.active_revision.is_none()
+            && self.pending_revision.is_none()
+            && self.consumed_request_id >= request
+            && self.error.is_none()
+            && self.graph_error.is_none()
+            && self.exact_exports(ids)
+            && self.exports.iter().all(|export| {
+                export.present && !export.gate_open && export.active_revision.is_none()
+            })
+    }
+
     pub fn exited(&self) -> bool {
         self.phase == "exited"
             && self.active_revision.is_none()
@@ -357,6 +370,24 @@ mod tests {
         evidence.exports[0].present = true;
         evidence.active_revision = Some(6);
         assert!(!evidence.owner_running(&ids(), 2));
+    }
+
+    #[test]
+    fn stop_requires_acknowledged_idle_closed_gates_and_retained_endpoints() {
+        let mut stopped = running();
+        stopped.phase = "idle".into();
+        stopped.active_revision = None;
+        for export in &mut stopped.exports {
+            export.gate_open = false;
+            export.active_revision = None;
+        }
+        assert!(stopped.stopped(&ids(), 2));
+        assert!(!stopped.stopped(&ids(), 3));
+        let mut missing = stopped.clone();
+        missing.exports[0].present = false;
+        assert!(!missing.stopped(&ids(), 2));
+        stopped.exports[1].gate_open = true;
+        assert!(!stopped.stopped(&ids(), 2));
     }
 
     #[test]
