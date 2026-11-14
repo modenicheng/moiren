@@ -164,7 +164,7 @@ pub(super) fn editor(shell: &StudioShell) -> Div {
                 component::input::Input::new(input)
                     .id(id)
                     .disabled(shell.settings.editor.busy())
-                    .bg(theme::SURFACE_3)
+                    .bg(theme::SURFACE)
                     .text_color(theme::TEXT)
                     .border_color(theme::BORDER),
             ));

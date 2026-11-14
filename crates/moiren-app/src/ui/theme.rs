@@ -6,22 +6,19 @@ use gpui_kit::{Hsla, hsla};
 pub mod controls;
 
 // --- Accents ---------------------------------------------------------------
-pub const PRIMARY: Hsla = controls::FOCUS;
-
 // Capture side: input devices, application sources, live signal.
 pub const SIGNAL_DEVICE: Hsla = hsla(0.522059, 0.857143, 0.533333, 1.0);
 
 // --- Surfaces --------------------------------------------------------------
-pub const WINDOW_BG: Hsla = controls::CANVAS;
-pub const SURFACE: Hsla = controls::PANEL;
-pub const SURFACE_3: Hsla = controls::RAISED;
+pub const WINDOW_BG: Hsla = hsla(0.611111, 0.25, 0.047059, 1.0); // #090b0f
+pub const SURFACE: Hsla = hsla(0.6, 0.227273, 0.086275, 1.0); // #11151b
 pub const SURFACE_4: Hsla = hsla(0.571429, 0.142857, 0.192157, 1.0); // hover / pressed control
 /// Neutral value-region fill for slider and fader tracks. Signal cyan stays
 /// reserved for meters and status, so a lit track never reads as audio.
 pub const TRACK_FILL: Hsla = hsla(0.597222, 0.151899, 0.309804, 1.0);
 
 // --- Lines -----------------------------------------------------------------
-pub const BORDER: Hsla = controls::BORDER;
+pub const BORDER: Hsla = hsla(0.604167, 0.16, 0.196078, 1.0); // #2a303a
 pub const BORDER_STRONG: Hsla = hsla(0.562500, 0.142857, 0.219608, 1.0);
 pub const HAIRLINE: Hsla = hsla(0.560606, 0.169231, 0.127451, 1.0);
 pub const GRIP: Hsla = hsla(0.578431, 0.104294, 0.319608, 1.0);
@@ -31,15 +28,23 @@ pub const GRID_LINE: Hsla = Hsla {
     ..WINDOW_BG
 };
 
+// --- Stroke widths (design 21 §1.3) -----------------------------------------
+/// A 1px rule: dividers, separators and underline strokes. (Borders drawn
+/// through gpui's semantic `.border_1()`-family methods already carry this
+/// width by construction and stay on that API — as do the 2px focus rings,
+/// which is why no FOCUS_RING_W token exists yet.)
+pub const HAIRLINE_W: f32 = 1.;
+/// The accent bar that marks an active tab or a selected row.
+pub const ACCENT_BAR_W: f32 = 2.;
+
 // --- Text ------------------------------------------------------------------
-pub const TEXT: Hsla = controls::TEXT;
-pub const TEXT_MUTED: Hsla = controls::SECONDARY;
-pub const TEXT_FAINT: Hsla = controls::MUTED;
+pub const TEXT: Hsla = hsla(0.583333, 0.285714, 0.972549, 1.0); // #f6f8fa
+pub const TEXT_MUTED: Hsla = hsla(0.6, 0.153846, 0.745098, 1.0); // #b4bcc8
+pub const TEXT_FAINT: Hsla = hsla(0.602564, 0.127451, 0.6, 1.0); // #8c96a6
 
 // --- Semantic status -------------------------------------------------------
-pub const SUCCESS: Hsla = SIGNAL_DEVICE;
 pub const WARNING: Hsla = hsla(0.120155, 0.964126, 0.562745, 1.0);
-pub const DANGER: Hsla = controls::DANGER;
+pub const DANGER: Hsla = hsla(0.0, 0.90604, 0.707843, 1.0); // #f87171
 /// Faint red wash layered over a faulted object's own surface (graph card
 /// body, mixer strip): DANGER at low alpha so the underlying surface keeps
 /// its depth. The red border carries the strong signal; this only tints.
@@ -51,23 +56,59 @@ pub const DANGER_WASH: Hsla = Hsla { a: 0.12, ..DANGER };
 pub const METER_PEAK_ZONE: Hsla = hsla(0., 0., 0., 0.45);
 
 // --- Spacing scale (4pt based) ---------------------------------------------
+pub const SPACE_0_5: f32 = 2.;
+pub const SPACE_1: f32 = 4.;
+pub const SPACE_1_5: f32 = 6.;
 pub const SPACE_2: f32 = 8.;
 pub const SPACE_3: f32 = 12.;
 pub const SPACE_4: f32 = 16.;
+pub const SPACE_6: f32 = 24.;
 
 // --- Studio geometry (Figma v0.1.0 Graph measurements) --------------------
-pub const TOOLBAR_HEIGHT: f32 = 44.;
+/// The shell toolbar's height, aliased from the action-component tokens so
+/// the chrome and the navigation controls share one source (design 21 §1.4).
+pub use controls::TOOLBAR as TOOLBAR_HEIGHT;
 pub const LIBRARY_WIDTH: f32 = 210.;
 /// Always-visible icon rail on the library's outer edge; also its collapsed form.
 pub const LIBRARY_RAIL_WIDTH: f32 = 44.;
 pub const INSPECTOR_WIDTH: f32 = 280.;
 pub const NODE_WIDTH: f32 = 270.;
 pub const NODE_SOURCE: Hsla = hsla(0.439203, 0.643725, 0.515686, 1.);
-pub const NODE_DSP: Hsla = hsla(0.722741, 0.781022, 0.731373, 1.);
 pub const NODE_SINK: Hsla = hsla(0.125581, 0.964126, 0.562745, 1.);
-pub const NODE_UTILITY: Hsla = TEXT_FAINT;
-pub const NODE_ANALYSIS: Hsla = SIGNAL_DEVICE;
 pub const CANVAS_GRID: f32 = 24.;
+
+// --- Chrome and window geometry (design 21 §1.3) ---------------------------
+/// The bottom status bar's height, shared by the chrome host and the bar
+/// itself so the two never drift apart.
+pub const STATUSBAR_HEIGHT: f32 = 28.;
+/// A workspace page's own toolbar strip (the Devices page's tab row).
+pub const PAGE_TOOLBAR_HEIGHT: f32 = 48.;
+/// Inset of the graph HUD overlays (editing toolbar, overview) from the
+/// canvas edges they float against.
+pub const HUD_INSET: f32 = 12.;
+/// Viewport width below which the shell switches to its compact layout.
+pub const COMPACT_BREAKPOINT: f32 = 1200.;
+/// Window floor the platform enforces on resize and restore.
+pub const WINDOW_MIN_WIDTH: f32 = 940.;
+pub const WINDOW_MIN_HEIGHT: f32 = 600.;
+/// How much of a restored window must stay on a display for it to count as
+/// still living there; anything less falls back to the primary display.
+pub const RESTORE_MIN_VISIBLE_WIDTH: f32 = 100.;
+pub const RESTORE_MIN_VISIBLE_HEIGHT: f32 = 40.;
+
+// --- Popover placement (design 21 §1.3) -------------------------------------
+/// Space an anchored popover keeps from the window edges on every side.
+pub const POPOVER_VIEWPORT_MARGIN: f32 = 8.;
+/// Space between the anchor's edge and a popover hung beside it.
+pub const POPOVER_ANCHOR_GAP: f32 = 4.;
+
+/// Resolves a compact-width value pair: `tight` below [`COMPACT_BREAKPOINT`],
+/// `roomy` above it. Generic so the chrome's text limits and the pages'
+/// pixel metrics fold through one helper instead of inline `if compact`
+/// pairs (design 21 §1.3).
+pub fn compact<T>(is_compact: bool, tight: T, roomy: T) -> T {
+    if is_compact { tight } else { roomy }
+}
 
 // Graph node card metrics (design 18): header + tint rail + per-kind
 // body + meter strip + port rails, all in world units.
@@ -83,7 +124,10 @@ pub mod card {
     pub const OUTLINE_W: f32 = 1.5;
     pub const OUTLINE_REST_W: f32 = 1.;
     pub const ICON_SIZE: f32 = 16.;
-    pub const TITLE_SIZE: f32 = 12.;
+    /// Aliases of the theme type ladder (design 21 §1.2): the card header's
+    /// title is a body-size label and its hint is the tiny readout size, so
+    /// the canvas and the chrome track one source.
+    pub use super::{TEXT_SM as TITLE_SIZE, TEXT_TINY as HINT_SIZE};
     pub const TITLE_WIDTH: f32 = 170.;
     /// Status glyph slots at the header's right edge; the badge is the
     /// error/loading marker, the expander opens the detail window.
@@ -123,12 +167,26 @@ pub mod card {
     pub const METER_H: f32 = 3.;
     pub const METER_CHANNEL_GAP: f32 = 2.;
     pub const METER_CHANNELS: usize = 2;
+    /// Recording-strip bodies (recorder cards): a status line, the output
+    /// file name, and one row of transport affordances. The live duration
+    /// shares the status line's right half but is painted by the hot layer.
+    pub const RECORD_BODY_H: f32 = 56.;
+    /// One transport glyph slot on the recording strip.
+    pub const REC_BTN: f32 = 18.;
+    /// Gap between the transport slots.
+    pub const REC_BTN_GAP: f32 = 6.;
+    /// The status dot beside the phase word.
+    pub const REC_DOT: f32 = 7.;
+    /// The strip's status line and live duration, one step above the generic
+    /// card hint so the session state reads at a glance.
+    pub const REC_STATUS_SIZE: f32 = super::TEXT_CAPTION;
+    /// The strip's output file name.
+    pub const REC_FILE_SIZE: f32 = super::TEXT_XS;
     /// Base distance from the card top to the first port anchor; taller
     /// bodies push the port rail down instead of overlapping the meter.
     pub const PORT_Y: f32 = 80.;
     pub const PORT_SPACING: f32 = 18.;
     pub const PORT_BOTTOM: f32 = 14.;
-    pub const HINT_SIZE: f32 = 9.;
     /// Neutral knob pointer (same neutral as slider thumbs).
     pub const THUMB: super::Hsla = gpui_kit::hsla(0., 0., 0.85098, 1.);
 }
@@ -138,10 +196,10 @@ pub mod card {
 /// can never land off-theme; category tints remain the default.
 pub fn node_tint(index: u8) -> Option<Hsla> {
     Some(match index {
-        0 => PRIMARY,
+        0 => controls::FOCUS,
         1 => SIGNAL_DEVICE,
         2 => NODE_SOURCE,
-        3 => NODE_DSP,
+        3 => controls::FOCUS,
         4 => NODE_SINK,
         5 => hsla(0.988_158, 0.703_704, 0.627_451, 1.), // pink
         6 => hsla(0.077_381, 0.825_397, 0.603_922, 1.), // orange
@@ -151,17 +209,62 @@ pub fn node_tint(index: u8) -> Option<Hsla> {
 }
 
 // --- Radii -----------------------------------------------------------------
-pub const RADIUS_SM: f32 = 4.;
+/// The action components' base corner radius, aliased so workstation
+/// surfaces and kit components share one source (design 21 §1.4).
+pub use controls::RADIUS as RADIUS_SM;
 pub const RADIUS_MD: f32 = 6.;
 pub const RADIUS_LG: f32 = 8.;
 
 // --- Typography ------------------------------------------------------------
 pub const FONT_UI: &str = controls::FONT;
 pub const FONT_MONO: &str = "Cascadia Mono";
+/// The type-size ladder, smallest to largest (design 21 §1.2). Micro and tiny
+/// serve dense readouts (fader values, card hints); caption is the badge and
+/// tray-dial size between XS and SM. Micro has no call site yet — it anchors
+/// the ladder's floor for the first dense readout that needs it.
+#[expect(dead_code)]
+pub const TEXT_MICRO: f32 = 8.;
+pub const TEXT_TINY: f32 = 9.;
 pub const TEXT_XS: f32 = 10.;
+pub const TEXT_CAPTION: f32 = 11.;
 pub const TEXT_SM: f32 = 12.;
 pub const TEXT_MD: f32 = 13.;
 pub const TEXT_LG: f32 = 15.;
+
+// --- Alpha system (design 21 §1.3) ------------------------------------------
+/// Selection wash over content the selection must not obscure (the canvas
+/// marquee fill).
+pub const ALPHA_SELECTION: f32 = 0.10;
+/// Halo strength for a colored wash layered behind a bright stroke (a
+/// selected wire's glow, the spectrum fill) so the stroke reads over any
+/// background.
+pub const ALPHA_HALO: f32 = 0.28;
+/// Dimmed strength for a tint that must keep its hue while clearly sitting
+/// behind the surface it marks: kind tint bars, displaced-stroke fades.
+pub const ALPHA_DIM: f32 = 0.55;
+
+/// Applies [`ALPHA_HALO`] to `color`.
+pub fn halo(color: Hsla) -> Hsla {
+    color.alpha(ALPHA_HALO)
+}
+
+/// Applies [`ALPHA_DIM`] to `color`.
+pub fn dim(color: Hsla) -> Hsla {
+    color.alpha(ALPHA_DIM)
+}
+
+// --- Icons -----------------------------------------------------------------
+/// The icon-size ladder (design 21 §1.3): small glyphs beside labels, the
+/// medium action-component default, larger rail glyphs, and the rare
+/// display-size icon. `controls::ICON` aliases [`ICON_MD`] so the kit action
+/// pipeline and workstation glyphs share one source.
+pub const ICON_SM: f32 = 14.;
+pub const ICON_MD: f32 = 16.;
+pub const ICON_LG: f32 = 18.;
+/// XL has no call site yet — the title-bar mark is a brand logo, not a UI
+/// icon, so it keeps its literal.
+#[expect(dead_code)]
+pub const ICON_XL: f32 = 24.;
 
 /// Soft fill for an accent (16% alpha over transparent), for chips/badges.
 pub fn soft(hsla: Hsla) -> Hsla {
@@ -182,8 +285,8 @@ pub fn apply_component_tokens(cx: &mut gpui_kit::App) {
         c.primary_foreground = controls::ON_ACCENT;
         c.ring = controls::PRIMARY;
         c.accent = soft(controls::PRIMARY);
-        c.accent_foreground = controls::TEXT;
-        c.danger = controls::DANGER;
+        c.accent_foreground = TEXT;
+        c.danger = DANGER;
         c.danger_hover = controls::DANGER_HOVER;
         c.danger_active = controls::DANGER_PRESSED;
         c.danger_foreground = controls::ON_ACCENT;

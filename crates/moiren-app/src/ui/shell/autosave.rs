@@ -1,14 +1,14 @@
 //! Recovery autosave: the working document is rewritten to a user-owned
 //! autosave file once edits settle, and restored on the next launch. Manual
-//! "Save project" keeps writing the external file the user chose.
+//! "Save project" keeps writing the external file the user chose; explicit
+//! persistence empties the slot so it can never hold another session's
+//! state.
 
 use std::collections::BTreeMap;
 use std::future::poll_fn;
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
-
-use rust_i18n::t;
 
 use super::*;
 
@@ -22,7 +22,6 @@ pub(super) const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 pub(crate) struct AutosaveStamp {
     revision: u64,
     processing: moiren_engine::audio_config::ProcessingSettings,
-    session: Option<crate::service::SessionSpec>,
     camera: (f32, f32, f32),
     workspace: crate::project::WorkspaceDocument,
     mixer_order: Vec<moiren_core::graph::NodeId>,
@@ -48,11 +47,15 @@ impl AutosaveStamp {
         Self {
             revision: state.snapshot.graph.candidate_revision,
             processing: state.snapshot.audio_settings.processing,
-            session: state.candidate_config(),
-            camera: (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
-            workspace: StudioShell::workspace_document(shell.presentation.page),
-            mixer_order: shell.mixer.order.clone(),
+            camera: (
+                shell.graph_view.camera.pan_x,
+                shell.graph_view.camera.pan_y,
+                shell.graph_view.camera.zoom,
+            ),
+            workspace: StudioShell::workspace_document(shell.presentation.page()),
+            mixer_order: shell.mixer.presentation.order.clone(),
             node_positions: shell
+                .graph_view
                 .node_positions
                 .iter()
                 .map(|(id, position)| (*id, *position))
@@ -64,23 +67,48 @@ impl AutosaveStamp {
 
 /// Serialized hand-off between background writes and their UI-thread
 /// completion watcher, so writes chain and shutdown can await the newest.
+/// Each completion may be awaited by several tasks at once (the UI watcher
+/// and the next chained link), so every waiter is woken and the result is
+/// handed to all of them.
 #[derive(Default)]
 pub(crate) struct AutosaveWriteCompletion {
     result: Option<Result<(), String>>,
-    waiter: Option<Waker>,
+    completed: bool,
+    waiters: Vec<Waker>,
 }
 
 async fn await_completion(completion: Arc<Mutex<AutosaveWriteCompletion>>) -> Result<(), String> {
     poll_fn(move |cx| {
         let mut completion = completion.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(result) = completion.result.take() {
-            Poll::Ready(result)
+        if completion.completed {
+            Poll::Ready(completion.result.clone().unwrap_or(Ok(())))
         } else {
-            completion.waiter = Some(cx.waker().clone());
+            completion.waiters.push(cx.waker().clone());
             Poll::Pending
         }
     })
     .await
+}
+
+/// Publishes a finished result and wakes everyone parked on it.
+fn complete(
+    publish: &Mutex<AutosaveWriteCompletion>,
+    result: Result<(), String>,
+) -> impl Iterator<Item = Waker> + '_ {
+    let mut completion = publish.lock().unwrap_or_else(|p| p.into_inner());
+    completion.result = Some(result);
+    completion.completed = true;
+    std::mem::take(&mut completion.waiters).into_iter()
+}
+
+/// Best-effort removal of the recovery slot; a missing file is the goal
+/// state, anything else is reported like a failed autosave write.
+fn discard_slot_file(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!("Moiren autosave: clearing the slot failed: {error}"),
+    }
 }
 
 impl StudioShell {
@@ -90,14 +118,18 @@ impl StudioShell {
         let state = self.state.read(cx);
         self.autosave.stamp.revision == state.snapshot.graph.candidate_revision
             && self.autosave.stamp.processing == state.snapshot.audio_settings.processing
-            && self.autosave.stamp.session == state.candidate_config()
             && self.autosave.stamp.camera
-                == (self.camera.pan_x, self.camera.pan_y, self.camera.zoom)
+                == (
+                    self.graph_view.camera.pan_x,
+                    self.graph_view.camera.pan_y,
+                    self.graph_view.camera.zoom,
+                )
             && self.autosave.stamp.workspace
-                == StudioShell::workspace_document(self.presentation.page)
-            && self.autosave.stamp.mixer_order == self.mixer.order
-            && self.node_positions.len() == self.autosave.stamp.node_positions.len()
+                == StudioShell::workspace_document(self.presentation.page())
+            && self.autosave.stamp.mixer_order == self.mixer.presentation.order
+            && self.graph_view.node_positions.len() == self.autosave.stamp.node_positions.len()
             && self
+                .graph_view
                 .node_positions
                 .iter()
                 .all(|(id, position)| self.autosave.stamp.node_positions.get(id) == Some(position))
@@ -148,7 +180,7 @@ impl StudioShell {
         let document = match self.project_document(cx) {
             Ok(document) => document,
             Err(error) => {
-                self.project_io.message = Some(error.to_string());
+                self.project_io.message = Some(project::ProjectMessage::Persisted(error.into()));
                 cx.notify();
                 return;
             }
@@ -167,12 +199,7 @@ impl StudioShell {
                 if let Err(error) = &result {
                     eprintln!("Moiren autosave: {error}");
                 }
-                let waiter = {
-                    let mut completion = publish.lock().unwrap_or_else(|p| p.into_inner());
-                    completion.result = Some(result);
-                    completion.waiter.take()
-                };
-                if let Some(waiter) = waiter {
+                for waiter in complete(&publish, result) {
                     waiter.wake();
                 }
             })
@@ -191,13 +218,42 @@ impl StudioShell {
                     }
                     Err(error) => {
                         shell.project_io.message =
-                            Some(t!("Could not auto-save: %{error}", error = error).to_string());
+                            Some(project::ProjectMessage::AutoSaveFailed { cause: error });
                         cx.notify();
                     }
                 }
             });
         })
         .detach();
+    }
+
+    /// Explicit persistence empties the recovery slot: the working state
+    /// now equals its on-disk source, so there is no unsaved delta to
+    /// recover, and a stale slot from an earlier session must not survive
+    /// into the next launch (where the autosave outranks the last saved
+    /// project). The removal runs once immediately and once more behind
+    /// any in-flight write, so an older document landing after the call
+    /// cannot resurrect the slot.
+    pub(super) fn autosave_clear(&mut self, cx: &App) {
+        let Some(path) = self.autosave.path.clone() else {
+            return;
+        };
+        discard_slot_file(&path);
+        let previous = self.autosave.write.clone();
+        let completion = Arc::new(Mutex::new(AutosaveWriteCompletion::default()));
+        let publish = completion.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Some(previous) = previous {
+                    await_completion(previous).await.ok();
+                }
+                discard_slot_file(&path);
+                for waiter in complete(&publish, Ok(())) {
+                    waiter.wake();
+                }
+            })
+            .detach();
+        self.autosave.write = Some(completion);
     }
 
     /// Synchronous quit-time write of unsaved changes; the returned task is

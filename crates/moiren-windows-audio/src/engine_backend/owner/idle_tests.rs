@@ -301,6 +301,10 @@ fn follower_starts_without_master_content_and_supplies_silence() {
     assert_eq!(fixture.probe.starts.load(Ordering::Acquire), 1);
     assert!(fixture.worker.started.load(Ordering::Acquire));
     assert!(fixture.counters.silent.load(Ordering::Acquire) > 0);
+    assert!(
+        fixture.counters.xruns.load(Ordering::Acquire) > 0,
+        "every silence-fill cycle counts one shortfall event"
+    );
     assert!(fixture.probe.writes.load(Ordering::Acquire) >= IDLE_CYCLES);
     assert_eq!(fixture.probe.nonzero_frames.load(Ordering::Acquire), 0);
     assert!(fixture.state.failure.lock().unwrap().is_none());

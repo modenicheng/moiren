@@ -10,7 +10,9 @@ use super::*;
 use crate::service::{AppRequest, GraphEdit, NODE_TINT_COUNT};
 use crate::ui::shell::controls;
 use crate::ui::theme;
-use gpui_kit::{AnyElement, MouseButton, Window, px};
+use crate::ui::widgets::anchored_popover::clamped_left;
+use crate::ui::widgets::occluding_page::{claim_presses, occluding_page};
+use gpui_kit::{AnyElement, Window, px};
 
 const MENU_WIDTH: f32 = 176.;
 
@@ -19,18 +21,18 @@ pub(crate) fn overlay(
     window: &Window,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
-    let Some(menu) = shell.context_menu else {
+    let Some(menu) = shell.graph_view.context_menu else {
         return div().into_any_element();
     };
     let this = cx.entity();
     let viewport = window.viewport_size();
-    let width = MENU_WIDTH.min(f32::from(viewport.width) - 16.);
-    let left = px(menu.at().0)
-        .min(px(f32::from(viewport.width) - width - 8.))
-        .max(px(8.));
-    let top = px(menu.at().1)
-        .min(px(f32::from(viewport.height) - 8.))
-        .max(px(8.));
+    let width = MENU_WIDTH.min(f32::from(viewport.width) - 2. * theme::POPOVER_VIEWPORT_MARGIN);
+    let left = clamped_left(menu.at().0, width, viewport);
+    let top = menu
+        .at()
+        .1
+        .min(f32::from(viewport.height) - theme::POPOVER_VIEWPORT_MARGIN)
+        .max(theme::POPOVER_VIEWPORT_MARGIN);
 
     let close = this.clone();
     let mut body = match menu {
@@ -40,7 +42,7 @@ pub(crate) fn overlay(
             let mut rows = color_row(this.clone(), node, shell, cx);
             rows.push(
                 div()
-                    .h(px(1.))
+                    .h(px(theme::HAIRLINE_W))
                     .w_full()
                     .bg(theme::BORDER)
                     .into_any_element(),
@@ -50,60 +52,37 @@ pub(crate) fn overlay(
         }
         ContextMenu::Background { .. } => arrange_row(this.clone()),
     };
-    let mut list = div()
-        .id("context-menu")
-        .absolute()
-        .left(left)
-        .top(top)
-        .w(px(width))
-        .flex()
-        .flex_col()
-        .gap(px(2.))
-        .p(px(6.))
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .bg(theme::SURFACE)
-        .occlude()
-        .gpui_test_observe()
-        // Claim the press so the occluding page behind never sees it —
-        // inside clicks must not close the menu that owns them.
-        .on_any_mouse_down(|_, _, cx| cx.stop_propagation());
+    let mut list = claim_presses(
+        div()
+            .id("context-menu")
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(width))
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACE_0_5))
+            .p(px(theme::SPACE_1_5))
+            .rounded(px(theme::RADIUS_MD))
+            .border_1()
+            .border_color(theme::BORDER_STRONG)
+            .bg(theme::SURFACE)
+            .occlude()
+            .gpui_test_observe(),
+    );
     list = list.children(body.drain(..));
 
-    div()
-        .id("context-menu-page")
-        .absolute()
-        .inset_0()
-        .size_full()
-        .occlude()
-        .on_key_down({
-            let close = close.clone();
-            move |event, _window, cx| {
-                if event.keystroke.key.as_str() == "escape" {
-                    close.update(cx, |shell, cx| {
-                        shell.context_menu = None;
-                        cx.notify();
-                    });
-                    cx.stop_propagation();
-                }
-            }
-        })
-        // Reached only by presses outside the menu — the menu claims its
-        // own subtree — so every press here closes it.
-        .on_any_mouse_down(move |_, _, cx| {
+    occluding_page(
+        "context-menu-page",
+        true,
+        move |cx| {
             close.update(cx, |shell, cx| {
-                shell.context_menu = None;
+                shell.graph_view.context_menu = None;
                 cx.notify();
-            });
-        })
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(list)
-        .into_any_element()
+            })
+        },
+        list,
+    )
 }
 
 impl ContextMenu {
@@ -132,7 +111,7 @@ fn action_rows(this: Entity<StudioShell>, node: moiren_core::graph::NodeId) -> V
                         shell.state.update(cx, |state, _| {
                             state.dispatch(AppRequest::EditGraph(GraphEdit::RemoveNode(node)))
                         });
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -147,7 +126,7 @@ fn action_rows(this: Entity<StudioShell>, node: moiren_core::graph::NodeId) -> V
                     this.update(cx, |shell, cx| {
                         shell.select_single_node(node);
                         shell.open_inspector();
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -162,7 +141,7 @@ fn action_rows(this: Entity<StudioShell>, node: moiren_core::graph::NodeId) -> V
                         shell.select_single_node(node);
                         shell.open_inspector();
                         shell.begin_node_rename(node, window, cx);
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -193,7 +172,7 @@ fn color_row(
         .id("context-menu-colors")
         .flex()
         .items_center()
-        .gap(px(4.));
+        .gap(px(theme::SPACE_1));
     row = row.child(
         div()
             .id("node-tint-auto")
@@ -209,10 +188,13 @@ fn color_row(
             .when(current.is_none(), |v| {
                 v.bg(theme::SURFACE_4).child(
                     div()
+                        // 3 px margin centers the 8 px check inside the
+                        // 16 px swatch under its 1 px border (off the
+                        // spacing grid by construction).
                         .m(px(3.))
                         .size(px(8.))
                         .rounded(px(2.))
-                        .bg(theme::PRIMARY.opacity(0.5)),
+                        .bg(theme::controls::FOCUS.opacity(0.5)),
                 )
             })
             .on_click({
@@ -225,7 +207,7 @@ fn color_row(
                                 tint: None,
                             }))
                         });
-                        shell.context_menu = None;
+                        shell.graph_view.context_menu = None;
                         cx.notify();
                     });
                 }
@@ -252,7 +234,7 @@ fn color_row(
                                     tint: Some(index),
                                 }))
                             });
-                            shell.context_menu = None;
+                            shell.graph_view.context_menu = None;
                             cx.notify();
                         });
                     }
@@ -274,7 +256,7 @@ fn arrange_row(this: Entity<StudioShell>) -> Vec<AnyElement> {
             .on_click(move |_, _, cx| {
                 this.update(cx, |shell, cx| {
                     shell.arrange_graph(cx);
-                    shell.context_menu = None;
+                    shell.graph_view.context_menu = None;
                     cx.notify();
                 });
             })

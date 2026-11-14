@@ -4,6 +4,7 @@ use gpui_kit::base::ScrollbarAxis;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use super::theme;
 use super::theme::controls as t;
 use super::widgets::action_assets::{ActionAssets, register_fonts};
 use super::widgets::action_style::SampleState;
@@ -11,7 +12,7 @@ use super::{
     ActionButton, ActionIcon, ButtonVariant, ControlSize, Density, IconButton, IconIntent,
     ToggleIconButton, WindowAction, WindowControlButton, WorkspaceTab,
 };
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::scroll_region;
 
 const STATES: [SampleState; 5] = [
     SampleState::Default,
@@ -79,7 +80,7 @@ pub fn run_component_preview() {
 }
 
 #[derive(Default)]
-pub(crate) struct ComponentGallery {
+struct ComponentGallery {
     density: Density,
     group: Group,
     /// The gallery body's scroll; a plain view field — the gallery carries
@@ -99,10 +100,10 @@ enum Group {
 }
 
 fn section(title: &'static str) -> Div {
-    div().flex().flex_col().gap(px(8.)).child(
+    div().flex().flex_col().gap(px(theme::SPACE_2)).child(
         div()
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(px(15.))
+            .text_size(px(theme::TEXT_LG))
             .child(title),
     )
 }
@@ -111,14 +112,14 @@ fn row(label: impl Into<SharedString>, samples: Vec<AnyElement>) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(px(theme::SPACE_2))
         .min_h(px(44.))
         .child(
             div()
                 .w(px(110.))
                 .flex_none()
-                .text_size(px(11.))
-                .text_color(t::SECONDARY)
+                .text_size(px(theme::TEXT_CAPTION))
+                .text_color(theme::TEXT_MUTED)
                 .child(label.into()),
         )
         .children(samples.into_iter().map(|sample| {
@@ -139,8 +140,8 @@ fn headings() -> Div {
             .into_iter()
             .map(|label| {
                 div()
-                    .text_size(px(10.))
-                    .text_color(t::MUTED)
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::TEXT_FAINT)
                     .child(label)
                     .into_any_element()
             })
@@ -255,7 +256,7 @@ impl Render for ComponentGallery {
         let tabs = section("Workspace Tab").child(
             div()
                 .flex()
-                .gap(px(8.))
+                .gap(px(theme::SPACE_2))
                 .child(
                     WorkspaceTab::new("tab-default", "Graph")
                         .icon(ActionIcon::Graph)
@@ -287,23 +288,23 @@ impl Render for ComponentGallery {
             .size_full()
             .flex()
             .flex_col()
-            .bg(t::CANVAS)
+            .bg(theme::WINDOW_BG)
             .font_family(t::FONT)
-            .text_color(t::TEXT)
-            .text_size(px(13.))
+            .text_color(theme::TEXT)
+            .text_size(px(theme::TEXT_MD))
             .child(
                 div()
                     .flex()
                     .flex_none()
                     .items_center()
                     .justify_between()
-                    .p(px(16.))
-                    .bg(t::PANEL)
+                    .p(px(theme::SPACE_4))
+                    .bg(theme::SURFACE)
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(px(theme::SPACE_1))
                             .child(
                                 div()
                                     .text_size(px(20.))
@@ -312,15 +313,15 @@ impl Render for ComponentGallery {
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.))
-                                    .text_color(t::SECONDARY)
+                                    .text_size(px(theme::TEXT_SM))
+                                    .text_color(theme::TEXT_MUTED)
                                     .child("Navigation & Actions · Figma v0.1.2"),
                             ),
                     )
                     .child(
                         div()
                             .flex()
-                            .gap(px(8.))
+                            .gap(px(theme::SPACE_2))
                             .children(
                                 [
                                     (Group::Buttons, "Buttons"),
@@ -342,64 +343,75 @@ impl Render for ComponentGallery {
                                 }),
                             )
                             .child(
-                                ActionButton::new("density", format!("{:?}", self.density))
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                ActionButton::new(
+                                    "density",
+                                    // `t` here names theme tokens (`t::FONT`), so the
+                                    // translation macro stays fully qualified.
+                                    match self.density {
+                                        Density::Comfortable => {
+                                            rust_i18n::t!("Comfortable").into_owned()
+                                        }
+                                        Density::Compact => rust_i18n::t!("Compact").into_owned(),
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.density = if this.density == Density::Comfortable {
                                             Density::Compact
                                         } else {
                                             Density::Comfortable
                                         };
                                         cx.notify();
-                                    })),
+                                    },
+                                )),
                             ),
                     ),
             )
             .child(
-                // The bar overlay is a sibling of the scroll container,
-                // never a child: the container translates its children by
-                // the offset at prepaint, so an overlay inside it would
-                // drift away with the content.
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        div()
-                            .id("component-scroll")
-                            .w_full()
-                            .h_full()
-                            .overflow_scroll()
-                            .track_scroll(&self.scroll)
-                            .p(px(16.))
-                            .child(
-                                (match self.group {
-                                    Group::Buttons => {
-                                        div().flex().gap(px(24.)).child(filled).child(quiet)
-                                    }
-                                    Group::Icons => {
-                                        div().flex().gap(px(24.)).child(icons).child(toggles)
-                                    }
-                                    Group::Navigation => {
-                                        div().flex().gap(px(24.)).child(windows).child(tabs)
-                                    }
-                                })
-                                .when(narrow, |s| s.flex_col().items_start()),
-                            ),
-                    )
-                    .child(overlay_scrollbar(
-                        &self.scroll,
-                        "scrollbar-component-scroll",
-                        ScrollbarAxis::Both,
-                    )),
+                scroll_region(
+                    "scrollbar-component-scroll",
+                    &self.scroll,
+                    ScrollbarAxis::Both,
+                    div()
+                        .id("component-scroll")
+                        .w_full()
+                        .h_full()
+                        .overflow_scroll()
+                        .track_scroll(&self.scroll)
+                        .restrict_scroll_to_axis()
+                        .p(px(theme::SPACE_4))
+                        .child(
+                            (match self.group {
+                                Group::Buttons => div()
+                                    .flex()
+                                    .gap(px(theme::SPACE_6))
+                                    .child(filled)
+                                    .child(quiet),
+                                Group::Icons => div()
+                                    .flex()
+                                    .gap(px(theme::SPACE_6))
+                                    .child(icons)
+                                    .child(toggles),
+                                Group::Navigation => div()
+                                    .flex()
+                                    .gap(px(theme::SPACE_6))
+                                    .child(windows)
+                                    .child(tabs),
+                            })
+                            .when(narrow, |s| s.flex_col().items_start()),
+                        ),
+                )
+                .flex_1()
+                .min_h_0(),
             )
             .child(
                 div()
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(16.))
-                    .p(px(12.))
-                    .bg(t::PANEL)
+                    .gap(px(theme::SPACE_4))
+                    .p(px(theme::SPACE_3))
+                    .bg(theme::SURFACE)
                     .child(
                         ActionButton::new("live-action", "Apply")
                             .variant(ButtonVariant::Primary)
@@ -439,7 +451,7 @@ impl Render for ComponentGallery {
                                     }))
                             }),
                     )
-                    .child(div().text_color(t::SECONDARY).child(format!(
+                    .child(div().text_color(theme::TEXT_MUTED).child(format!(
                         "{} activations · selected {}",
                         self.clicks, self.selected
                     ))),

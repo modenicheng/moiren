@@ -1,4 +1,5 @@
 //! Resolve intent on control, then negotiate every native stream on its owner.
+mod absence;
 mod native_observations;
 pub(crate) mod observations;
 #[cfg(windows)]
@@ -20,7 +21,7 @@ pub use native_observations::{
 #[cfg(windows)]
 pub use observations::{
     ProfessionalObservationReadHandle, ProfessionalObservationSnapshot, ProfessionalObservations,
-    ProfessionalStreamObservation,
+    ProfessionalStreamObservation, StreamEndpoint,
 };
 
 use crate::asio::{AsioOptions, AsioStream};
@@ -32,10 +33,11 @@ use crate::virtual_owner::{
     VirtualPreparedTransport,
 };
 use crate::wasapi::{WasapiOptions, WasapiStream, resolve_endpoint};
+use absence::{AbsenceMonitor, AbsentDevice, AbsentEntry};
 use moiren_core::graph::NodeId;
 use moiren_engine::{
     audio_config::{AudioBackend, SAMPLE_RATES, SampleFormat},
-    boundary::{CaptureIntent, ClockRole},
+    boundary::{CaptureIntent, ClockRole, ConstantSource, DiscardSink},
     compiler::NodeBindings,
     host::{
         BackendError, CancellationToken, EngineBackend, NodeConfig, PrepareMode, PrepareRequest,
@@ -49,6 +51,7 @@ use owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn};
 use recovery::RecoveryMonitor;
 use rtrb::RingBuffer;
 use std::{marker::PhantomData, sync::Arc};
+use validation::select_clock;
 
 /// Preparation budget charged per native IO node: 32 bytes per capacity
 /// frame — two stereo-f64 (`StereoFrame`) spans, covering the node's queue
@@ -70,6 +73,8 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     observations: ProfessionalObservations,
     native_observations: NativeObservations,
     recovery: RecoveryMonitor,
+    absence: AbsenceMonitor,
+    absence_probe: Arc<dyn Fn(&AbsentDevice) -> bool + Send + Sync>,
     virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
     virtual_clock: Arc<dyn VirtualClockFactory>,
     process_bridge: crate::process_loopback::ProcessBridgeOptions,
@@ -89,6 +94,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             observations: ProfessionalObservations::default(),
             native_observations: NativeObservations::default(),
             recovery: RecoveryMonitor::default(),
+            absence: AbsenceMonitor::default(),
+            absence_probe: Arc::new(system_endpoint_present),
             virtual_provider: None,
             virtual_clock: Arc::new(QpcClockFactory),
             process_bridge: Default::default(),
@@ -198,12 +205,27 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         self.telemetry = mode;
         self
     }
+    /// Replace the absent-device return probe (tests flip device presence
+    /// without touching the enumerator or the registry).
+    #[cfg(test)]
+    pub(crate) fn with_absence_probe(
+        mut self,
+        probe: Arc<dyn Fn(&AbsentDevice) -> bool + Send + Sync>,
+    ) -> Self {
+        self.absence_probe = probe;
+        self
+    }
 }
 
 #[derive(Clone)]
 struct Direction {
     node: NodeId,
     device: DeviceOptions,
+    /// The service-side endpoint identity the graph bound — recorded into
+    /// the stream observation so the UI can attribute the stream to a
+    /// catalog row. Distinct from the native open id an ASIO group
+    /// canonicalizes to.
+    endpoint: String,
 }
 struct Group {
     id: String,
@@ -283,14 +305,47 @@ fn asio_session_options(
     Ok((rate, buffer.unwrap_or(0) as u32))
 }
 
+/// Endpoint resolution outcome: a native device id, or absence — the device
+/// is missing from the system right now and prepares as a null stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Resolved {
+    Native(String),
+    Absent,
+}
+
 trait NativeDevices {
     fn resolve(
         &self,
         selector: &EndpointSelector,
         device: DeviceOptions,
         input: bool,
-    ) -> Result<String, BackendError>;
+    ) -> Result<Resolved, BackendError>;
     fn factory(&self, group: &Group, rate: u32) -> Result<StreamFactory, BackendError>;
+}
+
+/// The production return probe: re-resolves one absent device without any
+/// side effects. WASAPI asks the enumerator; ASIO checks the registry.
+fn system_endpoint_present(device: &AbsentDevice) -> bool {
+    match device.backend {
+        AudioBackend::Wasapi => {
+            matches!(
+                resolve_endpoint(&device.selector, device.input),
+                Ok(Some(_))
+            )
+        }
+        AudioBackend::Asio => match &device.selector {
+            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => matches!(
+                (|| -> Result<bool, BackendError> {
+                    let id = canonical_asio_driver_id(endpoint_id.as_str())?;
+                    Ok(crate::asio::list_drivers()?
+                        .iter()
+                        .any(|driver| driver.id == id))
+                })(),
+                Ok(true)
+            ),
+            EndpointSelector::FollowDefault(_) => false,
+        },
+    }
 }
 
 struct SystemNativeDevices;
@@ -300,12 +355,23 @@ impl NativeDevices for SystemNativeDevices {
         selector: &EndpointSelector,
         device: DeviceOptions,
         input: bool,
-    ) -> Result<String, BackendError> {
+    ) -> Result<Resolved, BackendError> {
         match device.backend {
-            AudioBackend::Wasapi => resolve_endpoint(selector, input),
+            AudioBackend::Wasapi => match resolve_endpoint(selector, input)? {
+                Some(id) => Ok(Resolved::Native(id)),
+                None => Ok(Resolved::Absent),
+            },
             AudioBackend::Asio => match selector {
                 EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
-                    canonical_asio_driver_id(endpoint_id)
+                    let id = canonical_asio_driver_id(endpoint_id)?;
+                    if crate::asio::list_drivers()?
+                        .iter()
+                        .any(|driver| driver.id == id)
+                    {
+                        Ok(Resolved::Native(id))
+                    } else {
+                        Ok(Resolved::Absent)
+                    }
                 }
                 _ => Err(unsupported(
                     "ASIO requires an explicitly selected driver CLSID",
@@ -320,11 +386,17 @@ impl NativeDevices for SystemNativeDevices {
 
 impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
     fn poll_resource(&self) -> Option<moiren_engine::host::ResourceEvent> {
-        self.recovery.poll().or_else(|| {
-            self.virtual_provider
-                .as_ref()
-                .and_then(|p| p.poll_resource())
-        })
+        self.recovery
+            .poll()
+            .or_else(|| {
+                self.virtual_provider
+                    .as_ref()
+                    .and_then(|p| p.poll_resource())
+            })
+            .or_else(|| {
+                let probe = self.absence_probe.clone();
+                self.absence.poll(move |device| probe(device))
+            })
     }
     fn prepare(
         &self,
@@ -358,7 +430,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 "latency budget and renderer must use the same render queue policy",
             ));
         }
-        let (rate, clock) = validate(&request, self.virtual_provider.is_some())?;
+        let rate = validate(&request, self.virtual_provider.is_some())?;
         self.validate_measured_sources(request.project)?;
         let mut bindings = NodeBindings::new();
         if request.mode == PrepareMode::Update {
@@ -468,38 +540,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             .virtual_buffer
             .admitted_recovery_cap_periods()
             .map_err(unsupported)?;
-        let virtual_demand = if clock == ProjectClock::VirtualRealtime {
-            self.virtual_buffer
-                .prepare_recovery(rate, block_demand)
-                .map_err(unsupported)?
-                .engine_burst_frames
-        } else {
-            // Replaced with the physical master's negotiated whole wake below.
-            block_demand
-                .checked_mul(recovery_cap_periods as u32)
-                .ok_or_else(|| unsupported("virtual burst demand overflow"))?
-        };
-        // A physical master negotiates the full wake below. Even Compatible
-        // microphone workers retain this demand for reset reprime, so prepare
-        // them only after it is known; diagnostics must not advertise a newer
-        // budget than the worker actually owns. Pure virtual order is unchanged.
-        let virtual_prepared = if clock == ProjectClock::VirtualRealtime
-            && self.virtual_buffer == Default::default()
-        {
-            Some(virtual_io::prepare(
-                &request,
-                self.virtual_provider.as_deref(),
-                rate,
-                virtual_demand,
-                self.virtual_buffer,
-                &mut bindings,
-                cancel,
-            )?)
-        } else {
-            None
-        };
-
         let mut groups: Vec<Group> = Vec::new();
+        let mut absent: Vec<(Direction, bool, EndpointSelector)> = Vec::new();
         let mut processes = Vec::new();
         let mut process_nodes = Vec::new();
         for (&node, config) in &request.project.nodes {
@@ -549,9 +591,51 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 },
                 _ => continue,
             };
-            let id = native.resolve(selector, device, input)?;
+            let resolved = native.resolve(selector, device, input)?;
+            let (id, endpoint) = match resolved {
+                Resolved::Absent => {
+                    // The device is gone right now: the node keeps its binding
+                    // as a silent null stream so the rest of the graph runs,
+                    // and the absence watch revives the device when it
+                    // returns.
+                    let endpoint = match selector {
+                        EndpointSelector::PinnedEndpoint { endpoint_id, .. } => endpoint_id.clone(),
+                        EndpointSelector::FollowDefault(role) => format!("default ({role:?})"),
+                    };
+                    log::info!(
+                        target: "moiren::audio::professional",
+                        "absent native device prepares as a null stream: node={:?} backend={} endpoint={endpoint:?} direction={}",
+                        node,
+                        device.backend.title(),
+                        if input { "input" } else { "output" },
+                    );
+                    absent.push((
+                        Direction {
+                            node,
+                            device,
+                            endpoint,
+                        },
+                        input,
+                        selector.clone(),
+                    ));
+                    continue;
+                }
+                Resolved::Native(id) => {
+                    let endpoint = match selector {
+                        EndpointSelector::PinnedEndpoint { endpoint_id, .. } => endpoint_id.clone(),
+                        // A followed default resolves to a concrete native id, which
+                        // is also the catalog row identity.
+                        EndpointSelector::FollowDefault(_) => id.clone(),
+                    };
+                    (id, endpoint)
+                }
+            };
             let endpoint_id_for_log = id.clone();
-            let direction = Direction { node, device };
+            let direction = Direction {
+                node,
+                device,
+                endpoint,
+            };
             if let Some(group) = groups.iter_mut().find(|g| {
                 g.id == id
                     && g.backend == device.backend
@@ -613,7 +697,44 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         let recovery = self
             .recovery
             .register(request.owner_generation, asio_configurations, rate);
-        let mut process_demand = virtual_demand;
+        let clock = select_clock(
+            &request,
+            &absent
+                .iter()
+                .map(|(direction, _, _)| direction.node)
+                .collect::<Vec<_>>(),
+        )?;
+        // Virtual demand deliberately follows clock selection: an absent
+        // physical master must fall back to QPC and use the virtual recovery
+        // burst, while a present master's negotiated wake is learned below.
+        let mut process_demand = if clock == ProjectClock::VirtualRealtime {
+            self.virtual_buffer
+                .prepare_recovery(rate, block_demand)
+                .map_err(unsupported)?
+                .engine_burst_frames
+        } else {
+            // Replaced with the physical master's negotiated whole wake below.
+            block_demand
+                .checked_mul(recovery_cap_periods as u32)
+                .ok_or_else(|| unsupported("virtual burst demand overflow"))?
+        };
+        // Preserve the default pure-virtual early result while custom virtual
+        // carriers and all physical projects wait for their final demand.
+        let virtual_prepared = if clock == ProjectClock::VirtualRealtime
+            && self.virtual_buffer == Default::default()
+        {
+            Some(virtual_io::prepare(
+                &request,
+                self.virtual_provider.as_deref(),
+                rate,
+                process_demand,
+                self.virtual_buffer,
+                &mut bindings,
+                cancel,
+            )?)
+        } else {
+            None
+        };
         // Custom input admission depends on the master's actual negotiated
         // period, so open that group before any physical capture followers.
         groups.sort_by_key(|group| !group.master());
@@ -939,6 +1060,54 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 cancel,
             )?;
         }
+        // Absent endpoints keep their graph bindings as null streams: a
+        // constant silence source for capture, a discard sink for render.
+        // No worker, ring, or native session backs them — the engine runs
+        // the compiled graph unchanged and these boundaries transfer
+        // nothing. Under a physical clock an absent render node joins the
+        // transport's sink bookkeeping like a virtual sink; the engine
+        // itself writes it during every render.
+        let mut absent_entries = Vec::with_capacity(absent.len());
+        let mut absent_virtual_sinks = Vec::new();
+        for (direction, input, selector) in absent {
+            if input {
+                bindings
+                    .bind_source(
+                        direction.node,
+                        ConstantSource {
+                            channels: 2,
+                            value: 0.0,
+                        },
+                    )
+                    .map_err(unsupported)?;
+            } else {
+                bindings
+                    .bind_sink(direction.node, DiscardSink { channels: 2 })
+                    .map_err(unsupported)?;
+                if matches!(clock, ProjectClock::Physical(_)) {
+                    transport.sinks.push(direction.node);
+                } else {
+                    // The virtual owner must protect every graph sink; an
+                    // absent discard sink is bookkept like a virtual one.
+                    absent_virtual_sinks.push(direction.node);
+                }
+            }
+            transport.streams.push((
+                absent_observation(&direction, input, rate),
+                Arc::new(Counters::default()),
+            ));
+            absent_entries.push(AbsentEntry {
+                node: direction.node,
+                configuration: request.project.nodes[&direction.node].clone(),
+                device: AbsentDevice {
+                    selector,
+                    backend: direction.device.backend,
+                    input,
+                },
+            });
+        }
+        self.absence
+            .register(request.owner_generation, absent_entries);
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -964,6 +1133,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             if cancel.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
+            let mut virtual_sinks = virtual_sinks;
+            virtual_sinks.extend(absent_virtual_sinks);
             return Ok(PreparedBackend {
                 bindings,
                 transport: Some(Box::new(
@@ -1014,12 +1185,14 @@ fn observation(
 ) -> ProfessionalStreamObservation {
     ProfessionalStreamObservation {
         node: direction.node,
+        endpoint: StreamEndpoint::Physical(direction.endpoint.clone()),
         input,
         master,
         requested: direction.device,
         actual,
         dropped_frames: 0,
         silent_frames: 0,
+        xruns: 0,
         native_callbacks: 0,
         native_wait_wakes: 0,
         native_written_frames: 0,
@@ -1027,7 +1200,50 @@ fn observation(
         native_dropped_frames: 0,
         native_silent_frames: 0,
         native_capture_quality: None,
+        native_xruns: 0,
+        engine_blocks: 0,
+        engine_busy_100ns: 0,
+        engine_peak_block_100ns: 0,
         driver_latency: None,
+        absent: false,
+    }
+}
+
+/// Null-stream observation: the requested settings with no device behind
+/// them, `buffer_frames = 0` like a virtual boundary.
+fn absent_observation(
+    direction: &Direction,
+    input: bool,
+    rate: u32,
+) -> ProfessionalStreamObservation {
+    ProfessionalStreamObservation {
+        node: direction.node,
+        endpoint: StreamEndpoint::Physical(direction.endpoint.clone()),
+        input,
+        master: false,
+        requested: direction.device,
+        actual: NativeStreamInfo {
+            sample_rate: direction.device.hardware_sample_rate.unwrap_or(rate),
+            format: direction.device.sample_format,
+            buffer_frames: 0,
+            channels: 2,
+        },
+        dropped_frames: 0,
+        silent_frames: 0,
+        xruns: 0,
+        native_callbacks: 0,
+        native_wait_wakes: 0,
+        native_written_frames: 0,
+        native_wait_timeouts: 0,
+        native_dropped_frames: 0,
+        native_silent_frames: 0,
+        native_capture_quality: None,
+        native_xruns: 0,
+        engine_blocks: 0,
+        engine_busy_100ns: 0,
+        engine_peak_block_100ns: 0,
+        driver_latency: None,
+        absent: true,
     }
 }
 
@@ -1160,6 +1376,10 @@ fn prepare_process<S: ProcessingSample>(
     transport.streams.push((
         ProfessionalStreamObservation {
             node,
+            endpoint: StreamEndpoint::Application {
+                pid: identity.0,
+                creation_time_100ns: identity.1,
+            },
             input: true,
             master: false,
             requested: device,
@@ -1172,6 +1392,7 @@ fn prepare_process<S: ProcessingSample>(
             },
             dropped_frames: 0,
             silent_frames: 0,
+            xruns: 0,
             native_callbacks: 0,
             native_wait_wakes: 0,
             native_written_frames: 0,
@@ -1179,7 +1400,12 @@ fn prepare_process<S: ProcessingSample>(
             native_dropped_frames: 0,
             native_silent_frames: 0,
             native_capture_quality: None,
+            native_xruns: 0,
+            engine_blocks: 0,
+            engine_busy_100ns: 0,
+            engine_peak_block_100ns: 0,
             driver_latency: None,
+            absent: false,
         },
         Arc::default(),
     ));

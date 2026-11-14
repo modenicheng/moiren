@@ -18,10 +18,14 @@ mod meters;
 mod parameters;
 #[cfg(windows)]
 mod process_traces;
+mod recordings;
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]
 mod windowed;
+
+pub(crate) use self::meters::LevelRegistry;
+pub use self::meters::{LevelLease, LevelSource};
 
 type Factory<S> = dyn Fn(
         AudioLatencyProfile,
@@ -147,6 +151,9 @@ pub struct ManagedDriver {
     catalog_backend: Option<Arc<dyn CatalogBackend>>,
     host_config: HostConfig,
     owner: Option<Owner>,
+    /// Live recording sessions, one per recorder node at most; each reserves
+    /// its cleanup slot upfront (see `recordings::OwnedRecording`).
+    recording_sessions: BTreeMap<NodeId, recordings::OwnedRecording>,
     completions: Option<CompletionQueue<Completion>>,
     edits: Vec<PendingEdit>,
     parameters: Vec<PendingParameter>,
@@ -158,10 +165,11 @@ pub struct ManagedDriver {
     catalog: CatalogRefresher,
     automatic_startup: bool,
     /// Startup with a restored project: once the first catalog arrives the
-    /// restored graph starts as saved, minus IO nodes whose devices are
-    /// offline (the driver's resume path).
+    /// restored graph starts as saved. IO nodes whose devices are absent
+    /// stay in the graph and run as silent null streams until the device
+    /// returns (the driver's resume path).
     automatic_resume: bool,
-    /// What the resume stripped, published as a fault only after the resumed
+    /// What resume stripped, published as a fault only after the resumed
     /// session has activated, since activation clears the fault group.
     resume_notice: Option<GraphFault>,
     exiting: bool,
@@ -171,9 +179,14 @@ pub struct ManagedDriver {
     /// mute) per node; diffs against the candidate drive live submissions.
     strip_live: BTreeMap<NodeId, (f64, bool)>,
     /// Trailing-edge debounce for the automatic apply of structure edits.
-    /// Armed only while an owner runs: a stopped session never auto-starts.
+    /// Always armed on a structural change: the session is always-on, so a
+    /// graph without a running owner re-opens through the same path.
     auto_apply_deadline: Option<Instant>,
-    meters: Option<meters::MeterBridge>,
+    /// The spectrum relay. Levels are not relayed since decision D-4
+    /// route B: the level subscription registry lives on the
+    /// [`ServiceContext`](super::ServiceContext) and the UI reads its
+    /// leases directly.
+    spectra: Option<meters::SpectrumBridge>,
     #[cfg(windows)]
     native_observations: Option<
         Arc<std::sync::Mutex<Option<moiren_windows_audio::engine_backend::NativeObservations>>>,
@@ -266,6 +279,7 @@ impl ManagedDriver {
                 ..Default::default()
             },
             owner: None,
+            recording_sessions: BTreeMap::new(),
             completions: None,
             edits: Vec::with_capacity(16),
             parameters: Vec::with_capacity(64),
@@ -283,7 +297,7 @@ impl ManagedDriver {
             exiting: false,
             apply: false,
             apply_settings: None,
-            meters: None,
+            spectra: None,
             #[cfg(all(test, windows))]
             measured_snapshot_reader: None,
             #[cfg(windows)]

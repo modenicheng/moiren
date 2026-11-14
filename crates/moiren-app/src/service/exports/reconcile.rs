@@ -96,12 +96,12 @@ pub(super) fn same_resource(a: &ExportIntent, b: &ExportIntent) -> bool {
         && a.channels == b.channels
 }
 
-fn confirms_active(observation: &ExportObservation, graph: &super::super::GraphSnapshot) -> bool {
+fn confirms_active(observation: &ExportObservation, active_revision: Option<u64>) -> bool {
     observation.resource == ExportResourceState::Present
         && observation.intent.enabled
         && observation.intent.binding.is_some()
         && observation.active_revision.is_some()
-        && observation.active_revision == graph.active_revision
+        && observation.active_revision == active_revision
 }
 
 impl ExportService {
@@ -109,8 +109,25 @@ impl ExportService {
     /// Adapters must recheck its revision before dispatch and publish actual
     /// creating/present/removing observations independently of gate/audio state.
     pub fn reconcile(&self, graph: &super::super::GraphSnapshot) -> ExportReconcilePlan {
+        self.reconcile_for(
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+        )
+    }
+
+    /// The projection [`Self::reconcile`] reads, without requiring the deep
+    /// graph snapshot: export reconciliation consults only the export list
+    /// and revisions. The driver poll supplies these directly so a read-only
+    /// poll never deep-copies the topology.
+    pub(super) fn reconcile_for(
+        &self,
+        exports: &[ExportIntent],
+        candidate_revision: u64,
+        active_revision: Option<u64>,
+    ) -> ExportReconcilePlan {
         let mut plan = ExportReconcilePlan {
-            candidate_revision: graph.candidate_revision,
+            candidate_revision,
             available: self.available,
             actions: Vec::new(),
         };
@@ -119,12 +136,11 @@ impl ExportService {
         }
         for observation in self.observations.values() {
             let id = observation.intent.endpoint_id;
-            let desired = graph
-                .exports
+            let desired = exports
                 .iter()
                 .find(|intent| intent.endpoint_id == id && intent.enabled);
             let retained = desired.is_some_and(|intent| same_resource(intent, &observation.intent));
-            let active = confirms_active(observation, graph);
+            let active = confirms_active(observation, active_revision);
             let allow_default = self.allow_default(id);
             let rebuild = retained
                 && matches!(
@@ -163,7 +179,7 @@ impl ExportService {
                 }
             }
         }
-        for intent in graph.exports.iter().filter(|intent| intent.enabled) {
+        for intent in exports.iter().filter(|intent| intent.enabled) {
             if self
                 .observations
                 .get(&intent.endpoint_id)
@@ -179,6 +195,16 @@ impl ExportService {
     }
 
     pub fn statuses(&self, graph: &super::super::GraphSnapshot) -> Vec<ExportStatus> {
+        self.statuses_for(&graph.exports, graph.active_revision)
+    }
+
+    /// The projection [`Self::statuses`] reads, without requiring the deep
+    /// graph snapshot (see [`Self::reconcile_for`]).
+    pub(in crate::service) fn statuses_for(
+        &self,
+        exports: &[ExportIntent],
+        active_revision: Option<u64>,
+    ) -> Vec<ExportStatus> {
         let mut intents: BTreeMap<_, _> = self
             .observations
             .iter()
@@ -186,8 +212,7 @@ impl ExportService {
             .map(|(&id, observation)| (id, observation.intent.clone()))
             .collect();
         intents.extend(
-            graph
-                .exports
+            exports
                 .iter()
                 .map(|intent| (intent.endpoint_id, intent.clone())),
         );
@@ -219,7 +244,7 @@ impl ExportService {
                     allow_default: self.allow_default(intent.endpoint_id),
                     gate_open: self.available && observed.is_some_and(|value| value.gate_open),
                     active_revision: observed
-                        .filter(|value| self.available && confirms_active(value, graph))
+                        .filter(|value| self.available && confirms_active(value, active_revision))
                         .and_then(|value| value.active_revision),
                     #[cfg(windows)]
                     diagnostics: self

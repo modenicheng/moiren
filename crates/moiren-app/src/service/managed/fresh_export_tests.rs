@@ -111,7 +111,13 @@ fn queued_fresh_dispatch_is_revoked_when_its_document_is_loaded_as_plain_ids() {
     let work = rig
         .driver
         .exports_runtime
-        .work(&rig.c.exports, &graph, true)
+        .work(
+            &rig.c.exports,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            true,
+        )
         .unwrap();
     let token = work.actions[0].new_identity.as_ref().unwrap().clone();
     let document = crate::project::ProjectDocument::from_graph("Loaded", &graph).unwrap();
@@ -124,7 +130,7 @@ fn queued_fresh_dispatch_is_revoked_when_its_document_is_loaded_as_plain_ids() {
 
 #[test]
 fn present_without_confirmed_policy_keeps_allocation_until_publication_completes() {
-    use crate::service::exports::runtime::{Adapter, Batch};
+    use crate::service::exports::runtime::Adapter;
     let (mut rig, adapter) = fresh_rig();
     let intent = create(&mut rig);
     let graph = rig.c.graph.snapshot();
@@ -132,10 +138,16 @@ fn present_without_confirmed_policy_keeps_allocation_until_publication_completes
     let work = rig
         .driver
         .exports_runtime
-        .work(&rig.c.exports, &graph, true)
+        .work(
+            &rig.c.exports,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            true,
+        )
         .unwrap();
     let mut batch = adapter.execute(work);
-    batch.observations[0].publication_prepared = false;
+    batch.observation_mut(0).publication_prepared = false;
     rig.driver
         .exports_runtime
         .complete(&mut rig.c.exports, Ok(batch));
@@ -149,14 +161,20 @@ fn present_without_confirmed_policy_keeps_allocation_until_publication_completes
     let work = rig
         .driver
         .exports_runtime
-        .work(&rig.c.exports, &graph, true)
+        .work(
+            &rig.c.exports,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            true,
+        )
         .unwrap();
     assert!(
         work.actions.is_empty(),
         "Present must not dispatch a second CREATE"
     );
     let mut batch = adapter.execute(work);
-    batch.observations[0].error = Some("QUERY failed".into());
+    batch.observation_mut(0).error = Some("QUERY failed".into());
     rig.driver
         .exports_runtime
         .complete(&mut rig.c.exports, Ok(batch));
@@ -169,19 +187,18 @@ fn present_without_confirmed_policy_keeps_allocation_until_publication_completes
     let work = rig
         .driver
         .exports_runtime
-        .work(&rig.c.exports, &graph, true)
+        .work(
+            &rig.c.exports,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            true,
+        )
         .unwrap();
-    let Batch {
-        observations,
-        errors,
-    } = adapter.execute(work);
-    rig.driver.exports_runtime.complete(
-        &mut rig.c.exports,
-        Ok(Batch {
-            observations,
-            errors,
-        }),
-    );
+    let batch = adapter.execute(work);
+    rig.driver
+        .exports_runtime
+        .complete(&mut rig.c.exports, Ok(batch));
     assert!(rig.c.exports.new_identities.is_empty());
     assert_eq!(adapter.creations.lock().unwrap().len(), 1);
 }

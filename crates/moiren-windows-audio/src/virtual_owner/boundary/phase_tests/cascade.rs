@@ -200,7 +200,7 @@ fn run_case<S: ProcessingSample>(rate: u32, channels: usize, directory: Option<&
             assert!(playback_oracle.push_frame(sample(frame).map(f64::from)));
         }
         consumed += pushed;
-        for offset in 0..BLOCK {
+        for (offset, captured_frame) in capture.bus.iter().enumerate().take(BLOCK) {
             let cursor = playback_oracle.cursor();
             let expected = playback_oracle.next_frame().unwrap();
             for (channel, value) in expected.iter().enumerate().take(channels) {
@@ -210,7 +210,7 @@ fn run_case<S: ProcessingSample>(rate: u32, channels: usize, directory: Option<&
                     S::from_f64(*value).to_f64()
                 };
                 assert_eq!(
-                    capture.bus[offset][channel], expected,
+                    captured_frame[channel], expected,
                     "compiled unity Bus must preserve every sample"
                 );
             }

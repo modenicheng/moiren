@@ -1,6 +1,6 @@
 //! Control snapshots clone prepared metadata; streaming only updates atomics.
 use moiren_core::graph::NodeId;
-use moiren_engine::node::DeviceOptions;
+use moiren_engine::node::{DeviceOptions, VirtualEndpointId};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -10,15 +10,38 @@ use std::sync::{
 use crate::native::NativeStreamStats;
 use crate::native::{NativeCaptureQuality, NativeLatency, NativeStreamInfo};
 
+/// The device a live stream runs on, recorded when the stream is
+/// registered. This is control-side metadata (it never enters the realtime
+/// path) and carries the **service-side identity** — the string the graph
+/// bound, which is the device catalog row id — not the canonical id a
+/// native open resolves to (an ASIO `Group.id` is the upper-case bare
+/// CLSID while the catalog row says `asio:{CLSID}`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamEndpoint {
+    /// MMDevice endpoint id or the `asio:{CLSID}` driver id, exactly as the
+    /// graph's binding names it. A `FollowDefault` selector records the
+    /// resolved id instead, which is also a catalog row id.
+    Physical(String),
+    /// Process loopback target identity.
+    Application { pid: u32, creation_time_100ns: u64 },
+    /// A virtual playback/microphone boundary.
+    Virtual(VirtualEndpointId),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfessionalStreamObservation {
     pub node: NodeId,
+    pub endpoint: StreamEndpoint,
     pub input: bool,
     pub master: bool,
     pub requested: DeviceOptions,
     pub actual: NativeStreamInfo,
     pub dropped_frames: u64,
     pub silent_frames: u64,
+    /// Bridge shortfall events (capture ring overflow, follower silence
+    /// fill), one per starved pump cycle; the frame fields above carry the
+    /// frames lost.
+    pub xruns: u64,
     /// Native callback count where supported; zero does not imply no progress.
     pub native_callbacks: u64,
     /// Actual signaled native waits, never synthesized into callbacks.
@@ -30,7 +53,22 @@ pub struct ProfessionalStreamObservation {
     pub native_dropped_frames: u64,
     pub native_silent_frames: u64,
     pub native_capture_quality: Option<NativeCaptureQuality>,
+    /// Native-callback shortfall events (ASIO driver level), one per
+    /// starved callback per direction — a full-duplex callback starving on
+    /// both ends counts twice.
+    pub native_xruns: u64,
+    /// Engine render accounting, advanced by the master output's pump only:
+    /// blocks rendered, total time spent inside `Engine::render`, and the
+    /// worst single block of the last completed one-second window, in 100 ns
+    /// ticks. The DSP-load readout divides the deltas by rendered audio time.
+    pub engine_blocks: u64,
+    pub engine_busy_100ns: u64,
+    pub engine_peak_block_100ns: u64,
     pub driver_latency: Option<NativeLatency>,
+    /// The endpoint's device is missing: the stream is a silent null stream
+    /// binding, not a native worker, and returns automatically once the
+    /// device comes back.
+    pub absent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +87,13 @@ pub(crate) struct Counters {
     pub consumer_events: std::sync::OnceLock<crate::latency::events::EventHistoryObserver>,
     pub dropped: AtomicU64,
     pub silent: AtomicU64,
+    pub xruns: AtomicU64,
+    /// Master pump only: engine blocks rendered, cumulative render time, and
+    /// the worst single block of the last completed one-second window. The
+    /// audio thread owns the windowing, so readers only load.
+    pub blocks: AtomicU64,
+    pub render_ticks: AtomicU64,
+    pub render_peak_ticks: AtomicU64,
     native_callbacks: AtomicU64,
     native_wait_wakes: AtomicU64,
     native_written_frames: AtomicU64,
@@ -59,6 +104,7 @@ pub(crate) struct Counters {
     capture_timestamp_errors: AtomicU64,
     capture_silent_frames: AtomicU64,
     capture_quality_valid: AtomicBool,
+    native_xruns: AtomicU64,
     latency_sequence: AtomicU64,
     latency: AtomicU64,
     latency_valid: AtomicBool,
@@ -92,6 +138,7 @@ impl Counters {
             .store(stats.capture_dropped_frames, Ordering::Relaxed);
         self.native_silent
             .store(stats.render_silent_frames, Ordering::Relaxed);
+        self.native_xruns.store(stats.xruns, Ordering::Relaxed);
         // One native owner writes. Capture flags share the bounded atomic
         // publication with latency; a contended/unsupported sample is unknown.
         let sequence = self.latency_sequence.load(Ordering::SeqCst);
@@ -161,6 +208,7 @@ impl ProfessionalObservationReadHandle {
                     let mut stream = stream.clone();
                     stream.dropped_frames = counters.dropped.load(Ordering::Relaxed);
                     stream.silent_frames = counters.silent.load(Ordering::Relaxed);
+                    stream.xruns = counters.xruns.load(Ordering::Relaxed);
                     stream.native_callbacks = counters.native_callbacks.load(Ordering::Relaxed);
                     stream.native_wait_wakes = counters.native_wait_wakes.load(Ordering::Relaxed);
                     stream.native_written_frames =
@@ -170,6 +218,11 @@ impl ProfessionalObservationReadHandle {
                     stream.native_dropped_frames = counters.native_dropped.load(Ordering::Relaxed);
                     stream.native_silent_frames = counters.native_silent.load(Ordering::Relaxed);
                     stream.native_capture_quality = counters.capture_quality();
+                    stream.native_xruns = counters.native_xruns.load(Ordering::Relaxed);
+                    stream.engine_blocks = counters.blocks.load(Ordering::Relaxed);
+                    stream.engine_busy_100ns = counters.render_ticks.load(Ordering::Relaxed);
+                    stream.engine_peak_block_100ns =
+                        counters.render_peak_ticks.load(Ordering::Relaxed);
                     stream.driver_latency = counters.driver_latency();
                     stream
                 })
@@ -320,6 +373,7 @@ mod tests {
         let fresh = Arc::new(Counters::default());
         let stream = ProfessionalStreamObservation {
             node,
+            endpoint: super::StreamEndpoint::Physical("test-endpoint".into()),
             input: true,
             master: false,
             requested: DeviceOptions::default(),
@@ -331,6 +385,7 @@ mod tests {
             },
             dropped_frames: 0,
             silent_frames: 0,
+            xruns: 0,
             native_callbacks: 0,
             native_wait_wakes: 0,
             native_written_frames: 0,
@@ -338,7 +393,12 @@ mod tests {
             native_dropped_frames: 0,
             native_silent_frames: 0,
             native_capture_quality: None,
+            native_xruns: 0,
+            engine_blocks: 0,
+            engine_busy_100ns: 0,
+            engine_peak_block_100ns: 0,
             driver_latency: None,
+            absent: false,
         };
         observations.publish(1, vec![(stream.clone(), old.clone())]);
         let old_read = observations.retain_session().unwrap();
@@ -357,6 +417,10 @@ mod tests {
             None,
         );
         fresh.dropped.store(3, Ordering::Relaxed);
+        fresh.xruns.store(2, Ordering::Relaxed);
+        fresh.blocks.store(41_000, Ordering::Relaxed);
+        fresh.render_ticks.store(9_000, Ordering::Relaxed);
+        fresh.render_peak_ticks.store(150, Ordering::Relaxed);
         fresh.publish_native(
             NativeStreamStats {
                 capture_quality_available: true,
@@ -369,6 +433,7 @@ mod tests {
                 wait_timeouts: 2,
                 capture_dropped_frames: 11,
                 render_silent_frames: 13,
+                xruns: 5,
                 ..Default::default()
             },
             Some(NativeLatency {
@@ -380,12 +445,18 @@ mod tests {
         let actual = &snapshot.streams[0];
         assert_eq!(actual.dropped_frames, 3);
         assert_eq!(actual.silent_frames, 0);
+        assert_eq!(actual.xruns, 2);
         assert_eq!(actual.native_callbacks, 0);
         assert_eq!(actual.native_wait_wakes, 5);
         assert_eq!(actual.native_written_frames, 480);
         assert_eq!(actual.native_wait_timeouts, 2);
         assert_eq!(actual.native_dropped_frames, 11);
         assert_eq!(actual.native_silent_frames, 13);
+        assert_eq!(actual.native_xruns, 5);
+        assert_eq!(actual.engine_blocks, 41_000);
+        assert_eq!(actual.engine_busy_100ns, 9_000);
+        assert_eq!(actual.engine_peak_block_100ns, 150);
+        assert_eq!(actual.driver_latency.unwrap().output_frames, 64);
         assert_eq!(
             actual.native_capture_quality,
             Some(NativeCaptureQuality {

@@ -99,7 +99,9 @@ impl StudioShell {
                 self.settings.editor.expert_inputs.reset(input);
                 continue;
             };
-            if !self.settings.editor.expert_inputs.enabled(input) || !self.settings_open {
+            if !self.settings.editor.expert_inputs.enabled(input)
+                || !self.presentation.workspace.is_settings()
+            {
                 continue;
             }
             for frames in Frames::ALL {
@@ -147,13 +149,16 @@ impl StudioShell {
                                         .unwrap(),
                                 ) = value;
                             }
-                            shell.settings.editor.global.error = shell
+                            shell.settings.editor.global.feedback = shell
                                 .settings
                                 .editor
                                 .expert_inputs
                                 .current(shell.settings.editor.global.transport, cx)
                                 .and_then(|transport| transport.validate())
-                                .err();
+                                .err()
+                                .map(|cause| {
+                                    crate::ui::pages::settings::DraftFeedback::Diagnostic { cause }
+                                });
                             cx.notify();
                         },
                     )
@@ -194,7 +199,7 @@ pub(super) fn policy(shell: &StudioShell, input: Input, cx: &Context<StudioShell
                 SharedString::from(format!("{}-policy-{index}", input.prefix())),
                 title,
             )
-            .density(shell.density)
+            .density(shell.chrome.density)
             .variant(
                 if input.get(&shell.settings.editor.global).is_some() == enabled {
                     ButtonVariant::Primary
@@ -277,7 +282,7 @@ pub(super) fn editor(shell: &StudioShell, input: Input) -> Div {
                         frames.key()
                     )))
                     .disabled(shell.settings.editor.busy())
-                    .bg(theme::SURFACE_3)
+                    .bg(theme::SURFACE)
                     .text_color(theme::TEXT)
                     .border_color(theme::BORDER),
             ));
@@ -298,7 +303,7 @@ mod tests {
         let (view, cx, runtime) = test_shell(cx);
         let old = cx.update(|window, cx| {
             view.update(cx, |shell, cx| {
-                shell.settings_open = true;
+                shell.open_settings(window, cx);
                 shell.settings.editor.global.transport.vad = Some(ExpertInputBuffer::default());
                 shell
                     .settings

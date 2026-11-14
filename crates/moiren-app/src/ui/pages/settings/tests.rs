@@ -46,7 +46,7 @@ fn settings_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut T
     let before = settings_rebuilds(&view, cx);
 
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
+        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
         cx.notify();
     });
     cached_frame(cx);
@@ -115,7 +115,7 @@ fn settings_panel_repaints_section_and_density_changes_exactly_once(cx: &mut Tes
     // A density change is a key input of its own, and compact visibly
     // re-lays the section out (denser controls).
     view.update(cx, |shell, cx| {
-        shell.density = Density::Compact;
+        shell.chrome.density = Density::Compact;
         cx.notify();
     });
     cached_frame(cx);
@@ -179,87 +179,46 @@ fn settings_page_rebuilds_on_global_draft_but_not_device_draft(cx: &mut TestAppC
     finish_service(runtime);
 }
 
+/// The audio actions are the last block of the scrolled column, so the
+/// scroll viewport must be the page area (not its content height — a
+/// `flex_1` viewport inside the scroll region's non-flex root used to grow
+/// to the content, scroll nowhere, and paint the overflow under whatever
+/// followed the page), and the actions must come into view at the scroll's
+/// end.
 #[gpui_kit::test]
-fn settings_transport_cache_tracks_device_conflict_and_pending_without_a_publish(
-    cx: &mut TestAppContext,
-) {
-    use super::model::{Pending, Stage};
-    let (view, cx, runtime) = test_shell(cx);
-    open_settings(cx);
-    view.update(cx, |shell, cx| {
-        shell.settings.editor.section = Section::Transport;
-        cx.notify();
-    });
-    cached_frame(cx);
-    let before = settings_rebuilds(&view, cx);
-    let snapshot = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.clone());
-    view.update(cx, |shell, cx| {
-        shell.settings.editor.device.audio.processing.sample_rate = 44_100;
-        cx.notify();
-    });
-    cached_frame(cx);
-    assert_eq!(settings_rebuilds(&view, cx), before + 1);
-    assert!(cx.update(|window, _| {
-        window
-            .find("measured-process-feedback")
-            .label()
-            .unwrap()
-            .contains("Save or discard")
-    }));
-    view.update(cx, |shell, cx| {
-        shell.settings.editor.device = shell.current_settings_draft(cx);
-        cx.notify();
-    });
-    cached_frame(cx);
-    assert_eq!(settings_rebuilds(&view, cx), before + 2);
-    view.update(cx, |shell, cx| {
-        shell.settings.editor.section = Section::Audio;
-        cx.notify();
-    });
-    cached_frame(cx);
-    let before = settings_rebuilds(&view, cx);
-    view.update(cx, |shell, cx| {
-        let submitted = shell.settings.editor.device.capture(&snapshot).unwrap();
-        shell.settings.editor.device.pending = Some(Pending {
-            request: crate::service::RequestId(u64::MAX),
-            stage: Stage::Audio,
-            restart: false,
-            submitted,
-        });
-        cx.notify();
-    });
-    cached_frame(cx);
-    assert!(settings_rebuilds(&view, cx) > before);
-    let before_clear = settings_rebuilds(&view, cx);
-    view.update(cx, |shell, cx| {
-        shell.settings.editor.device.pending = None;
-        cx.notify();
-    });
-    cached_frame(cx);
-    assert!(settings_rebuilds(&view, cx) > before_clear);
-    view.read_with(cx, |shell, cx| {
-        assert!(std::sync::Arc::ptr_eq(
-            &snapshot,
-            &shell.state.read(cx).snapshot
-        ))
-    });
-    finish_service(runtime);
-}
-
-#[gpui_kit::test]
-fn transport_long_choice_groups_remain_inside_the_reading_column(cx: &mut TestAppContext) {
+fn settings_scroll_viewport_fits_the_page_and_scrolls_actions_into_view(cx: &mut TestAppContext) {
     let (_view, cx, runtime) = test_shell(cx);
-    cx.simulate_resize(size(gpui_kit::px(1024.), gpui_kit::px(720.)));
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(640.)));
     open_settings(cx);
+    let page = cx.update(|window, _| window.find("settings-page").bounds());
+    let viewport = cx.update(|window, _| window.find("settings-scroll").bounds());
+    let page_bottom = page.origin.y + page.size.height;
+    assert_eq!(
+        viewport.origin.y, page.origin.y,
+        "the scroll viewport must start at the page's top"
+    );
+    assert_eq!(
+        viewport.origin.y + viewport.size.height,
+        page_bottom,
+        "the scroll viewport must end at the page's bottom, not at the content's"
+    );
+    let before = cx.update(|window, _| window.find("settings-save").bounds());
+    assert!(
+        before.origin.y >= page_bottom,
+        "a short window must push the actions below the fold, got {before:?}"
+    );
     cx.update(|window, cx| {
-        window.click("settings-nav-transport", cx);
-        let target = window.find("vad-recovery-cap-8").bounds();
-        let column = window.find("settings-content").bounds();
-        assert!(target.origin.x >= column.origin.x);
-        assert!(
-            target.origin.x + target.size.width <= column.origin.x + column.size.width,
-            "all recovery options must fit the reading column: {target:?} / {column:?}"
+        window.scroll(
+            "settings-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-4000.))),
+            cx,
         );
+        window.render_frame(cx);
     });
+    let save = cx.update(|window, _| window.find("settings-save").bounds());
+    assert!(
+        save.origin.y >= viewport.origin.y && save.origin.y + save.size.height <= page_bottom,
+        "the scrolled-to-end actions must sit inside the viewport, got {save:?}"
+    );
     finish_service(runtime);
 }

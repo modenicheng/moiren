@@ -51,6 +51,15 @@ pub fn current() -> UiLanguage {
     }
 }
 
+/// Locale-pinned translation for tests: renders `key` under Simplified
+/// Chinese no matter which locale parallel UI tests set globally. Keys are
+/// the English source strings; the ledger guards in `i18n_guards` keep every
+/// literal key resolvable in the shipped catalog.
+#[cfg(test)]
+pub(crate) fn zh(key: &str) -> String {
+    rust_i18n::t!(key, locale = SIMPLIFIED_CHINESE).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,16 +136,45 @@ mod tests {
     fn mixer_routes_translate_interpolation_and_meter_preferences() {
         assert_eq!(
             rust_i18n::t!(
-                "%{name} → in %{port}",
+                "%{name} · out %{source_port} → %{target} · in %{port}",
                 locale = SIMPLIFIED_CHINESE,
                 name = "Mic",
+                source_port = 1,
+                target = "Bus",
                 port = 2
             ),
-            "Mic → 输入 2"
+            "Mic · 输出 1 → Bus · 输入 2"
         );
         assert_eq!(
             rust_i18n::t!("Peak hold", locale = SIMPLIFIED_CHINESE),
             "峰值保持"
+        );
+        // The input dropdown's live multi-select chrome.
+        assert_eq!(
+            rust_i18n::t!(
+                "Manage inputs (%{used} of %{max})",
+                locale = SIMPLIFIED_CHINESE,
+                used = 2,
+                max = 8
+            ),
+            "管理输入（已用 2 / 8）"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Input limit reached (%{max}) — release one first",
+                locale = SIMPLIFIED_CHINESE,
+                max = 2
+            ),
+            "已达上限 2 路 — 先取消一路再勾选"
+        );
+        // Strip and channel-mode terms (M/S/ST/MONO/SWAP/L/R/n CH/CH n ONLY/DIM)
+        // are audio-engineering shorthand: they stay identical in every locale,
+        // so the zh-CN catalog mirrors them instead of translating.
+        assert_eq!(rust_i18n::t!("ST", locale = SIMPLIFIED_CHINESE), "ST");
+        assert_eq!(rust_i18n::t!("MONO", locale = SIMPLIFIED_CHINESE), "MONO");
+        assert_eq!(
+            rust_i18n::t!("%{channels} CH", locale = SIMPLIFIED_CHINESE, channels = 6),
+            "6 CH"
         );
         assert_eq!(rust_i18n::t!("No sends", locale = ENGLISH), "No sends");
     }

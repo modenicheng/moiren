@@ -80,7 +80,9 @@ fn snapshots_reuse_immutable_projects_and_distinguish_hosts() {
     )
     .unwrap();
     let observer = first.observer();
-    wait(&observer, |state| state.host == HostState::Open);
+    wait(&observer, |state| {
+        state.execution == ExecutionState::Running
+    });
     let before = observer.read();
     let no_change = first.control().edit(|_| Ok(())).unwrap();
     assert!(matches!(
@@ -90,7 +92,8 @@ fn snapshots_reuse_immutable_projects_and_distinguish_hosts() {
     let after = observer.read();
     assert!(Arc::ptr_eq(&before.desired, &after.desired));
     assert_ne!(after.host_id, second.observer().read().host_id);
-    assert!(after.active.is_none());
+    // An output-free project still owns a running transport.
+    assert!(after.active.is_some());
 }
 
 #[test]

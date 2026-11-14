@@ -4,9 +4,11 @@ mod action_accessibility;
 pub mod action_assets;
 pub(super) mod action_style;
 pub mod actions;
+pub mod anchored_popover;
 pub mod fader;
 pub mod meters;
 pub mod navigation;
+pub mod occluding_page;
 pub mod overlay_scrollbar;
 pub mod scroll_step;
 

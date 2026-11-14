@@ -63,9 +63,9 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
         .try_request(AppRequest::Start(SessionSpec {
             source: InputSelection::Tone { frequency_hz: 440. },
             output_endpoint_id: "capture-output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 0.75,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .map_err(|error| anyhow::anyhow!("capture start: {error:?}"))?;
@@ -86,6 +86,211 @@ fn demo_spectrum_curve() -> Vec<f32> {
     (0..121)
         .map(|index| body(index as f32).clamp(-96., 0.))
         .collect()
+}
+
+/// Where a drag of the first mixer strip's fader starts: the thumb's center
+/// on the registered track. `None` before the strips laid out.
+fn fader_press(shell: &StudioShell, cx: &App) -> Option<Point<Pixels>> {
+    let node = shell.mixer.presentation.order.first()?;
+    let slider = shell.mixer.presentation.faders.get(node)?.state.read(cx);
+    let bounds = slider.bounds();
+    (bounds.size.height > px(0.)).then(|| {
+        // The fader's value space is inverted: 1 is the track top.
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    })
+}
+
+/// The gesture `MOIREN_CAPTURE_DRAG` traces on the first strip's fader.
+#[derive(Clone, Copy, PartialEq)]
+enum Sweep {
+    /// A held pointer drag: the kit slider's drag-and-drop path.
+    Drag,
+    /// A precision-touchpad pan: pixel wheel deltas through the fader's
+    /// gesture surface, which reach the screen as nested-model rebuilds.
+    Pan,
+}
+
+/// The `MOIREN_CAPTURE_DRAG` gesture: sweeps the fader at `press` along a
+/// ±40 px, one-second sine until `until` passes. A drag presses, moves the
+/// pointer twice per frame and releases at the end; a pan scrolls once per
+/// frame by the sweep's travel since the previous frame. The events take the
+/// real input path, so the trace prices a live gesture frame by frame.
+fn sweep_fader(
+    window: &mut Window,
+    press: Point<Pixels>,
+    sweep: Sweep,
+    until: Instant,
+    cx: &mut App,
+) {
+    if sweep == Sweep::Drag {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: press,
+                click_count: 1,
+                ..Default::default()
+            }),
+            cx,
+        );
+    }
+    sweep_frame(window, press, sweep, Instant::now(), 0., until);
+}
+
+fn sweep_frame(
+    window: &mut Window,
+    press: Point<Pixels>,
+    sweep: Sweep,
+    started: Instant,
+    last: f32,
+    until: Instant,
+) {
+    window.on_next_frame(move |window, cx| {
+        let now = Instant::now();
+        let offset = |elapsed: f32| 40. * (std::f32::consts::TAU * elapsed).sin();
+        let at = |elapsed: f32| press + point(px(0.), px(offset(elapsed)));
+        let elapsed = now.duration_since(started).as_secs_f32();
+        let done = now >= until;
+        match sweep {
+            Sweep::Drag if done => window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: at(elapsed),
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            ),
+            Sweep::Drag => {
+                // Two moves per frame: real pointers report faster than the
+                // display refreshes, so a frame folds several Changes into
+                // one rebuild.
+                for elapsed in [(elapsed - 0.0035).max(0.), elapsed] {
+                    window.dispatch_event(
+                        PlatformInput::MouseMove(MouseMoveEvent {
+                            position: at(elapsed),
+                            pressed_button: Some(MouseButton::Left),
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                }
+                DispatchEventResult::default()
+            }
+            Sweep::Pan if done => return,
+            Sweep::Pan => window.dispatch_event(
+                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position: press,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(offset(elapsed) - offset(last)))),
+                    touch_phase: TouchPhase::Moved,
+                    ..Default::default()
+                }),
+                cx,
+            ),
+        };
+        if !done {
+            sweep_frame(window, press, sweep, started, elapsed, until);
+        }
+    });
+}
+
+/// `MOIREN_CAPTURE_ECHO`: how long an edit takes to come back to the UI.
+/// Dispatches a no-op strip edit 40 times, 60 ms apart, and times each from
+/// the dispatch to the shell notification that delivers the snapshot which
+/// consumed it: the service round trip plus however long the control pump
+/// takes to pick the publish up. Nothing here drains the state itself, so
+/// the number is the production pump's.
+async fn echo_probe(shell: &Entity<StudioShell>, cx: &mut AsyncApp) {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let in_flight: Rc<Cell<Option<(crate::service::RequestId, Instant)>>> = Rc::default();
+    let samples: Rc<RefCell<Vec<f64>>> = Rc::default();
+    let _delivery = cx.update(|cx| {
+        let (in_flight, samples) = (in_flight.clone(), samples.clone());
+        cx.observe(shell, move |shell, cx| {
+            let Some((request, sent)) = in_flight.get() else {
+                return;
+            };
+            if shell.read(cx).state.read(cx).snapshot.consumed_request_id >= request {
+                samples
+                    .borrow_mut()
+                    .push(sent.elapsed().as_secs_f64() * 1000.);
+                in_flight.set(None);
+            }
+        })
+    });
+    for _ in 0..40 {
+        let request = shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                let node = state.snapshot.graph.nodes.first()?;
+                let edit = crate::service::GraphEdit::SetMixer {
+                    node: node.id,
+                    state: node.mixer,
+                };
+                state.try_dispatch(AppRequest::EditGraph(edit)).ok()
+            })
+        });
+        in_flight.set(request.map(|request| (request, Instant::now())));
+        cx.background_executor()
+            .timer(Duration::from_millis(60))
+            .await;
+    }
+    in_flight.set(None);
+    let mut samples = samples.take();
+    samples.sort_by(f64::total_cmp);
+    let at = |p: f64| samples[((samples.len() - 1) as f64 * p).round() as usize];
+    if samples.is_empty() {
+        eprintln!("Echo latency: no edit came back");
+    } else {
+        eprintln!(
+            "Echo latency: p50={:.2}ms p95={:.2}ms max={:.2}ms (n={})",
+            at(0.5),
+            at(0.95),
+            at(1.),
+            samples.len()
+        );
+    }
+}
+
+/// Opens each status bar panel in turn and captures it at the comfortable
+/// size. The panels open through the production path (`status_toggle`), so
+/// a shot shows what a hover shows — the performance panel's sampler
+/// included — without synthesizing a real pointer.
+async fn status_panels(
+    window: AnyWindowHandle,
+    shell: &Entity<StudioShell>,
+    directory: &std::path::Path,
+    capture: &impl Fn(&mut AsyncApp, std::path::PathBuf),
+    cx: &mut AsyncApp,
+) {
+    use crate::ui::shell::status::StatusItem;
+    // Whatever size the preceding captures left behind, review these at
+    // the comfortable one.
+    let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
+    cx.background_executor()
+        .timer(Duration::from_millis(200))
+        .await;
+    for (name, item) in [
+        ("status-engine", StatusItem::Engine),
+        ("status-clock", StatusItem::Clock),
+        ("status-xrun", StatusItem::Xrun),
+        ("status-perf", StatusItem::Perf),
+        ("status-format", StatusItem::Format),
+    ] {
+        // Toggle through the production path: the performance sampler starts with
+        // the open, exactly as a hover would produce it.
+        shell.update(cx, |shell, cx| shell.status_toggle(item, cx));
+        // The panel fades in; the performance panel also needs two process
+        // tables a second apart before its CPU shares are rates.
+        let settle = if item == StatusItem::Perf { 1400 } else { 250 };
+        cx.background_executor()
+            .timer(Duration::from_millis(settle))
+            .await;
+        capture(cx, directory.join(format!("{name}.png")));
+    }
+    shell.update(cx, |shell, cx| shell.status_close(cx));
 }
 
 pub fn run_ui_capture() -> anyhow::Result<()> {
@@ -182,12 +387,29 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     .timer(Duration::from_millis(1200))
                     .await;
                 if meter_capture {
+                    // `MOIREN_CAPTURE_DRAG` traces a live fader gesture instead of
+                    // the steady state: `pan` sweeps it with touchpad pixel scrolls,
+                    // `inspector` drags with the inspector open on the dragged strip,
+                    // any other value drags with the inspector closed.
+                    let (sweep, inspector, label, suffix) =
+                        match std::env::var("MOIREN_CAPTURE_DRAG").ok().as_deref() {
+                            None => (None, false, "Steady", ""),
+                            Some("pan") => (Some(Sweep::Pan), false, "Pan", "-pan"),
+                            Some("inspector") => {
+                                (Some(Sweep::Drag), true, "Drag", "-drag-inspector")
+                            }
+                            Some(_) => (Some(Sweep::Drag), false, "Drag", "-drag"),
+                        };
                     for (name, width, height) in [("comfortable", 1440., 900.), ("compact", 1024., 720.)] {
                         window.update(cx, |_, window, _| window.resize(size(px(width), px(height)))).unwrap();
                         cx.background_executor().timer(Duration::from_millis(200)).await;
                         shell.update(cx, |shell, cx| {
                             shell.set_page(Page::Mixer, cx);
-                            shell.inspector_open = false;
+                            shell.chrome.inspector_open = false;
+                            if inspector {
+                                shell.selection.node = shell.mixer.presentation.order.first().copied();
+                                shell.open_inspector();
+                            }
                             cx.notify();
                         });
                         // Exclude resize and inspector spring settling from steady-state
@@ -195,13 +417,29 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         cx.background_executor().timer(Duration::from_secs(1)).await;
                         #[cfg(feature = "ui-profiler")]
                         let mut frames = cx.update(|cx| performance::PlatformTrace::new(cx, window.window_id()));
-                        let before = shell.read_with(cx, |shell, _| {
+                        let before = shell.read_with(cx, |shell, cx| {
                             let mut trace = shell.trace.borrow_mut();
                             trace.start_sample();
-                            (trace.strip_renders, trace.meter_paints)
+                            (trace.strip_renders, trace.meter_paints, trace.inspector_renders,
+                                shell.state.read(cx).snapshot.graph.candidate_revision)
                         });
                         let seconds = std::env::var("MOIREN_CAPTURE_SECONDS").ok()
                             .and_then(|value| value.parse::<u64>().ok()).unwrap_or(3).clamp(1, 60);
+                        if let Some(sweep) = sweep {
+                            let press = shell.read_with(cx, fader_press);
+                            let until = std::time::Instant::now() + Duration::from_secs(seconds);
+                            match press {
+                                Some(press) => {
+                                    // Inactive windows throttle frame callbacks to
+                                    // ~30 fps; the sweep must run at display rate.
+                                    let _ = cx.update_window(window, |_, window, cx| {
+                                        window.activate_window();
+                                        sweep_fader(window, press, sweep, until, cx)
+                                    });
+                                }
+                                None => capture_failure.store(true, std::sync::atomic::Ordering::Relaxed),
+                            }
+                        }
                         for _ in 0..seconds * 4 {
                             cx.background_executor().timer(Duration::from_millis(250)).await;
                             // Drain the bounded journal regularly; serialize only after
@@ -210,25 +448,33 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             frames.collect();
                         }
                         #[cfg(feature = "ui-profiler")]
-                        frames.write(&directory.join(format!("platform-{name}.json"))).unwrap();
-                        shell.read_with(cx, |shell, _| {
+                        frames.write(&directory.join(format!("platform-{name}{suffix}.json"))).unwrap();
+                        shell.read_with(cx, |shell, cx| {
                             let trace = shell.trace.borrow();
-                            eprintln!("Steady {name}: strip renders={}, meter paints={}",
-                                trace.strip_renders - before.0, trace.meter_paints - before.1);
-                            trace.write(&directory.join(format!("meter-{name}.json"))).unwrap();
+                            let revisions = shell.state.read(cx).snapshot.graph.candidate_revision - before.3;
+                            eprintln!("{label} {name}: strip renders={}, inspector renders={}, meter paints={}, revisions={revisions}",
+                                trace.strip_renders - before.0, trace.inspector_renders - before.2,
+                                trace.meter_paints - before.1);
+                            trace.write(&directory.join(format!("meter-{name}{suffix}.json"))).unwrap();
                         });
-                        capture(cx, directory.join(format!("mixer-{name}.png")));
+                        capture(cx, directory.join(format!("mixer-{name}{suffix}.png")));
                     }
                     shell.update(cx, |shell, cx| {
                         let state = shell.state.read(cx);
                         let snapshot = &state.snapshot;
                         eprintln!("Native capture: phase={:?}, live={}, visible={}, nodes={}", snapshot.phase,
                             snapshot.graph.nodes.iter().filter(|node| state.node_meters.channel_levels(node.id).is_some()).count(),
-                            shell.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
+                            shell.metering.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
                     });
                     if std::env::var_os("MOIREN_CAPTURE_STATES").is_some() {
                         mixer_states::capture(window, &shell, &directory, &capture, cx)
                             .await.expect("Mixer state captures");
+                    }
+                    if std::env::var_os("MOIREN_CAPTURE_ECHO").is_some() {
+                        echo_probe(&shell, cx).await;
+                    }
+                    if std::env::var_os("MOIREN_CAPTURE_STATUS").is_some() {
+                        status_panels(window, &shell, &directory, &capture, cx).await;
                     }
                     cx.update(|cx| cx.quit());
                     return;
@@ -244,7 +490,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .await;
                     for page in [Page::Graph, Page::Mixer, Page::Matrix, Page::Devices] {
                         shell.update(cx, |s, cx| {
-                            s.density = if name == "compact" {
+                            s.chrome.density = if name == "compact" {
                                 Density::Compact
                             } else {
                                 Density::Comfortable
@@ -271,7 +517,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                                 eprintln!(
                                     "Native mixer meters: {live}/{} live, {} visible, {} topics, phase {:?}",
                                     snapshot.graph.nodes.len(),
-                                    shell.node_meter_points.borrow().len(),
+                                    shell.metering.node_meter_points.borrow().len(),
                                     snapshot.signal_topics.node_levels.len(),
                                     snapshot.phase,
                                 );
@@ -287,13 +533,16 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     }
                     // Inspect a real catalog row without binding resources or
                     // submitting any audio request. The override stays a draft.
-                    shell.update(cx, |s, cx| {
-                        let id = s.state.read(cx).snapshot.catalog.outputs.first()
-                            .map(|row| row.endpoint_id.clone());
-                        if let Some(id) = id {
-                            s.inspect_device(id.clone(), cx);
-                            settings::device_stream_mut(&mut s.settings.editor.device.audio, settings::Direction::Output, &id);
-                        }
+                    let _ = window.update(cx, |_, window, cx| {
+                        shell.update(cx, |s, cx| {
+                            let id = s.state.read(cx).snapshot.catalog.outputs.first()
+                                .map(|row| row.endpoint_id.clone());
+                            if let Some(id) = id {
+                                let _ = window;
+                                s.inspect_device(id.clone(), cx);
+                                settings::device_stream_mut(&mut s.settings.editor.device.audio, settings::Direction::Output, &id);
+                            }
+                        });
                     });
                     cx.background_executor().timer(Duration::from_millis(100)).await;
                     capture(cx, directory.join(format!("{name}-device-override.png")));
@@ -316,10 +565,18 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         capture(cx, directory.join(format!("{name}-{suffix}.png")));
                     }
                 }
+                // `MOIREN_CAPTURE_STATUS` opens each status bar panel for a
+                // dedicated shot, so the hover surfaces are reviewable
+                // without driving a real pointer (the mixer state captures'
+                // precedent: the harness seeds the same shell state the
+                // interaction would produce).
+                if std::env::var_os("MOIREN_CAPTURE_STATUS").is_some() {
+                    status_panels(window, &shell, &directory, &capture, cx).await;
+                }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
-                    shell.sidebar_open = false;
-                    shell.inspector_open = false;
+                    shell.chrome.sidebar_open = false;
+                    shell.chrome.inspector_open = false;
                     let order = shell
                         .state
                         .read(cx)
@@ -335,7 +592,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             2 => (480., 35.),
                             _ => (810. + index.saturating_sub(3) as f32 * 250., 175.),
                         };
-                        shell.node_positions.insert(*id, position);
+                        shell.graph_view.node_positions.insert(*id, position);
                     }
                     cx.notify();
                 });
@@ -347,7 +604,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     ("graph-double", Some(2.)),
                 ] {
                     shell.update(cx, |shell, cx| {
-                        shell.camera = match zoom {
+                        shell.graph_view.camera = match zoom {
                             Some(zoom) => Camera {
                                 pan_x: 24.,
                                 pan_y: 64.,
@@ -371,7 +628,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 // draws synchronously, so the rebuilt panel shows the fault
                 // outline and the meter frame the tooltip in that draw.
                 shell.update(cx, |shell, cx| {
-                    shell.camera = Camera {
+                    shell.graph_view.camera = Camera {
                         pan_x: 24.,
                         pan_y: 64.,
                         zoom: 1.,
@@ -389,7 +646,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell
                         .state
                         .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
-                    shell.hovered_node = Some(id);
+                    shell.graph_view.hovered_node = Some(id);
                     cx.notify();
                 });
                 capture(cx, directory.join("graph-fault-tooltip.png"));
@@ -399,7 +656,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell
                         .state
                         .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
-                    shell.hovered_node = None;
+                    shell.graph_view.hovered_node = None;
                     cx.notify();
                 });
                 // The output card's binding chip hangs its endpoint menu off
@@ -415,7 +672,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .iter()
                         .find(|node| node.kind() == moiren_core::graph::NodeKind::Sink)
                         .map(|node| node.id());
-                    let anchor = shell.graph_canvas_frame.read().and_then(|frame| {
+                    let anchor = shell.graph_view.canvas_frame.read().and_then(|frame| {
                         let index = frame
                             .world
                             .nodes
@@ -425,13 +682,13 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         Some(frame.window_rect(chip.bounds))
                     });
                     if let (Some(node), Some(anchor)) = (sink, anchor) {
-                        shell.binding_menu = Some(graph::BindingMenu { node, anchor });
+                        shell.graph_view.binding_menu = Some(graph::BindingMenu { node, anchor });
                         cx.notify();
                     }
                 });
                 capture(cx, directory.join("graph-binding-menu.png"));
                 shell.update(cx, |shell, cx| {
-                    shell.binding_menu = None;
+                    shell.graph_view.binding_menu = None;
                     cx.notify();
                 });
                 // The spectrum analyzer's live body (design 18 B3): put an
@@ -461,7 +718,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         output_endpoint_id: None,
                         tint: None,
                     });
-                    shell.node_positions.insert(id, (420., 230.));
+                    shell.graph_view.node_positions.insert(id, (420., 230.));
                     let curve = demo_spectrum_curve();
                     shell.state.update(cx, |state, _| {
                         state.snapshot = std::sync::Arc::new(snapshot);
@@ -476,7 +733,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
                     let _ = graph.graph.remove_node(analyzer);
                     graph.nodes.retain(|node| node.id != analyzer);
-                    shell.node_positions.remove(&analyzer);
+                    shell.graph_view.node_positions.remove(&analyzer);
                     shell
                         .state
                         .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
@@ -490,9 +747,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 ] {
                     shell.update(cx, |shell, cx| {
                         shell.set_page(page, cx);
-                        shell.camera = Camera::default();
-                        shell.sidebar_open = page == Page::Graph;
-                        shell.inspector_open = true;
+                        shell.graph_view.camera = Camera::default();
+                        shell.chrome.sidebar_open = page == Page::Graph;
+                        shell.chrome.inspector_open = true;
                         let gain = shell
                             .state
                             .read(cx)
@@ -503,12 +760,12 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             .iter()
                             .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
                             .map(|node| node.id());
-                        shell.selected_node = gain;
-                        shell.selected_route = None;
+                        shell.selection.node = gain;
+                        shell.selection.route = None;
                         if name == "connection-inspector" {
-                            shell.selected_node = None;
+                            shell.selection.node = None;
                             let state = shell.state.read(cx);
-                            shell.selected_route = state.snapshot.graph.graph.edges().first()
+                            shell.selection.route = state.snapshot.graph.graph.edges().first()
                                 .map(|edge| (edge.src_port(), edge.dst_port()));
                         }
                         cx.notify();
@@ -532,9 +789,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 shell.update(cx, |shell, cx| {
                     shell.state.update(cx, |state, _| state.poll());
                     shell.set_page(Page::Graph, cx);
-                    shell.inspector_open = true;
-                    shell.sidebar_open = true;
-                    shell.selected_node = shell
+                    shell.chrome.inspector_open = true;
+                    shell.chrome.sidebar_open = true;
+                    shell.selection.node = shell
                         .state
                         .read(cx)
                         .snapshot
@@ -544,10 +801,10 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .iter()
                         .find(|node| node.kind() == moiren_core::graph::NodeKind::Compressor)
                         .map(|node| node.id());
-                    if let Some(key) = shell.selected_node {
-                        shell.node_positions.insert(key, (480., 370.));
+                    if let Some(key) = shell.selection.node {
+                        shell.graph_view.node_positions.insert(key, (480., 370.));
                     }
-                    shell.camera = Camera::default();
+                    shell.graph_view.camera = Camera::default();
                     cx.notify();
                 });
                 cx.background_executor()
@@ -586,11 +843,11 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
-                    shell.sidebar_open = false;
-                    shell.inspector_open = false;
-                    shell.selected_route = None;
-                    shell.selected_node = None;
-                    shell.camera = Camera {
+                    shell.chrome.sidebar_open = false;
+                    shell.chrome.inspector_open = false;
+                    shell.selection.route = None;
+                    shell.selection.node = None;
+                    shell.graph_view.camera = Camera {
                         pan_x: 24.,
                         pan_y: 64.,
                         zoom: 1.,
@@ -599,7 +856,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     let graph = &shell.state.read(cx).snapshot.graph.graph;
                     let ids = graph.nodes().iter().map(|node| node.id()).collect::<Vec<_>>();
                     for (index, id) in ids.iter().enumerate() {
-                        shell.node_positions.insert(
+                        shell.graph_view.node_positions.insert(
                             *id,
                             (40. + (index % 4) as f32 * 330., 120. + (index / 4) as f32 * 190.),
                         );

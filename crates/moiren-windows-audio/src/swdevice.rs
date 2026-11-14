@@ -1,7 +1,7 @@
 //! W00 software-device management. Fixed namespace; never install a driver.
 use crate::{
     catalog::{self, ApiFailure, CatalogSnapshot},
-    owner::{Apartment, OwnedHandle, take_string},
+    win32_raii::{Apartment, OwnedHandle, take_string},
 };
 use serde::Serialize;
 use windows::{

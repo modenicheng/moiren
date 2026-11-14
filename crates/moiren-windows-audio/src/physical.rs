@@ -1,7 +1,7 @@
 //! Explicit endpoint probes: native f32 capture and Shared silent render.
 use crate::{
     catalog::{self, ApiFailure},
-    owner::Apartment,
+    win32_raii::Apartment,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 

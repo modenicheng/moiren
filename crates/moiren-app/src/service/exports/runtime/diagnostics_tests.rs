@@ -305,7 +305,7 @@ fn complete_binds_real_diagnostics_to_accepted_generation_and_exact_stamp() {
         assert!(complete_native(&mut runtime, &mut service, native).is_empty());
         runtime.project(
             &mut service,
-            &graph,
+            graph.active_revision,
             std::slice::from_ref(&intent),
             Some([1, 1, 1, graph.candidate_revision, 1]),
         );
@@ -327,7 +327,13 @@ fn complete_binds_real_diagnostics_to_accepted_generation_and_exact_stamp() {
         assert!(!runtime.ready_for(&service, std::slice::from_ref(&intent)));
         assert!(
             runtime
-                .work(&service, &graph, false)
+                .work(
+                    &service,
+                    &graph.exports,
+                    graph.candidate_revision,
+                    graph.active_revision,
+                    false,
+                )
                 .unwrap()
                 .actions
                 .is_empty()
@@ -366,7 +372,7 @@ fn endpoint_error_survives_present_status_without_granting_readiness() {
     assert_eq!(errors, ["existing global failure", refusal]);
     runtime.project(
         &mut service,
-        &graph,
+        graph.active_revision,
         std::slice::from_ref(&intent),
         Some([1, 1, 1, graph.candidate_revision, 1]),
     );
@@ -421,7 +427,7 @@ fn cached_query_failure_clears_old_measurements_keeps_error_and_preserves_author
     );
     runtime.project(
         &mut service,
-        &graph,
+        graph.active_revision,
         &active,
         Some([1, 1, 1, graph.candidate_revision, 1]),
     );
@@ -457,7 +463,7 @@ fn cached_query_failure_clears_old_measurements_keeps_error_and_preserves_author
     assert_eq!(errors, ["QUERY timeout"]);
     runtime.project(
         &mut service,
-        &graph,
+        graph.active_revision,
         &active,
         Some([1, 1, 1, graph.candidate_revision, 1]),
     );
@@ -492,7 +498,15 @@ fn cached_query_failure_clears_old_measurements_keeps_error_and_preserves_author
     assert!(runtime.lifecycle_ready_for(&service, std::slice::from_ref(&healthy)));
     assert!(runtime.ready_for(&service, std::slice::from_ref(&healthy)));
     assert_eq!(healthy_status.active_revision, graph.active_revision);
-    let work = runtime.work(&service, &graph, false).unwrap();
+    let work = runtime
+        .work(
+            &service,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            false,
+        )
+        .unwrap();
     assert_eq!(work.actions.len(), 1);
     assert!(matches!(work.actions[0].action,
         ExportAction::SetGate { endpoint_id, open: true } if endpoint_id == healthy.endpoint_id

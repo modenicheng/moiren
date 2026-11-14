@@ -384,6 +384,68 @@ fn stop_start_preserves_queued_audio_and_does_not_count_stopped_frames_as_drops(
 }
 
 #[test]
+fn pause_skips_frames_without_counting_and_resume_continues() {
+    let (mut recorder, mut reader) = recorder(1, settings(4)).unwrap();
+    observe::<f64>(&mut recorder, &[&[1.0]]);
+    reader.pause();
+    assert!(reader.is_paused());
+    assert!(reader.is_recording(), "pause keeps the Recording state");
+    observe::<f64>(&mut recorder, &[&[2.0, 3.0]]);
+    let stats = reader.stats();
+    assert_eq!(stats.accepted_frames, 1);
+    assert_eq!(stats.dropped_frames, 0, "paused frames are not drops");
+    assert_eq!(stats.read_frames, 0);
+    assert_eq!(stats.state, RecorderState::Recording);
+    assert_eq!(reader.queued_frames(), 1);
+    reader.resume();
+    assert!(!reader.is_paused());
+    observe::<f64>(&mut recorder, &[&[4.0]]);
+    assert_eq!(reader.queued_frames(), 2);
+    assert_eq!(reader.stats().accepted_frames, 2);
+    let mut output = [0.0; 4];
+    assert_eq!(reader.read_interleaved(&mut output), 2);
+    assert_eq!(&output[..2], &[1.0, 4.0]);
+}
+
+#[test]
+fn pause_handle_gates_the_shared_control_block_across_a_lease() {
+    let (mut recorder, reader) = recorder(1, settings(4)).unwrap();
+    let handle = reader.pause_handle();
+    handle.pause();
+    assert!(reader.is_paused());
+    observe::<f64>(&mut recorder, &[&[5.0]]);
+    assert_eq!(reader.stats().accepted_frames, 0);
+    handle.resume();
+    observe::<f64>(&mut recorder, &[&[6.0]]);
+    assert_eq!(reader.stats().accepted_frames, 1);
+}
+
+#[test]
+fn skip_queued_settles_inflight_capture_and_discards_the_backlog() {
+    let (mut recorder, mut reader) = recorder(1, settings(8)).unwrap();
+    observe::<f64>(&mut recorder, &[&[1.0, 2.0, 3.0]]);
+    assert_eq!(reader.queued_frames(), 3);
+    reader.skip_queued();
+    assert_eq!(reader.state(), RecorderState::Stopped);
+    assert!(reader.is_quiescent());
+    assert_eq!(reader.queued_frames(), 0);
+    assert_eq!(
+        reader.stats().read_frames,
+        3,
+        "the drain keeps read_frames honest"
+    );
+    // Nothing observed while stopped reaches a later destination.
+    observe::<f64>(&mut recorder, &[&[8.0]]);
+    assert_eq!(reader.queued_frames(), 0);
+    reader.start();
+    observe::<f64>(&mut recorder, &[&[7.0]]);
+    assert_eq!(reader.queued_frames(), 1);
+    let mut output = [0.0; 2];
+    assert_eq!(reader.read_interleaved(&mut output), 1);
+    assert_eq!(output[0], 7.0);
+}
+
+#[test]
 fn reads_only_complete_frames_and_reports_disconnection_without_discarding_audio() {
     let (mut recorder, mut reader) = recorder(2, settings(4)).unwrap();
     observe::<f32>(&mut recorder, &[&[1.0, 2.0], &[3.0, 4.0]]);

@@ -104,16 +104,16 @@
 | VMware 显示名称 | `Windows 11 x64` |
 | Guest hostname | `DRIVER-TEST` |
 | Windows build | `10.0.26200` |
-| SSH | `wdkremoteuser@192.168.111.128` |
-| 本机私钥路径 | `C:\Users\cheng\.ssh\moiren-test` |
+| SSH | `<driver-test-user>@<driver-test-host>`（凭据见本地访问配置，不在此记录） |
+| 本机私钥路径 | `<local-key-path>` |
 | Guest 证据目录 | `C:\MoirenVadTest` |
 
 ```powershell
-ssh -i C:\Users\cheng\.ssh\moiren-test -o BatchMode=yes -o ConnectTimeout=10 wdkremoteuser@192.168.111.128
+ssh -i <local-key-path> -o BatchMode=yes -o ConnectTimeout=10 <driver-test-user>@<driver-test-host>
 ```
 
-用户曾提供 `.1` 地址；前次验证该地址不接受这把 key。
-`.128` 才是已实际测试的 guest，下一轮仍先核对 hostname，不能仅凭地址操作。
+用户曾提供一个备用地址；前次验证该地址不接受这把 key。
+上表地址才是已实际测试的 guest，下一轮仍先核对 hostname，不能仅凭地址操作。
 
 用户明确要求连接后阻止休眠。此前已确认 AC/DC standby timeout 都是 0，
 hibernation 已关闭／不可用。新一轮先复核电源设置和 probe 进程。
@@ -171,8 +171,8 @@ $ProgressPreference = 'SilentlyContinue'
     -Combined
 '@
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($remoteScript))
-ssh -i C:\Users\cheng\.ssh\moiren-test -o BatchMode=yes -o ConnectTimeout=10 `
-    wdkremoteuser@192.168.111.128 powershell -NoProfile -EncodedCommand $encoded
+ssh -i <local-key-path> -o BatchMode=yes -o ConnectTimeout=10 `
+    <driver-test-user>@<driver-test-host> powershell -NoProfile -EncodedCommand $encoded
 ```
 
 独立短测内部参数为 `--exercise --pcm --timeout-seconds=120`；

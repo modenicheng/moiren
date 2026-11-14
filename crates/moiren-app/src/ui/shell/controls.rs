@@ -2,7 +2,7 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::scroll_region;
 use gpui_kit::base::ScrollbarAxis;
 
 pub(crate) fn label(text: impl Into<SharedString>) -> Div {
@@ -22,12 +22,14 @@ pub(crate) fn heading(text: impl Into<SharedString>) -> Div {
 pub(crate) fn badge(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .flex_none()
-        .px(px(6.))
+        .px(px(theme::SPACE_1_5))
+        // 3 px: badge's vertical inset around the 11 px text, tighter than
+        // the spacing grid's steps.
         .py(px(3.))
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::soft(color))
         .text_color(color)
-        .text_size(px(11.))
+        .text_size(px(theme::TEXT_CAPTION))
         .child(text.into())
 }
 
@@ -36,13 +38,13 @@ pub(crate) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
         .flex()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(6.))
+        .py(px(theme::SPACE_1_5))
         .child(label(key.to_string()))
         .child(
             div()
                 .min_w_0()
-                .max_w(px(190.))
-                .text_size(px(12.))
+                .flex_1()
+                .text_size(px(theme::TEXT_SM))
                 .text_color(theme::TEXT)
                 .child(value.into()),
         )
@@ -61,12 +63,12 @@ pub(crate) fn detail_editable(
         .flex()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(6.))
+        .py(px(theme::SPACE_1_5))
         .child(label(key.to_string()))
         .child(
             editable_value(id, text, editing, input, on_start, px(12.), TextAlign::Left)
                 .min_w_0()
-                .max_w(px(190.))
+                .flex_1()
                 .text_color(theme::TEXT),
         )
 }
@@ -100,12 +102,15 @@ pub(crate) fn underline_editor(
                 .left_0()
                 .right_0()
                 .bottom_0()
-                .h(px(1.))
+                .h(px(theme::HAIRLINE_W))
                 .bg(theme::BORDER),
         )
         .child(
             component::input::Input::new(input)
                 .appearance(false)
+                // Explicit zero padding: the Input's own chrome is stripped
+                // so the editor sits exactly where the readout it replaced
+                // sat (see the doc comment above).
                 .px(px(0.))
                 .py(px(0.))
                 .h_auto()
@@ -184,17 +189,15 @@ pub(crate) fn panel_host(
     scroll: &ScrollHandle,
     panel: impl IntoElement,
 ) -> impl IntoElement {
-    div()
-        .relative()
-        .flex_none()
-        .w(px(theme::INSPECTOR_WIDTH))
-        .h_full()
-        .child(panel)
-        .child(overlay_scrollbar(
-            scroll,
-            SharedString::from(format!("scrollbar-{id}")),
-            ScrollbarAxis::Vertical,
-        ))
+    scroll_region(
+        SharedString::from(format!("scrollbar-{id}")),
+        scroll,
+        ScrollbarAxis::Vertical,
+        panel,
+    )
+    .flex_none()
+    .w(px(theme::INSPECTOR_WIDTH))
+    .h_full()
 }
 
 pub(crate) fn button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> ActionButton {
@@ -222,7 +225,7 @@ pub(crate) fn stereo_controls(
     use crate::service::GraphEdit;
     div()
         .flex()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(
             button("mix-mono", t!("Mono"))
                 .variant(if node.mono {

@@ -14,9 +14,9 @@ use gpui_kit::{
 use moiren_core::graph::NodeId;
 
 /// EQ editor plot spans: log frequency axis and symmetric gain axis.
-pub(crate) const EQ_FREQ_MIN: f64 = 20.;
-pub(crate) const EQ_FREQ_MAX: f64 = 20_000.;
-pub(crate) const EQ_GAIN_SPAN: f64 = 24.;
+const EQ_FREQ_MIN: f64 = 20.;
+const EQ_FREQ_MAX: f64 = 20_000.;
+const EQ_GAIN_SPAN: f64 = 24.;
 
 /// Fixed heights for the scrolling inspector column; the overlay stretches.
 pub(crate) const EQ_INSPECTOR_HEIGHT: f32 = 200.;
@@ -42,7 +42,7 @@ pub(crate) fn eq_section(
         .id("eq-q-row")
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .px(px(theme::SPACE_3))
         .py(px(theme::SPACE_2))
         .child(
@@ -269,7 +269,7 @@ fn paint_eq_plot(
             ),
             size: size(px(12.), px(12.)),
         },
-        theme::PRIMARY.opacity(0.3),
+        theme::controls::FOCUS.opacity(0.3),
     ));
     window.paint_quad(fill(
         Bounds {

@@ -1,14 +1,16 @@
-use super::super::Page;
+use super::super::{Page, WorkspaceView};
 use super::model::reorder;
+use crate::service::RunLimit;
+use crate::ui::editors::fader_readout_gain;
 use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{
     finish_service, settle_panels, shell_with_state, test_shell, wait_until,
 };
-use crate::ui::widgets::fader::FaderScale;
+use crate::ui::widgets::fader::{FaderScale, send_gain};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
-    SharedString, TestAppContext, VisualTestContext, point, px, size,
+    AppContext, Entity, Modifiers, MouseButton, MouseMoveEvent, Pixels, PlatformInput, ScrollDelta,
+    ScrollWheelEvent, SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 use moiren_core::graph::{NodeId, NodeKind};
 use std::time::Duration;
@@ -29,8 +31,8 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -63,11 +65,11 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
         assert_eq!(graph.node(gain).unwrap().mixer.channel_mode, 1);
         assert_eq!(graph.node(source).unwrap().mixer.channel_mode, 0);
         assert_eq!(graph.active_revision, None);
-        reorder(&mut shell.mixer.order, gain, source);
+        reorder(&mut shell.mixer.presentation.order, gain, source);
         let document = shell.project_document(cx).unwrap();
-        shell.mixer.order.clear();
+        shell.mixer.presentation.order.clear();
         shell.apply_project_presentation(&document, cx).unwrap();
-        assert_eq!(shell.mixer.order[0], gain);
+        assert_eq!(shell.mixer.presentation.order[0], gain);
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -93,12 +95,12 @@ fn mixer_header_drag_reorders_channels(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let order = view.update(cx, |shell, _| shell.mixer.order.clone());
+    let order = view.update(cx, |shell, _| shell.mixer.presentation.order.clone());
     let origin = cx.update(|window, _| {
         window
             .find(SharedString::from(format!("strip-header-{:?}", order[1])))
@@ -121,7 +123,9 @@ fn mixer_header_drag_reorders_channels(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
     cx.update(|window, cx| window.render_frame(cx));
     cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-    view.update(cx, |shell, _| assert_eq!(shell.mixer.order[0], order[1]));
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.mixer.presentation.order[0], order[1])
+    });
     finish_service(runtime);
 }
 
@@ -135,8 +139,8 @@ fn mixer_dock_divider_drag_resizes_the_dock(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -175,9 +179,9 @@ fn mixer_dock_divider_drag_resizes_the_dock(cx: &mut TestAppContext) {
     drag_divider_to(cx, divider_x - px(100.));
     view.update(cx, |shell, _| {
         assert!(
-            (shell.mixer.dock_width - 460.).abs() < 0.5,
+            (shell.mixer.presentation.dock_width - 460.).abs() < 0.5,
             "got {}",
-            shell.mixer.dock_width
+            shell.mixer.presentation.dock_width
         );
     });
     let sink = view.update(cx, |shell, cx| {
@@ -207,9 +211,9 @@ fn mixer_dock_divider_drag_resizes_the_dock(cx: &mut TestAppContext) {
     drag_divider_to(cx, dock.right() - px(10.));
     view.update(cx, |shell, _| {
         assert!(
-            (shell.mixer.dock_width - 160.).abs() < 0.5,
+            (shell.mixer.presentation.dock_width - 160.).abs() < 0.5,
             "the one-strip floor must hold, got {}",
-            shell.mixer.dock_width
+            shell.mixer.presentation.dock_width
         );
     });
     assert!(
@@ -221,7 +225,7 @@ fn mixer_dock_divider_drag_resizes_the_dock(cx: &mut TestAppContext) {
     drag_divider_to(cx, px(2.));
     let dock = cx.update(|window, _| window.find("mixer-dock").bounds());
     view.update(cx, |shell, _| {
-        let clamped = shell.mixer.dock_width;
+        let clamped = shell.mixer.presentation.dock_width;
         assert!(
             clamped > 460. && clamped < 1600.,
             "the cap must engage inside the requested span, got {clamped}"
@@ -240,17 +244,19 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     cx.update(|window, cx| {
-        let sends = window
-            .find(SharedString::from(format!("sends-{id:?}")))
+        // The I/O block is density-independent by design: compact or not,
+        // every strip carries the same expanded height.
+        let io = window
+            .find(SharedString::from(format!("io-{id:?}")))
             .bounds();
-        assert_eq!(sends.size.height, px(80.));
+        assert_eq!(io.size.height, px(super::routing::IO_EXPANDED_H));
         let strip = window
             .find(SharedString::from(format!("strip-{id:?}")))
             .bounds();
@@ -265,7 +271,10 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
         let unity = window
             .find(SharedString::from(format!("strip-unity-{id:?}")))
             .bounds();
-        let fader = view.read(cx).mixer.faders[&id].state.read(cx).bounds();
+        let fader = view.read(cx).mixer.presentation.faders[&id]
+            .state
+            .read(cx)
+            .bounds();
         assert!(
             (f32::from(unity.top() - (fader.top() + fader.size.height * 0.24))).abs() <= 1.,
             "0 dB reference must align with the fader's unity gain position"
@@ -276,10 +285,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
             .find(SharedString::from(format!("strip-readout-{id:?}")))
             .bounds();
         assert!(readout.bottom() <= levels.top());
-        let inputs = window
-            .find(SharedString::from(format!("inputs-{id:?}")))
-            .bounds();
-        assert!(inputs.bottom() <= sends.top());
+        assert!(io.bottom() <= levels.top());
         assert!(strip.bottom() <= px(720.));
         let footer = window
             .find(SharedString::from(format!("strip-header-{id:?}")))
@@ -312,7 +318,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
             .bounds();
         for edge in edges {
             let tap = window
-                .find(SharedString::from(format!("send-tap-{edge:?}")))
+                .find(SharedString::from(format!("send-pre-{edge:?}")))
                 .bounds();
             assert!(
                 tap.right() <= strip.right() - px(6.),
@@ -333,8 +339,8 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
     poll(&view, cx);
     let surround = view.update(cx, |shell, cx| {
         let id = shell.state.read(cx).snapshot.graph.nodes.last().unwrap().id;
-        let first = shell.mixer.order[0];
-        reorder(&mut shell.mixer.order, id, first);
+        let first = shell.mixer.presentation.order[0];
+        reorder(&mut shell.mixer.presentation.order, id, first);
         cx.notify();
         id
     });
@@ -358,8 +364,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
 #[gpui_kit::test]
 fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -375,9 +380,9 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -392,8 +397,8 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| {
@@ -442,7 +447,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     let after = view.read_with(cx, |shell, _| {
         let trace = shell.trace.borrow();
         assert!(
-            shell.node_meter_points.borrow().contains(&node),
+            shell.metering.node_meter_points.borrow().contains(&node),
             "cached meter demand must survive"
         );
         (trace.strip_renders, trace.meter_paints)
@@ -478,14 +483,16 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     // (Selection styles the live column since the routing split, so the
     // cached body's edit flag steps in as the trigger instead.)
     view.update(cx, |shell, cx| {
-        shell.mixer.editing_value = Some(node);
+        shell.mixer.presentation.editing_value = Some(node);
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders) > after.0);
 
     let controls_before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
-    let fader = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    let fader = view.read_with(cx, |shell, _| {
+        shell.mixer.presentation.faders[&node].state.clone()
+    });
     cx.update(|window, cx| fader.update(cx, |slider, cx| slider.set_value(0.25, window, cx)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
@@ -494,7 +501,9 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     );
 
     view.update(cx, |shell, cx| {
-        shell.settings_open = true;
+        shell.presentation.workspace = WorkspaceView::Settings {
+            resume: shell.presentation.workspace.page(),
+        };
         cx.notify();
     });
     cx.update(|window, cx| {
@@ -517,8 +526,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -535,9 +543,9 @@ fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut Te
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -552,8 +560,8 @@ fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut Te
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -601,16 +609,16 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         shell.state.update(cx, |state, _| {
             let snapshot = std::sync::Arc::make_mut(&mut state.snapshot);
             snapshot.desired = Some(crate::service::SessionSpec {
                 source: crate::service::InputSelection::Tone { frequency_hz: 440. },
                 output_endpoint_id: "output".into(),
-                limit: crate::service::RunLimit::UntilStopped,
                 gain: 1.,
                 pan: 0.,
+                limit: RunLimit::UntilStopped,
                 max_block_frames: 256,
             });
             let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
@@ -634,7 +642,7 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
         });
     }
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.meter_points.get()),
+        view.read_with(cx, |shell, _| shell.metering.meter_points.get()),
         (false, false)
     );
     view.update(cx, |shell, cx| {
@@ -646,7 +654,7 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.meter_points.get()),
+        view.read_with(cx, |shell, _| shell.metering.meter_points.get()),
         (true, true)
     );
     finish_service(runtime);
@@ -661,15 +669,15 @@ fn mixer_publish_rebuilds_only_the_changed_strip(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     // The inspector's closing spring notifies its way through the first
     // second; let it finish or every frame rebuilds every panel.
     crate::ui::shell::test_harness::settle_panels(cx);
-    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let target = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let muted = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
         view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
@@ -718,22 +726,27 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
-    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     // Start from unity (0 dB): thumb at FaderScale position 0.24.
     let start_value = 1. - FaderScale::position(1.);
-    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    let slider = view.read_with(cx, |shell, _| {
+        shell.mixer.presentation.faders[&node].state.clone()
+    });
     cx.update(|window, cx| {
         slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
-        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
         (
             bounds.center().x,
             bounds.top() + bounds.size.height * FaderScale::position(1.),
@@ -759,7 +772,11 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     }
     // Mid-drag sanity: the value tracks downward, never the rail.
     let mid_value = view.update(cx, |shell, cx| {
-        shell.mixer.faders[&node].state.read(cx).value().end()
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .value()
+            .end()
     });
     assert!(
         mid_value > 0.5 && mid_value < start_value,
@@ -770,23 +787,40 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
         MouseButton::Left,
         Modifiers::default(),
     );
+    let released = view.read_with(cx, |shell, cx| {
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .value()
+            .end()
+    });
+    assert!(
+        released > 0.5 && released < start_value,
+        "the release must land between unity and the rail, got {released}"
+    );
     // The dispatch rides the mailbox: until a poll consumes the published
-    // confirmation, the UI snapshot still holds the PRE-DRAG gain, and every
+    // confirmation, the UI snapshot still holds an older gain, and every
     // rendered frame runs the snapshot write-back. The thumb must hold the
-    // user's value through that window instead of snapping back to the rail.
+    // user's value through that window instead of snapping back.
     for _ in 0..3 {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let held = view.read_with(cx, |shell, cx| {
-            shell.mixer.faders[&node].state.read(cx).value().end()
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end()
         });
-        assert!(
-            held > 0.5,
-            "the thumb snapped back to the pre-drag snapshot value {held} before confirmation"
+        assert_eq!(
+            held, released,
+            "the thumb left the released value before confirmation"
         );
     }
-    // A stale publication (the driver's strip sync races the edit path on a
-    // real machine): a revision the UI has not seen, carrying the PRE-DRAG
-    // gain. The fresh user commit must shield the thumb from it.
+    // A stale publication — the release echo race: a revision the UI has
+    // not seen, built before the service consumed the release, so it still
+    // carries an older gain. The revision fence must keep it off the thumb
+    // entirely; without it the thumb snapped back by the last dispatch
+    // tick's travel and forward again on the next publish (design 22 R1).
     view.update(cx, |shell, cx| {
         let stale_gain = shell
             .state
@@ -809,16 +843,24 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let shielded = view.read_with(cx, |shell, cx| {
-        shell.mixer.faders[&node].state.read(cx).value().end()
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .value()
+            .end()
     });
-    assert!(
-        shielded > 0.5,
-        "a stale publication yanked the thumb back to {shielded}"
+    assert_eq!(
+        shielded, released,
+        "a stale publication pulled the just-released thumb back"
     );
     poll(&view, cx);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (final_value, final_db) = view.update(cx, |shell, cx| {
-        let value = shell.mixer.faders[&node].state.read(cx).value().end();
+        let value = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .value()
+            .end();
         let gain = shell
             .state
             .read(cx)
@@ -841,6 +883,316 @@ fn mixer_fader_small_drag_tracks_the_pointer_and_never_snaps_to_silence(cx: &mut
     finish_service(runtime);
 }
 
+/// The fader readout renders the slider's own value while the slider leads
+/// the snapshot (design 22 D1): mid-drag and after the release until the
+/// service confirms it, the number tracks the thumb instead of trailing it
+/// by a round trip; the confirmation then swaps in the published gain
+/// without moving the number, because the edit dispatched exactly that gain.
+#[gpui_kit::test]
+fn fader_readout_tracks_the_thumb_until_the_service_confirms_it(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    // (readout, published, the thumb's own) gains.
+    let gains = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |shell, cx| {
+            let slot = &shell.mixer.presentation.faders[&node];
+            let published = shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain;
+            let own = FaderScale::gain(1. - slot.state.read(cx).value().end());
+            (
+                fader_readout_gain(Some(slot), published, cx),
+                published,
+                own,
+            )
+        })
+    };
+    let (readout, published, _) = gains(&view, cx);
+    assert_eq!(
+        readout, published,
+        "at rest the readout is the published gain"
+    );
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    // The first move past the threshold starts the drag; the second one
+    // moves the value.
+    for travel in [12., 24.] {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(travel)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (readout, published, own) = gains(&view, cx);
+    assert_eq!(readout, own, "mid-drag the readout shows the thumb's value");
+    assert_ne!(readout, published, "not the published gain it left behind");
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let (released, published, own) = gains(&view, cx);
+    assert_eq!(
+        released, own,
+        "until the service confirms the release, the readout keeps the thumb's value"
+    );
+    assert_ne!(released, published);
+    poll(&view, cx);
+    let (confirmed, published, _) = gains(&view, cx);
+    assert_eq!(
+        confirmed, published,
+        "confirmed: the readout is the published gain"
+    );
+    assert_eq!(
+        confirmed, released,
+        "the confirmation must not move the number"
+    );
+    finish_service(runtime);
+}
+
+/// A drag that pauses must land its last value one frame later, with the
+/// button still down (design 22 D4). The fixed 33 ms dispatch interval
+/// this replaced flushed a stashed value only on the next move past the
+/// interval or at release, so the service sat on an older gain — and,
+/// with the readout showing the thumb, on a different number than the
+/// one on screen — for as long as the user held the fader still.
+#[gpui_kit::test]
+fn a_paused_fader_drag_lands_its_last_value_at_the_next_frame(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    // The press dispatches at once and arms the frame boundary. The moves
+    // then arrive together inside one frame, as a fast pointer's do: the
+    // first starts the drag, the next two change the value and only stash.
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| {
+        for travel in [12., 18., 24.] {
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: press + point(px(0.), px(travel)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        }
+    });
+    // Hold still: frames keep coming, the pointer does not move.
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    poll(&view, cx);
+    let (gain, thumb) = view.read_with(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+        )
+    });
+    assert_eq!(
+        gain,
+        FaderScale::gain(1. - thumb),
+        "the held drag's value must reach the service before release"
+    );
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    finish_service(runtime);
+}
+
+/// A touchpad pan over a fader must repaint the thumb on every frame
+/// (design 22 D0). The pan writes the slider state, and that notification
+/// rebuilds the strip's cached panel. The 33 ms nested-rebuild throttle
+/// this replaced let only one rebuild through per 33 ms, so a pan arriving
+/// at display rate showed the thumb at about 30 fps. Only the panned strip
+/// may rebuild; its siblings keep replaying.
+#[gpui_kit::test]
+fn a_touchpad_pan_rebuilds_the_panned_strip_every_frame(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let center = view.update(cx, |shell, cx| {
+        shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds()
+            .center()
+    });
+    let pan = |cx: &mut VisualTestContext| {
+        cx.simulate_event(ScrollWheelEvent {
+            position: center,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-3.))),
+            ..Default::default()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    // The first event also moves the pointer onto the fader; count from the
+    // frames after it.
+    pan(cx);
+    let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    for _ in 0..5 {
+        pan(cx);
+    }
+    let after = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
+    assert_eq!(
+        after - before,
+        5,
+        "each panned frame must rebuild exactly the panned strip"
+    );
+    finish_service(runtime);
+}
+
+/// Double click resets a fader wherever its second press lands. The first
+/// press jumps the thumb to the pointer and the strip repaints it there
+/// within a frame, so a human's second press hits the thumb, which claims
+/// its presses for itself: a bubble-phase click never counted to two, and
+/// the reset only worked beside the track.
+#[gpui_kit::test]
+fn double_click_resets_the_fader_after_the_first_click_moved_the_thumb(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    // A press well below the unity thumb, on the bare track.
+    let press = view.update(cx, |shell, cx| {
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
+        point(bounds.center().x, bounds.top() + bounds.size.height * 0.75)
+    });
+    let click = |cx: &mut VisualTestContext, click_count: usize| {
+        cx.simulate_event(gpui_kit::MouseDownEvent {
+            position: press,
+            button: MouseButton::Left,
+            click_count,
+            ..Default::default()
+        });
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            position: press,
+            button: MouseButton::Left,
+            click_count,
+            ..Default::default()
+        });
+        // A real double click takes longer than a frame: the thumb is
+        // already drawn under the pointer when the second press arrives.
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    };
+    click(cx, 1);
+    poll(&view, cx);
+    let jumped = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(node)
+            .expect("strip node")
+            .mixer
+            .gain
+    });
+    assert!(
+        jumped < 0.5,
+        "the first click jumps to the press, got {jumped}"
+    );
+    click(cx, 2);
+    poll(&view, cx);
+    let (gain, thumb) = view.read_with(cx, |shell, cx| {
+        (
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(node)
+                .expect("strip node")
+                .mixer
+                .gain,
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+        )
+    });
+    assert!(
+        (gain - 1.).abs() < 1e-6,
+        "the second press restores unity, got {gain}"
+    );
+    assert!(
+        (thumb - (1. - FaderScale::position(1.))).abs() < 1e-6,
+        "the thumb returns to unity, got {thumb}"
+    );
+    finish_service(runtime);
+}
+
 /// The user's repro: select the strip by clicking its bottom header, then
 /// drag the fader a tiny bit — the thumb must not lock onto -inf. The
 /// selection rebuilds the strip and (when the inspector is open) rewires
@@ -851,27 +1203,32 @@ fn mixer_fader_small_drag_survives_strip_selection(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
-    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     // Select the strip the way the header click does.
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(node);
+        shell.selection.node = Some(node);
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let start_value = 1. - FaderScale::position(1.);
-    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    let slider = view.read_with(cx, |shell, _| {
+        shell.mixer.presentation.faders[&node].state.clone()
+    });
     cx.update(|window, cx| {
         slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
-        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
         (
             bounds.center().x,
             bounds.top() + bounds.size.height * FaderScale::position(1.),
@@ -904,7 +1261,11 @@ fn mixer_fader_small_drag_survives_strip_selection(cx: &mut TestAppContext) {
             shell.state.update(cx, |state, _| state.poll());
         });
         let held = view.read_with(cx, |shell, cx| {
-            shell.mixer.faders[&node].state.read(cx).value().end()
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end()
         });
         assert!(
             held > 0.5,
@@ -941,7 +1302,10 @@ fn mixer_fader_small_drag_survives_strip_selection(cx: &mut TestAppContext) {
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (thumb_x, thumb_y) = view.update(cx, |shell, cx| {
-        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
         (
             bounds.center().x,
             bounds.top() + bounds.size.height * FaderScale::position(1.),
@@ -971,7 +1335,11 @@ fn mixer_fader_small_drag_survives_strip_selection(cx: &mut TestAppContext) {
     for _ in 0..3 {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let held = view.read_with(cx, |shell, cx| {
-            shell.mixer.faders[&node].state.read(cx).value().end()
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end()
         });
         assert!(
             held > 0.5,
@@ -1006,15 +1374,17 @@ fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppC
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
-    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let start_value = 1. - FaderScale::position(1.);
-    let slider = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    let slider = view.read_with(cx, |shell, _| {
+        shell.mixer.presentation.faders[&node].state.clone()
+    });
     cx.update(|window, cx| {
         slider.update(cx, |slider, cx| slider.set_value(start_value, window, cx))
     });
@@ -1028,7 +1398,10 @@ fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppC
         window.draw(cx).clear(cx);
     });
     let (thumb_x, thumb_y, _track_height) = view.update(cx, |shell, cx| {
-        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
         (
             bounds.center().x,
             bounds.top() + bounds.size.height * FaderScale::position(1.),
@@ -1059,7 +1432,11 @@ fn mixer_fader_small_drag_after_resize_tracks_the_new_geometry(cx: &mut TestAppC
     poll(&view, cx);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (final_value, final_db) = view.update(cx, |shell, cx| {
-        let value = shell.mixer.faders[&node].state.read(cx).value().end();
+        let value = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .value()
+            .end();
         let gain = shell
             .state
             .read(cx)
@@ -1094,13 +1471,13 @@ fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut T
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
-    let node = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let gain_of = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> f64 {
         view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
@@ -1147,7 +1524,10 @@ fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut T
     // its Change dispatches immediately, so the journal head is the press's
     // own value and the pointer owns the thumb (write-back suppressed).
     let press = view.update(cx, |shell, cx| {
-        let bounds = shell.mixer.faders[&node].state.read(cx).bounds();
+        let bounds = shell.mixer.presentation.faders[&node]
+            .state
+            .read(cx)
+            .bounds();
         point(
             bounds.center().x,
             bounds.top() + bounds.size.height * FaderScale::position(0.5) + px(8.),
@@ -1161,7 +1541,11 @@ fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut T
             "the drag's dispatch must be journaled before the undo"
         );
         assert_ne!(
-            shell.mixer.faders[&node].state.read(cx).value().end(),
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
             undo_position,
             "the dragging thumb must sit at the pointer, not at the snapshot"
         );
@@ -1198,7 +1582,11 @@ fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut T
                 .expect("strip node")
                 .mixer
                 .gain,
-            shell.mixer.faders[&node].state.read(cx).value().end(),
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
         )
     });
     assert!(
@@ -1221,8 +1609,7 @@ fn undo_during_a_fader_drag_lands_and_the_release_cannot_overwrite_it(cx: &mut T
 #[gpui_kit::test]
 fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use std::sync::atomic::Ordering;
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -1239,9 +1626,9 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -1256,15 +1643,15 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
     let (view, cx) = crate::ui::shell::test_harness::shell_with_state(cx, state);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
     view.update(cx, |shell, cx| {
         assert!(
-            shell.meter_points.get().0,
+            shell.metering.meter_points.get().0,
             "the source strip's capture probe must be mounted on the page"
         );
         assert!(
@@ -1296,11 +1683,11 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
     });
     view.read_with(cx, |shell, cx| {
         assert!(
-            shell.meter_points.get().0,
+            shell.metering.meter_points.get().0,
             "the probe must stay mounted while the page is at rest"
         );
         assert!(
-            !shell.meters.input_subscribed(),
+            !shell.metering.meters.input_subscribed(),
             "the capture tap stayed subscribed for a display the node topic covers"
         );
         assert!(
@@ -1316,8 +1703,8 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
 #[gpui_kit::test]
 fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceRuntime,
-        SessionPhase, SessionSpec,
+        AppRequest, GraphEdit, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase,
+        SessionSpec,
     };
     use std::sync::{Arc, atomic::Ordering};
     let backend = crate::service::test_backend::FakeBackend::default();
@@ -1334,9 +1721,9 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -1351,8 +1738,8 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -1441,19 +1828,20 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         poll(&view, cx);
     }
     let before = view.read_with(cx, |shell, _| {
-        shell.mixer_geometry.track_bounds(node).unwrap()
+        shell.mixer.geometry.track_bounds(node).unwrap()
     });
     view.update(cx, |shell, cx| {
-        shell.mixer_scroll.set_offset(point(px(-160.), px(0.)));
+        shell.mixer.scroll.set_offset(point(px(-160.), px(0.)));
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let after = view.read_with(cx, |shell, _| {
-        shell.mixer_geometry.track_bounds(node).unwrap()
+        shell.mixer.geometry.track_bounds(node).unwrap()
     });
     assert_eq!(after.left(), before.left() - px(160.));
     assert!(
         !view.read_with(cx, |shell, _| shell
+            .metering
             .node_meter_points
             .borrow()
             .contains(&node)),
@@ -1486,8 +1874,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
 #[gpui_kit::test]
 fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut TestAppContext) {
     use crate::service::{
-        AppRequest, InputSelection, ManagedDriver, RunLimit, ServiceRuntime, SessionPhase,
-        SessionSpec,
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
     };
     use crate::ui::presentation::dbfs_text;
     use std::sync::atomic::Ordering;
@@ -1505,9 +1892,9 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
                 endpoint_id: "input".into(),
             },
             output_endpoint_id: "output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -1522,8 +1909,8 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
     let (view, cx) = shell_with_state(cx, state);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -1536,9 +1923,9 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
             window.draw(cx).clear(cx);
         });
         view.read_with(cx, |shell, cx| {
-            let surface = shell.mixer_frame.read(cx).surface();
+            let surface = shell.mixer.frame.read(cx).surface();
             let surface = surface.borrow();
-            shell.node_meter_points.borrow().iter().all(|&id| {
+            shell.metering.node_meter_points.borrow().iter().all(|&id| {
                 shell
                     .state
                     .read(cx)
@@ -1554,7 +1941,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
         })
     });
     let (shapes_held, entries_held, paints_held) = view.read_with(cx, |shell, cx| {
-        let surface = shell.mixer_frame.read(cx).surface();
+        let surface = shell.mixer.frame.read(cx).surface();
         let (shapes, entries) = surface.borrow().readout_shape_stats();
         (shapes, entries, shell.trace.borrow().meter_paints)
     });
@@ -1566,7 +1953,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
         });
     }
     view.read_with(cx, |shell, cx| {
-        let surface = shell.mixer_frame.read(cx).surface();
+        let surface = shell.mixer.frame.read(cx).surface();
         let (shapes, entries) = surface.borrow().readout_shape_stats();
         assert_eq!(
             shapes, shapes_held,
@@ -1616,7 +2003,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
         });
     }
     let (shapes_fallen, readout, inspector) = view.read_with(cx, |shell, cx| {
-        let surface = shell.mixer_frame.read(cx).surface();
+        let surface = shell.mixer.frame.read(cx).surface();
         let surface = surface.borrow();
         let (shapes, entries) = surface.readout_shape_stats();
         assert_eq!(
@@ -1651,6 +2038,119 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
     finish_service(runtime);
 }
 
+/// The hot layer repaints every strip's channel labels ("L"/"R") every
+/// display frame, but the label texts are static: the shared (text, size)
+/// shaping cache must shape each distinct label exactly once and replay it
+/// while the meter frames keep painting (audit A-2, the last HC-8 residual).
+#[gpui_kit::test]
+fn mixer_channel_labels_share_one_shape_per_text_across_meter_frames(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase, SessionSpec,
+    };
+    use std::collections::BTreeSet;
+    use std::sync::atomic::Ordering;
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            gain: 1.,
+            pan: 0.,
+            limit: RunLimit::UntilStopped,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::shell::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    // The fixed session is the stereo chain, so every strip spells "L"/"R".
+    assert!(
+        snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .all(|node| node.channels() == 2),
+        "the fixed test session must stay stereo for the label set below"
+    );
+    let expected: BTreeSet<String> = ["L", "R"].into_iter().map(String::from).collect();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // Warm up until every demanded node is observed and the labels have
+    // flowed through the cache.
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            let surface = shell.mixer.frame.read(cx).surface();
+            let surface = surface.borrow();
+            shell.metering.node_meter_points.borrow().iter().all(|&id| {
+                shell
+                    .state
+                    .read(cx)
+                    .node_meters
+                    .channel_levels(id)
+                    .is_some()
+            }) && surface.painted_labels() == expected
+        })
+    });
+    let (shapes_held, paints_held) = view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer.frame.read(cx).surface();
+        let (shapes, entries) = surface.borrow().label_shape_stats();
+        assert_eq!(entries, shapes, "one entry per distinct label");
+        (shapes, shell.trace.borrow().meter_paints)
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    view.read_with(cx, |shell, cx| {
+        let surface = shell.mixer.frame.read(cx).surface();
+        let surface = surface.borrow();
+        let (shapes, entries) = surface.label_shape_stats();
+        assert_eq!(
+            shapes, shapes_held,
+            "held frames must replay the shaped labels instead of reshaping"
+        );
+        assert_eq!(
+            entries, shapes,
+            "each shaper run inserted exactly one distinct label"
+        );
+        assert_eq!(
+            surface.painted_labels(),
+            expected,
+            "the labels kept painting through the cache"
+        );
+        assert!(
+            shell.trace.borrow().meter_paints > paints_held,
+            "held frames actually painted the meter layer"
+        );
+    });
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     cx: &mut TestAppContext,
@@ -1658,8 +2158,8 @@ fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -1684,18 +2184,18 @@ fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     });
     cx.update(|window, cx| window.click(SharedString::from(format!("input-{edge:?}")), cx));
     view.update(cx, |shell, _| {
-        assert_eq!(shell.selected_route, Some(ports));
-        assert!(shell.inspector_open);
-        assert_eq!(shell.selected_node, None);
+        assert_eq!(shell.selection.route, Some(ports));
+        assert!(shell.chrome.inspector_open);
+        assert_eq!(shell.selection.node, None);
     });
     // Closing the inspector restores room without changing route identity.
     view.update(cx, |shell, cx| {
-        shell.inspector_open = false;
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     let (slider, bounds) = view.update(cx, |shell, cx| {
-        let slider = shell.mixer.faders[&dst].state.clone();
+        let slider = shell.mixer.presentation.faders[&dst].state.clone();
         let bounds = slider.read(cx).bounds();
         (slider, bounds)
     });
@@ -1725,12 +2225,12 @@ fn balance_drag_targets_its_own_strip_and_double_click_centers_it(cx: &mut TestA
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let bounds = cx.update(|window, _| {
         window
             .find(SharedString::from(format!("balance-track-{id:?}")))
@@ -1803,12 +2303,12 @@ fn balance_wheel_steps_a_tenth_and_clamps_at_the_limits(cx: &mut TestAppContext)
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let set_balance = |view: &Entity<StudioShell>, cx: &mut VisualTestContext, balance: f64| {
         view.update(cx, |shell, cx| {
             let mixer = shell
@@ -1884,8 +2384,8 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -1913,8 +2413,8 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
     });
     cx.update(|window, cx| {
         view.update(cx, |shell, cx| {
-            assert_eq!(shell.mixer.editing_send, Some(edge));
-            shell.mixer.send_inputs[&edge].update(cx, |input, cx| {
+            assert_eq!(shell.mixer.presentation.editing_send, Some(edge));
+            shell.mixer.presentation.send_inputs[&edge].update(cx, |input, cx| {
                 input.set_value("-18.5", window, cx);
                 cx.emit(gpui_kit::component::input::InputEvent::PressEnter {
                     secondary: false,
@@ -1936,14 +2436,16 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
             .params()
             .gain;
         assert!((20. * gain.log10() + 18.5).abs() < 0.00001);
-        assert!(shell.mixer.editing_send.is_none());
-        shell.mixer.order.clone()
+        assert!(shell.mixer.presentation.editing_send.is_none());
+        shell.mixer.presentation.order.clone()
     });
+    // One Sends head folds the list on every strip (the collapse is global,
+    // which is what keeps the meters aligned).
     let toggle = cx.update(|window, _| {
-        let bounds = window
-            .find(SharedString::from(format!("inputs-{:?}", order[0])))
-            .bounds();
-        bounds.origin + point(px(40.), px(14.))
+        window
+            .find(SharedString::from(format!("sends-head-{:?}", order[0])))
+            .bounds()
+            .center()
     });
     cx.simulate_click(toggle, Modifiers::default());
     cx.update(|window, cx| {
@@ -1951,16 +2453,16 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
         for id in &order {
             assert_eq!(
                 window
-                    .find(SharedString::from(format!("inputs-{id:?}")))
+                    .find(SharedString::from(format!("io-{id:?}")))
                     .bounds()
                     .size
                     .height,
-                px(28.)
+                px(super::routing::IO_COLLAPSED_H)
             );
         }
     });
     view.update(cx, |shell, cx| {
-        shell.mixer.editing_send = Some(edge);
+        shell.mixer.presentation.editing_send = Some(edge);
         shell.state.update(cx, |state, _| {
             state.dispatch(crate::service::AppRequest::EditGraph(
                 crate::service::GraphEdit::Disconnect(edge),
@@ -1969,9 +2471,9 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
     });
     poll(&view, cx);
     view.update(cx, |shell, _| {
-        assert!(shell.mixer.editing_send.is_none());
-        assert!(!shell.mixer.send_inputs.contains_key(&edge));
-        assert!(!shell.mixer.sends.contains_key(&edge));
+        assert!(shell.mixer.presentation.editing_send.is_none());
+        assert!(!shell.mixer.presentation.send_inputs.contains_key(&edge));
+        assert!(!shell.mixer.presentation.sends.contains_key(&edge));
     });
     finish_service(runtime);
 }
@@ -1982,8 +2484,8 @@ fn send_numeric_edit_commits_on_blur_and_rejects_invalid(cx: &mut TestAppContext
     cx.simulate_resize(size(px(1440.), px(900.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -2002,7 +2504,7 @@ fn send_numeric_edit_commits_on_blur_and_rejects_invalid(cx: &mut TestAppContext
                 .unwrap()
                 .params()
                 .gain;
-            (gain, shell.mixer.editing_send)
+            (gain, shell.mixer.presentation.editing_send)
         })
     };
     let open = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
@@ -2026,10 +2528,16 @@ fn send_numeric_edit_commits_on_blur_and_rejects_invalid(cx: &mut TestAppContext
             click_count: 2,
         });
         view.update(cx, |shell, _| {
-            assert_eq!(shell.mixer.editing_send, Some(edge), "editor must open");
+            assert_eq!(
+                shell.mixer.presentation.editing_send,
+                Some(edge),
+                "editor must open"
+            );
         });
     };
-    let editor = view.update(cx, |shell, _| shell.mixer.send_inputs[&edge].clone());
+    let editor = view.update(cx, |shell, _| {
+        shell.mixer.presentation.send_inputs[&edge].clone()
+    });
 
     // Focus loss runs the same commit path as Enter.
     open(&view, cx);
@@ -2059,15 +2567,17 @@ fn send_editor_accepts_the_shared_silence_spellings(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(1440.), px(900.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     let edge = view.update(cx, |shell, cx| {
         shell.state.read(cx).snapshot.graph.graph.edges()[0].id()
     });
-    let editor = view.update(cx, |shell, _| shell.mixer.send_inputs[&edge].clone());
+    let editor = view.update(cx, |shell, _| {
+        shell.mixer.presentation.send_inputs[&edge].clone()
+    });
     let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
         view.update(cx, |shell, cx| {
             shell
@@ -2103,7 +2613,11 @@ fn send_editor_accepts_the_shared_silence_spellings(cx: &mut TestAppContext) {
             click_count: 2,
         });
         view.update(cx, |shell, _| {
-            assert_eq!(shell.mixer.editing_send, Some(edge), "editor must open");
+            assert_eq!(
+                shell.mixer.presentation.editing_send,
+                Some(edge),
+                "editor must open"
+            );
         });
     };
 
@@ -2189,27 +2703,31 @@ fn fader_readout_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let input = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
-        view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone())
+        view.update(cx, |shell, _| {
+            shell.mixer.presentation.value_inputs[&id].clone()
+        })
     };
     let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
         view.update(cx, |shell, cx| {
             let graph = &shell.state.read(cx).snapshot.graph;
             (
                 graph.node(id).expect("strip node").mixer.gain,
-                shell.mixer.editing_value,
+                shell.mixer.presentation.editing_value,
             )
         })
     };
     let editor = input(&view, cx);
 
-    let editing = open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    let editing = open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
     assert_eq!(editing, id);
     type_and_commit(&view, cx, &editor, "-6");
     let (value, editing) = gain(&view, cx);
@@ -2221,18 +2739,24 @@ fn fader_readout_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
 
     let (before, _) = gain(&view, cx);
     for rejected in ["abc", "99"] {
-        open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+        open_editor(&view, cx, readout_of(id), |shell| {
+            shell.mixer.presentation.editing_value
+        });
         type_and_commit(&view, cx, &editor, rejected);
         let (value, editing) = gain(&view, cx);
         assert_eq!(value, before, "\"{rejected}\" must change nothing");
         assert_eq!(editing, None, "an invalid entry still closes the editor");
     }
 
-    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
     type_and_commit(&view, cx, &editor, "-inf");
     let (value, _) = gain(&view, cx);
     assert_eq!(value, 0., "\"-inf\" is exact digital silence");
-    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
     type_and_commit(&view, cx, &editor, "−∞");
     let (value, editing) = gain(&view, cx);
     assert_eq!(value, 0., "the Unicode ∞ spelling is silence too");
@@ -2246,25 +2770,29 @@ fn fader_readout_blur_commits_valid_and_rejects_invalid(cx: &mut TestAppContext)
     cx.simulate_resize(size(px(1600.), px(1000.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
-    let editor = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let editor = view.update(cx, |shell, _| {
+        shell.mixer.presentation.value_inputs[&id].clone()
+    });
     let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
         view.update(cx, |shell, cx| {
             let graph = &shell.state.read(cx).snapshot.graph;
             (
                 graph.node(id).expect("strip node").mixer.gain,
-                shell.mixer.editing_value,
+                shell.mixer.presentation.editing_value,
             )
         })
     };
 
     // Focus loss runs the same commit path as Enter.
-    let editing = open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    let editing = open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
     assert_eq!(editing, id);
     type_and_blur(&view, cx, &editor, "-6");
     let (value, editing) = gain(&view, cx);
@@ -2277,7 +2805,9 @@ fn fader_readout_blur_commits_valid_and_rejects_invalid(cx: &mut TestAppContext)
     // An invalid entry changes nothing on blur, and still closes.
     let (before, _) = gain(&view, cx);
     for rejected in ["abc", "99"] {
-        open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+        open_editor(&view, cx, readout_of(id), |shell| {
+            shell.mixer.presentation.editing_value
+        });
         type_and_blur(&view, cx, &editor, rejected);
         let (value, editing) = gain(&view, cx);
         assert_eq!(
@@ -2295,24 +2825,28 @@ fn fader_readout_enter_then_stale_blur_commits_once(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(1600.), px(1000.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
-    let editor = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let editor = view.update(cx, |shell, _| {
+        shell.mixer.presentation.value_inputs[&id].clone()
+    });
     let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
         view.update(cx, |shell, cx| {
             let graph = &shell.state.read(cx).snapshot.graph;
             (
                 graph.node(id).expect("strip node").mixer.gain,
-                shell.mixer.editing_value,
+                shell.mixer.presentation.editing_value,
             )
         })
     };
 
-    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
     type_and_commit(&view, cx, &editor, "-6");
     let (value, editing) = gain(&view, cx);
     assert!((value - 10f64.powf(-6. / 20.)).abs() < 1e-9);
@@ -2346,19 +2880,21 @@ fn fader_readout_commits_when_clicking_outside_the_editor(cx: &mut TestAppContex
     cx.simulate_resize(size(px(1600.), px(1000.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
-    let editor = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let editor = view.update(cx, |shell, _| {
+        shell.mixer.presentation.value_inputs[&id].clone()
+    });
     let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
         view.update(cx, |shell, cx| {
             let graph = &shell.state.read(cx).snapshot.graph;
             (
                 graph.node(id).expect("strip node").mixer.gain,
-                shell.mixer.editing_value,
+                shell.mixer.presentation.editing_value,
             )
         })
     };
@@ -2382,7 +2918,9 @@ fn fader_readout_commits_when_clicking_outside_the_editor(cx: &mut TestAppContex
         poll(view, cx);
     };
 
-    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
     cx.update(|window, cx| {
         editor.update(cx, |input, cx| input.set_value("-6", window, cx));
         window.render_frame(cx);
@@ -2397,7 +2935,9 @@ fn fader_readout_commits_when_clicking_outside_the_editor(cx: &mut TestAppContex
 
     // Invalid text: the outside click still closes, and changes nothing.
     let (before, _) = gain(&view, cx);
-    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
     cx.update(|window, cx| {
         editor.update(cx, |input, cx| input.set_value("abc", window, cx));
         window.render_frame(cx);
@@ -2420,16 +2960,20 @@ fn fader_readout_editor_occupies_the_label_box(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let label = cx.update(|window, _| window.find(readout_of(id)).bounds());
 
-    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
-    let input = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    open_editor(&view, cx, readout_of(id), |shell| {
+        shell.mixer.presentation.editing_value
+    });
+    let input = view.update(cx, |shell, _| {
+        shell.mixer.presentation.value_inputs[&id].clone()
+    });
     let editor =
         cx.update(|window, _| window.find(("editable-editor", input.entity_id())).bounds());
     assert!(
@@ -2457,15 +3001,17 @@ fn balance_label_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
     cx.simulate_resize(size(px(1440.), px(900.)));
     activate_window(cx);
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let label = SharedString::from(format!("balance-label-{id:?}"));
-    let editing_flag = |shell: &StudioShell| shell.mixer.editing_balance;
-    let editor = view.update(cx, |shell, _| shell.mixer.balance_inputs[&id].clone());
+    let editing_flag = |shell: &StudioShell| shell.mixer.presentation.editing_balance;
+    let editor = view.update(cx, |shell, _| {
+        shell.mixer.presentation.balance_inputs[&id].clone()
+    });
     let balance =
         |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
             view.update(cx, |shell, cx| {
@@ -2479,7 +3025,7 @@ fn balance_label_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
                         .expect("strip node")
                         .mixer
                         .balance,
-                    shell.mixer.editing_balance,
+                    shell.mixer.presentation.editing_balance,
                 )
             })
         };
@@ -2533,8 +3079,8 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -2556,9 +3102,11 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
     // The Gain node's strip fader edits mixer.gain; its "Requested" field is
     // a separate family editing the node's own DSP gain.
     let input = view.update(cx, |shell, _| {
-        shell.mixer.node_gain_inputs[&gain_id].clone()
+        shell.mixer.presentation.node_gain_inputs[&gain_id].clone()
     });
-    view.update(cx, |shell, _| shell.mixer.editing_node_gain = Some(gain_id));
+    view.update(cx, |shell, _| {
+        shell.mixer.presentation.editing_node_gain = Some(gain_id)
+    });
     type_and_commit(&view, cx, &input, "+6");
     view.update(cx, |shell, cx| {
         let graph = &shell.state.read(cx).snapshot.graph;
@@ -2568,10 +3116,12 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
             graph.node(gain_id).unwrap().gain
         );
         assert_eq!(graph.node(gain_id).unwrap().mixer.gain, 1.);
-        assert!(shell.mixer.editing_node_gain.is_none());
+        assert!(shell.mixer.presentation.editing_node_gain.is_none());
     });
 
-    view.update(cx, |shell, _| shell.mixer.editing_node_gain = Some(gain_id));
+    view.update(cx, |shell, _| {
+        shell.mixer.presentation.editing_node_gain = Some(gain_id)
+    });
     type_and_commit(&view, cx, &input, "99");
     view.update(cx, |shell, cx| {
         let gain = shell
@@ -2602,18 +3152,25 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
     let (pan_id, input) = view.update(cx, |shell, _| {
         let id = shell
             .mixer
+            .presentation
             .node_pan_inputs
             .keys()
             .copied()
             .last()
             .expect("the pan node has a position editor");
-        (id, shell.mixer.node_pan_inputs[&id].clone())
+        (id, shell.mixer.presentation.node_pan_inputs[&id].clone())
     });
     assert!(
-        !view.update(cx, |shell, _| shell.mixer.editing_value.is_some()),
+        !view.update(cx, |shell, _| shell
+            .mixer
+            .presentation
+            .editing_value
+            .is_some()),
         "the pan node's strip fader family stays independent"
     );
-    view.update(cx, |shell, _| shell.mixer.editing_node_pan = Some(pan_id));
+    view.update(cx, |shell, _| {
+        shell.mixer.presentation.editing_node_pan = Some(pan_id)
+    });
     type_and_commit(&view, cx, &input, "R25");
     view.update(cx, |shell, cx| {
         let graph = &shell.state.read(cx).snapshot.graph;
@@ -2623,7 +3180,7 @@ fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContex
             graph.node(pan_id).unwrap().pan
         );
         assert_eq!(graph.node(pan_id).unwrap().mixer.balance, 0.);
-        assert!(shell.mixer.editing_node_pan.is_none());
+        assert!(shell.mixer.presentation.editing_node_pan.is_none());
     });
     finish_service(runtime);
 }
@@ -2639,8 +3196,8 @@ fn edge_edits_hit_every_strip_cache_equally_after_the_routing_split(cx: &mut Tes
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -2677,6 +3234,7 @@ fn edge_edits_hit_every_strip_cache_equally_after_the_routing_split(cx: &mut Tes
     let before = view.read_with(cx, |shell, cx| {
         let deltas: Vec<usize> = shell
             .mixer
+            .presentation
             .strips
             .values()
             .map(|host| host.read(cx).rebuild_count())
@@ -2703,6 +3261,7 @@ fn edge_edits_hit_every_strip_cache_equally_after_the_routing_split(cx: &mut Tes
     let after = view.read_with(cx, |shell, cx| {
         let deltas: Vec<usize> = shell
             .mixer
+            .presentation
             .strips
             .values()
             .map(|host| host.read(cx).rebuild_count())
@@ -2749,10 +3308,10 @@ fn docked_strips_follow_the_dock_scroll(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         // Narrow the pane below one strip so the dock overflows.
-        shell.mixer.dock_width = 100.;
+        shell.mixer.presentation.dock_width = 100.;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -2778,7 +3337,7 @@ fn docked_strips_follow_the_dock_scroll(cx: &mut TestAppContext) {
             .bounds()
     });
     view.update(cx, |shell, cx| {
-        shell.dock_scroll.set_offset(point(px(-60.), px(0.)));
+        shell.mixer.dock_scroll.set_offset(point(px(-60.), px(0.)));
         cx.notify();
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -2806,13 +3365,13 @@ fn mixer_fault_rebuilds_only_its_strip_and_the_badge_opens_the_popover(cx: &mut 
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
-    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let target = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     let badge_id = SharedString::from(format!("strip-fault-{target:?}"));
 
     // A publish that lands the fault, delivered the way the service does.
@@ -2848,6 +3407,7 @@ fn mixer_fault_rebuilds_only_its_strip_and_the_badge_opens_the_popover(cx: &mut 
     });
     assert!(
         view.read_with(cx, |shell, _| shell
+            .chrome
             .fault_popover
             .is_some_and(|popover| popover.node == Some(target))),
         "the badge click must open the fault popover on its strip"
@@ -2864,7 +3424,7 @@ fn mixer_fault_rebuilds_only_its_strip_and_the_badge_opens_the_popover(cx: &mut 
         window.click("statusbar-format", cx);
         window.draw(cx).clear(cx);
     });
-    assert!(view.read_with(cx, |shell, _| shell.fault_popover.is_none()));
+    assert!(view.read_with(cx, |shell, _| shell.chrome.fault_popover.is_none()));
     cx.update(|window, _| {
         assert!(window.try_find("fault-popover").is_none());
     });
@@ -2911,13 +3471,13 @@ fn mixer_strip_body_fills_the_strip_and_pins_the_title_to_its_bottom(cx: &mut Te
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
-    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let id = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     cx.update(|window, _| {
         let strip = window
             .find(SharedString::from(format!("strip-{id:?}")))
@@ -2932,7 +3492,7 @@ fn mixer_strip_body_fills_the_strip_and_pins_the_title_to_its_bottom(cx: &mut Te
             .find(SharedString::from(format!("balance-track-{id:?}")))
             .bounds();
         let inputs = window
-            .find(SharedString::from(format!("inputs-{id:?}")))
+            .find(SharedString::from(format!("io-{id:?}")))
             .bounds();
         // The title rides the strip's bottom border; the levels row owns
         // everything between it and the fixed control stack.
@@ -2952,8 +3512,8 @@ fn mixer_strip_body_fills_the_strip_and_pins_the_title_to_its_bottom(cx: &mut Te
             "balance track must span the strip's inner width (track {track:?}, strip {strip:?})",
         );
         assert!(
-            inputs.bottom() < track.top(),
-            "routing sections sit above the balance track"
+            inputs.bottom() <= track.top(),
+            "the I/O block ends where the balance track begins"
         );
     });
     finish_service(runtime);
@@ -2964,18 +3524,18 @@ fn mixer_strip_hover_tracks_the_strip_for_the_fault_banner(cx: &mut TestAppConte
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Mixer;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
     crate::ui::shell::test_harness::settle_panels(cx);
-    let target = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let target = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
     cx.update(|window, cx| {
         window.hover(SharedString::from(format!("strip-{target:?}")), cx);
     });
     assert_eq!(
-        view.read_with(cx, |shell, _| shell.hovered_strip),
+        view.read_with(cx, |shell, _| shell.mixer.hovered_strip),
         Some(target),
         "hovering the strip must track it for the banner"
     );
@@ -2986,7 +3546,10 @@ fn mixer_strip_hover_tracks_the_strip_for_the_fault_banner(cx: &mut TestAppConte
     cx.update(|window, cx| {
         window.hover("engine-statusbar", cx);
     });
-    assert_eq!(view.read_with(cx, |shell, _| shell.hovered_strip), None);
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.mixer.hovered_strip),
+        None
+    );
     let before = view.read_with(cx, |shell, _| shell.trace.borrow().strip_renders);
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);
@@ -3000,5 +3563,554 @@ fn mixer_strip_hover_tracks_the_strip_for_the_fault_banner(cx: &mut TestAppConte
         0,
         "a hover change must never rebuild a strip panel"
     );
+    finish_service(runtime);
+}
+
+// --- The reworked I/O block --------------------------------------------------
+
+fn show_mixer(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+}
+
+fn add_node(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    kind: NodeKind,
+    channels: usize,
+) -> NodeId {
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::AddNode { kind, channels },
+            ));
+        });
+    });
+    poll(view, cx);
+    view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .nodes
+            .last()
+            .expect("node appended")
+            .id
+    })
+}
+
+/// Opens a strip's input dropdown and waits until it registers in a completed
+/// frame. One click + one frame is an assumption, not a guarantee: springs and
+/// the meter pump run on real time while the test clock parks, so the strip
+/// layout can shift between the click's own frames and the press can land
+/// beside the button's hitbox — eaten silently, with the dropdown never
+/// opening. Re-issuing the click is idempotent (the open handler only ever
+/// sets the same popover), so click until the dropdown registers, bounded.
+fn open_input_dropdown(cx: &mut VisualTestContext, node: NodeId) {
+    wait_until(Duration::from_secs(2), || {
+        cx.update(|window, cx| {
+            window.click(SharedString::from(format!("input-add-{node:?}")), cx);
+            window.render_frame(cx);
+            window
+                .try_find(SharedString::from(format!("input-popover-{node:?}")))
+                .is_some()
+        })
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{node:?}")))
+            .bounds();
+    });
+}
+
+/// The I/O block's whole point: every strip carries the same height, and the
+/// Sends head folds the list on every strip at once, so the meters below
+/// stay aligned however the routing differs.
+#[gpui_kit::test]
+fn io_block_heights_are_uniform_and_fold_globally(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let order = view.update(cx, |shell, _| shell.mixer.presentation.order.clone());
+    assert!(order.len() > 1, "the default session starts with strips");
+    let io_heights = |window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+        window.render_frame(cx);
+        order
+            .iter()
+            .map(|id| {
+                window
+                    .find(SharedString::from(format!("io-{id:?}")))
+                    .bounds()
+                    .size
+                    .height
+            })
+            .collect::<Vec<_>>()
+    };
+    cx.update(|window, cx| {
+        let heights = io_heights(window, cx);
+        assert!(
+            heights
+                .iter()
+                .all(|h| *h == px(super::routing::IO_EXPANDED_H)),
+            "every strip expanded: {heights:?}"
+        );
+    });
+    let head = view.update(cx, |shell, _| {
+        SharedString::from(format!(
+            "sends-head-{:?}",
+            shell.mixer.presentation.order[0]
+        ))
+    });
+    cx.update(|window, cx| window.click(head.clone(), cx));
+    cx.update(|window, cx| {
+        let heights = io_heights(window, cx);
+        assert!(
+            heights
+                .iter()
+                .all(|h| *h == px(super::routing::IO_COLLAPSED_H)),
+            "one head folds every strip: {heights:?}"
+        );
+    });
+    cx.update(|window, cx| window.click(head.clone(), cx));
+    cx.update(|window, cx| {
+        let heights = io_heights(window, cx);
+        assert!(
+            heights
+                .iter()
+                .all(|h| *h == px(super::routing::IO_EXPANDED_H)),
+            "one head unfolds every strip: {heights:?}"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// The dropdown is a live multi-select: checking a candidate connects it to
+/// the node's lowest free input port at once and the list stays open for the
+/// next pick; unchecking disconnects. The single-input row swaps its ghost
+/// button to the − remove control while occupied.
+#[gpui_kit::test]
+fn input_dropdown_connects_at_the_free_port_and_the_row_swaps_to_remove(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let gain = add_node(&view, cx, NodeKind::Gain, 2);
+    let source = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .map(|node| node.id())
+            .expect("default session has a source")
+    });
+    // Empty and able: the row carries the persistent +, never the −.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-add-{gain:?}")))
+            .bounds();
+        assert!(
+            window
+                .try_find(SharedString::from(format!("input-remove-{gain:?}")))
+                .is_none(),
+            "an empty node must not offer a remove control"
+        );
+    });
+    // Open the dropdown and check the source: the edge lands on the Gain's
+    // only input port, and the list stays open.
+    open_input_dropdown(cx, gain);
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        let edge = graph
+            .graph
+            .edges()
+            .iter()
+            .find(|edge| edge.dst() == gain)
+            .expect("checking the source connects it");
+        assert_eq!(edge.src(), source);
+        let free = graph.graph.get_node(gain).unwrap().inputs()[0].id();
+        assert_eq!(edge.dst_port(), free, "the edge takes the free input port");
+    });
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.mixer.presentation.input_popover.is_some(),
+            "the list stays open for the next pick"
+        );
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .find(SharedString::from(format!("input-popover-{gain:?}")))
+            .bounds();
+        window
+            .find(SharedString::from(format!("input-remove-{gain:?}")))
+            .bounds();
+        assert!(
+            window
+                .try_find(SharedString::from(format!("input-add-{gain:?}")))
+                .is_none(),
+            "an occupied single-input node swaps + for −"
+        );
+    });
+    // Unchecking disconnects through the same row.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        assert!(
+            graph.graph.edges().iter().all(|edge| edge.dst() != gain),
+            "unchecking disconnects the candidate"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// A press outside the open dropdown dismisses it, like every shell popover.
+#[gpui_kit::test]
+fn input_dropdown_closes_on_an_outside_press(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let gain = add_node(&view, cx, NodeKind::Gain, 2);
+    open_input_dropdown(cx, gain);
+    // A press over the first strip's fader area — anywhere off the dropdown
+    // box — dismisses it.
+    let first = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let outside = cx.update(|window, _| {
+        // Press on the first strip's title row: anywhere off the dropdown
+        // box dismisses it.
+        let strip = window
+            .find(SharedString::from(format!("strip-{first:?}")))
+            .bounds();
+        point(strip.left() + px(80.), strip.bottom() - px(6.))
+    });
+    cx.simulate_click(outside, Modifiers::default());
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find(SharedString::from(format!("input-popover-{gain:?}")))
+                .is_none(),
+            "an outside press closes the dropdown"
+        );
+    });
+    view.update(cx, |shell, _| {
+        assert!(shell.mixer.presentation.input_popover.is_none());
+    });
+    finish_service(runtime);
+}
+
+/// At the node's input cap the unchecked candidates are dead rows: clicking
+/// them connects nothing, while the checked row still releases its input.
+#[gpui_kit::test]
+fn input_dropdown_rows_go_dead_at_the_port_cap(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    // A bus starts without input ports; one AddBusInput gives it exactly
+    // one, so a single connection saturates the cap.
+    let bus = add_node(&view, cx, NodeKind::Bus, 2);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::AddBusInput(bus),
+            ));
+        });
+    });
+    poll(&view, cx);
+    let second_source = add_node(&view, cx, NodeKind::Source, 2);
+    let (sources, port) = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        (
+            graph
+                .graph
+                .nodes()
+                .iter()
+                .filter(|node| node.kind() == NodeKind::Source)
+                .map(|node| node.id())
+                .collect::<Vec<_>>(),
+            graph.graph.get_node(bus).unwrap().inputs()[0].id(),
+        )
+    });
+    assert!(sources.len() >= 2, "two candidates with outputs are needed");
+    open_input_dropdown(cx, bus);
+    let first = sources[0];
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{first:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        let edge = graph
+            .graph
+            .edges()
+            .iter()
+            .find(|edge| edge.dst() == bus)
+            .expect("the first check connects");
+        assert_eq!(edge.dst_port(), port);
+    });
+    // The cap is reached: the second source's unchecked row is dead.
+    cx.update(|window, cx| {
+        window.click(
+            SharedString::from(format!("input-pop-row-{second_source:?}")),
+            cx,
+        );
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        assert_eq!(
+            graph
+                .graph
+                .edges()
+                .iter()
+                .filter(|edge| edge.dst() == bus)
+                .count(),
+            1,
+            "a dead row must not connect"
+        );
+    });
+    // The checked row keeps working: unchecking releases the port.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-pop-row-{first:?}")), cx);
+    });
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        assert!(
+            graph.graph.edges().iter().all(|edge| edge.dst() != bus),
+            "the checked row still releases its input"
+        );
+    });
+    finish_service(runtime);
+}
+
+/// Rows the graph would refuse are dead like the at-cap rows: a candidate
+/// that already listens to the strip (checking it would close a feedback
+/// loop) and one whose output width differs from the free input. Checking
+/// them used to dispatch the connection anyway, and the service answered
+/// with a fault on both strips; a legal row still connects.
+#[gpui_kit::test]
+fn input_dropdown_rows_go_dead_for_loops_and_channel_mismatches(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(900.)));
+    show_mixer(&view, cx);
+    let bus = add_node(&view, cx, NodeKind::Bus, 2);
+    for _ in 0..2 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    crate::service::GraphEdit::AddBusInput(bus),
+                ));
+            });
+        });
+        poll(&view, cx);
+    }
+    // The bus feeds a new gain: the gain now listens to the bus.
+    let downstream = add_node(&view, cx, NodeKind::Gain, 2);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let graph = &state.snapshot.graph.graph;
+            let source = graph.get_node(bus).unwrap().outputs()[0].id();
+            let destination = graph.get_node(downstream).unwrap().inputs()[0].id();
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::Connect {
+                    source,
+                    destination,
+                },
+            ));
+        });
+    });
+    poll(&view, cx);
+    let mono = add_node(&view, cx, NodeKind::Gain, 1);
+    let source = view.update(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .map(|node| node.id())
+            .expect("default session has a source")
+    });
+    open_input_dropdown(cx, bus);
+    let feeds = |view: &Entity<StudioShell>, cx: &mut VisualTestContext, from: NodeId| {
+        view.update(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            assert_eq!(graph.last_error, None, "no rejected connection");
+            assert!(graph.faults.is_empty(), "no fault on any strip");
+            graph
+                .graph
+                .edges()
+                .iter()
+                .any(|edge| edge.src() == from && edge.dst() == bus)
+        })
+    };
+    for blocked in [downstream, mono] {
+        cx.update(|window, cx| {
+            window.click(SharedString::from(format!("input-pop-row-{blocked:?}")), cx);
+        });
+        poll(&view, cx);
+        assert!(!feeds(&view, cx, blocked), "a dead row must not connect");
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(SharedString::from(format!("input-pop-row-{source:?}")), cx);
+    });
+    poll(&view, cx);
+    assert!(feeds(&view, cx, source), "a legal row still connects");
+    finish_service(runtime);
+}
+
+/// A routing row's click selects the edge; its double click jumps to the
+/// Graph page with the same wire selected.
+#[gpui_kit::test]
+fn routing_rows_select_and_double_click_jumps_to_the_graph(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let (edge, ports) = view.update(cx, |shell, cx| {
+        let edge = &shell.state.read(cx).snapshot.graph.graph.edges()[0];
+        (edge.id(), (edge.src_port(), edge.dst_port()))
+    });
+    // Single click selects on the input row.
+    cx.update(|window, cx| {
+        window.click(SharedString::from(format!("input-{edge:?}")), cx);
+    });
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.selection.route, Some(ports));
+        assert!(shell.chrome.inspector_open);
+        assert!(matches!(
+            shell.presentation.workspace,
+            WorkspaceView::Page(Page::Mixer)
+        ));
+    });
+    // Double click jumps on both rows.
+    cx.update(|window, cx| {
+        window.double_click(SharedString::from(format!("input-{edge:?}")), cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(matches!(
+            shell.presentation.workspace,
+            WorkspaceView::Page(Page::Graph)
+        ));
+        assert_eq!(shell.selection.route, Some(ports));
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+            cx.notify();
+        });
+        window.render_frame(cx);
+    });
+    cx.update(|window, cx| {
+        window.double_click(SharedString::from(format!("send-row-{edge:?}")), cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(matches!(
+            shell.presentation.workspace,
+            WorkspaceView::Page(Page::Graph)
+        ));
+    });
+    finish_service(runtime);
+}
+
+/// The send bar's whole value chain is one number: the pointer fraction the
+/// kit reports becomes the slider value, the fill paints that same fraction,
+/// and the committed gain is that fraction's inverse through the shared
+/// scale — so the bar lands exactly under the mouse in both directions.
+/// (Regression: the fill once re-derived its width through a dB detour that
+/// was not in the drag's value space, so the painted bar barely moved.)
+#[gpui_kit::test]
+fn send_bar_drag_paints_and_commits_the_pointer_fraction(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    show_mixer(&view, cx);
+    let edge = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.edges()[0].id()
+    });
+    let (origin, loud, quiet) = cx.update(|window, _| {
+        let bounds = window
+            .find(SharedString::from(format!("send-track-{edge:?}")))
+            .bounds();
+        let at = |fraction: f32| {
+            point(
+                bounds.left() + bounds.size.width * fraction,
+                bounds.top() + px(2.),
+            )
+        };
+        (at(0.), at(0.75), at(0.10))
+    });
+    cx.simulate_mouse_down(origin, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(loud, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.render_frame(cx));
+    cx.simulate_mouse_move(quiet, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.render_frame(cx));
+    cx.simulate_mouse_up(quiet, MouseButton::Left, Modifiers::default());
+    poll(&view, cx);
+    // The slider value — the number the fill paints — sits at the pointer's
+    // final fraction, and the graph carries the gain of that same fraction.
+    view.update(cx, |shell, cx| {
+        let value = shell.mixer.presentation.sends[&edge]
+            .state
+            .read(cx)
+            .value()
+            .end();
+        assert!(
+            (value - 0.10).abs() < 0.01,
+            "the fill fraction follows the pointer: {value}"
+        );
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .get_edge(edge)
+            .unwrap()
+            .params()
+            .gain;
+        let expected = send_gain(0.10);
+        assert!(
+            (gain - expected).abs() < 0.01,
+            "the committed gain is the pointer fraction's gain: {gain} vs {expected}"
+        );
+    });
+    // The painted bar itself: the fill's width is the same fraction of the
+    // track, measured in pixels — the regression this pins is the paint, not
+    // just the value underneath it.
+    let fill = view.update(cx, |shell, _| {
+        SharedString::from(format!(
+            "send-fill-{}",
+            shell.mixer.presentation.sends[&edge].state.entity_id()
+        ))
+    });
+    cx.update(|window, _| {
+        let track = window
+            .find(SharedString::from(format!("send-track-{edge:?}")))
+            .bounds();
+        let fill = window.find(fill).bounds();
+        let fraction = fill.size.width / track.size.width;
+        assert!(
+            (fraction - 0.10).abs() < 0.01,
+            "the painted fill sits at the pointer fraction: {fraction}"
+        );
+    });
     finish_service(runtime);
 }

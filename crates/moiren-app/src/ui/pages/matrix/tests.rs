@@ -13,7 +13,7 @@ use gpui_kit::{
     Entity, ScrollDelta, SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 
-use super::{Page, StudioShell};
+use super::{Page, StudioShell, WorkspaceView};
 use crate::service::{AppRequest, GraphEdit};
 use crate::ui::shell::test_harness::{finish_service, settle_panels, test_shell, wait_until};
 use crate::ui::widgets::actions::Density;
@@ -73,10 +73,10 @@ fn assert_headers_align_with_body(cx: &mut VisualTestContext) {
 /// pinned explicitly.
 fn open_matrix_page(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
     view.update(cx, |shell, cx| {
-        shell.presentation.page = Page::Matrix;
-        shell.inspector_open = false;
+        shell.presentation.workspace = WorkspaceView::Page(Page::Matrix);
+        shell.chrome.inspector_open = false;
         shell.preferences.values.density = crate::project::UiDensity::Comfortable;
-        shell.density = Density::Comfortable;
+        shell.chrome.density = Density::Comfortable;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -206,7 +206,7 @@ fn matrix_rows_follow_density_on_a_plain_notification(cx: &mut TestAppContext) {
     // density move together.
     view.update(cx, |shell, cx| {
         shell.preferences.values.density = crate::project::UiDensity::Compact;
-        shell.density = Density::Compact;
+        shell.chrome.density = Density::Compact;
         cx.notify();
     });
     frame(cx);

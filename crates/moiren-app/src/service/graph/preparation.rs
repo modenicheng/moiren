@@ -26,6 +26,27 @@ impl PreparationFailure {
     }
 }
 
+/// The sink node that owns the native device clock: the lowest-id physical
+/// render endpoint not bound to an enabled export. `None` leaves the project
+/// paced by the single Engine realtime owner. Preparation and the status
+/// bar's read-only clock panel share this one policy.
+pub fn clock_master(
+    graph: &moiren_core::graph::LogicalGraph,
+    exports: &[crate::service::ExportIntent],
+) -> Option<NodeId> {
+    graph
+        .nodes()
+        .iter()
+        .filter(|n| n.kind() == NodeKind::Sink)
+        .filter(|n| {
+            !exports
+                .iter()
+                .any(|export| export.enabled && export.binding == Some(n.id()))
+        })
+        .map(|n| n.id())
+        .min()
+}
+
 impl GraphPreparation {
     /// Default-settings translation used only by the tests; production always
     /// carries the effective audio settings through
@@ -65,7 +86,7 @@ impl GraphPreparation {
         let profile_buffer = profile
             .requested_buffer_frames()
             .map(|frames| frames as usize);
-        self.primary_io_nodes()
+        self.validate_state()
             .map_err(PreparationFailure::graph_wide)?;
         let mut project = EngineProject {
             graph: self.graph.clone(),
@@ -75,21 +96,7 @@ impl GraphPreparation {
         project.processing.engine.max_block_frames = max_block_frames;
         project.processing.control_horizon_frames = u64::from(settings.processing.sample_rate);
         project.strips.extend(self.mixer_configs());
-        // Only a physical render endpoint can own the native device clock.
-        // An all-virtual project is paced by the single Engine realtime owner.
-        let master = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Sink)
-            .filter(|n| {
-                !self
-                    .exports
-                    .iter()
-                    .any(|export| export.enabled && export.binding == Some(n.id()))
-            })
-            .map(|n| n.id())
-            .min();
+        let master = clock_master(&self.graph, &self.exports);
         let mut endpoints = std::collections::BTreeSet::new();
         let mut inputs = std::collections::BTreeSet::new();
         let pinned = |endpoint_id: &String| EndpointSelector::PinnedEndpoint {
@@ -293,14 +300,13 @@ impl GraphPreparation {
             .map_err(|e| PreparationFailure::graph_wide(e.to_string()))?;
         Ok(project)
     }
-    pub fn primary_io_nodes(&self) -> Result<(NodeId, NodeId), String> {
+    /// The primary Source/Sink nodes when present. An output-free or
+    /// input-free graph is a valid project: absence is information, not an
+    /// error, so callers decide what a missing side means for them.
+    pub fn primary_io_nodes(&self) -> Result<(Option<NodeId>, Option<NodeId>), String> {
         self.validate_state()?;
-        let source = primary_node_of(&self.graph, NodeKind::Source)
-            .map(|n| n.id())
-            .ok_or("The graph needs a Source node")?;
-        let sink = primary_node_of(&self.graph, NodeKind::Sink)
-            .map(|n| n.id())
-            .ok_or("The graph needs a Sink node")?;
+        let source = primary_node_of(&self.graph, NodeKind::Source).map(|n| n.id());
+        let sink = primary_node_of(&self.graph, NodeKind::Sink).map(|n| n.id());
         Ok((source, sink))
     }
     pub(super) fn validate_state(&self) -> Result<(), String> {

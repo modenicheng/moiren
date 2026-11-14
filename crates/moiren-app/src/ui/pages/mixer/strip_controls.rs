@@ -1,6 +1,7 @@
 //! Compact channel actions and the strip-specific balance control.
 
 use super::*;
+use crate::ui::editors::{EditableValueFamily, balance_text, mixer_edit, start_value_edit};
 use crate::ui::widgets::scroll_step::{ScrollGesture, scroll_gesture};
 
 fn control(button: impl IntoElement) -> Div {
@@ -32,9 +33,9 @@ fn group_cell(
     } else {
         (
             theme::controls::RAISED,
-            theme::controls::TEXT,
+            theme::TEXT,
             theme::controls::RAISED,
-            theme::controls::CANVAS,
+            theme::WINDOW_BG,
         )
     };
     // Keep the ActionButton sizing contract by resolving the same metrics.
@@ -84,7 +85,9 @@ pub(crate) fn node_controls(
         .flex()
         .flex_col()
         .flex_none()
-        .px(px(8.))
+        .px(px(theme::SPACE_2))
+        // 3 px: dense strip inset hugging the M/S/DIM group, tighter than
+        // the spacing grid's steps.
         .py(px(3.))
         .child(
             div()
@@ -102,7 +105,7 @@ pub(crate) fn node_controls(
                         .h(px(metrics.height))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-mute-{id:?}")),
-                            "M",
+                            t!("M"),
                             requested.muted,
                             t!("Mute this channel"),
                             mixer_edit(
@@ -114,7 +117,7 @@ pub(crate) fn node_controls(
                         )))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-solo-{id:?}")),
-                            "S",
+                            t!("S"),
                             requested.solo,
                             t!("Solo this channel and its connected signal path"),
                             mixer_edit(
@@ -149,7 +152,7 @@ pub(crate) fn node_controls(
                         .border_color(theme::BORDER))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-dim-{id:?}")),
-                            "DIM",
+                            t!("DIM"),
                             requested.dimmed,
                             t!("Dim attenuates the post-fader signal by 12 dB"),
                             mixer_edit(state.clone(), this.clone(), id, |state| {
@@ -211,7 +214,7 @@ pub(crate) fn balance(
     }
     let value = entry.mixer.balance.clamp(-1., 1.);
     let position = ((value as f32) + 1.) * 0.5;
-    let editing = shell.mixer.editing_balance == Some(id);
+    let editing = shell.mixer.presentation.editing_balance == Some(id);
     let track_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
     let this = cx.entity();
     let drag_this = this.clone();
@@ -227,8 +230,8 @@ pub(crate) fn balance(
         .flex_col()
         .flex_none()
         .h(px(40.))
-        .px(px(8.))
-        .gap(px(2.))
+        .px(px(theme::SPACE_2))
+        .gap(px(theme::SPACE_0_5))
         .child(
             div()
                 .id(track_id)
@@ -276,7 +279,7 @@ pub(crate) fn balance(
                         // full Left..Right span. The drag path has no center
                         // snap, so stepping keeps the value it lands on.
                         let step = match gesture {
-                            ScrollGesture::Notch(direction) => f64::from(direction) * 0.1,
+                            ScrollGesture::Notch(notches) => f64::from(notches) * 0.1,
                             ScrollGesture::Pan(travel) => f64::from(travel) * 2.,
                         };
                         set_balance(&this, id, (value + step).clamp(-1., 1.), cx);
@@ -323,7 +326,7 @@ pub(crate) fn balance(
                 SharedString::from(format!("balance-label-{id:?}")),
                 balance_text(value),
                 editing,
-                &shell.mixer.balance_inputs[&id],
+                &shell.mixer.presentation.balance_inputs[&id],
                 start_value_edit(
                     cx.entity(),
                     EditableValueFamily::Balance,

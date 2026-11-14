@@ -200,11 +200,10 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                 .map(|&node| bindings.node(node))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| BackendError::Unsupported("virtual sink bindings changed".into()))?;
-            if protected.is_empty()
-                || protected
-                    .iter()
-                    .enumerate()
-                    .any(|(index, sink)| protected[..index].contains(sink))
+            if protected
+                .iter()
+                .enumerate()
+                .any(|(index, sink)| protected[..index].contains(sink))
                 || engine
                     .plan_snapshot()
                     .sink_processors()
@@ -256,7 +255,7 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                 // Match the physical paths' scheduling class: this thread
                 // paces Engine renders against audio deadlines. Registration
                 // failure is non-fatal.
-                let _mmcss = crate::owner::Mmcss::audio();
+                let _mmcss = crate::win32_raii::Mmcss::audio();
                 let mut engine = worker_slot
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner())

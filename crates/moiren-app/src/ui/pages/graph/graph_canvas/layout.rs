@@ -29,6 +29,14 @@ impl TextLayout {
             line_height: self.line_height * camera.zoom,
         }
     }
+
+    /// Canvas-space shift. Projection is affine, so translating a projected
+    /// layout equals projecting the moved node — this is how the hot layer
+    /// paints a dragged card without re-projecting anything (audit A-1).
+    fn translated(mut self, dx: f32, dy: f32) -> Self {
+        self.bounds.origin += point(dx, dy);
+        self
+    }
 }
 
 /// Where a card's level meter strip sits and which way it runs. The hot
@@ -78,6 +86,21 @@ pub struct ChipLayout {
     pub chevron: Bounds<f32>,
 }
 
+/// A recorder card's session strip: the status line (dot, phase word, and
+/// the hot-layer duration slot on its right), the output file name, and the
+/// three transport slots. Slot rects always exist; which carry affordances
+/// follows `RecordAction::available` in both the paint and the hit test.
+#[derive(Debug, Clone)]
+pub struct RecordingLayout {
+    pub dot: Bounds<f32>,
+    pub status: TextLayout,
+    pub duration: TextLayout,
+    pub file_name: TextLayout,
+    pub record: Bounds<f32>,
+    pub pause: Bounds<f32>,
+    pub stop: Bounds<f32>,
+}
+
 /// Design 18 card anatomy: header (icon, name, status glyphs), tint rail,
 /// per-kind body, meter strip, port rails with channel hints. World-space
 /// units; [`NodeLayout::project`] scales everything with the camera.
@@ -94,6 +117,7 @@ pub struct NodeLayout {
     pub meter: MeterLayout,
     pub knobs: Vec<KnobLayout>,
     pub chip: Option<ChipLayout>,
+    pub recording: Option<RecordingLayout>,
     pub matrix: Option<Bounds<f32>>,
     pub rack: Option<Bounds<f32>>,
     pub curve: Option<Bounds<f32>>,
@@ -233,6 +257,40 @@ impl NodeLayout {
             origin: point(node.x + theme::card::RAIL_W + padding, body_top),
             size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
         });
+        let recording = node.recording.as_ref().map(|_| {
+            let left = node.x + theme::card::RAIL_W + padding;
+            let inner = width - theme::card::RAIL_W - 2. * padding;
+            let status_w = (inner * 0.42).max(48.);
+            let button_y = body_top + 34.;
+            let button = |offset: f32| Bounds {
+                origin: point(left + offset, button_y),
+                size: size(theme::card::REC_BTN, theme::card::REC_BTN),
+            };
+            RecordingLayout {
+                dot: Bounds {
+                    origin: point(left, body_top + 2.5),
+                    size: size(theme::card::REC_DOT, theme::card::REC_DOT),
+                },
+                status: TextLayout::new(
+                    left + theme::card::REC_DOT + 6.,
+                    body_top,
+                    status_w,
+                    theme::card::REC_STATUS_SIZE,
+                ),
+                duration: TextLayout::new(
+                    left + theme::card::REC_DOT + 6. + status_w,
+                    body_top,
+                    inner - status_w - theme::card::REC_DOT - 6.,
+                    theme::card::REC_STATUS_SIZE,
+                ),
+                file_name: TextLayout::new(left, body_top + 18., inner, theme::card::REC_FILE_SIZE),
+                // Transport sits right-aligned against the strip's inner
+                // edge, reading as one bar under the session info.
+                record: button(inner - 3. * theme::card::REC_BTN - 2. * theme::card::REC_BTN_GAP),
+                pause: button(inner - 2. * theme::card::REC_BTN - theme::card::REC_BTN_GAP),
+                stop: button(inner - theme::card::REC_BTN),
+            }
+        });
         let rack = (!node.rack_stages.is_empty()).then(|| Bounds {
             origin: point(node.x + theme::card::RAIL_W + padding, body_top),
             size: size(width - theme::card::RAIL_W - 2. * padding, node.body_height),
@@ -296,6 +354,7 @@ impl NodeLayout {
             meter,
             knobs,
             chip,
+            recording,
             matrix,
             rack,
             curve,
@@ -334,6 +393,15 @@ impl NodeLayout {
                 label: chip.label.project(camera),
                 chevron: camera.project_rect(chip.chevron),
             }),
+            recording: self.recording.as_ref().map(|strip| RecordingLayout {
+                dot: camera.project_rect(strip.dot),
+                status: strip.status.project(camera),
+                duration: strip.duration.project(camera),
+                file_name: strip.file_name.project(camera),
+                record: camera.project_rect(strip.record),
+                pause: camera.project_rect(strip.pause),
+                stop: camera.project_rect(strip.stop),
+            }),
             matrix: self.matrix.map(|bounds| camera.project_rect(bounds)),
             rack: self.rack.map(|bounds| camera.project_rect(bounds)),
             curve: self.curve.map(|bounds| camera.project_rect(bounds)),
@@ -351,6 +419,144 @@ impl NodeLayout {
             output: self.output.map(|anchor| camera.world_to_canvas(anchor)),
             output_hint: self.output_hint.as_ref().map(|hint| hint.project(camera)),
             scale: camera.zoom,
+        }
+    }
+
+    /// The projected layout of the same card shifted by a canvas-space
+    /// offset — the hot layer's view of a dragged card. Projection is
+    /// affine, so this equals [`Self::project`] of the node at its moved
+    /// world position; every field is listed explicitly so a layout field
+    /// added later cannot silently escape the drag offset.
+    pub fn translated(&self, dx: f32, dy: f32) -> Self {
+        let shift = |bounds: &mut Bounds<f32>| bounds.origin += point(dx, dy);
+        let text = |text: &TextLayout| text.clone().translated(dx, dy);
+        let anchor = |anchor: &(f32, f32)| (anchor.0 + dx, anchor.1 + dy);
+        Self {
+            card: {
+                let mut card = self.card;
+                shift(&mut card);
+                card
+            },
+            rail: {
+                let mut rail = self.rail;
+                shift(&mut rail);
+                rail
+            },
+            icon: {
+                let mut icon = self.icon;
+                shift(&mut icon);
+                icon
+            },
+            title: text(&self.title),
+            badge: {
+                let mut badge = self.badge;
+                shift(&mut badge);
+                badge
+            },
+            expand: {
+                let mut expand = self.expand;
+                shift(&mut expand);
+                expand
+            },
+            body: {
+                let mut body = self.body;
+                shift(&mut body);
+                body
+            },
+            detail: text(&self.detail),
+            meter: match self.meter {
+                MeterLayout::Horizontal { bounds } => MeterLayout::Horizontal {
+                    bounds: {
+                        let mut bounds = bounds;
+                        shift(&mut bounds);
+                        bounds
+                    },
+                },
+                MeterLayout::Vertical { bounds } => MeterLayout::Vertical {
+                    bounds: {
+                        let mut bounds = bounds;
+                        shift(&mut bounds);
+                        bounds
+                    },
+                },
+            },
+            knobs: self
+                .knobs
+                .iter()
+                .map(|knob| KnobLayout {
+                    dial: {
+                        let mut dial = knob.dial;
+                        shift(&mut dial);
+                        dial
+                    },
+                    label: text(&knob.label),
+                    value: text(&knob.value),
+                })
+                .collect(),
+            chip: self.chip.as_ref().map(|chip| ChipLayout {
+                bounds: {
+                    let mut bounds = chip.bounds;
+                    shift(&mut bounds);
+                    bounds
+                },
+                icon: {
+                    let mut icon = chip.icon;
+                    shift(&mut icon);
+                    icon
+                },
+                label: text(&chip.label),
+                chevron: {
+                    let mut chevron = chip.chevron;
+                    shift(&mut chevron);
+                    chevron
+                },
+            }),
+            recording: self.recording.as_ref().map(|strip| RecordingLayout {
+                dot: {
+                    let mut dot = strip.dot;
+                    shift(&mut dot);
+                    dot
+                },
+                status: text(&strip.status),
+                duration: text(&strip.duration),
+                file_name: text(&strip.file_name),
+                record: {
+                    let mut record = strip.record;
+                    shift(&mut record);
+                    record
+                },
+                pause: {
+                    let mut pause = strip.pause;
+                    shift(&mut pause);
+                    pause
+                },
+                stop: {
+                    let mut stop = strip.stop;
+                    shift(&mut stop);
+                    stop
+                },
+            }),
+            matrix: self.matrix.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            rack: self.rack.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            curve: self.curve.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            spectrum: self.spectrum.map(|mut bounds| {
+                shift(&mut bounds);
+                bounds
+            }),
+            inputs: self.inputs.iter().map(anchor).collect(),
+            input_hints: self.input_hints.iter().map(text).collect(),
+            output: self.output.map(|a| anchor(&a)),
+            output_hint: self.output_hint.as_ref().map(text),
+            scale: self.scale,
         }
     }
 }

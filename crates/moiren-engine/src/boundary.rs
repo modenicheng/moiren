@@ -161,3 +161,21 @@ impl<S: ProcessingSample> RtAudioSource<S> for ConstantSource {
         }
     }
 }
+
+/// Deterministic sink that accepts and discards every block, for absent
+/// devices and backend-independent tests. Reporting the full frame count
+/// keeps the transfer out of the shortfall/xrun accounting.
+pub struct DiscardSink {
+    pub channels: usize,
+}
+impl<S: ProcessingSample> RtAudioSink<S> for DiscardSink {
+    fn channel_count(&self) -> usize {
+        self.channels
+    }
+    fn write(&mut self, ctx: &ProcessContext, _input: AudioBlock<'_, S>) -> BoundaryReport {
+        BoundaryReport {
+            transferred_frames: ctx.frames,
+            ..BoundaryReport::default()
+        }
+    }
+}

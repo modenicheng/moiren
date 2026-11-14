@@ -12,9 +12,14 @@ pub mod cli;
 #[allow(unsafe_code)]
 pub mod console;
 pub mod i18n;
+#[cfg(test)]
+mod i18n_guards;
 pub mod logging;
 pub mod project;
 pub mod service;
+// Host system performance samples; the Win32 reads are the module's own
+// gated `win` submodule.
+mod system;
 #[cfg(test)]
 mod timeline;
 pub mod ui;

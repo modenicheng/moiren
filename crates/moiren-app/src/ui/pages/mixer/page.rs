@@ -10,7 +10,7 @@ use crate::ui::monitoring::DisplayLevel;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::shell::hot::{HotLayerView, HotSurface};
 use crate::ui::shell::panel::{CachedPanel, PanelHost};
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 use std::collections::{BTreeMap, HashMap};
 
@@ -40,7 +40,7 @@ pub(crate) struct MeterGeometry {
     /// The strip rect the hovered fault banner hangs from. No clip rides
     /// along: the banner may reach below the scroll viewport's edge, so it
     /// clamps against the hot layer's own bounds instead.
-    pub(crate) banners: BTreeMap<NodeId, Bounds<Pixels>>,
+    banners: BTreeMap<NodeId, Bounds<Pixels>>,
 }
 
 /// Where the strip's meter tracks and readouts sit, registered by the
@@ -139,19 +139,20 @@ impl StripPanel {
             catalog: snapshot.catalog.clone(),
             managed: snapshot.signal_topics.node_levels.contains_key(&id),
             probe,
-            compact: shell.compact,
+            compact: shell.chrome.compact,
             position: shell
                 .mixer
+                .presentation
                 .order
                 .iter()
                 .position(|node| *node == id)
                 .unwrap_or(0),
-            editing_value: shell.mixer.editing_value == Some(id),
-            editing_balance: shell.mixer.editing_balance == Some(id),
+            editing_value: shell.mixer.presentation.editing_value == Some(id),
+            editing_balance: shell.mixer.presentation.editing_balance == Some(id),
             scroll: if docked {
-                shell.dock_scroll.offset()
+                shell.mixer.dock_scroll.offset()
             } else {
-                shell.mixer_scroll.offset()
+                shell.mixer.scroll.offset()
             },
             meters: shell.preferences.values.meters,
             faulted: graph.node_faulted(id),
@@ -226,15 +227,19 @@ impl CachedPanel for StripPanel {
         // here would wipe the registrations of siblings that are not
         // rebuilding. This strip's own stale placements are removed so the
         // canvases re-register fresh during this same layout pass.
-        if shell.mixer_geometry.read().is_none() {
-            shell.mixer_geometry.reset();
+        if shell.mixer.geometry.read().is_none() {
+            shell.mixer.geometry.reset();
         }
-        shell.mixer_geometry.update(|geometry| {
+        shell.mixer.geometry.update(|geometry| {
             geometry.tracks.remove(&self.id);
             geometry.readouts.remove(&self.id);
             geometry.banners.remove(&self.id);
         });
-        shell.node_meter_points.borrow_mut().remove(&self.id);
+        shell
+            .metering
+            .node_meter_points
+            .borrow_mut()
+            .remove(&self.id);
     }
 
     fn observe_nested(
@@ -250,13 +255,13 @@ impl CachedPanel for StripPanel {
         let (sliders, inputs) = shell.read_with(cx, |shell, _| {
             let mut sliders = Vec::new();
             let mut inputs = Vec::new();
-            if let Some(slot) = shell.mixer.faders.get(&self.id) {
+            if let Some(slot) = shell.mixer.presentation.faders.get(&self.id) {
                 sliders.push(slot.state.clone());
             }
-            if let Some(input) = shell.mixer.value_inputs.get(&self.id) {
+            if let Some(input) = shell.mixer.presentation.value_inputs.get(&self.id) {
                 inputs.push(input.clone());
             }
-            if let Some(input) = shell.mixer.balance_inputs.get(&self.id) {
+            if let Some(input) = shell.mixer.presentation.balance_inputs.get(&self.id) {
                 inputs.push(input.clone());
             }
             (sliders, inputs)
@@ -286,6 +291,7 @@ pub(crate) fn meter_probe_eligible(
     let input = kind == NodeKind::Source;
     matches!(kind, NodeKind::Source | NodeKind::Sink)
         && shell
+            .metering
             .observation_nodes
             .is_some_and(|(generation, source, sink)| {
                 generation == snapshot.generation && entry.id == if input { source } else { sink }
@@ -342,7 +348,7 @@ fn strip_column(
     host: &Entity<StripPanelHost>,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
-    let selected = shell.selected_node == Some(id);
+    let selected = shell.selection.node == Some(id);
     // The shared fault projection: the live column wears the danger frame,
     // the faint red wash and the banner anchor while the strip holds a
     // fault; the "!" badge rides the cached title row off the same
@@ -368,7 +374,7 @@ fn strip_column(
         .h_full()
         .min_h_0()
         .bg(if selected {
-            theme::SURFACE_3
+            theme::controls::RAISED
         } else {
             theme::SURFACE
         })
@@ -391,8 +397,8 @@ fn strip_column(
                     // graph's `hovered_node` twin: one notified frame per
                     // change, never a panel key.
                     let next = hovered.then_some(id);
-                    if shell.hovered_strip != next {
-                        shell.hovered_strip = next;
+                    if shell.mixer.hovered_strip != next {
+                        shell.mixer.hovered_strip = next;
                         cx.notify();
                     }
                 })
@@ -407,7 +413,7 @@ fn strip_column(
                         .is_ok_and(|node| matches!(node.kind(), NodeKind::Bus | NodeKind::Sink))
                 };
                 if docked(*dragged) == docked(id) {
-                    model::reorder(&mut shell.mixer.order, *dragged, id);
+                    model::reorder(&mut shell.mixer.presentation.order, *dragged, id);
                 }
                 cx.notify();
             })
@@ -415,7 +421,7 @@ fn strip_column(
         .child({
             // The fault banner's anchor: the whole strip's window rect,
             // registered for the meter frame the same way meter tracks are.
-            let geometry = shell.mixer_geometry.clone();
+            let geometry = shell.mixer.geometry.clone();
             canvas(
                 move |bounds, _window, _| {
                     geometry.update(|geometry| {
@@ -445,15 +451,16 @@ fn strip_column(
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .pt(px(4.))
-                .child(routing::inputs(shell, entry, cx))
-                .child(routing::sends(shell, id, cx))
+                .pt(px(theme::SPACE_1))
+                .child(routing::io(shell, entry, cx))
                 .child(cached_body),
         )
         .child(
             // The kind color rides the live column: an observed element
             // inside the cached body would report stale bounds on cache-hit
-            // frames.
+            // frames. Dimmed at ALPHA_DIM — the same strength the tray
+            // strip's bar already used (design 21 §1.3 unifies the former
+            // 0.8 here).
             div()
                 .id(SharedString::from(format!("strip-color-{id:?}")))
                 .absolute()
@@ -461,7 +468,7 @@ fn strip_column(
                 .left_0()
                 .right_0()
                 .h(px(4.))
-                .bg(node_kind_color(kind).opacity(0.8))
+                .bg(theme::dim(node_kind_color(kind)))
                 .gpui_test_observe(),
         )
         .gpui_test_observe()
@@ -479,24 +486,22 @@ impl Render for DockResize {
 
 /// The Mixer page: a light container (rebuilt per shell render) splicing the
 /// per-strip cached panels, with the meter hot layer as a sibling above them.
-pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShell>) -> AnyElement {
+pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShell>) -> AnyElement {
     let graph = &shell.state.read(cx).snapshot.graph;
     // The strip rows' scrollbar overlays are siblings of their scroll
-    // containers, never children: a scroll container translates its children
-    // by the offset at prepaint, so an overlay inside it would drift away
-    // with the content. The outer sizing lives on the relative wrapper.
+    // containers, never children (see `scroll_region`); the containers are
+    // built here and wrapped below. The outer sizing lives on the relative
+    // wrapper.
     let mut channels_area = div()
         .id("mixer-strips")
         .w_full()
         .h_full()
         .flex()
-        .track_scroll(&shell.mixer_scroll)
+        .track_scroll(&shell.mixer.scroll)
+        .restrict_scroll_to_axis()
         .overflow_x_scroll()
         .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
+        .on_scroll_wheel(notify_owner(cx.entity()));
     let mut dock = div().flex().flex_none().min_w_full().h_full().justify_end();
     let dock_container = div()
         .id("mixer-dock")
@@ -505,21 +510,19 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .flex()
         .border_l_1()
         .border_color(theme::BORDER_STRONG)
-        .track_scroll(&shell.dock_scroll)
+        .track_scroll(&shell.mixer.dock_scroll)
+        .restrict_scroll_to_axis()
         .overflow_x_scroll()
         .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
-    for id in &shell.mixer.order {
+        .on_scroll_wheel(notify_owner(cx.entity()));
+    for id in &shell.mixer.presentation.order {
         let Ok(node) = graph.graph.get_node(*id) else {
             continue;
         };
         let Some(entry) = graph.node(*id) else {
             continue;
         };
-        let Some(host) = shell.mixer.strips.get(id) else {
+        let Some(host) = shell.mixer.presentation.strips.get(id) else {
             continue;
         };
         let column = strip_column(shell, *id, entry, node.kind(), host, cx);
@@ -529,26 +532,22 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
             channels_area = channels_area.child(column);
         }
     }
-    let channels = div()
-        .relative()
-        .flex_1()
-        .min_w_0()
-        .min_h_0()
-        .child(channels_area.gpui_test_observe())
-        .child(overlay_scrollbar(
-            &shell.mixer_scroll,
-            "scrollbar-mixer-strips",
-            ScrollbarAxis::Both,
-        ));
-    let dock_host = div()
-        .relative()
-        .size_full()
-        .child(dock_container.child(dock).gpui_test_observe())
-        .child(overlay_scrollbar(
-            &shell.dock_scroll,
-            "scrollbar-mixer-dock",
-            ScrollbarAxis::Horizontal,
-        ));
+    let channels = scroll_region(
+        "scrollbar-mixer-strips",
+        &shell.mixer.scroll,
+        ScrollbarAxis::Both,
+        channels_area.gpui_test_observe(),
+    )
+    .flex_1()
+    .min_w_0()
+    .min_h_0();
+    let dock_host = scroll_region(
+        "scrollbar-mixer-dock",
+        &shell.mixer.dock_scroll,
+        ScrollbarAxis::Horizontal,
+        dock_container.child(dock).gpui_test_observe(),
+    )
+    .size_full();
     // The dock pane owns the user-resizable width (and its 55% cap) so the
     // divider border stays the pane's left edge and the grab handle can
     // straddle it without the scroll container clipping the reach; the
@@ -561,7 +560,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .relative()
         .flex_none()
         .min_h_0()
-        .w(px(shell.mixer.dock_width))
+        .w(px(shell.mixer.presentation.dock_width))
         .max_w(relative(MixerPresentation::DOCK_MAX_FRACTION))
         .child(dock_host)
         .child(
@@ -588,7 +587,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         f32::from(row.size.width) * MixerPresentation::DOCK_MAX_FRACTION,
                     );
                     resize_shell.update(cx, |shell, cx| {
-                        shell.mixer.dock_width = width;
+                        shell.mixer.presentation.dock_width = width;
                         cx.notify();
                     });
                 })
@@ -620,7 +619,12 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                 .child(channels)
                 .child(dock_pane),
         )
-        .child(shell.mixer_frame.clone())
+        .child(shell.mixer.frame.clone())
+        // The input dropdown hangs over the whole page (an occluding page
+        // under it dismisses on outside press), painted above the hot layer.
+        .when(shell.mixer.presentation.input_popover.is_some(), |page| {
+            page.child(routing::input_popover_overlay(shell, window, cx))
+        })
         .gpui_test_observe()
         .into_any_element()
 }
@@ -631,7 +635,7 @@ pub(crate) fn track(
     channels: usize,
     legacy_input: Option<bool>,
 ) -> Div {
-    let geometry = shell.mixer_geometry.clone();
+    let geometry = shell.mixer.geometry.clone();
     div()
         .h_full()
         .flex_none()
@@ -661,8 +665,34 @@ pub(crate) fn track(
         )
 }
 
+// --- The meter readout's reserved block (design 21 §1.5) --------------------
+// The dB readout hanging under each strip's meter track is the UI's one
+// layout-grade absolute positioning (design 21 §2), and its metrics live in
+// this one group because two files consume them: the reserved block itself
+// is styled in `super::meter` (pages/mixer.rs) while the hot layer below
+// (`ReadoutShapes`, `paint_mixer_meter_frame`) shapes and paints the live
+// text at the same size and line height — one group so the block and its
+// painter cannot drift apart.
+
+/// Left edge of the block this far left of the meter's left edge, so the
+/// block's width centers the dB text under the meter track.
+pub(crate) const READOUT_OFFSET_X: f32 = -10.;
+/// Bottom edge of the block this far below the meter's bottom edge: the
+/// number hangs under the track, inside the levels row's bottom margin
+/// (see `strip_body` in pages/mixer.rs).
+pub(crate) const READOUT_OFFSET_Y: f32 = -28.;
+/// Reserved width for the widest dB text at the mono size.
+pub(crate) const READOUT_WIDTH: f32 = 48.;
+/// The block's height: exactly one line.
+pub(crate) const READOUT_HEIGHT: f32 = 12.;
+/// The single line's line height, shared by the block style and the hot
+/// layer's `ShapedLine::paint`.
+pub(crate) const READOUT_LINE_HEIGHT: f32 = 12.;
+/// The mono text size the block style and the readout shaper share.
+pub(crate) const READOUT_TEXT_SIZE: f32 = 8.;
+
 pub(crate) fn readout(shell: &StudioShell, id: NodeId) -> impl IntoElement {
-    let geometry = shell.mixer_geometry.clone();
+    let geometry = shell.mixer.geometry.clone();
     canvas(
         move |bounds, window, _| {
             geometry.update(|geometry| {
@@ -689,6 +719,10 @@ pub(crate) struct MixerMeters {
     /// Shared, bounded shaping cache for every strip's readout, keyed by
     /// the exact text (see [`ReadoutShapes`]).
     readouts: std::cell::RefCell<ReadoutShapes>,
+    /// Shared, bounded shaping cache for the per-frame channel labels
+    /// ("L"/"R"/channel numbers), keyed by (text, font size) — the readout
+    /// cache's twin for the hot layer's static short labels.
+    labels: std::cell::RefCell<crate::ui::widgets::fader::LabelShapes>,
 }
 
 impl MixerMeters {
@@ -697,6 +731,7 @@ impl MixerMeters {
             shell,
             geometry,
             readouts: std::cell::RefCell::new(ReadoutShapes::default()),
+            labels: std::cell::RefCell::new(crate::ui::widgets::fader::LabelShapes::default()),
         }
     }
 
@@ -714,6 +749,20 @@ impl MixerMeters {
     pub(crate) fn last_readout(&self, id: NodeId) -> Option<String> {
         self.readouts.borrow().census.painted.get(&id).cloned()
     }
+
+    /// How many shaper runs the label cache has needed, and how many
+    /// distinct (text, size) entries it holds — the channel-label twin of
+    /// [`Self::readout_shape_stats`].
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(crate) fn label_shape_stats(&self) -> (usize, usize) {
+        self.labels.borrow().stats()
+    }
+
+    /// The distinct label texts painted through the label cache so far.
+    #[cfg(all(test, feature = "gpui-test"))]
+    pub(crate) fn painted_labels(&self) -> std::collections::BTreeSet<String> {
+        self.labels.borrow().painted()
+    }
 }
 
 /// The strip readouts' shaping cache, shared by every track and keyed by the
@@ -726,8 +775,8 @@ impl MixerMeters {
 /// hundreds, and no per-node entry survives a deleted node, so the old
 /// per-track map's unbounded growth is gone with it. The key is the text
 /// alone because every shaping parameter at the only call site (mono font,
-/// 8 px, muted color) is a constant; if the readout ever becomes styleable,
-/// those parameters must join the key.
+/// [`READOUT_TEXT_SIZE`], muted color) is a constant; if the readout ever
+/// becomes styleable, those parameters must join the key.
 #[derive(Default)]
 struct ReadoutShapes {
     lines: HashMap<String, gpui_kit::ShapedLine>,
@@ -757,7 +806,7 @@ impl ReadoutShapes {
             }
             let line = window.text_system().shape_line(
                 text.into(),
-                px(8.),
+                px(READOUT_TEXT_SIZE),
                 &[TextRun {
                     len: text.len(),
                     font: font(theme::FONT_MONO),
@@ -812,7 +861,15 @@ impl HotSurface for MixerMeters {
             return;
         };
         shell.update(cx, |shell, cx| {
-            paint_mixer_meter_frame(frame, shell, layer, window, cx, &self.readouts)
+            paint_mixer_meter_frame(
+                frame,
+                shell,
+                layer,
+                window,
+                cx,
+                &self.readouts,
+                &self.labels,
+            )
         });
     }
 }
@@ -841,20 +898,24 @@ fn paint_mixer_meter_frame(
     window: &mut Window,
     cx: &mut Context<StudioShell>,
     readouts: &std::cell::RefCell<ReadoutShapes>,
+    labels: &std::cell::RefCell<crate::ui::widgets::fader::LabelShapes>,
 ) {
     #[cfg(feature = "gpui-test")]
     let began = std::time::Instant::now();
     #[cfg(feature = "gpui-test")]
     let mut levels_fingerprint = 0u64;
+    // The channel labels' shaping cache, borrowed once for the whole frame:
+    // every strip's labels paint through the same (text, size) entries.
+    let mut labels = labels.borrow_mut();
     for (&id, &(placement, channels, legacy_input)) in &frame.tracks {
         if !placement.decorations_visible() {
             continue;
         }
         let legacy = legacy_input.and_then(|input| {
             if input {
-                shell.meters.display_input()
+                shell.metering.meters.display_input()
             } else {
-                shell.meters.display_output()
+                shell.metering.meters.display_output()
             }
         });
         let levels = {
@@ -875,6 +936,7 @@ fn paint_mixer_meter_frame(
                 levels.as_ref().map(|levels| levels.as_slice()),
                 channels,
                 &clips,
+                &mut labels,
                 window,
                 cx,
             );
@@ -888,9 +950,9 @@ fn paint_mixer_meter_frame(
         let legacy = frame.tracks.get(&id).and_then(|&(_, _, legacy_input)| {
             legacy_input.and_then(|input| {
                 if input {
-                    shell.meters.display_input()
+                    shell.metering.meters.display_input()
                 } else {
-                    shell.meters.display_output()
+                    shell.metering.meters.display_output()
                 }
             })
         });
@@ -912,7 +974,7 @@ fn paint_mixer_meter_frame(
             };
             let _ = line.paint(
                 placement.bounds.origin,
-                px(12.),
+                px(READOUT_LINE_HEIGHT),
                 TextAlign::Center,
                 Some(placement.bounds.size.width),
                 window,
@@ -926,13 +988,13 @@ fn paint_mixer_meter_frame(
         trace.levels(levels_fingerprint);
         trace.meter_paints += 1;
         trace.add(began.elapsed());
-        trace.finish(shell.node_meter_points.borrow().len());
+        trace.finish(shell.metering.node_meter_points.borrow().len());
     }
     // The hovered faulted strip's banner, hung under the strip and clamped
     // against the hot layer's own bounds. Like the graph page's tooltip it
     // lives on the shell outside every panel key: one notified frame per
     // hover change paints it, and it stands until the next change repaints.
-    if let Some(id) = shell.hovered_strip
+    if let Some(id) = shell.mixer.hovered_strip
         && let Some(bounds) = frame.banners.get(&id)
     {
         let faults: Vec<crate::ui::pages::graph::graph_canvas::CardFault> = {
@@ -948,8 +1010,16 @@ fn paint_mixer_meter_frame(
                 })
                 .collect()
         };
+        let mut shapes = shell.mixer.shapes.borrow_mut();
         crate::ui::pages::graph::graph_canvas_view::paint_fault_banner(
-            &faults, *bounds, layer, window, cx,
+            &faults,
+            *bounds,
+            layer,
+            crate::ui::pages::graph::graph_canvas_view::Paint {
+                shapes: &mut shapes,
+                window,
+            },
+            cx,
         );
     }
 }

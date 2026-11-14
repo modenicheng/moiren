@@ -2,266 +2,9 @@
 //! (the `transport_tests` module is the earlier precedent).
 
 use super::*;
-use crate::service::{ProcessRow, ServiceMailbox};
-use crate::ui::presentation::{output_name, source_name};
+use crate::service::InputSelection;
 use crate::ui::{finish_service, initial_projection, spawn_service, wait_until};
 use moiren_core::graph::NodeKind;
-
-fn catalog_state(backend: AudioBackend) -> (UiState, ServiceMailbox) {
-    let row = |id: &str, name: &str| DeviceRow {
-        endpoint_id: id.into(),
-        name: name.into(),
-    };
-    let mut context = crate::service::ServiceContext::default();
-    context.audio_settings.backend = backend;
-    context.catalog = Arc::new(DeviceCatalog {
-        inputs: vec![
-            row("wasapi-input", "WASAPI microphone"),
-            row("shared-id", "WASAPI shared input"),
-        ],
-        outputs: vec![
-            row("wasapi-output", "WASAPI speakers"),
-            row("shared-id", "WASAPI shared output"),
-        ],
-        asio_drivers: vec![
-            row("asio:{driver}", "ASIO interface"),
-            row("shared-id", "ASIO shared driver"),
-        ],
-        processes: vec![ProcessRow {
-            pid: 42,
-            creation_time_100ns: 7,
-            name: "Player".into(),
-        }],
-        default_input_endpoint_id: Some("wasapi-input".into()),
-        default_output_endpoint_id: Some("wasapi-output".into()),
-        ..Default::default()
-    });
-    let (handle, mailbox) =
-        ServiceMailbox::with_snapshot(std::thread::current(), crate::service::snapshot(&context));
-    let initial = handle.try_snapshot().unwrap();
-    (UiState::new(handle, initial), mailbox)
-}
-
-#[test]
-fn asio_candidates_and_selected_rows_use_the_same_driver_in_both_directions() {
-    let (mut state, _) = catalog_state(AudioBackend::Asio);
-    assert_eq!(state.selection.input_id, None);
-    assert_eq!(state.selection.output_id, None);
-    state.source_mode = SourceMode::Input;
-    state.selection.input_id = Some("asio:{driver}".into());
-    state.selection.output_id = Some("asio:{driver}".into());
-    let spec = state
-        .candidate_spec()
-        .expect("installed ASIO duplex driver");
-    assert_eq!(spec.output_endpoint_id, "asio:{driver}");
-    assert_eq!(
-        spec.source,
-        InputSelection::Physical {
-            endpoint_id: "asio:{driver}".into()
-        }
-    );
-    assert_eq!(
-        state.selection.input_index(&state.snapshot.catalog),
-        Some(0)
-    );
-    assert_eq!(
-        state.selection.output_index(&state.snapshot.catalog),
-        Some(0)
-    );
-    assert_eq!(
-        state.selection.input_selection(&state.snapshot.catalog),
-        Some(spec.source.clone())
-    );
-    assert_eq!(source_name(&state.snapshot, &spec.source), "ASIO interface");
-    assert_eq!(
-        output_name(&state.snapshot, &spec.output_endpoint_id),
-        "ASIO interface"
-    );
-}
-
-#[test]
-fn vanished_asio_driver_keeps_saved_identity_without_wasapi_fallback() {
-    let (mut state, _) = catalog_state(AudioBackend::Asio);
-    state.source_mode = SourceMode::Input;
-    state.selection.input_id = Some("shared-id".into());
-    state.selection.output_id = Some("shared-id".into());
-    Arc::make_mut(&mut Arc::make_mut(&mut state.snapshot).catalog)
-        .asio_drivers
-        .clear();
-    assert!(state.candidate_config().is_some());
-    assert!(state.candidate_spec().is_none());
-    assert_eq!(state.selection.input_index(&state.snapshot.catalog), None);
-    assert_eq!(state.selection.output_index(&state.snapshot.catalog), None);
-    assert_eq!(
-        state.selection.input_selection(&state.snapshot.catalog),
-        None
-    );
-    assert_eq!(
-        output_name(&state.snapshot, "shared-id"),
-        "Unavailable output"
-    );
-    assert_eq!(
-        source_name(
-            &state.snapshot,
-            &InputSelection::Physical {
-                endpoint_id: "shared-id".into()
-            }
-        ),
-        "Unavailable input"
-    );
-    assert_eq!(state.selection.input_id.as_deref(), Some("shared-id"));
-    assert_eq!(state.selection.output_id.as_deref(), Some("shared-id"));
-}
-
-#[test]
-fn requested_backend_controls_names_and_row_validation_across_switches() {
-    let (mut state, mailbox) = catalog_state(AudioBackend::Wasapi);
-    state.source_mode = SourceMode::Input;
-    assert!(state.candidate_spec().is_some());
-    assert_eq!(
-        output_name(&state.snapshot, "shared-id"),
-        "WASAPI shared output"
-    );
-    let source = InputSelection::Physical {
-        endpoint_id: "shared-id".into(),
-    };
-    assert_eq!(source_name(&state.snapshot, &source), "WASAPI shared input");
-
-    let mut snapshot = (*state.snapshot).clone();
-    snapshot.active_audio_settings = Some(snapshot.audio_settings.clone());
-    snapshot.audio_settings.backend = AudioBackend::Asio;
-    mailbox.publish(snapshot);
-    state.poll();
-    assert!(
-        state.candidate_spec().is_none(),
-        "WASAPI selections remain unavailable in ASIO"
-    );
-    assert_eq!(state.selection.input_index(&state.snapshot.catalog), None);
-    assert_eq!(state.selection.output_index(&state.snapshot.catalog), None);
-    assert_eq!(
-        state.selection.input_selection(&state.snapshot.catalog),
-        None
-    );
-    assert_eq!(
-        output_name(&state.snapshot, "shared-id"),
-        "ASIO shared driver"
-    );
-    assert_eq!(source_name(&state.snapshot, &source), "ASIO shared driver");
-    assert_eq!(
-        output_name(&state.snapshot, "wasapi-output"),
-        "Unavailable output"
-    );
-
-    state.selection.input_id = Some("asio:{driver}".into());
-    state.selection.output_id = Some("asio:{driver}".into());
-    assert!(state.candidate_spec().is_some());
-    let mut snapshot = (*state.snapshot).clone();
-    snapshot.audio_settings.backend = AudioBackend::Wasapi;
-    mailbox.publish(snapshot);
-    state.poll();
-    assert!(
-        state.candidate_spec().is_none(),
-        "ASIO selections remain unavailable in WASAPI"
-    );
-    assert_eq!(state.selection.input_index(&state.snapshot.catalog), None);
-    assert_eq!(state.selection.output_index(&state.snapshot.catalog), None);
-    assert_eq!(
-        output_name(&state.snapshot, "asio:{driver}"),
-        "Unavailable output"
-    );
-}
-
-#[test]
-fn asio_output_accepts_tone_and_live_process_without_substituting_physical_input() {
-    let (mut state, _) = catalog_state(AudioBackend::Asio);
-    state.selection.output_id = Some("asio:{driver}".into());
-    assert!(
-        state.candidate_spec().is_some(),
-        "software tone uses an ASIO output"
-    );
-    state.source_mode = SourceMode::Application;
-    state.selection.process_key = Some((42, 7));
-    let spec = state
-        .candidate_spec()
-        .expect("live process uses an ASIO output");
-    assert_eq!(
-        source_name(&state.snapshot, &spec.source),
-        "Player (PID 42)"
-    );
-    assert_eq!(
-        state.selection.input_selection(&state.snapshot.catalog),
-        Some(spec.source)
-    );
-    state.selection.process_key = Some((42, 8));
-    state.selection.input_id = Some("asio:{driver}".into());
-    assert_eq!(
-        state.selection.input_selection(&state.snapshot.catalog),
-        None
-    );
-    assert!(state.candidate_spec().is_none());
-}
-
-fn output_catalog(ids: &[&str], default: &str) -> DeviceCatalog {
-    DeviceCatalog {
-        outputs: ids
-            .iter()
-            .map(|id| DeviceRow {
-                endpoint_id: id.to_string(),
-                name: id.to_string(),
-            })
-            .collect(),
-        default_output_endpoint_id: Some(default.into()),
-        ..Default::default()
-    }
-}
-
-#[test]
-fn defaults_and_refresh_preserve_identity_and_reject_vanished_selection() {
-    let mut selections = SelectionState::default();
-    selections.refresh(&output_catalog(&["a", "b"], "b"));
-    assert_eq!(selections.output_id.as_deref(), Some("b"));
-    selections.refresh(&output_catalog(&["b", "a"], "a"));
-    assert_eq!(selections.output_id.as_deref(), Some("b"));
-    assert_eq!(
-        selections.output_index(&output_catalog(&["a"], "a")),
-        None,
-        "vanished identity stays selected but invalid"
-    );
-    assert_eq!(selections.output_index(&DeviceCatalog::default()), None);
-}
-
-#[test]
-fn exact_process_identity_survives_reorder_but_not_pid_reuse() {
-    let old = ProcessRow {
-        pid: 42,
-        creation_time_100ns: u64::MAX - 1,
-        name: "old".into(),
-    };
-    let mut selection = SelectionState::default();
-    let mut catalog = DeviceCatalog {
-        processes: vec![old.clone()],
-        ..Default::default()
-    };
-    selection.select_process(&catalog, Some(0));
-    assert_eq!(
-        selection.input_selection(&catalog),
-        Some(InputSelection::Process {
-            pid: 42,
-            creation_time_100ns: u64::MAX - 1
-        })
-    );
-    catalog.processes.insert(
-        0,
-        ProcessRow {
-            pid: 7,
-            creation_time_100ns: 8,
-            name: "other".into(),
-        },
-    );
-    assert_eq!(selection.process_index(&catalog), Some(1));
-    catalog.processes[1].creation_time_100ns = u64::MAX;
-    assert_eq!(selection.input_selection(&catalog), None);
-}
 
 #[test]
 fn control_feedback_reports_results_without_internal_protocol_identifiers() {
@@ -303,7 +46,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
     };
     use moiren_engine::node::DeviceOptions;
     use moiren_windows_audio::engine_backend::{
-        ProfessionalObservationSnapshot, ProfessionalStreamObservation,
+        ProfessionalObservationSnapshot, ProfessionalStreamObservation, StreamEndpoint,
     };
     use moiren_windows_audio::native::NativeStreamInfo;
     let runtime = spawn_service();
@@ -323,6 +66,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
             running: true,
             streams: vec![ProfessionalStreamObservation {
                 node,
+                endpoint: StreamEndpoint::Physical("asio:{probe-driver}".into()),
                 input: false,
                 master: true,
                 requested: DeviceOptions {
@@ -340,38 +84,53 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
                 },
                 dropped_frames: 9,
                 silent_frames: 11,
+                xruns: 0,
                 native_callbacks: 100,
                 native_wait_wakes: 0,
                 native_wait_timeouts: 0,
                 native_written_frames: 0,
                 native_dropped_frames: 3,
                 native_silent_frames: 5,
+                native_xruns: 0,
                 native_capture_quality: None,
+                engine_blocks: 0,
+                engine_busy_100ns: 0,
+                engine_peak_block_100ns: 0,
                 driver_latency: Some(moiren_windows_audio::native::NativeLatency {
                     input_frames: 32,
                     output_frames: 64,
                 }),
+                absent: false,
             }],
         },
     });
-    let rows = crate::ui::presentation::native_timing_rows(&state.snapshot);
-    let actual = &rows
+    let views = crate::ui::presentation::native_timing_views(&state.snapshot);
+    assert_eq!(views.processing.as_ref().unwrap().0, "Processing");
+    let stream = &views.streams[0];
+    assert_eq!(stream.node, node);
+    // The endpoint identity carries the service-side row id; with no catalog
+    // row for it the title falls back to the raw identity.
+    assert_eq!(stream.device_title, "asio:{probe-driver}");
+    let actual = &stream
+        .rows
         .iter()
-        .find(|(key, _)| key.contains("actual stream"))
+        .find(|(key, _)| key.contains("Actual stream"))
         .unwrap()
         .1;
     assert!(actual.contains("44100 Hz"));
     assert!(actual.contains("24-bit PCM"));
     assert!(actual.contains("1024 frames"));
     assert!(!actual.contains("96000"));
-    let mode = &rows
+    let mode = &stream
+        .rows
         .iter()
-        .find(|(key, _)| key.contains("backend / mode"))
+        .find(|(key, _)| key.contains("Backend / mode"))
         .unwrap()
         .1;
     assert!(mode.contains("driver owns mode"));
     assert!(!mode.contains("Shared"));
-    let native = &rows
+    let native = &stream
+        .rows
         .iter()
         .find(|(key, _)| key.contains("ASIO callback counters"))
         .unwrap()
@@ -379,19 +138,17 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
     assert!(native.contains("100 callbacks"));
     assert!(native.contains("dropped 3 / render silence 5"));
     assert!(native.contains("startup"));
-    let latency = &rows
+    let latency = &stream
+        .rows
         .iter()
-        .find(|(key, _)| key.contains("driver-reported latency"))
+        .find(|(key, _)| key.contains("Driver-reported latency"))
         .unwrap()
         .1;
     assert!(latency.contains("Input 32 / output 64 frames"));
     assert!(latency.contains("excludes application queues"));
     Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(8);
-    assert!(
-        !crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(key, _)| key.contains("actual stream"))
-    );
+    let stale = crate::ui::presentation::native_timing_views(&state.snapshot);
+    assert!(stale.streams.is_empty() && stale.processing.is_none());
     finish_service(runtime);
 }
 
@@ -409,7 +166,6 @@ fn restored_audio_settings_sync_block_size_without_starting_audio() {
         audio: audio.clone(),
         ..Default::default()
     });
-    assert_eq!(state.max_block_frames, 1024);
     wait_until(std::time::Duration::from_secs(2), || {
         state.poll();
         !state.pending_request
@@ -433,15 +189,15 @@ fn invalid_restored_audio_does_not_hide_its_error_with_latency_dispatch() {
     preferences.audio.processing.sample_rate = 192_000;
     preferences.latency_profile = crate::service::AudioLatencyProfile::Low;
     state.restore_preferences(&preferences);
-    assert!(
-        state
-            .dispatch_error
-            .as_ref()
-            .unwrap()
-            .contains("sample rate")
-    );
+    // The typed failure carries the closed AudioConfigError set whole; the
+    // old frozen string asserted only the rendered prose ("sample rate").
+    assert!(matches!(
+        state.dispatch_error,
+        Some(UiFailure::InvalidAudioSettings(
+            crate::service::AudioConfigError::InvalidSampleRate
+        ))
+    ));
     assert!(!state.pending_request);
-    assert_eq!(state.max_block_frames, 256);
     assert_eq!(state.snapshot.consumed_request_id, RequestId::default());
     finish_service(runtime);
 }
@@ -477,40 +233,6 @@ fn restored_latency_preference_selects_next_start_without_starting_audio() {
     assert_eq!(
         crate::ui::presentation::latency_apply_text(&state.snapshot),
         "Active profile matches selection"
-    );
-    finish_service(runtime);
-}
-
-#[test]
-fn service_resource_binding_changes_update_the_shared_session_projection() {
-    let runtime = spawn_service();
-    let handle = runtime.handle();
-    let mut state = UiState::new(handle.clone(), initial_projection(&handle));
-    let source = state
-        .snapshot
-        .graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| n.kind() == NodeKind::Source)
-        .unwrap()
-        .id();
-    state.dispatch(AppRequest::EditGraph(
-        crate::service::GraphEdit::BindSource {
-            node: source,
-            source: InputSelection::Physical {
-                endpoint_id: "service-selected-input".into(),
-            },
-        },
-    ));
-    wait_until(std::time::Duration::from_secs(2), || {
-        state.poll();
-        !state.pending_request
-    });
-    assert_eq!(state.source_mode, SourceMode::Input);
-    assert_eq!(
-        state.selection.input_id.as_deref(),
-        Some("service-selected-input")
     );
     finish_service(runtime);
 }
@@ -553,225 +275,21 @@ fn display_label_shows_the_node_label_even_when_a_device_is_bound() {
 }
 
 #[test]
-fn unavailable_resources_remain_in_saved_candidate_configuration() {
-    let runtime = spawn_service();
-    let handle = runtime.handle();
-    let mut state = UiState::new(handle.clone(), initial_projection(&handle));
-    let spec = SessionSpec {
-        source: InputSelection::Physical {
-            endpoint_id: "unplugged-input".into(),
-        },
-        output_endpoint_id: "unplugged-output".into(),
-        limit: RunLimit::Seconds(35),
-        gain: 0.25,
-        pan: -0.4,
-        max_block_frames: 512,
-    };
-    state.restore_candidate(&spec);
-    assert_eq!(state.candidate_config(), Some(spec));
-    assert!(
-        state.candidate_spec().is_none(),
-        "unavailable devices cannot start"
+fn dispatch_failure_text_translates_at_paint_per_locale() {
+    // failure_text reads the process locale at paint; under the default
+    // locale it renders the English key, and the explicit zh-CN lookup of
+    // the same key differs (the i18n tests' explicit-locale pattern keeps
+    // parallel tests independent of global state).
+    let failure = UiFailure::Dispatch(crate::service::DispatchError::Busy);
+    let english = crate::ui::presentation::failure_text(&failure);
+    let chinese = rust_i18n::t!(
+        "The audio service is busy; try again in a moment.",
+        locale = crate::i18n::SIMPLIFIED_CHINESE
+    )
+    .into_owned();
+    assert_eq!(english, "The audio service is busy; try again in a moment.");
+    assert_ne!(
+        english, chinese,
+        "the zh-CN catalog must translate the dispatch failure"
     );
-    finish_service(runtime);
-}
-
-#[test]
-fn graph_only_template_clears_previous_project_resource_selection() {
-    let runtime = spawn_service();
-    let handle = runtime.handle();
-    let mut state = UiState::new(handle.clone(), initial_projection(&handle));
-    state.selection.output_id = Some("old-output".into());
-    state.selection.input_id = Some("old-input".into());
-    state.source_mode = SourceMode::Input;
-    state.max_block_frames = 1024;
-    state.run_limit = RunLimit::Seconds(60);
-    state.restore_graph_candidate();
-    assert_eq!(state.source_mode, SourceMode::Tone);
-    assert_eq!(state.tone_frequency, 440.);
-    assert!(state.selection.output_id.is_none());
-    assert!(state.selection.input_id.is_none());
-    assert_eq!(state.max_block_frames, 256);
-    assert_eq!(state.run_limit, RunLimit::UntilStopped);
-    assert!(state.candidate_config().is_none());
-    finish_service(runtime);
-}
-
-#[test]
-fn running_projection_edits_candidate_nodes_instead_of_legacy_session_pair() {
-    let runtime = spawn_service();
-    let handle = runtime.handle();
-    let mut snapshot = (*initial_projection(&handle)).clone();
-    snapshot.phase = SessionPhase::Running;
-    let mut state = UiState::new(handle.clone(), Arc::new(snapshot));
-    state.gain = 0.25;
-    state.pan = 0.4;
-    state.request_parameters();
-    wait_until(std::time::Duration::from_secs(2), || {
-        state.poll();
-        !state.pending_request
-    });
-    for node in state.snapshot.graph.graph.nodes() {
-        let entry = state.snapshot.graph.node(node.id()).unwrap();
-        match node.kind() {
-            NodeKind::Gain => assert_eq!(entry.gain, 0.25),
-            NodeKind::Pan => assert_eq!(entry.pan, 0.4),
-            _ => {}
-        }
-    }
-    assert!(state.snapshot.control.pending_gain_pan.is_none());
-    finish_service(runtime);
-}
-#[test]
-fn restored_transport_intent_remains_pending_without_starting_and_invalid_restore_is_atomic() {
-    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
-    let runtime = spawn_service();
-    let handle = runtime.handle();
-    let mut state = UiState::new(handle.clone(), initial_projection(&handle));
-    let mut preferences = crate::project::AppPreferences {
-        transport_latency: TransportLatencySettings {
-            process: Some(ExpertInputBuffer::default()),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    state.restore_preferences(&preferences);
-    wait_until(std::time::Duration::from_secs(2), || {
-        state.poll();
-        !state.pending_request
-    });
-    assert_eq!(
-        state.snapshot.transport_latency,
-        preferences.transport_latency
-    );
-    assert_eq!(state.snapshot.active_transport_latency, None);
-    assert_eq!(state.snapshot.phase, SessionPhase::Idle);
-    let consumed = state.snapshot.consumed_request_id;
-    preferences
-        .transport_latency
-        .process
-        .as_mut()
-        .unwrap()
-        .capacity_frames = 0;
-    preferences.audio.processing.block_frames = 512;
-    state.restore_preferences(&preferences);
-    assert!(state.dispatch_error.is_some());
-    assert_eq!(state.max_block_frames, 256);
-    assert_eq!(state.snapshot.consumed_request_id, consumed);
-    assert!(!state.pending_request);
-    finish_service(runtime);
-}
-
-#[cfg(windows)]
-#[test]
-fn native_timing_projection_hides_stopped_and_stale_owner_observations() {
-    use crate::service::{NativeSessionObservations, SessionGeneration};
-    use moiren_windows_audio::{
-        engine_backend::{
-            NativeBridgeObservation, NativeObservationSnapshot, NativeStreamKind,
-            NativeStreamObservation,
-        },
-        latency::{
-            NativeStreamTiming, PreparedInputQueue, PreparedRenderQueue,
-            shared_period::SharedPeriodReport,
-        },
-    };
-    let runtime = spawn_service();
-    let handle = runtime.handle();
-    let mut snapshot = (*initial_projection(&handle)).clone();
-    snapshot.phase = SessionPhase::Running;
-    snapshot.generation = SessionGeneration(8);
-    let node = snapshot.graph.graph.nodes()[0].id();
-    snapshot.native_observations = Some(NativeSessionObservations {
-        generation: SessionGeneration(8),
-        observation: NativeObservationSnapshot {
-            virtual_clock: None,
-            virtual_callback: None,
-            process_delivery: Vec::new(),
-            render_padding: Vec::new(),
-            owner_generation: 3,
-            running: true,
-            streams: vec![NativeStreamObservation {
-                node,
-                kind: NativeStreamKind::MasterOutput,
-                timing: Some(NativeStreamTiming {
-                    sample_rate: 48_000,
-                    period_frames: Some(336),
-                    capacity_frames: 960,
-                }),
-                shared_period: Some(SharedPeriodReport {
-                    desired_period_ms: Some(5.0),
-                    actual_period_frames: Some(336),
-                    ..Default::default()
-                }),
-                render_queue: Some(PreparedRenderQueue {
-                    capacity_frames: 960,
-                    target_frames: 480,
-                    deadline_budget_frames: Some(96),
-                }),
-                input_queue: Some(PreparedInputQueue::compatible()),
-                virtual_budget: None,
-            }],
-            boundary_probes: vec![],
-            bridges: vec![NativeBridgeObservation {
-                queue_history: None,
-                packet_history: None,
-                node,
-                counters: moiren_windows_audio::clock_bridge::BridgeSnapshot {
-                    underrun_frames: 4,
-                    dropped_frames: 8,
-                    resets: 1,
-                    backlog_recoveries: 1,
-                    ..Default::default()
-                },
-            }],
-        },
-    });
-    let mut state = UiState::new(handle.clone(), Arc::new(snapshot));
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)[0]
-            .1
-            .contains("336 frames (7.00 ms)")
-    );
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(_, value)| value == "5.00 ms requested")
-    );
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(label, value)| {
-                label == "1 Master output: effective prepared render queue"
-                    && value == "Target 480 / capacity 960 frames"
-            })
-    );
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(label, value)| {
-                label == "1 Master output: effective prepared bridge queue"
-                    && value == "Prime 2048 / capacity 8192 frames"
-            })
-    );
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(label, value)| {
-                label == "Stream 1: faults / recovery"
-                    && value == "Underrun 4 / dropped 8 frames; resets 1 / backlog recoveries 1"
-            })
-    );
-    Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(9);
-    assert_eq!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot),
-        vec![("Actual native timing".into(), "—".into())]
-    );
-    Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(8);
-    Arc::make_mut(&mut state.snapshot).phase = SessionPhase::Idle;
-    assert_eq!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)[0].1,
-        "—"
-    );
-    finish_service(runtime);
 }

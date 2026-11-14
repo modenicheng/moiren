@@ -2,13 +2,13 @@
 //! Only the adapter's atomic admission invalidation runs on the service pump.
 use super::reconcile::same_resource;
 use super::*;
-use crate::service::{CompletionPermit, GraphSnapshot, JobPool, JobPriority};
+use crate::service::{CompletionPermit, JobPool, JobPriority};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
 
-pub(crate) type DriverStamp = [u64; 5];
+type DriverStamp = [u64; 5];
 
 // Native adapters and portable fake adapters consume these work records.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
@@ -45,8 +45,14 @@ pub(crate) struct NativeObservation {
     pub windows_name: Option<WindowsEndpointNameObservation>,
 }
 pub(crate) struct Batch {
-    pub observations: Vec<NativeObservation>,
+    observations: Vec<NativeObservation>,
     pub errors: Vec<String>,
+}
+impl Batch {
+    #[cfg(test)]
+    pub(crate) fn observation_mut(&mut self, index: usize) -> &mut NativeObservation {
+        &mut self.observations[index]
+    }
 }
 pub(crate) trait Adapter: Send + Sync {
     /// No IO, waiting, or locks shared with control/PCM workers.
@@ -55,7 +61,7 @@ pub(crate) trait Adapter: Send + Sync {
 }
 
 pub(crate) struct Runtime {
-    pub adapter: Option<Arc<dyn Adapter>>,
+    pub(crate) adapter: Option<Arc<dyn Adapter>>,
     in_flight: bool,
     native_empty: bool,
     shutdown_in_flight: bool,
@@ -177,12 +183,17 @@ impl Runtime {
             Err(error) => {
                 self.healthy.clear();
                 self.ready.clear();
-                service.windows_names.clear();
+                if !service.windows_names.is_empty() {
+                    service.windows_names.clear();
+                    service.mark_changed();
+                }
                 self.revoke();
                 return vec![error];
             }
         };
-        service.windows_names.clear();
+        // Rebuilt from the batch and swapped only on real change, so a
+        // content-equal observation batch never churns the content token.
+        let mut windows_names = std::collections::BTreeMap::new();
         self.native_empty = batch
             .observations
             .iter()
@@ -254,9 +265,9 @@ impl Runtime {
                 }
             }
             if native.resource == ExportResourceState::Absent {
-                // Project only the probe's accepted sequence. Keep the live
-                // provider observation absent so reconciliation still plans
-                // a fresh CREATE and no historical stamp becomes current.
+                // Record accepted probe evidence, then keep the live provider
+                // observation absent so reconciliation still plans a fresh
+                // CREATE and no historical stamp becomes current authority.
                 self.sequence = self
                     .sequence
                     .checked_add(1)
@@ -279,7 +290,9 @@ impl Runtime {
                     #[cfg(feature = "vad-integration-probe")]
                     service.observation_generations.insert(id, generation);
                 }
-                service.observations.remove(&id);
+                if service.observations.remove(&id).is_some() {
+                    service.mark_changed();
+                }
                 continue;
             }
             if let Some(stamp) = native.snapshot {
@@ -361,7 +374,7 @@ impl Runtime {
                     identity.revoke();
                 }
                 if let Some(name) = windows_name {
-                    service.windows_names.insert(id, name);
+                    windows_names.insert(id, name);
                 }
                 #[cfg(feature = "vad-integration-probe")]
                 if native.resource != ExportResourceState::Unavailable && accepted_result {
@@ -375,18 +388,28 @@ impl Runtime {
                     service.diagnostics.insert(id, diagnostics);
                 }
                 #[cfg(feature = "vad-integration-probe")]
-                if let Some(stamp) = native_stamp {
+                if let Some(stamp) = native_stamp
+                    && service.native_stamps.get(&id) != Some(&stamp)
+                {
                     service.native_stamps.insert(id, stamp);
+                    service.mark_changed();
                 }
             }
+        }
+        if windows_names != service.windows_names {
+            service.windows_names = windows_names;
+            service.mark_changed();
         }
         errors
     }
 
+    /// Projects execution state into the service's export observations. The
+    /// driver poll supplies only the active revision (all `project` reads),
+    /// not the deep graph snapshot.
     pub fn project(
         &mut self,
         service: &mut ExportService,
-        graph: &GraphSnapshot,
+        active_revision: Option<u64>,
         active: &[ExportIntent],
         basis: Option<[u64; 5]>,
     ) {
@@ -398,15 +421,18 @@ impl Runtime {
                 .map_or(0, |a| a.authorize(basis.map(|b| b[3])));
             self.basis = basis;
         }
+        let mut projected = false;
         for observation in service.observations.values_mut() {
-            observation.active_revision = None;
+            // The settled steady state re-derives the same admission every
+            // poll; write (and advance the content token) only on change.
+            let mut next = (None, observation.intent.binding);
             if observation.resource == ExportResourceState::Present
                 && self.ready.contains(&observation.intent.endpoint_id)
                 && let Some(intent) = active.iter().find(|i| {
                     i.enabled && i.binding.is_some() && same_resource(i, &observation.intent)
                 })
                 && let Some(basis) = basis
-                && graph.active_revision == Some(basis[3])
+                && active_revision == Some(basis[3])
                 && observation.allow_default
                     == service
                         .authorizations
@@ -414,16 +440,25 @@ impl Runtime {
                         .copied()
                         .unwrap_or(false)
             {
-                observation.intent.binding = intent.binding;
-                observation.active_revision = Some(basis[3]);
+                next = (Some(basis[3]), intent.binding);
             }
+            if observation.active_revision != next.0 || observation.intent.binding != next.1 {
+                observation.active_revision = next.0;
+                observation.intent.binding = next.1;
+                projected = true;
+            }
+        }
+        if projected {
+            service.mark_changed();
         }
     }
 
     pub fn work(
         &mut self,
         service: &ExportService,
-        graph: &GraphSnapshot,
+        exports: &[ExportIntent],
+        candidate_revision: u64,
+        active_revision: Option<u64>,
         drained: bool,
     ) -> Option<Work> {
         if self.adapter.is_none()
@@ -433,7 +468,7 @@ impl Runtime {
         {
             return None;
         }
-        let plan = service.reconcile(graph);
+        let plan = service.reconcile_for(exports, candidate_revision, active_revision);
         let actions = plan
             .actions
             .into_iter()
@@ -443,8 +478,7 @@ impl Runtime {
                     open: true,
                 } => {
                     self.basis.is_some()
-                        && graph
-                            .exports
+                        && exports
                             .iter()
                             .find(|intent| intent.endpoint_id == *endpoint_id)
                             .is_some_and(|intent| {

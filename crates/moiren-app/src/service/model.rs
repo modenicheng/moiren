@@ -44,7 +44,7 @@ impl SessionSpec {
         if !endpoint_valid(&self.output_endpoint_id)
             || !valid_gain_pan(self.gain, self.pan)
             || !(1..=4096).contains(&self.max_block_frames)
-            || matches!(self.limit,RunLimit::Seconds(n) if !(1..=600).contains(&n))
+            || matches!(self.limit, RunLimit::Seconds(seconds) if !(1..=600).contains(&seconds))
         {
             return Err(DispatchError::InvalidConfig);
         }
@@ -81,6 +81,10 @@ pub enum DispatchError {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
+    /// Test-only teardown hook for legacy managed-session tests. Production
+    /// shutdown remains exit-driven; the always-on architecture has no stop.
+    #[cfg(test)]
+    Stop,
     LoadProject(crate::project::ProjectDocument),
     /// Allocate in the service; project IDs and edits never grant fresh authority.
     CreateExport {
@@ -112,11 +116,30 @@ pub enum AppRequest {
     },
     ApplyGraph,
     Start(SessionSpec),
-    Stop,
     RefreshCatalog,
     SetGainPan {
         gain: f64,
         pan: f64,
+    },
+    /// Begin recording `node` into `directory` in `format`; the file name is
+    /// derived from the start time, never chosen by the caller.
+    StartRecording {
+        node: moiren_core::graph::NodeId,
+        directory: std::path::PathBuf,
+        format: super::RecordingFormat,
+        /// MP3 knobs, read when `format` is `Mp3`; ignored otherwise.
+        mp3: moiren_engine::recorder::Mp3Encoding,
+        /// FLAC knobs, read when `format` is `Flac`; ignored otherwise.
+        flac: moiren_engine::recorder::FlacEncoding,
+    },
+    PauseRecording {
+        node: moiren_core::graph::NodeId,
+    },
+    ResumeRecording {
+        node: moiren_core::graph::NodeId,
+    },
+    StopRecording {
+        node: moiren_core::graph::NodeId,
     },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +217,12 @@ pub struct AppSnapshot {
     pub phase: SessionPhase,
     pub desired: Option<SessionSpec>,
     pub error: Option<String>,
+    /// The live owner is waiting for audio resources: not a failure — the
+    /// session stays intended and resumes when the devices return.
+    pub waiting: bool,
+    /// Runtime recording state per recorder node. Durations are quantized to
+    /// whole seconds so recording itself cannot push publishing past 1 Hz.
+    pub recordings: Vec<super::RecordingSnapshot>,
     pub catalog: Arc<DeviceCatalog>,
     /// Refresh failure retains the last successful rows without changing the
     /// session phase/error. A successful refresh clears this owned diagnostic.
@@ -300,6 +329,7 @@ impl PartialEq for AppSnapshot {
             && self.phase == other.phase
             && self.desired == other.desired
             && self.error == other.error
+            && self.recordings == other.recordings
             && self.catalog_error == other.catalog_error
             && self.control == other.control
             && self.signal_topics == other.signal_topics

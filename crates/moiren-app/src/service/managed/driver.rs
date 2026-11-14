@@ -48,7 +48,8 @@ impl ServiceDriver for ManagedDriver {
                     self.exports_runtime.revoke();
                     // Eligibility is fixed before native exposure. Drain the
                     // owner before the lifecycle worker replaces its resource;
-                    // resuming requires a fresh Apply and Engine confirmation.
+                    // the session stays intended, so the next poll re-opens
+                    // the host under the new authorizations.
                     if self.owner.as_ref().is_some_and(|owner| {
                         owner.exports.iter().any(|intent| {
                             intent.enabled
@@ -56,10 +57,10 @@ impl ServiceDriver for ManagedDriver {
                                     != c.exports.allow_default(intent.endpoint_id)
                         })
                     }) {
-                        self.apply = false;
-                        self.apply_settings = None;
-                        let _ = c.core.stop();
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        let _ = c.core.restart_managed_graph(None);
                         self.retire(c);
+                        self.apply = true;
                     }
                 }
             }
@@ -138,15 +139,6 @@ impl ServiceDriver for ManagedDriver {
                 self.apply_settings = Some(ApplySettings::capture(c));
                 self.apply = true;
             }
-            AppRequest::Stop => {
-                c.measured_process = None;
-                self.cancel_startup_automation();
-                self.apply = false;
-                self.apply_settings = None;
-                self.auto_apply_deadline = None;
-                let _ = c.core.stop();
-                self.retire(c);
-            }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
                     c.exports.clear_new_identities();
@@ -174,19 +166,24 @@ impl ServiceDriver for ManagedDriver {
                     if let Some(node) = edited_strip {
                         self.sync_effective_strip_parameters(c, node);
                     }
-                    if structural && self.owner.is_some() {
+                    if structural {
                         self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
                     }
                 }
             }
             // A restored candidate is a structural change riding the same
             // trailing debounce as structural edits, so bursts of undo steps
-            // coalesce into one atomic plan swap. A stopped session only
-            // records the restored candidate and never restarts audio.
+            // coalesce into one atomic plan swap.
             AppRequest::UndoGraph | AppRequest::RedoGraph => {
                 let back = matches!(request, AppRequest::UndoGraph);
                 let stepped = if back { c.graph.undo() } else { c.graph.redo() };
-                if stepped && self.owner.is_some() {
+                if stepped {
+                    #[cfg(test)]
+                    // A test Stop is explicit user intent: undo restores the
+                    // candidate but must not resurrect the stopped session.
+                    if c.core.run_limit().is_none() {
+                        return;
+                    }
                     self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
                 }
             }
@@ -214,11 +211,31 @@ impl ServiceDriver for ManagedDriver {
                     c.core.update_gain_pan(gain, pan);
                 }
             }
+            AppRequest::StartRecording {
+                node,
+                directory,
+                format,
+                mp3,
+                flac,
+            } => self.start_recording(c, node, directory, format, mp3, flac),
+            AppRequest::PauseRecording { node } => self.pause_recording(c, node),
+            AppRequest::ResumeRecording { node } => self.resume_recording(c, node),
+            AppRequest::StopRecording { node } => self.stop_recording(c, node),
+            #[cfg(test)]
+            AppRequest::Stop => {
+                c.measured_process = None;
+                self.automatic_startup = false;
+                self.automatic_resume = false;
+                self.apply = false;
+                self.apply_settings = None;
+                self.auto_apply_deadline = None;
+                let _ = c.core.stop();
+                self.retire(c);
+            }
         }
     }
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
         self.poll_completions(c, budget);
-        update_vad_catalog(c);
         self.poll_catalog(pool);
         if let Some(deadline) = self.auto_apply_deadline
             && deadline <= Instant::now()
@@ -237,6 +254,7 @@ impl ServiceDriver for ManagedDriver {
             #[cfg(windows)]
             self.poll_process_trace(c, &snapshot);
             self.poll_execution(c, &snapshot);
+            self.poll_recording_rebinds(c, &snapshot);
             self.poll_edits(c);
             self.poll_parameters(c);
             self.pump_parameters(c, budget);
@@ -246,6 +264,13 @@ impl ServiceDriver for ManagedDriver {
         }
         self.publish_resume_notice(c);
         self.poll_exports(c, pool);
+        // Recording workers finalize on their own threads; this folds their
+        // statuses into the domain and queues terminal sessions for cleanup.
+        self.poll_recordings(c);
+        // One catalog reconciliation per poll, after every input it reads has
+        // settled: the second of the former two calls ran after `poll_exports`
+        // and saw the same resource/name evidence, so a single trailing call
+        // lands on the identical end-of-poll catalog state.
         update_vad_catalog(c);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
@@ -259,9 +284,11 @@ impl ServiceDriver for ManagedDriver {
         self.auto_apply_deadline = None;
         self.retire(c);
     }
+
     fn is_drained(&self) -> bool {
         self.auto_apply_deadline.is_none()
             && self.owner.is_none()
+            && self.recording_sessions.is_empty()
             && self.cleaning == 0
             && !self.catalog.is_running()
             && self.exports_runtime.is_drained()
@@ -276,8 +303,34 @@ impl ServiceDriver for ManagedDriver {
 #[path = "driver/vad_catalog_tests.rs"]
 mod vad_catalog_tests;
 
+impl ManagedDriver {
+    /// Stop and retire the owner once the requested run limit elapsed.
+    fn poll_run_limit(&mut self, c: &mut ServiceContext) {
+        let Some(owner) = self.owner.as_ref() else {
+            return;
+        };
+        if let Some(RunLimit::Seconds(seconds)) = c.core.run_limit()
+            && owner
+                .started
+                .is_some_and(|t| t.elapsed() >= Duration::from_secs(u64::from(seconds)))
+        {
+            let _ = c.core.stop();
+            self.retire(c);
+            self.apply = false;
+        }
+    }
+}
+
 fn update_vad_catalog(context: &mut ServiceContext) {
-    let statuses = context.exports.statuses(&context.graph.snapshot());
+    // The export projection reads only the export list and the active
+    // revision, so borrow the graph snapshot instead of deep-copying it
+    // into `statuses(&GraphSnapshot)`.
+    let statuses = {
+        let graph = context.graph.snapshot_ref();
+        context
+            .exports
+            .statuses_for(&graph.exports, graph.active_revision)
+    };
     let live_exports = statuses
         .iter()
         .filter(|status| status.resource != super::super::ExportResourceState::Absent)
@@ -300,7 +353,7 @@ fn update_vad_catalog(context: &mut ServiceContext) {
     if owned != context.catalog.vad_endpoints {
         let mut catalog = (*context.catalog).clone();
         catalog.vad_endpoints = owned;
-        context.catalog = Arc::new(catalog);
+        context.replace_catalog(catalog);
     }
 }
 
@@ -396,7 +449,7 @@ impl ManagedDriver {
                             catalog
                                 .vad_endpoints
                                 .extend(c.catalog.vad_endpoints.clone());
-                            c.catalog = Arc::new(catalog);
+                            c.replace_catalog(catalog);
                             c.catalog_error = None;
                             if self.automatic_startup {
                                 self.automatic_startup = false;
@@ -438,9 +491,10 @@ impl ManagedDriver {
     }
     /// Startup resume of a restored project. The restored graph already
     /// carries its device bindings, so unlike automatic startup nothing is
-    /// rebound to the catalog defaults. IO nodes whose devices are offline
-    /// leave through the ordinary journaled edit, so undo restores them,
-    /// and the rest of the graph starts.
+    /// rebound to the catalog defaults. IO nodes whose devices are absent
+    /// stay in the graph: the backend prepares them as silent null streams
+    /// and reports the degradation, so the node returns by itself once the
+    /// device is back.
     fn resume_restored(&mut self, c: &mut ServiceContext) {
         let snapshot = c.graph.snapshot();
         let mut stripped = Vec::new();
@@ -467,11 +521,6 @@ impl ManagedDriver {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            log::warn!(
-                target: "moiren::audio::service",
-                "resuming without {} offline device node(s): {names}",
-                stripped.len()
-            );
             let (nodes, devices) = if stripped.len() == 1 {
                 ("node", "its device is")
             } else {
@@ -491,9 +540,10 @@ impl ManagedDriver {
         self.apply_settings = Some(ApplySettings::capture(c));
         self.apply = true;
     }
+
     /// The stripped-device notice waits until the resumed session has fully
-    /// activated: activation clears the fault group, so a notice recorded
-    /// earlier would vanish before anyone saw it.
+    /// activated: activation clears the fault group, so recording it earlier
+    /// would erase it before users could see the degradation.
     fn publish_resume_notice(&mut self, c: &mut ServiceContext) {
         if self.resume_notice.is_none() || self.owner.is_none() {
             return;
@@ -507,7 +557,24 @@ impl ManagedDriver {
         }
     }
     fn poll_exports(&mut self, c: &mut ServiceContext, pool: &mut JobPool) {
-        let mut graph = c.graph.snapshot();
+        // Only the export list and revisions are consulted; borrowing them
+        // avoids the full graph snapshot deep copy on every poll. The export
+        // list itself is cloned unless the exiting path clears it anyway.
+        let (mut exports, candidate_revision, active_revision) = {
+            let graph = c.graph.snapshot_ref();
+            let pending_is_none = graph.pending_revision.is_none();
+            let active_revision = graph.active_revision;
+            let exports = if !self.exiting {
+                graph.exports.clone()
+            } else {
+                Vec::new()
+            };
+            (
+                exports,
+                graph.candidate_revision,
+                (active_revision, pending_is_none),
+            )
+        };
         let active = self
             .owner
             .as_ref()
@@ -516,8 +583,8 @@ impl ManagedDriver {
             let host = owner.observer.read();
             (host.state.execution == ExecutionState::Running
                 && host.state.active_revision == Some(owner.active_revision.0)
-                && graph.active_revision == Some(owner.active_revision.1)
-                && graph.pending_revision.is_none()
+                && active_revision.0 == Some(owner.active_revision.1)
+                && active_revision.1
                 && !self.apply
                 && owner.document == self.document
                 && !self.exiting)
@@ -530,17 +597,15 @@ impl ManagedDriver {
                 ])
         });
         self.exports_runtime
-            .project(&mut c.exports, &graph, &active, basis);
+            .project(&mut c.exports, active_revision.0, &active, basis);
         if self.exiting {
-            graph.exports.clear();
+            exports.clear();
         } else {
             // Unapplied candidate changes cannot replace a resource still used
             // by the current Engine owner. Retirement also waits for its reap.
             for intent in &active {
-                graph
-                    .exports
-                    .retain(|i| i.endpoint_id != intent.endpoint_id);
-                graph.exports.push(intent.clone());
+                exports.retain(|i| i.endpoint_id != intent.endpoint_id);
+                exports.push(intent.clone());
             }
         }
         // Reconciliation retains every export leased by the current owner.
@@ -551,7 +616,13 @@ impl ManagedDriver {
             self.exports_runtime
                 .shutdown_work(drained && self.owner.is_none())
         } else {
-            self.exports_runtime.work(&c.exports, &graph, drained)
+            self.exports_runtime.work(
+                &c.exports,
+                &exports,
+                candidate_revision,
+                active_revision.0,
+                drained,
+            )
         };
         if let Some(work) = work
             && let Ok(completion) = self.queue().port().try_reserve()
@@ -666,6 +737,34 @@ impl ManagedDriver {
                 generation,
                 observation,
             });
+        // Absent endpoints surface as node faults: the stream runs silent and
+        // revives automatically when the device returns, so the badge
+        // explains the silence. Recording on the refresh cadence keeps the
+        // fault visible across fault-group clears; record_fault dedupes.
+        if let Some(observations) = &c.professional_observations {
+            for stream in observations
+                .observation
+                .streams
+                .iter()
+                .filter(|stream| stream.absent)
+            {
+                let endpoint = match &stream.endpoint {
+                    moiren_windows_audio::engine_backend::StreamEndpoint::Physical(id) => {
+                        id.clone()
+                    }
+                    _ => continue,
+                };
+                c.graph.record_fault(super::GraphFault {
+                    subject: super::GraphSubject::Node(stream.node),
+                    cause: format!(
+                        "The device for this {} is absent ('{endpoint}'); \
+                         the stream runs silent until it returns",
+                        if stream.input { "input" } else { "output" },
+                    ),
+                    hint: Some("Reconnect the device; audio resumes automatically.".into()),
+                });
+            }
+        }
     }
     #[cfg(not(windows))]
     pub(super) fn poll_observations(
@@ -682,6 +781,7 @@ impl ManagedDriver {
             return;
         };
         let running = snapshot.state.execution == ExecutionState::Running;
+        c.active_execution = Some(snapshot.state.execution);
         let error = if snapshot.state.execution == ExecutionState::WaitingForResources {
             match &snapshot.state.update {
                 UpdateState::Blocked { reason, .. } => Some(format!("{reason:?}")),
@@ -732,11 +832,16 @@ impl ManagedDriver {
             // clears pending; periodic projection only restores settled state.
             if snapshot.state.active_revision == Some(owner.active_revision.0)
                 && (owner.active_apply_id == owner.latest_apply_id
-                    || c.graph.snapshot().pending_revision != Some(owner.active_revision.1))
+                    || c.graph.pending_revision() != Some(owner.active_revision.1))
             {
                 c.graph.confirmed(owner.generation, owner.active_revision.1);
             }
-        } else {
+        } else if owner.started.is_some()
+            && snapshot.state.execution != ExecutionState::WaitingForResources
+        {
+            // The engine ran and then went dormant on its own (a fault), and
+            // it is not waiting for resources: the always-on session keeps
+            // its intent, but this owner's settled projection is gone.
             c.active_latency_profile = None;
             c.active_audio_settings = None;
             c.active_transport_latency = None;
@@ -796,7 +901,7 @@ impl ManagedDriver {
             // the observer before enqueue cannot identify a same-structure edit:
             // older queued commands may advance that basis before acceptance.
             if owner.document == self.document
-                && (values.is_empty() || c.graph.snapshot().candidate_revision == revision)
+                && (values.is_empty() || c.graph.candidate_revision() == revision)
             {
                 self.confirm_parameters = Some(ApplyConfirmation {
                     id: apply_id,
@@ -804,7 +909,7 @@ impl ManagedDriver {
                     host_revision,
                 });
                 self.confirmation_values = values.into();
-            } else if c.graph.snapshot().pending_revision == Some(revision) {
+            } else if c.graph.pending_revision() == Some(revision) {
                 c.graph.clear_pending();
             }
         }
@@ -936,28 +1041,17 @@ impl ManagedDriver {
             }
         }
     }
-    /// Pump the meter bridge from the owner's observer.
+    /// Pump the meter surfaces from the owner's observer: the spectrum
+    /// relay, then the level subscription registry.
     fn poll_meters(&mut self, c: &mut ServiceContext) {
         let Some(owner) = self.owner.as_ref() else {
             return;
         };
-        if let Some(meters) = &mut self.meters {
-            meters.poll(c, &owner.observer);
+        if let Some(spectra) = &mut self.spectra {
+            spectra.poll(c, &owner.observer);
         }
-    }
-    /// Stop and retire the owner once the requested run limit elapsed.
-    fn poll_run_limit(&mut self, c: &mut ServiceContext) {
-        let Some(owner) = self.owner.as_ref() else {
-            return;
-        };
-        if let Some(RunLimit::Seconds(seconds)) = c.core.run_limit()
-            && owner
-                .started
-                .is_some_and(|t| t.elapsed() >= Duration::from_secs(u64::from(seconds)))
-        {
-            let _ = c.core.stop();
-            self.retire(c);
-            self.apply = false;
+        if let Some(tone) = c.levels.poll(&owner.observer, &mut c.signals.topics) {
+            c.tone_session = tone;
         }
     }
 }

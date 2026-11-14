@@ -7,6 +7,7 @@ mod branding;
 // stops it from linking into ordinary application builds.
 #[cfg(feature = "component-gallery")]
 mod component_gallery;
+mod editors;
 pub mod monitoring;
 mod observe;
 mod pages;
@@ -32,6 +33,7 @@ pub use widgets::actions::{
 pub use widgets::navigation::{WindowAction, WindowControlButton, WorkspaceTab};
 
 pub use pages::Page;
+pub use pages::WorkspaceView;
 pub use shell::PageCell;
 #[cfg(feature = "gpui-test")]
 pub use shell::run_ui_capture;
@@ -42,4 +44,4 @@ pub use shell::{WindowPresentation, run};
 pub use shell::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
 #[cfg(feature = "gpui-test")]
 pub use shell::{settle_panels, shell_with_state, test_shell};
-pub use state::{SelectionState, UiState};
+pub use state::UiState;

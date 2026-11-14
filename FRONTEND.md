@@ -1,8 +1,8 @@
 # Moiren 前端设计与协作要求
 
-本文件面向后续修改 Moiren UI 的开发者和设计会话，集中记录公共设计要求、资源入口、数据语义与协作约束。更新日期：2026-10-16。
+本文件面向后续修改 Moiren UI 的开发者和设计会话，集中记录公共设计要求、资源入口、数据语义与协作约束。更新日期：2026-11-11。
 
-**2026-10-14 UI 框架迁移完成：Slint 已完全移除，桌面 UI 改为 gpui-kit 0.7.3（纯 Rust）。** 下文的 Slint 组件/断点描述是历史设计参考；现行实现见 `crates/moiren-app/src/ui/`（theme.rs 令牌、widgets/ 组件、pages/ 页面、window.rs 壳）。设计令牌与配色语义已 1:1 移植。Slint 时代的验收方式作废，headless 测试用 `cargo test -p moiren-app --features gpui-test`。
+**2026-10-14 UI 框架迁移完成：Slint 已完全移除，桌面 UI 改为 gpui-kit 0.7.3（纯 Rust）。** 下文的 Slint 组件/断点描述是历史设计参考；现行实现见 `crates/moiren-app/src/ui/`（theme.rs 令牌、widgets/ 组件、pages/ 页面、shell.rs 壳）。设计令牌与配色语义已 1:1 移植。Slint 时代的验收方式作废，headless 测试用 `cargo test -p moiren-app --features gpui-test`。
 
 **2026-10-15 应用框架接入：Graph、Mixer、Matrix、Devices 和 Settings 共用 gpui 组件与服务快照。** 页面按工作站需求重新组织，不直接复制 Figma。服务拥有候选 LogicalGraph，支持真实拓扑事务、编译启动、Gain / Balance / Mono / Swap、输入与输出观测，以及项目和偏好保存。当前音频驱动的运行范围仍是单 Source、单 Sink 的双声道图；多设备候选可以编辑，应用时会明确报告运行限制。具体接线与验证见 [应用前端接入](docs/designs/13-application-frontend-integration.md)。
 
@@ -52,7 +52,7 @@ Graph、Mixer、Matrix 展示同一份音频图：
 | Graph | 节点、端口、拓扑和信号流，解释连接关系 |
 | Mixer | 通道或节点的参数、增益结构、电平与监听控制 |
 | Matrix | 大规模输出侧到输入侧的连接关系、选中交点和路由详情 |
-| Devices | 设备、应用音源、可用性、能力和时钟资源 |
+| Devices | 设备目录、每设备的流配置与运行监控（含虚拟设备与时钟总览） |
 | Settings | 应用偏好、快捷键、引擎选项与诊断 |
 
 共享的是图对象身份、Session、资源、参数、请求与确认状态。各视图的相机、排序、筛选、折叠和滚动属于展示状态，不应产生另一份拓扑权威。不能将「共享 LogicalGraph」解释成「只有 Graph 页面可以编辑」。多视图统一编辑的具体端口、边和事务设计见第 10 节的评估文档。
@@ -334,7 +334,7 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 
 ### 7.4 Devices 与 Settings
 
-Devices 区分 Inputs、Outputs、Applications、Clock；设备详情展示能力、身份、Default、Active、Next start、可用性和诊断。默认设备、活动设备与下一次 Start 的候选不是同一状态。设备消失后保留稳定身份与不可用原因；刷新失败保留最后一次成功数据。
+Devices 区分 Inputs、Outputs、Virtual devices、Clock。它只回答三件事：有哪些设备、每台设备用什么流参数打开、每台设备此刻实际跑成什么样（设备行的使用/绑定徽标、详情页的使用者三态与流明细）。绑定只有一个入口族：Graph 的 IO 节点（画布 chip 下拉与节点 Inspector）；Devices 页没有任何路由或走带控制。应用音源不是设备，在 Source 节点下拉里选。设备消失后保留稳定身份与不可用原因；刷新失败保留最后一次成功数据。
 
 Settings 负责 Audio Engine、Appearance、Shortcuts、Diagnostics 等应用偏好。关闭后回到原工作区并恢复选择、相机与面板状态。设备选择、路由与 Session 参数留在各自工作区，避免重复入口。
 
@@ -348,7 +348,7 @@ Settings 负责 Audio Engine、Appearance、Shortcuts、Diagnostics 等应用偏
 
 这些规则应在重写后继续满足，与现有页面的结构无关。
 
-- 分开展示候选配置和当前 Active Session。运行 A 时选择下次启动的 B，不能把 A 的电平、身份或来源标签改成 B。
+- 路由的真相只有一份：候选图。绑定只在 IO 节点上编辑；任何页面不得维护第二份选择账本或在启动时回写绑定。运行事实以引擎观测为准，配置事实以已保存请求为准，两者并排展示而不互相冒充。
 - 参数反馈包含 Requested → Accepted → Applied；拒绝或错误显示原因。Applied 由真实回执确认，可带 request、revision 与 effective frame，不能在本地拖动后立即假装生效。
 - 无数据、无 publisher、等待完整窗口、不可用、停止、错误、Prototype 与真实读数分别展示。Unknown 使用 `—` 或状态说明。
 - Peak、RMS、LUFS、相关度、CPU、延迟和 XRUN 各自需要真实来源。不能将已有 Source / Sink 观测伪装成每个处理节点的独立测量。
@@ -441,7 +441,7 @@ Slint 文件检查与原生 UI 验证可参考下面的历史接入文档，执�
 
 | 路径 | 用途 |
 | --- | --- |
-| [src/ui/window.rs](crates/moiren-app/src/ui/window.rs) 与 [src/ui/window/](crates/moiren-app/src/ui/window/) | 公共 shell、各工作区、Settings、项目文件操作与 native capture |
+| [src/ui/shell.rs](crates/moiren-app/src/ui/shell.rs) 与 [src/ui/shell/](crates/moiren-app/src/ui/shell/) | 公共 shell、各工作区、Settings、项目文件操作与 native capture |
 | [src/ui/theme.rs](crates/moiren-app/src/ui/theme.rs) 与 [src/ui/theme/controls.rs](crates/moiren-app/src/ui/theme/controls.rs) | 共享语义令牌、字体与密度 |
 | [src/ui/widgets/](crates/moiren-app/src/ui/widgets/) | 按钮、导航、图标与真实电平组件 |
 | [src/ui/state.rs](crates/moiren-app/src/ui/state.rs) | 服务快照投影、候选资源、请求与确认反馈 |

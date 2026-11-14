@@ -12,7 +12,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::GraphEdit;
 use crate::ui::presentation::{db_text, step_db};
-use crate::ui::widgets::overlay_scrollbar::{clamped_offset, overlay_scrollbar};
+use crate::ui::widgets::overlay_scrollbar::{clamped_offset, notify_owner, scroll_region};
 use controls::*;
 use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{PortId, SendParams};
@@ -42,7 +42,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .iter()
         .flat_map(|n| n.inputs().iter().enumerate().map(move |(i, p)| (n, i, p)))
         .collect();
-    let row_height = if shell.density == Density::Compact {
+    let row_height = if shell.chrome.density == Density::Compact {
         36.
     } else {
         48.
@@ -76,13 +76,19 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex_none()
                 .w(px(112.))
                 .h_full()
-                .p(px(8.))
-                .bg(theme::SURFACE_3)
-                .child(label(t!(
-                    "%{name} / in %{index}",
-                    name = name(node.id()),
-                    index = i + 1
-                ))),
+                .p(px(theme::SPACE_2))
+                .bg(theme::controls::RAISED)
+                // Design 21 §2: header cells carry user node labels —
+                // ellipsized inside the fixed cell, never past it.
+                .child(
+                    label(t!(
+                        "%{name} / in %{index}",
+                        name = name(node.id()),
+                        index = i + 1
+                    ))
+                    .min_w_0()
+                    .truncate(),
+                ),
         );
     }
     let mut row_header = div()
@@ -99,13 +105,19 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             div()
                 .flex_none()
                 .h(px(row_height))
-                .p(px(8.))
-                .bg(theme::SURFACE_3)
-                .child(label(t!(
-                    "%{name} / out %{index}",
-                    name = name(node.id()),
-                    index = i + 1
-                ))),
+                .p(px(theme::SPACE_2))
+                .bg(theme::controls::RAISED)
+                // Design 21 §2: header cells carry user node labels —
+                // ellipsized inside the fixed cell, never past it.
+                .child(
+                    label(t!(
+                        "%{name} / out %{index}",
+                        name = name(node.id()),
+                        index = i + 1
+                    ))
+                    .min_w_0()
+                    .truncate(),
+                ),
         );
     }
     let mut grid = div().flex().flex_col().w(px(width)).h(px(height));
@@ -125,7 +137,7 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             let edge = route_index
                 .get(&(src, dst))
                 .and_then(|index| graph.edges().get(*index));
-            let selected = shell.selected_route == Some((src, dst));
+            let selected = shell.selection.route == Some((src, dst));
             let forbidden = source.id() == destination.id();
             let value = edge
                 .map(|e| {
@@ -153,24 +165,27 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .rounded_none()
                     .border_0()
                     .bg(if selected {
-                        theme::soft(theme::PRIMARY)
+                        theme::soft(theme::controls::FOCUS)
                     } else if edge.is_some() {
-                        theme::SURFACE_3
+                        theme::controls::RAISED
                     } else if ri % 2 == 0 {
                         theme::SURFACE
                     } else {
                         theme::WINDOW_BG
                     })
-                    .text_size(px(12.))
+                    .text_size(px(theme::TEXT_SM))
                     .text_color(if edge.is_some() {
-                        theme::PRIMARY
+                        theme::controls::FOCUS
                     } else {
                         theme::TEXT_FAINT
                     })
-                    .child(value)
+                    // Design 21 §2: cell values (localized "Muted", dB
+                    // readouts) ellipsize inside the fixed cell instead of
+                    // spilling into neighbors.
+                    .child(div().min_w_0().truncate().child(value))
                     .on_click(move |_, _, cx| {
                         this.update(cx, |s, cx| {
-                            s.selected_route = Some((src, dst));
+                            s.selection.route = Some((src, dst));
                             // Single click selects the cell; a double click
                             // also opens the inspector.
                             if s.element_double_clicked(StudioShell::element_key(
@@ -200,8 +215,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
-                .gap(px(12.))
-                .p(px(12.))
+                .gap(px(theme::SPACE_3))
+                .p(px(theme::SPACE_3))
                 .child(
                     div()
                         .flex()
@@ -222,8 +237,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                     div()
                                         .w(px(156.))
                                         .flex_none()
-                                        .p(px(8.))
-                                        .bg(theme::SURFACE_3)
+                                        .p(px(theme::SPACE_2))
+                                        .bg(theme::controls::RAISED)
                                         .child(label(t!("Outputs → Inputs"))),
                                 )
                                 .child(
@@ -252,38 +267,26 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         .gpui_test_observe(),
                                 )
                                 .child(
-                                    // The bar overlay is a sibling of the
-                                    // scroll container, never a child: the
-                                    // container translates its children by
-                                    // the offset at prepaint, so an overlay
-                                    // inside it would drift away with the
-                                    // content. The outer sizing lives on the
-                                    // relative wrapper.
-                                    div()
-                                        .relative()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .id("matrix-grid")
-                                                .w_full()
-                                                .h_full()
-                                                .overflow_scroll()
-                                                .track_scroll(&shell.matrix.scroll)
-                                                .on_scroll_wheel(move |_, _, cx| {
-                                                    this.update(cx, |_, cx| cx.notify())
-                                                })
-                                                .child(grid)
-                                                .gpui_test_observe(),
-                                        )
-                                        .child(overlay_scrollbar(
-                                            &shell.matrix.scroll,
-                                            "scrollbar-matrix-grid",
-                                            ScrollbarAxis::Both,
-                                        )),
+                                    scroll_region(
+                                        "scrollbar-matrix-grid",
+                                        &shell.matrix.scroll,
+                                        ScrollbarAxis::Both,
+                                        div()
+                                            .id("matrix-grid")
+                                            .w_full()
+                                            .h_full()
+                                            .overflow_scroll()
+                                            .track_scroll(&shell.matrix.scroll)
+                                            .restrict_scroll_to_axis()
+                                            .on_scroll_wheel(notify_owner(this))
+                                            .child(grid)
+                                            .gpui_test_observe(),
+                                    )
+                                    .flex_1()
+                                    .min_w_0(),
                                 ),
                         )
-                        .child(div().flex_none().p(px(12.)).child(label(t!(
+                        .child(div().flex_none().p(px(theme::SPACE_3)).child(label(t!(
                             "%{outputs} output ports · %{inputs} input ports · %{connections} direct connections",
                             outputs = outputs.len(),
                             inputs = inputs.len(),
@@ -299,8 +302,8 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot.graph;
     let mut view =
-        panel("matrix-inspector", &shell.inspector_scroll).child(heading(t!("Connection")));
-    if let Some((source, destination)) = shell.selected_route {
+        panel("matrix-inspector", &shell.inspector.scroll).child(heading(t!("Connection")));
+    if let Some((source, destination)) = shell.selection.route {
         if let Some((src, dst, channels)) = find_nodes(snapshot, source, destination) {
             view = view
                 .child(detail(&t!("From"), src))
@@ -315,7 +318,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 let id = edge.id();
                 let params = *edge.params();
                 view = view
-                    .child(badge(t!("Connected"), theme::PRIMARY))
+                    .child(badge(t!("Connected"), theme::controls::FOCUS))
                     .child(detail(&t!("Route gain"), db_text(params.gain)))
                     .child(detail(&t!("Route balance"), format!("{:+.2}", params.pan)))
                     .child(detail(
@@ -353,7 +356,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     .child(
                         div()
                             .flex()
-                            .gap(px(6.))
+                            .gap(px(theme::SPACE_1_5))
                             // Route sends have no upper gain limit by design
                             // (SendParams deliberately accepts any finite
                             // headroom), so the +1 dB step never clamps.
@@ -394,11 +397,11 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     );
             }
             let this = cx.entity();
-            view = view.when(shell.presentation.page != Page::Graph, |view| {
+            view = view.when(shell.presentation.page() != Page::Graph, |view| {
                 view.child(button("show-in-graph", t!("Show in Graph")).on_click(
                     move |_, _, cx| {
                         this.update(cx, |s, cx| {
-                            s.selected_node = None;
+                            s.selection.node = None;
                             s.set_page(Page::Graph, cx);
                             s.open_inspector();
                         })
@@ -417,7 +420,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     }
     panel_host(
         "matrix-inspector",
-        &shell.inspector_scroll,
+        &shell.inspector.scroll,
         view.gpui_test_observe(),
     )
     .into_any_element()

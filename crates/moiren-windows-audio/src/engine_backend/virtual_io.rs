@@ -4,6 +4,7 @@ use crate::virtual_owner::{
     VirtualBoundaryRequest, VirtualSessions, bind_microphone_sink, bind_playback_source,
 };
 use moiren_engine::host::OwnerStatus;
+use moiren_engine::node::VirtualEndpointId;
 
 pub(super) struct VirtualAuxiliary(pub VirtualSessions);
 
@@ -99,7 +100,13 @@ pub(super) fn prepare<S: ProcessingSample>(
             },
             probe,
         ));
-        observations.push(virtual_observation(node, playback, device, channels));
+        observations.push(virtual_observation(
+            node,
+            endpoint_id,
+            playback,
+            device,
+            channels,
+        ));
     }
     if cancel.is_cancelled() {
         return Err(BackendError::Cancelled);
@@ -121,6 +128,7 @@ pub(super) type VirtualProbe = (
 
 fn virtual_observation(
     node: NodeId,
+    endpoint_id: VirtualEndpointId,
     input: bool,
     requested: DeviceOptions,
     channels: usize,
@@ -128,6 +136,7 @@ fn virtual_observation(
     (
         ProfessionalStreamObservation {
             node,
+            endpoint: StreamEndpoint::Virtual(endpoint_id),
             input,
             master: false,
             requested,
@@ -141,6 +150,7 @@ fn virtual_observation(
             },
             dropped_frames: 0,
             silent_frames: 0,
+            xruns: 0,
             native_callbacks: 0,
             native_wait_wakes: 0,
             native_written_frames: 0,
@@ -148,7 +158,12 @@ fn virtual_observation(
             native_dropped_frames: 0,
             native_silent_frames: 0,
             native_capture_quality: None,
+            native_xruns: 0,
+            engine_blocks: 0,
+            engine_busy_100ns: 0,
+            engine_peak_block_100ns: 0,
             driver_latency: None,
+            absent: false,
         },
         Arc::default(),
     )

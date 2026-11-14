@@ -34,6 +34,18 @@ pub enum DeviceMode {
     Exclusive,
 }
 
+impl DeviceMode {
+    /// Display-name registry entry translated at paint (`t!(mode.title())`),
+    /// mirroring [`crate::audio_config::AudioBackend::title`]. Debug stays for
+    /// logs and plumbing; visible text must come from these keys.
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Shared => "Shared",
+            Self::Exclusive => "Exclusive",
+        }
+    }
+}
+
 /// Desired hardware settings, not negotiated format or a promise of support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeviceOptions {

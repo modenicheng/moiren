@@ -375,21 +375,8 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
                 return Ok(());
             }
         }
-        let stopped = handle
-            .try_request_tracked(AppRequest::Stop)
-            .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
-        wait(
-            &handle,
-            if options.soaking() {
-                (Instant::now() + PCM_PHASE_LIMIT).min(work_deadline)
-            } else {
-                work_deadline
-            },
-            "stop_closed_gates_retained_endpoints",
-            &mut report,
-            shared,
-            |evidence| evidence.stopped(&ids, stopped.0),
-        )?;
+        // The session is always-on: there is no user stop to verify
+        // gates against. Gate closure checkpoints now belong to exit.
         ensure!(
             options.soak_idle_seconds == 0
                 || report
@@ -604,38 +591,6 @@ impl LiveSession<'_> {
         Ok(false)
     }
 
-    fn require_stopped(
-        &self,
-        request: u64,
-        report: &mut Report,
-        shared: &Shared,
-    ) -> anyhow::Result<bool> {
-        if let Some((_, observed)) = self.last_snapshot.borrow().as_ref() {
-            ensure!(
-                observed.elapsed() <= Duration::from_secs(2),
-                "stopped service snapshot publication stale"
-            );
-        }
-        let mut observed = false;
-        if let Some(snapshot) = self.handle.try_snapshot() {
-            self.observe_snapshot(&snapshot, report)?;
-            let evidence = Evidence::from(snapshot.as_ref());
-            record(
-                report,
-                "capture_running_after_stop",
-                evidence.clone(),
-                shared,
-            );
-            ensure!(
-                evidence.stopped(self.ids, request),
-                "Stop state/gates/endpoints changed: {evidence:?}"
-            );
-            observed = true;
-        }
-        ensure!(Instant::now() < self.deadline, "stopped capture deadline");
-        Ok(observed)
-    }
-
     fn observe_snapshot(
         &self,
         snapshot: &Arc<moiren_app::service::AppSnapshot>,
@@ -676,7 +631,7 @@ impl LiveSession<'_> {
             confirmed_revision: self.revision,
             ..Default::default()
         });
-        let topic = loop {
+        let source = loop {
             self.require_running(
                 "no_clients_waiting_for_gain_topic",
                 report,
@@ -690,39 +645,20 @@ impl LiveSession<'_> {
                     .nodes()
                     .iter()
                     .find(|node| node.kind() == NodeKind::Gain)
-                && let Some(topic) = snapshot.signal_topics.node_levels.get(&node.id())
+                && let Some(source) = snapshot.signal_topics.node_levels.get(&node.id())
             {
-                break topic.clone();
+                break source.clone();
             }
             ensure!(
                 Instant::now() < subscription_deadline,
-                "Gain signal topic not published"
+                "Gain level source not published"
             );
             thread::sleep(Duration::from_millis(5));
         };
-        let mut ticket = self
-            .handle
-            .subscribe_topic(topic, Default::default())
-            .map_err(|error| anyhow::anyhow!("Gain signal subscribe: {error:?}"))?;
-        let mut subscriber = loop {
-            self.require_running(
-                "no_clients_subscribing_gain",
-                report,
-                shared,
-                subscription_deadline,
-            )?;
-            if let Some(subscriber) = ticket
-                .try_take()
-                .map_err(|error| anyhow::anyhow!("Gain subscription: {error:?}"))?
-            {
-                break subscriber;
-            }
-            ensure!(
-                Instant::now() < subscription_deadline,
-                "Gain subscriber not delivered"
-            );
-            thread::sleep(Duration::from_millis(5));
-        };
+        // Levels are read through the registry's lease (decision D-4 route
+        // B): subscribing is immediate, and the service's registry round
+        // binds the engine subscription underneath.
+        let lease = source.subscribe();
         let hold_started = Instant::now();
         let hold_deadline = (hold_started + duration + Duration::from_secs(5)).min(self.deadline);
         if soak_seconds > 0 {
@@ -738,20 +674,21 @@ impl LiveSession<'_> {
                 .expect("initialized hold evidence");
             hold.observed_wall_ms = elapsed.as_millis();
             let mut header = None;
-            // Level topics are FIFO stream blocks: drain the queued windows
-            // and validate each; the freshest header feeds the hold timeline.
-            while let Some(window) = subscriber.next() {
-                if window.header().frame_end > window.header().frame_start {
-                    ensure!(
-                        window.elements().len() == 2
-                            && window
-                                .elements()
-                                .iter()
-                                .all(|level| level.peak.is_finite() && level.rms.is_finite()),
-                        "invalid stereo Gain signal window"
-                    );
-                    header = Some(*window.header());
-                }
+            // Engine topics supersede: read the newest window and validate
+            // it; the freshest header feeds the hold timeline.
+            if let Some((read_header, valid)) = lease.read_latest(|_epoch, window| {
+                (
+                    *window.header(),
+                    window.header().frame_end > window.header().frame_start
+                        && window.elements().len() == 2
+                        && window
+                            .elements()
+                            .iter()
+                            .all(|level| level.peak.is_finite() && level.rms.is_finite()),
+                )
+            }) {
+                ensure!(valid, "invalid stereo Gain signal window");
+                header = Some(read_header);
             }
             if let Some(timeline_header) = header {
                 hold.timeline.observe(timeline_header)?;
@@ -839,92 +776,9 @@ impl LiveSession<'_> {
             if soak_seconds > 0 {
                 self.soak_pcm(&mut clients, soak_seconds, material, report, shared)?;
             }
-            let evidence = report.pcm.as_mut().expect("PCM evidence");
-            evidence.capture_running_at_stop_request = clients.capture_running();
-            ensure!(
-                evidence.capture_running_at_stop_request,
-                "capture stopped before service Stop"
-            );
-            let stopped = self
-                .handle
-                .try_request_tracked(AppRequest::Stop)
-                .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
-            eprintln!("stage2: Stop while capture RUN, retaining native endpoints");
-            let stop_deadline = (Instant::now() + PCM_PHASE_LIMIT).min(self.deadline);
-            loop {
-                ensure!(
-                    Instant::now() < stop_deadline,
-                    "service Stop deadline with capture RUN"
-                );
-                // Do not stop capture/render during service Stop; drain while the
-                // graph retires so a later silent packet is not a stopped client.
-                clients.pump(|samples, _| validate_finite(samples))?;
-                if let Some(snapshot) = self.handle.try_snapshot() {
-                    let evidence = Evidence::from(snapshot.as_ref());
-                    record(
-                        report,
-                        "stop_with_capture_running",
-                        evidence.clone(),
-                        shared,
-                    );
-                    if evidence.stopped(self.ids, stopped.0) {
-                        break;
-                    }
-                    ensure!(
-                        evidence.phase != "failed",
-                        "service Stop failed: {evidence:?}"
-                    );
-                }
-                ensure!(
-                    Instant::now() < self.deadline,
-                    "service Stop timed out with capture RUN"
-                );
-                thread::sleep(Duration::from_millis(1));
-            }
-            report
-                .pcm
-                .as_mut()
-                .expect("PCM evidence")
-                .capture_running_after_stop_ack = clients.capture_running();
-            let started = Instant::now();
-            let deadline = (started + PCM_PHASE_LIMIT).min(self.deadline);
-            loop {
-                self.require_stopped(stopped.0, report, shared)?;
-                ensure!(
-                    clients.capture_running(),
-                    "capture left RUN before silence verification"
-                );
-                let evidence = report.pcm.as_mut().expect("PCM evidence");
-                let settling = started.elapsed() < SETTLE;
-                evidence.silence_elapsed_ms = started.elapsed().as_millis() as u64;
-                clients.pump(|samples, discontinuity| {
-                    if settling {
-                        validate_finite(samples)
-                    } else {
-                        observe_at(
-                            &mut evidence.stopped_silence,
-                            samples,
-                            [0.0; 2],
-                            discontinuity,
-                            started.elapsed(),
-                        )
-                    }
-                })?;
-                evidence.capture_running_during_silence = true;
-                if !settling
-                    && evidence.stopped_silence.require_silence().is_ok()
-                    && self.require_stopped(stopped.0, report, shared)?
-                {
-                    break;
-                }
-                publish(shared, report);
-                ensure!(
-                    Instant::now() < deadline,
-                    "insufficient post-Stop real silent frames: {:?}",
-                    report.pcm
-                );
-                thread::sleep(Duration::from_millis(1));
-            }
+            // The session is always-on: there is no user stop, so the former
+            // "Stop while capture RUN" gate-retention and post-Stop silence
+            // checkpoints are gone. Gate closure now belongs to exit.
             Ok(())
         })();
         let evidence = report.pcm.as_mut().expect("PCM evidence");

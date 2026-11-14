@@ -323,7 +323,7 @@ pub(super) fn vad_summary(settings: crate::service::TransportLatencySettings) ->
         input = summary(settings.vad),
         cap = settings.vad_recovery_cap_periods.map_or_else(
             || t!("Compatible (8 periods)").to_string(),
-            |periods| t!("%{periods} periods", periods = periods).to_string()
+            |periods| periods.to_string()
         )
     )
     .into()
@@ -332,14 +332,14 @@ pub(super) fn vad_summary(settings: crate::service::TransportLatencySettings) ->
 pub(super) fn process_summary(
     settings: crate::service::TransportLatencySettings,
     measured: Option<&crate::service::MeasuredProcessSummary>,
+    snapshot: &crate::service::AppSnapshot,
 ) -> String {
     t!(
         "%{input}; host ingress elapsed limit: %{limit}",
-        input = super::process_input_summary(settings.process, measured),
-        limit = settings.process_max_ingress_elapsed_100ns.map_or_else(
-            || t!("Disabled").to_string(),
-            |ticks| t!("%{ticks} x 100 ns", ticks = ticks).to_string()
-        )
+        input = super::process_input_summary(settings.process, measured, snapshot),
+        limit = settings
+            .process_max_ingress_elapsed_100ns
+            .map_or_else(|| t!("Disabled").to_string(), |ticks| ticks.to_string())
     )
     .into()
 }

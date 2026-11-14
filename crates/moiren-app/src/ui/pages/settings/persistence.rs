@@ -1,6 +1,12 @@
-use rust_i18n::t;
-
 use super::*;
+
+/// The unset-preference recording directory: `<home>/Music/Moiren`, falling
+/// back to the temp directory when no home can be resolved.
+pub(crate) fn default_recording_directory() -> std::path::PathBuf {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    home.map(|home| std::path::PathBuf::from(home).join("Music").join("Moiren"))
+        .unwrap_or_else(std::env::temp_dir)
+}
 
 #[derive(Default)]
 struct PreferenceWriteCompletion {
@@ -9,6 +15,56 @@ struct PreferenceWriteCompletion {
 }
 
 impl StudioShell {
+    /// Where recordings land when no directory preference is set: the user's
+    /// Music folder under a Moiren subdirectory. Resolved at click time so a
+    /// preference change applies to the very next start without any sync.
+    /// The format applied to the next recording start, mirroring the
+    /// directory preference above.
+    pub(crate) fn recording_format(&self) -> crate::service::RecordingFormat {
+        self.preferences.values.recording_format
+    }
+
+    /// MP3 knobs applied to the next MP3 recording start.
+    pub(crate) fn recording_mp3(&self) -> moiren_engine::recorder::Mp3Encoding {
+        self.preferences.values.recording_mp3
+    }
+
+    /// FLAC knobs applied to the next FLAC recording start.
+    pub(crate) fn recording_flac(&self) -> moiren_engine::recorder::FlacEncoding {
+        self.preferences.values.recording_flac
+    }
+
+    pub(crate) fn recording_output_directory(&self) -> std::path::PathBuf {
+        self.preferences
+            .values
+            .recording_directory
+            .clone()
+            .unwrap_or_else(default_recording_directory)
+    }
+
+    /// Pick a new recording output directory and persist it quietly. The
+    /// dialog is the platform folder picker; cancellation changes nothing.
+    pub(crate) fn change_recording_directory(&mut self, cx: &mut Context<Self>) {
+        let prompt = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("Choose the recording output directory").into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = prompt.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |shell, cx| {
+                    shell.preferences.values.recording_directory = Some(path);
+                    shell.save_preferences_quiet(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Serialize preference writes so rapid profile/density actions cannot let
     /// an older background write overwrite the user's latest choice.
     pub(crate) fn save_preferences(&mut self, cx: &mut Context<Self>) {
@@ -21,11 +77,12 @@ impl StudioShell {
         self.save_preferences_inner(cx, false);
     }
 
-    pub(crate) fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
+    fn save_preferences_inner(&mut self, cx: &mut Context<Self>, report: bool) {
         let Some(path) = self.preferences.path.clone() else {
             if report {
-                self.project_io.message =
-                    Some(t!("User configuration directory is unavailable").into());
+                self.project_io.message = Some(project::ProjectMessage::Persisted(
+                    crate::project::PersistenceError::ConfigurationDirectoryUnavailable.into(),
+                ));
             }
             return;
         };
@@ -84,20 +141,15 @@ impl StudioShell {
                         && saved_revision == revision
                     {
                         let draft = shell.settings.editor.draft_mut(editor);
-                        draft.error = Some(
-                            t!("Could not save preferences: %{error}", error = error).to_string(),
-                        );
-                        draft.message = None;
+                        draft.feedback = Some(DraftFeedback::PreferencesSaveFailed {
+                            cause: error.clone(),
+                        });
                     }
                     if report {
-                        shell.project_io.message = Some(
-                            result
-                                .map(|_| t!("Preferences saved").into())
-                                .unwrap_or_else(|error| {
-                                    t!("Could not save preferences: %{error}", error = error)
-                                        .to_string()
-                                }),
-                        );
+                        shell.project_io.message = Some(match result {
+                            Ok(()) => project::ProjectMessage::PreferencesSaved,
+                            Err(cause) => project::ProjectMessage::PreferencesSaveFailed { cause },
+                        });
                         cx.notify();
                     }
                 }
@@ -105,7 +157,7 @@ impl StudioShell {
         })
         .detach();
         if report {
-            self.project_io.message = Some(t!("Preferences save queued").into());
+            self.project_io.message = Some(project::ProjectMessage::PreferencesSaveQueued);
         }
     }
 }

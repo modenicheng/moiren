@@ -10,7 +10,7 @@ use crate::{
             start_owner_returning_with_abort, start_owner_returning_with_abort_policy, stream,
         },
     },
-    owner::{Apartment, OwnedHandle},
+    win32_raii::{Apartment, OwnedHandle},
 };
 use std::{
     os::windows::io::OwnedHandle as StdHandle,

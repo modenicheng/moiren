@@ -946,3 +946,229 @@ fn badge_hits_on_a_faulted_card_and_falls_through_to_the_card_without_one() {
     );
     assert_eq!(frame.hit_test(position), Some(HitTarget::Node("sink")));
 }
+
+/// The hot layer paints a dragged card from its cached layout shifted by the
+/// drag offset. Projection is affine, so the shifted layout must equal the
+/// projection of the node at its moved world position — this is the
+/// zero-visual-change guarantee for the drag paint (audit A-1). The fixture
+/// carries every layout-bearing body kind so a field added to `NodeLayout`
+/// and missed by `translated` fails here.
+#[test]
+fn translated_layout_matches_the_projection_of_the_moved_node() {
+    // A knob card and a binding-chip card cover every layout-bearing body
+    // kind, with ports; the fixture mirrors what `CanvasWorld::positioned`
+    // builds for a gain and a sink.
+    let mut gain = node("gain", "Gain", "L/R").at(40., 60.).ports(true, true);
+    gain.knobs.push(super::CardKnob {
+        control: super::KnobControl::GainLevel,
+        label: "Gain".into(),
+        value_text: "0.0 dB".into(),
+        position: 0.5,
+        origin: 0.,
+    });
+    gain.body_height = theme::card::KNOB_BODY_H;
+    let mut sink = node("sink", "Output", "Device")
+        .at(480., 90.)
+        .ports(true, false);
+    sink.binding = Some(super::BindingChip {
+        label: "Speakers".into(),
+        icon: "speaker",
+        unbound: false,
+    });
+    sink.body_height = theme::card::CHIP_BODY_H;
+    let world = Arc::new(CanvasWorld::new(vec![gain, sink], Vec::new()));
+    let camera = Camera {
+        pan_x: 30.,
+        pan_y: 70.,
+        zoom: 0.8,
+        adjusted: true,
+    };
+    let (dx, dy) = (23., -17.);
+    for node in &world.nodes {
+        let moved = {
+            let mut moved = node.clone();
+            // The shift runs in canvas space; the moved node carries the
+            // same offset divided back into world units.
+            moved.x += dx / camera.zoom;
+            moved.y += dy / camera.zoom;
+            NodeLayout::new(&moved).project(camera)
+        };
+        let shifted = NodeLayout::new(node).project(camera).translated(dx, dy);
+        let close = |a: Bounds<f32>, b: Bounds<f32>| {
+            assert_close(a.origin.x, b.origin.x);
+            assert_close(a.origin.y, b.origin.y);
+            assert_close(a.size.width, b.size.width);
+            assert_close(a.size.height, b.size.height);
+        };
+        close(shifted.card, moved.card);
+        close(shifted.rail, moved.rail);
+        close(shifted.icon, moved.icon);
+        close(shifted.badge, moved.badge);
+        close(shifted.expand, moved.expand);
+        close(shifted.body, moved.body);
+        close(shifted.title.bounds, moved.title.bounds);
+        assert_close(shifted.title.font_size, moved.title.font_size);
+        close(shifted.detail.bounds, moved.detail.bounds);
+        match (&shifted.meter, &moved.meter) {
+            (MeterLayout::Horizontal { bounds: a }, MeterLayout::Horizontal { bounds: b })
+            | (MeterLayout::Vertical { bounds: a }, MeterLayout::Vertical { bounds: b }) => {
+                close(*a, *b)
+            }
+            _ => panic!("meter axis changed"),
+        }
+        assert_eq!(shifted.knobs.len(), moved.knobs.len(), "knobs");
+        for (shifted, moved) in shifted.knobs.iter().zip(&moved.knobs) {
+            close(shifted.dial, moved.dial);
+            close(shifted.label.bounds, moved.label.bounds);
+            close(shifted.value.bounds, moved.value.bounds);
+        }
+        match (&shifted.chip, &moved.chip) {
+            (Some(a), Some(b)) => {
+                close(a.bounds, b.bounds);
+                close(a.icon, b.icon);
+                close(a.label.bounds, b.label.bounds);
+                close(a.chevron, b.chevron);
+            }
+            (None, None) => {}
+            _ => panic!("chip presence changed"),
+        }
+        assert_eq!(shifted.inputs.len(), moved.inputs.len(), "input anchors");
+        for (shifted, moved) in shifted.inputs.iter().zip(&moved.inputs) {
+            assert_position(*shifted, *moved);
+        }
+        match (shifted.output, moved.output) {
+            (Some(shifted), Some(moved)) => assert_position(shifted, moved),
+            (None, None) => {}
+            _ => panic!("output anchor presence changed"),
+        }
+        close(
+            shifted.matrix.unwrap_or(shifted.body),
+            moved.matrix.unwrap_or(moved.body),
+        );
+        close(
+            shifted.curve.unwrap_or(shifted.body),
+            moved.curve.unwrap_or(moved.body),
+        );
+        assert_close(shifted.scale, moved.scale);
+    }
+}
+
+#[test]
+fn recorder_strip_lays_out_status_line_name_and_transport_slots() {
+    let mut recorder = node("rec", "Recorder", "48kHz L/R").at(32., 80.);
+    recorder.recording = Some(super::CardRecording {
+        phase: Some(crate::service::RecordingPhase::Recording),
+        file_name: "moiren-rec-20261111-150405.wav".into(),
+    });
+    let layout = NodeLayout::new(&recorder);
+    let strip = layout.recording.as_ref().expect("recorder card strip");
+    // The status line leads with the dot, the duration text closes the same
+    // line, and the file name takes the row below.
+    assert!(strip.status.bounds.origin.x > strip.dot.origin.x);
+    assert!(strip.duration.bounds.origin.x > strip.status.bounds.origin.x);
+    assert!(
+        strip.duration.bounds.origin.y < strip.file_name.bounds.origin.y,
+        "the file name sits under the status line"
+    );
+    // Three side-by-side transport slots, one stride apart.
+    let stride = theme::card::REC_BTN + 6.;
+    assert_close(strip.pause.origin.x - strip.record.origin.x, stride);
+    assert_close(strip.stop.origin.x - strip.pause.origin.x, stride);
+    assert_eq!(
+        strip.record.size,
+        size(theme::card::REC_BTN, theme::card::REC_BTN)
+    );
+}
+
+#[test]
+fn transport_hits_follow_the_phase_availability() {
+    use super::RecordAction;
+    use crate::service::RecordingPhase;
+
+    /// The frame plus the window-space centers of the three transport slots.
+    type SlotCenters = (CanvasFrame, (f32, f32), (f32, f32), (f32, f32));
+
+    fn frame_with(phase: Option<RecordingPhase>) -> SlotCenters {
+        let mut recorder = node("rec", "Recorder", "48kHz L/R").at(32., 80.);
+        recorder.recording = Some(super::CardRecording {
+            phase,
+            file_name: "f.wav".into(),
+        });
+        let frame = CanvasFrame::new(
+            Arc::new(CanvasWorld::new(vec![recorder], Vec::new())),
+            Camera::default(),
+            viewport(),
+        );
+        let strip = frame.nodes[0].recording.clone().expect("strip");
+        let (record, pause, stop) = {
+            let center = |bounds: Bounds<f32>| {
+                (
+                    f32::from(frame.bounds.origin.x) + bounds.origin.x + bounds.size.width / 2.,
+                    f32::from(frame.bounds.origin.y) + bounds.origin.y + bounds.size.height / 2.,
+                )
+            };
+            (
+                center(strip.record),
+                center(strip.pause),
+                center(strip.stop),
+            )
+        };
+        (frame, record, pause, stop)
+    }
+
+    // Idle: only the record affordance exists.
+    let (frame, record, pause, stop) = frame_with(None);
+    assert_eq!(
+        frame.hit_test(record),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Record,
+        })
+    );
+    assert_eq!(frame.hit_test(pause), Some(HitTarget::Node("rec")));
+    assert_eq!(frame.hit_test(stop), Some(HitTarget::Node("rec")));
+
+    // Running: pause and stop; the record slot goes dark.
+    let (frame, record, pause, stop) = frame_with(Some(RecordingPhase::Recording));
+    assert_eq!(frame.hit_test(record), Some(HitTarget::Node("rec")));
+    assert_eq!(
+        frame.hit_test(pause),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Pause,
+        })
+    );
+    assert_eq!(
+        frame.hit_test(stop),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Stop,
+        })
+    );
+
+    // Paused: the pause slot flips to resume.
+    let (frame, _, pause, _) = frame_with(Some(RecordingPhase::Paused));
+    assert_eq!(
+        frame.hit_test(pause),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Resume,
+        })
+    );
+
+    // Stopping: nothing is offered; every slot falls through to the card.
+    let (frame, record, pause, stop) = frame_with(Some(RecordingPhase::Stopping));
+    assert_eq!(frame.hit_test(record), Some(HitTarget::Node("rec")));
+    assert_eq!(frame.hit_test(pause), Some(HitTarget::Node("rec")));
+    assert_eq!(frame.hit_test(stop), Some(HitTarget::Node("rec")));
+
+    // Terminal: record returns for a fresh file.
+    let (frame, record, _, _) = frame_with(Some(RecordingPhase::Finished));
+    assert_eq!(
+        frame.hit_test(record),
+        Some(HitTarget::CardAction {
+            node: "rec",
+            action: RecordAction::Record,
+        })
+    );
+}

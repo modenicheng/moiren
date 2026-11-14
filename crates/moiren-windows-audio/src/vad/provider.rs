@@ -853,7 +853,7 @@ fn run_worker(
 ) {
     // Match the physical paths' scheduling class: this thread paces bounded
     // PCM IO against native deadlines. Registration failure is non-fatal.
-    let _mmcss = crate::owner::Mmcss::audio();
+    let _mmcss = crate::win32_raii::Mmcss::audio();
     let playback = matches!(&config, WorkerConfig::Playback { .. });
     let result = catch_worker_result(&state, playback, || match config {
         WorkerConfig::Playback {

@@ -1104,10 +1104,7 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
         rig.c.signals.topics.node_levels[&pan].business_subscribers(),
         0
     );
-    let (mut ticket, request) =
-        crate::service::signals::subscription_request(topic.clone(), Default::default());
-    rig.c.signals.execute(request);
-    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    let lease = topic.subscribe();
     rig.request(AppRequest::EditGraph(GraphEdit::SetMixer {
         node: gain,
         state: crate::service::MixerState {
@@ -1119,16 +1116,14 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
     loop {
         rig.tick();
         rig.c.signals.pump_if_due(Instant::now());
-        let mut matched = false;
-        while let Some(window) = subscriber.next() {
-            if window.header().frame_end > window.header().frame_start
-                && window.elements().iter().all(|level| {
-                    (level.peak - 0.5).abs() < 0.00001 && (level.rms - 0.5).abs() < 0.00001
-                })
-            {
-                matched = true;
-            }
-        }
+        let matched = lease
+            .read_latest(|_, window| {
+                window.header().frame_end > window.header().frame_start
+                    && window.elements().iter().all(|level| {
+                        (level.peak - 0.5).abs() < 0.00001 && (level.rms - 0.5).abs() < 0.00001
+                    })
+            })
+            .unwrap_or(false);
         if matched {
             break;
         }
@@ -1142,7 +1137,7 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
         rig.c.signals.topics.node_levels[&pan].business_subscribers(),
         0
     );
-    drop(subscriber);
+    drop(lease);
     assert_eq!(topic.business_subscribers(), 0);
 }
 
@@ -1218,7 +1213,7 @@ fn spectrum_bridge_relays_fft_windows_only_on_demand() {
         rig.tick();
     }
     assert_eq!(
-        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        rig.driver.spectra.as_ref().unwrap().demanded_spectra(),
         0,
         "no subscriber, no engine-side FFT demand"
     );
@@ -1237,14 +1232,14 @@ fn spectrum_bridge_relays_fft_windows_only_on_demand() {
         assert_eq!(bins.len(), 2 * 4097);
         (bins[0] - 1.).abs() < 0.02 && (bins[4097] - 1.).abs() < 0.02 && bins[2048].abs() < 1e-3
     });
-    assert_eq!(rig.driver.meters.as_ref().unwrap().demanded_spectra(), 1);
+    assert_eq!(rig.driver.spectra.as_ref().unwrap().demanded_spectra(), 1);
     drop(subscriber);
     assert_eq!(topic.business_subscribers(), 0);
     for _ in 0..5 {
         rig.tick();
     }
     assert_eq!(
-        rig.driver.meters.as_ref().unwrap().demanded_spectra(),
+        rig.driver.spectra.as_ref().unwrap().demanded_spectra(),
         0,
         "dropping the last subscriber releases the engine subscription"
     );
@@ -2034,29 +2029,30 @@ fn stop_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
 #[test]
 fn legacy_meter_subscription_receives_managed_host_audio_windows() {
     let mut r = Rig::new();
-    let (mut ticket, request) =
-        signals::subscription_request(r.c.signals.topics.tone_output.clone(), Default::default());
-    r.c.signals.execute(request);
-    let mut subscriber = ticket.try_take().unwrap().unwrap();
+    let lease = r.c.signals.topics.tone_output.subscribe();
     r.start();
     r.wait(|r| {
-        r.driver
-            .meters
-            .as_ref()
-            .is_some_and(|_| r.state.last_sample.load(Ordering::SeqCst) != 0)
+        r.driver.owner.as_ref().is_some_and(|_| {
+            lease
+                .read_latest(|_, window| window.header().frame_end > 0)
+                .is_some()
+        })
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         r.tick();
-        r.c.signals.pump_if_due(Instant::now());
-        let mut delivered = false;
-        while let Some(window) = subscriber.next() {
-            assert_eq!(window.elements()[0].peak, 1.0);
-            assert_eq!(window.elements()[0].rms, 1.0);
-            assert!(window.header().frame_end > window.header().frame_start);
-            delivered = true;
-        }
-        if delivered {
+        if let Some((_, window)) = lease.read_latest(|epoch, window| {
+            (
+                epoch,
+                (window.header().frame_end > window.header().frame_start)
+                    .then(|| window.elements().to_vec()),
+            )
+        }) && let Some(levels) = window
+            && levels.len() == 2
+            && levels
+                .iter()
+                .all(|level| (level.peak - 1.0).abs() < 1e-6 && (level.rms - 1.0).abs() < 1e-6)
+        {
             break;
         }
         assert!(Instant::now() < deadline, "managed meter did not publish");
@@ -2289,18 +2285,11 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         assert!(Instant::now() < deadline, "service did not start");
         std::thread::sleep(Duration::from_millis(1));
     };
-    let mut ticket = handle.subscribe_topic(topic, Default::default()).unwrap();
-    let mut subscriber = loop {
-        if let Some(subscriber) = ticket.try_take().unwrap() {
-            break subscriber;
-        }
-        assert!(Instant::now() < deadline, "subscription did not arrive");
-        std::thread::sleep(Duration::from_millis(1));
-    };
+    let lease = topic.subscribe();
     let mut ages = Vec::new();
     let mut sequences = Vec::new();
     let mut observed_windows = 0;
-    let mut latest_frame_end = None;
+    let mut latest_frame_end = 0_u64;
     let mut missing_updates = 0;
     let period = Duration::from_secs_f64(1.0 / 120.0);
     let mut next = Instant::now() + period;
@@ -2308,21 +2297,29 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
     for frame in 0..150 {
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
         next += period;
-        let mut received = false;
-        while let Some(window) = subscriber.next() {
-            received = true;
-            observed_windows += 1;
-            assert_eq!(window.header().frame_end - window.header().frame_start, 200);
-            latest_frame_end = Some(window.header().frame_end);
-            if frame >= 30 {
-                sequences.push(window.meta().sequence);
-            }
+        let Some((epoch, levels)) = lease.read_latest(|epoch, window| {
+            (
+                epoch,
+                (window.header().frame_end - window.header().frame_start == 200)
+                    .then(|| (window.header().frame_end, window.meta().sequence)),
+            )
+        }) else {
+            continue;
+        };
+        let Some((frame_end, sequence)) = levels else {
+            continue;
+        };
+        let received = true;
+        observed_windows += 1;
+        latest_frame_end = latest_frame_end.max(frame_end);
+        if frame >= 30 {
+            sequences.push((epoch, sequence));
         }
         if frame >= 30 {
             missing_updates += usize::from(!received);
             let read_at = Instant::now();
             let history = state.render_history.lock().unwrap();
-            if let Some(frame_end) = latest_frame_end
+            if latest_frame_end > 0
                 && let Some((_, published_at)) = history.iter().find(|(end, _)| *end >= frame_end)
             {
                 // Include cached-window age when this tick receives nothing.
@@ -2365,7 +2362,9 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         sequences.last()
     );
     assert!(
-        sequences.windows(2).all(|pair| pair[1] > pair[0]),
+        sequences
+            .windows(2)
+            .all(|pair| pair[0].0 == pair[1].0 && pair[0].1 < pair[1].1),
         "new deliveries replayed an old sequence"
     );
     assert!(
@@ -2969,7 +2968,7 @@ fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
             endpoint_id: "missing-input".into()
         })
     );
-    assert!(rig.driver.resume_notice.is_none());
+    assert!(snapshot.last_error.is_none());
 }
 
 #[test]
@@ -3036,14 +3035,14 @@ fn zero_signal_demand_still_applies_controls_retires_and_restarts() {
     });
     r.wait(|r| r.c.control.accepted_pending == 0 && r.c.control.last_result.is_some());
     assert_eq!(topic.business_subscribers(), 0);
-    assert_eq!(topic.stats().attempts, 0);
+    assert_eq!(topic.held_subscriptions(), 0);
     r.request(AppRequest::Stop);
     r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Idle);
-    assert_eq!(topic.stats().attempts, 0);
+    assert_eq!(topic.held_subscriptions(), 0);
     assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
     // A clean retirement leaves the signal bus reusable for the next session.
     r.start();
     r.wait(|r| r.c.core.phase() == SessionPhase::Running);
     assert_eq!(topic.business_subscribers(), 0);
-    assert_eq!(topic.stats().attempts, 0);
+    assert_eq!(topic.held_subscriptions(), 0);
 }

@@ -29,6 +29,17 @@ pub(crate) struct InspectorKey {
     page: Page,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
+    /// The device-override rows and the save footer render from the same
+    /// settings-editor device draft as the Devices page, so the same edit
+    /// revision (`Draft::revision`) keys them here — see `DevicesKey`'s
+    /// field for why the revision stands in for the draft value.
+    device_revision: u64,
+    /// The sampled runtime-observation readout (issue #118): the metering
+    /// pump stores this on the inspector state and notifies when it
+    /// changes — a status transition immediately, the Peak/RMS texts on
+    /// the sample cadence — so the cached panel refreshes without
+    /// rebuilding at the meter frame rate.
+    observation: Option<graph::ObservationSnapshot>,
     node_name_editing: Option<moiren_core::graph::NodeId>,
     editing_value: Option<moiren_core::graph::NodeId>,
     editing_balance: Option<moiren_core::graph::NodeId>,
@@ -43,7 +54,6 @@ pub(crate) struct InspectorKey {
     /// inspector, scrolling apart from the panel itself.
     inspector_scroll: Pixels,
     override_scroll: Pixels,
-    device_draft: Option<settings::Draft>,
     device_busy: bool,
     device_inputs: Vec<(Entity<component::input::InputState>, SharedString)>,
 }
@@ -56,7 +66,7 @@ impl CachedPanel for InspectorPanel {
 
     fn key(&self, shell: &Self::Owner, cx: &App) -> Self::Key {
         let state = shell.state.read(cx);
-        let device_editor = shell.presentation.page == Page::Devices
+        let device_editor = shell.presentation.page() == Page::Devices
             && shell.devices.selected_device.is_some()
             && matches!(
                 shell.devices.device_tab,
@@ -64,22 +74,23 @@ impl CachedPanel for InspectorPanel {
             );
         Self::Key {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
-            selected_node: shell.selected_node,
-            selected_route: shell.selected_route,
-            page: shell.presentation.page,
+            selected_node: shell.selection.node,
+            selected_route: shell.selection.route,
+            page: shell.presentation.page(),
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.clone(),
-            node_name_editing: shell.node_name_editing,
-            editing_value: shell.mixer.editing_value,
-            editing_balance: shell.mixer.editing_balance,
-            editing_node_gain: shell.mixer.editing_node_gain,
-            editing_node_pan: shell.mixer.editing_node_pan,
-            editing_send: shell.mixer.editing_send,
-            compact: shell.compact,
+            device_revision: shell.settings.editor.device.revision,
+            observation: shell.inspector.observation.clone(),
+            node_name_editing: shell.inspector.node_name_editing,
+            editing_value: shell.mixer.presentation.editing_value,
+            editing_balance: shell.mixer.presentation.editing_balance,
+            editing_node_gain: shell.mixer.presentation.editing_node_gain,
+            editing_node_pan: shell.mixer.presentation.editing_node_pan,
+            editing_send: shell.mixer.presentation.editing_send,
+            compact: shell.chrome.compact,
             preferences: shell.preferences.values.clone(),
-            inspector_scroll: shell.inspector_scroll.offset().y,
+            inspector_scroll: shell.inspector.scroll.offset().y,
             override_scroll: shell.devices.device_override_scroll.offset().y,
-            device_draft: device_editor.then(|| shell.settings.editor.device.clone()),
             device_busy: device_editor && (shell.settings.editor.busy() || state.pending_request),
             device_inputs: if device_editor {
                 shell
@@ -110,7 +121,7 @@ impl CachedPanel for InspectorPanel {
     fn on_rebuild(&self, shell: &mut Self::Owner) {
         // The inspector's canvases register their meter tracks during this
         // same layout pass; stale placements must not survive a rebuild.
-        shell.inspector_meters.reset();
+        shell.inspector.meters.reset();
     }
 
     fn observe_nested(
@@ -133,12 +144,14 @@ impl CachedPanel for InspectorPanel {
             sliders.extend(
                 shell
                     .mixer
+                    .presentation
                     .inspector_faders
                     .values()
                     .map(|slot| slot.state.clone()),
             );
             sliders.extend(
                 shell
+                    .inspector
                     .compressor
                     .sliders
                     .values()
@@ -171,13 +184,14 @@ fn inspector_panel_for(shell: &StudioShell, _window: &Window) -> AnyElement {
         .size_full()
         .child(
             shell
-                .inspector_panel
+                .inspector
+                .panel
                 .clone()
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
         )
         .child(overlay_scrollbar(
-            &shell.inspector_scroll,
+            &shell.inspector.scroll,
             "scrollbar-inspector-panel",
             ScrollbarAxis::Vertical,
         ))
@@ -209,12 +223,12 @@ pub(crate) struct LibraryKey {
 fn library_key(shell: &StudioShell, cx: &App) -> LibraryKey {
     LibraryKey {
         snapshot: PublishRef::new(std::sync::Arc::clone(&shell.state.read(cx).snapshot)),
-        selected_node: shell.selected_node,
-        pending_spawn: shell.pending_node_spawn.is_some(),
-        compact: shell.compact,
+        selected_node: shell.selection.node,
+        pending_spawn: shell.graph_view.pending_node_spawn.is_some(),
+        compact: shell.chrome.compact,
         preferences: shell.preferences.values.clone(),
-        scroll: shell.library_scroll.offset().y,
-        rail_scroll: shell.library_rail_scroll.offset().y,
+        scroll: shell.library.scroll.offset().y,
+        rail_scroll: shell.library.rail_scroll.offset().y,
     }
 }
 
@@ -242,7 +256,7 @@ impl CachedPanel for LibraryPanel {
         owner: &Entity<Self::Owner>,
         cx: &mut Context<PanelHost<Self>>,
     ) -> Vec<Subscription> {
-        let search = owner.read_with(cx, |shell, _| shell.node_search.clone());
+        let search = owner.read_with(cx, |shell, _| shell.graph_view.node_search.clone());
         vec![cx.observe(&search, |host, _, cx| host.notify_nested(cx))]
     }
 }
@@ -414,14 +428,14 @@ pub(super) fn inspector_host(
         .h_full()
         .child(panel(
             "inspector-panel-width",
-            shell.inspector_open,
+            shell.chrome.inspector_open,
             theme::INSPECTOR_WIDTH,
             inspector_panel_for(shell, window),
         ))
-        .child(shell.inspector_meter_layer.clone())
+        .child(shell.inspector.meter_layer.clone())
         .child(edge_handle(
             "inspector-toggle",
-            shell.inspector_open,
+            shell.chrome.inspector_open,
             Side::Right,
             this,
             None,
@@ -431,6 +445,40 @@ pub(super) fn inspector_host(
 /// Left-hand node-library host for the graph page. The icon rail is the
 /// collapsed form: it grows in from zero only while the detail sleeve is
 /// closed, so the two springs swap one for the other in the same motion.
+/// The inspector column's shell-owned state (design 20 §4): the rename
+/// editor's input entity and target, the compressor parameter controls,
+/// the meter-track frame and its hot layer, the panel's scroll, and the
+/// cached InspectorPanel host.
+pub(crate) struct InspectorState {
+    pub(crate) node_name: Entity<component::input::InputState>,
+    /// Node whose label is being edited inline in the inspector.
+    pub(crate) node_name_editing: Option<moiren_core::graph::NodeId>,
+    pub(crate) compressor: crate::ui::pages::graph::CompressorControls,
+    pub(crate) meters: InspectorMeterFrame,
+    pub(crate) meter_layer: Entity<InspectorMeterLayer>,
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) panel: Entity<InspectorPanelHost>,
+    /// The selected node's runtime-observation readout as last sampled by
+    /// the metering pump (issue #118): rides `InspectorKey` so the cached
+    /// panel refreshes when the metering path notifies — immediately on a
+    /// status transition, on the sampling cadence for the Peak/RMS texts.
+    pub(crate) observation: Option<graph::ObservationSnapshot>,
+    /// Which node the texts were last sampled for, and when: a different
+    /// node (selection change) samples immediately instead of waiting out
+    /// the cadence. `None` alongside a `None` observation so the next
+    /// demand samples immediately.
+    pub(crate) observation_sampled: Option<(moiren_core::graph::NodeId, std::time::Instant)>,
+}
+
+/// The node library's shell-owned state (design 20 §4): both hosts' scroll
+/// containers and their cached panel hosts.
+pub(crate) struct LibraryState {
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) rail_scroll: ScrollHandle,
+    pub(crate) panel: Entity<LibraryPanelHost>,
+    pub(crate) rail_panel: Entity<LibraryRailPanelHost>,
+}
+
 pub(crate) fn library_host(
     shell: &StudioShell,
     _window: &Window,
@@ -445,7 +493,7 @@ pub(crate) fn library_host(
         .h_full()
         .child(panel(
             "library-rail-width",
-            !shell.sidebar_open,
+            !shell.chrome.sidebar_open,
             theme::LIBRARY_RAIL_WIDTH,
             deselecting(
                 div()
@@ -453,13 +501,14 @@ pub(crate) fn library_host(
                     .size_full()
                     .child(
                         shell
-                            .library_rail_panel
+                            .library
+                            .rail_panel
                             .clone()
                             .cached(StyleRefinement::default().size_full())
                             .into_any_element(),
                     )
                     .child(overlay_scrollbar(
-                        &shell.library_rail_scroll,
+                        &shell.library.rail_scroll,
                         "scrollbar-library-rail",
                         ScrollbarAxis::Vertical,
                     ))
@@ -469,7 +518,7 @@ pub(crate) fn library_host(
         ))
         .child(panel(
             "library-panel-width",
-            shell.sidebar_open,
+            shell.chrome.sidebar_open,
             theme::LIBRARY_WIDTH,
             deselecting(
                 div()
@@ -477,13 +526,14 @@ pub(crate) fn library_host(
                     .size_full()
                     .child(
                         shell
-                            .library_panel
+                            .library
+                            .panel
                             .clone()
                             .cached(StyleRefinement::default().size_full())
                             .into_any_element(),
                     )
                     .child(overlay_scrollbar(
-                        &shell.library_scroll,
+                        &shell.library.scroll,
                         "scrollbar-node-library",
                         ScrollbarAxis::Vertical,
                     ))
@@ -493,14 +543,15 @@ pub(crate) fn library_host(
         ))
         .child(edge_handle(
             "library-toggle",
-            shell.sidebar_open,
+            shell.chrome.sidebar_open,
             Side::Left,
             this,
             // The handle protrudes over the canvas inside the cached panel;
             // the graph meter frame paints around its registered rect.
             Some(
                 shell
-                    .graph_overlays
+                    .graph_view
+                    .overlays
                     .probe("library-handle")
                     .into_any_element(),
             ),
@@ -527,9 +578,9 @@ fn deselecting(content: AnyElement, this: &Entity<StudioShell>) -> AnyElement {
                 return;
             }
             this.update(cx, |shell, cx| {
-                if shell.selected_node.is_some()
-                    || !shell.selected_nodes.is_empty()
-                    || shell.selected_route.is_some()
+                if shell.selection.node.is_some()
+                    || !shell.selection.nodes.is_empty()
+                    || shell.selection.route.is_some()
                 {
                     shell.clear_canvas_selection();
                     cx.notify();
@@ -604,27 +655,27 @@ fn edge_handle(
         .flex()
         .items_center()
         .justify_center()
-        .bg(theme::SURFACE_3)
+        .bg(theme::controls::RAISED)
         .border_1()
         .border_color(theme::BORDER_STRONG)
-        .text_color(theme::PRIMARY)
+        .text_color(theme::controls::FOCUS)
         .cursor_pointer()
         .hover(|style| style.bg(theme::SURFACE_4))
         .when_some(probe, |handle, probe| handle.child(probe))
         .child(
             component::Icon::default()
                 .path(icon)
-                .size(px(14.))
-                .text_color(theme::PRIMARY),
+                .size(px(theme::ICON_SM))
+                .text_color(theme::controls::FOCUS),
         )
         .on_click(move |_, _, cx| {
             this.update(cx, |shell, cx| {
                 match side {
-                    Side::Left => shell.sidebar_open = !shell.sidebar_open,
+                    Side::Left => shell.chrome.sidebar_open = !shell.chrome.sidebar_open,
                     Side::Right => {
-                        shell.inspector_open = !shell.inspector_open;
-                        if shell.compact {
-                            shell.sidebar_open = false;
+                        shell.chrome.inspector_open = !shell.chrome.inspector_open;
+                        if shell.chrome.compact {
+                            shell.chrome.sidebar_open = false;
                         }
                     }
                 }
@@ -637,9 +688,9 @@ fn edge_handle(
 /// Inspector content follows the active page; the shell guarantees one
 /// consistent host width across all of them.
 fn page_inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    match shell.presentation.page {
+    match shell.presentation.page() {
         Page::Graph => {
-            if shell.selected_node.is_none() && shell.selected_route.is_some() {
+            if shell.selection.node.is_none() && shell.selection.route.is_some() {
                 matrix::inspector(shell, cx)
             } else {
                 graph::inspector(shell, cx)

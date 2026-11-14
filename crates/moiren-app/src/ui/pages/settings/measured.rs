@@ -36,6 +36,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .clone()
         .or_else(|| measured.message.clone())
         .or_else(|| blocked.clone())
+        .or_else(|| measured.exact.validate(cx).err())
         .or_else(|| preflight.as_ref().err().cloned())
         .unwrap_or_else(|| {
             t!("Ready to validate the measured input budget and restart audio.").into()
@@ -174,6 +175,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             transport::process_summary(
                 snapshot.transport_latency,
                 snapshot.measured_process.as_ref(),
+                snapshot,
             ),
         ))
         .child(summary(
@@ -181,7 +183,11 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             &t!("Active process request"),
             if snapshot.phase == SessionPhase::Running {
                 snapshot.active_transport_latency.map(|v| {
-                    transport::process_summary(v, snapshot.active_measured_process.as_ref())
+                    transport::process_summary(
+                        v,
+                        snapshot.active_measured_process.as_ref(),
+                        snapshot,
+                    )
                 })
             } else {
                 None
@@ -276,7 +282,11 @@ impl StudioShell {
                 self.settings.editor.measured.begin(id, request, &snapshot);
                 self.measured_deadline(id, cx);
             }
-            Err(error) => self.settings.editor.measured.error = Some(format!("{error:?}")),
+            Err(error) => {
+                self.settings.editor.measured.error = Some(crate::ui::presentation::failure_text(
+                    &UiFailure::Dispatch(error),
+                ));
+            }
         }
         cx.notify();
     }
@@ -298,10 +308,14 @@ impl StudioShell {
 
     pub(crate) fn finish_measured_process(&mut self, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
-        self.settings
-            .editor
-            .measured
-            .observe(&state.snapshot, state.dispatch_error.as_deref());
+        self.settings.editor.measured.observe(
+            &state.snapshot,
+            state
+                .dispatch_error
+                .as_ref()
+                .map(crate::ui::presentation::failure_text)
+                .as_deref(),
+        );
     }
 }
 

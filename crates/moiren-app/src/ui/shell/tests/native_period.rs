@@ -176,10 +176,13 @@ fn shared_native_period_device_input_keeps_focus_and_reset_drops_invalid_text(
 ) {
     let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("device-shared-period");
-    view.update(cx, |shell, cx| {
-        shell.preferences.path = Some(path.clone());
-        shell.set_page(pages::Page::Devices, cx);
-        shell.inspect_device("output-a".into(), cx);
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell.preferences.path = Some(path.clone());
+            shell.set_page(pages::Page::Devices, cx);
+            let _ = window;
+            shell.inspect_device("output-a".into(), cx);
+        });
     });
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1600.), px(1200.)));

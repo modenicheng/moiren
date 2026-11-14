@@ -165,7 +165,7 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
         )
         .unwrap();
         let prepared = super::super::start_owner(stop, move |stop, sender, started| {
-            let audio = crate::owner::OwnedHandle::event().unwrap();
+            let audio = crate::win32_raii::OwnedHandle::event().unwrap();
             let capture: IAudioCaptureClient = Packets {
                 audio: audio.0,
                 stop: handle(&stop),
@@ -287,7 +287,7 @@ fn interrupted_drain(end: DrainEnd) -> (CaptureReport, crate::clock_bridge::Brid
     let gate = ActivationGate::new(stop.clone()).unwrap();
     let worker_gate = gate.clone();
     let prepared = super::super::start_owner(stop, move |stop, sender, started| {
-        let audio = crate::owner::OwnedHandle::event().unwrap();
+        let audio = crate::win32_raii::OwnedHandle::event().unwrap();
         let capture: IAudioCaptureClient = Packets {
             audio: audio.0,
             stop: handle(&stop),
@@ -423,7 +423,7 @@ fn rejected_buffer_query(
 ) -> (CaptureError, CaptureReport) {
     let stop = crate::StopSignal::new().unwrap();
     let gate = ActivationGate::new(stop.clone()).unwrap();
-    let audio = crate::owner::OwnedHandle::event().unwrap();
+    let audio = crate::win32_raii::OwnedHandle::event().unwrap();
     let capture: IAudioCaptureClient = Packets {
         audio: audio.0,
         stop: handle(&stop.event),
@@ -533,7 +533,7 @@ fn process_bounded_packet_run(
     let stop = crate::StopSignal::new().unwrap();
     let gate = ActivationGate::new(stop.clone()).unwrap();
     gate.activate().unwrap();
-    let audio = crate::owner::OwnedHandle::event().unwrap();
+    let audio = crate::win32_raii::OwnedHandle::event().unwrap();
     let releases = Rc::new(RefCell::new(Vec::new()));
     let capture: IAudioCaptureClient = Packets {
         audio: audio.0,
@@ -729,7 +729,7 @@ fn process_bounded_packet_unknown_capacity_prepares_without_start_before_gate() 
     let gate = ActivationGate::new(stop.clone()).unwrap();
     let worker_gate = gate.clone();
     let prepared = super::super::start_owner(stop, move |stop, sender, started| {
-        let audio = crate::owner::OwnedHandle::event().unwrap();
+        let audio = crate::win32_raii::OwnedHandle::event().unwrap();
         let capture: IAudioCaptureClient = Packets {
             audio: audio.0,
             stop: handle(&stop),

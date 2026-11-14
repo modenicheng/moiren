@@ -1,6 +1,6 @@
 //! Creation owns callback storage until SwDeviceClose has joined callbacks.
 use super::{ENUMERATOR, unexpected};
-use crate::owner::OwnedHandle;
+use crate::win32_raii::OwnedHandle;
 use std::{
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},

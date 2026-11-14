@@ -619,11 +619,37 @@ fn session(source: InputSelection) -> SessionSpec {
     SessionSpec {
         source,
         output_endpoint_id: "{stable-output-identity}".into(),
-        limit: RunLimit::Seconds(90),
         gain: 0.35,
         pan: -0.25,
+        limit: RunLimit::UntilStopped,
         max_block_frames: 512,
     }
+}
+
+#[test]
+fn explicit_run_limit_field_round_trips_after_load() {
+    let directory = TestDirectory::new();
+    let path = directory.file("legacy-limit.moiren");
+    let spec = session(InputSelection::Physical {
+        endpoint_id: "{input-device}".into(),
+    });
+    let document = ProjectDocument::new("Legacy limit", &spec);
+    // Run limits are session controls again, so loading and resaving keep
+    // the explicit value rather than silently converting it to until-stopped.
+    let mut json = serde_json::to_value(&document).unwrap();
+    json["session"]
+        .as_object_mut()
+        .unwrap()
+        .insert("limit".into(), serde_json::json!({"until_stopped": null}));
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let restored = load_project(&path).unwrap();
+    assert_eq!(restored.session_spec().unwrap(), Some(spec));
+    save_project(&path, &restored).unwrap();
+    let resaved = serde_json::to_value(&restored).unwrap();
+    assert_eq!(
+        resaved["session"]["limit"],
+        serde_json::json!("until_stopped")
+    );
 }
 
 #[test]

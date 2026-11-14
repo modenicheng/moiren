@@ -24,6 +24,86 @@ pub enum NodeTemplate {
     Output,
 }
 
+/// The single NodeKind presentation registry (issue #122): every surface
+/// that colors or icons a node — canvas cards, drag ghosts, catalog
+/// tiles, mixer/tray color bars — resolves through here, so a new kind
+/// lands everywhere by extending one match.
+pub(crate) fn kind_tint(kind: NodeKind) -> Hsla {
+    use moiren_core::graph::NodeKind::*;
+    match kind {
+        Source => theme::NODE_SOURCE,
+        Sink => theme::NODE_SINK,
+        Bus | Rack | ChannelMapper => theme::TEXT_FAINT,
+        Recorder | Meter | SpectrumAnalyzer => theme::SIGNAL_DEVICE,
+        // DSP (and any future kind without a dedicated hue) wears the shared
+        // accent: `controls::FOCUS` doubles as the DSP node tint.
+        _ => theme::controls::FOCUS,
+    }
+}
+
+/// Human display title for a kind (issue #121): the inspector's subtitle
+/// and the mixer/tray strip subtitles show this instead of the debug
+/// format. Wording follows the catalog template titles where a template
+/// exists ("Parametric EQ", "Mix bus", ...); kinds without a template of
+/// their own get a plain name — Source and Sink each cover several
+/// templates, and Plugin has none.
+///
+/// Plain English today, like the template titles: per design 21 §4 these
+/// strings are runtime i18n table keys, so later translation swaps the
+/// lookup here without touching the call sites.
+pub(crate) fn kind_title(kind: NodeKind) -> &'static str {
+    use moiren_core::graph::NodeKind::*;
+    match kind {
+        Source => "Input",
+        Sink => "Output",
+        Gain => "Gain",
+        Pan => "Balance",
+        Eq => "Parametric EQ",
+        Compressor => "Compressor",
+        Gate => "Gate",
+        Limiter => "Limiter",
+        Delay => "Delay",
+        ChannelMapper => "Channel mapper",
+        Recorder => "Recorder",
+        Meter => "Level meter",
+        SpectrumAnalyzer => "Spectrum analyzer",
+        Rack => "Processor rack",
+        Bus => "Mix bus",
+        Plugin => "Plugin",
+    }
+}
+
+/// The card icon for a kind; a Source's icon follows its live input
+/// selection (physical mic, application loopback, or the tone generator).
+pub(crate) fn kind_icon(
+    kind: NodeKind,
+    source: Option<&crate::service::InputSelection>,
+) -> &'static str {
+    use moiren_core::graph::NodeKind::*;
+    match kind {
+        Source => match source {
+            Some(crate::service::InputSelection::Process { .. }) => "app",
+            Some(crate::service::InputSelection::Tone { .. }) => "wave",
+            Some(crate::service::InputSelection::Physical { .. }) | None => "mic",
+        },
+        Sink => "speaker",
+        Bus => "git-merge",
+        Recorder => "radio",
+        Meter => "activity",
+        SpectrumAnalyzer => "chart-histogram",
+        Delay => "clock",
+        Gain => "volume",
+        Pan => "arrows-horizontal",
+        Eq => "wave-square",
+        Compressor => "arrows-minimize",
+        Gate => "door",
+        Limiter => "wall",
+        Rack => "list-details",
+        ChannelMapper => "route",
+        Plugin => "sliders",
+    }
+}
+
 impl NodeTemplate {
     pub const ALL: [Self; 17] = [
         Self::Input,
@@ -150,14 +230,7 @@ impl NodeTemplate {
     }
 
     pub fn tint(self) -> Hsla {
-        match self {
-            Self::Input | Self::Application | Self::Tone => theme::NODE_SOURCE,
-            Self::Bus => theme::NODE_UTILITY,
-            Self::Output => theme::NODE_SINK,
-            Self::Recorder | Self::Meter | Self::Spectrum => theme::NODE_ANALYSIS,
-            Self::Rack => theme::NODE_UTILITY,
-            _ => theme::NODE_DSP,
-        }
+        self.kind().map_or(theme::controls::FOCUS, kind_tint)
     }
 
     pub fn matches(self, query: &str) -> bool {

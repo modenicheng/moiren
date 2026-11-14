@@ -865,6 +865,19 @@ fn measured_exact_bounds_accept_nonpreset_target_and_wait_for_exact_confirmation
     fixture.control.lock().unwrap().confirmation = Some(Confirmation::Exact);
     wait_snapshot(&view, cx, |snapshot| {
         snapshot.active_measured_process.is_some()
+            && snapshot.native_observations.as_ref().is_some_and(|native| {
+                native.generation == snapshot.generation && native.observation.running
+            })
+            && snapshot.active_transport_latency.is_some()
+            && snapshot.active_audio_settings.is_some()
+            && snapshot.graph.pending_revision.is_none()
+            && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
+    });
+    wait_until(Duration::from_secs(3), || {
+        poll(&view, cx);
+        view.update(cx, |shell, cx| shell.finish_measured_process(cx));
+        cx.run_until_parked();
+        view.update(cx, |shell, _| !shell.settings.editor.measured.busy())
     });
     view.update(cx, |shell, cx| {
         assert!(!shell.settings.editor.measured.busy());
@@ -1172,8 +1185,9 @@ fn measured_click_enqueues_exact_request_once_and_waits_beyond_mailbox_consumpti
     assert_eq!(desired.selection_id, 17);
     assert_eq!(desired.request, expected);
     assert!(
-        row(cx, "measured-process-requested")
-            .contains(&super::process_input_summary(None, Some(&desired)))
+        row(cx, "measured-process-requested").contains(&view.update(cx, |shell, cx| {
+            super::process_input_summary(None, Some(&desired), &shell.state.read(cx).snapshot)
+        }))
     );
     assert!(!row(cx, "measured-process-active").contains("selection 17"));
     cx.update(|window, cx| window.click("measured-process-apply", cx));
@@ -1202,8 +1216,9 @@ fn measured_click_enqueues_exact_request_once_and_waits_beyond_mailbox_consumpti
         );
     });
     assert!(
-        row(cx, "measured-process-active")
-            .contains(&super::process_input_summary(None, Some(&desired)))
+        row(cx, "measured-process-active").contains(&view.update(cx, |shell, cx| {
+            super::process_input_summary(None, Some(&desired), &shell.state.read(cx).snapshot)
+        }))
     );
     assert_draft(&view, cx, expected);
     assert_eq!(
@@ -1229,8 +1244,9 @@ fn measured_refusal_is_visible_and_preserves_editable_draft_and_previous_active_
     });
     assert!(row(cx, "measured-process-feedback").contains(REFUSAL));
     assert!(
-        row(cx, "measured-process-active")
-            .contains(&super::process_input_summary(None, Some(&old)))
+        row(cx, "measured-process-active").contains(&view.update(cx, |shell, cx| {
+            super::process_input_summary(None, Some(&old), &shell.state.read(cx).snapshot)
+        }))
     );
     assert_draft(&view, cx, expected);
     view.update(cx, |shell, cx| {

@@ -3,7 +3,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::{GraphEdit, InputSelection, RequestId};
 use crate::ui::pages::graph::node_catalog::NodeTemplate;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 
 #[derive(Clone)]
@@ -23,8 +23,12 @@ impl Render for NodeTemplate {
 pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     use controls::*;
     let state = shell.state.read(cx);
-    let query = shell.node_search.read(cx).value();
-    let mut items = div().id("node-library-items").flex().flex_col().gap(px(4.));
+    let query = shell.graph_view.node_search.read(cx).value();
+    let mut items = div()
+        .id("node-library-items")
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_1));
     let mut group = "";
     let mut count = 0;
     for template in NodeTemplate::ALL
@@ -34,9 +38,16 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         count += 1;
         if group != template.group() {
             group = template.group();
-            items = items.child(div().mt(px(14.)).mb(px(2.)).child(label(t!(group))));
+            items = items.child(
+                div()
+                    // 14 px: template-group label's separation from the
+                    // group above it, off the spacing grid.
+                    .mt(px(14.))
+                    .mb(px(theme::SPACE_0_5))
+                    .child(label(t!(group))),
+            );
         }
-        let enabled = template.kind().is_some() && shell.pending_node_spawn.is_none();
+        let enabled = template.kind().is_some() && shell.graph_view.pending_node_spawn.is_none();
         let this = cx.entity();
         let tint = template.tint();
         // One card per template: the tinted icon tile, title and description
@@ -49,7 +60,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             .items_center()
             .gap(px(theme::SPACE_2))
             .px(px(theme::SPACE_2))
-            .py(px(6.))
+            .py(px(theme::SPACE_1_5))
             .rounded(px(theme::RADIUS_SM))
             .child(
                 div()
@@ -77,7 +88,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(px(theme::SPACE_0_5))
                     .child(
                         div()
                             .text_size(px(theme::TEXT_SM))
@@ -98,7 +109,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             )
             .when(enabled, |card| {
                 card.cursor_pointer()
-                    .hover(|style| style.bg(theme::SURFACE_3))
+                    .hover(|style| style.bg(theme::controls::RAISED))
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
                             shell.spawn_template_at_center(template, cx);
@@ -125,9 +136,9 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .id("session-node-list")
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .mt(px(16.))
-        .pt(px(12.))
+        .gap(px(theme::SPACE_1))
+        .mt(px(theme::SPACE_4))
+        .pt(px(theme::SPACE_3))
         .border_t_1()
         .border_color(theme::BORDER)
         .child(heading(t!(
@@ -136,7 +147,7 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         )));
     for entry in &state.snapshot.graph.nodes {
         let id = entry.id;
-        let selected = shell.selected_node == Some(id);
+        let selected = shell.selection.node == Some(id);
         let this = cx.entity();
         // The row wrapper carries the selected fact (`aria_selected`) for
         // tests and assistive tech; the button inside keeps the `locate-` id
@@ -160,8 +171,8 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     })
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
-                            shell.selected_node = Some(id);
-                            shell.selected_route = None;
+                            shell.selection.node = Some(id);
+                            shell.selection.route = None;
                             // Locating selects; a double click also opens the
                             // inspector, matching canvas node behavior.
                             if shell.element_double_clicked(StudioShell::element_key("node", id)) {
@@ -185,62 +196,55 @@ pub(crate) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .border_color(theme::BORDER)
         .child(
             div()
-                .p(px(12.))
+                .p(px(theme::SPACE_3))
                 .flex_none()
                 .flex()
                 .flex_col()
+                // 10 px: the header stack's gap between the library title
+                // and its search field, off the spacing grid.
                 .gap(px(10.))
                 .child(heading(t!("Node library")))
                 .child(
-                    component::input::Input::new(&shell.node_search)
+                    component::input::Input::new(&shell.graph_view.node_search)
                         .id("node-search")
-                        .bg(theme::SURFACE_3)
+                        .bg(theme::controls::RAISED)
                         .text_color(theme::TEXT)
                         .border_color(theme::BORDER),
                 ),
         )
         .child(
-            // The bar overlay is a sibling of the scroll container, never a
-            // child: the container translates its children by the offset at
-            // prepaint, so an overlay inside it would drift away with the
-            // content. The container scrolls inside the cached panel, so its
-            // offset rides LibraryKey.
-            div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    div()
-                        .id("node-library-scroll")
-                        .w_full()
-                        .h_full()
-                        .px(px(12.))
-                        .track_scroll(&shell.library_scroll)
-                        .overflow_y_scroll()
-                        .on_scroll_wheel({
-                            let this = cx.entity();
-                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-                        })
-                        .child(items)
-                        .child(session)
-                        .gpui_test_observe(),
-                )
-                .child(overlay_scrollbar(
-                    &shell.library_scroll,
-                    "scrollbar-node-library-scroll",
-                    ScrollbarAxis::Vertical,
-                )),
+            // The container scrolls inside the cached panel, so its offset
+            // rides LibraryKey.
+            scroll_region(
+                "scrollbar-node-library-scroll",
+                &shell.library.scroll,
+                ScrollbarAxis::Vertical,
+                div()
+                    .id("node-library-scroll")
+                    .w_full()
+                    .h_full()
+                    .px(px(theme::SPACE_3))
+                    .track_scroll(&shell.library.scroll)
+                    .restrict_scroll_to_axis()
+                    .overflow_y_scroll()
+                    .on_scroll_wheel(notify_owner(cx.entity()))
+                    .child(items)
+                    .child(session)
+                    .gpui_test_observe(),
+            )
+            .flex_1()
+            .min_h_0(),
         )
         .child(
             div()
-                .p(px(12.))
+                .p(px(theme::SPACE_3))
                 .flex_none()
                 .border_t_1()
                 .border_color(theme::BORDER)
                 .child(label(t!("Drag a node onto the graph")))
                 .child(
                     div()
-                        .text_size(px(10.))
+                        .text_size(px(theme::TEXT_XS))
                         .text_color(theme::TEXT_FAINT)
                         .child(t!("Or click to add at the canvas center.")),
                 ),
@@ -260,16 +264,16 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
         .flex()
         .flex_col()
         .items_center()
-        .gap(px(2.))
+        .gap(px(theme::SPACE_0_5))
+        // 10 px: the collapsed rail's own vertical inset, off the spacing
+        // grid.
         .py(px(10.))
-        .track_scroll(&shell.library_rail_scroll)
+        .track_scroll(&shell.library.rail_scroll)
+        .restrict_scroll_to_axis()
         .overflow_y_scroll()
-        .on_scroll_wheel({
-            let this = this.clone();
-            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        });
+        .on_scroll_wheel(notify_owner(this.clone()));
     for template in NodeTemplate::ALL {
-        let enabled = shell.pending_node_spawn.is_none();
+        let enabled = shell.graph_view.pending_node_spawn.is_none();
         let this = this.clone();
         rail = rail.child(
             div()
@@ -284,7 +288,7 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
                 .child(
                     component::Icon::default()
                         .path(format!("icons/{}.svg", template.icon()))
-                        .size(px(18.))
+                        .size(px(theme::ICON_LG))
                         .text_color(if enabled {
                             template.tint().opacity(0.7)
                         } else {
@@ -307,33 +311,28 @@ pub(crate) fn library_rail(shell: &StudioShell, cx: &Context<StudioShell>) -> im
     // The rail's outer chrome (width, right border) lives on the relative
     // host so the bar overlay can pin there as the scroll container's
     // sibling; the offset rides LibraryKey inside the cached panel.
-    div()
-        .relative()
-        .flex_none()
-        .w(px(theme::LIBRARY_RAIL_WIDTH))
-        .h_full()
-        .bg(theme::SURFACE)
-        .border_r_1()
-        .border_color(theme::HAIRLINE)
-        .child(rail.gpui_test_observe())
-        .child(overlay_scrollbar(
-            &shell.library_rail_scroll,
-            "scrollbar-library-rail-scroll",
-            ScrollbarAxis::Vertical,
-        ))
+    scroll_region(
+        "scrollbar-library-rail-scroll",
+        &shell.library.rail_scroll,
+        ScrollbarAxis::Vertical,
+        rail.gpui_test_observe(),
+    )
+    .flex_none()
+    .w(px(theme::LIBRARY_RAIL_WIDTH))
+    .h_full()
+    .bg(theme::SURFACE)
+    .border_r_1()
+    .border_color(theme::HAIRLINE)
 }
 
 impl StudioShell {
-    pub(crate) fn spawn_template_at_center(
-        &mut self,
-        template: NodeTemplate,
-        cx: &mut Context<Self>,
-    ) {
+    fn spawn_template_at_center(&mut self, template: NodeTemplate, cx: &mut Context<Self>) {
         let center = self
+            .graph_view
             .canvas_size
             .map(|(width, height)| (width / 2., height / 2.))
             .unwrap_or((320., 220.));
-        self.spawn_node(template, self.camera.canvas_to_world(center), cx);
+        self.spawn_node(template, self.graph_view.camera.canvas_to_world(center), cx);
     }
 
     pub(super) fn spawn_node(
@@ -345,7 +344,10 @@ impl StudioShell {
         let Some(kind) = template.kind() else {
             return;
         };
-        if self.pending_node_spawn.is_some() || !position.0.is_finite() || !position.1.is_finite() {
+        if self.graph_view.pending_node_spawn.is_some()
+            || !position.0.is_finite()
+            || !position.1.is_finite()
+        {
             return;
         }
         let previous = self
@@ -363,8 +365,8 @@ impl StudioShell {
                 channels: 2,
             }))
         }) {
-            self.camera.adjusted = true;
-            self.pending_node_spawn = Some(PendingNodeSpawn {
+            self.graph_view.camera.adjusted = true;
+            self.graph_view.pending_node_spawn = Some(PendingNodeSpawn {
                 request,
                 previous,
                 position,
@@ -375,7 +377,7 @@ impl StudioShell {
     }
 
     pub(crate) fn finish_node_spawn(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = &self.pending_node_spawn else {
+        let Some(pending) = &self.graph_view.pending_node_spawn else {
             return;
         };
         let snapshot = self.state.read(cx).snapshot.clone();
@@ -383,6 +385,7 @@ impl StudioShell {
             return;
         }
         let pending = self
+            .graph_view
             .pending_node_spawn
             .take()
             .expect("checked pending creation");
@@ -399,13 +402,13 @@ impl StudioShell {
             return;
         };
         let id = entry.id;
-        self.node_positions.insert(id, pending.position);
+        self.graph_view.node_positions.insert(id, pending.position);
         // The spawned node is the whole selection: anything selected before
         // must not ride along with the drag that usually follows a spawn.
-        self.selected_nodes.clear();
-        self.selected_nodes.insert(id);
-        self.selected_node = Some(id);
-        self.selected_route = None;
+        self.selection.nodes.clear();
+        self.selection.nodes.insert(id);
+        self.selection.node = Some(id);
+        self.selection.route = None;
         self.open_inspector();
         let source = match pending.template {
             NodeTemplate::Tone => Some(InputSelection::Tone { frequency_hz: 440. }),

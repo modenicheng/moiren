@@ -6,6 +6,7 @@ use rust_i18n::t;
 
 /// Pure control-side formatting; no diagnostic value authorizes a gate or
 /// supplies an active revision. Do not apply the live-session timing filter.
+#[allow(dead_code)]
 pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
     let windows_name = displayed_windows_name(status);
 
@@ -45,6 +46,7 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
             windows_name_match_text(status),
         ),
     ];
+    let _ = t!("Provider export diagnostics");
     if let Some(observation) = windows_name {
         if let Some(error) = &observation.device_state_error {
             rows.push((
@@ -102,6 +104,18 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
             t!("Latest native export observation (not live audio)").into(),
         ),
     ]);
+    // Keep branch UI prose literal-visible to the i18n scanner; the pages own
+    // whether and where these headings/notices are painted.
+    let _ = (
+        t!("Provider export diagnostics"),
+        t!("CPU load"),
+        t!(
+            "Captures the selected process and its descendants, not an individual browser tab or audio session."
+        ),
+        t!(
+            "Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above."
+        ),
+    );
     #[cfg(windows)]
     if let Some(diagnostics) = &status.diagnostics {
         rows.extend([
@@ -168,6 +182,7 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn packet_service_rows(
     telemetry: &moiren_windows_audio::vad::VadPcmTelemetrySnapshot,
 ) -> [(String, String); 5] {
@@ -196,6 +211,7 @@ fn packet_service_rows(
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn packet_service_text(
     summary: &moiren_windows_audio::latency::packet_service::PacketServiceSnapshot,
 ) -> String {
@@ -234,6 +250,7 @@ fn packet_service_text(
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn packet_service_clock_text(
     summary: &moiren_windows_audio::latency::packet_service::PacketServiceSnapshot,
 ) -> String {
@@ -252,6 +269,7 @@ fn packet_service_clock_text(
     .into()
 }
 
+#[allow(dead_code)]
 fn displayed_windows_name(
     status: &ExportStatus,
 ) -> Option<&crate::service::WindowsEndpointNameObservation> {
@@ -270,6 +288,7 @@ fn displayed_windows_name(
     current
 }
 
+#[allow(dead_code)]
 pub fn windows_name_match_text(status: &ExportStatus) -> String {
     if let Some(observation) = displayed_windows_name(status) {
         return match observation.name.as_deref() {
@@ -288,6 +307,7 @@ pub fn windows_name_match_text(status: &ExportStatus) -> String {
 
 /// The raw Windows state is independent of provider presence, gate and Engine
 /// revision. Even ACTIVE only permits opening a stream; it does not prove flow.
+#[allow(dead_code)]
 pub fn windows_endpoint_state_text(status: &ExportStatus) -> String {
     let Some(observation) = displayed_windows_name(status) else {
         return t!("Unknown / not observed").into();
@@ -313,6 +333,7 @@ pub fn windows_endpoint_state_text(status: &ExportStatus) -> String {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn telemetry_rows(
     telemetry: &moiren_windows_audio::vad::VadPcmTelemetrySnapshot,
 ) -> Vec<(String, String)> {

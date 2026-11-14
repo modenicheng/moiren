@@ -331,6 +331,10 @@ pub struct NativeStreamStats {
     pub capture_silent_frames: u64,
     /// Frames zero-filled by a native callback, including startup starvation.
     pub render_silent_frames: u64,
+    /// Shortfall events, one per starved callback: a capture block dropped or
+    /// render frames zero-filled counts once here while the frame counters
+    /// above grow by the size of the shortfall.
+    pub xruns: u64,
 }
 
 /// Driver-reported hardware frames, not measured end-to-end latency.

@@ -5,6 +5,7 @@ use gpui_kit::*;
 
 use super::action_assets::ActionIcon;
 use super::action_style::{Paint, SampleState, Skin, styled_control};
+use crate::ui::theme;
 use crate::ui::theme::controls as t;
 use rust_i18n::t;
 
@@ -69,18 +70,30 @@ impl WindowControlButton {
 
 impl RenderOnce for WindowControlButton {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let normal = Paint::new(t::TRANSPARENT, t::MUTED, t::TRANSPARENT);
+        let normal = Paint::new(t::TRANSPARENT, theme::TEXT_FAINT, t::TRANSPARENT);
         let close = matches!(self.action, WindowAction::Close);
         let skin = Skin {
             normal,
             hover: Paint::new(
-                if close { t::DANGER } else { t::RAISED },
-                if close { t::ON_ACCENT } else { t::MUTED },
+                if close { theme::DANGER } else { t::RAISED },
+                if close {
+                    t::ON_ACCENT
+                } else {
+                    theme::TEXT_FAINT
+                },
                 t::TRANSPARENT,
             ),
             pressed: Paint::new(
-                if close { t::CLOSE_PRESSED } else { t::CANVAS },
-                if close { t::ON_ACCENT } else { t::MUTED },
+                if close {
+                    t::CLOSE_PRESSED
+                } else {
+                    theme::WINDOW_BG
+                },
+                if close {
+                    t::ON_ACCENT
+                } else {
+                    theme::TEXT_FAINT
+                },
                 t::TRANSPARENT,
             ),
             disabled: normal,
@@ -157,7 +170,11 @@ impl RenderOnce for WorkspaceTab {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let normal = Paint::new(
             t::TRANSPARENT,
-            if self.active { t::TEXT } else { t::SECONDARY },
+            if self.active {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            },
             t::TRANSPARENT,
         );
         let skin = Skin {
@@ -167,7 +184,7 @@ impl RenderOnce for WorkspaceTab {
                 ..normal
             },
             pressed: Paint {
-                bg: t::CANVAS,
+                bg: theme::WINDOW_BG,
                 ..normal
             },
             disabled: Paint {
@@ -187,12 +204,20 @@ impl RenderOnce for WorkspaceTab {
         )
         .role(Role::Tab)
         .aria_selected(self.active)
-        .w(px(t::TAB_WIDTH))
+        // Elasticity (design 21 §2): the tab's width is a flex basis with a
+        // shrink floor, not a fixed extent — `styled_control`'s `flex_none`
+        // is overridden so the toolbar can reclaim space when the window
+        // narrows, while the basis keeps the approved uniform width at rest.
+        // The label wraps in a `min_w_0 + truncate` div so a squeezed tab
+        // ellipsizes instead of painting past its bounds.
+        .flex_initial()
+        .flex_basis(px(t::TAB_WIDTH))
+        .min_w(px(t::TAB_MIN_WIDTH))
         .h(px(t::TOOLBAR))
-        .px(px(12.))
-        .gap(px(8.))
+        .px(px(theme::SPACE_3))
+        .gap(px(theme::SPACE_2))
         .font_family(t::FONT)
-        .text_size(px(12.))
+        .text_size(px(theme::TEXT_SM))
         .line_height(px(16.))
         .font_weight(if self.active {
             FontWeight::SEMIBOLD
@@ -200,7 +225,7 @@ impl RenderOnce for WorkspaceTab {
             FontWeight::MEDIUM
         })
         .when_some(self.icon, |s, icon| s.child(icon.element()))
-        .child(self.label)
+        .child(div().min_w_0().truncate().child(self.label))
         .when(self.active, |s| {
             s.child(
                 div()
@@ -208,7 +233,7 @@ impl RenderOnce for WorkspaceTab {
                     .left_0()
                     .right_0()
                     .bottom_0()
-                    .h(px(2.))
+                    .h(px(theme::ACCENT_BAR_W))
                     .bg(t::FOCUS),
             )
         })

@@ -25,6 +25,9 @@ fn main() {
     for name in ["moiren-2c-mark-light.svg", "moiren-2c-mark-dark.svg"] {
         println!("cargo:rerun-if-changed={}", logos.join(name).display());
     }
+    // The rust-i18n macro embeds the locale catalogs without emitting a
+    // rerun trigger, so editing a yml alone would not rebuild the crate.
+    println!("cargo:rerun-if-changed=locales");
     let app = light.replacen(
         '>',
         "><rect x=\"8\" y=\"8\" width=\"240\" height=\"240\" rx=\"48\" fill=\"#F5F3EE\"/>",

@@ -1,5 +1,6 @@
 //! Real native events verify the action contract independently of audio hardware.
 
+use crate::ui::theme;
 use crate::ui::{
     ActionButton, ActionIcon, ControlSize, Density, IconButton, ToggleIconButton, WindowAction,
     WindowControlButton, WorkspaceTab,
@@ -28,7 +29,7 @@ impl Render for Actions {
             .size_full()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(px(theme::SPACE_2))
             .child(
                 ActionButton::new("action", "Apply")
                     .on_click(move |_, _, _| count.set(count.get() + 1)),

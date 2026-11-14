@@ -117,7 +117,7 @@ fn encoded_amplitude_case<S: ProcessingSample>(dc: bool) {
         }
         consumed += pushed;
         microphone_oracle.set_correction_ppm(capture.microphone_ppm);
-        for offset in 0..BLOCK {
+        for (offset, captured_frame) in capture.bus.iter().enumerate().take(BLOCK) {
             let frame = playback_oracle.next_frame().unwrap();
             let expected = frame.map(|value| {
                 if offset < source.muted_frames as usize {
@@ -126,7 +126,7 @@ fn encoded_amplitude_case<S: ProcessingSample>(dc: bool) {
                     S::from_f64(value).to_f64()
                 }
             });
-            assert_eq!(capture.bus[offset], expected, "unity Bus changed amplitude");
+            assert_eq!(*captured_frame, expected, "unity Bus changed amplitude");
             assert!(microphone_oracle.push_frame(expected));
         }
         assert_eq!(playback_oracle.cursor(), source.after.unwrap());

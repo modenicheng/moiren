@@ -5,8 +5,8 @@ use crate::{
     capture::PcmRecorder,
     capture_packet::{borrow_capture_packet, packet_byte_len},
     clock_bridge::{CaptureIngress, CapturePacket},
-    owner::{LeaseFallback, PacketLease},
     stats::SILENT,
+    win32_raii::{LeaseFallback, PacketLease},
 };
 use windows::Win32::Media::Audio::IAudioCaptureClient;
 

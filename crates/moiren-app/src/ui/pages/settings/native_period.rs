@@ -81,7 +81,7 @@ impl StudioShell {
                 && stream(draft, key).is_some_and(|stream| stream.mode == DeviceMode::Shared)
         });
         let mut targets = Vec::new();
-        if self.settings_open {
+        if self.presentation.workspace.is_settings() {
             for direction in [Direction::Input, Direction::Output] {
                 targets.push((Editor::Global, direction, None));
             }
@@ -161,7 +161,14 @@ impl StudioShell {
                                     draft.changed();
                                 }
                                 Err(error) => {
-                                    shell.settings.editor.draft_mut(key.0).error = Some(error)
+                                    let draft = shell.settings.editor.draft_mut(key.0);
+                                    // The cached inspector keys on the draft revision rather
+                                    // than comparing its full value every notification.
+                                    // `changed` would clear this diagnostic, so report it
+                                    // while making the feedback itself a repaint input.
+                                    draft.revision = draft.revision.wrapping_add(1);
+                                    draft.feedback =
+                                        Some(DraftFeedback::Diagnostic { cause: error });
                                 }
                             }
                             cx.notify();
@@ -177,7 +184,7 @@ impl StudioShell {
                         value.map_or_else(String::new, |value| value.to_string()),
                         window,
                         cx,
-                    )
+                    );
                 });
             }
         }
@@ -198,7 +205,7 @@ pub(super) fn editor(
             component::input::Input::new(&entry.input)
                 .id(SharedString::from(format!("{prefix}-period-input")))
                 .disabled(shell.settings.editor.busy())
-                .bg(theme::SURFACE_3)
+                .bg(theme::SURFACE)
                 .text_color(theme::TEXT)
                 .border_color(theme::BORDER),
         );
@@ -218,7 +225,7 @@ mod tests {
         let key = (Editor::Global, Direction::Output, None);
         let old = cx.update(|window, cx| {
             view.update(cx, |shell, cx| {
-                shell.settings_open = true;
+                shell.open_settings(window, cx);
                 shell.settings.editor.global.audio = AudioSettings::default();
                 shell.sync_native_period_inputs(window, cx);
                 shell.settings.editor.period_inputs[&key].input.clone()

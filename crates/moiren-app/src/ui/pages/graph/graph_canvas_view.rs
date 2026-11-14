@@ -8,8 +8,9 @@ use gpui_kit::*;
 use rust_i18n::t;
 
 use super::graph_canvas::{
-    Camera, CanvasFrame, CanvasNode, CanvasWorld, ConnectionCandidate, HitTarget, KnobControl,
-    OverlayRects, PortDirection, PortTarget, WireCurve,
+    Camera, CanvasFrame, CanvasNode, CanvasWire, CanvasWorld, ConnectionCandidate, DragGuides,
+    HitTarget, KnobControl, OverlayRects, PortDirection, PortTarget, RecordAction, WireCurve,
+    WireGeometry,
 };
 use crate::ui::monitoring::{DisplayLevel, SpectrumCurve};
 use crate::ui::observe::TestObserve;
@@ -17,6 +18,12 @@ use crate::ui::shared_frame::SharedFrame;
 use crate::ui::theme;
 
 mod nodes;
+
+pub(in crate::ui) use nodes::{CanvasShapesHandle, Paint};
+pub(in crate::ui) use nodes::{
+    paint_fault_banner, paint_fault_tooltip, paint_meter_bars, paint_node,
+    paint_recording_duration, paint_spectrum_body,
+};
 
 // The callback aliases ride `pub(in crate::ui)` so the window-side page
 // builders can name them when they construct [`CanvasCallbacks`] fields.
@@ -79,10 +86,6 @@ struct LiveReaders<'a> {
 /// rebuilds, exactly like the canvas painted them.
 pub(in crate::ui) type PreparedFrame = SharedFrame<CanvasFrame>;
 
-pub(in crate::ui) use nodes::{
-    paint_fault_banner, paint_fault_tooltip, paint_meter_bars, paint_spectrum_body,
-};
-
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
     /// The connection drag in flight: the port it pulls from, the cursor in
@@ -107,6 +110,9 @@ pub struct CanvasCallbacks {
     /// A binding chip was pressed: canvas node id plus the chip's window
     /// rect, which anchors the endpoint menu.
     pub on_chip: Rc<WindowAppCallback<(String, Bounds<Pixels>)>>,
+    /// A recorder card's transport slot was pressed, carrying the affordance
+    /// the phase offered at that position.
+    pub on_record: Rc<WindowAppCallback<(String, RecordAction)>>,
     /// A faulted card's "!" badge was pressed: canvas node id plus the
     /// badge's window rect, which anchors the fault detail popover.
     pub on_badge: Rc<WindowAppCallback<(String, Bounds<Pixels>)>>,
@@ -154,11 +160,11 @@ fn paint_grid(frame: &CanvasFrame, window: &mut Window) {
 }
 
 /// The snap alignment guides (item F): world-space vertical/horizontal
-/// lines painted above the grid while a card drag is aligned.
-fn paint_snap_guides(frame: &CanvasFrame, window: &mut Window) {
-    let Some(guides) = frame.world.guides else {
-        return;
-    };
+/// lines painted above the grid while a card drag is aligned. The guides
+/// ride the rebuild capture, not the cached world: the world is reused
+/// across drag rebuilds, and the guide value changes only when the snap
+/// target does (audit A-1).
+fn paint_snap_guides(frame: &CanvasFrame, guides: DragGuides, window: &mut Window) {
     let viewport = frame.viewport();
     if let Some(x) = guides.x {
         let left = frame.camera.world_to_canvas((x, 0.)).0;
@@ -168,7 +174,7 @@ fn paint_snap_guides(frame: &CanvasFrame, window: &mut Window) {
                     origin: point(left, 0.),
                     size: size(1., viewport.size.height),
                 }),
-                theme::PRIMARY,
+                theme::controls::FOCUS,
             ));
         }
     }
@@ -180,67 +186,110 @@ fn paint_snap_guides(frame: &CanvasFrame, window: &mut Window) {
                     origin: point(0., top),
                     size: size(viewport.size.width, 1.),
                 }),
-                theme::PRIMARY,
+                theme::controls::FOCUS,
             ));
         }
     }
 }
 
+/// One wire between its endpoints, shared by the cached canvas and the hot
+/// layer's dragged-entity paint so both stroke identically.
+pub(in crate::ui) fn paint_wire(
+    frame: &CanvasFrame,
+    wire: &CanvasWire,
+    geometry: &WireGeometry,
+    origin: (f32, f32),
+    selected: bool,
+    connected: bool,
+    window: &mut Window,
+) {
+    let width = ((if selected {
+        2.8
+    } else if connected {
+        2.
+    } else {
+        1.6
+    }) * frame.camera.zoom)
+        .max(if selected { 1.8 } else { 0.75 });
+    if selected && let Ok(halo) = geometry.stroke(width + 5., origin) {
+        window.paint_path(halo, theme::halo(theme::controls::FOCUS));
+    }
+    if let Ok(path) = geometry.stroke(width, origin) {
+        window.paint_path(
+            path,
+            if selected {
+                theme::TEXT
+            } else {
+                wire.tint.unwrap_or(theme::controls::FOCUS)
+            },
+        );
+    }
+}
+
+/// The gesture and selection capture the cached canvas paint closure replays
+/// between rebuilds: the selection's canvas-id identity, the selected wire,
+/// the snap guides, and the dragged entities the cached canvas freezes out
+/// (they paint through the hot layer at the live drag offset — audit A-1).
+/// The page captures these at rebuild time; the key guarantees a rebuild
+/// whenever any of them changes.
+pub struct CanvasPaintState {
+    pub selected_nodes: std::rc::Rc<Vec<String>>,
+    pub selected_wire: Option<std::rc::Rc<str>>,
+    pub guides: DragGuides,
+    pub drag_hidden: Vec<moiren_core::graph::NodeId>,
+}
+
 fn paint_canvas_layer(
     frame: &CanvasFrame,
-    selected_nodes: &[String],
-    selected_wire: Option<&str>,
+    state: &CanvasPaintState,
     readers: LiveReaders<'_>,
-    connection: Option<(PortTarget, (f32, f32))>,
-    window: &mut Window,
+    paint: Paint<'_>,
     cx: &mut App,
 ) {
+    let CanvasPaintState {
+        selected_nodes,
+        selected_wire,
+        guides,
+        drag_hidden,
+    } = state;
+    let Paint { shapes, window } = paint;
     window.with_content_mask(
         Some(ContentMask {
             bounds: frame.bounds,
         }),
         |window| {
             paint_grid(frame, window);
-            paint_snap_guides(frame, window);
+            paint_snap_guides(frame, *guides, window);
             let origin = (
                 f32::from(frame.bounds.origin.x),
                 f32::from(frame.bounds.origin.y),
             );
             for (wire, geometry) in frame.world.wires.iter().zip(&frame.wires) {
-                let selected = selected_wire == Some(wire.id.as_str());
+                // The dragged selection's wires move with the cards: the
+                // hot layer paints them live at the drag offset, so the
+                // cached canvas leaves them out of its frozen paint.
+                if drag_hidden.contains(&wire.src) || drag_hidden.contains(&wire.dst) {
+                    continue;
+                }
+                let selected = selected_wire.as_deref() == Some(wire.id.as_str());
                 let connected = selected_nodes
                     .iter()
                     .any(|node| node == &wire.source || node == &wire.destination);
-                let width = ((if selected {
-                    2.8
-                } else if connected {
-                    2.
-                } else {
-                    1.6
-                }) * frame.camera.zoom)
-                    .max(if selected { 1.8 } else { 0.75 });
-                if selected && let Ok(halo) = geometry.stroke(width + 5., origin) {
-                    window.paint_path(halo, theme::PRIMARY.opacity(0.28));
-                }
-                if let Ok(path) = geometry.stroke(width, origin) {
-                    window.paint_path(
-                        path,
-                        if selected {
-                            theme::TEXT
-                        } else {
-                            wire.tint.unwrap_or(theme::PRIMARY)
-                        },
-                    );
-                }
+                paint_wire(frame, wire, geometry, origin, selected, connected, window);
             }
             for (node, layout) in frame.world.nodes.iter().zip(&frame.nodes) {
+                // A dragged card paints through the hot layer at its live
+                // offset; the cached canvas freezes it out (audit A-1).
+                if node.node_id.is_some_and(|id| drag_hidden.contains(&id)) {
+                    continue;
+                }
                 if layout.card.intersects(&frame.viewport()) {
                     let spectrum = node
                         .spectrum
                         .then(|| node.node_id.and_then(|id| (readers.spectrum)(id, cx)))
                         .flatten();
                     let meters = node.node_id.and_then(|id| (readers.levels)(id, cx));
-                    nodes::paint_node(
+                    paint_node(
                         frame,
                         node,
                         layout,
@@ -249,13 +298,13 @@ fn paint_canvas_layer(
                             meters: meters.as_ref(),
                             spectrum: spectrum.as_ref().map(NodeSpectrumReading::curve),
                         },
-                        window,
+                        Paint {
+                            shapes: &mut *shapes,
+                            window: &mut *window,
+                        },
                         cx,
                     );
                 }
-            }
-            if let Some((port, cursor)) = connection {
-                paint_connection_drag(frame, port, cursor, window);
             }
         },
     );
@@ -264,8 +313,10 @@ fn paint_canvas_layer(
 /// The connection drag's ghost line and hover verdict: the line snaps to
 /// the resolved candidate port when the drop would land (port or body),
 /// colors itself by the verdict, and rings the target so the release is
-/// never a surprise (design 18 A3).
-fn paint_connection_drag(
+/// never a surprise (design 18 A3). Painted by the hot layer per frame —
+/// the drag's cursor must not ride the panel key, so the cached canvas
+/// never sees it (audit A-1).
+pub(in crate::ui) fn paint_connection_drag(
     frame: &CanvasFrame,
     port: PortTarget,
     cursor: (f32, f32),
@@ -297,7 +348,7 @@ fn paint_connection_drag(
     let color = match candidate.as_ref().map(|candidate| candidate.status) {
         Some(CandidateStatus::Incompatible | CandidateStatus::Cycles) => theme::DANGER,
         Some(CandidateStatus::Displacing) => theme::WARNING,
-        _ => theme::PRIMARY,
+        _ => theme::controls::FOCUS,
     };
     let origin = (
         f32::from(frame.bounds.origin.x),
@@ -317,7 +368,7 @@ fn paint_connection_drag(
         return;
     };
     let status_color = match candidate.status {
-        CandidateStatus::Valid => theme::PRIMARY,
+        CandidateStatus::Valid => theme::controls::FOCUS,
         CandidateStatus::Displacing => theme::WARNING,
         CandidateStatus::Incompatible | CandidateStatus::Cycles => theme::DANGER,
     };
@@ -343,7 +394,7 @@ fn paint_connection_drag(
         window.paint_quad(PaintQuad {
             bounds: card,
             corner_radii: (theme::card::RADIUS * layout.scale).into(),
-            background: transparent_black().into(),
+            background: theme::controls::TRANSPARENT.into(),
             border_widths: theme::card::OUTLINE_W.into(),
             border_color: status_color,
             border_style: BorderStyle::default(),
@@ -359,7 +410,7 @@ fn paint_connection_drag(
             .position(|wire| wire.dst_port == candidate.port.id)
         && let Ok(path) = frame.wires[index].stroke(3., origin)
     {
-        window.paint_path(path, theme::WINDOW_BG.opacity(0.55));
+        window.paint_path(path, theme::dim(theme::WINDOW_BG));
     }
 }
 
@@ -376,21 +427,7 @@ pub(in crate::ui) fn node_drag_preview(
     // The ghost paints the library's own glyph for the kind, so the card
     // that lands looks exactly like the card that was dragged.
     let icon = template.icon();
-    let tint = match template {
-        NodeTemplate::Input | NodeTemplate::Application | NodeTemplate::Tone => theme::NODE_SOURCE,
-        NodeTemplate::Output => theme::NODE_SINK,
-        NodeTemplate::Bus | NodeTemplate::ChannelMapper | NodeTemplate::Rack => theme::NODE_UTILITY,
-        NodeTemplate::Recorder | NodeTemplate::Meter | NodeTemplate::Spectrum => {
-            theme::NODE_ANALYSIS
-        }
-        NodeTemplate::Delay
-        | NodeTemplate::Gain
-        | NodeTemplate::Balance
-        | NodeTemplate::Compressor
-        | NodeTemplate::Eq
-        | NodeTemplate::Gate
-        | NodeTemplate::Limiter => theme::NODE_DSP,
-    };
+    let tint = template.tint();
     // A fresh card's port shape: sources only output, the sink only inputs.
     let (input_count, has_output) = match template {
         NodeTemplate::Input | NodeTemplate::Application | NodeTemplate::Tone => (0, true),
@@ -407,7 +444,7 @@ pub(in crate::ui) fn node_drag_preview(
         detail: match template {
             NodeTemplate::Input => t!("Choose a source").to_string(),
             NodeTemplate::Output => t!("Choose an output").to_string(),
-            _ => "L/R".into(),
+            _ => t!("L/R").into_owned(),
         },
         icon: Some(icon),
         x: PREVIEW_PORT_PAD,
@@ -433,12 +470,16 @@ pub(in crate::ui) fn node_drag_preview(
         rack_stages: Vec::new(),
         curve: None,
         spectrum,
+        recording: None,
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
         node.height() + PREVIEW_PORT_PAD * 2.,
     );
     let world = Arc::new(CanvasWorld::new(vec![node], Vec::new()));
+    // The preview paints per frame while a template drag moves; its ghost
+    // card's labels shape once and replay from their own small cache.
+    let shapes: CanvasShapesHandle = Default::default();
     canvas(
         move |bounds, _, _| {
             CanvasFrame::new(
@@ -450,16 +491,23 @@ pub(in crate::ui) fn node_drag_preview(
                 bounds,
             )
         },
-        |_, frame, window, cx| {
-            nodes::paint_node(
-                &frame,
-                &frame.world.nodes[0],
-                &frame.nodes[0],
-                false,
-                NodeLive::default(),
-                window,
-                cx,
-            );
+        {
+            let shapes = shapes.clone();
+            move |_, frame, window, cx| {
+                let mut shapes = shapes.borrow_mut();
+                paint_node(
+                    &frame,
+                    &frame.world.nodes[0],
+                    &frame.nodes[0],
+                    false,
+                    NodeLive::default(),
+                    Paint {
+                        shapes: &mut shapes,
+                        window,
+                    },
+                    cx,
+                );
+            }
         },
     )
     .w(px(size.0))
@@ -469,10 +517,10 @@ pub(in crate::ui) fn node_drag_preview(
 fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElement {
     div()
         .absolute()
-        .bottom(px(12.))
-        .right(px(12.))
+        .bottom(px(theme::HUD_INSET))
+        .right(px(theme::HUD_INSET))
         .w(px(164.))
-        .p(px(8.))
+        .p(px(theme::SPACE_2))
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::SURFACE)
         .border_1()
@@ -511,7 +559,7 @@ fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElemen
                         window.paint_quad(PaintQuad {
                             bounds: project(overview.viewport),
                             corner_radii: 0f32.into(),
-                            background: transparent_black().into(),
+                            background: theme::controls::TRANSPARENT.into(),
                             border_widths: 1f32.into(),
                             border_color: theme::TEXT_MUTED,
                             border_style: BorderStyle::default(),
@@ -527,11 +575,11 @@ fn overview(prepared: PreparedFrame, overlays: &OverlayRects) -> impl IntoElemen
 pub fn graph_canvas_view(
     world: Arc<CanvasWorld>,
     camera: Camera,
-    selected_nodes: &[String],
-    selected_wire: Option<&str>,
+    state: CanvasPaintState,
     callbacks: CanvasCallbacks,
     prepared: PreparedFrame,
     overlays: &OverlayRects,
+    shapes: CanvasShapesHandle,
 ) -> impl IntoElement {
     let CanvasCallbacks {
         on_drop_node,
@@ -552,15 +600,16 @@ pub fn graph_canvas_view(
         on_knob_wheel,
         on_expand,
         on_chip,
+        on_record,
         on_badge,
         on_connection_move,
         on_delete,
         on_cancel,
     } = callbacks;
-    let selected_nodes = selected_nodes.to_vec();
-    let selected_wire = selected_wire.map(str::to_owned);
     // The painter and the release path only need the head and the port it
-    // pulls from; the picked-up input already shaped the world.
+    // pulls from; the picked-up input already shaped the world. The ghost
+    // line itself paints through the hot layer, which reads the drag's live
+    // cursor — the cached paint closure is only rebuilt on key changes.
     let connection = connection.map(|(port, cursor, _)| (port, cursor));
     // The left handler moves `focus`; keep one clone for the right handler,
     // which must also focus the canvas so right-button drags keep keys alive.
@@ -585,16 +634,18 @@ pub fn graph_canvas_view(
                     }
                 },
                 move |_, frame, window, cx| {
+                    let mut shapes = shapes.borrow_mut();
                     paint_canvas_layer(
                         &frame,
-                        &selected_nodes,
-                        selected_wire.as_deref(),
+                        &state,
                         LiveReaders {
                             levels: node_levels.as_ref(),
                             spectrum: node_spectrum.as_ref(),
                         },
-                        connection,
-                        window,
+                        Paint {
+                            shapes: &mut shapes,
+                            window,
+                        },
                         cx,
                     );
                 },
@@ -638,6 +689,7 @@ pub fn graph_canvas_view(
                     let on_knob_down = on_knob_down.clone();
                     let on_expand = on_expand.clone();
                     let on_chip = on_chip.clone();
+                    let on_record = on_record.clone();
                     let on_badge = on_badge.clone();
                     move |event, window, cx| {
                         window.focus(&focus, cx);
@@ -677,6 +729,9 @@ pub fn graph_canvas_view(
                                 if let Some(anchor) = anchor {
                                     on_chip((node.to_string(), anchor), window, cx)
                                 }
+                            }
+                            Some(HitTarget::CardAction { node, action }) => {
+                                on_record((node.to_string(), action), window, cx)
                             }
                             Some(HitTarget::Badge { node }) => {
                                 let anchor = frame

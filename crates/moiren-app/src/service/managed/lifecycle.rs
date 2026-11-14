@@ -34,14 +34,15 @@ impl ManagedDriver {
             self.owner.is_some(),
             self.cleaning,
         );
-        self.meters = None;
+        self.spectra = None;
         c.tone_session = false;
-        c.signals.clear_node_levels();
+        c.levels.retire(&mut c.signals.topics);
         c.signals.clear_node_spectra();
         c.active_latency_profile = None;
         c.active_audio_settings = None;
         c.active_transport_latency = None;
         c.active_measured_process = None;
+        c.active_execution = None;
         #[cfg(windows)]
         {
             if let Some(observations) = &self.native_observations {
@@ -55,6 +56,14 @@ impl ManagedDriver {
         }
         self.edits.clear();
         self.clear_parameters(c);
+        // Recording workers keep running without the host. An owner swap
+        // parks every session on its open file for the rebind poll; only
+        // the exit path stops them and settles the domain.
+        if self.exiting {
+            self.retire_recordings(c);
+        } else {
+            self.detach_recordings(c);
+        }
         if let Some(owner) = self.owner.take() {
             #[cfg(windows)]
             let (host_revision, graph_revision) = owner.active_revision;
@@ -240,12 +249,9 @@ impl ManagedDriver {
                 || o.exports != preparation.exports
                 || stranded_virtual_transport
         }) {
-            if let Ok(summary) = c
-                .graph
-                .managed_session_spec(c.core.desired(), c.core.run_limit())
-            {
-                let _ = c.core.restart_managed_graph(summary);
-            }
+            // Restart converts any legacy summary to graph-only intent; the
+            // prior explicit limit stays in Graph::limit, not desired().
+            let _ = c.core.restart_managed_graph(None);
             self.retire(c);
             return;
         }
@@ -308,10 +314,7 @@ impl ManagedDriver {
             if self.reject_failed_cleanup(c, false) {
                 return;
             }
-            let mut summary = match c
-                .graph
-                .managed_session_spec(c.core.desired(), c.core.run_limit())
-            {
+            let mut summary = match c.graph.managed_session_spec(c.core.desired()) {
                 Ok(summary) => summary,
                 Err(error) => {
                     c.core.failed(c.core.generation(), error.clone());
@@ -365,7 +368,11 @@ impl ManagedDriver {
                     let control = host.control();
                     let generation = c.core.generation();
                     c.graph.preparing(generation, preparation.revision);
-                    self.meters = meters::MeterBridge::new(c).ok();
+                    self.spectra = meters::SpectrumBridge::new(c).ok();
+                    // A fresh owner carries a fresh engine bus: every level
+                    // lease's stale subscription unwinds, and the per-node
+                    // taps re-sync from the first registry round.
+                    c.levels.retire(&mut c.signals.topics);
                     self.owner = Some(Owner {
                         host,
                         control,

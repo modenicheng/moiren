@@ -497,3 +497,83 @@ fn restored_adapter_requires_fresh_engine_admission() {
     );
     assert_eq!(service.statuses(&graph.snapshot())[0].active_revision, None);
 }
+
+/// The Devices page export rows paint `t!(direction.title())`; every variant
+/// must resolve in both shipped locales, replacing the retired
+/// `format!("{direction:?}", ..)` Debug blob.
+#[test]
+fn export_direction_titles_render_in_both_locales() {
+    for (direction, zh_cn) in [
+        (ExportDirection::Playback, "播放"),
+        (ExportDirection::Microphone, "麦克风"),
+    ] {
+        let title = direction.title();
+        assert!(!title.is_empty());
+        assert_eq!(
+            rust_i18n::t!(title, locale = crate::i18n::ENGLISH),
+            title,
+            "en mirrors the key"
+        );
+        assert_eq!(crate::i18n::zh(title), zh_cn, "zh-CN value for {title:?}");
+    }
+}
+
+/// The narrow export projections drive the driver's read-only poll paths
+/// without a graph snapshot; they must stay content-identical to their
+/// snapshot-based wrappers across active, gated, and confirmed states.
+#[test]
+fn narrow_projections_equal_the_snapshot_based_projections() {
+    let mut graph = ServiceGraph::default();
+    let export = intent(&graph);
+    graph
+        .edit(GraphEdit::SetExports(vec![export.clone()]))
+        .unwrap();
+    let mut snapshot = graph.snapshot();
+    let mut service = ExportService::default();
+    assert_eq!(
+        service.statuses(&snapshot),
+        service.statuses_for(&snapshot.exports, snapshot.active_revision)
+    );
+    assert_eq!(
+        service.reconcile(&snapshot),
+        service.reconcile_for(
+            &snapshot.exports,
+            snapshot.candidate_revision,
+            snapshot.active_revision
+        )
+    );
+
+    service.set_available(true);
+    let mut observation = ExportObservation {
+        intent: export.clone(),
+        generation: 1,
+        resource: ExportResourceState::Creating,
+        allow_default: false,
+        gate_open: false,
+        active_revision: None,
+    };
+    service.observe(observation.clone()).unwrap();
+    observation.generation = 2;
+    observation.resource = ExportResourceState::Present;
+    observation.gate_open = true;
+    observation.active_revision = Some(snapshot.candidate_revision);
+    service.observe(observation).unwrap();
+    snapshot.active_revision = Some(snapshot.candidate_revision);
+
+    assert_eq!(
+        service.statuses(&snapshot),
+        service.statuses_for(&snapshot.exports, snapshot.active_revision)
+    );
+    assert_eq!(
+        service.reconcile(&snapshot),
+        service.reconcile_for(
+            &snapshot.exports,
+            snapshot.candidate_revision,
+            snapshot.active_revision
+        )
+    );
+    assert_eq!(
+        service.statuses(&snapshot)[0].active_revision,
+        Some(snapshot.candidate_revision)
+    );
+}

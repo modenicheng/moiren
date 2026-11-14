@@ -49,7 +49,7 @@ impl NativeDevices for EvidenceDevices {
         selector: &EndpointSelector,
         device: DeviceOptions,
         input: bool,
-    ) -> Result<String, BackendError> {
+    ) -> Result<Resolved, BackendError> {
         self.inner.resolve(selector, device, input)
     }
 

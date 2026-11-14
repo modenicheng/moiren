@@ -63,8 +63,9 @@ fn policy_summary(policy: ProcessWindowPolicy) -> String {
 fn selection_summary(
     settings: crate::service::TransportLatencySettings,
     measured: Option<&MeasuredProcessSummary>,
+    snapshot: &crate::service::AppSnapshot,
 ) -> String {
-    let input = transport::process_summary(settings, measured);
+    let input = transport::process_summary(settings, measured, snapshot);
     let mode = match measured {
         Some(summary) => match &summary.observed_window {
             Some(window) => format!(
@@ -186,6 +187,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         selection_summary(
             snapshot.transport_latency,
             snapshot.measured_process.as_ref(),
+            snapshot,
         ),
     ))
     .child(summary(
@@ -193,7 +195,11 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         &t!("Active process request"),
         if snapshot.phase == SessionPhase::Running {
             snapshot.active_transport_latency.map(|settings| {
-                selection_summary(settings, snapshot.active_measured_process.as_ref())
+                selection_summary(
+                    settings,
+                    snapshot.active_measured_process.as_ref(),
+                    snapshot,
+                )
             })
         } else {
             None
@@ -247,7 +253,11 @@ impl StudioShell {
                     .begin_live(id, request, policy, &snapshot);
                 self.measured_deadline(id, cx);
             }
-            Err(error) => self.settings.editor.measured.error = Some(format!("{error:?}")),
+            Err(error) => {
+                self.settings.editor.measured.error = Some(crate::ui::presentation::failure_text(
+                    &UiFailure::Dispatch(error),
+                ));
+            }
         }
         cx.notify();
     }

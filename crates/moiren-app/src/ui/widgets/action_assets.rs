@@ -24,13 +24,17 @@ pub enum ActionIcon {
     Sliders,
     ListDetails,
     ChevronDown,
+    Play,
+    Stop,
+    Record,
+    Pause,
 }
 
 impl ActionIcon {
     /// Every variant, so the asset regression test can enumerate all request
     /// sites instead of chasing scattered call sites.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 17] = [
+    const ALL: [Self; 21] = [
         Self::Plus,
         Self::Settings,
         Self::Graph,
@@ -48,6 +52,10 @@ impl ActionIcon {
         Self::Sliders,
         Self::ListDetails,
         Self::ChevronDown,
+        Self::Play,
+        Self::Stop,
+        Self::Record,
+        Self::Pause,
     ];
 
     /// The asset path is a literal: every toolbar rebuild used to pay a
@@ -71,6 +79,10 @@ impl ActionIcon {
             Self::Sliders => "icons/sliders.svg",
             Self::ListDetails => "icons/list-details.svg",
             Self::ChevronDown => "icons/chevron-down.svg",
+            Self::Play => "icons/player-play.svg",
+            Self::Stop => "icons/player-stop.svg",
+            Self::Record => "icons/player-record.svg",
+            Self::Pause => "icons/player-pause.svg",
         }
     }
 
@@ -155,6 +167,30 @@ impl AssetSource for ActionAssets {
             "icons/hand-move.svg" => Some(include_bytes!("../../../assets/icons/hand-move.svg")),
             "icons/minus.svg" => Some(include_bytes!("../../../assets/icons/minus.svg")),
             "icons/plus.svg" => Some(include_bytes!("../../../assets/icons/plus.svg")),
+            "icons/arrow-left.svg" => Some(include_bytes!("../../../assets/icons/arrow-left.svg")),
+            "icons/arrow-right.svg" => {
+                Some(include_bytes!("../../../assets/icons/arrow-right.svg"))
+            }
+            "icons/check.svg" => Some(include_bytes!("../../../assets/icons/check.svg")),
+            "icons/fader-scale.svg" => {
+                Some(include_bytes!("../../../assets/icons/fader-scale.svg"))
+            }
+            "icons/loader-2.svg" => Some(include_bytes!("../../../assets/icons/loader-2.svg")),
+            "icons/bolt-off.svg" => Some(include_bytes!("../../../assets/icons/bolt-off.svg")),
+            "icons/cpu.svg" => Some(include_bytes!("../../../assets/icons/cpu.svg")),
+            "icons/gauge.svg" => Some(include_bytes!("../../../assets/icons/gauge.svg")),
+            "icons/player-play.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-play.svg"))
+            }
+            "icons/player-stop.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-stop.svg"))
+            }
+            "icons/player-record.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-record.svg"))
+            }
+            "icons/player-pause.svg" => {
+                Some(include_bytes!("../../../assets/icons/player-pause.svg"))
+            }
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }
@@ -277,9 +313,18 @@ mod tests {
             "icons/chevron-right.svg", // sidebar collapse control
             "icons/zoom-scan.svg",     // inspector zoom-to-scan button
             "brand/mark.svg",          // toolbar brand mark
+            "icons/arrow-left.svg",    // mixer strip: input row's source arrow
+            "icons/arrow-right.svg",   // mixer strip: send enable/mute arrow
+            "icons/check.svg",         // mixer strip: input dropdown checkbox
+            "icons/fader-scale.svg",   // mixer strip: send PRE/POST tap toggle
+            "icons/loader-2.svg",      // status bar: starting/stopping spinner
+            "icons/bolt-off.svg",      // status bar: XRUN item
+            "icons/cpu.svg",           // status bar: performance item
+            "icons/gauge.svg",         // status bar: buffer/latency item
         ];
         // Design 18 node-card glyphs: the per-kind icons, the chip dropdown,
-        // the rack markers, and the alert the fault tooltip leads with.
+        // the rack markers, the recorder strip's transport affordances, and
+        // the alert the fault tooltip leads with.
         const DESIGN18_REQUESTS: &[&str] = &[
             "icons/alert-triangle.svg",
             "icons/volume.svg",
@@ -291,6 +336,8 @@ mod tests {
             "icons/chart-histogram.svg",
             "icons/chevron-down.svg",
             "icons/list-details.svg",
+            "icons/player-record.svg",
+            "icons/player-pause.svg",
         ];
 
         let mut used: HashSet<String> = ActionIcon::ALL

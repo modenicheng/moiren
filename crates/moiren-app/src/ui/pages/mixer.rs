@@ -1,3 +1,4 @@
+use super::graph::{OBSERVATION_SAMPLE_CADENCE, observation_snapshot};
 use super::*;
 use crate::service::GraphNodeState;
 use crate::ui::presentation::db_text;
@@ -9,16 +10,15 @@ mod model;
 pub(crate) mod page;
 mod routing;
 pub(crate) mod strip_controls;
-use crate::ui::widgets::fader::{FaderScale, fader, ruler};
-// Slider-sync machinery is shared with the compressor parameter sliders
-// (window::graph::compressor), so the slot type, edit type and the
-// coalesced sync/commit entry points are visible across the window.
-use model::StripDrag;
-pub(crate) use model::{
-    EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text,
-    commit_active_editor, commit_closure, fader_rows, gain_db_text, mixer_edit,
-    reset_clip_on_click, start_value_edit, sync_faders, sync_slider_range,
+use crate::ui::editors::{
+    EditableValueFamily, fader_readout_gain, gain_db_text, reset_clip_on_click, start_value_edit,
 };
+use crate::ui::widgets::fader::{FaderScale, fader, ruler};
+// The slider/click-to-type editing kernel shared with the graph inspector
+// and the tray flyout lives in `crate::ui::editors`; this page consumes it
+// like any other surface and only re-exports its own presentation model.
+use model::StripDrag;
+pub(crate) use model::{InputPopover, MixerPresentation};
 
 impl StudioShell {
     pub(crate) fn update_node_meters(&mut self, visible: bool, cx: &mut Context<Self>) -> bool {
@@ -30,9 +30,9 @@ impl StudioShell {
         // `visible` alone proves a Graph/Mixer frame gate or a graph
         // gesture, not that the current page's inspector paints the node.
         let inspector_selected = if visible
-            && self.inspector_open
-            && matches!(self.presentation.page, Page::Graph | Page::Mixer)
-            && let Some(selected) = self.selected_node
+            && self.chrome.inspector_open
+            && matches!(self.presentation.page(), Page::Graph | Page::Mixer)
+            && let Some(selected) = self.selection.node
             && self
                 .state
                 .read(cx)
@@ -49,8 +49,13 @@ impl StudioShell {
         let preferences = self.preferences.values.meters;
         // Only the graph card paints a spectrum body: a Mixer strip or an
         // inspector selection must not keep an analyzer's FFT demanded.
-        let spectra_visible = visible && self.presentation.page == Page::Graph;
-        self.state.update(cx, |state, _| {
+        let spectra_visible = visible && self.presentation.page() == Page::Graph;
+        // The observation readout re-keys on status transitions immediately:
+        // capture the pre-poll status so a transition inside the update
+        // below can be told apart from an unchanged one (issue #118).
+        let observation_status_before =
+            inspector_selected.map(|node| self.state.read(cx).node_meters.status(node));
+        let changed = self.state.update(cx, |state, _| {
             state.node_meters.set_preferences(preferences);
             // Borrow the registered set straight through: the pump runs at
             // display and poll cadence, and cloning it here would allocate
@@ -58,7 +63,7 @@ impl StudioShell {
             // the same iterator instead of being inserted into the
             // registration set, which belongs to the canvases alone.
             if visible {
-                let points = self.node_meter_points.borrow();
+                let points = self.metering.node_meter_points.borrow();
                 let meters = state.node_meters.update(
                     &state.snapshot,
                     points.iter().copied().chain(inspector_selected),
@@ -78,20 +83,71 @@ impl StudioShell {
                 let spectra = state.node_spectra.update(&state.snapshot, []);
                 meters || spectra
             }
-        })
+        });
+        self.sample_inspector_observation(inspector_selected, observation_status_before, cx);
+        changed
+    }
+
+    /// Re-sample the inspector's runtime-observation readout (issue #118):
+    /// the metering path updates `node_meters` without notifying the shell,
+    /// so the cached inspector panel would freeze the texts it was built
+    /// with. A status transition re-keys immediately (discrete, rare); the
+    /// Peak/RMS texts re-key on [`OBSERVATION_SAMPLE_CADENCE`] because they
+    /// move at the meter frame rate and every re-key rebuilds the panel.
+    fn sample_inspector_observation(
+        &mut self,
+        node: Option<NodeId>,
+        status_before: Option<crate::ui::monitoring::MeterStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(node) = node else {
+            // The demand is gone (inspector closed, page switch, selection
+            // dropped, node deleted): drop the snapshot so the next demand
+            // samples immediately instead of inheriting another node's
+            // texts. No notify — nothing displays the snapshot, and the key
+            // fields that ended the demand already rebuilt the panel.
+            self.inspector.observation = None;
+            self.inspector.observation_sampled = None;
+            return;
+        };
+        let status_now = self.state.read(cx).node_meters.status(node);
+        let status_changed = status_before.is_some_and(|before| before != status_now);
+        let now = std::time::Instant::now();
+        // A first sample for this node (fresh selection) is due at once;
+        // otherwise the texts follow the cadence.
+        let due = match self.inspector.observation_sampled {
+            None => true,
+            Some((sampled_node, sampled_at)) => {
+                sampled_node != node || now.duration_since(sampled_at) >= OBSERVATION_SAMPLE_CADENCE
+            }
+        };
+        if !status_changed && !due {
+            return;
+        }
+        let snapshot = observation_snapshot(&self.state.read(cx).node_meters, node);
+        self.inspector.observation_sampled = Some((node, now));
+        if self.inspector.observation.as_ref() != Some(&snapshot) {
+            self.inspector.observation = Some(snapshot);
+            cx.notify();
+        }
     }
 }
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 
-pub(crate) fn node_kind_color(kind: NodeKind) -> Hsla {
-    match kind {
-        NodeKind::Source => theme::NODE_SOURCE,
-        NodeKind::Sink => theme::NODE_SINK,
-        NodeKind::Bus => theme::NODE_UTILITY,
-        _ => theme::NODE_DSP,
-    }
+pub(crate) use crate::ui::pages::graph::node_catalog::kind_tint as node_kind_color;
+
+/// The strip subtitle shared by the mixer page and the tray flyout
+/// (issue #121): `"{number} · {kind} · {channels} ch"` with the kind's
+/// display title from the catalog registry instead of its debug format.
+/// Plain English today; the kind titles are runtime i18n table keys per
+/// design 21 §4.
+pub(crate) fn strip_subtitle(number: usize, kind: NodeKind, channels: usize) -> String {
+    format!(
+        "{number} · {} · {channels} ch",
+        crate::ui::pages::graph::node_catalog::kind_title(kind)
+    )
 }
 
 /// The strip's cached control stack: everything below the live routing
@@ -106,6 +162,22 @@ pub(crate) fn node_kind_color(kind: NodeKind) -> Hsla {
 /// content — the levels row pinned at its minimum height, the title
 /// floating mid-strip, and per-strip widths following each label's text
 /// length (see the chrome status bar for the same rule).
+/// The Mixer page's shell-owned state (design 20 §4): the presentation
+/// model (strip order, slider slots, editor families), the page's layout
+/// geometry and meter layer, both scroll containers, and the hovered
+/// strip the fault banner tracks.
+pub(crate) struct MixerPageState {
+    pub(crate) presentation: MixerPresentation,
+    pub(crate) geometry: page::Geometry,
+    pub(crate) frame: Entity<page::MixerMeterLayer>,
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) dock_scroll: ScrollHandle,
+    pub(crate) hovered_strip: Option<moiren_core::graph::NodeId>,
+    /// The hovered strip's fault banner shapes from this cache, the same
+    /// text-keyed policy the graph page's tooltip uses (audit A-1).
+    pub(in crate::ui) shapes: crate::ui::pages::graph::graph_canvas_view::CanvasShapesHandle,
+}
+
 fn strip_body(
     shell: &StudioShell,
     entry: &GraphNodeState,
@@ -127,9 +199,11 @@ fn strip_body(
         .id(SharedString::from(format!("strip-header-{id:?}")))
         .flex()
         .flex_col()
-        .gap(px(2.))
-        .h(px(if shell.compact { 44. } else { 52. }))
+        .gap(px(theme::SPACE_0_5))
+        .h(px(theme::compact(shell.chrome.compact, 44., 52.)))
         .flex_none()
+        // 10 px: the strip title row's horizontal inset inside the strip's
+        // full bleed, off the spacing grid.
         .px(px(10.))
         .justify_center()
         .border_t_1()
@@ -140,37 +214,40 @@ fn strip_body(
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.))
+                .gap(px(theme::SPACE_1))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(12.))
+                        .text_size(px(theme::TEXT_SM))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .overflow_hidden()
-                        .text_ellipsis()
+                        // Design 21 §2: user labels truncate on one line —
+                        // ellipsis alone still wrapped long names.
+                        .truncate()
                         .child(crate::ui::presentation::display_label(entry)),
                 )
                 .when(faulted, |row| row.child(strip_fault_badge(id, cx))),
         )
         .child(
-            label(format!(
-                "{} · {kind:?} · {channels} ch",
+            label(strip_subtitle(
                 shell
                     .mixer
+                    .presentation
                     .order
                     .iter()
                     .position(|node| *node == id)
                     .unwrap_or(0)
-                    + 1
+                    + 1,
+                kind,
+                channels,
             ))
-            .text_size(px(9.)),
+            .text_size(px(theme::TEXT_TINY)),
         )
         .on_click({
             let this = cx.entity();
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
-                    shell.selected_node = Some(id);
+                    shell.selection.node = Some(id);
                     // Single click selects the strip; a double click also
                     // opens the inspector.
                     if shell.element_double_clicked(StudioShell::element_key("node", id)) {
@@ -198,12 +275,16 @@ fn strip_body(
         .child(strip_controls::balance(shell, entry, channels, cx))
         .child(node_controls(shell, entry, channels, cx))
         .child({
-            let editing = shell.mixer.editing_value == Some(id);
+            let editing = shell.mixer.presentation.editing_value == Some(id);
             editable_value(
                 SharedString::from(format!("strip-readout-{id:?}")),
-                db_text(entry.mixer.gain),
+                db_text(fader_readout_gain(
+                    shell.mixer.presentation.faders.get(&id),
+                    entry.mixer.gain,
+                    cx,
+                )),
                 editing,
-                &shell.mixer.value_inputs[&id],
+                &shell.mixer.presentation.value_inputs[&id],
                 start_value_edit(cx.entity(), EditableValueFamily::Fader, id, move |graph| {
                     graph
                         .node(id)
@@ -226,15 +307,20 @@ fn strip_body(
                 .flex_1()
                 .min_h(px(160.))
                 .justify_center()
-                .gap(px(6.))
+                .gap(px(theme::SPACE_1_5))
+                // 14 px: the levels area's separation from the editors
+                // above it, off the spacing grid.
                 .mt(px(14.))
+                // 32 px: clears the meter readout, which hangs up to
+                // READOUT_OFFSET_Y (28 px) below the track, plus breathing
+                // room before the title row.
                 .mb(px(32.))
                 .child(
                     div()
                         .id(SharedString::from(format!("strip-unity-{id:?}")))
                         .absolute()
                         .top(relative(FaderScale::position(1.)))
-                        .h(px(1.))
+                        .h(px(theme::HAIRLINE_W))
                         .w_full()
                         .bg(theme::BORDER_STRONG)
                         .gpui_test_observe(),
@@ -242,8 +328,8 @@ fn strip_body(
                 .child(meter(shell, entry, kind, channels, cx))
                 .child(ruler())
                 .child(fader(
-                    &shell.mixer.faders[&id].state,
-                    &shell.mixer.faders[&id].behavior,
+                    &shell.mixer.presentation.faders[&id].state,
+                    &shell.mixer.presentation.faders[&id].behavior,
                     cx,
                 ))
                 .gpui_test_observe(),
@@ -269,7 +355,7 @@ fn strip_fault_badge(id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement 
         .justify_center()
         .bg(theme::DANGER)
         .text_color(theme::controls::ON_ACCENT)
-        .text_size(px(9.))
+        .text_size(px(theme::TEXT_TINY))
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
         .child("!")
@@ -283,7 +369,7 @@ fn strip_fault_badge(id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement 
                 // same hang point the graph badge uses.
                 let position = window.mouse_position();
                 let half = px(7.);
-                shell.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
+                shell.chrome.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
                     node: Some(id),
                     anchor: Bounds {
                         origin: point(position.x - half, position.y - half),
@@ -329,7 +415,7 @@ fn meter(
         // registration, because per-strip panels no longer run a
         // whole-table reset over their siblings.
         .child({
-            let points = shell.node_meter_points.clone();
+            let points = shell.metering.node_meter_points.clone();
             let id = entry.id;
             canvas(
                 move |bounds, window, _| {
@@ -353,14 +439,28 @@ fn meter(
             // an eligibility or identity transition resets the flags in
             // `refresh_observation_nodes` and the new owners re-register on
             // their rebuild in the same layout pass.
-            view.child(meter_probe(shell.meter_points.clone(), input))
+            view.child(meter_probe(shell.metering.meter_points.clone(), input))
         })
         .child(page::track(shell, entry.id, channels, eligible.then_some(input)))
-        .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
-            .absolute().bottom(px(-28.)).left(px(-10.)).w(px(48.)).h(px(12.)).line_height(px(12.))
-            .text_center().font_family(theme::FONT_MONO).text_size(px(8.)).text_color(theme::TEXT_MUTED)
-            .child(page::readout(shell, entry.id))
-            .gpui_test_observe())
+        // The readout's reserved block: the UI's one layout-grade absolute
+        // positioning (design 21 §2), styled from the READOUT_* group so the
+        // block and the hot layer's paint of the live text never drift.
+        .child(
+            div()
+                .id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
+                .absolute()
+                .bottom(px(page::READOUT_OFFSET_Y))
+                .left(px(page::READOUT_OFFSET_X))
+                .w(px(page::READOUT_WIDTH))
+                .h(px(page::READOUT_HEIGHT))
+                .line_height(px(page::READOUT_LINE_HEIGHT))
+                .text_center()
+                .font_family(theme::FONT_MONO)
+                .text_size(px(page::READOUT_TEXT_SIZE))
+                .text_color(theme::TEXT_MUTED)
+                .child(page::readout(shell, entry.id))
+                .gpui_test_observe(),
+        )
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
             t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip.").into_owned()
         ).build(window, cx))

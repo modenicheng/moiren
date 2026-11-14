@@ -5,7 +5,7 @@
 //! gesture resolves canvas ids back to `NodeId`s) the projected world.
 
 use super::*;
-use crate::ui::pages::graph::graph_canvas::{CanvasFrame, CanvasWorld};
+use crate::ui::pages::graph::graph_canvas::{CanvasFrame, CanvasWorld, RecordAction};
 use crate::ui::pages::graph::graph_canvas_view::{
     CameraFitFn, SelectFn, WindowAppCallback, WindowAppFn, ZoomFn,
 };
@@ -18,7 +18,7 @@ pub(super) fn zoom(this: &Entity<StudioShell>) -> Rc<ZoomFn> {
         move |(factor, anchor): (f32, Point<Pixels>), _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
                 let anchor = (f32::from(anchor.x), f32::from(anchor.y));
-                shell.camera.zoom_by(factor, anchor);
+                shell.graph_view.camera.zoom_by(factor, anchor);
                 cx.notify();
             });
         },
@@ -46,39 +46,43 @@ pub(super) fn select_node(
             };
             let modifiers = window.modifiers();
             if modifiers.control || modifiers.shift {
-                if shell.selected_nodes.contains(&node_id) {
-                    shell.selected_nodes.remove(&node_id);
-                    if shell.selected_node == Some(node_id) {
-                        shell.selected_node = None;
+                if shell.selection.nodes.contains(&node_id) {
+                    shell.selection.nodes.remove(&node_id);
+                    if shell.selection.node == Some(node_id) {
+                        shell.selection.node = None;
                     }
                 } else {
-                    shell.selected_nodes.insert(node_id);
-                    shell.selected_node = Some(node_id);
+                    shell.selection.nodes.insert(node_id);
+                    shell.selection.node = Some(node_id);
                 }
-            } else if !shell.selected_nodes.contains(&node_id) {
-                shell.selected_nodes.clear();
-                shell.selected_nodes.insert(node_id);
-                shell.selected_node = Some(node_id);
+            } else if !shell.selection.nodes.contains(&node_id) {
+                shell.selection.nodes.clear();
+                shell.selection.nodes.insert(node_id);
+                shell.selection.node = Some(node_id);
             } else {
-                shell.selected_node = Some(node_id);
+                shell.selection.node = Some(node_id);
             }
-            shell.selected_route = None;
+            shell.selection.route = None;
             // Dragging moves the whole selection; seed every member so the
             // world positions survive a move of untouched nodes.
-            for selected in shell.selected_nodes.clone() {
+            for selected in shell.selection.nodes.clone() {
                 if let Some(projected) = nodes
                     .nodes
                     .iter()
                     .find(|node| node.node_id == Some(selected))
                     .map(|node| (node.x, node.y))
                 {
-                    shell.node_positions.entry(selected).or_insert(projected);
+                    shell
+                        .graph_view
+                        .node_positions
+                        .entry(selected)
+                        .or_insert(projected);
                 }
             }
             let pos = window.mouse_position();
-            shell.camera.adjusted = true;
-            shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
-            shell.node_drag_snap = (0., 0.);
+            shell.graph_view.camera.adjusted = true;
+            shell.graph_gestures.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
+            shell.graph_gestures.node_drag_offset = (0., 0.);
             shell.sync_drag_demand();
             // Single click selects; a double click on the same node also
             // opens the inspector.
@@ -108,22 +112,24 @@ pub(super) fn background_move(
                     Some(MouseButton::Left | MouseButton::Middle | MouseButton::Right)
                 );
                 if !held {
-                    shell.pan_grab = None;
-                    shell.node_drag = None;
-                    shell.node_drag_snap = (0., 0.);
-                    shell.knob_drag = None;
-                    shell.drag_guides = None;
+                    shell.graph_gestures.pan_grab = None;
+                    shell.graph_gestures.knob_drag = None;
+                    // The card drag commits here, at release: positions
+                    // were frozen during the gesture, so this is the one
+                    // place they move (audit A-1).
+                    let drag_ended = shell.commit_node_drag();
                     // Hover for the fault tooltip: tracked here, painted by
                     // the meter frame, so a change costs one frame and never
                     // a page rebuild. Anything on a card counts, port dots
                     // included.
-                    let hovered = shell.graph_canvas_frame.read().and_then(|frame| {
+                    let hovered = shell.graph_view.canvas_frame.read().and_then(|frame| {
                         use crate::ui::pages::graph::graph_canvas::HitTarget;
                         let id = match frame.hit_test((x, y))? {
                             HitTarget::Node(id)
                             | HitTarget::Knob { node: id, .. }
                             | HitTarget::Expand { node: id }
                             | HitTarget::Chip { node: id }
+                            | HitTarget::CardAction { node: id, .. }
                             | HitTarget::Badge { node: id } => id.to_owned(),
                             HitTarget::Port(port) => return frame.world.node_of_port(port),
                             HitTarget::Wire(_) => return None,
@@ -135,28 +141,29 @@ pub(super) fn background_move(
                             .find(|node| node.id == id)
                             .and_then(|node| node.node_id)
                     });
-                    if shell.hovered_node != hovered {
-                        shell.hovered_node = hovered;
+                    if shell.graph_view.hovered_node != hovered {
+                        shell.graph_view.hovered_node = hovered;
                         cx.notify();
                     }
                     // A right press released within the drag threshold opens
                     // the context menu over the node under the cursor, or
                     // the background menu over the canvas or a wire; a
                     // longer stroke was a pan.
-                    if let Some(pressed) = shell.right_press.take()
+                    if let Some(pressed) = shell.graph_gestures.right_press.take()
                         && (x - pressed.0).hypot(y - pressed.1) <= 3.
                     {
-                        shell.context_menu = Some(match hovered {
+                        shell.graph_view.context_menu = Some(match hovered {
                             Some(node) => ContextMenu::Node { node, at: (x, y) },
                             None => ContextMenu::Background { at: (x, y) },
                         });
                         cx.notify();
                     }
                     let clicked = shell
+                        .graph_gestures
                         .background_click
                         .take()
                         .is_some_and(|(bx, by)| (x - bx).hypot(y - by) <= 3.);
-                    if let Some(drag) = shell.selection_drag.take() {
+                    if let Some(drag) = shell.graph_gestures.selection_drag.take() {
                         // A plain background click clears the selection; a
                         // rubber band already applied its live selection.
                         if !drag.moved && clicked {
@@ -167,13 +174,19 @@ pub(super) fn background_move(
                         shell.clear_canvas_selection();
                         cx.notify();
                     }
-                    if shell.connection_drag.take().is_some() {
+                    if shell.graph_gestures.connection_drag.take().is_some() {
+                        cx.notify();
+                    }
+                    // The drag end must reach the screen: the cached canvas
+                    // un-hides the dragged entities and paints their
+                    // committed positions.
+                    if drag_ended {
                         cx.notify();
                     }
                     shell.sync_drag_demand();
                     return;
                 }
-                if let Some((id, control, start_y, start_value)) = shell.knob_drag {
+                if let Some((id, control, start_y, start_value)) = shell.graph_gestures.knob_drag {
                     // Vertical drag on the dial; up increases. The value
                     // math is anchored to the press so mid-drag camera or
                     // concurrent edits cannot feedback-loop the knob.
@@ -193,18 +206,18 @@ pub(super) fn background_move(
                         cx.notify();
                     }
                 }
-                if let Some(drag) = shell.selection_drag.as_mut() {
+                if let Some(drag) = shell.graph_gestures.selection_drag.as_mut() {
                     drag.current = (x, y);
                     if !drag.moved && (x - drag.anchor.0).hypot(y - drag.anchor.1) > 3. {
                         drag.moved = true;
-                        shell.background_click = None;
+                        shell.graph_gestures.background_click = None;
                     }
                     // Apply the live selection here, in the event phase: the
                     // cached page rebuilds on this notify, and a notify raised
                     // from the hot layer's paint would never reach it.
                     let (moved, anchor, current, additive) =
                         (drag.moved, drag.anchor, drag.current, drag.additive);
-                    let frame = shell.graph_canvas_frame.read();
+                    let frame = shell.graph_view.canvas_frame.read();
                     if moved && let Some(frame) = frame {
                         let a = frame.local_position(anchor);
                         let b = frame.local_position(current);
@@ -219,55 +232,50 @@ pub(super) fn background_move(
                         }
                     }
                 }
-                if let Some((id, gx, gy)) = shell.node_drag {
-                    shell.camera.adjusted = true;
-                    let raw = shell.camera.canvas_delta_to_world((x - gx, y - gy));
+                if let Some((_, gx, gy)) = shell.graph_gestures.node_drag {
+                    shell.graph_view.camera.adjusted = true;
+                    // The drag's free path, measured from the fixed press
+                    // anchor in world units. Positions stay frozen during
+                    // the gesture: the offset rides the hot layer's paint
+                    // and commits at release, so no pointer report rebuilds
+                    // the page (audit A-1).
+                    let raw = shell
+                        .graph_view
+                        .camera
+                        .canvas_delta_to_world((x - gx, y - gy));
                     // Alignment snapping (item F): the dragged selection's
                     // bounding box seeks the other cards' edges and the
-                    // horizontal axis within 6 screen px. The threshold
-                    // reads the drag's free path: stored positions carry
-                    // the offset previous frames baked in, so it is undone
-                    // first — measuring the per-frame step instead would
-                    // re-match the same target every sub-threshold move and
-                    // pin the card forever. Alt bypasses it and releases a
-                    // baked one.
-                    let baked = shell.node_drag_snap;
-                    shell.node_drag_snap = (0., 0.);
+                    // horizontal axis within 6 screen px. Candidates are
+                    // measured on the free path — stored positions plus the
+                    // un-baked offset — so a snapped card lets go once the
+                    // cursor leaves the threshold, and nothing ever needs
+                    // undoing: the offset lives in the gesture, never in
+                    // the stored positions. Alt bypasses it.
                     if window.modifiers().alt {
-                        shell.drag_guides = None;
-                    } else if let Some(frame) = shell.graph_canvas_frame.read() {
+                        shell.graph_gestures.node_drag_offset = raw;
+                        shell.graph_gestures.drag_guides = None;
+                    } else if let Some(frame) = shell.graph_view.canvas_frame.read() {
                         let (snapped, guides) = snap_delta(
                             &frame,
-                            &shell.selected_nodes,
-                            &shell.node_positions,
-                            baked,
+                            &shell.selection.nodes,
+                            &shell.graph_view.node_positions,
                             raw,
                         );
-                        shell.node_drag_snap = snapped;
-                        shell.drag_guides = Some(guides);
+                        shell.graph_gestures.node_drag_offset =
+                            (raw.0 + snapped.0, raw.1 + snapped.1);
+                        shell.graph_gestures.drag_guides = Some(guides);
+                    } else {
+                        shell.graph_gestures.node_drag_offset = raw;
                     }
-                    // The stored positions bake in the previous offset: this
-                    // frame's move lands them on the new one, or releases
-                    // them back onto the free path when the snap lets go.
-                    let applied = (
-                        raw.0 + shell.node_drag_snap.0 - baked.0,
-                        raw.1 + shell.node_drag_snap.1 - baked.1,
-                    );
-                    let selection: Vec<_> = shell.selected_nodes.iter().copied().collect();
-                    for id in selection {
-                        if let Some(pos) = shell.node_positions.get_mut(&id) {
-                            pos.0 += applied.0;
-                            pos.1 += applied.1;
-                        }
-                    }
-                    shell.node_drag = Some((id, x, y));
                     cx.notify();
                 }
-                if let Some((gx, gy)) = shell.pan_grab {
-                    shell.camera.pan_by(x - gx, y - gy);
-                    shell.node_drag = None;
-                    shell.node_drag_snap = (0., 0.);
-                    shell.pan_grab = Some((x, y));
+                if let Some((gx, gy)) = shell.graph_gestures.pan_grab {
+                    shell.graph_view.camera.pan_by(x - gx, y - gy);
+                    // A pan grab takes the pointer from a card drag (a
+                    // second button pressed mid-drag): the drag commits
+                    // where its offset left it, exactly as a release would.
+                    shell.commit_node_drag();
+                    shell.graph_gestures.pan_grab = Some((x, y));
                     shell.sync_drag_demand();
                     cx.notify();
                 }
@@ -292,14 +300,14 @@ pub(super) fn background_down(
                 match event.button {
                     // Left on the background: plain click clears the selection
                     // on release; dragging past the threshold rubber-bands.
-                    MouseButton::Left if !shell.hand_tool => {
-                        shell.background_click = Some(anchor);
+                    MouseButton::Left if !shell.graph_gestures.hand_tool => {
+                        shell.graph_gestures.background_click = Some(anchor);
                         let modifiers = window.modifiers();
-                        shell.selection_drag = Some(SelectionDrag {
+                        shell.graph_gestures.selection_drag = Some(SelectionDrag {
                             anchor,
                             current: anchor,
                             additive: modifiers.control || modifiers.shift,
-                            base: shell.selected_nodes.clone(),
+                            base: shell.selection.nodes.clone(),
                             moved: false,
                             hits: Default::default(),
                         });
@@ -309,10 +317,11 @@ pub(super) fn background_down(
                     // within the drag threshold it opens the menu, beyond it
                     // the stroke was a pan.
                     _ => {
-                        shell.pan_grab = Some(anchor);
-                        shell.background_click = None;
-                        shell.selection_drag = None;
-                        shell.right_press = (event.button == MouseButton::Right).then_some(anchor);
+                        shell.graph_gestures.pan_grab = Some(anchor);
+                        shell.graph_gestures.background_click = None;
+                        shell.graph_gestures.selection_drag = None;
+                        shell.graph_gestures.right_press =
+                            (event.button == MouseButton::Right).then_some(anchor);
                     }
                 }
                 shell.sync_drag_demand();
@@ -327,7 +336,7 @@ pub(super) fn scroll_pan(this: &Entity<StudioShell>) -> WindowAppFn<(f32, f32)> 
     Box::new(
         move |(dx, dy): (f32, f32), _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
-                shell.camera.pan_by(dx, dy);
+                shell.graph_view.camera.pan_by(dx, dy);
                 cx.notify();
             });
         },
@@ -356,7 +365,7 @@ pub(super) fn camera_fit(
                 // screen, or their level windows keep being drained and
                 // their ballistics advancing for a view nobody sees
                 // (audit HC-9).
-                let mut points = shell.node_meter_points.borrow_mut();
+                let mut points = shell.metering.node_meter_points.borrow_mut();
                 points.clear();
                 points.extend(
                     nodes
@@ -374,11 +383,11 @@ pub(super) fn camera_fit(
                 );
                 drop(points);
                 let canvas_size = Some((f32::from(canvas.width), f32::from(canvas.height)));
-                let changed = shell.canvas_size != canvas_size
-                    || (!shell.camera.adjusted && shell.camera != *fitted);
-                shell.canvas_size = canvas_size;
-                if !shell.camera.adjusted {
-                    shell.camera = *fitted;
+                let changed = shell.graph_view.canvas_size != canvas_size
+                    || (!shell.graph_view.camera.adjusted && shell.graph_view.camera != *fitted);
+                shell.graph_view.canvas_size = canvas_size;
+                if !shell.graph_view.camera.adjusted {
+                    shell.graph_view.camera = *fitted;
                 }
                 if changed {
                     cx.notify();
@@ -406,16 +415,17 @@ const SNAP_THRESHOLD_SCREEN: f32 = 6.;
 /// selection's bounding box seeks the other cards' left/center/right and
 /// top/middle/bottom edges plus the horizontal axis, nearest candidate
 /// within the threshold wins per axis, and the aligned world coordinate
-/// comes back as the guide lines to paint. `positions` carry the offset
-/// previous frames baked in (`baked`): the candidates are measured on the
-/// drag's free path — stored minus baked plus this frame's raw move — so a
-/// snapped card lets go once the cursor leaves the threshold. Returns the
-/// offset to bake in going forward.
+/// comes back as the guide lines to paint. `positions` are the stored,
+/// un-dragged positions: the candidates are measured on the drag's free
+/// path — stored plus the live offset `raw` — so a snapped card lets go
+/// once the cursor leaves the threshold, and no offset ever needs baking
+/// or undoing (audit A-1: the drag's offset lives in the gesture, and the
+/// stored positions only commit it at release). Returns the snap offset to
+/// add to the free path.
 fn snap_delta(
     frame: &CanvasFrame,
     dragged: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
     positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
-    baked: (f32, f32),
     raw: (f32, f32),
 ) -> (
     (f32, f32),
@@ -441,10 +451,10 @@ fn snap_delta(
             continue;
         };
         let card = crate::ui::pages::graph::graph_canvas::NodeLayout::new(node).card;
-        min_x = min_x.min(x + raw.0 - baked.0);
-        min_y = min_y.min(y + raw.1 - baked.1);
-        max_x = max_x.max(x + raw.0 - baked.0 + card.size.width);
-        max_y = max_y.max(y + raw.1 - baked.1 + card.size.height);
+        min_x = min_x.min(x + raw.0);
+        min_y = min_y.min(y + raw.1);
+        max_x = max_x.max(x + raw.0 + card.size.width);
+        max_y = max_y.max(y + raw.1 + card.size.height);
     }
     if min_x > max_x {
         return (
@@ -525,10 +535,11 @@ pub(super) fn port_down(
         this.update(cx, |shell, cx| {
             if !shell.begin_pointer_session(window) {
                 use crate::ui::pages::graph::graph_canvas::PortDirection;
-                shell.camera.adjusted = true;
+                shell.graph_view.camera.adjusted = true;
                 for node in &nodes.nodes {
                     if let Some(node_id) = node.node_id {
                         shell
+                            .graph_view
                             .node_positions
                             .entry(node_id)
                             .or_insert((node.x, node.y));
@@ -571,7 +582,7 @@ pub(super) fn port_down(
                         }
                     })
                     .unwrap_or(port);
-                shell.connection_drag = Some(ConnectionDrag {
+                shell.graph_gestures.connection_drag = Some(ConnectionDrag {
                     port,
                     cursor,
                     detached: picked,
@@ -586,7 +597,7 @@ pub(super) fn connection_move(this: &Entity<StudioShell>) -> Rc<WindowAppCallbac
     let this = this.clone();
     Rc::new(move |cursor, _, cx| {
         this.update(cx, |shell, cx| {
-            if let Some(drag) = &mut shell.connection_drag {
+            if let Some(drag) = &mut shell.graph_gestures.connection_drag {
                 drag.cursor = cursor;
                 cx.notify();
             }
@@ -601,7 +612,7 @@ pub(super) fn port_up(
     Rc::new(move |candidate, _, cx| {
         this.update(cx, |shell, cx| {
             use crate::ui::pages::graph::graph_canvas::{CandidateStatus, PortDirection};
-            let Some(drag) = shell.connection_drag.take() else {
+            let Some(drag) = shell.graph_gestures.connection_drag.take() else {
                 return;
             };
             if let Some(picked) = drag.detached {
@@ -713,7 +724,7 @@ pub(super) fn knob_down(
                         .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
                 }
             } else {
-                shell.knob_drag = Some((node_id, control, y, current));
+                shell.graph_gestures.knob_drag = Some((node_id, control, y, current));
                 shell.sync_drag_demand();
             }
             cx.notify();
@@ -737,14 +748,55 @@ pub(super) fn chip(
             };
             // The chip selects its card like a press anywhere on it, then
             // hangs the endpoint menu off the chip.
-            shell.selected_nodes.clear();
-            shell.selected_nodes.insert(node_id);
-            shell.selected_node = Some(node_id);
-            shell.selected_route = None;
-            shell.binding_menu = Some(BindingMenu {
+            shell.selection.nodes.clear();
+            shell.selection.nodes.insert(node_id);
+            shell.selection.node = Some(node_id);
+            shell.selection.route = None;
+            shell.graph_view.binding_menu = Some(BindingMenu {
                 node: node_id,
                 anchor,
             });
+            cx.notify();
+        })
+    })
+}
+
+/// A recorder card's transport slot: dispatches the phase's affordance. The
+/// start action resolves the output directory from the preferences at click
+/// time (the service thread never sees the preference store).
+pub(super) fn record(
+    this: &Entity<StudioShell>,
+    world: &std::sync::Arc<CanvasWorld>,
+) -> Rc<WindowAppCallback<(String, RecordAction)>> {
+    let this = this.clone();
+    let nodes = world.clone();
+    Rc::new(move |(id, action), window, cx| {
+        this.update(cx, |shell, cx| {
+            if shell.begin_pointer_session(window) {
+                return;
+            }
+            let Some(node_id) = resolve_node(&nodes, &id) else {
+                return;
+            };
+            // Like the chip, a transport press selects its card; the
+            // inspector follows the selection the action will change.
+            shell.selection.nodes.clear();
+            shell.selection.nodes.insert(node_id);
+            shell.selection.node = Some(node_id);
+            shell.selection.route = None;
+            let request = match action {
+                RecordAction::Record => AppRequest::StartRecording {
+                    node: node_id,
+                    directory: shell.recording_output_directory(),
+                    format: shell.recording_format(),
+                    mp3: shell.recording_mp3(),
+                    flac: shell.recording_flac(),
+                },
+                RecordAction::Pause => AppRequest::PauseRecording { node: node_id },
+                RecordAction::Resume => AppRequest::ResumeRecording { node: node_id },
+                RecordAction::Stop => AppRequest::StopRecording { node: node_id },
+            };
+            shell.state.update(cx, |state, _| state.dispatch(request));
             cx.notify();
         })
     })
@@ -767,7 +819,7 @@ pub(super) fn badge(
             // The badge opens the fault popover on the card's fault group;
             // it selects nothing, mirroring the hover tooltip that also
             // presumes nothing.
-            shell.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
+            shell.chrome.fault_popover = Some(crate::ui::shell::fault_popover::FaultPopover {
                 node: Some(node_id),
                 anchor,
             });
@@ -831,7 +883,7 @@ pub(super) fn expand(
             // right click does, anchored at the click.
             let pos = window.mouse_position();
             shell.select_single_node(node_id);
-            shell.context_menu = Some(ContextMenu::Node {
+            shell.graph_view.context_menu = Some(ContextMenu::Node {
                 node: node_id,
                 at: (f32::from(pos.x), f32::from(pos.y)),
             });
@@ -866,7 +918,7 @@ pub(super) fn select_wire(this: &Entity<StudioShell>) -> Rc<SelectFn> {
             if shell.begin_pointer_session(window) {
                 return;
             }
-            shell.selected_route = shell
+            shell.selection.route = shell
                 .state
                 .read(cx)
                 .snapshot
@@ -876,9 +928,9 @@ pub(super) fn select_wire(this: &Entity<StudioShell>) -> Rc<SelectFn> {
                 .iter()
                 .find(|e| format!("{:?}", e.id()) == id)
                 .map(|e| (e.src_port(), e.dst_port()));
-            shell.selected_node = None;
-            shell.selected_nodes.clear();
-            if let Some(route) = shell.selected_route
+            shell.selection.node = None;
+            shell.selection.nodes.clear();
+            if let Some(route) = shell.selection.route
                 && shell.element_double_clicked(StudioShell::element_key("route", route))
             {
                 shell.open_inspector();

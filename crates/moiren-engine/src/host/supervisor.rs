@@ -196,7 +196,6 @@ impl<S: ProcessingSample> Supervisor<S> {
             if closing
                 || self.fault.is_some()
                 || self.unavailable()
-                || !self.project.has_output()
                 || self
                     .active
                     .as_ref()
@@ -236,9 +235,6 @@ impl<S: ProcessingSample> Supervisor<S> {
                 }
             }
             self.shared.signals.pump();
-            if self.idle() && !closing && !self.project.has_output() && self.active.is_none() {
-                self.activate_edits(self.desired, None);
-            }
             self.publish_snapshot();
             if closing && self.active.is_none() && self.idle() {
                 break;

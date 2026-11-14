@@ -3,7 +3,7 @@ use rust_i18n::t;
 use super::*;
 use crate::service::AudioLatencyProfile;
 use crate::ui::shell::panel::{CachedPanel, PanelHost, PublishRef};
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
 use gpui_kit::base::ScrollbarAxis;
@@ -11,6 +11,8 @@ use moiren_engine::audio_config::{
     AudioBackend, AudioSettings, ProcessingPrecision, SAMPLE_RATES, StreamSettings,
 };
 use moiren_engine::node::DeviceMode;
+
+use crate::ui::state::UiFailure;
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod cache_tests;
@@ -26,12 +28,13 @@ mod native_period;
 mod persistence;
 mod transaction;
 mod transport;
-use fields::{choices, pref_choices, rate_title, row, row_with_note, rows, select_trigger};
-pub(crate) use fields::{field, footer, stream_editor};
+use fields::{choices, field, pref_choices, rate_title, row, row_with_note, rows, select_trigger};
+pub(crate) use fields::{footer, stream_editor};
 use menu::ValueField;
 pub(crate) use menu::{ValueMenu, menu_overlay};
 pub(crate) use model::{
-    Direction, Draft, Editor, Section, SettingsEditor, StreamTarget, device_stream_mut,
+    Direction, Draft, DraftFeedback, Editor, Section, SettingsEditor, StreamTarget,
+    device_stream_mut,
 };
 
 /// The settings workspace: rebuilt only when the published snapshot
@@ -46,19 +49,21 @@ pub(crate) struct SettingsKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     section: Section,
     global: Draft,
-    pending_request: bool,
-    busy: bool,
-    device_conflict: bool,
-    measured: model::MeasuredKey,
-    expert_modes: [bool; 2],
-    inputs: Vec<(Entity<component::input::InputState>, SharedString)>,
     /// The page body scrolls inside the cached splice, whose paint bakes
     /// coordinates: the offset rides the key or a scroll freezes.
     scroll: Pixels,
     meters: crate::project::MeterDisplayPreferences,
     density: Density,
     restore_last_project: bool,
-    project_message: Option<String>,
+    pending_request: bool,
+    project_message: Option<project::ProjectMessage>,
+    /// Transport-only editors own nested input entities; their values must
+    /// be part of the panel key, or a cached splice misses live text edits.
+    busy: bool,
+    device_conflict: bool,
+    measured: model::MeasuredKey,
+    expert_modes: [bool; 2],
+    inputs: Vec<(Entity<component::input::InputState>, SharedString)>,
 }
 
 pub(crate) type SettingsPanelHost = PanelHost<SettingsPanel>;
@@ -74,10 +79,12 @@ impl CachedPanel for SettingsPanel {
             snapshot: PublishRef::new(std::sync::Arc::clone(&state.snapshot)),
             section: settings.section,
             global: settings.global.clone(),
+            meters: shell.preferences.values.meters,
+            density: shell.chrome.density,
+            restore_last_project: shell.preferences.values.restore_last_project,
             pending_request: state.pending_request,
+            project_message: shell.project_io.message.clone(),
             busy: settings.busy(),
-            // Measured admission depends on other drafts, but ordinary Audio
-            // rows do not render the device editor's values.
             device_conflict: settings.section == Section::Transport && settings.device.dirty(),
             measured: settings.measured.cache_key(),
             expert_modes: settings.expert_inputs.modes(),
@@ -92,10 +99,6 @@ impl CachedPanel for SettingsPanel {
                 .chain(settings.measured.inputs())
                 .map(|input| (input.clone(), input.read(cx).value()))
                 .collect(),
-            meters: shell.preferences.values.meters,
-            density: shell.density,
-            restore_last_project: shell.preferences.values.restore_last_project,
-            project_message: shell.project_io.message.clone(),
             scroll: shell.settings.scroll.offset().y,
         }
     }
@@ -123,11 +126,11 @@ impl CachedPanel for SettingsPanel {
 }
 
 /// The settings page's cached splice; mounted in place of the workspace
-/// while settings are open (the shell's own `.when`).
+/// while the shell's view is [`WorkspaceView::Settings`].
 /// The Settings page's shell-owned state (design 20 §4): the draft editor,
 /// the open value menu, the page's scroll container, and the cached
-/// SettingsPanel host. `settings_open` itself stays on the shell until the
-/// chrome group's WorkspaceView lands.
+/// SettingsPanel host. Which view is shown lives on the shell's
+/// presentation (`WorkspaceView`).
 pub(crate) struct SettingsPageState {
     pub(crate) editor: SettingsEditor,
     pub(crate) menu: Option<ValueMenu>,
@@ -150,7 +153,12 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
     let this = cx.entity();
     let escape = this.clone();
     let close = this.clone();
-    let mut nav = div().flex().flex_col().gap(px(2.)).px(px(8.)).pt(px(4.));
+    let mut nav = div()
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_0_5))
+        .px(px(theme::SPACE_2))
+        .pt(px(theme::SPACE_1));
     for (id, icon, title, section) in [
         (
             "settings-nav-audio",
@@ -159,16 +167,16 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
             Section::Audio,
         ),
         (
-            "settings-nav-transport",
-            ActionIcon::Sliders,
-            t!("Input buffers"),
-            Section::Transport,
-        ),
-        (
             "settings-nav-interface",
             ActionIcon::Sliders,
             t!("Interface"),
             Section::Interface,
+        ),
+        (
+            "settings-nav-transport",
+            ActionIcon::Sliders,
+            t!("Input buffers"),
+            Section::Transport,
         ),
         (
             "settings-nav-diagnostics",
@@ -188,7 +196,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .icon(icon)
                         .full_width()
                         .justify_start()
-                        .density(shell.density)
+                        .density(shell.chrome.density)
                         .variant(if selected {
                             ButtonVariant::Secondary
                         } else {
@@ -209,9 +217,9 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                             .left(px(0.))
                             .top(px(6.))
                             .bottom(px(6.))
-                            .w(px(2.))
+                            .w(px(theme::ACCENT_BAR_W))
                             .rounded(px(1.))
-                            .bg(theme::PRIMARY),
+                            .bg(theme::controls::FOCUS),
                     )
                 }),
         );
@@ -263,17 +271,17 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .h_full()
                         .flex()
                         .flex_col()
-                        .gap(px(12.))
+                        .gap(px(theme::SPACE_3))
                         .border_r_1()
                         .border_color(theme::BORDER)
                         .bg(theme::WINDOW_BG)
-                        .p(px(8.))
+                        .p(px(theme::SPACE_2))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .justify_between()
-                                .px(px(4.))
+                                .px(px(theme::SPACE_1))
                                 .child(heading(t!("Settings")))
                                 .child(
                                     IconButton::new(
@@ -293,70 +301,66 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                         .child(nav),
                 )
                 .child(
-                    div()
+                    div().flex_1().min_w_0().min_h_0().flex().flex_col().child(
+                        scroll_region(
+                            "scrollbar-settings-scroll",
+                            &shell.settings.scroll,
+                            ScrollbarAxis::Vertical,
+                            div()
+                                .id("settings-scroll")
+                                // Sized by percentage, not `flex_1`: the
+                                // scroll region's root is not a flex
+                                // container, so a flex factor is ignored
+                                // and the viewport grows to its content —
+                                // nothing scrolls and the overflow paints
+                                // past the page.
+                                .w_full()
+                                .h_full()
+                                .track_scroll(&shell.settings.scroll)
+                                .restrict_scroll_to_axis()
+                                .overflow_y_scroll()
+                                .on_scroll_wheel(notify_owner(this.clone()))
+                                .px(px(theme::SPACE_4))
+                                .py(px(theme::SPACE_6))
+                                // A fixed reading measure, centered: on wide
+                                // windows the section content holds together
+                                // as one block instead of rows drifting
+                                // apart across the workspace.
+                                .child(
+                                    div().flex().justify_center().child(
+                                        div()
+                                            .w(px(COLUMN_WIDTH))
+                                            .max_w_full()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(theme::SPACE_4))
+                                            .child(content)
+                                            // The page's actions are the last
+                                            // block of the scrolled column, not
+                                            // a bar pinned over it — scrolled
+                                            // cards used to show through the
+                                            // bar's transparent fill.
+                                            .when(
+                                                matches!(
+                                                    shell.settings.editor.section,
+                                                    Section::Audio | Section::Transport
+                                                ),
+                                                |column| {
+                                                    column.child(fields::actions(
+                                                        shell,
+                                                        Editor::Global,
+                                                        cx,
+                                                    ))
+                                                },
+                                            ),
+                                    ),
+                                )
+                                .gpui_test_observe(),
+                        )
                         .flex_1()
                         .min_w_0()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            // The bar overlay is a sibling of the scroll
-                            // container, never a child: the container
-                            // translates its children by the offset at
-                            // prepaint, so an overlay inside it would drift
-                            // away with the content.
-                            div()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .flex_1()
-                                .min_w_0()
-                                .min_h_0()
-                                .child(
-                                    div()
-                                        .id("settings-scroll")
-                                        .flex_1()
-                                        .min_h_0()
-                                        .track_scroll(&shell.settings.scroll)
-                                        .overflow_y_scroll()
-                                        .on_scroll_wheel({
-                                            let this = this.clone();
-                                            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-                                        })
-                                        .px(px(16.))
-                                        .py(px(24.))
-                                        // A fixed reading measure, centered: on wide
-                                        // windows the section content holds together
-                                        // as one block instead of rows drifting
-                                        // apart across the workspace.
-                                        .child(
-                                            div().flex().justify_center().child(
-                                                div()
-                                                    .id("settings-content")
-                                                    .w(px(COLUMN_WIDTH))
-                                                    .max_w_full()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap(px(16.))
-                                                    .child(content)
-                                                    .gpui_test_observe(),
-                                            ),
-                                        )
-                                        .gpui_test_observe(),
-                                )
-                                .child(overlay_scrollbar(
-                                    &shell.settings.scroll,
-                                    "scrollbar-settings-scroll",
-                                    ScrollbarAxis::Vertical,
-                                )),
-                        )
-                        .when(
-                            matches!(
-                                shell.settings.editor.section,
-                                Section::Audio | Section::Transport
-                            ),
-                            |column| column.child(footer(shell, Editor::Global, cx)),
-                        ),
+                        .min_h_0(),
+                    ),
                 )
                 .into_any_element(),
         )
@@ -392,9 +396,10 @@ fn card_shell() -> Div {
 /// via [`rows`]; the card bounds their measure on wide windows.
 fn group(title: impl Into<SharedString>, body: impl IntoElement) -> Div {
     card_shell()
-        .px(px(16.))
-        .pt(px(12.))
-        .pb(px(4.))
+        .px(px(theme::SPACE_4))
+        .pt(px(theme::SPACE_3))
+        .pb(px(theme::SPACE_1))
+        // 10 px: the card's title-to-rows gap, off the spacing grid.
         .gap(px(10.))
         .child(group_title(title))
         .child(body)
@@ -407,7 +412,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(px(theme::SPACE_4))
         .child(heading(t!("Audio")))
         .child(group(
             t!("Processing"),
@@ -470,17 +475,17 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             ]),
         ))
         .child(
-            card_shell().p(px(16.)).child(
+            card_shell().p(px(theme::SPACE_4)).child(
                 div()
                     .flex()
-                    .gap(px(24.))
+                    .gap(px(theme::SPACE_6))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
+                            .gap(px(theme::SPACE_3))
                             .child(group_title(t!("Input defaults")))
                             .child(stream_editor(
                                 shell,
@@ -490,14 +495,14 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                                 cx,
                             )),
                     )
-                    .child(div().w(px(1.)).bg(theme::HAIRLINE))
+                    .child(div().w(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
+                            .gap(px(theme::SPACE_3))
                             .child(group_title(t!("Output defaults")))
                             .child(stream_editor(
                                 shell,
@@ -514,7 +519,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(theme::SPACE_2))
                 .child(choices(
                     shell,
                     Editor::Global,
@@ -530,13 +535,13 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     cx,
                 ))
                 .child(label(t!(shell.settings.editor.global.profile.description())))
-                .child(div().h(px(1.)).bg(theme::HAIRLINE))
+                .child(div().h(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))
                 .child(row(
                     &t!("Device overrides"),
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(px(theme::SPACE_3))
                         .child(label(t!(
                             "%{input_count} input / %{output_count} output",
                             input_count = config.input_overrides.len(),
@@ -560,7 +565,7 @@ fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(px(theme::SPACE_4))
         .child(heading(t!("Interface")))
         .child(group(
             t!("General"),
@@ -582,7 +587,7 @@ fn interface(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     pref_choices(
                         shell,
                         "density",
-                        shell.density,
+                        shell.chrome.density,
                         [
                             (Density::Comfortable, t!("Comfortable").into()),
                             (Density::Compact, t!("Compact").into()),
@@ -647,11 +652,12 @@ fn peak_hold_title(hold: crate::project::PeakHold) -> String {
 fn process_input_summary(
     input: Option<crate::service::ExpertInputBuffer>,
     measured: Option<&crate::service::MeasuredProcessSummary>,
+    snapshot: &crate::service::AppSnapshot,
 ) -> String {
     match measured {
         Some(measured) => t!(
             "Measured source node %{node}; PID %{pid} (created %{created}); target %{target} / capacity %{capacity} / jitter %{jitter} frames at 48 kHz; origin session %{session} / owner %{owner} / revision %{revision}; selection %{selection}",
-            node = format!("{:?}", measured.request.node),
+            node = node_display_name(snapshot, measured.request.node),
             pid = measured.process_pid,
             created = measured.process_creation_time_100ns,
             target = measured.request.target_frames,
@@ -665,6 +671,54 @@ fn process_input_summary(
         .into(),
         None => transport::summary(input),
     }
+}
+
+fn node_display_name(
+    snapshot: &crate::service::AppSnapshot,
+    node: moiren_core::graph::NodeId,
+) -> String {
+    snapshot
+        .graph
+        .node(node)
+        .map(crate::ui::presentation::display_label)
+        .unwrap_or_else(|| t!("Unknown node").into())
+}
+
+/// The diagnostics card's native timing rows: the processing parameters
+/// once, then one group per live stream titled by device · node · role.
+fn native_timing_card_rows(snapshot: &crate::service::AppSnapshot) -> Vec<Div> {
+    let views = crate::ui::presentation::native_timing_views(snapshot);
+    let mut items = Vec::new();
+    if let Some((key, value)) = views.processing {
+        items.push(detail(&key, value));
+    }
+    for view in &views.streams {
+        items.push(label(format!(
+            "{} · {} · {}",
+            view.device_title,
+            view.node_label,
+            view.role()
+        )));
+        items.extend(
+            view.rows
+                .iter()
+                .map(|(key, value)| detail(key, value.clone())),
+        );
+    }
+    if items.is_empty() {
+        items.push(detail(&t!("Actual native timing"), "—"));
+    }
+    items
+}
+
+fn native_detail(id: impl Into<ElementId>, key: &str, value: String) -> Stateful<Div> {
+    let accessible_text = format!("{key}: {value}");
+    detail(key, value)
+        .id(id)
+        // A label alone does not emit a native accessibility node in GPUI.
+        .role(Role::Label)
+        .aria_label(accessible_text.clone())
+        .aria_value(accessible_text)
 }
 
 fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
@@ -699,6 +753,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 transport::process_summary(
                     snapshot.transport_latency,
                     snapshot.measured_process.as_ref(),
+                    snapshot,
                 ),
             )
             .gpui_test_observe(),
@@ -714,9 +769,11 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let columns = match (running, snapshot.active_audio_settings.as_ref()) {
         (true, Some(active)) => div()
             .flex()
+            // 28 px: the wide column gap of the Requested | Active
+            // comparison around its hairline divider, off the spacing grid.
             .gap(px(28.))
             .child(requested_column)
-            .child(div().w(px(1.)).bg(theme::HAIRLINE))
+            .child(div().w(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))
             .child(
                 div()
                     .flex_1()
@@ -746,6 +803,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                                     transport::process_summary(
                                         active,
                                         snapshot.active_measured_process.as_ref(),
+                                        snapshot,
                                     ),
                                 )
                                 .gpui_test_observe(),
@@ -765,33 +823,35 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(px(theme::SPACE_4))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(px(theme::SPACE_3))
                 .child(heading(t!("Diagnostics")))
                 .child(badge(
                     crate::ui::presentation::phase_text(snapshot),
                     if running {
-                        theme::SUCCESS
+                        theme::SIGNAL_DEVICE
                     } else {
                         theme::TEXT_MUTED
                     },
                 )),
         )
-        .child(card_shell().p(px(16.)).child(columns))
-        .child(label(t!(
-            "Unsaved edits stay in the Audio draft until Save or Restart Audio."
+        .child(card_shell().p(px(theme::SPACE_4)).child(columns))
+        // The timing rows carry their own names, so the card stays untitled
+        // rather than repeating one.
+        .child(card_shell().px(px(theme::SPACE_4)).pt(px(theme::SPACE_2)).pb(px(theme::SPACE_2)).child(rows(
+            native_timing_card_rows(snapshot),
         )))
         .child(label(t!(
             "Input targets are estimates. Physical end-to-end latency is unqualified."
         )))
         .child(
             card_shell()
-                .px(px(16.))
-                .py(px(8.))
+                .px(px(theme::SPACE_4))
+                .py(px(theme::SPACE_3))
                 .child(heading(t!("Actual native timing")))
                 .children(
                     crate::ui::presentation::process_trace_rows(snapshot)
@@ -818,7 +878,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(theme::SPACE_2))
                 .child(rows([detail(
                     &t!("Catalog"),
                     t!(
@@ -859,8 +919,8 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                             .gpui_test_observe(),
                     )
                 })
-                .when_some(shell.project_io.message.clone(), |view, text| {
-                    view.child(label(text))
+                .when_some(shell.project_io.message.clone(), |view, message| {
+                    view.child(label(project::message_text(&message)))
                 }),
         ))
         .child(
@@ -875,10 +935,10 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
 fn export_diagnostics(snapshot: &crate::service::AppSnapshot) -> AnyElement {
     let mut exports = card_shell()
         .id("provider-export-diagnostics")
-        .px(px(16.))
-        .py(px(12.))
+        .px(px(theme::SPACE_4))
+        .py(px(theme::SPACE_3))
         .flex_none()
-        .gap(px(8.))
+        .gap(px(theme::SPACE_2))
         .child(heading(t!("Provider export diagnostics")));
     if snapshot.exports.is_empty() {
         exports = exports.child(label(t!("No native export observations")));
@@ -890,7 +950,7 @@ fn export_diagnostics(snapshot: &crate::service::AppSnapshot) -> AnyElement {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(4.))
+            .gap(px(theme::SPACE_1))
             .children(
                 crate::ui::presentation::export_diagnostic_rows(status)
                     .into_iter()
@@ -904,18 +964,7 @@ fn export_diagnostics(snapshot: &crate::service::AppSnapshot) -> AnyElement {
     exports.gpui_test_observe().into_any_element()
 }
 
-fn native_detail(id: impl Into<ElementId>, key: &str, value: String) -> Stateful<Div> {
-    let accessible_text = format!("{key}: {value}");
-    detail(key, value)
-        .id(id)
-        // A label alone does not emit a native accessibility node in GPUI.
-        .role(Role::Label)
-        .aria_label(accessible_text.clone())
-        // AccessKit's text role derives its UIA Name from the text value.
-        .aria_value(accessible_text)
-}
-
-pub(super) fn processing_summary(audio: &AudioSettings) -> String {
+fn processing_summary(audio: &AudioSettings) -> String {
     format!(
         "{} / {} / {} frames",
         rate_title(audio.processing.sample_rate),

@@ -18,7 +18,7 @@ pub use camera::Camera;
 pub use curves::CurveSpec;
 pub use frame::{CanvasFrame, HitTarget, PortDirection, PortTarget};
 pub use knob::{CardKnob, KnobControl};
-pub use layout::{ChipLayout, KnobLayout, MeterLayout, NodeLayout, TextLayout};
+pub use layout::{ChipLayout, KnobLayout, MeterLayout, NodeLayout, RecordingLayout, TextLayout};
 pub use overlays::{OverlayRects, carve};
 pub use wire::{WireCurve, WireGeometry};
 
@@ -104,6 +104,57 @@ pub struct CanvasNode {
     /// is projected here, the curve itself reaches the screen through the
     /// hot layer at paint time and never enters the projection.
     pub spectrum: bool,
+    /// The recorder card's session strip: discrete state and the output
+    /// file name, painted with the cached card. `None` on non-recorder
+    /// kinds; the ticking duration rides the hot layer instead.
+    pub recording: Option<CardRecording>,
+}
+
+/// A recorder card's session state for the canvas: the service phase, with
+/// `None` meaning "no session yet", and the output file name (empty when
+/// idle). Only discrete values live here — graph-page cache keys must stay
+/// free of the per-second duration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardRecording {
+    pub phase: Option<crate::service::RecordingPhase>,
+    pub file_name: String,
+}
+
+/// One transport affordance on a recorder card. Which exist in a phase is
+/// decided by [`RecordAction::available`], the single list both the paint
+/// and the hit test consult so the two can never drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordAction {
+    /// Begin a new file (idle, or after a terminal session).
+    Record,
+    /// Suspend the running session; skipped spans stay out of the file.
+    Pause,
+    /// Continue a paused session into the same file.
+    Resume,
+    /// Finalize the file and end the session.
+    Stop,
+}
+
+impl RecordAction {
+    /// Whether this affordance is offered in `phase`; `None` is the idle
+    /// recorder. The pause slot flips to `Resume` while paused.
+    pub fn available(self, phase: Option<crate::service::RecordingPhase>) -> Option<Self> {
+        use crate::service::RecordingPhase;
+        match (self, phase) {
+            (Self::Record, None | Some(RecordingPhase::Finished | RecordingPhase::Failed)) => {
+                Some(Self::Record)
+            }
+            (Self::Pause, Some(RecordingPhase::Recording)) => Some(Self::Pause),
+            (Self::Pause, Some(RecordingPhase::Paused)) => Some(Self::Resume),
+            (Self::Stop, Some(RecordingPhase::Recording | RecordingPhase::Paused)) => {
+                Some(Self::Stop)
+            }
+            // A rebinding session has no live reader to pause, but the file
+            // can still be finalized.
+            (Self::Stop, Some(RecordingPhase::Rebinding)) => Some(Self::Stop),
+            _ => None,
+        }
+    }
 }
 
 /// A card's IO binding chip: what the node is wired to outside the graph
@@ -150,7 +201,7 @@ impl CanvasNode {
             + theme::card::PORT_BOTTOM
     }
     pub fn tint(&self) -> Hsla {
-        self.tint.unwrap_or(theme::PRIMARY)
+        self.tint.unwrap_or(theme::controls::FOCUS)
     }
 }
 
@@ -168,7 +219,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         input_ports: Vec::new(),
         output_port: None,
         has_output: false,
-        tint: Some(theme::PRIMARY),
+        tint: Some(theme::controls::FOCUS),
         faulted: false,
         preparing: false,
         faults: Vec::new(),
@@ -181,6 +232,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         rack_stages: Vec::new(),
         curve: None,
         spectrum: false,
+        recording: None,
     }
 }
 
@@ -198,14 +250,15 @@ pub struct CanvasWire {
     pub tint: Option<Hsla>,
 }
 
-/// The whole world payload the canvas renders.
+/// The whole world payload the canvas renders. Gesture bookkeeping (snap
+/// guides, the dragged selection's live offset) stays out of here on
+/// purpose: the world is cached on the shell and reused across rebuilds
+/// that only the camera or the pointer moved, so anything per-frame must
+/// reach the paint closures separately (audit A-1).
 pub struct CanvasWorld {
     pub nodes: Vec<CanvasNode>,
     pub wires: Vec<CanvasWire>,
     pub graph_bounds: Bounds<f32>,
-    /// Snap alignment guides while a card drag is aligned, in world space:
-    /// the vertical/horizontal lines the canvas paints over the grid.
-    pub guides: Option<DragGuides>,
 }
 
 /// Snap guide lines for an in-flight card drag (item F): `x` is a vertical
@@ -321,6 +374,17 @@ impl CanvasWorld {
         }
         let preparing: std::collections::BTreeSet<moiren_core::graph::NodeId> =
             graph.preparing_nodes.iter().copied().collect();
+        // Recording card state is discrete by construction (phase and file
+        // name only); it rides the cached card so the strip repaints exactly
+        // when a session phase changes, never per second.
+        let mut recording: std::collections::BTreeMap<
+            moiren_core::graph::NodeId,
+            crate::service::RecordingCard,
+        > = graph
+            .recording
+            .iter()
+            .map(|card| (card.node, card.clone()))
+            .collect();
         let order = graph.graph.topological_order().unwrap_or_default();
         let mut depth = std::collections::HashMap::new();
         let mut rows = std::collections::HashMap::new();
@@ -346,36 +410,15 @@ impl CanvasWorld {
                 .unwrap_or((32. + level as f32 * 330., 80. + *row as f32 * 170.));
             *row += 1;
             let channels = if logical.channels() == 2 {
-                "L/R".into()
+                t!("L/R").into_owned()
             } else {
-                format!("{} ch", logical.channels())
+                t!("%{channels} ch", channels = logical.channels()).into_owned()
             };
             let detail = detail_string(logical.kind(), state, &channels);
-            let (icon, tint) = match logical.kind() {
-                NodeKind::Source => (
-                    match state.source {
-                        Some(crate::service::InputSelection::Physical { .. }) | None => "mic",
-                        Some(crate::service::InputSelection::Process { .. }) => "app",
-                        Some(crate::service::InputSelection::Tone { .. }) => "wave",
-                    },
-                    theme::NODE_SOURCE,
-                ),
-                NodeKind::Sink => ("speaker", theme::NODE_SINK),
-                NodeKind::Bus => ("git-merge", theme::NODE_UTILITY),
-                NodeKind::Recorder => ("radio", theme::NODE_ANALYSIS),
-                NodeKind::Meter => ("activity", theme::NODE_ANALYSIS),
-                NodeKind::SpectrumAnalyzer => ("chart-histogram", theme::NODE_ANALYSIS),
-                NodeKind::Delay => ("clock", theme::NODE_DSP),
-                NodeKind::Gain => ("volume", theme::NODE_DSP),
-                NodeKind::Pan => ("arrows-horizontal", theme::NODE_DSP),
-                NodeKind::Eq => ("wave-square", theme::NODE_DSP),
-                NodeKind::Compressor => ("arrows-minimize", theme::NODE_DSP),
-                NodeKind::Gate => ("door", theme::NODE_DSP),
-                NodeKind::Limiter => ("wall", theme::NODE_DSP),
-                NodeKind::Rack => ("list-details", theme::NODE_UTILITY),
-                NodeKind::ChannelMapper => ("route", theme::NODE_UTILITY),
-                NodeKind::Plugin => ("sliders", theme::NODE_DSP),
-            };
+            let (icon, tint) = (
+                super::node_catalog::kind_icon(logical.kind(), state.source.as_ref()),
+                super::node_catalog::kind_tint(logical.kind()),
+            );
             let mut card = node(&key, &crate::ui::presentation::display_label(state), detail)
                 .at(position.0, position.1)
                 .icon(icon)
@@ -425,6 +468,14 @@ impl CanvasWorld {
             }
             if !card.knobs.is_empty() {
                 card.body_height = theme::card::KNOB_BODY_H;
+            }
+            if logical.kind() == NodeKind::Recorder {
+                let state = recording.remove(&id);
+                card.recording = Some(CardRecording {
+                    phase: state.as_ref().map(|state| state.phase),
+                    file_name: state.map(|state| state.file_name).unwrap_or_default(),
+                });
+                card.body_height = card.body_height.max(theme::card::RECORD_BODY_H);
             }
             // IO binding chips: sources and sinks name what they are wired
             // to; tone sources show their frequency knob instead.
@@ -648,7 +699,6 @@ impl CanvasWorld {
                 origin: graph_bounds.origin - point(8., 8.),
                 size: graph_bounds.size + size(16., 16.),
             },
-            guides: None,
         }
     }
 

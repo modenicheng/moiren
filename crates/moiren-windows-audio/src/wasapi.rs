@@ -22,7 +22,7 @@ use crate::negotiation::{
     initialize_legacy_shared, initialize_legacy_shared_with_duration, parse_descriptor,
     shared_engine_periods, shared_initialize_retryable,
 };
-use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
+use crate::win32_raii::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
     audio_config::{BUFFER_SIZES, SampleFormat},
     host::BackendError,
@@ -133,47 +133,64 @@ fn api<T>(stage: &'static str, result: windows::core::Result<T>) -> Result<T, Ba
     })
 }
 
+/// Resolves a selector to a native endpoint ID. `Ok(None)` means the
+/// endpoint is absent — the enumerator cannot find it or it is not active —
+/// which prepares as a silent null stream instead of failing the session;
+/// configuration errors stay `Err`. Open-time failures (device in use,
+/// unsupported formats) happen later, at stream open, and stay hard.
 pub(super) fn resolve_endpoint(
     selector: &EndpointSelector,
     input: bool,
-) -> Result<String, BackendError> {
+) -> Result<Option<String>, BackendError> {
     selector.validate().map_err(unsupported)?;
     let _apartment = api("CoInitializeEx(resolve)", Apartment::new())?;
     let enumerator: IMMDeviceEnumerator = api("MMDeviceEnumerator", unsafe {
         CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
     })?;
     let flow = if input { eCapture } else { eRender };
-    let device = api(
-        "resolve endpoint",
-        match selector {
-            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
-                if endpoint_id.contains('\0') {
-                    return Err(unsupported("endpoint ID contains NUL"));
-                }
-                unsafe { enumerator.GetDevice(&HSTRING::from(endpoint_id)) }
+    let device = match selector {
+        EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
+            if endpoint_id.contains('\0') {
+                return Err(unsupported("endpoint ID contains NUL"));
             }
-            EndpointSelector::FollowDefault(role) => unsafe {
-                enumerator.GetDefaultAudioEndpoint(
-                    flow,
-                    match role {
-                        DefaultDeviceRole::Console => eConsole,
-                        DefaultDeviceRole::Multimedia => eMultimedia,
-                        DefaultDeviceRole::Communications => eCommunications,
-                    },
-                )
-            },
+            unsafe { enumerator.GetDevice(&HSTRING::from(endpoint_id)) }
+        }
+        EndpointSelector::FollowDefault(role) => unsafe {
+            enumerator.GetDefaultAudioEndpoint(
+                flow,
+                match role {
+                    DefaultDeviceRole::Console => eConsole,
+                    DefaultDeviceRole::Multimedia => eMultimedia,
+                    DefaultDeviceRole::Communications => eCommunications,
+                },
+            )
         },
-    )?;
+    };
+    let device = match device {
+        Ok(device) => device,
+        Err(error) => {
+            let failure = StageError::new("resolve endpoint", error);
+            log::debug!(
+                target: "moiren::audio::wasapi",
+                "endpoint resolve reports absence: {} (HRESULT 0x{:08X})",
+                failure.stage,
+                failure.hresult as u32
+            );
+            return Ok(None);
+        }
+    };
     let endpoint: IMMEndpoint = api("IMMEndpoint", device.cast())?;
     if api("GetState", unsafe { device.GetState() })? != DEVICE_STATE_ACTIVE
         || api("GetDataFlow", unsafe { endpoint.GetDataFlow() })? != flow
     {
-        return Err(BackendError::ResourceUnavailable(
-            "endpoint is inactive or has the wrong direction".into(),
-        ));
+        log::debug!(
+            target: "moiren::audio::wasapi",
+            "endpoint is present but inactive or has the wrong direction; treating as absent"
+        );
+        return Ok(None);
     }
     let id = api("GetId", unsafe { device.GetId() })?;
-    api("endpoint ID", crate::owner::take_string(id))
+    api("endpoint ID", crate::win32_raii::take_string(id)).map(Some)
 }
 
 pub struct WasapiStream {

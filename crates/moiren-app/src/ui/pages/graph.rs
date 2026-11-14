@@ -1,8 +1,11 @@
 use rust_i18n::t;
 
+use std::rc::Rc;
+
 use super::*;
 
 mod arrange;
+mod binding_choices;
 mod binding_menu;
 mod compressor;
 mod context_menu;
@@ -22,6 +25,48 @@ pub(crate) mod page;
 pub(crate) use library::PendingNodeSpawn;
 pub(crate) use library::{library, library_rail};
 pub(crate) use node_inspector::inspector;
+pub(crate) use node_inspector::{
+    OBSERVATION_SAMPLE_CADENCE, ObservationSnapshot, observation_snapshot,
+};
+
+/// The graph canvas's in-flight pointer gestures (design 20 §4): node
+/// drags (with their live offset and alignment guides), the rubber-band
+/// selection, connection drags, knob drags, background pan/click state,
+/// the right-press anchor, and the hand-tool toggle.
+#[derive(Default)]
+pub(crate) struct GraphInteractionState {
+    /// The card drag in flight: the pressed node and the window-space press
+    /// anchor, fixed for the gesture's whole duration.
+    pub(crate) node_drag: Option<(moiren_core::graph::NodeId, f32, f32)>,
+    /// The dragged selection's live world-space offset. Positions only
+    /// commit here at release — during the drag the offset reaches the
+    /// screen through the hot layer alone, so no pointer report has to
+    /// rebuild the page (audit A-1).
+    pub(crate) node_drag_offset: (f32, f32),
+    pub(crate) selection_drag: Option<SelectionDrag>,
+    pub(crate) connection_drag: Option<ConnectionDrag>,
+    pub(crate) knob_drag: Option<(
+        moiren_core::graph::NodeId,
+        crate::ui::pages::graph::graph_canvas::KnobControl,
+        f32,
+        f64,
+    )>,
+    pub(crate) pan_grab: Option<(f32, f32)>,
+    background_click: Option<(f32, f32)>,
+    right_press: Option<(f32, f32)>,
+    pub(crate) drag_guides: Option<crate::ui::pages::graph::graph_canvas::DragGuides>,
+    hand_tool: bool,
+}
+
+/// The workspace selection (design 20 §4): the multi-selection set, its
+/// primary (last-clicked) member that drives the inspector, and the route
+/// pick the matrix/inspectors target.
+#[derive(Default)]
+pub(crate) struct Selection {
+    pub(crate) node: Option<moiren_core::graph::NodeId>,
+    pub(crate) nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    pub(crate) route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
+}
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
@@ -30,7 +75,7 @@ mod tests;
 /// stays in the service until release commits, while the canvas shows the
 /// head as free and the drag pulls from the edge's source output.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DetachedEdge {
+struct DetachedEdge {
     edge: moiren_core::graph::EdgeId,
     destination: moiren_core::graph::PortId,
 }
@@ -74,7 +119,7 @@ impl StudioShell {
     /// once per frame while a box select is in flight. Returns whether the
     /// selection changed (the caller notifies once per change, not per
     /// frame).
-    pub(crate) fn apply_box_select(
+    fn apply_box_select(
         &mut self,
         rect: Bounds<f32>,
         nodes: &[crate::ui::pages::graph::graph_canvas::CanvasNode],
@@ -90,7 +135,7 @@ impl StudioShell {
             })
             .filter_map(|node| node.node_id)
             .collect();
-        let Some(drag) = self.selection_drag.as_mut() else {
+        let Some(drag) = self.graph_gestures.selection_drag.as_mut() else {
             return false;
         };
         if !drag.moved {
@@ -102,38 +147,60 @@ impl StudioShell {
         } else {
             drag.hits.clone()
         };
-        if self.selected_nodes == selection {
+        if self.selection.nodes == selection {
             return false;
         }
-        self.selected_nodes = selection;
-        if self.selected_nodes.len() == 1 {
-            self.selected_node = self.selected_nodes.iter().next().copied();
+        self.selection.nodes = selection;
+        if self.selection.nodes.len() == 1 {
+            self.selection.node = self.selection.nodes.iter().next().copied();
         } else if self
-            .selected_node
-            .is_none_or(|id| !self.selected_nodes.contains(&id))
+            .selection
+            .node
+            .is_none_or(|id| !self.selection.nodes.contains(&id))
         {
-            self.selected_node = None;
+            self.selection.node = None;
         }
-        if !self.selected_nodes.is_empty() {
-            self.selected_route = None;
+        if !self.selection.nodes.is_empty() {
+            self.selection.route = None;
         }
         true
+    }
+
+    /// Commits the in-flight card drag: its live offset lands in the stored
+    /// positions exactly once, at the gesture's end (audit A-1 — during the
+    /// drag the offset painted through the hot layer and the key stayed
+    /// put). Every path that ends a drag goes through here, with or without
+    /// a pointer event: release, Escape, page switch, a pan grab taking
+    /// over. Returns whether a drag was actually ended, so the caller knows
+    /// to rebuild (the cached canvas un-hides the dragged entities).
+    pub(crate) fn commit_node_drag(&mut self) -> bool {
+        let active = self.graph_gestures.node_drag.take().is_some();
+        self.graph_gestures.drag_guides = None;
+        let offset = std::mem::take(&mut self.graph_gestures.node_drag_offset);
+        if active && offset != (0., 0.) {
+            for id in self.selection.nodes.iter().copied().collect::<Vec<_>>() {
+                if let Some(position) = self.graph_view.node_positions.get_mut(&id) {
+                    position.0 += offset.0;
+                    position.1 += offset.1;
+                }
+            }
+        }
+        active
     }
 
     /// Shared pointer-session preamble for canvas hit targets: cancel any
     /// in-flight drag or click first; under the hand tool the pointer instead
     /// becomes a pan grab. Returns true when the hand tool consumed the event.
-    pub(crate) fn begin_pointer_session(&mut self, window: &mut Window) -> bool {
-        self.node_drag = None;
-        self.node_drag_snap = (0., 0.);
-        self.pan_grab = None;
-        self.background_click = None;
-        self.selection_drag = None;
-        self.knob_drag = None;
+    fn begin_pointer_session(&mut self, window: &mut Window) -> bool {
+        self.commit_node_drag();
+        self.graph_gestures.pan_grab = None;
+        self.graph_gestures.background_click = None;
+        self.graph_gestures.selection_drag = None;
+        self.graph_gestures.knob_drag = None;
         self.sync_drag_demand();
-        if self.hand_tool {
+        if self.graph_gestures.hand_tool {
             let position = window.mouse_position();
-            self.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
+            self.graph_gestures.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
             self.sync_drag_demand();
             true
         } else {
@@ -148,24 +215,26 @@ impl StudioShell {
     /// stale rubber band and pin the DRAG frame demand after the user has
     /// moved on. Same effect as the canvas's Escape handler.
     pub(crate) fn cancel_active_gesture(&mut self, cx: &mut Context<Self>) {
-        let cancelled = self.drag_active() || self.background_click.is_some();
-        self.connection_drag = None;
-        self.node_drag = None;
-        self.node_drag_snap = (0., 0.);
-        self.drag_guides = None;
-        self.pan_grab = None;
-        self.background_click = None;
-        self.selection_drag = None;
-        self.knob_drag = None;
+        // A drag ended without its pointer event still commits: the offset
+        // rode the hot layer, so the cards keep where the drag put them,
+        // exactly as the per-frame writes used to (audit A-1).
+        let committed = self.commit_node_drag();
+        let cancelled =
+            self.drag_active() || committed || self.graph_gestures.background_click.is_some();
+        self.graph_gestures.connection_drag = None;
+        self.graph_gestures.pan_grab = None;
+        self.graph_gestures.background_click = None;
+        self.graph_gestures.selection_drag = None;
+        self.graph_gestures.knob_drag = None;
         // Keyboard focus stays on the canvas while the page's popovers are
         // open, so Escape lands here: it dismisses them too. The session
         // popover and the context menu ride along — they can be open on
         // any page, and on the graph page this is the Escape path that
         // reaches them.
-        let dismissed = self.binding_menu.take().is_some()
-            | std::mem::take(&mut self.context_menu).is_some()
-            | std::mem::take(&mut self.right_press).is_some()
-            | std::mem::take(&mut self.project_menu);
+        let dismissed = self.graph_view.binding_menu.take().is_some()
+            | std::mem::take(&mut self.graph_view.context_menu).is_some()
+            | std::mem::take(&mut self.graph_gestures.right_press).is_some()
+            | std::mem::take(&mut self.chrome.project_menu);
         if cancelled {
             self.sync_drag_demand();
         }
@@ -175,9 +244,9 @@ impl StudioShell {
     }
 
     pub(crate) fn clear_canvas_selection(&mut self) {
-        self.selected_nodes.clear();
-        self.selected_node = None;
-        self.selected_route = None;
+        self.selection.nodes.clear();
+        self.selection.node = None;
+        self.selection.route = None;
     }
 
     /// The "arrange" action: re-lays the whole graph into DAG layers, writes
@@ -185,12 +254,12 @@ impl StudioShell {
     /// and fits the camera to the result. Fit mode re-fits on its own; an
     /// adjusted camera is fitted once here so the arranged graph lands in
     /// view.
-    pub(crate) fn arrange_graph(&mut self, cx: &mut Context<Self>) {
+    fn arrange_graph(&mut self, cx: &mut Context<Self>) {
         let world = {
             let state = self.state.read(cx);
             crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
                 &state.snapshot,
-                &self.node_positions,
+                &self.graph_view.node_positions,
             )
         };
         let sizes: arrange::CardSizes = world
@@ -206,26 +275,68 @@ impl StudioShell {
         let arranged = arrange::arrange(&snapshot.graph.graph, &sizes);
         let bbox = arrange::bounds(&arranged, &sizes);
         for node in arranged {
-            self.node_positions.insert(node.node_id, node.position);
+            self.graph_view
+                .node_positions
+                .insert(node.node_id, node.position);
         }
-        if let Some((width, height)) = self.canvas_size {
-            self.camera.fit(size(px(width), px(height)), bbox);
+        if let Some((width, height)) = self.graph_view.canvas_size {
+            self.graph_view
+                .camera
+                .fit(size(px(width), px(height)), bbox);
         }
         cx.notify();
     }
 
     /// Single selection over a node, clearing routes and the rest of the
     /// band — the context menu's identity actions act on this node alone.
-    pub(crate) fn select_single_node(&mut self, node: moiren_core::graph::NodeId) {
-        self.selected_nodes.clear();
-        self.selected_nodes.insert(node);
-        self.selected_node = Some(node);
-        self.selected_route = None;
+    fn select_single_node(&mut self, node: moiren_core::graph::NodeId) {
+        self.selection.nodes.clear();
+        self.selection.nodes.insert(node);
+        self.selection.node = Some(node);
+        self.selection.route = None;
+    }
+
+    /// Jump navigation for "locate in graph" affordances (design 23 §3.6):
+    /// switch to the Graph page, single-select the node, and open the
+    /// inspector. The zoom is preserved; a node outside the viewport pans to
+    /// the viewport's center, and an unknown canvas size skips the pan — the
+    /// graph's first-frame fit covers it. A node that no longer exists in
+    /// the candidate does nothing. Navigation only: it writes no graph
+    /// state.
+    pub(crate) fn reveal_node(&mut self, node: moiren_core::graph::NodeId, cx: &mut Context<Self>) {
+        let anchor = {
+            let state = self.state.read(cx);
+            if state.snapshot.graph.node(node).is_none() {
+                return;
+            }
+            crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
+                &state.snapshot,
+                &self.graph_view.node_positions,
+            )
+            .nodes
+            .into_iter()
+            .find(|card| card.node_id == Some(node))
+            .map(|card| (card.x, card.y))
+        };
+        self.set_page(Page::Graph, cx);
+        self.select_single_node(node);
+        self.open_inspector();
+        if let (Some((x, y)), Some((viewport_w, viewport_h))) =
+            (anchor, self.graph_view.canvas_size)
+        {
+            let (canvas_x, canvas_y) = self.graph_view.camera.world_to_canvas((x, y));
+            if canvas_x < 0. || canvas_y < 0. || canvas_x > viewport_w || canvas_y > viewport_h {
+                self.graph_view
+                    .camera
+                    .pan_by(viewport_w / 2. - canvas_x, viewport_h / 2. - canvas_y);
+            }
+        }
+        cx.notify();
     }
 
     /// Enters the inspector's inline rename for `node`, seeded with the
     /// label it shows today and focused so typing replaces it immediately.
-    pub(crate) fn begin_node_rename(
+    fn begin_node_rename(
         &mut self,
         node: moiren_core::graph::NodeId,
         window: &mut Window,
@@ -239,24 +350,25 @@ impl StudioShell {
                 .node(node)
                 .map(crate::ui::presentation::display_label)
         };
-        self.node_name_editing = Some(node);
+        self.inspector.node_name_editing = Some(node);
         if let Some(initial) = initial {
-            self.node_name
+            self.inspector
+                .node_name
                 .update(cx, |input, cx| input.set_value(initial, window, cx));
         }
-        let input = self.node_name.clone();
+        let input = self.inspector.node_name.clone();
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
 
-    pub(crate) fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
+    fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
         // The primary selection may have been set from outside the canvas
         // (mixer strip, library locator); it always deletes with the band.
-        if let Some(id) = self.selected_node {
-            self.selected_nodes.insert(id);
+        if let Some(id) = self.selection.node {
+            self.selection.nodes.insert(id);
         }
         let mut removed = false;
-        for id in self.selected_nodes.iter().copied().collect::<Vec<_>>() {
+        for id in self.selection.nodes.iter().copied().collect::<Vec<_>>() {
             let removed_here = self.state.update(cx, |state, _| {
                 state
                     .try_dispatch(AppRequest::EditGraph(
@@ -269,7 +381,7 @@ impl StudioShell {
         if !removed {
             let edge_id = {
                 let graph = &self.state.read(cx).snapshot.graph.graph;
-                self.selected_route.and_then(|ports| {
+                self.selection.route.and_then(|ports| {
                     graph
                         .edges()
                         .iter()
@@ -286,16 +398,15 @@ impl StudioShell {
                         .is_ok()
                 })
             {
-                self.selected_route = None;
+                self.selection.route = None;
             }
         } else {
-            self.selected_nodes.clear();
-            self.selected_node = None;
-            self.selected_route = None;
+            self.selection.nodes.clear();
+            self.selection.node = None;
+            self.selection.route = None;
         }
-        self.connection_drag = None;
-        self.node_drag = None;
-        self.node_drag_snap = (0., 0.);
+        self.graph_gestures.connection_drag = None;
+        self.commit_node_drag();
         cx.notify();
     }
 }
@@ -304,76 +415,164 @@ impl StudioShell {
 /// shell renders this through [`page::page`], which caches it behind
 /// [`page::ControlsKey`] and adds the animation-owner meter frame as a
 /// sibling.
-pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShell>) -> AnyElement {
+pub(crate) fn page(
+    shell: &mut StudioShell,
+    window: &Window,
+    cx: &mut Context<StudioShell>,
+) -> AnyElement {
+    // The canvas world (audit A-1): re-projecting it costs a dozen heap
+    // strings per node plus a topology walk, and every rebuild used to pay
+    // that even when only the camera or a drag cursor moved. The cache
+    // reuses the last projection whenever nothing it contains moved; the
+    // cheap camera layout projection runs per rebuild regardless.
     let state = shell.state.read(cx);
-    // Meter bar readings are not baked in: the canvas paint consults the
-    // live ballistics per draw, so meter motion repaints without the page
-    // cache being invalidated or the world being re-projected.
-    let mut world = crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
-        &state.snapshot,
-        &shell.node_positions,
-    );
-    // The drag's snap guides ride the world so the canvas paint layer, a
-    // shell-free closure, can draw them above the grid.
-    world.guides = shell.drag_guides;
-    // A wire end picked up off an input is already in flight: drop it from
-    // the projection so the canvas paints the drag as a free head (no stale
-    // line, an empty origin port, and no phantom Displacing/Cycles verdicts
-    // against the edge being moved).
-    if let Some(destination) = shell
+    let detached = shell
+        .graph_gestures
         .connection_drag
         .as_ref()
         .and_then(|drag| drag.detached)
-        .map(|picked| picked.destination)
-    {
-        world.wires.retain(|wire| wire.dst_port != destination);
-    }
-    let world = std::sync::Arc::new(world);
-    let camera = shell.camera;
+        .map(|picked| picked.destination);
+    let world = {
+        let reused = shell
+            .graph_view
+            .world_cache
+            .as_ref()
+            .filter(|cache| {
+                cache.matches(&state.snapshot, &shell.graph_view.node_positions, detached)
+            })
+            .map(|cache| cache.world.clone());
+        match reused {
+            Some(world) => world,
+            None => {
+                // A wire end picked up off an input is already in flight:
+                // drop it from the projection so the canvas paints the drag
+                // as a free head (no stale line, an empty origin port, and
+                // no phantom Displacing/Cycles verdicts against the edge
+                // being moved). The drop rides the cache key, so release
+                // puts the wire back with one rebuild.
+                let mut world = crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
+                    &state.snapshot,
+                    &shell.graph_view.node_positions,
+                );
+                if let Some(destination) = detached {
+                    world.wires.retain(|wire| wire.dst_port != destination);
+                }
+                let world = std::sync::Arc::new(world);
+                shell.graph_view.world_cache = Some(page::WorldCache::build(
+                    &state.snapshot,
+                    shell.graph_view.node_positions.clone(),
+                    detached,
+                    world.clone(),
+                ));
+                #[cfg(feature = "gpui-test")]
+                {
+                    shell.graph_view.world_builds += 1;
+                }
+                world
+            }
+        }
+    };
+    // Meter bar readings are not baked in: the canvas paint consults the
+    // live ballistics per draw, so meter motion repaints without the page
+    // cache being invalidated or the world being re-projected.
+    let camera = shell.graph_view.camera;
     // The canvas view identifies nodes by their Debug id string; this is the
-    // single NodeId -> canvas-id conversion on the render path.
-    let selected_ids: Vec<String> = shell
-        .selected_nodes
-        .iter()
-        .map(|id| format!("{id:?}"))
-        .collect();
-    let selected_wire = shell.selected_route.and_then(|ports| {
-        state
-            .snapshot
-            .graph
-            .graph
-            .edges()
-            .iter()
-            .find(|edge| (edge.src_port(), edge.dst_port()) == ports)
-            .map(|edge| format!("{:?}", edge.id()))
+    // single NodeId -> canvas-id conversion on the render path. Cached until
+    // the selection changes: a pan or zoom frame must not re-format every
+    // selected id (audit A-1's clone tax).
+    let selected_ids = match &shell.graph_view.selected_ids {
+        Some((nodes, ids)) if *nodes == shell.selection.nodes => ids.clone(),
+        _ => {
+            let ids = Rc::new(
+                shell
+                    .selection
+                    .nodes
+                    .iter()
+                    .map(|id| format!("{id:?}"))
+                    .collect::<Vec<String>>(),
+            );
+            shell.graph_view.selected_ids = Some((shell.selection.nodes.clone(), Rc::clone(&ids)));
+            ids
+        }
+    };
+    let selected_wire = shell.selection.route.and_then(|ports| {
+        let cached = shell.graph_view.selected_wire.as_ref().and_then(|cache| {
+            ((cache.route == Some(ports)
+                && std::sync::Arc::ptr_eq(&cache.graph, &state.snapshot.graph))
+            .then(|| cache.wire.clone()))
+            .flatten()
+        });
+        cached.or_else(|| {
+            let wire = state
+                .snapshot
+                .graph
+                .graph
+                .edges()
+                .iter()
+                .find(|edge| (edge.src_port(), edge.dst_port()) == ports)
+                .map(|edge| Rc::from(format!("{:?}", edge.id()).as_str()));
+            shell.graph_view.selected_wire = Some(page::SelectedWireCache {
+                route: Some(ports),
+                graph: state.snapshot.graph.clone(),
+                wire: wire.clone(),
+            });
+            wire
+        })
     });
-    let this = cx.entity();
-    let node_levels = page::node_levels(&this);
-    let node_spectrum = page::node_spectrum(&this);
+    let readers = shell
+        .graph_view
+        .live_readers
+        .get_or_insert_with(|| {
+            let this = cx.entity().downgrade();
+            page::LiveReaderHandles {
+                levels: page::node_levels(&this),
+                spectrum: page::node_spectrum(&this),
+            }
+        })
+        .clone();
+    // The drag's snap guides ride the rebuild capture so the canvas paint
+    // layer, a shell-free closure, can draw them above the grid; the key
+    // carries their value, so each snap transition costs one rebuild.
+    let guides = shell.graph_gestures.drag_guides.unwrap_or_default();
+    // A card drag hides the dragged selection from the frozen cached paint —
+    // the hot layer paints those entities at the live offset. The capture
+    // refreshes on every rebuild, and the key's drag flag guarantees a
+    // rebuild exactly at the gesture's start and end.
+    let drag_hidden: Vec<moiren_core::graph::NodeId> = if shell.graph_gestures.node_drag.is_some() {
+        shell.selection.nodes.iter().copied().collect()
+    } else {
+        Vec::new()
+    };
 
     // Canvas view with interaction plumbed to the shell entity; every
     // callback body lives in `interactions.rs`, one builder per field.
+    let this = cx.entity();
     let canvas_view = crate::ui::pages::graph::graph_canvas_view::graph_canvas_view(
         world.clone(),
         camera,
-        &selected_ids,
-        selected_wire.as_deref(),
+        crate::ui::pages::graph::graph_canvas_view::CanvasPaintState {
+            selected_nodes: selected_ids,
+            selected_wire,
+            guides,
+            drag_hidden,
+        },
         crate::ui::pages::graph::graph_canvas_view::CanvasCallbacks {
-            focus: shell.graph_focus.clone(),
-            connection: shell.connection_drag.map(|drag| {
+            focus: shell.graph_view.focus.clone(),
+            connection: shell.graph_gestures.connection_drag.map(|drag| {
                 (
                     drag.port,
                     drag.cursor,
                     drag.detached.map(|picked| picked.destination),
                 )
             }),
-            node_levels,
-            node_spectrum,
+            node_levels: readers.levels,
+            node_spectrum: readers.spectrum,
             on_port_down: interactions::port_down(&this, &world),
             on_connection_move: interactions::connection_move(&this),
             on_port_up: interactions::port_up(&this),
             on_knob_down: interactions::knob_down(&this, &world),
             on_chip: interactions::chip(&this, &world),
+            on_record: interactions::record(&this, &world),
             on_badge: interactions::badge(&this, &world),
             on_knob_wheel: interactions::knob_wheel(&this, &world),
             on_expand: interactions::expand(&this, &world),
@@ -390,8 +589,9 @@ pub(crate) fn page(shell: &StudioShell, window: &Window, cx: &Context<StudioShel
         },
         // Shared with the meter frame: its overlay repaints bars at this
         // frame's geometry between cache rebuilds.
-        shell.graph_canvas_frame.clone(),
-        &shell.graph_overlays,
+        shell.graph_view.canvas_frame.clone(),
+        &shell.graph_view.overlays,
+        shell.graph_view.shapes.clone(),
     );
 
     div()
@@ -431,19 +631,19 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
     use controls::*;
     let mut view = div()
         .absolute()
-        .top(px(12.))
-        .left(px(12.))
+        .top(px(theme::HUD_INSET))
+        .left(px(theme::HUD_INSET))
         .flex()
         .items_center()
-        .gap(px(4.))
-        .p(px(4.))
+        .gap(px(theme::SPACE_1))
+        .p(px(theme::SPACE_1))
         .rounded(px(theme::RADIUS_MD))
         .bg(theme::SURFACE)
         .border_1()
         .border_color(theme::BORDER)
         // The meter frame paints around this rect (it is a later sibling of
         // the cached panel, so live bars would otherwise cover the HUD).
-        .child(shell.graph_overlays.probe("toolbar"));
+        .child(shell.graph_view.overlays.probe("toolbar"));
     for (id, name, icon, hand) in [
         ("tool-select", t!("Select"), ActionIcon::Cursor, false),
         ("tool-hand", t!("Hand"), ActionIcon::HandMove, true),
@@ -454,14 +654,14 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                 .icon(icon)
                 .icon_only()
                 .tooltip(name)
-                .variant(if shell.hand_tool == hand {
+                .variant(if shell.graph_gestures.hand_tool == hand {
                     ButtonVariant::Primary
                 } else {
                     ButtonVariant::Ghost
                 })
                 .on_click(move |_, _, cx| {
                     this.update(cx, |s, cx| {
-                        s.hand_tool = hand;
+                        s.graph_gestures.hand_tool = hand;
                         cx.notify();
                     })
                 }),
@@ -470,9 +670,9 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
     view = view.child(
         div()
             .flex_none()
-            .w(px(1.))
+            .w(px(theme::HAIRLINE_W))
             .h(px(16.))
-            .mx(px(2.))
+            .mx(px(theme::SPACE_0_5))
             .rounded_full()
             .bg(theme::BORDER),
     );
@@ -487,7 +687,9 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                 let this = this.clone();
                 move |_, _, cx: &mut App| {
                     this.update(cx, |s, cx| {
-                        s.camera.zoom_around_center(s.canvas_size, factor);
+                        s.graph_view
+                            .camera
+                            .zoom_around_center(s.graph_view.canvas_size, factor);
                         cx.notify();
                     })
                 }
@@ -506,7 +708,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
             .justify_center()
             .child(label(format!(
                 "{}%",
-                (shell.camera.zoom * 100.).round() as i32
+                (shell.graph_view.camera.zoom * 100.).round() as i32
             ))),
     );
     view = view.child(zoom_step(
@@ -519,7 +721,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         let this = this.clone();
         move |_, _, cx| {
             this.update(cx, |s, cx| {
-                s.camera.adjusted = false;
+                s.graph_view.camera.adjusted = false;
                 cx.notify();
             })
         }

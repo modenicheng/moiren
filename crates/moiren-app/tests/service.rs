@@ -7,22 +7,21 @@ fn tone_spec() -> SessionSpec {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "test-output".into(),
-        limit: RunLimit::UntilStopped,
         gain: 0.05,
         pan: 0.0,
+        limit: RunLimit::UntilStopped,
         max_block_frames: 256,
     }
 }
 #[test]
-fn stopped_or_superseded_start_never_gets_permission_to_play() {
+fn superseded_start_never_gets_permission_to_play_and_exit_revokes_it() {
     let mut c = ServiceCore::default();
     let first = c.start(tone_spec()).unwrap();
     let second = c.start(tone_spec()).unwrap();
     assert!(!c.may_activate(first));
     assert!(c.may_activate(second));
-    c.stop().unwrap();
-    assert!(!c.may_activate(second));
     c.begin_exit();
+    assert!(!c.may_activate(second));
     assert_eq!(c.phase(), SessionPhase::Exiting);
     assert_eq!(c.start(tone_spec()), Err(DispatchError::Exiting));
 }
@@ -76,12 +75,6 @@ fn rejects_invalid_domains_and_preserves_intent() {
     let mut c = ServiceCore::default();
     let g = c.start(tone_spec()).unwrap();
     let mut cases = Vec::new();
-    let mut s = tone_spec();
-    s.limit = RunLimit::Seconds(0);
-    cases.push(s);
-    let mut s = tone_spec();
-    s.limit = RunLimit::Seconds(601);
-    cases.push(s);
     let mut s = tone_spec();
     s.pan = 1.1;
     cases.push(s);

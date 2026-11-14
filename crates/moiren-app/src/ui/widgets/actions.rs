@@ -11,6 +11,7 @@ use gpui_kit::*;
 use super::action_accessibility::ActionAccessibility;
 use super::action_assets::ActionIcon;
 use super::action_style::{Paint, SampleState, Skin, styled_control};
+use crate::ui::theme;
 use crate::ui::theme::controls as t;
 pub use t::{ControlSize, Density};
 
@@ -30,28 +31,28 @@ impl ButtonVariant {
     fn skin(self) -> Skin {
         let (normal, hover, pressed, disabled) = match self {
             Self::Primary => (
-                Paint::new(t::PRIMARY, t::ON_ACCENT, t::BORDER),
-                Paint::new(t::PRIMARY_HOVER, t::ON_ACCENT, t::BORDER),
-                Paint::new(t::PRIMARY_PRESSED, t::ON_ACCENT, t::BORDER),
-                Paint::new(t::PRIMARY_MUTED, t::SECONDARY, t::BORDER),
+                Paint::new(t::PRIMARY, t::ON_ACCENT, theme::BORDER),
+                Paint::new(t::PRIMARY_HOVER, t::ON_ACCENT, theme::BORDER),
+                Paint::new(t::PRIMARY_PRESSED, t::ON_ACCENT, theme::BORDER),
+                Paint::new(t::PRIMARY_MUTED, theme::TEXT_MUTED, theme::BORDER),
             ),
             Self::Danger => (
-                Paint::new(t::DANGER, t::ON_ACCENT, t::DANGER),
-                Paint::new(t::DANGER_HOVER, t::ON_ACCENT, t::DANGER),
-                Paint::new(t::DANGER_PRESSED, t::ON_ACCENT, t::DANGER),
-                Paint::new(t::DANGER_DISABLED, t::SECONDARY, t::DANGER),
+                Paint::new(theme::DANGER, t::ON_ACCENT, theme::DANGER),
+                Paint::new(t::DANGER_HOVER, t::ON_ACCENT, theme::DANGER),
+                Paint::new(t::DANGER_PRESSED, t::ON_ACCENT, theme::DANGER),
+                Paint::new(t::DANGER_DISABLED, theme::TEXT_MUTED, theme::DANGER),
             ),
             Self::Secondary => (
-                Paint::new(t::RAISED, t::TEXT, t::BORDER),
-                Paint::new(t::RAISED, t::TEXT, t::BORDER),
-                Paint::new(t::CANVAS, t::TEXT, t::BORDER),
-                Paint::new(t::RAISED, t::MUTED, t::BORDER),
+                Paint::new(t::RAISED, theme::TEXT, theme::BORDER),
+                Paint::new(t::RAISED, theme::TEXT, theme::BORDER),
+                Paint::new(theme::WINDOW_BG, theme::TEXT, theme::BORDER),
+                Paint::new(t::RAISED, theme::TEXT_FAINT, theme::BORDER),
             ),
             Self::Ghost => (
-                Paint::new(t::TRANSPARENT, t::SECONDARY, t::TRANSPARENT),
-                Paint::new(t::RAISED, t::SECONDARY, t::TRANSPARENT),
-                Paint::new(t::CANVAS, t::SECONDARY, t::TRANSPARENT),
-                Paint::new(t::TRANSPARENT, t::MUTED, t::TRANSPARENT),
+                Paint::new(t::TRANSPARENT, theme::TEXT_MUTED, t::TRANSPARENT),
+                Paint::new(t::RAISED, theme::TEXT_MUTED, t::TRANSPARENT),
+                Paint::new(theme::WINDOW_BG, theme::TEXT_MUTED, t::TRANSPARENT),
+                Paint::new(t::TRANSPARENT, theme::TEXT_FAINT, t::TRANSPARENT),
             ),
         };
         Skin {
@@ -196,7 +197,9 @@ impl RenderOnce for ActionButton {
         .when(self.full_width, |s| s.w_full().justify_center())
         .when(self.justify_start, |s| s.justify_start())
         .when(self.square, |s| s.rounded_none())
-        .when(icon_only, |s| s.w(px(m.height)).justify_center().px(px(6.)))
+        .when(icon_only, |s| {
+            s.w(px(m.height)).justify_center().px(px(theme::SPACE_1_5))
+        })
         .when_some(self.icon, |s, icon| s.child(icon.element()))
         .when(!icon_only, |s| s.child(self.label))
         .when_some(self.trailing_icon, |s, icon| s.child(icon.element()))
@@ -227,22 +230,22 @@ pub enum IconIntent {
 impl IconIntent {
     fn skin(self) -> Skin {
         let normal = match self {
-            Self::Neutral => Paint::new(t::TRANSPARENT, t::SECONDARY, t::BORDER),
-            Self::Accent => Paint::new(t::PRIMARY_MUTED, t::PRIMARY, t::BORDER),
-            Self::Danger => Paint::new(t::TRANSPARENT, t::DANGER, t::BORDER),
+            Self::Neutral => Paint::new(t::TRANSPARENT, theme::TEXT_MUTED, theme::BORDER),
+            Self::Accent => Paint::new(t::PRIMARY_MUTED, t::PRIMARY, theme::BORDER),
+            Self::Danger => Paint::new(t::TRANSPARENT, theme::DANGER, theme::BORDER),
         };
         let (hover, pressed) = match self {
             Self::Neutral => (
-                Paint::new(t::RAISED, t::SECONDARY, t::BORDER),
-                Paint::new(t::CANVAS, t::SECONDARY, t::BORDER),
+                Paint::new(t::RAISED, theme::TEXT_MUTED, theme::BORDER),
+                Paint::new(theme::WINDOW_BG, theme::TEXT_MUTED, theme::BORDER),
             ),
             Self::Accent => (
-                Paint::new(t::PRIMARY_HOVER, t::ON_ACCENT, t::BORDER),
-                Paint::new(t::PRIMARY_PRESSED, t::ON_ACCENT, t::BORDER),
+                Paint::new(t::PRIMARY_HOVER, t::ON_ACCENT, theme::BORDER),
+                Paint::new(t::PRIMARY_PRESSED, t::ON_ACCENT, theme::BORDER),
             ),
             Self::Danger => (
-                Paint::new(t::DANGER, t::ON_ACCENT, t::BORDER),
-                Paint::new(t::DANGER, t::ON_ACCENT, t::BORDER),
+                Paint::new(theme::DANGER, t::ON_ACCENT, theme::BORDER),
+                Paint::new(theme::DANGER, t::ON_ACCENT, theme::BORDER),
             ),
         };
         Skin {
@@ -256,10 +259,10 @@ impl IconIntent {
                     t::CONTROL_DISABLED
                 },
                 t::DISABLED,
-                t::BORDER,
+                theme::BORDER,
             ),
             focus: if matches!(self, Self::Accent) {
-                Paint::new(t::PRIMARY, t::ON_ACCENT, t::BORDER)
+                Paint::new(t::PRIMARY, t::ON_ACCENT, theme::BORDER)
             } else {
                 normal
             },
@@ -388,19 +391,19 @@ impl RenderOnce for ToggleIconButton {
         let normal = if self.selected {
             Paint::new(t::PRIMARY_MUTED, t::ON_ACCENT, t::PRIMARY)
         } else {
-            Paint::new(t::TRANSPARENT, t::SECONDARY, t::BORDER)
+            Paint::new(t::TRANSPARENT, theme::TEXT_MUTED, theme::BORDER)
         };
         let skin = Skin {
             normal,
             hover: if self.selected {
                 Paint::new(t::PRIMARY_HOVER, t::ON_ACCENT, t::PRIMARY)
             } else {
-                Paint::new(t::RAISED, t::SECONDARY, t::BORDER)
+                Paint::new(t::RAISED, theme::TEXT_MUTED, theme::BORDER)
             },
             pressed: if self.selected {
                 Paint::new(t::PRIMARY_PRESSED, t::ON_ACCENT, t::PRIMARY)
             } else {
-                Paint::new(t::CANVAS, t::SECONDARY, t::BORDER)
+                Paint::new(theme::WINDOW_BG, theme::TEXT_MUTED, theme::BORDER)
             },
             disabled: Paint::new(normal.bg, t::DISABLED, normal.border),
             focus: normal,
@@ -425,7 +428,7 @@ impl RenderOnce for ToggleIconButton {
                     .size(px(t::INDICATOR_SIZE))
                     .rounded_full()
                     .bg(if self.disabled {
-                        t::MUTED
+                        theme::TEXT_FAINT
                     } else {
                         t::INDICATOR
                     }),

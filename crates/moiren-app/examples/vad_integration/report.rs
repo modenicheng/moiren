@@ -142,14 +142,9 @@ pub(super) struct PcmEvidence {
     pub second_expected_after_gain: [f32; 2],
     pub signal: super::validation::Observation,
     pub second_signal: super::validation::Observation,
-    pub stopped_silence: super::validation::Observation,
     pub signal_elapsed_ms: u64,
     pub second_signal_elapsed_ms: u64,
-    pub silence_elapsed_ms: u64,
     pub settle_ms_per_phase: u64,
-    pub capture_running_at_stop_request: bool,
-    pub capture_running_after_stop_ack: bool,
-    pub capture_running_during_silence: bool,
     pub native_discontinuities: u64,
     pub native_clients_stopped: bool,
 }
@@ -245,19 +240,6 @@ impl Evidence {
 
     pub fn gates_open(&self) -> bool {
         !self.exports.is_empty() && self.exports.iter().all(|export| export.gate_open)
-    }
-
-    pub fn stopped(&self, ids: &[String; 2], request: u64) -> bool {
-        self.phase == "idle"
-            && self.consumed_request_id >= request
-            && self.active_revision.is_none()
-            && self.pending_revision.is_none()
-            && self.error.is_none()
-            && self.graph_error.is_none()
-            && self.exact_exports(ids)
-            && self.exports.iter().all(|export| {
-                export.present && !export.gate_open && export.active_revision.is_none()
-            })
     }
 
     pub fn exited(&self) -> bool {
@@ -375,24 +357,6 @@ mod tests {
         evidence.exports[0].present = true;
         evidence.active_revision = Some(6);
         assert!(!evidence.owner_running(&ids(), 2));
-    }
-
-    #[test]
-    fn stop_requires_acknowledged_idle_closed_gates_and_retained_endpoints() {
-        let mut stopped = running();
-        stopped.phase = "idle".into();
-        stopped.active_revision = None;
-        for export in &mut stopped.exports {
-            export.gate_open = false;
-            export.active_revision = None;
-        }
-        assert!(stopped.stopped(&ids(), 2));
-        assert!(!stopped.stopped(&ids(), 3));
-        let mut missing = stopped.clone();
-        missing.exports[0].present = false;
-        assert!(!missing.stopped(&ids(), 2));
-        stopped.exports[1].gate_open = true;
-        assert!(!stopped.stopped(&ids(), 2));
     }
 
     #[test]

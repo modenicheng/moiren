@@ -185,16 +185,18 @@ impl SessionDocument {
         self.source.validate()?;
         validate_identity(&self.output_endpoint_id, "session.output_endpoint_id")?;
         validate_gain_pan(self.gain, self.pan, "session")?;
+        if let RunLimit::Seconds(seconds) = self.limit.into()
+            && !(1..=600).contains(&seconds)
+        {
+            return Err(PersistenceError::invalid(
+                "session.limit",
+                "must be until_stopped or 1..=600 seconds",
+            ));
+        }
         if !(1..=4096).contains(&self.max_block_frames) {
             return Err(PersistenceError::invalid(
                 "session.max_block_frames",
                 "must be in 1..=4096",
-            ));
-        }
-        if matches!(self.limit, RunLimitDocument::Seconds(n) if !(1..=600).contains(&n)) {
-            return Err(PersistenceError::invalid(
-                "session.limit",
-                "duration must be in 1..=600 seconds",
             ));
         }
         Ok(())
@@ -205,11 +207,36 @@ impl SessionDocument {
         Ok(SessionSpec {
             source: self.source.to_selection(),
             output_endpoint_id: self.output_endpoint_id.clone(),
-            limit: self.limit.into(),
             gain: self.gain,
             pan: self.pan,
+            limit: self.limit.into(),
             max_block_frames: self.max_block_frames,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunLimitDocument {
+    UntilStopped,
+    Seconds(u16),
+}
+
+impl From<RunLimit> for RunLimitDocument {
+    fn from(value: RunLimit) -> Self {
+        match value {
+            RunLimit::UntilStopped => Self::UntilStopped,
+            RunLimit::Seconds(seconds) => Self::Seconds(seconds),
+        }
+    }
+}
+
+impl From<RunLimitDocument> for RunLimit {
+    fn from(value: RunLimitDocument) -> Self {
+        match value {
+            RunLimitDocument::UntilStopped => Self::UntilStopped,
+            RunLimitDocument::Seconds(seconds) => Self::Seconds(seconds),
+        }
     }
 }
 
@@ -277,31 +304,6 @@ impl SourceDocument {
             Self::Tone { frequency_hz } => InputSelection::Tone {
                 frequency_hz: *frequency_hz,
             },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunLimitDocument {
-    UntilStopped,
-    Seconds(u16),
-}
-
-impl From<RunLimit> for RunLimitDocument {
-    fn from(value: RunLimit) -> Self {
-        match value {
-            RunLimit::UntilStopped => Self::UntilStopped,
-            RunLimit::Seconds(seconds) => Self::Seconds(seconds),
-        }
-    }
-}
-
-impl From<RunLimitDocument> for RunLimit {
-    fn from(value: RunLimitDocument) -> Self {
-        match value {
-            RunLimitDocument::UntilStopped => Self::UntilStopped,
-            RunLimitDocument::Seconds(seconds) => Self::Seconds(seconds),
         }
     }
 }
@@ -433,6 +435,12 @@ pub struct AppPreferences {
     pub transport_latency: crate::service::TransportLatencySettings,
     pub restore_last_project: bool,
     pub last_project_path: Option<std::path::PathBuf>,
+    /// Default recording output directory; `None` resolves to the user's
+    /// Music folder at start time.
+    pub recording_directory: Option<std::path::PathBuf>,
+    pub recording_format: crate::service::RecordingFormat,
+    pub recording_mp3: moiren_engine::recorder::Mp3Encoding,
+    pub recording_flac: moiren_engine::recorder::FlacEncoding,
     /// Recently opened project files, most recent first, for the session
     /// menu's quick switch.
     pub recent_projects: Vec<std::path::PathBuf>,
@@ -452,6 +460,10 @@ impl Default for AppPreferences {
             transport_latency: crate::service::TransportLatencySettings::default(),
             restore_last_project: false,
             last_project_path: None,
+            recording_directory: None,
+            recording_format: Default::default(),
+            recording_mp3: Default::default(),
+            recording_flac: Default::default(),
             recent_projects: Vec::new(),
         }
     }
@@ -493,6 +505,26 @@ impl AppPreferences {
             return Err(PersistenceError::invalid(
                 "last_project_path",
                 "must be a nonempty path without NUL",
+            ));
+        }
+        if let Some(path) = &self.recording_directory
+            && (path.as_os_str().is_empty() || path.to_string_lossy().contains('\0'))
+        {
+            return Err(PersistenceError::invalid(
+                "recording_directory",
+                "must be a nonempty path without NUL",
+            ));
+        }
+        if !self.recording_mp3.valid() {
+            return Err(PersistenceError::invalid(
+                "recording_mp3",
+                "bitrate must sit on the LAME ladder and VBR quality within 0..=9",
+            ));
+        }
+        if !self.recording_flac.valid() {
+            return Err(PersistenceError::invalid(
+                "recording_flac",
+                "compression level must be 0 through 8",
             ));
         }
         if self.recent_projects.len() > RECENT_PROJECT_LIMIT {

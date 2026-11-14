@@ -226,8 +226,16 @@ fn explicit_create_deferral_retries_until_one_creation_is_accepted() {
     };
     let mut service = ExportService::default();
     for attempt in 1..=3 {
-        runtime.project(&mut service, &graph, &[], None);
-        let work = runtime.work(&service, &graph, true).unwrap();
+        runtime.project(&mut service, graph.active_revision, &[], None);
+        let work = runtime
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                true,
+            )
+            .unwrap();
         assert_eq!(work.actions.len(), 1);
         assert!(matches!(&work.actions[0].action,
             ExportAction::Create { intent: requested, .. } if requested == &intent
@@ -247,7 +255,15 @@ fn explicit_create_deferral_retries_until_one_creation_is_accepted() {
         assert_eq!(adapter.calls.lock().unwrap().len(), attempt);
     }
     adapter.defer_create.store(false, Ordering::Release);
-    let work = runtime.work(&service, &graph, true).unwrap();
+    let work = runtime
+        .work(
+            &service,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            true,
+        )
+        .unwrap();
     assert_eq!(work.actions.len(), 1);
     assert!(
         runtime
@@ -259,8 +275,16 @@ fn explicit_create_deferral_retries_until_one_creation_is_accepted() {
         ExportResourceState::Present
     );
     for _ in 0..3 {
-        runtime.project(&mut service, &graph, &[], None);
-        let work = runtime.work(&service, &graph, true).unwrap();
+        runtime.project(&mut service, graph.active_revision, &[], None);
+        let work = runtime
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                true,
+            )
+            .unwrap();
         assert!(work.actions.is_empty(), "accepted creation must not repeat");
         assert!(
             runtime
@@ -284,8 +308,16 @@ fn disabling_intent_during_explicit_create_deferral_stops_retry_and_retirement()
         ..Default::default()
     };
     let mut service = ExportService::default();
-    runtime.project(&mut service, &graph, &[], None);
-    let work = runtime.work(&service, &graph, true).unwrap();
+    runtime.project(&mut service, graph.active_revision, &[], None);
+    let work = runtime
+        .work(
+            &service,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            true,
+        )
+        .unwrap();
     let batch = adapter.execute(work);
     assert!(batch.observations.is_empty());
     assert_eq!(batch.errors.len(), 1);
@@ -294,8 +326,16 @@ fn disabling_intent_during_explicit_create_deferral_stops_retry_and_retirement()
     assert_eq!(runtime.complete(&mut service, Ok(batch)).len(), 1);
     adapter.defer_create.store(false, Ordering::Release);
     for _ in 0..3 {
-        runtime.project(&mut service, &graph, &[], None);
-        let work = runtime.work(&service, &graph, true).unwrap();
+        runtime.project(&mut service, graph.active_revision, &[], None);
+        let work = runtime
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                true,
+            )
+            .unwrap();
         assert!(work.actions.is_empty());
         assert!(
             runtime
@@ -325,8 +365,16 @@ fn uncertain_create_stays_creating_without_retry_or_admission() {
     };
     let mut service = ExportService::default();
     for round in 0..4 {
-        runtime.project(&mut service, &graph, &[], None);
-        let work = runtime.work(&service, &graph, true).unwrap();
+        runtime.project(&mut service, graph.active_revision, &[], None);
+        let work = runtime
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                true,
+            )
+            .unwrap();
         if round == 0 {
             assert_eq!(work.actions.len(), 1);
             assert!(matches!(
@@ -495,30 +543,60 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
             )
             .is_empty()
     );
-    runtime.project(&mut service, &graph, std::slice::from_ref(&intent), None);
+    runtime.project(
+        &mut service,
+        graph.active_revision,
+        std::slice::from_ref(&intent),
+        None,
+    );
     assert!(
         runtime
-            .work(&service, &graph, false)
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                false
+            )
             .unwrap()
             .actions
             .is_empty()
     );
     runtime.project(
         &mut service,
-        &graph,
+        graph.active_revision,
         std::slice::from_ref(&intent),
         Some([1, 1, 1, graph.candidate_revision, 1]),
     );
-    let work = runtime.work(&service, &graph, false).unwrap();
+    let work = runtime
+        .work(
+            &service,
+            &graph.exports,
+            graph.candidate_revision,
+            graph.active_revision,
+            false,
+        )
+        .unwrap();
     assert!(work.actions.iter().any(|dispatch| matches!(dispatch.action,
         ExportAction::SetGate { endpoint_id, open: true } if endpoint_id == intent.endpoint_id
     )));
     assert_eq!(work.revision, graph.active_revision);
     runtime.revoke();
-    runtime.project(&mut service, &graph, std::slice::from_ref(&intent), None);
+    runtime.project(
+        &mut service,
+        graph.active_revision,
+        std::slice::from_ref(&intent),
+        None,
+    );
     assert!(
         runtime
-            .work(&service, &graph, false)
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                false
+            )
             .unwrap()
             .actions
             .is_empty()
@@ -560,7 +638,7 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
     );
     runtime.project(
         &mut service,
-        &graph,
+        graph.active_revision,
         std::slice::from_ref(&intent),
         Some([1, 1, 1, graph.candidate_revision, 1]),
     );
@@ -569,7 +647,13 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
     assert_eq!(service.statuses(&graph)[0].active_revision, None);
     assert!(
         runtime
-            .work(&service, &graph, false)
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                false
+            )
             .unwrap()
             .actions
             .iter()
@@ -616,7 +700,7 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
 
     runtime.project(
         &mut service,
-        &graph,
+        graph.active_revision,
         std::slice::from_ref(&intent),
         Some([1, 1, 1, graph.candidate_revision, 1]),
     );
@@ -626,7 +710,13 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
     assert_eq!(service.statuses(&graph)[0].active_revision, None);
     assert!(
         runtime
-            .work(&service, &graph, false)
+            .work(
+                &service,
+                &graph.exports,
+                graph.candidate_revision,
+                graph.active_revision,
+                false
+            )
             .unwrap()
             .actions
             .is_empty()
@@ -680,7 +770,7 @@ fn windows_identity_projection_requires_current_healthy_native_identity() {
         ..Default::default()
     };
     let mut service = ExportService::default();
-    runtime.project(&mut service, &graph, &[], None);
+    runtime.project(&mut service, graph.active_revision, &[], None);
     for (identity, error, expected) in [
         ([1, 7, 1], None, true),
         ([2, 7, 1], None, false),
@@ -978,7 +1068,7 @@ mod native_stamp {
             ..Default::default()
         };
         let mut service = ExportService::default();
-        runtime.project(&mut service, &graph, &[], None);
+        runtime.project(&mut service, graph.active_revision, &[], None);
         assert_eq!(service.statuses(&graph)[0].native_stamp, None);
 
         // A closed native stream can legitimately have generation zero.
@@ -992,7 +1082,12 @@ mod native_stamp {
                     .complete(&mut service, Ok(observed(&intent, Some(stamp))))
                     .is_empty()
             );
-            runtime.project(&mut service, &graph, std::slice::from_ref(&intent), None);
+            runtime.project(
+                &mut service,
+                graph.active_revision,
+                std::slice::from_ref(&intent),
+                None,
+            );
             for _ in 0..3 {
                 let status = &service.statuses(&graph)[0];
                 assert_eq!(status.native_stamp, Some(stamp));
@@ -1001,7 +1096,13 @@ mod native_stamp {
             }
             assert!(
                 runtime
-                    .work(&service, &graph, false)
+                    .work(
+                        &service,
+                        &graph.exports,
+                        graph.candidate_revision,
+                        graph.active_revision,
+                        false
+                    )
                     .unwrap()
                     .actions
                     .is_empty()

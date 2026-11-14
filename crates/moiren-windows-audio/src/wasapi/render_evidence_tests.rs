@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
-    owner::LeaseClient,
     render_evidence::{RenderEvidenceConfig, RenderEvidenceFormat, render_evidence_stream},
     test_allocation::assert_allocates_nothing,
+    win32_raii::LeaseClient,
 };
 use std::cell::{Cell, RefCell};
 use windows::core::HRESULT;

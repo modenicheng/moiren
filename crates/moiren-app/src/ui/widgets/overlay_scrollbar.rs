@@ -14,6 +14,11 @@
 //! goes inside a cached panel: the cached splice replays paint but not
 //! hitboxes, so the thumb would freeze and lose its drag target. Wrap the
 //! cached subtree from outside.
+//!
+//! [`scroll_region`] is the converged form of that arrangement (design 21
+//! §3.2): one call assembles the `relative` wrapper, the caller's scroll
+//! container and the pinned sibling bar, so mount sites cannot hand-copy the
+//! child order wrong.
 
 use gpui_kit::InteractiveElement;
 use gpui_kit::base::{Scrollbar, ScrollbarAxis, ScrollbarMode, ScrollbarStyles};
@@ -91,6 +96,16 @@ fn scrollbar_styles() -> impl FnOnce(ScrollbarStyles) -> ScrollbarStyles {
 /// `w_full().h_full()`. The bar hides itself while the content fits, so a
 /// container with both axes enabled can carry a both-axis overlay and only
 /// ever show the axis that actually overflows.
+/// The wheel-notification closure every scroll container that feeds a
+/// cached panel carries: scrolling must notify the owning view so the
+/// panel's key (which carries the offset) can diff. One line replaces the
+/// four-line `let this = ...; move |...| ...` block at every mount site.
+pub fn notify_owner<T: 'static>(
+    owner: Entity<T>,
+) -> impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| owner.update(cx, |_, cx| cx.notify())
+}
+
 pub fn overlay_scrollbar(
     handle: &ScrollHandle,
     id: impl Into<ElementId>,
@@ -106,6 +121,27 @@ pub fn overlay_scrollbar(
             .viewport_from_layout()
             .styles(scrollbar_styles()),
     )
+}
+
+/// The scroll trio as one component (design 21 §3.2): the `relative`
+/// wrapper, the caller's scroll container, and the bar overlay pinned above
+/// it as the wrapper's *last* child — the sibling order the layering rule
+/// at the top of this module exists to protect. `container` arrives fully
+/// built: its id, `track_scroll` wiring, `restrict_scroll_to_axis`, wheel
+/// notification ([`notify_owner`]) and padding differ per page, so they stay
+/// at the call site; chain the wrapper's outer sizing (`.flex_1()`,
+/// `.min_h_0()`, fixed widths, …) on the returned div. `id` names the bar's
+/// element — keep it byte-stable: caches and tests address the bar by it.
+pub fn scroll_region(
+    id: impl Into<ElementId>,
+    handle: &ScrollHandle,
+    axis: ScrollbarAxis,
+    container: impl IntoElement,
+) -> Div {
+    div()
+        .relative()
+        .child(container)
+        .child(overlay_scrollbar(handle, id, axis))
 }
 
 /// Offset clamped against this frame's content size and the handle's
@@ -130,7 +166,7 @@ pub fn clamped_offset(handle: &ScrollHandle, content: Size<Pixels>) -> Point<Pix
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests {
-    use super::overlay_scrollbar;
+    use super::scroll_region;
     use gpui_kit::InteractiveElement;
     use gpui_kit::StatefulInteractiveElement;
     use gpui_kit::base::ScrollbarAxis;
@@ -150,38 +186,37 @@ mod tests {
 
     impl Render for SpikeView {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // 10 px test-fixture inset: keeps the scroll area off the test
+            // window's edges; not a production surface metric.
             div().size_full().p(px(10.)).child(
                 // The load-bearing structure under test: the scroll area
                 // and the bar overlay are siblings under one relative
                 // wrapper.
-                div()
-                    .relative()
-                    .w(px(100.))
-                    .h(px(100.))
-                    .child(
-                        div()
-                            .id("spike-area")
-                            .gpui_test_observe()
-                            .w_full()
-                            .h_full()
-                            .flex()
-                            .flex_col()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.handle)
-                            .children((0..self.rows).map(|ix| {
-                                div()
-                                    .id(SharedString::from(format!("spike-row-{ix}")))
-                                    .gpui_test_observe()
-                                    .flex_none()
-                                    .w_full()
-                                    .h(px(50.))
-                            })),
-                    )
-                    .child(overlay_scrollbar(
-                        &self.handle,
-                        "scrollbar-spike-area",
-                        ScrollbarAxis::Vertical,
-                    )),
+                scroll_region(
+                    "scrollbar-spike-area",
+                    &self.handle,
+                    ScrollbarAxis::Vertical,
+                    div()
+                        .id("spike-area")
+                        .gpui_test_observe()
+                        .w_full()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.handle)
+                        .restrict_scroll_to_axis()
+                        .children((0..self.rows).map(|ix| {
+                            div()
+                                .id(SharedString::from(format!("spike-row-{ix}")))
+                                .gpui_test_observe()
+                                .flex_none()
+                                .w_full()
+                                .h(px(50.))
+                        })),
+                )
+                .w(px(100.))
+                .h(px(100.)),
             )
         }
     }

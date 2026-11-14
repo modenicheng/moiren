@@ -128,12 +128,10 @@ impl Eq {
                 q.sample(frame),
                 sample_rate,
             );
-            for channel in 0..io.channel_count() {
-                let output = Self::process_sample(
-                    &mut self.states[channel],
-                    io.read(channel, frame),
-                    coefficients,
-                );
+            // The state array is MAX_CHANNELS-wide; zip keeps the iteration
+            // bound at the block's channel count instead of the array length.
+            for (state, channel) in self.states.iter_mut().zip(0..io.channel_count()) {
+                let output = Self::process_sample(state, io.read(channel, frame), coefficients);
                 io.write(channel, frame, S::from_f64(output));
             }
         }

@@ -15,6 +15,7 @@ pub(crate) mod measured_process;
 mod model;
 #[cfg(windows)]
 pub(crate) mod process_trace;
+mod recording;
 #[cfg(windows)]
 pub use process_trace::*;
 #[cfg(test)]
@@ -29,21 +30,24 @@ mod transport_latency;
 mod windows;
 pub use backend::*;
 pub use exports::*;
-pub(crate) use graph::primary_node_of;
+use graph::primary_node_of;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
     GraphPreparation, GraphSnapshot, GraphSubject, MixerState, NODE_TINT_COUNT, ServiceGraph,
-    default_label, validate_node_state,
+    clock_master, default_label, validate_node_state,
 };
 pub use latency::AudioLatencyProfile;
-pub use managed::ManagedDriver;
+use managed::LevelRegistry;
+pub use managed::{LevelLease, LevelSource, ManagedDriver};
 pub use measured_process::{
     MeasuredProcessRequest, MeasuredProcessSummary, MeasuredProcessWindow, ProcessWindowPolicy,
 };
 pub use moiren_engine::audio_config::*;
-pub use signals::{
-    LevelTopic, SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket,
+pub use recording::{
+    DateTimeParts, RecordingCard, RecordingFormat, RecordingPhase, RecordingService,
+    RecordingSnapshot,
 };
+pub use signals::{SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket};
 pub use transport_latency::{
     DeliveryProvenance, ExpertInputBuffer, ExpertRenderQueue, TransportLatencySettings,
 };
@@ -141,19 +145,40 @@ pub struct ServiceContext {
     pub active_transport_latency: Option<TransportLatencySettings>,
     pub graph: ServiceGraph,
     pub core: ServiceCore,
+    /// Runtime recording state per node; see [`recording`] for why it stays
+    /// out of the editable graph domain.
+    pub recordings: RecordingService,
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
+    /// Content token for the snapshot publisher: bumped whenever the catalog
+    /// Arc is swapped for different content (see [`Self::replace_catalog`]).
+    catalog_epoch: u64,
     pub control: ControlSummary,
-    pub(crate) signals: signals::SignalService,
+    signals: signals::SignalService,
+    /// The level subscription registry (decision D-4 route B): holds the
+    /// engine's level subscriptions directly against the leases the UI
+    /// holds, replacing the relay's copy machinery.
+    levels: LevelRegistry,
     /// Whether the active session routes its levels into the tone topic
     /// instead of the physical monitor pair. The meter bridge resolves it
     /// from the running host graph and retires it with the owner.
     pub tone_session: bool,
+    /// The live owner's engine execution state, refreshed every poll and
+    /// cleared with the owner. Powers the waiting-for-resources projection:
+    /// the session stays intended while devices are away.
+    pub active_execution: Option<moiren_engine::host::ExecutionState>,
     pending: VecDeque<(JobPriority, Job, DeferredPermit)>,
     slots: Arc<AtomicUsize>,
+    /// Test observability for the snapshot publisher: counts every
+    /// `snapshot(&c)` build so tests can assert the loop skips rebuilds
+    /// while no input changes.
+    #[cfg(test)]
+    snapshot_builds: std::sync::atomic::AtomicU64,
 }
 impl Default for ServiceContext {
     fn default() -> Self {
+        let signals = signals::SignalService::new().expect("fixed application signal topics");
+        let levels = LevelRegistry::new(&signals.topics);
         Self {
             measured_process: None,
             active_measured_process: None,
@@ -174,13 +199,19 @@ impl Default for ServiceContext {
             active_transport_latency: None,
             graph: ServiceGraph::default(),
             core: ServiceCore::default(),
+            recordings: RecordingService::default(),
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
+            catalog_epoch: 0,
             control: ControlSummary::default(),
-            signals: signals::SignalService::new().expect("fixed application signal topics"),
+            signals,
+            levels,
             tone_session: false,
+            active_execution: None,
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),
+            #[cfg(test)]
+            snapshot_builds: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -216,6 +247,12 @@ impl ServiceContext {
         let mut audio = self.audio_settings.clone();
         if let Some(processing) = document.processing {
             audio.processing = processing;
+        } else if let Some(session) = &document.session {
+            // Design 23 §4.3: old documents carry the block size on the
+            // session because the deleted UI ledger used to ferry it into a
+            // Start request. Explicit project processing stays authoritative
+            // when both forms are present; a session without it migrates.
+            audio.processing.block_frames = session.max_block_frames as u32;
         }
         audio.validate().map_err(|error| error.to_string())?;
         if let Some(graph) = &document.graph {
@@ -257,6 +294,17 @@ impl ServiceContext {
         self.transport_latency = settings;
         self.measured_process = None;
         true
+    }
+
+    /// Swap in a refreshed device catalog. The snapshot catalog is never
+    /// mutated in place, so the content token advances exactly when the
+    /// content differs; a content-equal refresh keeps the old Arc and lets
+    /// the publish dedup hold UI identity stable.
+    pub(crate) fn replace_catalog(&mut self, catalog: DeviceCatalog) {
+        if *self.catalog != catalog {
+            self.catalog = Arc::new(catalog);
+            self.catalog_epoch = self.catalog_epoch.wrapping_add(1);
+        }
     }
 
     /// Stale-observation guard shared by every snapshot projection: a value is
@@ -366,9 +414,6 @@ impl ServiceDriver for CoreDriver {
             AppRequest::Start(s) => {
                 let _ = c.core.start(s);
             }
-            AppRequest::Stop => {
-                let _ = c.core.stop();
-            }
             AppRequest::SetGainPan { gain, pan } => c.control.pending_gain_pan = Some((gain, pan)),
             AppRequest::RefreshCatalog => {}
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
@@ -406,11 +451,27 @@ impl ServiceDriver for CoreDriver {
                 c.graph
                     .record_error("No native audio backend is configured");
             }
+            AppRequest::StartRecording { .. }
+            | AppRequest::PauseRecording { .. }
+            | AppRequest::ResumeRecording { .. }
+            | AppRequest::StopRecording { .. } => {
+                c.graph
+                    .record_error("No native audio backend is configured");
+            }
+            #[cfg(test)]
+            AppRequest::Stop => {}
         }
     }
 }
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
-    let graph = c.graph.snapshot();
+    #[cfg(test)]
+    c.snapshot_builds
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut graph = c.graph.snapshot();
+    // Runtime card state rides the graph projection but never its editing
+    // domain: cards repaint on phase transitions only, and the ticking
+    // duration stays out of it entirely (graph-page keys must stay 1 Hz-free).
+    graph.recording = c.recordings.cards();
     AppSnapshot {
         measured_process: c
             .measured_process
@@ -453,6 +514,9 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         phase: c.core.phase(),
         desired: c.core.desired().cloned(),
         error: c.core.error().map(str::to_owned),
+        waiting: c.active_execution
+            == Some(moiren_engine::host::ExecutionState::WaitingForResources),
+        recordings: c.recordings.snapshots(),
         catalog: c.catalog.clone(),
         catalog_error: c.catalog_error.clone(),
         control: c.control.clone(),
@@ -463,6 +527,120 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         // repainting for as long as the session runs.
         elapsed: Duration::from_secs(c.core.elapsed().as_secs()),
     }
+}
+
+/// Content tokens for everything [`snapshot`] projects whose construction or
+/// comparison is expensive: the graph deep copy, the export statuses/plan
+/// projections, the session core fields, and the device catalog. Each token
+/// is advanced by the domain's own mutation paths (graph.rs, core.rs,
+/// exports.rs/runtime.rs, and `replace_catalog` here), so a change in any of
+/// them is guaranteed to be reflected in the next published snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SnapshotRevision {
+    graph: u64,
+    core: u64,
+    exports: u64,
+    catalog: u64,
+    recordings: u64,
+    /// Whole seconds of the session clock: the only snapshot input that
+    /// advances on its own (the published elapsed is quantized to seconds,
+    /// so the published content moves at 1 Hz at most).
+    elapsed_secs: u64,
+}
+
+/// Cheap, allocation-free change probe for the tokened snapshot domains.
+pub(crate) fn snapshot_revision(c: &ServiceContext) -> SnapshotRevision {
+    SnapshotRevision {
+        graph: c.graph.state_epoch(),
+        core: c.core.state_epoch(),
+        exports: c.exports.state_epoch(),
+        catalog: c.catalog_epoch,
+        recordings: c.recordings.state_epoch(),
+        elapsed_secs: c.core.elapsed().as_secs(),
+    }
+}
+
+/// Whether the small, directly comparable snapshot inputs still match the
+/// last published snapshot. These inputs are all cheap `PartialEq` values,
+/// so they are compared by value instead of carrying tokens; they never
+/// require building the graph deep copy or the export projections.
+pub(crate) fn small_snapshot_inputs_match(c: &ServiceContext, last: &AppSnapshot) -> bool {
+    let loaded_project_same = match (&last.loaded_project, &c.loaded_project) {
+        (None, None) => true,
+        (Some(published), Some(current)) => Arc::ptr_eq(published, current),
+        _ => false,
+    };
+    // The published observations/settings pass through freshness filters;
+    // project the same view without cloning before comparing.
+    let observations_same = {
+        #[cfg(windows)]
+        {
+            let projected = c
+                .professional_observations
+                .as_ref()
+                .filter(|value| c.fresh(value.generation));
+            last.professional_observations.as_ref() == projected
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    };
+    let active_settings_same = {
+        let projected = c
+            .active_audio_settings
+            .as_ref()
+            .filter(|_| c.fresh(c.core.generation()));
+        last.active_audio_settings.as_ref() == projected
+    };
+    // Native diagnostics, measured Process state, and cleanup evidence are
+    // cheap PartialEq projections. Compare them directly so callback-only or
+    // refusal-only changes cannot be hidden by an otherwise idle token.
+    let native_same = {
+        #[cfg(windows)]
+        {
+            let projected = c
+                .native_observations
+                .as_ref()
+                .filter(|value| c.fresh(value.generation));
+            last.native_observations.as_ref() == projected
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    };
+    let trace_same = {
+        #[cfg(windows)]
+        {
+            last.process_trace_status == c.process_trace_status
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    };
+    let transport_same = last.transport_latency == c.transport_latency
+        && last.active_transport_latency == c.active_transport_latency;
+    let measured_same = last.measured_process.as_ref()
+        == c.measured_process.as_ref().map(|profile| profile.summary())
+        && last.active_measured_process == c.active_measured_process;
+    let cleanup_same = last.last_cleanup == c.last_cleanup;
+    loaded_project_same
+        && observations_same
+        && active_settings_same
+        && last.latency_profile == c.latency_profile
+        && last.active_latency_profile == c.active_latency_profile
+        && last.audio_settings == c.audio_settings
+        && last.catalog_error == c.catalog_error
+        && last.control == c.control
+        && last.signal_topics == c.signals.topics
+        && last.tone_session == c.tone_session
+        && native_same
+        && trace_same
+        && transport_same
+        && measured_same
+        && cleanup_same
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceJoinError {
@@ -522,6 +700,13 @@ impl ServiceRuntime {
             .spawn(move || {
                 let (handle, mailbox) =
                     ServiceMailbox::with_snapshot(thread::current(), snapshot(&c));
+                // Snapshot publishing is token-gated: `snapshot(&c)` deep-copies
+                // the graph and rebuilds the export projections, so it runs only
+                // when a content token moved, a directly compared input changed,
+                // or a request was consumed (its receipt id is published). The
+                // mailbox's own equality dedup stays as the backstop for token
+                // bumps whose content turns out equivalent.
+                let mut published_revision = snapshot_revision(&c);
                 if hand_tx.send(handle).is_err() {
                     return;
                 }
@@ -562,7 +747,14 @@ impl ServiceRuntime {
                         pool.shutdown();
                     }
                     c.signals.pump_if_due(std::time::Instant::now());
-                    mailbox.publish(snapshot(&c));
+                    let revision = snapshot_revision(&c);
+                    if handled > 0
+                        || revision != published_revision
+                        || !small_snapshot_inputs_match(&c, &mailbox.last_published())
+                    {
+                        mailbox.publish(snapshot(&c));
+                        published_revision = revision;
+                    }
                     if c.core.phase() == SessionPhase::Exited {
                         break;
                     }
@@ -619,9 +811,9 @@ mod snapshot_publish_tests {
                 endpoint_id: "probe-input".into(),
             },
             output_endpoint_id: "probe-output".into(),
-            limit: RunLimit::UntilStopped,
             gain: 1.0,
             pan: 0.0,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 64,
         };
         let generation = c.core.start(spec).expect("probe spec validates");
@@ -852,5 +1044,292 @@ mod snapshot_publish_tests {
             refusal: Some("history overwritten".into()),
         });
         assert_published_change(initial, changed);
+    }
+
+    fn probe_session() -> SessionSpec {
+        SessionSpec {
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+            output_endpoint_id: "render".into(),
+            gain: 1.0,
+            pan: 0.0,
+            limit: RunLimit::UntilStopped,
+            max_block_frames: 256,
+        }
+    }
+
+    /// Reports the context's snapshot-build counter every service round.
+    /// `is_drained == false` keeps the loop cycling on its 10 ms cadence
+    /// without any signal demand, so the test observes pure idle rounds.
+    struct BuildProbeDriver {
+        builds: std::sync::mpsc::SyncSender<u64>,
+        exiting: bool,
+    }
+    impl ServiceDriver for BuildProbeDriver {
+        fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
+            // The probe applies exactly one domain change so the test can
+            // watch a real content change propagate to the publication.
+            if let AppRequest::SetLatencyProfile(profile) = request {
+                c.latency_profile = profile;
+            }
+        }
+        fn poll(&mut self, c: &mut ServiceContext, _: &mut JobPool, _: RoundBudget) {
+            let _ = self
+                .builds
+                .try_send(c.snapshot_builds.load(std::sync::atomic::Ordering::Relaxed));
+        }
+        fn begin_exit(&mut self, _: &mut ServiceContext, _: &mut JobPool) {
+            self.exiting = true;
+        }
+        fn is_drained(&self) -> bool {
+            // Undrained keeps the loop cycling on its 10 ms cadence without
+            // demand; exit must still be able to retire the service.
+            self.exiting
+        }
+    }
+
+    fn collect_rounds(
+        receiver: &std::sync::mpsc::Receiver<u64>,
+        count: usize,
+        timeout: Duration,
+    ) -> Vec<u64> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut rounds = Vec::with_capacity(count);
+        while rounds.len() < count {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_default();
+            assert!(
+                !remaining.is_zero(),
+                "service loop stopped reporting rounds: {rounds:?}"
+            );
+            match receiver.recv_timeout(remaining) {
+                Ok(builds) => rounds.push(builds),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("no round report within budget: {rounds:?}")
+                }
+                Err(error) => panic!("service loop disconnected: {error}: {rounds:?}"),
+            }
+        }
+        rounds
+    }
+
+    /// B-1 regression: rounds whose inputs did not change must not rebuild
+    /// (and republish) the snapshot at all; a real change must rebuild and
+    /// reach the published snapshot.
+    #[test]
+    fn service_loop_skips_snapshot_rebuilds_while_inputs_unchanged() {
+        let (builds_tx, builds_rx) = std::sync::mpsc::sync_channel(256);
+        let runtime = ServiceRuntime::spawn_with_driver(BuildProbeDriver {
+            builds: builds_tx,
+            exiting: false,
+        })
+        .unwrap();
+        let handle = runtime.handle();
+        // Steady run: every report carries the same build count. The old
+        // build-and-compare loop incremented it on every round.
+        let steady = collect_rounds(&builds_rx, 10, Duration::from_secs(5));
+        let baseline = steady[0];
+        assert!(
+            steady.iter().all(|&builds| builds == baseline),
+            "unchanged rounds must skip snapshot rebuilds: {steady:?}"
+        );
+        // A real change: the request round rebuilds exactly once and the
+        // published snapshot carries it to the UI.
+        handle
+            .try_request(AppRequest::SetLatencyProfile(AudioLatencyProfile::Low))
+            .unwrap();
+        let mut rebuilt = None;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while rebuilt.is_none() {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_default();
+            assert!(!remaining.is_zero(), "the edit never rebuilt the snapshot");
+            match builds_rx.recv_timeout(remaining) {
+                Ok(builds) if builds > baseline => rebuilt = Some(builds),
+                Ok(_) => continue,
+                Err(error) => panic!("service loop disconnected: {error}"),
+            }
+        }
+        let rebuilt = rebuilt.expect("edit rebuild observed");
+        // The round's publish lands right after the poll report above, so
+        // wait for it instead of racing the snapshot slot read.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the rebuilt snapshot never reached the UI"
+            );
+            if handle.try_snapshot().unwrap().latency_profile == AudioLatencyProfile::Low {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // And the loop falls silent again until the next real change.
+        let steady = collect_rounds(&builds_rx, 10, Duration::from_secs(5));
+        assert!(
+            steady.iter().all(|&builds| builds == rebuilt),
+            "rounds after the change must skip snapshot rebuilds again: {steady:?}"
+        );
+        crate::ui::finish_service(runtime);
+    }
+
+    /// Every tokened domain must move the revision exactly when its content
+    /// can change the published snapshot; idempotent re-projections must not
+    /// churn it (the hot per-round paths depend on that).
+    #[test]
+    fn snapshot_revision_tracks_every_tokened_domain() {
+        let mut c = ServiceContext::default();
+        let initial = snapshot_revision(&c);
+        // A projection that changes nothing (wrong generation) is inert.
+        c.core.managed_execution(SessionGeneration(7), true, None);
+        assert_eq!(
+            snapshot_revision(&c),
+            initial,
+            "an inert projection must not churn any token"
+        );
+
+        // Graph domain: an accepted edit advances the candidate revision.
+        let before = snapshot_revision(&c);
+        let gain = primary_node_of(
+            &c.graph.snapshot_ref().graph,
+            moiren_core::graph::NodeKind::Gain,
+        )
+        .expect("fixed chain gain")
+        .id();
+        c.graph
+            .edit(GraphEdit::SetGain {
+                node: gain,
+                gain: 0.5,
+            })
+            .expect("gain edit validates");
+        assert_ne!(snapshot_revision(&c), before, "graph edit must bump");
+
+        // Core domain: desired intent and execution projection.
+        let before = snapshot_revision(&c);
+        c.core
+            .managed_desired(probe_session())
+            .expect("spec validates");
+        assert_ne!(snapshot_revision(&c), before, "desired change must bump");
+        let generation = c.core.generation();
+        c.core.managed_execution(generation, false, None);
+        let starting = snapshot_revision(&c);
+        // The driver re-projects the same execution facts every round.
+        c.core.managed_execution(generation, false, None);
+        assert_eq!(
+            snapshot_revision(&c),
+            starting,
+            "steady re-projection must not churn the core token"
+        );
+        c.core.managed_execution(generation, true, None);
+        assert_ne!(
+            snapshot_revision(&c),
+            starting,
+            "running transition must bump"
+        );
+
+        // Exports domain: availability drives every projected resource state.
+        let before = snapshot_revision(&c);
+        c.exports.set_available(true);
+        assert_ne!(snapshot_revision(&c), before, "availability flip must bump");
+        let available = snapshot_revision(&c);
+        c.exports.set_available(true);
+        assert_eq!(
+            snapshot_revision(&c),
+            available,
+            "idempotent availability must not churn"
+        );
+        c.exports
+            .set_authorizations(&[ExportAuthorization {
+                endpoint_id: moiren_engine::node::VirtualEndpointId::from_bytes([0x11; 16]),
+                allow_default: true,
+            }])
+            .expect("authorization validates");
+        assert_ne!(
+            snapshot_revision(&c),
+            available,
+            "authorization change must bump"
+        );
+
+        // Catalog domain: content-equal refresh keeps the token, a real
+        // refresh moves it.
+        let before = snapshot_revision(&c);
+        c.replace_catalog(DeviceCatalog::default());
+        assert_eq!(
+            snapshot_revision(&c),
+            before,
+            "content-equal catalog refresh must not churn"
+        );
+        let catalog = DeviceCatalog {
+            default_output_endpoint_id: Some("probe-output".into()),
+            ..DeviceCatalog::default()
+        };
+        c.replace_catalog(catalog);
+        assert_ne!(
+            snapshot_revision(&c),
+            before,
+            "catalog content change must bump"
+        );
+    }
+
+    /// The directly compared snapshot inputs must decide exactly like a full
+    /// rebuild followed by the publish dedup: `small_snapshot_inputs_match`
+    /// against the published snapshot must agree with `snapshot(&c) ==
+    /// published`, including the freshness filters applied at publication.
+    #[test]
+    fn small_snapshot_inputs_match_tracks_directly_compared_fields() {
+        let mut c = ServiceContext::default();
+        let published = snapshot(&c);
+        let oracle = |c: &ServiceContext, published: &AppSnapshot| {
+            small_snapshot_inputs_match(c, published) == (snapshot(c) == *published)
+        };
+        assert!(oracle(&c, &published), "unchanged context: both agree");
+
+        c.latency_profile = AudioLatencyProfile::Low;
+        assert!(!small_snapshot_inputs_match(&c, &published));
+        assert!(oracle(&c, &published), "latency profile: both agree");
+        let published = snapshot(&c);
+
+        c.control.pending_gain_pan = Some((0.5, 0.0));
+        assert!(!small_snapshot_inputs_match(&c, &published));
+        assert!(oracle(&c, &published), "control: both agree");
+        let published = snapshot(&c);
+
+        c.audio_settings.processing.block_frames = 128;
+        assert!(!small_snapshot_inputs_match(&c, &published));
+        assert!(oracle(&c, &published), "audio settings: both agree");
+        let published = snapshot(&c);
+
+        c.catalog_error = Some("probe failure".into());
+        assert!(!small_snapshot_inputs_match(&c, &published));
+        assert!(oracle(&c, &published), "catalog error: both agree");
+        let published = snapshot(&c);
+
+        c.tone_session = true;
+        assert!(!small_snapshot_inputs_match(&c, &published));
+        assert!(oracle(&c, &published), "tone session: both agree");
+
+        // The active-settings publication applies the same freshness filter
+        // as `snapshot`, so both views must agree through the lifecycle.
+        c.core
+            .managed_desired(probe_session())
+            .expect("spec validates");
+        let generation = c.core.generation();
+        c.core.managed_execution(generation, true, None);
+        assert!(oracle(&c, &published), "running, no active settings: agree");
+        c.active_audio_settings = Some(c.audio_settings.clone());
+        assert!(!small_snapshot_inputs_match(&c, &published));
+        assert!(oracle(&c, &published), "fresh active settings: agree");
+        let published = snapshot(&c);
+        assert!(small_snapshot_inputs_match(&c, &published));
+        // Advancing the intent generation retires the active-settings slot:
+        // the published snapshot filters it as stale.
+        c.core.start(probe_session()).expect("spec validates");
+        assert!(
+            oracle(&c, &published),
+            "stale active settings filtered: agree"
+        );
     }
 }

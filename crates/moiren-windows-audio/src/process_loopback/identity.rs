@@ -2,7 +2,7 @@
 use super::ProcessIdentity;
 use crate::{
     capture::{CaptureError, wasapi::api},
-    owner::{OwnedHandle, Process},
+    win32_raii::{OwnedHandle, Process},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use windows::Win32::{

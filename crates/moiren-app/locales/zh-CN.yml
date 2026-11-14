@@ -20,27 +20,6 @@ _version: 2
 "Show error details":
   en: Show error details
   zh-CN: 查看错误详情
-"Start":
-  en: Start
-  zh-CN: 启动
-"Stop":
-  en: Stop
-  zh-CN: 停止
-"%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}":
-  en: "%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}"
-  zh-CN: "%{khz} kHz · %{frames} 采样 · %{ms} ms · %{precision}"
-"%{khz} kHz · period unknown · %{precision}":
-  en: "%{khz} kHz · period unknown · %{precision}"
-  zh-CN: "%{khz} kHz · 周期未知 · %{precision}"
-"%{source} → %{sink}":
-  en: "%{source} → %{sink}"
-  zh-CN: "%{source} → %{sink}"
-"Tone generator · %{hz} Hz":
-  en: Tone generator · %{hz} Hz
-  zh-CN: 测试音发生器 · %{hz} Hz
-"Apply graph":
-  en: Apply graph
-  zh-CN: 应用图
 "Mono":
   en: Mono
   zh-CN: 单声道
@@ -104,9 +83,6 @@ _version: 2
 "Output":
   en: Output
   zh-CN: 输出
-"Active session":
-  en: Active session
-  zh-CN: 活动会话
 "Actual native timing":
   en: Actual native timing
   zh-CN: 实际原生时序
@@ -155,48 +131,6 @@ _version: 2
 "Determined by ASIO driver":
   en: Determined by ASIO driver
   zh-CN: 由 ASIO 驱动决定
-"Requested device buffer (frames / ms)":
-  en: Requested device buffer (frames / ms)
-  zh-CN: 请求设备缓冲（帧 / 毫秒）
-"Requested device period (frames)":
-  en: Requested device period (frames)
-  zh-CN: 请求设备周期（帧）
-"Render queue":
-  en: Render queue
-  zh-CN: 渲染队列
-"Full native capacity":
-  en: Full native capacity
-  zh-CN: 填满原生缓冲
-"Explicit render target":
-  en: Explicit render target
-  zh-CN: 显式渲染目标
-"Render target":
-  en: Render target
-  zh-CN: 渲染目标
-"Render wake margin":
-  en: Render wake margin
-  zh-CN: 渲染唤醒余量
-"Render callback budget":
-  en: Render callback budget
-  zh-CN: 渲染回调预算
-"Requested render queue":
-  en: Requested render queue
-  zh-CN: 请求渲染队列
-"Active render queue":
-  en: Active render queue
-  zh-CN: 活动渲染队列
-"Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.":
-  en: Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.
-  zh-CN: 单位为输出采样率下的帧。原生准备要求目标不小于实际周期、唤醒余量与回调预算之和，且不超过容量。输入目标独立设置；此配置不保证延迟。
-"Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate":
-  en: Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate
-  zh-CN: 目标 %{target}；唤醒余量 %{wake}；回调预算 %{callback}（输出采样率下的帧）
-"Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.":
-  en: Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.
-  zh-CN: 共享模式设备周期必须为 64～4096 帧的整数；留空使用驱动默认值。
-"Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.":
-  en: Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.
-  zh-CN: 精确请求共享模式设备周期（64～4096 帧），留空使用驱动默认值。原生准备阶段会检查设备是否支持；此值与引擎处理块独立。
 "Unsaved changes":
   en: Unsaved changes
   zh-CN: 有未保存的更改
@@ -275,12 +209,9 @@ _version: 2
 "Outputs":
   en: Outputs
   zh-CN: 输出
-"Applications":
-  en: Applications
-  zh-CN: 应用程序
-"Exports":
-  en: Exports
-  zh-CN: 导出
+"Virtual devices":
+  en: Virtual devices
+  zh-CN: 虚拟设备
 "Clock":
   en: Clock
   zh-CN: 时钟
@@ -302,81 +233,27 @@ _version: 2
 "Default":
   en: Default
   zh-CN: 默认
-"Configure":
-  en: Configure
-  zh-CN: 配置
+"Bound ×%{count}":
+  en: "Bound ×%{count}"
+  zh-CN: "已绑定 ×%{count}"
+"In use ×%{count}":
+  en: "In use ×%{count}"
+  zh-CN: "使用中 ×%{count}"
 "Active":
   en: Active
   zh-CN: 活动
-"Next start":
-  en: Next start
-  zh-CN: 下次启动
-"Use next start":
-  en: Use next start
-  zh-CN: 下次启动时使用
-"Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.":
-  en: Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.
-  zh-CN: 应用回环需要 WASAPI。请在设置中选择 WASAPI 以使用应用音源。
-"Captures the selected process and its descendants, not an individual browser tab or audio session.":
-  en: Captures the selected process and its descendants, not an individual browser tab or audio session.
-  zh-CN: 捕获所选进程及其后代进程，而非单个浏览器标签页或音频会话。
-"No capturable applications":
-  en: No capturable applications
-  zh-CN: 没有可捕获的应用程序
-"Start an application that plays audio, then refresh. Protected applications may be unavailable.":
-  en: Start an application that plays audio, then refresh. Protected applications may be unavailable.
-  zh-CN: 先启动一个正在播放音频的应用，再刷新。受保护的应用可能不可用。
-"PID %{pid} · created %{created}":
-  en: "PID %{pid} · created %{created}"
-  zh-CN: "PID %{pid} · 创建于 %{created}"
 "Active audio clocks":
   en: Active audio clocks
   zh-CN: 活动音频时钟
-"Input sample rate":
-  en: Input sample rate
-  zh-CN: 输入采样率
-"Output sample rate":
-  en: Output sample rate
-  zh-CN: 输出采样率
-"Clock correction":
-  en: Clock correction
-  zh-CN: 时钟校正
-"Input buffer fill":
-  en: Input buffer fill
-  zh-CN: 输入缓冲填充
-"Processed":
-  en: Processed
-  zh-CN: 已处理
-"Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.":
-  en: Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.
-  zh-CN: 时钟校正与缓冲存量来自活动监视器。缓冲填充量不等于端到端延迟。
-"No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.":
-  en: No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.
-  zh-CN: 没有活动的监视器时钟观测。启动物理输入或应用会话以查看时钟适配。
-"Session resources":
-  en: Session resources
-  zh-CN: 会话资源
 "Source":
   en: Source
   zh-CN: 音源
-"No active session":
-  en: No active session
-  zh-CN: 无活动会话
-"Source mode":
-  en: Source mode
-  zh-CN: 音源模式
-"Select available resources":
-  en: Select available resources
-  zh-CN: 选择可用资源
-"Not selected":
-  en: Not selected
-  zh-CN: 未选择
-"Selecting another resource leaves the running session unchanged. Stop and start to switch devices.":
-  en: Selecting another resource leaves the running session unchanged. Stop and start to switch devices.
-  zh-CN: 选择其他资源不会影响正在运行的会话。停止并重新启动即可切换设备。
 "Refresh devices":
   en: Refresh devices
   zh-CN: 刷新设备
+"Select a device to view its configuration and monitoring.":
+  en: Select a device to view its configuration and monitoring.
+  zh-CN: 选择一个设备查看其配置与监控。
 "ASIO discovery failed: %{error}. Refresh devices to retry.":
   en: "ASIO discovery failed: %{error}. Refresh devices to retry."
   zh-CN: "ASIO 发现失败：%{error}。刷新设备以重试。"
@@ -410,48 +287,57 @@ _version: 2
 "Active request":
   en: Active request
   zh-CN: 活动请求
-"Observed session timing":
-  en: Observed session timing
-  zh-CN: 观测到的会话时序
-"This device is not bound to the active source/output pair.":
-  en: This device is not bound to the active source/output pair.
-  zh-CN: 此设备未绑定到活动的音源/输出对。
+"Locate in graph":
+  en: Locate in graph
+  zh-CN: 在图中定位
+"Binding changed; the old stream is still running":
+  en: Binding changed; the old stream is still running
+  zh-CN: 绑定已变更，旧流仍在运行
+"Waiting to take effect":
+  en: Waiting to take effect
+  zh-CN: 等待生效
+"No nodes are bound to this device.":
+  en: No nodes are bound to this device.
+  zh-CN: 当前没有节点绑定此设备。
+"Users":
+  en: Users
+  zh-CN: 使用者
 "No active native timing. Start audio to inspect the actual stream clocks.":
   en: No active native timing. Start audio to inspect the actual stream clocks.
   zh-CN: 暂无活动的原生时序。启动音频后即可查看实际流时钟。
-"Configure never changes routing; choosing Use next start on a device row updates the candidate graph.":
-  en: Configure never changes routing; choosing Use next start on a device row updates the candidate graph.
-  zh-CN: 配置不会改变路由；在设备行选择“下次启动时使用”才会更新候选图。
-"Export is no longer in this project's candidate graph":
-  en: Export is no longer in this project's candidate graph
-  zh-CN: 该导出已不在此项目的候选图中
-"Virtual exports":
-  en: Virtual exports
-  zh-CN: 虚拟导出
-"Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
-  en: Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
-  zh-CN: 在此编辑项目意图，然后应用图以请求激活。端点存在并不代表音频正在流动。停止后端点仍保留，但闸门关闭。
-"Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.":
-  en: "Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export."
-  zh-CN: 将选中的通道数匹配的图 IO 绑定：播放使用源节点；麦克风使用输出节点。一个 IO 只能属于一个导出。
 "Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.":
   en: Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.
   zh-CN: 默认资格仅是本机上的许可，不会保存到项目中。关闭时既阻止 Windows 自动选择默认，也阻止用户手动设为默认。开启只表示允许成为默认，并不会设置 Windows 默认设备。
-"Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.":
-  en: Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.
-  zh-CN: 更改声道数、名称或默认资格会安全退役并重建端点。再次应用即可恢复；更改声道数前请先解绑不兼容的图 IO。
-"No virtual exports yet. Create one above; it starts unbound.":
-  en: No virtual exports yet. Create one above; it starts unbound.
-  zh-CN: 还没有虚拟导出。在上方创建一个；初始为未绑定状态。
 "Playback":
   en: Playback
   zh-CN: 播放
+"No virtual devices yet. Create one above; it starts unbound.":
+  en: No virtual devices yet. Create one above; it starts unbound.
+  zh-CN: 还没有虚拟设备。在上方创建一个；初始为未绑定状态。
+"Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first.":
+  en: "Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first."
+  zh-CN: 更改声道、名称或默认资格会安全地退役并重建端点；请先在 Graph 的 IO 节点上清除或更改绑定。
+"Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Choose this device on a Graph input/output node; each IO node belongs to one virtual device.":
+  en: "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Choose this device on a Graph input/output node; each IO node belongs to one virtual device."
+  zh-CN: 虚拟扬声器：其他应用把声音播放进 Moiren 的输入。虚拟麦克风：Moiren 的输出送给其他应用。在 Graph 的输入/输出节点上选择此设备；每个 IO 节点只属于一个虚拟设备。
+"The clock overview groups every live stream by device. Start audio to see it.":
+  en: The clock overview groups every live stream by device. Start audio to see it.
+  zh-CN: 时钟总览按设备列出每条生效流。启动音频后即可查看。
+"Create and configure virtual devices here. Bind them on Graph input/output nodes.":
+  en: Create and configure virtual devices here. Bind them on Graph input/output nodes.
+  zh-CN: 在这里创建和配置虚拟设备；绑定请在 Graph 的输入/输出节点上进行。
+"The virtual device is no longer in this project's graph":
+  en: "The virtual device is no longer in this project's graph"
+  zh-CN: 该虚拟设备已不在此工程的图中
+"Create":
+  en: Create
+  zh-CN: 创建
+"Create virtual device":
+  en: Create virtual device
+  zh-CN: 创建虚拟设备
 "Microphone":
   en: Microphone
   zh-CN: 麦克风
-"Create export":
-  en: Create export
-  zh-CN: 创建导出
 "Endpoint name (1-63 UTF-16 units; no control characters)":
   en: Endpoint name (1-63 UTF-16 units; no control characters)
   zh-CN: 端点名称（1-63 个 UTF-16 单元；不含控制字符）
@@ -485,15 +371,6 @@ _version: 2
 "Inactive":
   en: Inactive
   zh-CN: 未激活
-"Candidate graph binding":
-  en: Candidate graph binding
-  zh-CN: 候选图绑定
-"Unbound":
-  en: Unbound
-  zh-CN: 未绑定
-"Candidate intent":
-  en: Candidate intent
-  zh-CN: 候选意图
 "Enabled":
   en: Enabled
   zh-CN: 已启用
@@ -509,27 +386,21 @@ _version: 2
 "Rename":
   en: Rename
   zh-CN: 重命名
-"Disable intent":
-  en: Disable intent
-  zh-CN: 禁用意图
-"Enable intent":
-  en: Enable intent
-  zh-CN: 启用意图
-"Bind":
-  en: Bind
-  zh-CN: 绑定
-"Bind selected IO":
-  en: Bind selected IO
-  zh-CN: 绑定选中的 IO
-"Unbind":
-  en: Unbind
-  zh-CN: 解绑
-"Remove intent":
-  en: Remove intent
-  zh-CN: 移除意图
-"Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.":
-  en: Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.
-  zh-CN: 已从候选图移除。服务会保留生命周期跟踪，直到确认安全退役。
+"Removed from the graph. The service retains lifecycle tracking until safe retirement is confirmed.":
+  en: Removed from the graph. The service retains lifecycle tracking until safe retirement is confirmed.
+  zh-CN: 已从图中移除。服务会保留生命周期跟踪，直到确认安全退役。
+"Unbound. Choose this device on a Graph input/output node.":
+  en: Unbound. Choose this device on a Graph input/output node.
+  zh-CN: 未绑定。请在 Graph 的输入/输出节点上选择此设备。
+"Remove":
+  en: Remove
+  zh-CN: 移除
+"Enable":
+  en: Enable
+  zh-CN: 启用
+"Disable":
+  en: Disable
+  zh-CN: 停用
 "Revoke local default eligibility":
   en: Revoke local default eligibility
   zh-CN: 撤销本机默认资格
@@ -569,9 +440,6 @@ _version: 2
 "Select a node to inspect its properties.":
   en: Select a node to inspect its properties.
   zh-CN: 选择一个节点以查看其属性。
-"Name":
-  en: Name
-  zh-CN: 名称
 "Channel strip":
   en: Channel strip
   zh-CN: 通道条
@@ -653,9 +521,6 @@ _version: 2
 "rename":
   en: rename
   zh-CN: 重命名
-"Waiting for Apply graph":
-  en: Waiting for Apply graph
-  zh-CN: 等待应用图
 "Unavailable for this node":
   en: Unavailable for this node
   zh-CN: 此节点不可用
@@ -665,9 +530,6 @@ _version: 2
 "Status":
   en: Status
   zh-CN: 状态
-"The candidate graph is not the confirmed runtime. Apply graph to observe this node.":
-  en: The candidate graph is not the confirmed runtime. Apply graph to observe this node.
-  zh-CN: 候选图尚未成为确认的运行图。应用图以观测此节点。
 "This node has no managed level topic in the current service projection.":
   en: This node has no managed level topic in the current service projection.
   zh-CN: 当前服务投影中此节点没有受管电平主题。
@@ -677,9 +539,6 @@ _version: 2
 "RMS %{index}":
   en: "RMS %{index}"
   zh-CN: "RMS %{index}"
-"Candidate graph · audio owner unchanged":
-  en: Candidate graph · audio owner unchanged
-  zh-CN: 候选图 · 音频所有者未变化
 "Parametric EQ":
   en: Parametric EQ
   zh-CN: 参量均衡器
@@ -761,12 +620,6 @@ _version: 2
 "Buffer":
   en: Buffer
   zh-CN: 缓冲
-"Add 1 second":
-  en: Add 1 second
-  zh-CN: 增加 1 秒
-"Remove 1 second":
-  en: Remove 1 second
-  zh-CN: 减少 1 秒
 "Level meter":
   en: Level meter
   zh-CN: 电平表
@@ -857,9 +710,6 @@ _version: 2
 "%{source} to %{destination}: %{value}":
   en: "%{source} to %{destination}: %{value}"
   zh-CN: "%{source} 至 %{destination}：%{value}"
-"Routing matrix":
-  en: Routing matrix
-  zh-CN: 路由矩阵
 "Outputs → Inputs":
   en: Outputs → Inputs
   zh-CN: 输出 → 输入
@@ -965,45 +815,30 @@ _version: 2
 "Project opened":
   en: Project opened
   zh-CN: 项目已打开
+"Could not %{operation} %{path}: %{source}":
+  en: "Could not %{operation} %{path}: %{source}"
+  zh-CN: "无法%{operation} %{path}：%{source}"
+"Invalid JSON in %{path}: %{source}":
+  en: "Invalid JSON in %{path}: %{source}"
+  zh-CN: "%{path} 中的 JSON 无效：%{source}"
+"Invalid %{field}: %{reason}":
+  en: "Invalid %{field}: %{reason}"
+  zh-CN: "%{field} 无效：%{reason}"
+"Unsupported %{document} document version %{version}":
+  en: "Unsupported %{document} document version %{version}"
+  zh-CN: "不支持的 %{document} 文档版本 %{version}"
+"Document %{path} exceeds the 8 MiB limit":
+  en: "Document %{path} exceeds the 8 MiB limit"
+  zh-CN: "文档 %{path} 超出 8 MiB 限制"
 "Mixer":
   en: Mixer
   zh-CN: 调音台
-"Drag headers to reorder · drag dividers to resize":
-  en: Drag headers to reorder · drag dividers to resize
-  zh-CN: 拖动标题排序 · 拖动分隔条调整宽度
 "SENDS":
   en: SENDS
   zh-CN: 发送
-"PRE":
-  en: PRE
-  zh-CN: 推子前
-"POST":
-  en: POST
-  zh-CN: 推子后
-"No sends · connect in Graph":
-  en: No sends · connect in Graph
-  zh-CN: 无发送 · 请在图中连接
-"MONO":
-  en: MONO
-  zh-CN: 单声道
-"SWAP":
-  en: SWAP
-  zh-CN: 交换
-"L ONLY":
-  en: L ONLY
-  zh-CN: 仅左声道
-"R ONLY":
-  en: R ONLY
-  zh-CN: 仅右声道
-"CH %{channel} ONLY":
-  en: "CH %{channel} ONLY"
-  zh-CN: "仅第 %{channel} 声道"
 "Move channel":
   en: Move channel
   zh-CN: 移动通道
-"Pending":
-  en: Pending
-  zh-CN: 待应用
 "No strips · open Moiren to build a graph":
   en: No strips · open Moiren to build a graph
   zh-CN: 没有通道条 · 打开 Moiren 搭建图
@@ -1097,6 +932,12 @@ _version: 2
 "Choose an output":
   en: Choose an output
   zh-CN: 选择输出
+"L/R":
+  en: L/R
+  zh-CN: 左/右
+"%{channels} ch":
+  en: "%{channels} ch"
+  zh-CN: "%{channels} 声道"
 "%{ms} ms · %{percent}% wet":
   en: "%{ms} ms · %{percent}% wet"
   zh-CN: "%{ms} ms · 湿声 %{percent}%"
@@ -1142,6 +983,9 @@ _version: 2
 "No publisher":
   en: No publisher
   zh-CN: 无发布者
+"Meter subscription failed":
+  en: Meter subscription failed
+  zh-CN: 电平表订阅失败
 "Meter subscription: %{error}":
   en: "Meter subscription: %{error}"
   zh-CN: "电平表订阅：%{error}"
@@ -1160,147 +1004,57 @@ _version: 2
 "Failed":
   en: Failed
   zh-CN: 失败
+"Waiting for devices":
+  en: Waiting for devices
+  zh-CN: 等待设备
+"Waiting for audio devices to return":
+  en: Waiting for audio devices to return
+  zh-CN: 等待音频设备回来后自动恢复
 "Exiting":
   en: Exiting
   zh-CN: 正在退出
 "Exited":
   en: Exited
   zh-CN: 已退出
-"Explicit stream buffers control professional audio latency":
-  en: Explicit stream buffers control professional audio latency
-  zh-CN: 显式流缓冲控制专业音频延迟
-"Active profile matches selection":
-  en: Active profile matches selection
-  zh-CN: 活动策略与所选一致
-"Pending: apply graph or start again to use selected profile":
-  en: "Pending: apply graph or start again to use selected profile"
-  zh-CN: 待生效：应用图或重新启动后使用所选策略
-"Selected profile applies on next Apply / Start":
-  en: Selected profile applies on next Apply / Start
-  zh-CN: 所选策略将在下次应用 / 启动时生效
 "Master output":
   en: Master output
   zh-CN: 主输出
+"Driver-reported latency":
+  en: Driver-reported latency
+  zh-CN: 驱动报告延迟
+"ASIO callback counters":
+  en: ASIO callback counters
+  zh-CN: ASIO 回调计数
+"Bridge counters":
+  en: Bridge counters
+  zh-CN: 桥接计数
+"Requested buffer":
+  en: Requested buffer
+  zh-CN: 请求缓冲
+"Backend / mode":
+  en: Backend / mode
+  zh-CN: 后端 / 模式
+"Actual stream":
+  en: Actual stream
+  zh-CN: 实际流
 "Follower output":
   en: Follower output
   zh-CN: 从属输出
-"%{prefix}: actual stream":
-  en: "%{prefix}: actual stream"
-  zh-CN: "%{prefix}：实际流"
 "ASIO driver (driver owns mode)":
   en: ASIO driver (driver owns mode)
   zh-CN: ASIO 驱动（模式由驱动决定）
-"%{prefix}: backend / mode":
-  en: "%{prefix}: backend / mode"
-  zh-CN: "%{prefix}：后端 / 模式"
-"%{prefix}: requested buffer":
-  en: "%{prefix}: requested buffer"
-  zh-CN: "%{prefix}：请求缓冲"
-"%{prefix}: bridge counters":
-  en: "%{prefix}: bridge counters"
-  zh-CN: "%{prefix}：桥接计数"
 "Dropped %{dropped} / silence %{silent} frames":
   en: "Dropped %{dropped} / silence %{silent} frames"
   zh-CN: "丢弃 %{dropped} / 静音 %{silent} 帧"
-"%{prefix}: ASIO callback counters":
-  en: "%{prefix}: ASIO callback counters"
-  zh-CN: "%{prefix}：ASIO 回调计数"
 "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)":
   en: "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)"
   zh-CN: "%{callbacks} 次回调；采集丢弃 %{dropped} / 渲染静音 %{silent} 帧（含启动阶段）"
-"%{prefix}: driver-reported latency":
-  en: "%{prefix}: driver-reported latency"
-  zh-CN: "%{prefix}：驱动报告延迟"
 "Input %{input} / output %{output} frames; excludes application queues":
   en: "Input %{input} / output %{output} frames; excludes application queues"
   zh-CN: "输入 %{input} / 输出 %{output} 帧；不含应用队列"
 "Unavailable (not measured round-trip latency)":
   en: Unavailable (not measured round-trip latency)
   zh-CN: 不可用（未测量往返延迟）
-"Application input":
-  en: Application input
-  zh-CN: 应用输入
-"Virtual playback":
-  en: Virtual playback
-  zh-CN: 虚拟播放
-"Virtual microphone":
-  en: Virtual microphone
-  zh-CN: 虚拟麦克风
-"%{prefix}: actual timing":
-  en: "%{prefix}: actual timing"
-  zh-CN: "%{prefix}：实际时序"
-"period unknown":
-  en: period unknown
-  zh-CN: 周期未知
-"%{rate} Hz; %{period}; capacity %{capacity} frames":
-  en: "%{rate} Hz; %{period}; capacity %{capacity} frames"
-  zh-CN: "%{rate} Hz；%{period}；容量 %{capacity} 帧"
-"Virtual capture; no hardware period":
-  en: Virtual capture; no hardware period
-  zh-CN: 虚拟采集；无硬件周期
-"%{prefix}: period request":
-  en: "%{prefix}: period request"
-  zh-CN: "%{prefix}：周期请求"
-"%{ms} ms requested":
-  en: "%{ms} ms requested"
-  zh-CN: "已请求 %{ms} ms"
-"Device default requested":
-  en: Device default requested
-  zh-CN: 已请求设备默认值
-"%{prefix}: initialization":
-  en: "%{prefix}: initialization"
-  zh-CN: "%{prefix}：初始化"
-"%{prefix}: effective prepared render queue":
-  en: "%{prefix}: effective prepared render queue"
-  zh-CN: "%{prefix}：实际准备的渲染队列"
-"Target %{target} / capacity %{capacity} frames":
-  en: "Target %{target} / capacity %{capacity} frames"
-  zh-CN: "目标 %{target} / 容量 %{capacity} 帧"
-"%{prefix}: effective prepared bridge queue":
-  en: "%{prefix}: effective prepared bridge queue"
-  zh-CN: "%{prefix}：实际准备的桥接队列"
-"Prime %{prime} / capacity %{capacity} frames":
-  en: "Prime %{prime} / capacity %{capacity} frames"
-  zh-CN: "预填充 %{prime} / 容量 %{capacity} 帧"
-"Stream %{index}":
-  en: "Stream %{index}"
-  zh-CN: "流 %{index}"
-"Unmapped stream":
-  en: Unmapped stream
-  zh-CN: 未映射的流
-"%{prefix}: live queue / clock":
-  en: "%{prefix}: live queue / clock"
-  zh-CN: "%{prefix}：实时队列 / 时钟"
-"%{prefix}: faults / recovery":
-  en: "%{prefix}: faults / recovery"
-  zh-CN: "%{prefix}：故障 / 恢复"
-"%{prefix}: prepared boundary capacity":
-  en: "%{prefix}: prepared boundary capacity"
-  zh-CN: "%{prefix}：已准备的边界容量"
-"%{prefix}: total pre-transfer content target":
-  en: "%{prefix}: total pre-transfer content target"
-  zh-CN: "%{prefix}：传输前总内容目标"
-"%{prefix}: post-transfer occupancy / correction":
-  en: "%{prefix}: post-transfer occupancy / correction"
-  zh-CN: "%{prefix}：传输后占用量 / 校正"
-"%{prefix}: cumulative boundary events":
-  en: "%{prefix}: cumulative boundary events"
-  zh-CN: "%{prefix}：累计边界事件"
-"%{frames} native frames at 48 kHz (storage headroom)":
-  en: "%{frames} native frames at 48 kHz (storage headroom)"
-  zh-CN: "%{frames} 个 48 kHz 原生帧（存储余量）"
-"%{frames} native frames at 48 kHz":
-  en: "%{frames} native frames at 48 kHz"
-  zh-CN: "%{frames} 个 48 kHz 原生帧"
-"%{frames} native frames at 48 kHz; applied %{ppm} ppm":
-  en: "%{frames} native frames at 48 kHz; applied %{ppm} ppm"
-  zh-CN: "%{frames} 个 48 kHz 原生帧；已应用 %{ppm} ppm"
-"Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)":
-  en: "Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)"
-  zh-CN: "Xrun %{xruns} / 软事件 %{soft} 次（非驱动丢帧数或静音帧数）"
-"Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}":
-  en: "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}"
-  zh-CN: "欠载 %{underrun} / 丢弃 %{dropped} 帧；复位 %{resets} / 积压恢复 %{recoveries}"
 "Applying changes...":
   en: Applying changes...
   zh-CN: 正在应用更改…
@@ -1328,18 +1082,6 @@ _version: 2
 "Next start · engine stopped":
   en: Next start · engine stopped
   zh-CN: 下次启动 · 引擎已停止
-"Test tone":
-  en: Test tone
-  zh-CN: 测试音
-"Application":
-  en: Application
-  zh-CN: 应用程序
-"Choose an available source and output before starting.":
-  en: Choose an available source and output before starting.
-  zh-CN: 启动前请选择可用的音源与输出。
-"Graph is not ready: %{error}":
-  en: "Graph is not ready: %{error}"
-  zh-CN: "图尚未就绪：%{error}"
 "Unavailable output":
   en: Unavailable output
   zh-CN: 输出不可用
@@ -1358,9 +1100,6 @@ _version: 2
 "Show Moiren":
   en: Show Moiren
   zh-CN: 显示 Moiren
-"Stop Session":
-  en: Stop Session
-  zh-CN: 停止会话
 "Exit":
   en: Exit
   zh-CN: 退出
@@ -1415,48 +1154,111 @@ _version: 2
 "32-bit PCM":
   en: 32-bit PCM
   zh-CN: 32 位 PCM
-"INPUTS":
-  en: INPUTS
-  zh-CN: 输入
 "Unknown":
   en: Unknown
   zh-CN: 未知
-"%{name} → in %{port}":
-  en: "%{name} → in %{port}"
-  zh-CN: "%{name} → 输入 %{port}"
 "%{name} · out %{source_port} → %{target} · in %{port}":
   en: "%{name} · out %{source_port} → %{target} · in %{port}"
   zh-CN: "%{name} · 输出 %{source_port} → %{target} · 输入 %{port}"
-"Resource · %{name}":
-  en: "Resource · %{name}"
-  zh-CN: "资源 · %{name}"
 "No inputs":
   en: No inputs
   zh-CN: 无输入
 "No sends":
   en: No sends
   zh-CN: 无发送
-"Enable send; turning it off preserves its gain":
-  en: Enable send; turning it off preserves its gain
-  zh-CN: 启用发送；关闭时保留增益设置
+"Add input (up to %{max})":
+  en: "Add input (up to %{max})"
+  zh-CN: "添加输入（最多 %{max} 路）"
+"Manage inputs (%{used} of %{max})":
+  en: "Manage inputs (%{used} of %{max})"
+  zh-CN: "管理输入（已用 %{used} / %{max}）"
+"Remove this input":
+  en: Remove this input
+  zh-CN: 移除输入
+"Choose inputs":
+  en: Choose inputs
+  zh-CN: 选择输入
+"In %{port}":
+  en: "In %{port}"
+  zh-CN: "输入 %{port}"
+"Connected — uncheck to disconnect":
+  en: Connected — uncheck to disconnect
+  zh-CN: 已连接 — 取消勾选即断开
+"Input limit reached (%{max}) — release one first":
+  en: "Input limit reached (%{max}) — release one first"
+  zh-CN: "已达上限 %{max} 路 — 先取消一路再勾选"
+"Would close a feedback loop — this source already listens to the strip":
+  en: Would close a feedback loop — this source already listens to the strip
+  zh-CN: 会形成反馈环 — 该节点已在本通道下游
+"Channel counts differ (%{from} → %{to})":
+  en: "Channel counts differ (%{from} → %{to})"
+  zh-CN: "声道数不同（%{from} → %{to}）"
+"This connection is not possible":
+  en: This connection is not possible
+  zh-CN: 无法建立此连接
+"Check to connect to the next free input":
+  en: Check to connect to the next free input
+  zh-CN: 勾选即连接到下一个空闲输入口
+"Send enabled — click to mute; the gain is preserved":
+  en: Send enabled — click to mute; the gain is preserved
+  zh-CN: 发送已启用 — 点击箭头静音（保留电平）
+"Send muted — click to enable; the gain is preserved":
+  en: Send muted — click to enable; the gain is preserved
+  zh-CN: 发送已静音 — 点击箭头恢复（保留电平）
+"Click to enter the send level (−60 … +24 dB)":
+  en: "Click to enter the send level (−60 … +24 dB)"
+  zh-CN: "点击输入发送电平（−60 … +24 dB）"
+"Collapse or expand the sends of every strip":
+  en: Collapse or expand the sends of every strip
+  zh-CN: 折叠 / 展开所有通道条的发送列表
 "PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim.":
   en: "PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim."
-  zh-CN: "PRE：位于声道模式、声像与静音之后，增益与 DIM 之前。POST：位于增益与 DIM 之后。"
+  zh-CN: "推子前：位于声道模式、声像与静音之后，增益与衰减之前。推子后：位于增益与衰减之后。"
 "Mute this channel":
   en: Mute this channel
   zh-CN: 静音此通道
 "Solo this channel and its connected signal path":
   en: Solo this channel and its connected signal path
   zh-CN: 独奏此通道及其相连的信号路径
+"M":
+  en: M
+  zh-CN: M
+"S":
+  en: S
+  zh-CN: S
 "Stereo -> Mono average -> Left to both -> Right to both -> Swap":
   en: Stereo -> Mono average -> Left to both -> Right to both -> Swap
   zh-CN: 立体声 → 单声道平均 → 左声道复制到双侧 → 右声道复制到双侧 → 交换左右
 "Cycle normal, mono average, individual channels, and reverse channel order":
   en: Cycle normal, mono average, individual channels, and reverse channel order
   zh-CN: 循环切换正常、单声道平均、独立声道与反转声道顺序
+"ST":
+  en: ST
+  zh-CN: ST
+"MONO":
+  en: MONO
+  zh-CN: MONO
+"SWAP":
+  en: SWAP
+  zh-CN: SWAP
+"L":
+  en: L
+  zh-CN: L
+"R":
+  en: R
+  zh-CN: R
+"%{channels} CH":
+  en: "%{channels} CH"
+  zh-CN: "%{channels} CH"
+"CH %{n} ONLY":
+  en: "CH %{n} ONLY"
+  zh-CN: "CH %{n} ONLY"
+"DIM":
+  en: DIM
+  zh-CN: DIM
 "Dim attenuates the post-fader signal by 12 dB":
   en: Dim attenuates the post-fader signal by 12 dB
-  zh-CN: DIM 将推子后信号衰减 12 dB
+  zh-CN: 衰减将推子后信号降低 12 dB
 "Drag to reorder channels within the same mixer section":
   en: Drag to reorder channels within the same mixer section
   zh-CN: 拖动以调整同一混音区域内的通道顺序
@@ -1473,15 +1275,9 @@ _version: 2
   en: Off
   zh-CN: 关闭
 
-"Selected profile activates on the next audio start":
-  en: Selected profile activates on the next audio start
-  zh-CN: 所选延迟档位将在下次音频启动时生效
 "Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
   en: Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
   zh-CN: 端点存在不代表音频正在流动。停止后端点保留但闸门关闭。
-"Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.":
-  en: Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.
-  zh-CN: 修改声道数、名称或资格会安全退役并重建端点；改声道前先解开不兼容的图输入/输出。
 "Not running":
   en: Not running
   zh-CN: 未在运行
@@ -1491,289 +1287,10 @@ _version: 2
 "Error: %{cause}":
   en: "Error: %{cause}"
   zh-CN: "错误：%{cause}"
-"Channel: %{location}":
-  en: "Channel: %{location}"
-  zh-CN: "通道：%{location}"
 "Hint: %{hint}":
   en: "Hint: %{hint}"
   zh-CN: "提示：%{hint}"
 
-"Provider export diagnostics":
-  en: Provider export diagnostics
-  zh-CN: 提供方导出诊断
-"Stable endpoint ID":
-  en: Stable endpoint ID
-  zh-CN: 稳定端点 ID
-"Export direction":
-  en: Export direction
-  zh-CN: 导出方向
-"Requested endpoint name":
-  en: Requested endpoint name
-  zh-CN: 请求的端点名称
-"Provider-created name":
-  en: Provider-created name
-  zh-CN: 提供方创建名称
-"Windows endpoint name":
-  en: Windows endpoint name
-  zh-CN: Windows 端点名称
-"Windows name match":
-  en: Windows name match
-  zh-CN: Windows 名称匹配状态
-"Windows endpoint state":
-  en: Windows endpoint state
-  zh-CN: Windows 端点状态
-"Windows endpoint state readback error":
-  en: Windows endpoint state readback error
-  zh-CN: Windows 端点状态读取错误
-"Active (not a flow signal)":
-  en: Active (not a flow signal)
-  zh-CN: 活动（不代表音频正在流动）
-"Disabled in Windows":
-  en: Disabled in Windows
-  zh-CN: 已在 Windows 中禁用
-"Not present in Windows":
-  en: Not present in Windows
-  zh-CN: Windows 中不存在
-"Unplugged in Windows":
-  en: Unplugged in Windows
-  zh-CN: 已从 Windows 拔出
-"Unknown Windows endpoint state 0x%{state}":
-  en: Unknown Windows endpoint state 0x%{state}
-  zh-CN: 未知 Windows 端点状态 0x%{state}
-"Windows name readback error":
-  en: Windows name readback error
-  zh-CN: Windows 名称读取错误
-"Windows name MMDevice ID":
-  en: Windows name MMDevice ID
-  zh-CN: Windows 名称对应的 MMDevice ID
-"Windows name observation QPC (100 ns)":
-  en: Windows name observation QPC (100 ns)
-  zh-CN: Windows 名称观测 QPC（100 ns）
-"Unknown / not observed":
-  en: Unknown / not observed
-  zh-CN: 未知 / 尚未观测
-"Matches requested name":
-  en: Matches requested name
-  zh-CN: 与请求名称一致
-"Does not match requested name":
-  en: Does not match requested name
-  zh-CN: 与请求名称不一致
-"Read failed":
-  en: Read failed
-  zh-CN: 读取失败
-"Pending native recreation":
-  en: Pending native recreation
-  zh-CN: 等待原生端点重建
-"Diagnostic scope":
-  en: Diagnostic scope
-  zh-CN: 诊断范围
-"Latest native export observation (not live audio)":
-  en: Latest native export observation (not live audio)
-  zh-CN: 最近一次原生导出观测（非实时音频）
-"Observation generation":
-  en: Observation generation
-  zh-CN: 观测代次
-"Native transport preparation":
-  en: Native transport preparation
-  zh-CN: 原生传输准备状态
-"Prepared (native observation only)":
-  en: Prepared (native observation only)
-  zh-CN: 已准备（仅为原生观测）
-"Not prepared":
-  en: Not prepared
-  zh-CN: 未准备
-"Endpoint error":
-  en: Endpoint error
-  zh-CN: 端点错误
-"None reported":
-  en: None reported
-  zh-CN: 未报告
-"Provider packet telemetry":
-  en: Provider packet telemetry
-  zh-CN: 提供方数据包遥测
-"Native export diagnostics":
-  en: Native export diagnostics
-  zh-CN: 原生导出诊断
-"Provider telemetry schema":
-  en: Provider telemetry schema
-  zh-CN: 提供方遥测版本
-"Observed packet":
-  en: Observed packet
-  zh-CN: 观测到的数据包
-"Maximum observed packet":
-  en: Maximum observed packet
-  zh-CN: 观测到的最大数据包
-"Completion interval observations":
-  en: Completion interval observations
-  zh-CN: 完成间隔观测数
-"0 observations; timing unknown":
-  en: 0 observations; timing unknown
-  zh-CN: 0 次观测；时序未知
-"%{count} observations; max %{ticks} x 100 ns":
-  en: "%{count} observations; max %{ticks} x 100 ns"
-  zh-CN: "%{count} 次观测；最大间隔 %{ticks} x 100 ns"
-"Playback packet service":
-  en: Playback packet service
-  zh-CN: 播放数据包服务
-"Microphone packet service":
-  en: Microphone packet service
-  zh-CN: 麦克风数据包服务
-"Playback service clock diagnostics":
-  en: Playback service clock diagnostics
-  zh-CN: 播放服务时钟诊断
-"Microphone service clock diagnostics":
-  en: Microphone service clock diagnostics
-  zh-CN: 麦克风服务时钟诊断
-"Packet service observation scope":
-  en: Packet service observation scope
-  zh-CN: 数据包服务观测范围
-"Driver transfer -> owner collection":
-  en: Driver transfer -> owner collection
-  zh-CN: 驱动传输 -> 所有者收集
-"Host submission -> owner collection":
-  en: Host submission -> owner collection
-  zh-CN: 主机提交 -> 所有者收集
-"Unknown stamp origin":
-  en: Unknown stamp origin
-  zh-CN: 时间戳来源未知
-"Completion service delay only; not source sample age or physical latency; independent live summaries.":
-  en: Completion service delay only; not source sample age or physical latency; independent live summaries.
-  zh-CN: 仅为完成服务延迟；非源样本年龄或物理延迟；各实时摘要独立观测。
-"%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns":
-  en: "%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns"
-  zh-CN: "%{origin}；%{count} 次观测；最小 %{min} / 最大 %{max} x 100 ns"
-"%{origin}; %{count} observations; service delay unknown":
-  en: "%{origin}; %{count} observations; service delay unknown"
-  zh-CN: "%{origin}；%{count} 次观测；服务延迟未知"
-"QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}":
-  en: "QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}"
-  zh-CN: "QPC %{frequency}；时钟不可用 %{unavailable} / 未来时间戳 %{future} / 换算溢出 %{overflows}"
-"%{hz} Hz":
-  en: "%{hz} Hz"
-  zh-CN: "%{hz} Hz"
-"Cumulative submissions":
-  en: Cumulative submissions
-  zh-CN: 累计提交
-"%{attempts} attempts / %{submitted} submitted packets":
-  en: "%{attempts} attempts / %{submitted} submitted packets"
-  zh-CN: "尝试 %{attempts} 次 / 已提交 %{submitted} 个数据包"
-"Cumulative completions":
-  en: Cumulative completions
-  zh-CN: 累计完成
-"%{count} packets":
-  en: "%{count} packets"
-  zh-CN: "%{count} 个数据包"
-"Cumulative packet drops":
-  en: Cumulative packet drops
-  zh-CN: 累计丢包
-"Driver %{driver} / quota %{quota} / carrier %{carrier} / total %{total} packets":
-  en: "Driver %{driver} / quota %{quota} / carrier %{carrier} / total %{total} packets"
-  zh-CN: "驱动 %{driver} / 配额 %{quota} / 载体 %{carrier} / 合计 %{total} 个数据包"
-"Cumulative stale packets":
-  en: Cumulative stale packets
-  zh-CN: 累计过期数据包
-"Cumulative silence":
-  en: Cumulative silence
-  zh-CN: 累计静音
-"%{packets} packets / %{frames} frames":
-  en: "%{packets} packets / %{frames} frames"
-  zh-CN: "%{packets} 个数据包 / %{frames} 帧"
-"Cumulative epoch resets":
-  en: Cumulative epoch resets
-  zh-CN: 累计纪元重置
-"Cumulative recoveries":
-  en: Cumulative recoveries
-  zh-CN: 累计恢复
-"Cumulative completion clock regressions":
-  en: Cumulative completion clock regressions
-  zh-CN: 累计完成时钟回退
-"No native export observations":
-  en: No native export observations
-  zh-CN: 暂无原生导出观测
-"CPU load":
-  en: CPU load
-  zh-CN: CPU 负载
-"Physical end-to-end latency":
-  en: Physical end-to-end latency
-  zh-CN: 物理端到端延迟
-"Unknown / unqualified":
-  en: Unknown / unqualified
-  zh-CN: 未知 / 未经验证
-"Queue fill and packet timing do not measure CPU load or physical end-to-end latency.":
-  en: Queue fill and packet timing do not measure CPU load or physical end-to-end latency.
-  zh-CN: 队列填充量与数据包时序无法测量 CPU 负载或物理端到端延迟。
-"%{prefix}: native delivery packets":
-  en: "%{prefix}: native delivery packets"
-  zh-CN: "%{prefix}：原生交付数据包"
-"%{prefix}: maximum native packet":
-  en: "%{prefix}: maximum native packet"
-  zh-CN: "%{prefix}：原生数据包最大帧数"
-"%{prefix}: maximum callback burst":
-  en: "%{prefix}: maximum callback burst"
-  zh-CN: "%{prefix}：回调突发最大帧数"
-"%{prefix}: native arrival gaps":
-  en: "%{prefix}: native arrival gaps"
-  zh-CN: "%{prefix}：原生到达间隔"
-"%{count} observations; timing unknown":
-  en: "%{count} observations; timing unknown"
-  zh-CN: "%{count} 次观测；时序未知"
-"%{prefix}: delivery bound violations":
-  en: "%{prefix}: delivery bound violations"
-  zh-CN: "%{prefix}：交付边界超限"
-"%{prefix}: delivery clock observations":
-  en: "%{prefix}: delivery clock observations"
-  zh-CN: "%{prefix}：交付时钟观测"
-"Packet %{packet} / gap %{gap} observations":
-  en: "Packet %{packet} / gap %{gap} observations"
-  zh-CN: "数据包 %{packet} / 间隔 %{gap} 次观测"
-"Unavailable %{unavailable} / regressed %{regressed} observations":
-  en: "Unavailable %{unavailable} / regressed %{regressed} observations"
-  zh-CN: "不可用 %{unavailable} / 回退 %{regressed} 次观测"
-"%{prefix}: oldest pending frame age estimate":
-  en: "%{prefix}: oldest pending frame age estimate"
-  zh-CN: "%{prefix}：最早待处理帧的年龄估计"
-"%{ticks} x 100 ns (owner-local estimate, not physical E2E)":
-  en: "%{ticks} x 100 ns (owner-local estimate, not physical E2E)"
-  zh-CN: "%{ticks} x 100 ns（所有者局部估计，非物理端到端延迟）"
-"%{prefix}: oldest frame correlation":
-  en: "%{prefix}: oldest frame correlation"
-  zh-CN: "%{prefix}：最早帧的关联信息"
-"Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames":
-  en: "Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames"
-  zh-CN: "代次 %{generation}；数据包位置 %{position} 帧；偏移 %{offset} / 已接收 %{accepted} 帧"
-"%{prefix}: age QPC correlation":
-  en: "%{prefix}: age QPC correlation"
-  zh-CN: "%{prefix}：帧年龄的 QPC 关联"
-"Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns":
-  en: "Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns"
-  zh-CN: "数据包 %{packet} / 帧 %{frame} / 观测时刻 %{observed} x 100 ns"
-"%{prefix}: age rate basis":
-  en: "%{prefix}: age rate basis"
-  zh-CN: "%{prefix}：帧年龄的采样率依据"
-"%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm":
-  en: "%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm"
-  zh-CN: "%{rate} Hz；已验证的 Capture/QPC 校正 %{ppm} ppm"
-"%{rate} Hz nominal rate (Capture/QPC correction unqualified)":
-  en: "%{rate} Hz nominal rate (Capture/QPC correction unqualified)"
-  zh-CN: "%{rate} Hz 标称采样率（Capture/QPC 校正未经验证）"
-"%{prefix}: native render padding":
-  en: "%{prefix}: native render padding"
-  zh-CN: "%{prefix}：原生输出填充量"
-"%{padding} / capacity %{capacity} frames (native queue only, not E2E)":
-  en: "%{padding} / capacity %{capacity} frames (native queue only, not E2E)"
-  zh-CN: "%{padding} / 容量 %{capacity} 帧（仅为原生队列，非端到端延迟）"
-"%{prefix}: observed render rate":
-  en: "%{prefix}: observed render rate"
-  zh-CN: "%{prefix}：观测到的输出采样率"
-"%{rate} Hz":
-  en: "%{rate} Hz"
-  zh-CN: "%{rate} Hz"
-"%{prefix}: observed render period":
-  en: "%{prefix}: observed render period"
-  zh-CN: "%{prefix}：观测到的输出周期"
-"%{prefix}: render sample sequence":
-  en: "%{prefix}: render sample sequence"
-  zh-CN: "%{prefix}：输出观测序号"
 # Service-layer user messages: faults, causes, and hints. The snapshot
 # carries the English keys; the UI translates them when rendering.
 "Mono and Swap only apply to Balance nodes":
@@ -1887,15 +1404,9 @@ _version: 2
 "No native audio backend is configured":
   en: "No native audio backend is configured"
   zh-CN: "未配置原生音频驱动"
-"The live parameter queue is busy; the candidate value is kept — retry or apply the graph later":
-  en: "The live parameter queue is busy; the candidate value is kept — retry or apply the graph later"
-  zh-CN: "实时参数队列繁忙；候选值已保留，可稍后重试或应用图"
 "The live parameter queue is busy; the candidate value is kept":
   en: "The live parameter queue is busy; the candidate value is kept"
   zh-CN: "实时参数队列繁忙；候选值已保留"
-"Apply the loaded project candidate before editing its live parameters":
-  en: "Apply the loaded project candidate before editing its live parameters"
-  zh-CN: "请先应用载入的候选项目，再调整该项目的实时参数"
 "The apply request identity space is exhausted":
   en: "The apply request identity space is exhausted"
   zh-CN: "应用请求身份空间已耗尽"
@@ -1932,301 +1443,6 @@ _version: 2
 "Parameters are outside their valid range":
   en: "Parameters are outside their valid range"
   zh-CN: "参数超出有效范围"
-"Measured Process input":
-  en: "Measured Process input"
-  zh-CN: "实测进程输入"
-"Process source":
-  en: "Process source"
-  zh-CN: "进程输入源"
-"Apply measured budget and restart":
-  en: "Apply measured budget and restart"
-  zh-CN: "应用实测预算并重启音频"
-"Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency.":
-  en: "Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency."
-  zh-CN: "使用当前输入源观测到的传输时序和整次唤醒需求。重启将替换音频会话；这不代表连续输出或物理端到端延迟已通过验收。"
-"Ready to validate the measured input budget and restart audio.":
-  en: "Ready to validate the measured input budget and restart audio."
-  zh-CN: "可以校验实测输入预算并重启音频。"
-"Waiting for the current audio transaction.":
-  en: "Waiting for the current audio transaction."
-  zh-CN: "正在等待当前音频操作完成。"
-"Save or discard other settings drafts before applying a measured budget.":
-  en: "Save or discard other settings drafts before applying a measured budget."
-  zh-CN: "应用实测预算前，请先保存或放弃其他设置草稿。"
-"Measured selection requires a matching running graph and saved settings.":
-  en: "Measured selection requires a matching running graph and saved settings."
-  zh-CN: "选择实测配置需要运行中的音频图与已保存设置一致。"
-"Select a running Process source.":
-  en: "Select a running Process source."
-  zh-CN: "请选择运行中的进程输入源。"
-"Matching live Process observations are unavailable.":
-  en: "Matching live Process observations are unavailable."
-  zh-CN: "当前没有与该进程输入匹配的实时观测数据。"
-"Measured Process selection is only supported on Windows.":
-  en: "Measured Process selection is only supported on Windows."
-  zh-CN: "实测进程输入配置仅支持 Windows。"
-"Restarting audio; waiting for the measured budget to become active.":
-  en: "Restarting audio; waiting for the measured budget to become active."
-  zh-CN: "正在重启音频，等待实测预算生效。"
-"Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later.":
-  en: "Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later."
-  zh-CN: "30 秒内未确认实测预算生效。请查看诊断；音频状态仍可能随后改变。"
-"Settings changed while applying the measured budget.":
-  en: "Settings changed while applying the measured budget."
-  zh-CN: "应用实测预算期间，设置发生了变化。"
-"Measured budget was refused or replaced. Your draft is retained.":
-  en: "Measured budget was refused or replaced. Your draft is retained."
-  zh-CN: "实测预算被拒绝或已被其他请求替换，草稿已保留。"
-"Audio stopped before the measured budget became active.":
-  en: "Audio stopped before the measured budget became active."
-  zh-CN: "实测预算生效前，音频已停止。"
-"The graph changed while applying the measured budget.":
-  en: "The graph changed while applying the measured budget."
-  zh-CN: "应用实测预算期间，音频图发生了变化。"
-"Measured budget is active; physical latency remains unqualified.":
-  en: "Measured budget is active; physical latency remains unqualified."
-  zh-CN: "实测预算已生效；物理端到端延迟仍未验收。"
-"Process trace collection":
-  en: "Process trace collection"
-  zh-CN: "进程历史采集"
-"Collecting a bounded prefix; not latency qualification.":
-  en: "Collecting a bounded prefix; not latency qualification."
-  zh-CN: "正在采集有界历史前缀；不代表延迟验收。"
-"Process trace predecessor":
-  en: "Process trace predecessor"
-  zh-CN: "进程历史所属前序会话"
-"Process trace prefix":
-  en: "Process trace prefix"
-  zh-CN: "进程历史前缀"
-"%{packets} packets / %{reads} reads retained; limit 8192 per writer":
-  en: "%{packets} packets / %{reads} reads retained; limit 8192 per writer"
-  zh-CN: "保留 %{packets} 个包 / %{reads} 次读取；每个写入端上限为 8192 条"
-"Process trace result":
-  en: "Process trace result"
-  zh-CN: "进程历史采集结果"
-"Closed prefix available; not latency qualification.":
-  en: "Closed prefix available; not latency qualification."
-  zh-CN: "闭合历史前缀可用；不代表延迟验收。"
-"Evaluate closed Process prefix":
-  en: "Evaluate closed Process prefix"
-  zh-CN: "评估已闭合的进程历史前缀"
-"Back to measured input":
-  en: "Back to measured input"
-  zh-CN: "返回实测输入设置"
-"Closed Process prefix evaluation":
-  en: "Closed Process prefix evaluation"
-  zh-CN: "闭合进程历史前缀评估"
-"Diagnostic replay uses declared assumptions. Explicit Apply separately requires final whole-drain and whole-wake admission plus the exact evaluated window; future delivery and physical latency remain unqualified.":
-  en: "Diagnostic replay uses declared assumptions. Explicit Apply separately requires final whole-drain and whole-wake admission plus the exact evaluated window; future delivery and physical latency remain unqualified."
-  zh-CN: "诊断回放使用声明的假设。显式应用还须独立通过最终整批传输、整次唤醒准入与同一配置窗口评估；后续传输和物理延迟仍未验收。"
-"Capacity / target / jitter (frames)":
-  en: "Capacity / target / jitter (frames)"
-  zh-CN: "容量 / 运行目标 / 抖动余量（帧）"
-"Retained origin":
-  en: "Retained origin"
-  zh-CN: "保留历史的原始身份"
-"Maximum initial unserved (output frames)":
-  en: "Maximum initial unserved (output frames)"
-  zh-CN: "初始未提供输出的帧数上限"
-"Maximum initial prime discard (input frames)":
-  en: "Maximum initial prime discard (input frames)"
-  zh-CN: "初始预填丢弃的输入帧数上限"
-"Minimum output frames":
-  en: "Minimum output frames"
-  zh-CN: "最少输出帧数"
-"Minimum output reads":
-  en: "Minimum output reads"
-  zh-CN: "最少有效输出读取次数"
-"Minimum output span (ms)":
-  en: "Minimum output span (ms)"
-  zh-CN: "最短输出跨度（毫秒）"
-"Observed violation":
-  en: "Observed violation"
-  zh-CN: "发现违规"
-"Insufficient exposure":
-  en: "Insufficient exposure"
-  zh-CN: "有效输出证据不足"
-"No violation in this window":
-  en: "No violation in this window"
-  zh-CN: "本窗口内未发现违规"
-"Not qualified: no sustained, waveform, sample-age or physical latency proof":
-  en: "Not qualified: no sustained, waveform, sample-age or physical latency proof"
-  zh-CN: "未通过验收：不能证明持续运行、波形正确性、样本年龄或物理延迟"
-"Evaluating one bounded prefix on a background worker.":
-  en: "Evaluating one bounded prefix on a background worker."
-  zh-CN: "正在后台评估一个有界历史前缀。"
-"Ready to evaluate; audio will not change.":
-  en: "Ready to evaluate; audio will not change."
-  zh-CN: "可以开始评估；不会更改音频运行状态。"
-"Evaluate candidate window":
-  en: "Evaluate candidate window"
-  zh-CN: "评估候选配置窗口"
-"Stop a collected Process session to evaluate its closed prefix.":
-  en: "Stop a collected Process session to evaluate its closed prefix."
-  zh-CN: "请先停止已采集历史的进程会话，再评估其闭合前缀。"
-"The selected source is not the retained Process source.":
-  en: "The selected source is not the retained Process source."
-  zh-CN: "所选输入源不是保留历史所属的进程输入源。"
-"A finite-window evaluation is already running.":
-  en: "A finite-window evaluation is already running."
-  zh-CN: "已有一个有限窗口评估正在运行。"
-"Evaluation discarded: predecessor, candidate or policy changed.":
-  en: "Evaluation discarded: predecessor, candidate or policy changed."
-  zh-CN: "评估结果已丢弃：前序会话、候选配置或评估策略已更改。"
-"Final whole-wake admission and this window permit explicit Apply; physical latency is unqualified.":
-  en: "Final whole-wake admission and this window permit explicit Apply; physical latency is unqualified."
-  zh-CN: "最终整次唤醒准入与本窗口评估允许显式应用；物理延迟仍未验收。"
-"Empirical whole-drain / gap / whole-wake":
-  en: "Empirical whole-drain / gap / whole-wake"
-  zh-CN: "实测整批传输 / 间隔 / 整次唤醒"
-"Window policy: initial unserved / prime discard / output frames / reads / span":
-  en: "Window policy: initial unserved / prime discard / output frames / reads / span"
-  zh-CN: "窗口策略：初始未提供帧数 / 预填丢弃 / 输出帧数 / 读取次数 / 跨度"
-"No evaluated native candidate is available.":
-  en: "No evaluated native candidate is available."
-  zh-CN: "没有可应用的原生评估候选配置。"
-"Apply evaluated budget and start audio":
-  en: "Apply evaluated budget and start audio"
-  zh-CN: "应用已评估预算并启动音频"
-"A stopped matching evaluated native candidate is required.":
-  en: "A stopped matching evaluated native candidate is required."
-  zh-CN: "需要已停止且身份匹配的原生评估候选配置。"
-"VAD recovery cap":
-  en: "VAD recovery cap"
-  zh-CN: "VAD 追赶周期上限"
-"Compatible (8 periods)":
-  en: "Compatible (8 periods)"
-  zh-CN: "兼容（8 周期）"
-"%{periods} periods":
-  en: "%{periods} periods"
-  zh-CN: "%{periods} 周期"
-"Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods.":
-  en: "Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods."
-  zh-CN: "仅限制虚拟时钟追赶，不减少物理输出整次唤醒需求，也不保证延迟。较小上限可能丢弃更多逾期周期。"
-"%{input}; virtual-clock recovery cap: %{cap}":
-  en: "%{input}; virtual-clock recovery cap: %{cap}"
-  zh-CN: "%{input}；虚拟时钟追赶周期上限：%{cap}"
-"Process host ingress elapsed limit":
-  en: "Process host ingress elapsed limit"
-  zh-CN: "进程输入发布起算的主机时间上限"
-"Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy.":
-  en: "Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy."
-  zh-CN: "限制从数据包开始发布起算的主机经过时间，并非源样本年龄或物理延迟。恢复时也可能丢弃同一输入前缀中较新的帧。当前实测准入不支持此策略。"
-"%{input}; host ingress elapsed limit: %{limit}":
-  en: "%{input}; host ingress elapsed limit: %{limit}"
-  zh-CN: "%{input}；主机发布起算时间上限：%{limit}"
-"%{ticks} x 100 ns":
-  en: "%{ticks} x 100 ns"
-  zh-CN: "%{ticks} x 100 ns"
-"%{milliseconds} ms":
-  en: "%{milliseconds} ms"
-  zh-CN: "%{milliseconds} ms"
-
-"Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export.":
-  en: "Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Bind matching channels; each IO belongs to one export."
-  zh-CN: "虚拟扬声器：其他应用播放到 Moiren 输入。虚拟麦克风：Moiren 输出供其他应用录音。绑定时须匹配声道；每个 IO 仅属于一个导出。"
-"Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart.":
-  en: "Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart."
-  zh-CN: "保存传输设置（包括渲染队列）会清除实测进程选择，需要重新准入。运行中的所有者仅在重启后改变。"
-"Enter exact input bounds":
-  en: "Enter exact input bounds"
-  zh-CN: "输入精确输入预算"
-"Use input presets":
-  en: "Use input presets"
-  zh-CN: "使用输入预设"
-"Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget.":
-  en: "Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget."
-  zh-CN: "实测输入预算必须是受支持范围内的整数帧数，原生准备会验证完整预算。"
-"Exact input fields are not ready.":
-  en: "Exact input fields are not ready."
-  zh-CN: "精确输入字段尚未就绪。"
-"Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.":
-  en: "Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value."
-  zh-CN: "精确输入预算以 48 kHz 帧数为单位。无效文本会阻止应用，不取整，也不回退到上一个有效值。"
-"%{prefix}: admitted input reserve":
-  en: "%{prefix}: admitted input reserve"
-  zh-CN: "%{prefix}：已准入输入储备"
-"Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)":
-  en: "Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)"
-  zh-CN: "最低 %{minimum}；低水位 %{low} / 高水位 %{high} 输入帧（模型储备，不是延迟）"
-"Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget.":
-  en: "Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget."
-  zh-CN: "专家输入预算必须是支持范围内的整数帧数。原生准备阶段仍会校验完整预算。"
-"Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value.":
-  en: "Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value."
-  zh-CN: "精确专家预算以 48 kHz 输入帧计。无效文本会阻止保存和重启音频，不取整，也不回退到上一个有效值。"
-"%{prefix}: virtual Engine demand":
-  en: "%{prefix}: virtual Engine demand"
-  zh-CN: "%{prefix}：虚拟 Engine 需求"
-"%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods":
-  en: "%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods"
-  zh-CN: "%{rate} Hz Engine；块 %{block} / 整次突发 %{burst} 帧；追赶上限 %{cap} 周期"
-"%{prefix}: virtual native reserve":
-  en: "%{prefix}: virtual native reserve"
-  zh-CN: "%{prefix}：虚拟原生储备"
-"Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)":
-  en: "Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)"
-  zh-CN: "传输 %{transfer} / FIR %{fir} / 唤醒 %{wake} 帧（48 kHz 模型值，不是延迟）"
-"%{prefix}: virtual delivery evidence":
-  en: "%{prefix}: virtual delivery evidence"
-  zh-CN: "%{prefix}：虚拟交付依据"
-"%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz":
-  en: "%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz"
-  zh-CN: "%{evidence}；数据包边界 %{packet} / 间隔边界 %{gap}；已协商数据包 %{negotiated} 帧（48 kHz）"
-"Declared assumption":
-  en: "Declared assumption"
-  zh-CN: "声明假设"
-"Empirical observation":
-  en: "Empirical observation"
-  zh-CN: "实测观测"
-"Native packet observation":
-  en: "Native packet observation"
-  zh-CN: "原生数据包观测"
-"Virtual clock observation":
-  en: "Virtual clock observation"
-  zh-CN: "虚拟时钟观测"
-"Virtual clock configuration":
-  en: "Virtual clock configuration"
-  zh-CN: "虚拟时钟配置"
-"Virtual clock rendered":
-  en: "Virtual clock rendered"
-  zh-CN: "虚拟时钟已渲染量"
-"Virtual clock recovery":
-  en: "Virtual clock recovery"
-  zh-CN: "虚拟时钟恢复"
-"Virtual clock timeline":
-  en: "Virtual clock timeline"
-  zh-CN: "虚拟时钟时间线"
-"Virtual clock counter saturation":
-  en: "Virtual clock counter saturation"
-  zh-CN: "虚拟时钟计数器饱和状态"
-"Schema 1 (owner-local cumulative counters, not latency)":
-  en: "Schema 1 (owner-local cumulative counters, not latency)"
-  zh-CN: "版本 1（所属运行实例的累计计数，不是延迟）"
-"Unsupported schema %{schema}":
-  en: "Unsupported schema %{schema}"
-  zh-CN: "不支持的版本 %{schema}"
-"%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods":
-  en: "%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods"
-  zh-CN: "%{rate} Hz Engine；块 %{block} 帧；追赶上限 %{cap} 周期"
-"%{periods} periods / %{frames} Engine frames":
-  en: "%{periods} periods / %{frames} Engine frames"
-  zh-CN: "%{periods} 周期 / %{frames} Engine 帧"
-"Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)":
-  en: "Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)"
-  zh-CN: "迟到唤醒 %{late} 次；跳过 %{periods} 周期 / %{frames} Engine 帧（不是原生 PCM 丢帧）"
-"Resets %{resets}; maximum backlog %{backlog} periods (before cap)":
-  en: "Resets %{resets}; maximum backlog %{backlog} periods (before cap)"
-  zh-CN: "重置 %{resets} 次；最大积欠 %{backlog} 周期（施加上限之前）"
-"Saturated (counts are lower bounds)":
-  en: "Saturated (counts are lower bounds)"
-  zh-CN: "已饱和（计数仅为下界）"
-"Not saturated":
-  en: "Not saturated"
-  zh-CN: "未饱和"
-"Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.":
-  en: "Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above."
-  zh-CN: "重命名会重新创建 Windows 端点，可能中断音频，或需要其他应用重新选择端点。请求的名称不代表 Windows 显示名称已更新；请核对上方读回的名称。"
 
 "Interface":
   en: Interface
@@ -2273,3 +1489,1012 @@ _version: 2
 "System":
   en: System
   zh-CN: 系统
+
+"The audio service is busy; try again in a moment.":
+  en: The audio service is busy; try again in a moment.
+  zh-CN: 音频服务繁忙，请稍后重试。
+"The audio service is shutting down.":
+  en: The audio service is shutting down.
+  zh-CN: 音频服务正在关闭。
+"The audio service is disconnected.":
+  en: The audio service is disconnected.
+  zh-CN: 音频服务已断开。
+"The audio service rejected the request as invalid.":
+  en: The audio service rejected the request as invalid.
+  zh-CN: 音频服务拒绝了无效的请求。
+"Too many audio sessions have been started. Restart the application to continue.":
+  en: Too many audio sessions have been started. Restart the application to continue.
+  zh-CN: 音频会话启动次数已达上限，请重启应用程序后继续。
+"Too many pending requests. Restart the application to continue.":
+  en: Too many pending requests. Restart the application to continue.
+  zh-CN: 挂起的请求已达上限，请重启应用程序后继续。
+"sample rate must be 44.1, 48, 88.2 or 96 kHz":
+  en: sample rate must be 44.1, 48, 88.2 or 96 kHz
+  zh-CN: 采样率必须为 44.1、48、88.2 或 96 kHz
+"buffer must be 64, 128, 256, 512, 1024, 2048 or 4096 frames":
+  en: buffer must be 64, 128, 256, 512, 1024, 2048 or 4096 frames
+  zh-CN: 缓冲区必须为 64、128、256、512、1024、2048 或 4096 帧
+"device identity must contain 1 to 32768 bytes without NUL":
+  en: device identity must contain 1 to 32768 bytes without NUL
+  zh-CN: 设备标识长度必须为 1 到 32768 字节且不含 NUL
+"at most 256 device overrides can be saved per direction":
+  en: at most 256 device overrides can be saved per direction
+  zh-CN: 每个方向最多可保存 256 条设备覆盖配置
+"Engine clock":
+  en: Engine clock
+  zh-CN: 引擎时钟
+"XRUN":
+  en: XRUN
+  zh-CN: XRUN
+"Audio engine":
+  en: Audio engine
+  zh-CN: 音频引擎
+"Realtime thread is running":
+  en: Realtime thread is running
+  zh-CN: 实时线程运行中
+"Opening audio devices…":
+  en: Opening audio devices…
+  zh-CN: 正在打开音频设备…
+"Releasing audio devices…":
+  en: Releasing audio devices…
+  zh-CN: 正在释放音频设备…
+"The audio engine stopped with an error":
+  en: The audio engine stopped with an error
+  zh-CN: 音频引擎因错误停止
+"Engine is idle":
+  en: Engine is idle
+  zh-CN: 引擎空闲
+"Shutting down":
+  en: Shutting down
+  zh-CN: 正在关闭
+"Stop engine":
+  en: Stop engine
+  zh-CN: 停止引擎
+"Start engine":
+  en: Start engine
+  zh-CN: 启动引擎
+"Restart engine":
+  en: Restart engine
+  zh-CN: 重新启动引擎
+"Master clock":
+  en: Master clock
+  zh-CN: 主时钟
+"Sample clock source of the whole graph":
+  en: Sample clock source of the whole graph
+  zh-CN: 全图采样时钟源
+"Takes effect at the next start":
+  en: Takes effect at the next start
+  zh-CN: 下次启动时生效
+"Engine realtime clock; no hardware master":
+  en: Engine realtime clock; no hardware master
+  zh-CN: 引擎实时时钟；无硬件主时钟
+"XRUN statistics":
+  en: XRUN statistics
+  zh-CN: XRUN 统计
+"Events in the last 60 s":
+  en: Events in the last 60 s
+  zh-CN: 近 60 秒事件分布
+"Reset":
+  en: Reset
+  zh-CN: 重置
+"Total XRUNs":
+  en: Total XRUNs
+  zh-CN: 累计 XRUN
+"Last event":
+  en: Last event
+  zh-CN: 最近一次
+"Longest clean run":
+  en: Longest clean run
+  zh-CN: 最长无故障
+"No events in the last 60 s":
+  en: No events in the last 60 s
+  zh-CN: 近 60 秒无事件
+"%{count} events (%{percent})":
+  en: "%{count} events (%{percent})"
+  zh-CN: "%{count} 次（%{percent}）"
+"Performance":
+  en: Performance
+  zh-CN: 性能监控
+"By process, refreshed every second":
+  en: By process, refreshed every second
+  zh-CN: 按进程，每 1 秒刷新
+"Process":
+  en: Process
+  zh-CN: 进程
+"CPU":
+  en: CPU
+  zh-CN: CPU
+"Memory":
+  en: Memory
+  zh-CN: 内存
+"Sampling…":
+  en: Sampling…
+  zh-CN: 采样中…
+"Total CPU / last 60 s":
+  en: Total CPU / last 60 s
+  zh-CN: 总 CPU / 近 60 秒
+"DSP load":
+  en: DSP load
+  zh-CN: DSP 负载
+"%{average} avg / %{peak} peak":
+  en: "%{average} avg / %{peak} peak"
+  zh-CN: "均值 %{average} / 峰值 %{peak}"
+"Engine information":
+  en: Engine information
+  zh-CN: 引擎运行信息
+"Processing format":
+  en: Processing format
+  zh-CN: 处理格式
+"Device format":
+  en: Device format
+  zh-CN: 设备位深
+"Driver latency":
+  en: Driver latency
+  zh-CN: 驱动延迟
+"In %{input} / out %{output} smp":
+  en: "In %{input} / out %{output} smp"
+  zh-CN: "输入 %{input} / 输出 %{output} 采样"
+"Rendered blocks":
+  en: Rendered blocks
+  zh-CN: 已渲染块
+"%{seconds} s ago":
+  en: "%{seconds} s ago"
+  zh-CN: "%{seconds} 秒前"
+"%{minutes} min %{seconds} s ago":
+  en: "%{minutes} min %{seconds} s ago"
+  zh-CN: "%{minutes} 分 %{seconds} 秒前"
+"%{seconds} s":
+  en: "%{seconds} s"
+  zh-CN: "%{seconds} 秒"
+"%{minutes} min %{seconds} s":
+  en: "%{minutes} min %{seconds} s"
+  zh-CN: "%{minutes} 分 %{seconds} 秒"
+"%{frames} smp / %{ms} ms":
+  en: "%{frames} smp / %{ms} ms"
+  zh-CN: "%{frames} 采样 / %{ms} ms"
+"Ready":
+  en: Ready
+  zh-CN: 就绪
+"Recording":
+  en: Recording
+  zh-CN: 录制中
+"Paused":
+  en: Paused
+  zh-CN: 已暂停
+"Reconnecting":
+  en: Reconnecting
+  zh-CN: 续接中
+"Saved":
+  en: Saved
+  zh-CN: 已保存
+"File":
+  en: File
+  zh-CN: 文件
+"Dropped frames":
+  en: Dropped frames
+  zh-CN: 丢弃帧数
+"Start recording":
+  en: Start recording
+  zh-CN: 开始录制
+"Pause recording":
+  en: Pause recording
+  zh-CN: 暂停录制
+"Resume recording":
+  en: Resume recording
+  zh-CN: 继续录制
+"Stop recording":
+  en: Stop recording
+  zh-CN: 终止录制
+"Output directory":
+  en: Output directory
+  zh-CN: 输出目录
+"Change directory…":
+  en: Change directory…
+  zh-CN: 更换目录…
+"The buffer is fixed while a recording runs.":
+  en: The buffer is fixed while a recording runs.
+  zh-CN: 录制进行期间缓冲保持不变。
+"Choose the recording output directory":
+  en: Choose the recording output directory
+  zh-CN: 选择录制输出目录
+"WAV":
+  en: WAV
+  zh-CN: WAV
+"MP3":
+  en: MP3
+  zh-CN: MP3
+"Bitrate":
+  en: Bitrate
+  zh-CN: 比特率
+"CBR":
+  en: CBR
+  zh-CN: CBR
+"VBR":
+  en: VBR
+  zh-CN: VBR
+"VBR quality":
+  en: VBR quality
+  zh-CN: VBR 质量
+"0 is best.":
+  en: 0 is best.
+  zh-CN: 0 最佳。
+"Applies to the next recording.":
+  en: Applies to the next recording.
+  zh-CN: 应用于下一次录制。
+"%{kbps} kbps":
+  en: "%{kbps} kbps"
+  zh-CN: "%{kbps} kbps"
+"FLAC":
+  en: FLAC
+  zh-CN: FLAC
+"Compression level":
+  en: Compression level
+  zh-CN: 压缩等级
+"%{level} of %{max}":
+  en: "%{level} of %{max}"
+  zh-CN: "%{level} / %{max}"
+"0 is fastest, 8 is smallest.":
+  en: 0 is fastest, 8 is smallest.
+  zh-CN: 0 最快，8 体积最小。
+"%{attempts} attempts / %{submitted} submitted packets":
+  en: "%{attempts} attempts / %{submitted} submitted packets"
+  zh-CN: "尝试 %{attempts} 次 / 已提交 %{submitted} 个数据包"
+"%{count} observations; max %{ticks} x 100 ns":
+  en: "%{count} observations; max %{ticks} x 100 ns"
+  zh-CN: "%{count} 次观测；最大间隔 %{ticks} x 100 ns"
+"%{count} observations; timing unknown":
+  en: "%{count} observations; timing unknown"
+  zh-CN: "%{count} 次观测；时序未知"
+"%{count} packets":
+  en: "%{count} packets"
+  zh-CN: "%{count} 个数据包"
+"%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz":
+  en: "%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz"
+  zh-CN: "%{evidence}；数据包边界 %{packet} / 间隔边界 %{gap}；已协商数据包 %{negotiated} 帧（48 kHz）"
+"%{hz} Hz":
+  en: "%{hz} Hz"
+  zh-CN: "%{hz} Hz"
+"%{input}; host ingress elapsed limit: %{limit}":
+  en: "%{input}; host ingress elapsed limit: %{limit}"
+  zh-CN: "%{input}；主机发布起算时间上限：%{limit}"
+"%{input}; virtual-clock recovery cap: %{cap}":
+  en: "%{input}; virtual-clock recovery cap: %{cap}"
+  zh-CN: "%{input}；虚拟时钟追赶周期上限：%{cap}"
+"%{milliseconds} ms":
+  en: "%{milliseconds} ms"
+  zh-CN: "%{milliseconds} ms"
+"%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns":
+  en: "%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns"
+  zh-CN: "%{origin}；%{count} 次观测；最小 %{min} / 最大 %{max} x 100 ns"
+"%{origin}; %{count} observations; service delay unknown":
+  en: "%{origin}; %{count} observations; service delay unknown"
+  zh-CN: "%{origin}；%{count} 次观测；服务延迟未知"
+"%{packets} packets / %{frames} frames":
+  en: "%{packets} packets / %{frames} frames"
+  zh-CN: "%{packets} 个数据包 / %{frames} 帧"
+"%{packets} packets / %{reads} reads retained; limit 8192 per writer":
+  en: "%{packets} packets / %{reads} reads retained; limit 8192 per writer"
+  zh-CN: "保留 %{packets} 个包 / %{reads} 次读取；每个写入端上限为 8192 条"
+"%{padding} / capacity %{capacity} frames (native queue only, not E2E)":
+  en: "%{padding} / capacity %{capacity} frames (native queue only, not E2E)"
+  zh-CN: "%{padding} / 容量 %{capacity} 帧（仅为原生队列，非端到端延迟）"
+"%{periods} periods":
+  en: "%{periods} periods"
+  zh-CN: "%{periods} 周期"
+"%{periods} periods / %{frames} Engine frames":
+  en: "%{periods} periods / %{frames} Engine frames"
+  zh-CN: "%{periods} 周期 / %{frames} Engine 帧"
+"%{prefix}: age QPC correlation":
+  en: "%{prefix}: age QPC correlation"
+  zh-CN: "%{prefix}：帧年龄的 QPC 关联"
+"%{prefix}: age rate basis":
+  en: "%{prefix}: age rate basis"
+  zh-CN: "%{prefix}：帧年龄的采样率依据"
+"%{prefix}: delivery bound violations":
+  en: "%{prefix}: delivery bound violations"
+  zh-CN: "%{prefix}：交付边界超限"
+"%{prefix}: delivery clock observations":
+  en: "%{prefix}: delivery clock observations"
+  zh-CN: "%{prefix}：交付时钟观测"
+"%{prefix}: maximum callback burst":
+  en: "%{prefix}: maximum callback burst"
+  zh-CN: "%{prefix}：回调突发最大帧数"
+"%{prefix}: maximum native packet":
+  en: "%{prefix}: maximum native packet"
+  zh-CN: "%{prefix}：原生数据包最大帧数"
+"%{prefix}: native arrival gaps":
+  en: "%{prefix}: native arrival gaps"
+  zh-CN: "%{prefix}：原生到达间隔"
+"%{prefix}: native delivery packets":
+  en: "%{prefix}: native delivery packets"
+  zh-CN: "%{prefix}：原生交付数据包"
+"%{prefix}: native render padding":
+  en: "%{prefix}: native render padding"
+  zh-CN: "%{prefix}：原生输出填充量"
+"%{prefix}: observed render period":
+  en: "%{prefix}: observed render period"
+  zh-CN: "%{prefix}：观测到的输出周期"
+"%{prefix}: observed render rate":
+  en: "%{prefix}: observed render rate"
+  zh-CN: "%{prefix}：观测到的输出采样率"
+"%{prefix}: oldest frame correlation":
+  en: "%{prefix}: oldest frame correlation"
+  zh-CN: "%{prefix}：最早帧的关联信息"
+"%{prefix}: oldest pending frame age estimate":
+  en: "%{prefix}: oldest pending frame age estimate"
+  zh-CN: "%{prefix}：最早待处理帧的年龄估计"
+"%{prefix}: render sample sequence":
+  en: "%{prefix}: render sample sequence"
+  zh-CN: "%{prefix}：输出观测序号"
+"%{prefix}: virtual Engine demand":
+  en: "%{prefix}: virtual Engine demand"
+  zh-CN: "%{prefix}：虚拟 Engine 需求"
+"%{prefix}: virtual delivery evidence":
+  en: "%{prefix}: virtual delivery evidence"
+  zh-CN: "%{prefix}：虚拟交付依据"
+"%{prefix}: virtual native reserve":
+  en: "%{prefix}: virtual native reserve"
+  zh-CN: "%{prefix}：虚拟原生储备"
+"%{rate} Hz":
+  en: "%{rate} Hz"
+  zh-CN: "%{rate} Hz"
+"%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods":
+  en: "%{rate} Hz Engine; block %{block} / whole burst %{burst} frames; recovery cap %{cap} periods"
+  zh-CN: "%{rate} Hz Engine；块 %{block} / 整次突发 %{burst} 帧；追赶上限 %{cap} 周期"
+"%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods":
+  en: "%{rate} Hz Engine; block %{block} frames; recovery cap %{cap} periods"
+  zh-CN: "%{rate} Hz Engine；块 %{block} 帧；追赶上限 %{cap} 周期"
+"%{rate} Hz nominal rate (Capture/QPC correction unqualified)":
+  en: "%{rate} Hz nominal rate (Capture/QPC correction unqualified)"
+  zh-CN: "%{rate} Hz 标称采样率（Capture/QPC 校正未经验证）"
+"%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm":
+  en: "%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm"
+  zh-CN: "%{rate} Hz；已验证的 Capture/QPC 校正 %{ppm} ppm"
+"%{ticks} x 100 ns":
+  en: "%{ticks} x 100 ns"
+  zh-CN: "%{ticks} x 100 ns"
+"%{ticks} x 100 ns (owner-local estimate, not physical E2E)":
+  en: "%{ticks} x 100 ns (owner-local estimate, not physical E2E)"
+  zh-CN: "%{ticks} x 100 ns（所有者局部估计，非物理端到端延迟）"
+"0 observations; timing unknown":
+  en: 0 observations; timing unknown
+  zh-CN: 0 次观测；时序未知
+"A finite-window evaluation is already running.":
+  en: "A finite-window evaluation is already running."
+  zh-CN: "已有一个有限窗口评估正在运行。"
+"A stopped matching evaluated native candidate is required.":
+  en: "A stopped matching evaluated native candidate is required."
+  zh-CN: "需要已停止且身份匹配的原生评估候选配置。"
+"Active revision %{revision}":
+  en: "Active revision %{revision}"
+  zh-CN: "活动修订 %{revision}"
+"Apply evaluated budget and start audio":
+  en: "Apply evaluated budget and start audio"
+  zh-CN: "应用已评估预算并启动音频"
+"Apply measured budget and restart":
+  en: "Apply measured budget and restart"
+  zh-CN: "应用实测预算并重启音频"
+"Audio stopped before the measured budget became active.":
+  en: "Audio stopped before the measured budget became active."
+  zh-CN: "实测预算生效前，音频已停止。"
+"Back to measured input":
+  en: "Back to measured input"
+  zh-CN: "返回实测输入设置"
+"Capacity / target / jitter (frames)":
+  en: "Capacity / target / jitter (frames)"
+  zh-CN: "容量 / 运行目标 / 抖动余量（帧）"
+"Closed Process prefix evaluation":
+  en: "Closed Process prefix evaluation"
+  zh-CN: "闭合进程历史前缀评估"
+"Closed prefix available; not latency qualification.":
+  en: "Closed prefix available; not latency qualification."
+  zh-CN: "闭合历史前缀可用；不代表延迟验收。"
+"Collecting a bounded prefix; not latency qualification.":
+  en: "Collecting a bounded prefix; not latency qualification."
+  zh-CN: "正在采集有界历史前缀；不代表延迟验收。"
+"Compatible (8 periods)":
+  en: "Compatible (8 periods)"
+  zh-CN: "兼容（8 周期）"
+"Completion interval observations":
+  en: Completion interval observations
+  zh-CN: 完成间隔观测数
+"Completion service delay only; not source sample age or physical latency; independent live summaries.":
+  en: Completion service delay only; not source sample age or physical latency; independent live summaries.
+  zh-CN: 仅为完成服务延迟；非源样本年龄或物理延迟；各实时摘要独立观测。
+"Cumulative completion clock regressions":
+  en: Cumulative completion clock regressions
+  zh-CN: 累计完成时钟回退
+"Cumulative completions":
+  en: Cumulative completions
+  zh-CN: 累计完成
+"Cumulative epoch resets":
+  en: Cumulative epoch resets
+  zh-CN: 累计纪元重置
+"Cumulative packet drops":
+  en: Cumulative packet drops
+  zh-CN: 累计丢包
+"Cumulative recoveries":
+  en: Cumulative recoveries
+  zh-CN: 累计恢复
+"Cumulative silence":
+  en: Cumulative silence
+  zh-CN: 累计静音
+"Cumulative stale packets":
+  en: Cumulative stale packets
+  zh-CN: 累计过期数据包
+"Cumulative submissions":
+  en: Cumulative submissions
+  zh-CN: 累计提交
+"Declared assumption":
+  en: "Declared assumption"
+  zh-CN: "声明假设"
+"Diagnostic replay uses declared assumptions. Explicit Apply separately requires final whole-drain and whole-wake admission plus the exact evaluated window; future delivery and physical latency remain unqualified.":
+  en: "Diagnostic replay uses declared assumptions. Explicit Apply separately requires final whole-drain and whole-wake admission plus the exact evaluated window; future delivery and physical latency remain unqualified."
+  zh-CN: "诊断回放使用声明的假设。显式应用还须独立通过最终整批传输、整次唤醒准入与同一配置窗口评估；后续传输和物理延迟仍未验收。"
+"Diagnostic scope":
+  en: Diagnostic scope
+  zh-CN: 诊断范围
+"Does not match requested name":
+  en: Does not match requested name
+  zh-CN: 与请求名称不一致
+"Driver %{driver} / quota %{quota} / carrier %{carrier} / total %{total} packets":
+  en: "Driver %{driver} / quota %{quota} / carrier %{carrier} / total %{total} packets"
+  zh-CN: "驱动 %{driver} / 配额 %{quota} / 载体 %{carrier} / 合计 %{total} 个数据包"
+"Driver transfer -> owner collection":
+  en: Driver transfer -> owner collection
+  zh-CN: 驱动传输 -> 所有者收集
+"Empirical observation":
+  en: "Empirical observation"
+  zh-CN: "实测观测"
+"Empirical whole-drain / gap / whole-wake":
+  en: "Empirical whole-drain / gap / whole-wake"
+  zh-CN: "实测整批传输 / 间隔 / 整次唤醒"
+"Endpoint error":
+  en: Endpoint error
+  zh-CN: 端点错误
+"Enter exact input bounds":
+  en: "Enter exact input bounds"
+  zh-CN: "输入精确输入预算"
+"Evaluate candidate window":
+  en: "Evaluate candidate window"
+  zh-CN: "评估候选配置窗口"
+"Evaluate closed Process prefix":
+  en: "Evaluate closed Process prefix"
+  zh-CN: "评估已闭合的进程历史前缀"
+"Evaluating one bounded prefix on a background worker.":
+  en: "Evaluating one bounded prefix on a background worker."
+  zh-CN: "正在后台评估一个有界历史前缀。"
+"Evaluation discarded: predecessor, candidate or policy changed.":
+  en: "Evaluation discarded: predecessor, candidate or policy changed."
+  zh-CN: "评估结果已丢弃：前序会话、候选配置或评估策略已更改。"
+"Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.":
+  en: Exact Shared device period in frames (64..=4096). Blank uses driver default. Native preparation checks support; this is independent of the Engine block.
+  zh-CN: 精确请求共享模式设备周期（64～4096 帧），留空使用驱动默认值。原生准备阶段会检查设备是否支持；此值与引擎处理块独立。
+"Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value.":
+  en: "Exact expert bounds use 48 kHz frames. Invalid text blocks Save and Restart Audio; no rounding or fallback to the preceding value."
+  zh-CN: "精确专家预算以 48 kHz 输入帧计。无效文本会阻止保存和重启音频，不取整，也不回退到上一个有效值。"
+"Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value.":
+  en: "Exact input bounds use 48 kHz frames. Invalid text blocks Apply; no rounding or fallback to the preceding value."
+  zh-CN: "精确输入预算以 48 kHz 帧数为单位。无效文本会阻止应用，不取整，也不回退到上一个有效值。"
+"Exact input fields are not ready.":
+  en: "Exact input fields are not ready."
+  zh-CN: "精确输入字段尚未就绪。"
+"Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget.":
+  en: "Expert input bounds must be integers in the supported frame range. Native preparation validates the complete budget."
+  zh-CN: "专家输入预算必须是支持范围内的整数帧数。原生准备阶段仍会校验完整预算。"
+"Explicit render target":
+  en: Explicit render target
+  zh-CN: 显式渲染目标
+"Export direction":
+  en: Export direction
+  zh-CN: 导出方向
+"Final whole-wake admission and this window permit explicit Apply; physical latency is unqualified.":
+  en: "Final whole-wake admission and this window permit explicit Apply; physical latency is unqualified."
+  zh-CN: "最终整次唤醒准入与本窗口评估允许显式应用；物理延迟仍未验收。"
+"Full native capacity":
+  en: Full native capacity
+  zh-CN: 填满原生缓冲
+"Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames":
+  en: "Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames"
+  zh-CN: "代次 %{generation}；数据包位置 %{position} 帧；偏移 %{offset} / 已接收 %{accepted} 帧"
+"Host submission -> owner collection":
+  en: Host submission -> owner collection
+  zh-CN: 主机提交 -> 所有者收集
+"Insufficient exposure":
+  en: "Insufficient exposure"
+  zh-CN: "有效输出证据不足"
+"Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)":
+  en: "Late wakes %{late}; skipped %{periods} periods / %{frames} Engine frames (not native PCM drops)"
+  zh-CN: "迟到唤醒 %{late} 次；跳过 %{periods} 周期 / %{frames} Engine 帧（不是原生 PCM 丢帧）"
+"Latest native export observation (not live audio)":
+  en: Latest native export observation (not live audio)
+  zh-CN: 最近一次原生导出观测（非实时音频）
+"Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy.":
+  en: "Limits host time since packet publication began, not source sample age or physical latency. Recovery may also discard newer frames in the same input prefix. Measured admission currently refuses this policy."
+  zh-CN: "限制从数据包开始发布起算的主机经过时间，并非源样本年龄或物理延迟。恢复时也可能丢弃同一输入前缀中较新的帧。当前实测准入不支持此策略。"
+"Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods.":
+  en: "Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods."
+  zh-CN: "仅限制虚拟时钟追赶，不减少物理输出整次唤醒需求，也不保证延迟。较小上限可能丢弃更多逾期周期。"
+"Matches requested name":
+  en: Matches requested name
+  zh-CN: 与请求名称一致
+"Matching live Process observations are unavailable.":
+  en: "Matching live Process observations are unavailable."
+  zh-CN: "当前没有与该进程输入匹配的实时观测数据。"
+"Maximum observed packet":
+  en: Maximum observed packet
+  zh-CN: 观测到的最大数据包
+"Measured Process input":
+  en: "Measured Process input"
+  zh-CN: "实测进程输入"
+"Measured Process selection is only supported on Windows.":
+  en: "Measured Process selection is only supported on Windows."
+  zh-CN: "实测进程输入配置仅支持 Windows。"
+"Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later.":
+  en: "Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later."
+  zh-CN: "30 秒内未确认实测预算生效。请查看诊断；音频状态仍可能随后改变。"
+"Measured budget is active; physical latency remains unqualified.":
+  en: "Measured budget is active; physical latency remains unqualified."
+  zh-CN: "实测预算已生效；物理端到端延迟仍未验收。"
+"Measured budget was refused or replaced. Your draft is retained.":
+  en: "Measured budget was refused or replaced. Your draft is retained."
+  zh-CN: "实测预算被拒绝或已被其他请求替换，草稿已保留。"
+"Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget.":
+  en: "Measured input bounds must be integers in the supported frame range. Native preparation validates the complete budget."
+  zh-CN: "实测输入预算必须是受支持范围内的整数帧数，原生准备会验证完整预算。"
+"Measured selection requires a matching running graph and saved settings.":
+  en: "Measured selection requires a matching running graph and saved settings."
+  zh-CN: "选择实测配置需要运行中的音频图与已保存设置一致。"
+"Microphone packet service":
+  en: Microphone packet service
+  zh-CN: 麦克风数据包服务
+"Microphone service clock diagnostics":
+  en: Microphone service clock diagnostics
+  zh-CN: 麦克风服务时钟诊断
+"Native export diagnostics":
+  en: Native export diagnostics
+  zh-CN: 原生导出诊断
+"Native packet observation":
+  en: "Native packet observation"
+  zh-CN: "原生数据包观测"
+"Native transport preparation":
+  en: Native transport preparation
+  zh-CN: 原生传输准备状态
+"No active audio configuration":
+  en: No active audio configuration
+  zh-CN: 无活动音频配置
+"No evaluated native candidate is available.":
+  en: "No evaluated native candidate is available."
+  zh-CN: "没有可应用的原生评估候选配置。"
+"No violation in this window":
+  en: "No violation in this window"
+  zh-CN: "本窗口内未发现违规"
+"None reported":
+  en: None reported
+  zh-CN: 未报告
+"Not prepared":
+  en: Not prepared
+  zh-CN: 未准备
+"Not qualified: no sustained, waveform, sample-age or physical latency proof":
+  en: "Not qualified: no sustained, waveform, sample-age or physical latency proof"
+  zh-CN: "未通过验收：不能证明持续运行、波形正确性、样本年龄或物理延迟"
+"Not saturated":
+  en: "Not saturated"
+  zh-CN: "未饱和"
+"Observation generation":
+  en: Observation generation
+  zh-CN: 观测代次
+"Observed packet":
+  en: Observed packet
+  zh-CN: 观测到的数据包
+"Observed violation":
+  en: "Observed violation"
+  zh-CN: "发现违规"
+"Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.":
+  en: Output-rate frames. Native preparation requires target >= actual period + wake margin + callback budget and target <= capacity. Input targets remain independent; no latency guarantee.
+  zh-CN: 单位为输出采样率下的帧。原生准备要求目标不小于实际周期、唤醒余量与回调预算之和，且不超过容量。输入目标独立设置；此配置不保证延迟。
+"Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns":
+  en: "Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns"
+  zh-CN: "数据包 %{packet} / 帧 %{frame} / 观测时刻 %{observed} x 100 ns"
+"Packet %{packet} / gap %{gap} observations":
+  en: "Packet %{packet} / gap %{gap} observations"
+  zh-CN: "数据包 %{packet} / 间隔 %{gap} 次观测"
+"Packet service observation scope":
+  en: Packet service observation scope
+  zh-CN: 数据包服务观测范围
+"Pending native recreation":
+  en: Pending native recreation
+  zh-CN: 等待原生端点重建
+"Physical end-to-end latency":
+  en: Physical end-to-end latency
+  zh-CN: 物理端到端延迟
+"Playback packet service":
+  en: Playback packet service
+  zh-CN: 播放数据包服务
+"Playback service clock diagnostics":
+  en: Playback service clock diagnostics
+  zh-CN: 播放服务时钟诊断
+"Prepared (native observation only)":
+  en: Prepared (native observation only)
+  zh-CN: 已准备（仅为原生观测）
+"Process host ingress elapsed limit":
+  en: "Process host ingress elapsed limit"
+  zh-CN: "进程输入发布起算的主机时间上限"
+"Process source":
+  en: "Process source"
+  zh-CN: "进程输入源"
+"Process trace collection":
+  en: "Process trace collection"
+  zh-CN: "进程历史采集"
+"Process trace predecessor":
+  en: "Process trace predecessor"
+  zh-CN: "进程历史所属前序会话"
+"Process trace prefix":
+  en: "Process trace prefix"
+  zh-CN: "进程历史前缀"
+"Process trace result":
+  en: "Process trace result"
+  zh-CN: "进程历史采集结果"
+"Provider packet telemetry":
+  en: Provider packet telemetry
+  zh-CN: 提供方数据包遥测
+"Provider telemetry schema":
+  en: Provider telemetry schema
+  zh-CN: 提供方遥测版本
+"Provider-created name":
+  en: Provider-created name
+  zh-CN: 提供方创建名称
+"QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}":
+  en: "QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}"
+  zh-CN: "QPC %{frequency}；时钟不可用 %{unavailable} / 未来时间戳 %{future} / 换算溢出 %{overflows}"
+"Read failed":
+  en: Read failed
+  zh-CN: 读取失败
+"Ready to evaluate; audio will not change.":
+  en: "Ready to evaluate; audio will not change."
+  zh-CN: "可以开始评估；不会更改音频运行状态。"
+"Ready to validate the measured input budget and restart audio.":
+  en: "Ready to validate the measured input budget and restart audio."
+  zh-CN: "可以校验实测输入预算并重启音频。"
+"Render queue":
+  en: Render queue
+  zh-CN: 渲染队列
+"Requested device period (frames)":
+  en: Requested device period (frames)
+  zh-CN: 请求设备周期（帧）
+"Requested endpoint name":
+  en: Requested endpoint name
+  zh-CN: 请求的端点名称
+"Resets %{resets}; maximum backlog %{backlog} periods (before cap)":
+  en: "Resets %{resets}; maximum backlog %{backlog} periods (before cap)"
+  zh-CN: "重置 %{resets} 次；最大积欠 %{backlog} 周期（施加上限之前）"
+"Restarting audio; waiting for the measured budget to become active.":
+  en: "Restarting audio; waiting for the measured budget to become active."
+  zh-CN: "正在重启音频，等待实测预算生效。"
+"Retained origin":
+  en: "Retained origin"
+  zh-CN: "保留历史的原始身份"
+"Saturated (counts are lower bounds)":
+  en: "Saturated (counts are lower bounds)"
+  zh-CN: "已饱和（计数仅为下界）"
+"Save or discard other settings drafts before applying a measured budget.":
+  en: "Save or discard other settings drafts before applying a measured budget."
+  zh-CN: "应用实测预算前，请先保存或放弃其他设置草稿。"
+"Schema 1 (owner-local cumulative counters, not latency)":
+  en: "Schema 1 (owner-local cumulative counters, not latency)"
+  zh-CN: "版本 1（所属运行实例的累计计数，不是延迟）"
+"Select a running Process source.":
+  en: "Select a running Process source."
+  zh-CN: "请选择运行中的进程输入源。"
+"Settings changed while applying the measured budget.":
+  en: "Settings changed while applying the measured budget."
+  zh-CN: "应用实测预算期间，设置发生了变化。"
+"Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.":
+  en: Shared device period must be an integer within 64..=4096 frames; leave blank for driver default.
+  zh-CN: 共享模式设备周期必须为 64～4096 帧的整数；留空使用驱动默认值。
+"Stable endpoint ID":
+  en: Stable endpoint ID
+  zh-CN: 稳定端点 ID
+"Stop a collected Process session to evaluate its closed prefix.":
+  en: "Stop a collected Process session to evaluate its closed prefix."
+  zh-CN: "请先停止已采集历史的进程会话，再评估其闭合前缀。"
+"Stream %{index}":
+  en: "Stream %{index}"
+  zh-CN: "流 %{index}"
+"Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate":
+  en: Target %{target}; wake margin %{wake}; callback budget %{callback} frames at the output rate
+  zh-CN: 目标 %{target}；唤醒余量 %{wake}；回调预算 %{callback}（输出采样率下的帧）
+"The graph changed while applying the measured budget.":
+  en: "The graph changed while applying the measured budget."
+  zh-CN: "应用实测预算期间，音频图发生了变化。"
+"The selected source is not the retained Process source.":
+  en: "The selected source is not the retained Process source."
+  zh-CN: "所选输入源不是保留历史所属的进程输入源。"
+"Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)":
+  en: "Transfer %{transfer} / FIR %{fir} / wake %{wake} frames at 48 kHz (modeled, not latency)"
+  zh-CN: "传输 %{transfer} / FIR %{fir} / 唤醒 %{wake} 帧（48 kHz 模型值，不是延迟）"
+"Unavailable %{unavailable} / regressed %{regressed} observations":
+  en: "Unavailable %{unavailable} / regressed %{regressed} observations"
+  zh-CN: "不可用 %{unavailable} / 回退 %{regressed} 次观测"
+"Unknown / not observed":
+  en: Unknown / not observed
+  zh-CN: 未知 / 尚未观测
+"Unknown / unqualified":
+  en: Unknown / unqualified
+  zh-CN: 未知 / 未经验证
+"Unknown stamp origin":
+  en: Unknown stamp origin
+  zh-CN: 时间戳来源未知
+"Unmapped stream":
+  en: Unmapped stream
+  zh-CN: 未映射的流
+"Unsupported schema %{schema}":
+  en: "Unsupported schema %{schema}"
+  zh-CN: "不支持的版本 %{schema}"
+"Use input presets":
+  en: "Use input presets"
+  zh-CN: "使用输入预设"
+"Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency.":
+  en: "Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency."
+  zh-CN: "使用当前输入源观测到的传输时序和整次唤醒需求。重启将替换音频会话；这不代表连续输出或物理端到端延迟已通过验收。"
+"VAD recovery cap":
+  en: "VAD recovery cap"
+  zh-CN: "VAD 追赶周期上限"
+"Virtual clock configuration":
+  en: "Virtual clock configuration"
+  zh-CN: "虚拟时钟配置"
+"Virtual clock counter saturation":
+  en: "Virtual clock counter saturation"
+  zh-CN: "虚拟时钟计数器饱和状态"
+"Virtual clock observation":
+  en: "Virtual clock observation"
+  zh-CN: "虚拟时钟观测"
+"Virtual clock recovery":
+  en: "Virtual clock recovery"
+  zh-CN: "虚拟时钟恢复"
+"Virtual clock rendered":
+  en: "Virtual clock rendered"
+  zh-CN: "虚拟时钟已渲染量"
+"Virtual clock timeline":
+  en: "Virtual clock timeline"
+  zh-CN: "虚拟时钟时间线"
+"Waiting for the current audio transaction.":
+  en: "Waiting for the current audio transaction."
+  zh-CN: "正在等待当前音频操作完成。"
+"Window policy: initial unserved / prime discard / output frames / reads / span":
+  en: "Window policy: initial unserved / prime discard / output frames / reads / span"
+  zh-CN: "窗口策略：初始未提供帧数 / 预填丢弃 / 输出帧数 / 读取次数 / 跨度"
+"Windows endpoint name":
+  en: Windows endpoint name
+  zh-CN: Windows 端点名称
+"Windows name MMDevice ID":
+  en: Windows name MMDevice ID
+  zh-CN: Windows 名称对应的 MMDevice ID
+"Windows name match":
+  en: Windows name match
+  zh-CN: Windows 名称匹配状态
+"Windows name observation QPC (100 ns)":
+  en: Windows name observation QPC (100 ns)
+  zh-CN: Windows 名称观测 QPC（100 ns）
+"Windows name readback error":
+  en: Windows name readback error
+  zh-CN: Windows 名称读取错误
+
+"%{observations} gap observations / %{slots} unobserved native sequence slots (not proof of signal loss; first-packet prefix unknown)":
+  en: "%{observations} gap observations / %{slots} unobserved native sequence slots (not proof of signal loss; first-packet prefix unknown)"
+  zh-CN: "%{observations} 个间隙观测 / %{slots} 个未观测原生序列槽（不证明信号丢失；首包前缀未知）"
+"Active (not a flow signal)":
+  en: "Active (not a flow signal)"
+  zh-CN: "活动（不代表音频正在流动）"
+"Active process request":
+  en: "Active process request"
+  zh-CN: "活动进程请求"
+"All input bounds use 48 kHz frames. Capacity is spare storage; target is normal residency. The native owner validates the full output demand before activation.":
+  en: "All input bounds use 48 kHz frames. Capacity is spare storage; target is normal residency. The native owner validates the full output demand before activation."
+  zh-CN: "所有输入边界均使用 48 kHz 帧。容量是备用存储；目标是正常驻留。原生 owner 会在激活前验证完整输出需求。"
+"Capacity %{capacity}; target %{target}; jitter %{jitter}; packet %{packet}; gap %{gap} frames at 48 kHz (%{evidence})":
+  en: "Capacity %{capacity}; target %{target}; jitter %{jitter}; packet %{packet}; gap %{gap} frames at 48 kHz (%{evidence})"
+  zh-CN: "容量 %{capacity}；目标 %{target}；抖动 %{jitter}；数据包 %{packet}；间隙 %{gap} 帧（48 kHz，%{evidence}）"
+"Delivery evidence":
+  en: "Delivery evidence"
+  zh-CN: "交付证据"
+"Disabled in Windows":
+  en: "Disabled in Windows"
+  zh-CN: "已在 Windows 中禁用"
+"Empirical estimate":
+  en: "Empirical estimate"
+  zh-CN: "经验估计"
+"Expert estimate":
+  en: "Expert estimate"
+  zh-CN: "专家估计"
+"Expert input buffers":
+  en: "Expert input buffers"
+  zh-CN: "专家输入缓冲"
+"Input targets are estimates. Physical end-to-end latency is unqualified.":
+  en: "Input targets are estimates. Physical end-to-end latency is unqualified."
+  zh-CN: "输入目标是估计值。物理端到端延迟未认证。"
+"Name pending; waiting for native recreation":
+  en: "Name pending; waiting for native recreation"
+  zh-CN: "名称待定；等待原生重建"
+"Not present in Windows":
+  en: "Not present in Windows"
+  zh-CN: "Windows 中不存在"
+"Playback native sequence gaps":
+  en: "Playback native sequence gaps"
+  zh-CN: "播放原生序列间隙"
+"Process input buffer":
+  en: "Process input buffer"
+  zh-CN: "进程输入缓冲"
+"Requested process input":
+  en: "Requested process input"
+  zh-CN: "请求的进程输入"
+"Unknown / not present":
+  en: "Unknown / not present"
+  zh-CN: "未知 / 不存在"
+"Unknown Windows endpoint state 0x%{state}":
+  en: "Unknown Windows endpoint state 0x%{state}"
+  zh-CN: "未知 Windows 端点状态 0x%{state}"
+"Unplugged in Windows":
+  en: "Unplugged in Windows"
+  zh-CN: "已从 Windows 拔出"
+"VAD input buffer":
+  en: "VAD input buffer"
+  zh-CN: "VAD 输入缓冲"
+"Windows endpoint state":
+  en: "Windows endpoint state"
+  zh-CN: "Windows 端点状态"
+"Captures the selected process and its descendants, not an individual browser tab or audio session.":
+  en: Captures the selected process and its descendants, not an individual browser tab or audio session.
+  zh-CN: 捕获所选进程及其后代进程，而非单个浏览器标签页或音频会话。
+"Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.":
+  en: "Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above."
+  zh-CN: "重命名会重新创建 Windows 端点，可能中断音频，或需要其他应用重新选择端点。请求的名称不代表 Windows 显示名称已更新；请核对上方读回的名称。"
+
+"%{prefix}: prepared boundary capacity":
+  en: "%{prefix}: prepared boundary capacity"
+  zh-CN: "%{prefix}：已准备的边界容量"
+"%{prefix}: post-transfer occupancy / correction":
+  en: "%{prefix}: post-transfer occupancy / correction"
+  zh-CN: "%{prefix}：传输后占用量 / 校正"
+"%{prefix}: cumulative boundary events":
+  en: "%{prefix}: cumulative boundary events"
+  zh-CN: "%{prefix}：累计边界事件"
+"%{frames} native frames at 48 kHz (storage headroom)":
+  en: "%{frames} native frames at 48 kHz (storage headroom)"
+  zh-CN: "%{frames} 个 48 kHz 原生帧（存储余量）"
+"%{frames} native frames at 48 kHz":
+  en: "%{frames} native frames at 48 kHz"
+  zh-CN: "%{frames} 个 48 kHz 原生帧"
+"%{frames} native frames at 48 kHz; applied %{ppm} ppm":
+  en: "%{frames} native frames at 48 kHz; applied %{ppm} ppm"
+  zh-CN: "%{frames} 个 48 kHz 原生帧；已应用 %{ppm} ppm"
+"Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)":
+  en: "Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)"
+  zh-CN: "Xrun %{xruns} / 软事件 %{soft} 次（非驱动丢帧数或静音帧数）"
+"%{prefix}: actual stream":
+  en: "%{prefix}: actual stream"
+  zh-CN: "%{prefix}：实际流"
+"%{prefix}: backend / mode":
+  en: "%{prefix}: backend / mode"
+  zh-CN: "%{prefix}：后端 / 模式"
+"%{prefix}: requested buffer":
+  en: "%{prefix}: requested buffer"
+  zh-CN: "%{prefix}：请求缓冲"
+"%{prefix}: bridge counters":
+  en: "%{prefix}: bridge counters"
+  zh-CN: "%{prefix}：桥接计数"
+"%{prefix}: ASIO callback counters":
+  en: "%{prefix}: ASIO callback counters"
+  zh-CN: "%{prefix}：ASIO 回调计数"
+"%{prefix}: driver-reported latency":
+  en: "%{prefix}: driver-reported latency"
+  zh-CN: "%{prefix}：驱动报告延迟"
+"%{prefix}: actual timing":
+  en: "%{prefix}: actual timing"
+  zh-CN: "%{prefix}：实际时序"
+"%{rate} Hz; %{period}; capacity %{capacity} frames":
+  en: "%{rate} Hz; %{period}; capacity %{capacity} frames"
+  zh-CN: "%{rate} Hz；%{period}；容量 %{capacity} 帧"
+"period unknown":
+  en: period unknown
+  zh-CN: 周期未知
+"Virtual capture; no hardware period":
+  en: Virtual capture; no hardware period
+  zh-CN: 虚拟采集；无硬件周期
+"%{prefix}: period request":
+  en: "%{prefix}: period request"
+  zh-CN: "%{prefix}：周期请求"
+"%{ms} ms requested":
+  en: "%{ms} ms requested"
+  zh-CN: "已请求 %{ms} ms"
+"Device default requested":
+  en: Device default requested
+  zh-CN: 已请求设备默认值
+"%{prefix}: initialization":
+  en: "%{prefix}: initialization"
+  zh-CN: "%{prefix}：初始化"
+"%{prefix}: effective prepared render queue":
+  en: "%{prefix}: effective prepared render queue"
+  zh-CN: "%{prefix}：实际准备的渲染队列"
+"Target %{target} / capacity %{capacity} frames":
+  en: "Target %{target} / capacity %{capacity} frames"
+  zh-CN: "目标 %{target} / 容量 %{capacity} 帧"
+"%{prefix}: effective prepared bridge queue":
+  en: "%{prefix}: effective prepared bridge queue"
+  zh-CN: "%{prefix}：实际准备的桥接队列"
+"Prime %{prime} / capacity %{capacity} frames":
+  en: "Prime %{prime} / capacity %{capacity} frames"
+  zh-CN: "预填充 %{prime} / 容量 %{capacity} 帧"
+"%{prefix}: live queue / clock":
+  en: "%{prefix}: live queue / clock"
+  zh-CN: "%{prefix}：实时队列 / 时钟"
+"%{prefix}: faults / recovery":
+  en: "%{prefix}: faults / recovery"
+  zh-CN: "%{prefix}：故障 / 恢复"
+"Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}":
+  en: "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}"
+  zh-CN: "欠载 %{underrun} / 丢弃 %{dropped} 帧；复位 %{resets} / 积压恢复 %{recoveries}"
+"Application input":
+  en: Application input
+  zh-CN: 应用输入
+"Virtual playback":
+  en: Virtual playback
+  zh-CN: 虚拟播放
+"Virtual microphone":
+  en: Virtual microphone
+  zh-CN: 虚拟麦克风
+"%{prefix}: admitted input reserve":
+  en: "%{prefix}: admitted input reserve"
+  zh-CN: "%{prefix}：已准入输入储备"
+"Provider export diagnostics":
+  en: Provider export diagnostics
+  zh-CN: 提供方导出诊断
+"CPU load":
+  en: "CPU load"
+  zh-CN: "CPU 负载"
+
+"%{prefix}: total pre-transfer content target":
+  en: "%{prefix}: total pre-transfer content target"
+  zh-CN: "%{prefix}：传输前总内容目标"
+"Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)":
+  en: "Minimum %{minimum}; low %{low} / high %{high} input frames (modeled reserve, not latency)"
+  zh-CN: "最低 %{minimum}；低水位 %{low} / 高水位 %{high} 输入帧（模型储备，不是延迟）"
+"Windows endpoint state readback error":
+  en: "Windows endpoint state readback error"
+  zh-CN: "Windows 端点状态读取错误"
+"Active VAD request":
+  en: "Active VAD request"
+  zh-CN: "活动 VAD 请求"
+"Active render queue":
+  en: "Active render queue"
+  zh-CN: "活动渲染队列"
+"Input buffer settings were rejected.":
+  en: "Input buffer settings were rejected."
+  zh-CN: "输入缓冲设置被拒绝。"
+"Input buffers":
+  en: "Input buffers"
+  zh-CN: "输入缓冲"
+"Measured Process selection changed while saving. Your draft is retained.":
+  en: "Measured Process selection changed while saving. Your draft is retained."
+  zh-CN: "保存期间实测 Process 选择发生变化。草稿已保留。"
+"Measured source node %{node}; PID %{pid} (created %{created}); target %{target} / capacity %{capacity} / jitter %{jitter} frames at 48 kHz; origin session %{session} / owner %{owner} / revision %{revision}; selection %{selection}":
+  en: "Measured source node %{node}; PID %{pid} (created %{created}); target %{target} / capacity %{capacity} / jitter %{jitter} frames at 48 kHz; origin session %{session} / owner %{owner} / revision %{revision}; selection %{selection}"
+  zh-CN: "实测源节点 %{node}；PID %{pid}（创建时间 %{created}）；目标 %{target} / 容量 %{capacity} / 抖动余量 %{jitter} 帧（48 kHz）；来源会话 %{session} / 所有者 %{owner} / 修订 %{revision}；选择 %{selection}"
+"No native export observations":
+  en: "No native export observations"
+  zh-CN: "没有原生导出观测"
+"Queue fill and packet timing do not measure CPU load or physical end-to-end latency.":
+  en: "Queue fill and packet timing do not measure CPU load or physical end-to-end latency."
+  zh-CN: "队列填充和数据包时序不能测量 CPU 负载或物理端到端延迟。"
+"Requested VAD input":
+  en: "Requested VAD input"
+  zh-CN: "请求的 VAD 输入"
+"Requested render queue":
+  en: "Requested render queue"
+  zh-CN: "请求的渲染队列"
+"Settings changed while restarting. Your draft is retained.":
+  en: "Settings changed while restarting. Your draft is retained."
+  zh-CN: "重启期间设置发生变化。草稿已保留。"
+"Unknown node":
+  en: "Unknown node"
+  zh-CN: "未知节点"

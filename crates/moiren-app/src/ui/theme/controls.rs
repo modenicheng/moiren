@@ -1,27 +1,24 @@
 //! Shared tokens for the approved v0.1.2 action components.
-//! Interactive-state palette variants (hover/pressed/on-accent) live here;
-//! `theme.rs` re-exports base tokens only and must not grow same-name copies.
+//! Interactive-state palette variants (hover/pressed/on-accent) live here,
+//! alongside kit-only tokens; base colors shared with the workstation
+//! palette are defined once in `theme.rs` (design 21 §1: one constant per
+//! color value).
 //!
 //! Source: Moiren UI v0.1.2, Navigation & Actions, checked 2026-10-14.
 //! The experimental graph theme is migrated as its components are replaced.
 
 use gpui_kit::{Hsla, hsla};
 
-pub const CANVAS: Hsla = hsla(0.611111, 0.25, 0.047059, 1.0); // #090b0f
-pub const PANEL: Hsla = hsla(0.6, 0.227273, 0.086275, 1.0); // #11151b
 pub const RAISED: Hsla = hsla(0.602564, 0.19403, 0.131373, 1.0); // #1b2028
-pub const BORDER: Hsla = hsla(0.604167, 0.16, 0.196078, 1.0); // #2a303a
+/// The focus/accent purple. One accent value shared by the kit's focus
+/// ring, the workstation's accent surfaces, and the DSP node tint.
 pub const FOCUS: Hsla = hsla(0.722741, 0.781022, 0.731373, 1.0); // #a985f0
-pub const TEXT: Hsla = hsla(0.583333, 0.285714, 0.972549, 1.0); // #f6f8fa
-pub const SECONDARY: Hsla = hsla(0.6, 0.153846, 0.745098, 1.0); // #b4bcc8
-pub const MUTED: Hsla = hsla(0.602564, 0.127451, 0.6, 1.0); // #8c96a6
 pub const DISABLED: Hsla = hsla(0.6, 0.147059, 0.266667, 1.0); // #3a424e
 pub const ON_ACCENT: Hsla = hsla(0.0, 0.0, 1.00000000, 1.0); // #ffffff
 pub const PRIMARY: Hsla = hsla(0.725333, 0.523013, 0.531373, 1.0); // #7549c6
 pub const PRIMARY_HOVER: Hsla = hsla(0.718667, 0.675676, 0.637255, 1.0); // #8b64e1
 pub const PRIMARY_PRESSED: Hsla = hsla(0.735632, 0.537037, 0.423529, 1.0); // #6232a6
 pub const PRIMARY_MUTED: Hsla = hsla(0.737443, 0.623932, 0.229412, 1.0); // #35165f
-pub const DANGER: Hsla = hsla(0.0, 0.90604, 0.707843, 1.0); // #f87171
 pub const DANGER_HOVER: Hsla = hsla(0.0, 0.911111, 0.735294, 1.0); // #f97e7e
 pub const DANGER_PRESSED: Hsla = hsla(0.0, 0.545894, 0.594118, 1.0); // #d05f5f
 pub const DANGER_DISABLED: Hsla = hsla(0.981061, 0.366667, 0.235294, 1.0); // #52262b
@@ -32,10 +29,17 @@ pub const INDICATOR: Hsla = hsla(0.104167, 0.307692, 0.94902, 1.0); // #f6f3ee
 pub const TRANSPARENT: Hsla = hsla(0., 0., 0., 0.);
 pub const FONT: &str = "Inter";
 pub const RADIUS: f32 = 4.;
-pub const ICON: f32 = 16.;
+/// The approved action-component icon size, aliased from the theme's icon
+/// ladder (design 21 §1.3) so both stay one source.
+pub const ICON: f32 = super::ICON_MD;
 pub const HIT_TARGET: f32 = 32.;
 pub const TOOLBAR: f32 = 44.;
+/// The workspace tab's preferred width: its flex basis at rest, so the strip
+/// keeps the approved uniform rhythm when the toolbar has room.
 pub const TAB_WIDTH: f32 = 112.;
+/// The workspace tab's shrink floor: padding (12+12) + icon (16) + gap (8)
+/// plus a two-character label remnant. Below this the tab shows icon only.
+pub const TAB_MIN_WIDTH: f32 = 72.;
 pub const WINDOW_WIDTH: f32 = 46.;
 pub const INDICATOR_SIZE: f32 = 4.;
 pub const INDICATOR_INSET: f32 = 4.;

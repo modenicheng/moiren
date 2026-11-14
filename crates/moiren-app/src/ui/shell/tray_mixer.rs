@@ -2,9 +2,10 @@
 //! strips (sources, buses, sinks) without opening the main window.
 //!
 //! Faders reuse the main mixer's rows verbatim, so both share the identical
-//! perceptual value space and edit path (see `mixer::model`): drag Changes
-//! dispatch coalesced, the release's final value always lands, and the wheel
-//! and double-click gestures edit immediately, as do mute/solo clicks.
+//! perceptual value space and edit path (see `crate::ui::editors`): drag
+//! Changes dispatch coalesced, the release's final value always lands, and
+//! the wheel and double-click gestures edit immediately, as do mute/solo
+//! clicks.
 //!
 //! The strips are a cached panel ([`TrayPanel`]) and the live meter bars a
 //! hot surface ([`FlyoutMeters`]) over them — the same two-tier split as the
@@ -20,18 +21,19 @@ use std::sync::Arc;
 use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::hot::{HotLayerView, HotSurface, MeterTracks};
-use super::mixer::{
-    SliderSlot, fader_rows, mixer_edit, node_kind_color, reset_clip_on_click, sync_faders,
-};
+use super::mixer::{node_kind_color, strip_subtitle};
 use super::panel::{CachedPanel, PanelHost, PublishRef};
 use super::*;
 use crate::service::{GraphNodeState, GraphSnapshot};
+use crate::ui::editors::{
+    SliderSlot, fader_readout_gain, fader_rows, mixer_edit, reset_clip_on_click, sync_faders,
+};
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::presentation::db_text;
 use crate::ui::shared_frame::SharedFrame;
 use crate::ui::widgets::fader::fader;
 use crate::ui::widgets::meters::paint_meter_fill;
-use crate::ui::widgets::overlay_scrollbar::overlay_scrollbar;
+use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 use moiren_core::graph::{NodeId, NodeKind};
 
@@ -181,7 +183,7 @@ impl Render for TrayMixer {
 }
 
 #[derive(PartialEq)]
-pub(crate) struct TrayKey {
+struct TrayKey {
     snapshot: PublishRef<crate::service::AppSnapshot>,
     /// The strip row scrolls inside the cached panel (same
     /// scroll-under-cache rationale as the main window's pages).
@@ -190,9 +192,9 @@ pub(crate) struct TrayKey {
 
 /// The flyout's strip panel: faders, mute/solo, and readouts, rebuilt only
 /// when the published snapshot changes.
-pub(crate) struct TrayPanel;
+struct TrayPanel;
 
-pub(crate) type TrayPanelHost = PanelHost<TrayPanel>;
+type TrayPanelHost = PanelHost<TrayPanel>;
 
 impl CachedPanel for TrayPanel {
     type Owner = TrayMixer;
@@ -223,16 +225,21 @@ impl CachedPanel for TrayPanel {
             .h_full()
             .flex()
             .track_scroll(&owner.strips_scroll)
+            .restrict_scroll_to_axis()
             .overflow_x_scroll()
-            .on_scroll_wheel({
-                let this = cx.entity();
-                move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-            });
-        for id in ids {
+            .on_scroll_wheel(notify_owner(cx.entity()));
+        for (index, id) in ids.into_iter().enumerate() {
             let (Ok(node), Some(entry)) = (graph.graph.get_node(id), graph.node(id)) else {
                 continue;
             };
-            strips = strips.child(strip(owner, entry, node.kind(), cx));
+            strips = strips.child(strip(
+                owner,
+                entry,
+                index + 1,
+                node.kind(),
+                node.channels(),
+                cx,
+            ));
         }
 
         div()
@@ -249,8 +256,8 @@ impl CachedPanel for TrayPanel {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
+                    .gap(px(theme::SPACE_2))
+                    .px(px(theme::SPACE_3))
                     .h(px(36.))
                     .border_b_1()
                     .border_color(theme::BORDER)
@@ -264,26 +271,20 @@ impl CachedPanel for TrayPanel {
                     .flex_1()
                     .items_center()
                     .justify_center()
-                    .px(px(16.))
+                    .px(px(theme::SPACE_4))
                     .child(label(t!("No strips · open Moiren to build a graph")))
                     .into_any_element()
             } else {
-                // The bar overlay is a sibling of the scroll container,
-                // never a child: the container translates its children by
-                // the offset at prepaint, so an overlay inside it would
-                // drift away with the strips.
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .child(strips)
-                    .child(overlay_scrollbar(
-                        &owner.strips_scroll,
-                        "scrollbar-tray-mixer-strips",
-                        ScrollbarAxis::Horizontal,
-                    ))
-                    .into_any_element()
+                scroll_region(
+                    "scrollbar-tray-mixer-strips",
+                    &owner.strips_scroll,
+                    ScrollbarAxis::Horizontal,
+                    strips,
+                )
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .into_any_element()
             })
             .into_any_element()
     }
@@ -337,7 +338,9 @@ fn open_button(cx: &Context<TrayMixer>) -> impl IntoElement {
 fn strip(
     flyout: &TrayMixer,
     entry: &GraphNodeState,
+    number: usize,
     kind: NodeKind,
+    channels: usize,
     cx: &Context<TrayMixer>,
 ) -> impl IntoElement {
     let id = entry.id;
@@ -352,16 +355,16 @@ fn strip(
         .bg(theme::SURFACE)
         .border_r_1()
         .border_color(theme::BORDER)
-        .child(div().h(px(3.)).flex_none().bg(color.opacity(0.55)))
+        .child(div().h(px(3.)).flex_none().bg(theme::dim(color)))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(px(theme::SPACE_0_5))
                 .flex_none()
                 .min_w_0()
-                .px(px(8.))
-                .py(px(8.))
+                .px(px(theme::SPACE_2))
+                .py(px(theme::SPACE_2))
                 .child(
                     div()
                         .min_w_0()
@@ -373,7 +376,7 @@ fn strip(
                         // binding lives on the node card's chip, not here.
                         .child(crate::ui::presentation::display_label(entry)),
                 )
-                .child(label(format!("{kind:?}"))),
+                .child(label(strip_subtitle(number, kind, channels))),
         )
         .child(
             div()
@@ -382,8 +385,8 @@ fn strip(
                 .flex_none()
                 .items_end()
                 .justify_center()
-                .gap(px(8.))
-                .py(px(6.))
+                .gap(px(theme::SPACE_2))
+                .py(px(theme::SPACE_1_5))
                 // The shared fader fills its container; the flyout fixes the
                 // track height the main mixer takes from the strip.
                 .child(div().h(px(196.)).flex_none().child(fader(
@@ -405,9 +408,9 @@ fn strip(
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .gap(px(4.))
-                .px(px(8.))
-                .pb(px(6.))
+                .gap(px(theme::SPACE_1))
+                .px(px(theme::SPACE_2))
+                .pb(px(theme::SPACE_1_5))
                 .child(
                     button(SharedString::from(format!("tray-strip-mute-{id:?}")), "M")
                         .variant(if entry.mixer.muted {
@@ -438,13 +441,19 @@ fn strip(
                 .flex()
                 .flex_none()
                 .justify_center()
+                // 10 px: the gain readout's breathing room above the
+                // flyout's bottom edge, off the spacing grid.
                 .pb(px(10.))
                 .child(
                     div()
                         .font_family(theme::FONT_MONO)
-                        .text_size(px(11.))
+                        .text_size(px(theme::TEXT_CAPTION))
                         .text_color(theme::TEXT_MUTED)
-                        .child(db_text(entry.mixer.gain)),
+                        .child(db_text(fader_readout_gain(
+                            flyout.faders.get(&id),
+                            entry.mixer.gain,
+                            cx,
+                        ))),
                 )
                 .gpui_test_observe(),
         )
@@ -468,7 +477,7 @@ fn meter_track(flyout: &TrayMixer, id: NodeId) -> impl IntoElement {
 
 /// The flyout's hot surface: live bars over the cached strips, painting from
 /// the geometry the strips registered and the shared observations.
-pub(crate) struct FlyoutMeters {
+struct FlyoutMeters {
     flyout: WeakEntity<TrayMixer>,
     geometry: SharedFrame<MeterTracks>,
     /// How many registered tracks this surface has painted. Test-visible
@@ -499,7 +508,7 @@ impl FlyoutMeters {
     }
 }
 
-pub(crate) type FlyoutMeterLayer = HotLayerView<FlyoutMeters>;
+type FlyoutMeterLayer = HotLayerView<FlyoutMeters>;
 
 impl HotSurface for FlyoutMeters {
     type Frame = MeterTracks;

@@ -1,6 +1,6 @@
 //! Lease-local staging: copy before release, publish the exact outcome afterward.
 use super::*;
-use crate::{owner::LeaseClient, render_evidence::RenderEvidenceWriter};
+use crate::{render_evidence::RenderEvidenceWriter, win32_raii::LeaseClient};
 
 /// Scalar envelope only: no native calls, allocation or reclamation. The clock
 /// closures are never invoked when the existing evidence hook is disabled.

@@ -1,10 +1,13 @@
 //! Clock selection and native admission are independent of virtual IO intent.
 use super::*;
 
+/// Admission checks that run before endpoints are resolved. Returns the
+/// processing rate; the clock follows in [`select_clock`] once absence is
+/// known.
 pub(super) fn validate(
     request: &PrepareRequest<'_>,
     has_provider: bool,
-) -> Result<(u32, ProjectClock), BackendError> {
+) -> Result<u32, BackendError> {
     let project = request.project;
     project.validate().map_err(unsupported)?;
     if !has_provider {
@@ -28,10 +31,8 @@ pub(super) fn validate(
         }
     }
     let mut virtual_ids = Vec::new();
-    let mut physical_outputs = Vec::new();
-    let mut outputs = 0;
     let mut io_count = 0;
-    for (&node, config) in &project.nodes {
+    for config in project.nodes.values() {
         let (channels, device, virtual_id) = match config {
             NodeConfig::Input(input) => {
                 if input.device.clock_role != ClockRole::Follower {
@@ -47,13 +48,9 @@ pub(super) fn validate(
                 )
             }
             NodeConfig::Output(output) => {
-                outputs += 1;
                 let virtual_id = match output.target {
                     OutputTarget::VirtualMicrophone { endpoint_id } => Some(endpoint_id),
-                    OutputTarget::Physical(_) => {
-                        physical_outputs.push((node, output.device.clock_role));
-                        None
-                    }
+                    OutputTarget::Physical(_) => None,
                     _ => {
                         return Err(unsupported(
                             "professional outputs need physical or virtual targets",
@@ -112,26 +109,46 @@ pub(super) fn validate(
             "professional Engine block must be 1..4096 frames",
         ));
     }
-    if outputs == 0 || io_count > 64 {
+    if io_count > 64 {
         return Err(unsupported(
-            "professional backend needs an output and at most 64 IO nodes",
+            "professional backend allows at most 64 IO nodes",
         ));
     }
-    let clock = if physical_outputs.is_empty() {
-        ProjectClock::VirtualRealtime
-    } else {
-        let mut masters = physical_outputs
-            .iter()
-            .filter(|(_, role)| *role == ClockRole::Master);
-        let master = masters.next().ok_or_else(|| {
-            unsupported("professional backend needs exactly one physical output master")
-        })?;
-        if masters.next().is_some() {
-            return Err(unsupported(
-                "professional backend needs exactly one physical output master",
-            ));
+    Ok(sr as u32)
+}
+
+/// Picks the project clock once endpoint presence is known. Exactly one
+/// master is required among all physical outputs (a configuration fact), but
+/// an absent master degrades the whole project to the QPC virtual clock —
+/// the present outputs keep rendering as followers while the device is gone.
+pub(super) fn select_clock(
+    request: &PrepareRequest<'_>,
+    absent: &[NodeId],
+) -> Result<ProjectClock, BackendError> {
+    let mut physical_outputs = Vec::new();
+    for (&node, config) in &request.project.nodes {
+        if let NodeConfig::Output(output) = config
+            && matches!(output.target, OutputTarget::Physical(_))
+        {
+            physical_outputs.push((node, output.device.clock_role));
         }
-        ProjectClock::Physical(master.0)
-    };
-    Ok((sr as u32, clock))
+    }
+    if physical_outputs.is_empty() {
+        return Ok(ProjectClock::VirtualRealtime);
+    }
+    let mut masters = physical_outputs
+        .iter()
+        .filter(|(_, role)| *role == ClockRole::Master);
+    let master = masters.next().ok_or_else(|| {
+        unsupported("professional backend needs exactly one physical output master")
+    })?;
+    if masters.next().is_some() {
+        return Err(unsupported(
+            "professional backend needs exactly one physical output master",
+        ));
+    }
+    if absent.contains(&master.0) {
+        return Ok(ProjectClock::VirtualRealtime);
+    }
+    Ok(ProjectClock::Physical(master.0))
 }

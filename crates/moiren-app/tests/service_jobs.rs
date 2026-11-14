@@ -12,10 +12,16 @@ fn full_mailbox_cannot_lose_exit() {
     for _ in 0..64 {
         h.try_request(AppRequest::RefreshCatalog).unwrap();
     }
-    assert_eq!(h.try_request(AppRequest::Stop), Err(DispatchError::Busy));
+    assert_eq!(
+        h.try_request(AppRequest::UndoGraph),
+        Err(DispatchError::Busy)
+    );
     h.request_exit();
     assert!(m.exit_requested());
-    assert_eq!(h.try_request(AppRequest::Stop), Err(DispatchError::Exiting));
+    assert_eq!(
+        h.try_request(AppRequest::UndoGraph),
+        Err(DispatchError::Exiting)
+    );
 }
 #[test]
 fn cleanup_is_reserved_while_prepare_is_blocked() {
@@ -109,9 +115,9 @@ fn spec() -> SessionSpec {
     SessionSpec {
         source: InputSelection::Tone { frequency_hz: 440. },
         output_endpoint_id: "output".into(),
-        limit: RunLimit::UntilStopped,
         gain: 0.05,
         pan: 0.,
+        limit: RunLimit::UntilStopped,
         max_block_frames: 256,
     }
 }

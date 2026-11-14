@@ -214,6 +214,53 @@ fn default_project_resolves_processing_rate_and_profile_buffers() {
 }
 
 #[test]
+fn capture_only_and_empty_graphs_prepare_without_a_sink_or_summary() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    let mut service = ServiceGraph::default();
+    let (source, _, _, sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+        })
+        .unwrap();
+    service.edit(GraphEdit::RemoveNode(sink)).unwrap();
+    let preparation = service.preparation();
+    // An output-free graph is a valid always-on project: it prepares for the
+    // virtual clock and carries no two-endpoint legacy summary.
+    preparation
+        .configured_engine_project(
+            256,
+            &AudioSettings::default(),
+            AudioLatencyProfile::Compatible,
+        )
+        .unwrap();
+    assert_eq!(
+        preparation.primary_io_nodes().unwrap(),
+        (Some(source), None)
+    );
+    assert_eq!(
+        service.managed_session_spec(None).unwrap(),
+        None,
+        "a virtual-clock project has no legacy summary"
+    );
+    // Dropping the input side as well still prepares: an empty graph runs.
+    service.edit(GraphEdit::RemoveNode(source)).unwrap();
+    let preparation = service.preparation();
+    preparation
+        .configured_engine_project(
+            256,
+            &AudioSettings::default(),
+            AudioLatencyProfile::Compatible,
+        )
+        .unwrap();
+    assert_eq!(preparation.primary_io_nodes().unwrap(), (None, None));
+    assert_eq!(service.managed_session_spec(None).unwrap(), None);
+}
+
+#[test]
 fn configured_project_resolves_each_endpoint_and_preserves_clock_roles() {
     use crate::service::{
         AudioBackend, AudioLatencyProfile, AudioSettings, SampleFormat, StreamSettings,
@@ -656,7 +703,9 @@ fn render(service: &ServiceGraph) -> Vec<f32> {
         runtime::EngineConfig,
     };
     let preparation = service.preparation();
-    let (input, sink) = preparation.primary_io_nodes().expect("io nodes");
+    let (Some(input), Some(sink)) = preparation.primary_io_nodes().expect("io nodes") else {
+        panic!("io nodes");
+    };
     let (writer, mut output) = audio_bridge(2, 32, 8 * 1024 * 1024).unwrap();
     let mut bindings = moiren_engine::compiler::NodeBindings::new();
     bindings
@@ -1741,5 +1790,115 @@ fn preparation_failures_name_the_node_they_came_from() {
                 AudioLatencyProfile::default()
             )
             .is_ok()
+    );
+}
+
+/// The light revision accessors mirror the snapshot fields they replace, so
+/// poll paths can read one field without paying the snapshot deep copy.
+#[test]
+fn revision_accessors_mirror_the_snapshot_fields() {
+    let mut service = ServiceGraph::default();
+    let gain = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Gain)
+        .map(|node| node.id())
+        .unwrap();
+    assert_eq!(
+        service.candidate_revision(),
+        service.snapshot().candidate_revision
+    );
+    assert_eq!(
+        service.active_revision(),
+        service.snapshot().active_revision
+    );
+    assert_eq!(
+        service.pending_revision(),
+        service.snapshot().pending_revision
+    );
+
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 2.0,
+        })
+        .unwrap();
+    assert_eq!(
+        service.candidate_revision(),
+        service.snapshot().candidate_revision
+    );
+
+    service.preparing(SessionGeneration(1), service.candidate_revision());
+    assert_eq!(
+        service.pending_revision(),
+        Some(service.candidate_revision())
+    );
+    service.confirmed(SessionGeneration(1), service.candidate_revision());
+    assert_eq!(
+        service.active_revision(),
+        Some(service.candidate_revision())
+    );
+    assert_eq!(service.pending_revision(), None);
+    assert_eq!(
+        (service.active_revision(), service.pending_revision()),
+        (
+            service.snapshot().active_revision,
+            service.snapshot().pending_revision
+        )
+    );
+}
+
+/// The publisher's content token must move only on real content change: the
+/// driver re-projects confirmations and stops every round while an owner
+/// exists, and a settled session re-reports the same revision.
+#[test]
+fn settled_lifecycle_projections_do_not_advance_the_state_epoch() {
+    let mut service = ServiceGraph::default();
+    let gain = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Gain)
+        .map(|node| node.id())
+        .unwrap();
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.5,
+        })
+        .unwrap();
+    let revision = service.candidate_revision();
+    service.preparing(SessionGeneration(1), revision);
+    let prepared = service.state_epoch();
+    assert_ne!(prepared, 0, "pending projection moves the token");
+    service.preparing(SessionGeneration(1), revision);
+    assert_eq!(
+        service.state_epoch(),
+        prepared,
+        "re-projecting the same pending state is content-neutral"
+    );
+
+    service.confirmed(SessionGeneration(1), revision);
+    let settled = service.state_epoch();
+    assert_ne!(settled, prepared);
+    service.confirmed(SessionGeneration(1), revision);
+    service.confirmed(SessionGeneration(1), revision);
+    assert_eq!(
+        service.state_epoch(),
+        settled,
+        "steady re-confirmation must not churn the token"
+    );
+
+    service.stopped();
+    let stopped = service.state_epoch();
+    assert_ne!(stopped, settled, "the active revision actually cleared");
+    service.stopped();
+    assert_eq!(
+        service.state_epoch(),
+        stopped,
+        "repeated stop projections are content-neutral"
     );
 }

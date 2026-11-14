@@ -381,9 +381,6 @@ impl Pair {
         self.capture.poll_capture(observe)
     }
 
-    pub fn capture_running(&self) -> bool {
-        self.capture.active
-    }
     pub fn discontinuities(&self) -> u64 {
         self.capture.discontinuities
     }

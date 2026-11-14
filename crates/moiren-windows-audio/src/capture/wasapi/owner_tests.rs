@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     ActivationGate,
     clock_bridge::{ClockBridgeConfig, capture_bridge},
-    owner::OwnedHandle,
+    win32_raii::OwnedHandle,
 };
 
 #[test]
@@ -35,8 +35,8 @@ fn process_preparation_rejects_foreign_gate_stop_before_spawning() {
 #[test]
 fn target_exit_wakes_without_audio_and_stop_wins_all_signals() {
     let stop = crate::StopSignal::new().unwrap();
-    let target = crate::owner::OwnedHandle::event().unwrap();
-    let audio = crate::owner::OwnedHandle::event().unwrap();
+    let target = crate::win32_raii::OwnedHandle::event().unwrap();
+    let audio = crate::win32_raii::OwnedHandle::event().unwrap();
     unsafe {
         SetEvent(target.0).unwrap();
     }

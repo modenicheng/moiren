@@ -277,7 +277,7 @@ fn native_owner<S: ProcessingSample>(
     // Match the physical and virtual paths' scheduling class: this thread
     // paces exclusive native deadlines. Registration failure is non-fatal.
     #[cfg(windows)]
-    let _mmcss = crate::owner::Mmcss::audio();
+    let _mmcss = crate::win32_raii::Mmcss::audio();
     let native = (request.factory)();
     let stream = match native {
         Ok(stream) => stream,
@@ -474,6 +474,12 @@ pub(super) struct Pump {
     offset: usize,
     counters: Arc<Counters>,
     master: bool,
+    engine_rate: u32,
+    /// DSP-load windowing state on the audio thread: blocks rendered and the
+    /// worst block's render time since the last completed window was
+    /// published into the counters. No reader writes these.
+    window_blocks: usize,
+    window_peak: u64,
     servo: FollowerServo,
     max_engine_frames: usize,
 }
@@ -501,6 +507,7 @@ impl Pump {
         // watermark is a drift target, never a condition for native start.
         let period_frames = (u64::from(info.buffer_frames) * u64::from(engine_rate)
             / u64::from(info.sample_rate)) as usize;
+        // QPC stamps the capture clock and times the master's Engine renders.
         let qpc = (capture.is_some() || master)
             .then(crate::latency::QpcClock::new)
             .flatten();
@@ -524,6 +531,9 @@ impl Pump {
             offset: 0,
             counters,
             master,
+            engine_rate,
+            window_blocks: 0,
+            window_peak: 0,
             servo: FollowerServo::new(FollowerServo::start_target(period_frames, capacity)),
             max_engine_frames: (u64::from(info.buffer_frames) * u64::from(engine_rate))
                 .div_ceil(u64::from(info.sample_rate)) as usize
@@ -540,6 +550,7 @@ impl Pump {
         if let Some(tx) = &mut self.capture {
             // Snapshot-sized work: a perpetually busy capture cannot starve output.
             let mut captured = 0usize;
+            let mut overflowed = false;
             for _ in 0..4 {
                 let frames = native.read(&mut self.input)?;
                 if frames > self.input.len() {
@@ -554,9 +565,18 @@ impl Pump {
                 for &frame in &self.input[..accepted] {
                     let _ = tx.push(frame);
                 }
-                self.counters
-                    .dropped
-                    .fetch_add((frames - accepted) as u64, Ordering::Relaxed);
+                if frames > accepted {
+                    overflowed = true;
+                    self.counters
+                        .dropped
+                        .fetch_add((frames - accepted) as u64, Ordering::Relaxed);
+                }
+            }
+            // One XRUN per cycle no matter how many packets it lost: a
+            // sustained overflow is one continuous event per wake, and the
+            // dropped-frame total carries its size.
+            if overflowed {
+                self.counters.xruns.fetch_add(1, Ordering::Relaxed);
             }
             if captured > 0 {
                 // One stamp per wake carries the capture/QPC slope; dropped
@@ -602,7 +622,8 @@ impl Pump {
                         let engine = engine
                             .as_mut()
                             .ok_or_else(|| unsupported("master has no Engine"))?;
-                        if rendered > self.max_engine_frames + engine.config().max_block_frames {
+                        let block = engine.config().max_block_frames;
+                        if rendered > self.max_engine_frames + block {
                             return Err(unsupported(
                                 "Engine did not produce its prepared master sink",
                             ));
@@ -614,10 +635,37 @@ impl Pump {
                             .input_frames_needed(demand - self.pending)
                             .filter(|&frames| frames > 0)
                             .ok_or_else(|| unsupported("native render SRC demand invalid"))?;
-                        let frames = missing.min(engine.config().max_block_frames);
+                        let block = engine.config().max_block_frames;
+                        let frames = missing.min(block);
+                        // DSP-load accounting: two QPC reads and relaxed
+                        // atomics per block — no allocation, no blocking, no
+                        // clock domain beyond QPC itself.
+                        let began = self.qpc.as_ref().and_then(|clock| clock.now());
                         engine
                             .render(frames)
                             .map_err(|e| BackendError::Failed(e.to_string()))?;
+                        if let Some(spent) = began
+                            .zip(self.qpc.as_ref().and_then(|clock| clock.now()))
+                            .map(|(began, ended)| ended.saturating_sub(began))
+                        {
+                            self.counters
+                                .render_ticks
+                                .fetch_add(spent, Ordering::Relaxed);
+                            self.window_peak = self.window_peak.max(spent);
+                        }
+                        self.counters.blocks.fetch_add(1, Ordering::Relaxed);
+                        self.window_blocks += 1;
+                        // One second of audio completes the window; its worst
+                        // block becomes the published peak and the next
+                        // window starts fresh.
+                        let window = (self.engine_rate as usize / frames.max(1)).max(1);
+                        if self.window_blocks >= window {
+                            self.counters
+                                .render_peak_ticks
+                                .store(self.window_peak, Ordering::Relaxed);
+                            self.window_blocks = 0;
+                            self.window_peak = 0;
+                        }
                         rendered += frames;
                         timeline.publish(engine);
                     } else {
@@ -628,6 +676,10 @@ impl Pump {
                         self.counters
                             .silent
                             .fetch_add(missing as u64, Ordering::Relaxed);
+                        self.counters.xruns.fetch_add(1, Ordering::Relaxed);
+                        // Preserve only the requested wake; padding the full
+                        // scratch would manufacture silent residency beyond
+                        // the native queue and inflate measured latency.
                         self.pending = demand;
                     }
                 }

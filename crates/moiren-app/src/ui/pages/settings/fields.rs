@@ -16,7 +16,6 @@ fn segmented_group(
 ) -> Div {
     let mut group = div()
         .flex()
-        .flex_wrap()
         .items_stretch()
         .max_w_full()
         .self_start()
@@ -28,7 +27,7 @@ fn segmented_group(
     for (index, (title, selected, handler)) in items.into_iter().enumerate() {
         group = group.child(
             button(SharedString::from(format!("{id}-{index}")), title)
-                .density(shell.density)
+                .density(shell.chrome.density)
                 .variant(if selected {
                     ButtonVariant::Primary
                 } else {
@@ -64,9 +63,6 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(
                 value == selected,
                 Box::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                     this.update(cx, |shell, cx| {
-                        if shell.settings.editor.busy() {
-                            return;
-                        }
                         let draft = shell.settings.editor.draft_mut(editor);
                         if draft.pending.is_none() {
                             set(draft, value);
@@ -113,7 +109,7 @@ pub(crate) fn field(title: &str, value: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(label(title.to_owned()))
         .child(value)
 }
@@ -121,16 +117,12 @@ pub(crate) fn field(title: &str, value: impl IntoElement) -> Div {
 /// A [`field`] whose label carries the one note a value can't say for
 /// itself. The note is a tooltip: it answers a question the user asks by
 /// hovering, instead of a paragraph they must read past.
-pub(crate) fn field_with_note(
-    title: &str,
-    note: impl Into<SharedString>,
-    value: impl IntoElement,
-) -> Div {
+fn field_with_note(title: &str, note: impl Into<SharedString>, value: impl IntoElement) -> Div {
     let note: SharedString = note.into();
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(theme::SPACE_1_5))
         .child(
             div()
                 .id(SharedString::from(format!("field-note-{title}")))
@@ -143,6 +135,11 @@ pub(crate) fn field_with_note(
         .child(value)
 }
 
+/// The settings row's vertical inset, deliberately off the spacing grid:
+/// measured against the 1 px hairline dividers between rows ([`rows`]) so
+/// the row's label and control sit at the page's reading rhythm.
+const ROW_PAD_Y: f32 = 7.;
+
 /// A settings row: name on the left, the control that changes it on the
 /// right. Dividers between rows come from [`rows`].
 pub(crate) fn row(title: &str, control: impl IntoElement) -> Div {
@@ -152,7 +149,7 @@ pub(crate) fn row(title: &str, control: impl IntoElement) -> Div {
         .items_center()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(7.))
+        .py(px(ROW_PAD_Y))
         .child(label(title.to_owned()))
         .child(control)
 }
@@ -170,7 +167,7 @@ pub(crate) fn row_with_note(
         .items_center()
         .justify_between()
         .gap(px(theme::SPACE_3))
-        .py(px(7.))
+        .py(px(ROW_PAD_Y))
         .child(
             div()
                 .id(SharedString::from(format!("field-note-{title}")))
@@ -189,7 +186,7 @@ pub(crate) fn rows(items: impl IntoIterator<Item = Div>) -> Div {
     let mut group = div().flex().flex_col();
     for (index, item) in items.into_iter().enumerate() {
         if index > 0 {
-            group = group.child(div().h(px(1.)).bg(theme::HAIRLINE));
+            group = group.child(div().h(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE));
         }
         group = group.child(item);
     }
@@ -219,7 +216,7 @@ pub(crate) fn select_trigger(
 ) -> ActionButton {
     let this = cx.entity();
     button(SharedString::from(format!("{id}-trigger")), title)
-        .density(shell.density)
+        .density(shell.chrome.density)
         .variant(ButtonVariant::Secondary)
         .trailing_icon(ActionIcon::ChevronDown)
         .disabled(shell.settings.editor.busy())
@@ -275,7 +272,7 @@ pub(crate) fn stream_editor(
     let mut view = div()
         .flex()
         .flex_col()
-        .gap(px(if shell.density == Density::Compact {
+        .gap(px(if shell.chrome.density == Density::Compact {
             10.
         } else {
             14.
@@ -358,18 +355,29 @@ pub(crate) fn stream_editor(
     ))
 }
 
+/// The action bar pinned under the device override inspector's scroll area.
 pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShell>) -> Div {
+    div()
+        .flex_none()
+        .px(px(theme::SPACE_4))
+        .py(px(theme::SPACE_3))
+        .border_t_1()
+        .border_color(theme::BORDER)
+        // No fill of its own: the bar sits on the inspector panel that
+        // carries it instead of drawing a second band across the bottom.
+        .child(actions(shell, editor, cx))
+}
+
+/// The draft status line over the discard/save/restart buttons. It has no
+/// chrome of its own, so it lays out wherever the caller puts it: the last
+/// block of the settings page's scrolled column, or inside [`footer`].
+pub(crate) fn actions(shell: &StudioShell, editor: Editor, cx: &Context<StudioShell>) -> Div {
     let draft = shell.settings.editor.draft(editor);
     let state = shell.state.read(cx);
     let running = state.snapshot.phase == SessionPhase::Running;
-    let submitted = draft.capture(&state.snapshot);
-    let needs_restart = submitted
-        .as_ref()
-        .is_ok_and(|submitted| !submitted.matches_active(&state.snapshot));
-    let clears_measured = state.snapshot.measured_process.is_some()
-        && submitted
-            .as_ref()
-            .is_ok_and(|submitted| submitted.save_transport);
+    let needs_restart = state.snapshot.active_audio_settings.as_ref() != Some(&draft.audio)
+        || state.snapshot.active_latency_profile
+            != super::model::expected_active_profile(draft.profile);
     let busy = shell.settings.editor.busy()
         || state.pending_request
         || state.snapshot.graph.pending_revision.is_some()
@@ -385,113 +393,93 @@ pub(crate) fn footer(shell: &StudioShell, editor: Editor, cx: &Context<StudioShe
     } else {
         "device-settings"
     };
-    let feedback = draft
-        .error
-        .clone()
-        .or_else(|| draft.message.clone())
-        .unwrap_or_else(|| {
-            if draft.dirty() {
-                t!("Unsaved changes").into()
-            } else if running {
-                t!("Saved requests and active audio are shown separately in Diagnostics.").into()
-            } else {
-                t!("Audio is stopped. Save keeps it stopped.").into()
-            }
-        });
     let this = cx.entity();
     let restart_this = this.clone();
-    let actions = div()
-        .flex()
-        .flex_wrap()
-        .gap(px(8.))
-        .justify_end()
-        .child(
-            button(
-                SharedString::from(format!("{prefix}-discard")),
-                t!("Discard changes"),
-            )
-            .disabled(busy || !draft.dirty())
-            .on_click(move |_, _, cx| {
-                this.update(cx, |shell, cx| {
-                    shell.settings.editor.reset_period_inputs(editor);
-                    if editor == Editor::Global {
-                        shell.settings.editor.reset_expert_inputs();
-                    }
-                    *shell.settings.editor.draft_mut(editor) = shell.current_settings_draft(cx);
-                    cx.notify();
-                })
-            }),
-        )
-        .child(
-            button(SharedString::from(format!("{prefix}-save")), t!("Save"))
-                .variant(if running {
-                    ButtonVariant::Secondary
-                } else {
-                    ButtonVariant::Primary
-                })
-                .disabled(busy || !draft.dirty())
-                .on_click({
-                    let this = cx.entity();
-                    move |_, _, cx| {
-                        this.update(cx, |shell, cx| shell.save_audio_settings(editor, false, cx))
-                    }
-                }),
-        )
-        .when(running, |view| {
-            view.child(
-                button(
-                    SharedString::from(format!("{prefix}-restart")),
-                    t!("Restart Audio"),
-                )
-                .variant(ButtonVariant::Primary)
-                .disabled(busy || !needs_restart)
-                .on_click(move |_, _, cx| {
-                    restart_this.update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))
-                }),
-            )
-        });
-    let content = div()
+    let feedback_text = match draft.feedback.as_ref() {
+        Some(feedback) => super::model::feedback_text(feedback),
+        None => {
+            if draft.dirty() {
+                t!("Unsaved changes").into_owned()
+            } else if running {
+                t!("Saved requests and active audio are shown separately in Diagnostics.")
+                    .into_owned()
+            } else {
+                t!("Audio is stopped. Save keeps it stopped.").into_owned()
+            }
+        }
+    };
+    div()
         .w_full()
-        .max_w(px(680.))
-        .mx_auto()
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(px(theme::SPACE_2))
         .child(
             div()
                 .id(SharedString::from(format!("{prefix}-feedback")))
-                .aria_label(feedback.clone())
+                .role(Role::Label)
+                .aria_label(feedback_text.clone())
+                .aria_value(feedback_text.clone())
                 .text_size(px(theme::TEXT_SM))
-                .text_color(if draft.error.is_some() {
-                    theme::DANGER
-                } else {
-                    theme::TEXT_MUTED
+                .text_color(match draft.feedback.as_ref() {
+                    Some(feedback) if feedback.is_error() => theme::DANGER,
+                    _ => theme::TEXT_MUTED,
                 })
-                .child(feedback)
+                // The stored status translates here with the current
+                // locale (design 21 §4); the fallbacks are paint-time
+                // t! calls like every other rendered string.
+                .child(feedback_text)
                 .gpui_test_observe(),
         )
-        .when(clears_measured, |view| {
-            let warning = t!(
-                "Saving transport settings (including render queue) clears the measured Process selection and requires fresh admission. The running owner changes only on restart."
-            );
-            view.child(
-                div()
-                    .id(SharedString::from(format!("{prefix}-measured-invalidation")))
-                    .aria_label(warning.clone())
-                    .child(label(warning))
-                    .gpui_test_observe(),
-            )
-        })
-        .child(actions);
-    // Keep the transaction bar aligned with the workspace's reading column;
-    // device overrides use the same bar inside their narrower inspector.
-    div()
-        .flex_none()
-        .flex()
-        .flex_col()
-        .px(px(16.))
-        .py(px(12.))
-        .border_t_1()
-        .border_color(theme::BORDER)
-        .child(content)
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(theme::SPACE_2))
+                .justify_end()
+                .child(
+                    button(
+                        SharedString::from(format!("{prefix}-discard")),
+                        t!("Discard changes"),
+                    )
+                    .disabled(busy || !draft.dirty())
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
+                            *shell.settings.editor.draft_mut(editor) =
+                                shell.current_settings_draft(cx);
+                            cx.notify();
+                        })
+                    }),
+                )
+                .child(
+                    button(SharedString::from(format!("{prefix}-save")), t!("Save"))
+                        .variant(if running {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Primary
+                        })
+                        .disabled(busy || !draft.dirty())
+                        .on_click({
+                            let this = cx.entity();
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.save_audio_settings(editor, false, cx)
+                                })
+                            }
+                        }),
+                )
+                .when(running, |view| {
+                    view.child(
+                        button(
+                            SharedString::from(format!("{prefix}-restart")),
+                            t!("Restart Audio"),
+                        )
+                        .variant(ButtonVariant::Primary)
+                        .disabled(busy || !needs_restart)
+                        .on_click(move |_, _, cx| {
+                            restart_this
+                                .update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))
+                        }),
+                    )
+                }),
+        )
 }

@@ -205,6 +205,9 @@ fn joined_fixture() -> (MonitorReport, crate::service::SessionCleanupObservation
         running: false,
         streams: vec![ProfessionalStreamObservation {
             node,
+            endpoint: moiren_windows_audio::engine_backend::StreamEndpoint::Physical(
+                "asio:probe-driver".into(),
+            ),
             input: false,
             master: true,
             requested: Default::default(),
@@ -216,14 +219,20 @@ fn joined_fixture() -> (MonitorReport, crate::service::SessionCleanupObservation
             },
             dropped_frames: 3,
             silent_frames: 5,
+            xruns: 0,
             native_callbacks: 7,
             native_wait_wakes: 11,
             native_wait_timeouts: 13,
-            native_written_frames: 17024,
+            native_capture_quality: None,
+            native_written_frames: 17_024,
             native_dropped_frames: 17,
             native_silent_frames: 19,
-            native_capture_quality: None,
+            native_xruns: 0,
+            engine_blocks: 0,
+            engine_busy_100ns: 0,
+            engine_peak_block_100ns: 0,
             driver_latency: None,
+            absent: false,
         }],
     };
     let cleanup = crate::service::SessionCleanupObservation {

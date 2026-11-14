@@ -397,8 +397,8 @@ mod tests {
         core::GUID,
     };
 
-    fn owned(format: WAVEFORMATEXTENSIBLE) -> crate::owner::TaskMemory<WAVEFORMATEX> {
-        let memory = crate::owner::TaskMemory(
+    fn owned(format: WAVEFORMATEXTENSIBLE) -> crate::win32_raii::TaskMemory<WAVEFORMATEX> {
+        let memory = crate::win32_raii::TaskMemory(
             unsafe { CoTaskMemAlloc(size_of::<WAVEFORMATEXTENSIBLE>()) }.cast::<WAVEFORMATEX>(),
         );
         assert!(!memory.0.is_null());

@@ -31,8 +31,13 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             measured.draft.capacity_frames, measured.draft.target_frames, measured.draft.jitter_frames)));
     if let Some(evidence) = window_state::retained(snapshot) {
         let origin = evidence.origin();
+        let node = snapshot
+            .graph
+            .node(origin.node)
+            .map(crate::ui::presentation::display_label)
+            .unwrap_or_else(|| t!("Unknown node").into());
         view = view.child(label(format!(
-            "{}: session {} / document {} / graph {} / native {} / PID {} / created {} / node {:?}",
+            "{}: session {} / document {} / graph {} / native {} / PID {} / created {} / node {}",
             t!("Retained origin"),
             origin.generation.0,
             origin.document,
@@ -40,7 +45,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             origin.native_owner_generation,
             origin.process.pid,
             origin.process.creation_time_100ns,
-            origin.node
+            node
         )));
     }
     for (kind, title, values, selected) in [
@@ -297,7 +302,11 @@ impl StudioShell {
                     .begin_retained(id, request, &snapshot);
                 self.measured_deadline(id, cx);
             }
-            Err(error) => self.settings.editor.measured.error = Some(format!("{error:?}")),
+            Err(error) => {
+                self.settings.editor.measured.error = Some(crate::ui::presentation::failure_text(
+                    &UiFailure::Dispatch(error),
+                ));
+            }
         }
         cx.notify();
     }

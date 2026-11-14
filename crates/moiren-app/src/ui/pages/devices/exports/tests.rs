@@ -1,6 +1,5 @@
-use super::{IntentEdit, binding_candidate, create_export, edit_export};
-use crate::service::{ExportDirection, ExportIntent, GraphEdit, ServiceGraph};
-use moiren_core::graph::NodeKind;
+use super::{IntentEdit, create_export, edit_export};
+use crate::service::{ExportDirection, ExportIntent, ServiceGraph};
 use moiren_engine::node::VirtualEndpointId;
 
 fn id(value: u8) -> VirtualEndpointId {
@@ -61,85 +60,6 @@ fn edits_preserve_other_intents_identity_and_channel_shape() {
 }
 
 #[test]
-fn binding_requires_matching_direction_shape_and_exclusive_graph_io() {
-    let mut service = ServiceGraph::default();
-    let source = service.snapshot().graph.nodes()[0].id();
-    let sink = service.snapshot().graph.nodes()[3].id();
-    let gain = service.snapshot().graph.nodes()[1].id();
-    service
-        .edit(GraphEdit::AddNode {
-            kind: NodeKind::Source,
-            channels: 1,
-        })
-        .unwrap();
-    let mono = service.snapshot().graph.nodes()[4].id();
-    service
-        .edit(GraphEdit::SetExports(vec![ExportIntent {
-            endpoint_id: id(1),
-            direction: ExportDirection::Playback,
-            name: "Playback".into(),
-            channels: 2,
-            enabled: true,
-            binding: None,
-        }]))
-        .unwrap();
-    assert_eq!(
-        binding_candidate(&service.snapshot(), id(1), Some(source)),
-        Some(source)
-    );
-    for selection in [None, Some(sink), Some(mono), Some(gain)] {
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), selection),
-            None
-        );
-    }
-    assert!(
-        service
-            .edit(GraphEdit::BindExport {
-                endpoint_id: id(1),
-                node: Some(sink)
-            })
-            .is_err()
-    );
-    service
-        .edit(GraphEdit::BindExport {
-            endpoint_id: id(1),
-            node: Some(source),
-        })
-        .unwrap();
-    let mut exports = service.snapshot().exports;
-    exports.push(ExportIntent {
-        endpoint_id: id(2),
-        name: "Other".into(),
-        binding: None,
-        ..exports[0].clone()
-    });
-    service.edit(GraphEdit::SetExports(exports)).unwrap();
-    assert_eq!(
-        binding_candidate(&service.snapshot(), id(2), Some(source)),
-        None
-    );
-    service
-        .edit(GraphEdit::BindExport {
-            endpoint_id: id(2),
-            node: Some(source),
-        })
-        .unwrap();
-    assert_eq!(service.snapshot().exports[0].binding, None);
-    assert_eq!(service.snapshot().exports[1].binding, Some(source));
-    service
-        .edit(GraphEdit::BindExport {
-            endpoint_id: id(2),
-            node: None,
-        })
-        .unwrap();
-    assert_eq!(
-        binding_candidate(&service.snapshot(), id(1), Some(source)),
-        Some(source)
-    );
-}
-
-#[test]
 fn create_enforces_service_export_limit() {
     let mut graph = ServiceGraph::default().snapshot();
     for value in 0..crate::service::MAX_EXPORTS as u8 {
@@ -149,8 +69,11 @@ fn create_enforces_service_export_limit() {
     assert!(create_export(&graph, id(255), ExportDirection::Playback, "Overflow", 2).is_err());
 }
 
+/// Channel-shape edits still refuse an incompatible bound node, and the
+/// binding itself is arranged through the service graph edits the node-side
+/// surfaces send (design 23 §3.4: this page never binds).
 #[test]
-fn shape_edits_reject_invalid_channel_counts() {
+fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
     for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
         let mut service = ServiceGraph::default();
         let stereo = if direction == ExportDirection::Playback {
@@ -159,14 +82,14 @@ fn shape_edits_reject_invalid_channel_counts() {
             service.snapshot().graph.nodes()[3].id()
         };
         service
-            .edit(GraphEdit::AddNode {
+            .edit(crate::service::GraphEdit::AddNode {
                 kind: direction.node_kind(),
                 channels: 1,
             })
             .unwrap();
         let mono = service.snapshot().graph.nodes()[4].id();
         service
-            .edit(GraphEdit::SetExports(vec![ExportIntent {
+            .edit(crate::service::GraphEdit::SetExports(vec![ExportIntent {
                 endpoint_id: id(1),
                 direction,
                 name: "Endpoint".into(),
@@ -176,7 +99,7 @@ fn shape_edits_reject_invalid_channel_counts() {
             }]))
             .unwrap();
         service
-            .edit(GraphEdit::BindExport {
+            .edit(crate::service::GraphEdit::BindExport {
                 endpoint_id: id(1),
                 node: Some(stereo),
             })
@@ -184,7 +107,7 @@ fn shape_edits_reject_invalid_channel_counts() {
         let before = service.snapshot();
         assert!(edit_export(&before, id(1), IntentEdit::Channels(1)).is_err());
         service
-            .edit(GraphEdit::BindExport {
+            .edit(crate::service::GraphEdit::BindExport {
                 endpoint_id: id(1),
                 node: None,
             })
@@ -192,23 +115,26 @@ fn shape_edits_reject_invalid_channel_counts() {
         let mut candidate = service.snapshot();
         candidate.exports = edit_export(&candidate, id(1), IntentEdit::Channels(1)).unwrap();
         service
-            .edit(GraphEdit::SetExports(candidate.exports.clone()))
+            .edit(crate::service::GraphEdit::SetExports(
+                candidate.exports.clone(),
+            ))
             .unwrap();
         let exports = candidate.exports;
         assert_eq!(exports[0].endpoint_id, id(1));
         assert_eq!(exports[0].name, "Endpoint");
         assert_eq!(exports[0].direction, direction);
         assert!(exports[0].enabled);
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(stereo)),
-            None
-        );
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(mono)),
-            Some(mono)
+        // The service edit keeps direction and shape exclusive.
+        assert!(
+            service
+                .edit(crate::service::GraphEdit::BindExport {
+                    endpoint_id: id(1),
+                    node: Some(stereo),
+                })
+                .is_err()
         );
         service
-            .edit(GraphEdit::BindExport {
+            .edit(crate::service::GraphEdit::BindExport {
                 endpoint_id: id(1),
                 node: Some(mono),
             })
@@ -216,26 +142,13 @@ fn shape_edits_reject_invalid_channel_counts() {
         assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(2)).is_err());
         assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(0)).is_err());
         assert!(edit_export(&service.snapshot(), id(1), IntentEdit::Channels(3)).is_err());
-        service
-            .edit(GraphEdit::BindExport {
-                endpoint_id: id(1),
-                node: None,
-            })
-            .unwrap();
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(stereo)),
-            None
-        );
-        assert_eq!(
-            binding_candidate(&service.snapshot(), id(1), Some(mono)),
-            Some(mono)
-        );
     }
 }
 
 #[cfg(feature = "gpui-test")]
 mod headless {
-    use crate::service::{AppSnapshot, ExportDirection, GraphSnapshot, ServiceRuntime};
+    use crate::service::{AppSnapshot, ExportDirection, GraphEdit, GraphSnapshot, ServiceRuntime};
+    use crate::ui::pages::Page;
     use crate::ui::pages::{self, devices};
     use crate::ui::shell::{StudioShell, UiState};
     use gpui_kit::test::TestWindowExt;
@@ -311,7 +224,7 @@ mod headless {
     }
 
     #[gpui_kit::test]
-    fn compact_exports_controls_remain_reachable_by_scrolling_at_1024x720(
+    fn compact_virtual_device_controls_remain_reachable_by_scrolling_at_1024x720(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
@@ -321,9 +234,10 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
+            shell.autosave.path = None;
             shell.preferences.path = None;
             shell.preferences.values.export_authorizations.clear();
-            shell.presentation.page = pages::Page::Devices;
+            shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
             shell.devices.device_tab = devices::DeviceTab::Exports;
             cx.notify();
         });
@@ -358,7 +272,7 @@ mod headless {
             .unwrap();
         let key = |action| SharedString::from(format!("export-{action}-{id}"));
         for action in [
-            "mono", "stereo", "name", "rename", "toggle", "bind", "unbind", "remove", "default",
+            "mono", "stereo", "name", "rename", "toggle", "remove", "default",
         ] {
             scroll_to_control(cx, key(action));
         }
@@ -410,180 +324,13 @@ mod headless {
         runtime.join().unwrap();
     }
 
+    /// Creation, rename, toggle, default eligibility and removal stay; the
+    /// binding column is gone (design 23 §3.4). The binding itself is what
+    /// the node sends: the test drives the same graph edit the node-side
+    /// dropdown dispatches, then the virtual device's user list carries the
+    /// node read-only, with a working "Locate in graph" jump.
     #[gpui_kit::test]
-    fn export_row_shows_disabled_windows_state_without_sending_audio_requests(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        use crate::service::{
-            ExportIntent, ExportObservation, ExportResourceState, GraphEdit, ServiceContext,
-            ServiceMailbox, WindowsEndpointNameObservation,
-        };
-        let mut context = ServiceContext::default();
-        let endpoint_id = super::id(14);
-        let intent = ExportIntent {
-            endpoint_id,
-            direction: ExportDirection::Playback,
-            name: "Requested playback".into(),
-            channels: 2,
-            enabled: true,
-            binding: None,
-        };
-        context
-            .graph
-            .edit(GraphEdit::SetExports(vec![intent.clone()]))
-            .unwrap();
-        context.exports.set_available(true);
-        context
-            .exports
-            .observe(ExportObservation {
-                intent,
-                generation: 1,
-                resource: ExportResourceState::Present,
-                allow_default: false,
-                gate_open: false,
-                active_revision: None,
-            })
-            .unwrap();
-        let mut snapshot = crate::service::snapshot(&context);
-        snapshot.exports[0].windows_name = Some(WindowsEndpointNameObservation {
-            native_identity: [1, 2, 3],
-            observed_qpc_100ns: Some(42),
-            device_state: Some(2),
-            device_state_error: None,
-            mmdevice_id: Some("{disabled-exact-device}".into()),
-            name: Some("Raw Windows name".into()),
-            error: None,
-        });
-        let (handle, mailbox) = ServiceMailbox::with_snapshot(std::thread::current(), snapshot);
-        let initial = handle.try_snapshot().unwrap();
-        let state = cx.new(|_| UiState::new(handle, initial));
-        let (view, cx) = super::super::super::super::test_harness::shell_with_state(cx, state);
-        while mailbox.try_request().is_some() {}
-        view.update(cx, |shell, cx| {
-            shell.presentation.page = pages::Page::Devices;
-            shell.devices.device_tab = devices::DeviceTab::Exports;
-            shell.inspector_open = false;
-            shell.sidebar_open = false;
-            cx.notify();
-        });
-        let key = SharedString::from(format!("export-windows-state-{endpoint_id}"));
-        for viewport in [size(px(1440.), px(1600.)), size(px(1024.), px(720.))] {
-            cx.update(|window, cx| {
-                window.resize(viewport);
-                window.render_frame(cx);
-            });
-            scroll_to_control(cx, key.clone());
-            cx.update(|window, _| {
-                let row = window.find(key.clone());
-                assert!(row.visible());
-                assert_eq!(
-                    row.label(),
-                    Some("Windows endpoint state: Disabled in Windows")
-                );
-            });
-        }
-        assert!(mailbox.try_request().is_none());
-    }
-
-    #[gpui_kit::test]
-    fn rename_controls_explain_native_recreation_without_claiming_windows_success(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        use crate::service::{AppRequest, GraphEdit, ServiceContext, ServiceMailbox};
-
-        let mut context = ServiceContext::default();
-        let endpoints = [ExportDirection::Playback, ExportDirection::Microphone].map(|direction| {
-            let endpoint_id = super::id(if direction == ExportDirection::Playback {
-                11
-            } else {
-                12
-            });
-            crate::service::ExportIntent {
-                endpoint_id,
-                direction,
-                name: format!("Requested {direction:?}"),
-                channels: 2,
-                enabled: true,
-                binding: None,
-            }
-        });
-        context
-            .graph
-            .edit(GraphEdit::SetExports(endpoints.to_vec()))
-            .unwrap();
-        let (handle, mailbox) = ServiceMailbox::with_snapshot(
-            std::thread::current(),
-            crate::service::snapshot(&context),
-        );
-        let initial = handle.try_snapshot().unwrap();
-        let original_graph = initial.graph.clone();
-        let state = cx.new(|_| UiState::new(handle, initial));
-        let (view, cx) = super::super::super::super::test_harness::shell_with_state(cx, state);
-        while mailbox.try_request().is_some() {}
-        view.update(cx, |shell, cx| {
-            shell.presentation.page = pages::Page::Devices;
-            shell.devices.device_tab = devices::DeviceTab::Exports;
-            shell.inspector_open = false;
-            shell.sidebar_open = false;
-            cx.notify();
-        });
-        for viewport in [size(px(1440.), px(1600.)), size(px(1024.), px(720.))] {
-            for endpoint in &endpoints {
-                let key =
-                    SharedString::from(format!("export-rename-help-{}", endpoint.endpoint_id));
-                cx.update(|window, cx| {
-                    window.resize(viewport);
-                    window.render_frame(cx);
-                    assert!(
-                        window.try_find(key.clone()).is_some(),
-                        "each native rename control must explain interruption and Windows-name limits"
-                    );
-                });
-                scroll_to_control(cx, key.clone());
-                cx.update(|window, _| {
-                    let help = window.find(key.clone());
-                    assert!(help.visible());
-                    assert_eq!(
-                        help.label(),
-                        Some("Renaming recreates the Windows endpoint and can interrupt audio or require other apps to select it again. The requested name is not proof of the Windows display name; check the observed name above.")
-                    );
-                    let bounds = help.bounds();
-                    let page = window.find("devices-page").bounds();
-                    assert!(bounds.left() >= page.left() && bounds.right() <= page.right());
-                });
-            }
-        }
-        assert!(mailbox.try_request().is_none());
-        let playback = &endpoints[0];
-        cx.update(|window, cx| {
-            view.update(cx, |shell, cx| {
-                shell.devices.export_controls.names[&playback.endpoint_id]
-                    .input
-                    .update(cx, |input, cx| {
-                        input.set_value("New playback intent", window, cx)
-                    });
-            });
-            window.render_frame(cx);
-        });
-        let rename = SharedString::from(format!("export-rename-{}", playback.endpoint_id));
-        scroll_to_control(cx, rename.clone());
-        cx.update(|window, cx| window.click(rename, cx));
-        let AppRequest::EditGraph(GraphEdit::SetExports(updated)) = mailbox.try_request().unwrap()
-        else {
-            panic!("rename must only dispatch candidate intent, not start/apply audio");
-        };
-        assert_eq!(updated[0].name, "New playback intent");
-        assert_eq!(updated[0].endpoint_id, playback.endpoint_id);
-        assert_eq!(updated[0].binding, playback.binding);
-        assert_eq!(updated[1], endpoints[1]);
-        view.update(cx, |shell, cx| {
-            assert_eq!(shell.state.read(cx).snapshot.graph, original_graph);
-        });
-        assert!(mailbox.try_request().is_none());
-    }
-
-    #[gpui_kit::test]
-    fn export_controls_create_rename_bind_unbind_toggle_and_remove(
+    fn export_controls_create_toggle_and_remove_with_a_read_only_user_list(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
@@ -593,12 +340,13 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
+            shell.autosave.path = None;
             shell.preferences.path = None;
             shell.preferences.values.export_authorizations.clear();
-            shell.presentation.page = pages::Page::Devices;
+            shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
             shell.devices.device_tab = devices::DeviceTab::Exports;
-            shell.inspector_open = false;
-            shell.sidebar_open = false;
+            shell.chrome.inspector_open = false;
+            shell.chrome.sidebar_open = false;
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -636,14 +384,6 @@ mod headless {
         assert!(first.enabled && first.binding.is_none());
         assert_eq!(candidate(&view, cx).active_revision, None);
         let id = first.endpoint_id;
-        let requested_name_row = format!("export-requested-name-{id}");
-        cx.update(|window, _cx| {
-            let row = window.find(SharedString::from(requested_name_row.clone()));
-            assert_eq!(
-                row.label(),
-                Some("Requested endpoint name: Moiren Playback")
-            );
-        });
         let key = |action| SharedString::from(format!("export-{action}-{id}"));
         let graph = candidate(&view, cx);
         let source = graph
@@ -653,78 +393,94 @@ mod headless {
             .find(|node| node.kind() == moiren_core::graph::NodeKind::Source)
             .unwrap()
             .id();
-        let sink = graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|node| node.kind() == moiren_core::graph::NodeKind::Sink)
-            .unwrap()
-            .id();
-        view.update(cx, |shell, cx| {
-            shell.selected_node = Some(sink);
-            cx.notify();
-        });
-        scroll_to_control(cx, key("bind"));
-        scroll_to_control(cx, key("unbind"));
+        // Unbound: the page points at the node instead of binding here.
         cx.update(|window, cx| {
-            window.click(key("bind"), cx);
-            window.click(key("unbind"), cx);
-        });
-        view.update(cx, |shell, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(key("bind")).is_none());
+            assert!(window.try_find(key("unbind")).is_none());
             assert!(
-                !shell.state.read(cx).pending_request,
-                "incompatible controls are inert"
+                window
+                    .find(SharedString::from(format!("export-users-empty-{id}")))
+                    .visible(),
+                "the unbound hint must point at the graph nodes"
             );
         });
-        assert_eq!(candidate(&view, cx).exports[0].binding, None);
+        // The node's own dropdown is the binding surface: replay the edit it
+        // would send and watch the user list pick the node up.
         view.update(cx, |shell, cx| {
-            shell.selected_node = Some(source);
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    GraphEdit::BindExport {
+                        endpoint_id: id,
+                        node: Some(source),
+                    },
+                ))
+            });
             cx.notify();
-        });
-        scroll_to_control(cx, key("bind"));
-        cx.update(|window, cx| {
-            window.click(key("bind"), cx);
         });
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].binding == Some(source)
         });
-        assert_eq!(candidate(&view, cx).node(source).unwrap().source, None);
         assert_eq!(
             candidate(&view, cx).active_revision,
             None,
             "binding edits do not activate audio"
         );
-        scroll_to_control(cx, key("mono"));
         cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find(SharedString::from(format!("export-user-{id}-{source:?}")))
+                    .visible(),
+                "the bound node must list as the device's user"
+            );
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(
+                SharedString::from(format!("export-reveal-{id}-{source:?}")),
+                cx,
+            );
+        });
+        view.read_with(cx, |shell, _| {
+            assert_eq!(shell.presentation.page(), Page::Graph);
+            assert_eq!(shell.selection.node, Some(source));
+            assert!(shell.chrome.inspector_open);
+        });
+        // Shape edits against a bound node still fail loudly, and removing
+        // the binding is the node's clear action, exercised through the same
+        // service edit before the shape can change.
+        view.update(cx, |shell, cx| {
+            shell.set_page(Page::Devices, cx);
+            shell.devices.device_tab = devices::DeviceTab::Exports;
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
             window.click(key("mono"), cx);
             window.render_frame(cx);
             assert!(window.find("statusbar-faults").visible());
         });
         assert_eq!(candidate(&view, cx).exports[0].channels, 2);
         assert_eq!(candidate(&view, cx).exports[0].binding, Some(source));
-        scroll_to_control(cx, key("unbind"));
-        cx.update(|window, cx| window.click(key("unbind"), cx));
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    GraphEdit::BindExport {
+                        endpoint_id: id,
+                        node: None,
+                    },
+                ))
+            });
+            cx.notify();
+        });
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].binding.is_none()
         });
-        assert_eq!(
-            candidate(&view, cx).node(source).unwrap().source,
-            None,
-            "unbinding a virtual endpoint does not invent a physical source"
-        );
-        scroll_to_control(cx, key("mono"));
         cx.update(|window, cx| window.click(key("mono"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].channels == 1
         });
-        scroll_to_control(cx, key("bind"));
-        cx.update(|window, cx| window.click(key("bind"), cx));
-        assert_eq!(
-            candidate(&view, cx).exports[0].binding,
-            None,
-            "stereo selection cannot bind mono export"
-        );
-        scroll_to_control(cx, key("stereo"));
         cx.update(|window, cx| window.click(key("stereo"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].channels == 2
@@ -738,26 +494,15 @@ mod headless {
                     });
             });
             window.render_frame(cx);
+            window.click(key("rename"), cx);
         });
-        scroll_to_control(cx, key("rename"));
-        cx.update(|window, cx| window.click(key("rename"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].name == "Renamed Playback"
         });
-        cx.update(|window, _cx| {
-            let row = window.find(SharedString::from(requested_name_row.clone()));
-            assert_eq!(
-                row.label(),
-                Some("Requested endpoint name: Renamed Playback")
-            );
-        });
-        scroll_to_control(cx, key("toggle"));
         cx.update(|window, cx| window.click(key("toggle"), cx));
         wait_for(&view, cx, |snapshot| !snapshot.graph.exports[0].enabled);
-        scroll_to_control(cx, key("toggle"));
         cx.update(|window, cx| window.click(key("toggle"), cx));
         wait_for(&view, cx, |snapshot| snapshot.graph.exports[0].enabled);
-        scroll_to_control(cx, key("default"));
         cx.update(|window, cx| window.click(key("default"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot
@@ -769,7 +514,6 @@ mod headless {
             assert_eq!(shell.preferences.values.export_authorizations.len(), 1);
             assert!(shell.preferences.values.export_authorizations[0].allow_default);
         });
-        scroll_to_control(cx, key("default"));
         cx.update(|window, cx| window.click(key("default"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot
@@ -777,7 +521,6 @@ mod headless {
                 .iter()
                 .any(|status| status.intent.endpoint_id == id && !status.allow_default)
         });
-        scroll_to_control(cx, key("remove"));
         cx.update(|window, cx| window.click(key("remove"), cx));
         wait_for(&view, cx, |snapshot| snapshot.graph.exports.is_empty());
         cx.update(|window, cx| {
@@ -819,11 +562,12 @@ mod headless {
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
         let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
         view.update(cx, |shell, cx| {
+            shell.autosave.path = None;
             shell.preferences.path = None;
-            shell.presentation.page = pages::Page::Devices;
+            shell.presentation.workspace = pages::WorkspaceView::Page(pages::Page::Devices);
             shell.devices.device_tab = devices::DeviceTab::Exports;
-            shell.inspector_open = false;
-            shell.sidebar_open = false;
+            shell.chrome.inspector_open = false;
+            shell.chrome.sidebar_open = false;
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -843,15 +587,13 @@ mod headless {
         assert!(candidate(&view, cx).exports.is_empty());
         cx.update(|window, cx| {
             view.update(cx, |shell, cx| {
-                assert!(
-                    shell
-                        .state
-                        .read(cx)
-                        .dispatch_error
-                        .as_ref()
-                        .unwrap()
-                        .contains("UTF-16")
-                );
+                // The typed failure carries the free-form validate_exports
+                // prose as data; the old frozen string asserted "UTF-16".
+                assert!(matches!(
+                    &shell.state.read(cx).dispatch_error,
+                    Some(crate::ui::state::UiFailure::ExportInvalid { reason })
+                        if reason.contains("UTF-16")
+                ));
                 shell
                     .devices
                     .export_controls
@@ -870,30 +612,8 @@ mod headless {
                     .update(cx, |input, cx| input.set_value("\t", window, cx))
             });
             window.render_frame(cx);
-            view.update(cx, |shell, cx| {
-                assert_eq!(
-                    shell.devices.export_controls.names[&id]
-                        .input
-                        .read(cx)
-                        .value()
-                        .as_ref(),
-                    "\t"
-                );
-                assert!(!shell.state.read(cx).pending_request);
-            });
-        });
-        // Name diagnostics make the row taller than the headless viewport;
-        // bring the whole button into the scroll clip before hit testing it.
-        scroll_to_control(cx, SharedString::from(format!("export-rename-{id}")));
-        cx.update(|window, cx| {
             window.click(SharedString::from(format!("export-rename-{id}")), cx);
             window.render_frame(cx);
-            view.update(cx, |shell, cx| {
-                assert!(
-                    shell.state.read(cx).dispatch_error.is_some(),
-                    "invalid rename did not publish validation feedback"
-                );
-            });
             assert!(window.find("statusbar-faults").visible());
         });
         view.update(cx, |shell, cx| {

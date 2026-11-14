@@ -1,7 +1,8 @@
 //! The service owns the editable topology. Pages receive immutable projections;
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{
-    ExportIntent, InputSelection, RunLimit, SessionGeneration, SessionSpec, validate_exports,
+    ExportIntent, InputSelection, RecordingCard, RunLimit, SessionGeneration, SessionSpec,
+    validate_exports,
 };
 use moiren_core::graph::{EdgeId, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
 use moiren_core::protocol::ParamValue;
@@ -15,6 +16,7 @@ pub use builtin::BuiltinState;
 pub use compressor::{CompressorParameter, CompressorState};
 use edit::edit_candidate;
 pub use mixer::MixerState;
+pub use preparation::clock_master;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphNodeState {
@@ -76,6 +78,10 @@ pub struct GraphSnapshot {
     /// engine is re-preparing these, so cards show the loading state. An
     /// edit failure or activation clears the set.
     pub preparing_nodes: Vec<NodeId>,
+    /// Discrete recording card state attached by the snapshot assembler:
+    /// phase and file name only. The ticking duration is deliberately absent
+    /// so graph-page keys stay free of per-second values.
+    pub recording: Vec<RecordingCard>,
 }
 impl GraphSnapshot {
     pub fn node(&self, id: NodeId) -> Option<&GraphNodeState> {
@@ -304,6 +310,12 @@ pub struct ServiceGraph {
     snapshot: GraphSnapshot,
     journal: UndoJournal,
     pending_generation: Option<SessionGeneration>,
+    /// Content token for the snapshot publisher: bumped by every mutation
+    /// that can change the projected [`GraphSnapshot`]. The service loop
+    /// compares this instead of rebuilding the graph projection every
+    /// round, so each mutation path in this file must keep its bump in
+    /// step with the writes it performs.
+    state_epoch: u64,
 }
 impl Default for ServiceGraph {
     fn default() -> Self {
@@ -366,14 +378,20 @@ impl Default for ServiceGraph {
                 can_undo: false,
                 can_redo: false,
                 preparing_nodes: Vec::new(),
+                recording: Vec::new(),
             },
             journal: UndoJournal::default(),
             pending_generation: None,
+            state_epoch: 0,
         }
     }
 }
 /// Default label for freshly created nodes. A Source/Sink node still carrying
 /// its default label follows the bound device name in presentation instead.
+///
+/// Ratified: labels are user-editable data, not UI chrome, so the canonical
+/// stored strings are intentionally English and are never localized — only
+/// genuinely translatable chrome goes through `t!`.
 pub fn default_label(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Source => "Input",
@@ -512,7 +530,7 @@ fn structural_diff_nodes(before: &LogicalGraph, after: &LogicalGraph) -> Vec<Nod
 }
 
 /// The channel or route an edit names, for fault placement.
-pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubject {
+fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubject {
     let node = |node: &NodeId| GraphSubject::Node(*node);
     match edit {
         GraphEdit::SetBuiltin { node: id, .. }
@@ -577,7 +595,7 @@ fn edit_hint(error: &str) -> Option<&'static str> {
 /// rebuilds because it rewires prepared routing. `previous` is the graph
 /// before the edit. Drivers whose backend lacks the live strip mapping
 /// (the legacy fixed session chain) treat `SetMixer` as structural.
-pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &LogicalGraph) -> bool {
+fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &LogicalGraph) -> bool {
     match edit {
         GraphEdit::AddNode { .. }
         | GraphEdit::RemoveNode(_)
@@ -654,6 +672,30 @@ impl ServiceGraph {
     pub fn snapshot(&self) -> GraphSnapshot {
         self.snapshot.clone()
     }
+    /// Shared view of the current snapshot for read-only projections. Poll
+    /// paths that only inspect a field or feed `statuses` must take this
+    /// instead of the deep [`ServiceGraph::snapshot`] copy.
+    pub fn snapshot_ref(&self) -> &GraphSnapshot {
+        &self.snapshot
+    }
+    /// Light revision accessors: reading one field must not pay the full
+    /// snapshot deep copy.
+    pub fn candidate_revision(&self) -> u64 {
+        self.snapshot.candidate_revision
+    }
+    pub fn active_revision(&self) -> Option<u64> {
+        self.snapshot.active_revision
+    }
+    pub fn pending_revision(&self) -> Option<u64> {
+        self.snapshot.pending_revision
+    }
+    /// Content token advanced by every snapshot mutation below.
+    pub fn state_epoch(&self) -> u64 {
+        self.state_epoch
+    }
+    fn bump(&mut self) {
+        self.state_epoch = self.state_epoch.wrapping_add(1);
+    }
     pub fn preparation(&self) -> GraphPreparation {
         GraphPreparation {
             exports: self.snapshot.exports.clone(),
@@ -669,7 +711,10 @@ impl ServiceGraph {
             cause: error.clone(),
             hint: None,
         });
-        self.snapshot.last_error = Some(error);
+        if self.snapshot.last_error.as_deref() != Some(error.as_str()) {
+            self.snapshot.last_error = Some(error);
+            self.bump();
+        }
     }
     /// Record a fault whose subject is already known (a rejected edit names
     /// its own channel or route).
@@ -679,17 +724,24 @@ impl ServiceGraph {
             cause: error.to_string(),
             hint: edit_hint(error).map(str::to_string),
         });
-        self.snapshot.last_error = Some(error.to_string());
+        if self.snapshot.last_error.as_deref() != Some(error) {
+            self.snapshot.last_error = Some(error.to_string());
+            self.bump();
+        }
     }
-    pub fn record_fault(&mut self, fault: GraphFault) {
-        if !self
+    /// Returns whether the fault was new content; duplicate faults are
+    /// dropped without changing the snapshot.
+    pub fn record_fault(&mut self, fault: GraphFault) -> bool {
+        let fresh = !self
             .snapshot
             .faults
             .iter()
-            .any(|existing| existing.subject == fault.subject && existing.cause == fault.cause)
-        {
+            .any(|existing| existing.subject == fault.subject && existing.cause == fault.cause);
+        if fresh {
             self.snapshot.faults.push(fault);
+            self.bump();
         }
+        fresh
     }
     /// Applies a validated edit and reports whether the prepared structure
     /// changed and a rebuild is required (see
@@ -757,6 +809,9 @@ impl ServiceGraph {
         next.can_undo = !self.journal.undo.is_empty();
         next.can_redo = !self.journal.redo.is_empty();
         self.snapshot = next;
+        // The accepted edit always advances the candidate revision, so this
+        // is a real content change.
+        self.bump();
         Ok(structural)
     }
     /// Restore the editable content recorded before the last edit. Revision
@@ -806,6 +861,7 @@ impl ServiceGraph {
         self.snapshot.candidate_revision = revision;
         self.snapshot.can_undo = can_undo;
         self.snapshot.can_redo = can_redo;
+        self.bump();
         true
     }
     /// A loaded document creates a new candidate. Disk contents cannot confirm
@@ -844,12 +900,19 @@ impl ServiceGraph {
         self.snapshot.last_error = None;
         self.snapshot.can_undo = !self.journal.undo.is_empty();
         self.snapshot.can_redo = !self.journal.redo.is_empty();
+        // The replaced candidate advances the revision: a real content change.
+        self.bump();
         Ok(())
     }
     pub fn configure_session(&mut self, spec: &SessionSpec) -> Result<(), String> {
         spec.validate().map_err(|e| format!("{e:?}"))?;
         let preparation = self.preparation();
         let (source, output) = preparation.primary_io_nodes()?;
+        // The legacy session summary binds both endpoints; a one-sided graph
+        // cannot carry it (the always-on graph path has no such requirement).
+        let (Some(source), Some(output)) = (source, output) else {
+            return Err("The graph needs a Source node and a Sink node".into());
+        };
         let mut next = self.snapshot.clone();
         for state in &mut next.nodes {
             if state.id == source {
@@ -878,49 +941,52 @@ impl ServiceGraph {
                 .ok_or("The graph revision space is exhausted")?;
             next.last_error = None;
             self.snapshot = next;
+            self.bump();
         }
         Ok(())
     }
     /// Only legacy sessions have a two-endpoint summary. The managed host uses
     /// the validated EngineProject for virtual or mixed graph resource intent.
+    /// A project paced by the virtual clock (no physical master output), a
+    /// one-sided graph, or one whose primary IO is a virtual export boundary
+    /// has no summary at all.
     pub(crate) fn managed_session_spec(
         &self,
         current: Option<&SessionSpec>,
-        limit: Option<RunLimit>,
     ) -> Result<Option<SessionSpec>, String> {
         let prep = self.preparation();
         let (source, output) = prep.primary_io_nodes()?;
+        if clock_master(&prep.graph, &prep.exports).is_none() {
+            return Ok(None);
+        }
+        let (Some(source), Some(output)) = (source, output) else {
+            return Ok(None);
+        };
         if prep.exports.iter().any(|export| {
             export.enabled
                 && matches!(export.binding, Some(node) if node == source || node == output)
         }) {
             return Ok(None);
         }
-        let mut summary = self.session_spec(current)?;
-        if let Some(limit) = limit {
-            summary.limit = limit;
-        }
-        Ok(Some(summary))
+        Ok(Some(self.session_spec(current)?))
     }
     pub fn session_spec(&self, current: Option<&SessionSpec>) -> Result<SessionSpec, String> {
         let prep = self.preparation();
         let (source, output) = prep.primary_io_nodes()?;
-        let source = self
-            .snapshot
-            .node(source)
+        let source = source
+            .and_then(|node| self.snapshot.node(node))
             .and_then(|s| s.source.clone())
             .ok_or("Choose an input resource")?;
-        let output_endpoint_id = self
-            .snapshot
-            .node(output)
+        let output_endpoint_id = output
+            .and_then(|node| self.snapshot.node(node))
             .and_then(|s| s.output_endpoint_id.clone())
             .ok_or("Choose an output device")?;
         let mut spec = current.cloned().unwrap_or(SessionSpec {
             source: source.clone(),
             output_endpoint_id: output_endpoint_id.clone(),
-            limit: RunLimit::UntilStopped,
             gain: 1.0,
             pan: 0.0,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         });
         spec.source = source;
@@ -933,50 +999,79 @@ impl ServiceGraph {
         Ok(spec)
     }
     pub fn preparing(&mut self, generation: SessionGeneration, revision: u64) {
+        let changed = self.pending_generation != Some(generation)
+            || self.snapshot.pending_revision != Some(revision);
         self.pending_generation = Some(generation);
         self.snapshot.pending_revision = Some(revision);
+        if changed {
+            self.bump();
+        }
     }
     pub fn running(&mut self, generation: SessionGeneration, revision: u64) {
         if self.pending_generation == Some(generation)
             && self.snapshot.pending_revision == Some(revision)
         {
+            // The matching pending state always clears here: a real change.
             self.snapshot.active_revision = Some(revision);
             self.snapshot.pending_revision = None;
             self.pending_generation = None;
             self.snapshot.preparing_nodes.clear();
+            self.bump();
         }
     }
     pub fn stopped(&mut self) {
+        // Projected every round while an owner waits for resources; only an
+        // actual confirmation/pending change may advance the token.
+        let changed =
+            self.snapshot.active_revision.is_some() || !self.snapshot.preparing_nodes.is_empty();
         self.snapshot.active_revision = None;
         self.snapshot.preparing_nodes.clear();
+        if changed {
+            self.bump();
+        }
     }
     /// Only a managed owner may call this after host/RT confirmation. An older
     /// applied topology may become active while a newer candidate is pending.
     pub(crate) fn confirmed(&mut self, generation: SessionGeneration, revision: u64) {
+        // Projected every round while the session runs; the settled steady
+        // state re-reports the same revision and must not advance the token.
+        let mut changed = false;
         if self.snapshot.candidate_revision == revision
             && (self.snapshot.active_revision != Some(revision)
                 || self.snapshot.pending_revision == Some(revision))
         {
             self.snapshot.last_error = None;
             self.snapshot.faults.clear();
+            changed = true;
         }
-        self.snapshot.active_revision = Some(revision);
+        if self.snapshot.active_revision != Some(revision) {
+            self.snapshot.active_revision = Some(revision);
+            changed = true;
+        }
         if self.pending_generation == Some(generation)
             && self.snapshot.pending_revision == Some(revision)
         {
             self.clear_pending();
+            changed = true;
+        }
+        if changed {
+            self.bump();
         }
     }
     pub fn clear_pending(&mut self) {
+        let changed = self.pending_generation.is_some()
+            || self.snapshot.pending_revision.is_some()
+            || !self.snapshot.preparing_nodes.is_empty();
         self.pending_generation = None;
         self.snapshot.pending_revision = None;
         self.snapshot.preparing_nodes.clear();
+        if changed {
+            self.bump();
+        }
     }
     pub fn preparation_failed(&mut self, generation: SessionGeneration, error: impl ToString) {
         if self.pending_generation == Some(generation) {
-            self.snapshot.pending_revision = None;
-            self.pending_generation = None;
-            self.snapshot.preparing_nodes.clear();
+            self.clear_pending();
             self.record_error(error);
         }
     }
@@ -989,11 +1084,12 @@ impl ServiceGraph {
         error: String,
     ) {
         if self.pending_generation == Some(generation) {
-            self.snapshot.pending_revision = None;
-            self.pending_generation = None;
-            self.snapshot.preparing_nodes.clear();
+            self.clear_pending();
             self.record_fault(fault);
-            self.snapshot.last_error = Some(error);
+            if self.snapshot.last_error.as_deref() != Some(error.as_str()) {
+                self.snapshot.last_error = Some(error);
+                self.bump();
+            }
         }
     }
 }

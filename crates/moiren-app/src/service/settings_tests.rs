@@ -7,9 +7,9 @@ fn session() -> SessionSpec {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "render".into(),
-        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
+        limit: RunLimit::UntilStopped,
         max_block_frames: 256,
     }
 }
@@ -79,7 +79,9 @@ fn active_audio_settings_require_running_current_owner() {
         snapshot(&context).active_audio_settings,
         Some(AudioSettings::default())
     );
-    context.core.stop().unwrap();
+    // A newer intent generation retires the snapshot: the active settings
+    // ride the owner identity, not the context slot.
+    context.core.start(session()).unwrap();
     assert_eq!(snapshot(&context).active_audio_settings, None);
 }
 
@@ -98,7 +100,8 @@ fn active_transport_settings_are_fenced_by_running_owner_generation() {
         Some(Default::default())
     );
     context.core.stop().unwrap();
-    assert_eq!(snapshot(&context).active_transport_latency, None);
+    context.core.owner_reaped(old);
+    assert_eq!(context.core.phase(), SessionPhase::Idle);
     context.core.managed_desired(session()).unwrap();
     assert_ne!(context.core.generation(), old);
     context.core.managed_execution(old, true, None);

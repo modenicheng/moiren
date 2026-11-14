@@ -103,7 +103,9 @@ fn frozen_shell(
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(2400.)));
     view.update(cx, |shell, cx| {
-        shell.settings_open = true;
+        shell.presentation.workspace = crate::ui::WorkspaceView::Settings {
+            resume: crate::ui::Page::Graph,
+        };
         shell.settings.editor.section = Section::Transport;
         shell.settings.editor.global = shell.current_settings_draft(cx);
         if expert {
@@ -255,7 +257,7 @@ fn cache_measured_feedback_repaints_but_unchanged_polling_reuses_paint(cx: &mut 
     for _ in 0..4 {
         view.update(cx, |shell, cx| {
             shell.finish_measured_process(cx);
-            shell.selected_node = Some(snapshot.graph.graph.nodes()[0].id());
+            shell.selection.node = Some(snapshot.graph.graph.nodes()[0].id());
             cx.notify();
         });
         cached_frame(cx);

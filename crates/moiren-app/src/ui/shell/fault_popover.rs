@@ -3,13 +3,15 @@
 //! and lists what is wrong and how to fix it. This replaces the old
 //! full-width error strip: located faults surface on the object itself, and
 //! this popover only carries the details on demand. Mounted at the shell
-//! root outside the cached pages, copying the binding menu's placement and
-//! dismissal.
+//! root outside the cached pages, on the shared anchored-popover placement
+//! and the shared occluding-page dismissal.
 
 use super::*;
 use crate::service::GraphSubject;
 use crate::ui::theme;
-use gpui_kit::{AnyElement, Bounds, MouseButton, Pixels, Window, px};
+use crate::ui::widgets::anchored_popover;
+use crate::ui::widgets::occluding_page::{claim_presses, occluding_page};
+use gpui_kit::{AnyElement, Bounds, Pixels, Window, px};
 use moiren_core::graph::NodeId;
 
 /// An open fault popover: the node whose faults are listed, or `None` for
@@ -30,7 +32,7 @@ const MAX_HEIGHT: f32 = 320.;
 /// successful edit, or the faulted node was deleted) so the occluding layer
 /// never outlives its reason.
 pub(crate) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
-    let Some(popover) = shell.fault_popover else {
+    let Some(popover) = shell.chrome.fault_popover else {
         return;
     };
     let state = shell.state.read(cx);
@@ -39,7 +41,7 @@ pub(crate) fn sync(shell: &mut StudioShell, cx: &Context<StudioShell>) {
         None => has_unlocated(state),
     };
     if !alive {
-        shell.fault_popover = None;
+        shell.chrome.fault_popover = None;
     }
 }
 
@@ -57,7 +59,9 @@ pub(crate) fn has_unlocated(state: &UiState) -> bool {
 }
 
 /// The status bar's red summary: the first unlocated message, translated.
-/// Causes are English catalog keys; plain prose passes through unchanged.
+/// Fault causes and snapshot errors are English catalog keys — plain prose
+/// passes through unchanged; the typed dispatch failure translates through
+/// [`crate::ui::presentation::failure_text`].
 pub(crate) fn unlocated_summary(state: &UiState) -> Option<String> {
     state
         .snapshot
@@ -66,11 +70,21 @@ pub(crate) fn unlocated_summary(state: &UiState) -> Option<String> {
         .iter()
         .find(|fault| fault.subject == GraphSubject::Graph)
         .map(|fault| t!(fault.cause.as_str()).into_owned())
+        .or_else(|| unlocated_diagnostic(state))
+}
+
+/// The non-located diagnostics minus the located graph faults: the stored
+/// dispatch failure first, then the snapshot's error strings.
+fn unlocated_diagnostic(state: &UiState) -> Option<String> {
+    state
+        .dispatch_error
+        .as_ref()
+        .map(crate::ui::presentation::failure_text)
         .or_else(|| {
             state
-                .dispatch_error
+                .snapshot
+                .error
                 .as_ref()
-                .or(state.snapshot.error.as_ref())
                 .or(state.snapshot.catalog_error.as_ref())
                 .map(|error| t!(error.as_str()).into_owned())
         })
@@ -81,8 +95,8 @@ pub(crate) fn overlay(
     window: &Window,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
-    let this = cx.entity();
-    let Some(popover) = shell.fault_popover else {
+    let close = cx.entity();
+    let Some(popover) = shell.chrome.fault_popover else {
         return div().into_any_element();
     };
     let state = shell.state.read(cx);
@@ -127,13 +141,8 @@ pub(crate) fn overlay(
                 .collect();
             // The non-located diagnostics, first Some wins (the error
             // strip's old precedence).
-            if let Some(error) = state
-                .dispatch_error
-                .as_ref()
-                .or(state.snapshot.error.as_ref())
-                .or(state.snapshot.catalog_error.as_ref())
-            {
-                rows.push(fault_row(t!(error.as_str()).into_owned(), None));
+            if let Some(error) = unlocated_diagnostic(state) {
+                rows.push(fault_row(error, None));
             }
             rows
         }
@@ -144,66 +153,29 @@ pub(crate) fn overlay(
     // Hang the popover under the anchor, flipping above it when the window
     // bottom is too close, and keep it inside the window sideways.
     let viewport = window.viewport_size();
-    let (view_width, view_height) = (f32::from(viewport.width), f32::from(viewport.height));
     let width = WIDTH.max(f32::from(popover.anchor.size.width));
     let height = MAX_HEIGHT.min(rows.len() as f32 * 34. + 2. * PAD + 40.);
-    let left = f32::from(popover.anchor.origin.x)
-        .min(view_width - width - 8.)
-        .max(8.);
-    let below = f32::from(popover.anchor.origin.y + popover.anchor.size.height) + 4.;
-    let top = if below + height > view_height - 8. {
-        (f32::from(popover.anchor.origin.y) - 4. - height).max(8.)
-    } else {
-        below
-    };
-    let close = this.clone();
-    div()
-        .id("fault-popover-page")
-        .absolute()
-        .inset_0()
-        .size_full()
-        .occlude()
-        .on_key_down(move |event, _window, cx| {
-            if event.keystroke.key.as_str() == "escape" {
-                close.update(cx, |shell, cx| {
-                    shell.fault_popover = None;
-                    cx.notify();
-                });
-                cx.stop_propagation();
-            }
-        })
-        .on_any_mouse_down({
-            let this = this.clone();
-            move |event, _window, cx| {
-                cx.stop_propagation();
-                let inside = event.position.x >= px(left)
-                    && event.position.x <= px(left + width)
-                    && event.position.y >= px(top)
-                    && event.position.y <= px(top + height);
-                if !inside {
-                    this.update(cx, |shell, cx| {
-                        shell.fault_popover = None;
-                        cx.notify();
-                    });
-                }
-            }
-        })
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(
+    let placed = anchored_popover::under_anchor(popover.anchor, width, height, viewport);
+    occluding_page(
+        "fault-popover-page",
+        true,
+        move |cx| {
+            close.update(cx, |shell, cx| {
+                shell.chrome.fault_popover = None;
+                cx.notify();
+            })
+        },
+        claim_presses(
             div()
                 .id("fault-popover")
                 .absolute()
-                .left(px(left))
-                .top(px(top))
+                .left(px(placed.left))
+                .top(px(placed.top))
                 .w(px(width))
                 .max_h(px(height))
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(px(theme::SPACE_1_5))
                 .p(px(PAD))
                 .rounded(px(theme::RADIUS_MD))
                 .bg(theme::SURFACE)
@@ -225,8 +197,8 @@ pub(crate) fn overlay(
                         .child(t!("Diagnostics: %{log_path}", log_path = log_path).to_string()),
                 )
                 .gpui_test_observe(),
-        )
-        .into_any_element()
+        ),
+    )
 }
 
 /// One cause row with its optional hint, the error strip's old row moved
@@ -236,6 +208,8 @@ fn fault_row(cause: String, hint: Option<String>) -> AnyElement {
     let mut row = div()
         .flex()
         .flex_col()
+        // 1 px: hairline-tight stack — the cause and its hint read as one
+        // fault, not two lines of text.
         .gap(px(1.))
         .text_size(px(theme::TEXT_SM))
         .child(

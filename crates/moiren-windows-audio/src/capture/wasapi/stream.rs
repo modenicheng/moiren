@@ -14,7 +14,7 @@ use crate::{
     latency::{
         CallbackObservation, InputDeliveryRecorder, LatencyRecorder, TelemetryMode, clock::QpcClock,
     },
-    owner::{Mmcss, Streaming},
+    win32_raii::{Mmcss, Streaming},
 };
 use std::{
     os::windows::io::OwnedHandle,

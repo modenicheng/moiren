@@ -7,10 +7,11 @@ Moiren is a Rust 2024 workspace for Windows real-time audio:
 - `crates/moiren-core`: editable `LogicalGraph` topology and control protocol.
 - `crates/moiren-engine`: DSP, graph compilation, buffers, and runtime execution.
 - `crates/moiren-signal`: typed, bounded Latest/Stream signals.
+- `crates/moiren-plugins`: VST2/VST3/CLAP plugin hosting (ABI declarations, dispatch wrappers, and host orchestration).
 - `crates/moiren-windows-audio`: the professional audio backend (WASAPI Shared/Exclusive and ASIO), engine-backed capture/render, VAD support, clock adaptation, and probes.
 - `crates/moiren-app`: application service, CLI, and gpui desktop UI.
 
-Each crate uses `src/` for sources, `tests/` for integration tests, and optional `examples/` for demonstrations. The desktop UI is gpui-kit (Rust, no markup language); UI code lives in `crates/moiren-app/src/ui/` with Tabler icon SVGs under `crates/moiren-app/assets/icons/`; architecture notes in `docs/`; shared logos in `assets/logos/`.
+Each crate uses `src/` for sources, `tests/` for integration tests, and optional `examples/` for demonstrations. The C++ VAD driver host lives in `driver/`, the rt-check harness and audio-hack-lab in `tools/`, and support scripts in `scripts/`. The desktop UI is gpui-kit (Rust, no markup language); UI code lives in `crates/moiren-app/src/ui/` with Tabler icon SVGs under `crates/moiren-app/assets/icons/`; architecture notes in `docs/`; shared logos in `assets/logos/`.
 
 ## Build, Test, and Development Commands
 
@@ -36,6 +37,18 @@ Use Rust's `#[test]` harness and descriptive `snake_case` test names. Add regres
 ## Architecture Constraints
 
 Prepare graphs, buffers, and signal bindings off the audio thread. Real-time processing must avoid heap allocation/deallocation and blocking; reclaim retired plans on the control side. Keep logical topology separate from prepared execution plans and platform transports.
+
+### Adding a node kind (checklist)
+
+`NodeKind` is a closed enum; its exhaustive matches are the safety net that turns a missed touchpoint into a compile error. Adding a variant means updating all of the following (each verified against the tree, 2026-11-11):
+
+1. `moiren-core`: the `NodeKind` enum and `initial_ports()` port layout in `crates/moiren-core/src/graph/model.rs`.
+2. `moiren-engine`: the `Binding<S>` enum in `crates/moiren-engine/src/compiler/bindings.rs`, a `bind_*` constructor on `NodeBindings`, and the exhaustive `validate` match in the same file.
+3. `moiren-engine`: the `NodeKind` lowering match in `crates/moiren-engine/src/compiler/plan.rs`.
+4. `moiren-engine`: the parallel `NodeConfig` enum in `crates/moiren-engine/src/host/project.rs`.
+5. `moiren-app`: the `GraphNodeKind` enum and its bidirectional `From` impls in `crates/moiren-app/src/project/graph.rs`.
+
+Keep the enum closed; do not replace it with a runtime registry — the exhaustive-match compile-time guarantee is worth more to an RT system than removing the boilerplate (2026-11-09 audit E-1).
 
 ## Commit & Pull Request Guidelines
 

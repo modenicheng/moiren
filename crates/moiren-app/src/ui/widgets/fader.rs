@@ -1,10 +1,12 @@
 //! One numerical scale for the main Mixer's fader, ruler and meters.
+use crate::ui::observe::TestObserve;
 use crate::ui::theme;
 use crate::ui::widgets::scroll_step::{ScrollGesture, scroll_gesture};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rust_i18n::t;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 pub struct FaderScale;
@@ -134,6 +136,121 @@ pub(super) fn paint_text(
     let _ = line.paint(origin, px(10.), align, width, window, cx);
 }
 
+/// The hot layer's static label shaping cache, shared across strips and
+/// keyed by (text, font size): the strip meters' "L"/"R"/channel-number
+/// labels repaint every display frame, but their texts come from a tiny
+/// fixed population, so keying turns per-frame shaping into lookups forever
+/// — the same text-keyed move the strip readouts made with the mixer page's
+/// `ReadoutShapes` cache (audit A-2, the HC-8 residual). The key carries the
+/// font size because label call sites shape at their own sizes; the font
+/// family, weight and color are compile-time constants of the shared
+/// painter above, and any future parameterization must join the key.
+#[derive(Default)]
+pub(crate) struct LabelShapes {
+    /// Shaped lines grouped by font size (raw `f32` bits): the inner maps
+    /// look up by `&str`, so a hit never allocates.
+    lines: HashMap<u32, HashMap<String, gpui_kit::ShapedLine>>,
+    /// Test census: real shaper runs and the texts painted through the
+    /// cache.
+    #[cfg(feature = "gpui-test")]
+    census: LabelCensus,
+}
+
+#[cfg(feature = "gpui-test")]
+#[derive(Default)]
+struct LabelCensus {
+    shapes: usize,
+    painted: std::collections::BTreeSet<String>,
+}
+
+/// Far above the honest label population (the fixed L/R pair, one number per
+/// channel, one "{channels} ch" per channel count); a pathological feed that
+/// exceeds it clears the cache and pays reshapes again instead of growing
+/// without bound.
+const LABEL_SHAPE_CACHE_CAP: usize = 512;
+
+impl LabelShapes {
+    /// Paint `text` through the cache: shape only on a (text, size) miss,
+    /// then paint exactly like the free [`paint_text`]. The signature mirrors
+    /// that free painter one receiver wider.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_text(
+        &mut self,
+        text: &str,
+        origin: Point<Pixels>,
+        font_size: f32,
+        align: TextAlign,
+        width: Option<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        #[cfg(feature = "gpui-test")]
+        self.census.painted.insert(text.to_owned());
+        let Some(line) = self.line(text, font_size, window) else {
+            return;
+        };
+        let _ = line.paint(origin, px(10.), align, width, window, cx);
+    }
+
+    /// The shaped line for `(text, font_size)`, running the shaper only on a
+    /// cache miss.
+    fn line(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        window: &mut Window,
+    ) -> Option<&gpui_kit::ShapedLine> {
+        let size = font_size.to_bits();
+        if !self
+            .lines
+            .get(&size)
+            .is_some_and(|lines| lines.contains_key(text))
+        {
+            let entries: usize = self.lines.values().map(HashMap::len).sum();
+            if entries >= LABEL_SHAPE_CACHE_CAP {
+                self.lines.clear();
+            }
+            let line = window.text_system().shape_line(
+                text.to_owned().into(),
+                px(font_size),
+                &[TextRun {
+                    len: text.len(),
+                    font: font(theme::FONT_MONO),
+                    color: theme::TEXT_FAINT,
+                    ..Default::default()
+                }],
+                None,
+            );
+            self.lines
+                .entry(size)
+                .or_default()
+                .insert(text.to_owned(), line);
+            #[cfg(feature = "gpui-test")]
+            {
+                self.census.shapes += 1;
+            }
+        }
+        self.lines.get(&size).and_then(|lines| lines.get(text))
+    }
+}
+
+#[cfg(all(test, feature = "gpui-test"))]
+impl LabelShapes {
+    /// How many shaper runs the cache has needed, and how many distinct
+    /// (text, size) entries it holds. Every run inserts exactly one entry,
+    /// so the pair pins "one shape per distinct label, everything else is a
+    /// lookup".
+    pub(crate) fn stats(&self) -> (usize, usize) {
+        let entries: usize = self.lines.values().map(HashMap::len).sum();
+        (self.census.shapes, entries)
+    }
+
+    /// The distinct texts painted through the cache so far.
+    pub(crate) fn painted(&self) -> std::collections::BTreeSet<String> {
+        self.census.painted.clone()
+    }
+}
+
 /// Shared wheel/double-click commit for one computed value: writes the
 /// slider value and dispatches the graph edit.
 pub type Commit = Rc<dyn Fn(f32, &mut Window, &mut App)>;
@@ -145,9 +262,10 @@ pub type Commit = Rc<dyn Fn(f32, &mut Window, &mut App)>;
 /// the drag path.
 #[derive(Clone)]
 pub struct SliderBehavior {
-    /// One wheel notch: current value -> new value. Direction +1 = up/right
-    /// (increase), -1 = down/left.
-    pub step: Rc<dyn Fn(f32, i32) -> f32>,
+    /// Wheel travel: (current value, signed notches) -> new value. +1 is one
+    /// notch up/right (increase), -1 down/left; fine-grained wheels pass a
+    /// fraction of a notch.
+    pub step: Rc<dyn Fn(f32, f32) -> f32>,
     /// Value a double click restores (unity / default / center).
     pub reset: f32,
     /// Commit an externally computed value: set slider value + dispatch the
@@ -188,7 +306,7 @@ fn gestures(
                 let current = slider.value().end();
                 let (min, max) = (slider.min_value(), slider.max_value());
                 let value = match gesture {
-                    ScrollGesture::Notch(direction) => (behavior.step)(current, direction),
+                    ScrollGesture::Notch(notches) => (behavior.step)(current, notches),
                     ScrollGesture::Pan(travel) => (current + travel * (max - min)).clamp(min, max),
                 };
                 // An immediate, user-paced gesture: bypass drag coalescing
@@ -198,10 +316,17 @@ fn gestures(
                 }
             }
         })
-        .on_click({
+        // The double click resets on its second press, in the capture phase,
+        // ahead of everything under the pointer. The first press jumps the
+        // thumb to the pointer, so the second lands on the thumb — which
+        // claims its presses for itself, so a bubble-phase click handler
+        // here never counted to two. Stopping the press also keeps the track
+        // from re-jumping and gpui from starting a drag on it.
+        .capture_any_mouse_down({
             let behavior = behavior.clone();
-            move |event: &ClickEvent, window, cx| {
-                if event.click_count() == 2 {
+            move |event: &MouseDownEvent, window, cx| {
+                if event.button == MouseButton::Left && event.click_count >= 2 {
+                    cx.stop_propagation();
                     (behavior.commit)(behavior.reset, window, cx);
                 }
             }
@@ -328,7 +453,7 @@ pub fn fader(
                             .right(px(2.))
                             .top(px(10.))
                             .h(px(2.))
-                            .bg(theme::SURFACE_3),
+                            .bg(theme::controls::RAISED),
                     ),
             ),
     )
@@ -407,6 +532,110 @@ pub fn hslider(
     .h(px(16.))
 }
 
+/// The send bars' value space: the channel fader's [`FaderScale`] laid along
+/// the horizontal axis. A slider value IS its fill fraction — the pointer maps
+/// onto this space directly, so the painted fill tracks the mouse and the
+/// touchpad one-to-one with no second mapping to drift out of sync. 0 is
+/// exact silence at the quiet (left) rail, unity sits at the scale's 0 dB
+/// anchor three quarters along, and 1 is the +12 dB scale top filling the bar
+/// flush against the loud (right) rail (boosts past it pin at full).
+pub fn send_value(gain: f64) -> f32 {
+    1. - FaderScale::position(gain)
+}
+
+/// [`send_value`]'s inverse: the gain a send slider value stands for. The
+/// write-back (`sync_sliders`) and the drag dispatch both go through this one
+/// pair, so a value painted at a fraction also commits the gain whose fill is
+/// that fraction.
+pub fn send_gain(value: f32) -> f64 {
+    FaderScale::gain(1. - value)
+}
+
+/// Visible height of the send level bar. Off the spacing grid on purpose:
+/// twice the accent bar width, the same thickness the approved prototype
+/// shipped (`ACCENT_BAR_W × 2`).
+pub const SEND_BAR_H: f32 = 4.;
+
+/// The send level bar: a plain rectangular controller — no thumb, no rounded
+/// corners, flush at both ends. The whole bar is the control: the fill's
+/// extent is the level, growing from the quiet (left) end toward the loud
+/// (right) end — silence empties it, unity reaches three quarters, and the
+/// +12 dB scale top fills it flush against the right edge. The track is
+/// [`theme::controls::RAISED`] for every
+/// send regardless of selection or mute; muting only grays the fill. The 4 px
+/// under the track are breathing room and part of the drag hit area, so the
+/// element is twice [`SEND_BAR_H`] tall while the visible strip stays 4 px.
+pub fn send_bar(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    muted: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let slider = state.read(cx);
+    // The value space IS the fill fraction (see [`send_value`]): paint the
+    // position the slider reports, never a second dB detour.
+    let fill = normalized_value(slider.value().end(), slider.min_value(), slider.max_value());
+    gestures(
+        state,
+        behavior,
+        Axis::Horizontal,
+        base::slider::Slider::new(state)
+            .horizontal()
+            .relative()
+            .size_full()
+            // The pointer mapping and the drag hitbox span the whole element,
+            // the 4 px below the visible strip included.
+            .child(
+                base::slider::SliderIndicator::new(state)
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h_full(),
+            )
+            .child(
+                base::slider::SliderTrack::new(state)
+                    .axis(Axis::Horizontal)
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h(px(SEND_BAR_H))
+                    .bg(theme::controls::RAISED),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "send-fill-{}",
+                        state.entity_id()
+                    )))
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(relative(fill))
+                    .h(px(SEND_BAR_H))
+                    .bg(if muted {
+                        theme::TRACK_FILL
+                    } else {
+                        theme::SIGNAL_DEVICE
+                    })
+                    .gpui_test_observe(),
+            ),
+    )
+    .flex_none()
+    .w_full()
+    // Track + the hit-area strip below it.
+    .h(px(SEND_BAR_H * 2.))
+}
+
 #[cfg(test)]
 mod tests {
     use super::FaderScale;
@@ -480,6 +709,37 @@ mod tests {
         // A degenerate span keeps the thumb at the quiet end instead of NaN.
         assert_eq!(normalized_value(5., 5., 5.), 0.);
         assert_eq!(thumb_top(0., 0., 1.), 1.);
+    }
+
+    #[test]
+    fn send_values_lay_the_fader_scale_on_the_bar_axis() {
+        use super::send_value;
+        // The bar's value space is the fader's scale mirrored onto the width:
+        // silence empties the bar at the left rail, unity reaches its 0 dB
+        // anchor three quarters along, and the +12 dB scale top fills it.
+        assert_eq!(send_value(0.), 0.);
+        assert!((send_value(1.) - 0.76).abs() < 0.0001);
+        assert_eq!(send_value(10f64.powf(12. / 20.)), 1.);
+        // Boosts past the scale top pin at full, exactly like the fader's top
+        // anchor.
+        assert_eq!(send_value(10f64.powf(24. / 20.)), 1.);
+    }
+
+    #[test]
+    fn the_send_value_space_round_trips_through_the_scale() {
+        use super::{send_gain, send_value};
+        // The dispatch (value -> gain) and the write-back (gain -> value)
+        // share one inverse pair, so a value painted at a fraction commits
+        // the gain whose fill is that fraction — the bar can never disagree
+        // with the committed level.
+        for step in 0..=100 {
+            let value = step as f32 / 100.;
+            assert!((send_value(send_gain(value)) - value).abs() < 0.0001);
+        }
+        for db in -72..=12 {
+            let gain = 10f64.powf(f64::from(db) / 20.);
+            assert!((20. * send_gain(send_value(gain)).log10() - f64::from(db)).abs() < 0.001);
+        }
     }
 
     #[test]

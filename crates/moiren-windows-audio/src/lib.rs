@@ -1,4 +1,11 @@
 //! Windows audio probes, Shared capture/render and backend clock adaptation.
+//!
+//! The canonical thread/realtime-boundary map for this crate — every thread
+//! that drives audio, what each may do, and which module owns it — lives in
+//! `docs/platform/windows-audio-threads.md`. Two test files are deliberately
+//! absent from every crate target and compile only under `tools/rt-check`
+//! (`#[path]` shadow mounts): `asio_rt_tests.rs` and
+//! `engine_backend/recovery_host_tests.rs`.
 
 #[cfg(all(windows, target_pointer_width = "64"))]
 pub mod asio;
@@ -65,7 +72,7 @@ pub use catalog::{
     CatalogSnapshot, DefaultEndpoint, EndpointSnapshot, owned_snapshot as catalog_snapshot,
 };
 #[cfg(windows)]
-mod owner;
+mod win32_raii;
 
 #[cfg(windows)]
 pub(crate) mod negotiation;

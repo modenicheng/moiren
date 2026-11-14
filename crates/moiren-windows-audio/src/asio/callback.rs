@@ -130,6 +130,7 @@ pub(super) struct Context {
     callbacks: AtomicU64,
     capture_dropped: AtomicU64,
     render_silent: AtomicU64,
+    xruns: AtomicU64,
     pub latency_changed: AtomicBool,
     sample_rate: u32,
     event: HANDLE,
@@ -144,6 +145,7 @@ impl Context {
             callbacks: AtomicU64::new(0),
             capture_dropped: AtomicU64::new(0),
             render_silent: AtomicU64::new(0),
+            xruns: AtomicU64::new(0),
             latency_changed: AtomicBool::new(false),
             sample_rate,
             event,
@@ -156,6 +158,7 @@ impl Context {
         self.callbacks.store(0, Ordering::Relaxed);
         self.capture_dropped.store(0, Ordering::Relaxed);
         self.render_silent.store(0, Ordering::Relaxed);
+        self.xruns.store(0, Ordering::Relaxed);
         self.latency_changed.store(false, Ordering::Relaxed);
         self.data.get_mut().discard_first_input = true;
     }
@@ -199,6 +202,7 @@ impl Context {
             callbacks: self.callbacks.load(Ordering::Relaxed),
             capture_dropped_frames: self.capture_dropped.load(Ordering::Relaxed),
             render_silent_frames: self.render_silent.load(Ordering::Relaxed),
+            xruns: self.xruns.load(Ordering::Relaxed),
             ..Default::default()
         }
     }
@@ -245,6 +249,7 @@ impl Context {
             if input.slots() < data.frames {
                 self.capture_dropped
                     .fetch_add(data.frames as u64, Ordering::Relaxed);
+                self.xruns.fetch_add(1, Ordering::Relaxed);
             } else {
                 for frame_index in 0..data.frames {
                     let mut frame = Frame::default();
@@ -289,6 +294,9 @@ impl Context {
                 }
             }
             self.render_silent.fetch_add(silent, Ordering::Relaxed);
+            if silent > 0 {
+                self.xruns.fetch_add(1, Ordering::Relaxed);
+            }
         }
         self.copying.store(false, Ordering::Release);
         self.signal();

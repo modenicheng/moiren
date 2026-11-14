@@ -21,7 +21,7 @@ fn cached_frame(cx: &mut VisualTestContext) {
 
 fn inspector_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
     view.read_with(cx, |shell, cx| {
-        shell.inspector_panel.read(cx).rebuild_count()
+        shell.inspector.panel.read(cx).rebuild_count()
     })
 }
 
@@ -36,14 +36,21 @@ fn device_override_cache_repaints_local_draft_error_and_discard_without_a_publis
     };
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(gpui_kit::px(1600.), gpui_kit::px(1200.)));
-    view.update(cx, |shell, cx| {
-        shell.set_page(Page::Devices, cx);
-        shell.devices.device_tab = DeviceTab::Outputs;
-        shell.inspect_device("output-a".into(), cx);
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell.set_page(Page::Devices, cx);
+            shell.devices.device_tab = DeviceTab::Outputs;
+            let _ = window;
+            shell.inspect_device("output-a".into(), cx);
+        });
     });
     cx.update(|window, cx| window.render_frame(cx));
+    // Mount the newly selected device inspector before adding its override.
+    // InputState construction is owned by the cached panel render.
+    cached_frame(cx);
+    let before = inspector_rebuilds(&view, cx);
     settle_spring(cx);
-    burn_in(&view, |cx| inspector_rebuilds(&view, cx), cx);
+    let _ = before;
     let snapshot = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.clone());
     view.update(cx, |shell, cx| {
         crate::ui::pages::settings::device_stream_mut(
@@ -55,6 +62,12 @@ fn device_override_cache_repaints_local_draft_error_and_discard_without_a_publis
         cx.notify();
     });
     cached_frame(cx);
+    view.update(cx, |shell, cx| {
+        shell.settings.editor.device.changed();
+        cx.notify();
+    });
+    cached_frame(cx);
+    cx.update(|window, cx| window.render_frame(cx));
     assert!(
         cx.update(|window, _| window.try_find("device-output-period-input").is_some()),
         "a local override must repaint the cached inspector before any service publish"
@@ -65,8 +78,8 @@ fn device_override_cache_repaints_local_draft_error_and_discard_without_a_publis
             .editor
             .device_period_inputs()
             .next()
-            .unwrap()
-            .clone()
+            .map(|input| input.clone())
+            .expect("the rendered override must own a period input")
     });
     cx.update(|window, cx| {
         old.update(cx, |input, cx| {
@@ -74,13 +87,22 @@ fn device_override_cache_repaints_local_draft_error_and_discard_without_a_publis
             cx.emit(crate::ui::shell::component::input::InputEvent::Change);
         });
     });
+    view.update(cx, |shell, cx| {
+        let text = shell
+            .settings
+            .editor
+            .device_period_inputs()
+            .next()
+            .map(|input| input.read(cx).value());
+        assert_eq!(text.as_deref(), Some("invalid"));
+        assert!(shell.settings.editor.device.feedback.is_some());
+    });
     cached_frame(cx);
     assert!(
         cx.update(|window, _| window
             .find("device-settings-feedback")
             .label()
-            .unwrap()
-            .contains("integer")),
+            .is_some_and(|label| label.contains("integer")),),
         "invalid local input must repaint the refusal without an external refresh"
     );
     view.update(cx, |shell, cx| {
@@ -104,19 +126,24 @@ fn device_period_nested_notifications_repaint_caret_without_a_publish(cx: &mut T
     use crate::ui::pages::{Page, devices::DeviceTab, settings::Direction};
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(gpui_kit::px(1600.), gpui_kit::px(1200.)));
-    view.update(cx, |shell, cx| {
-        shell.set_page(Page::Devices, cx);
-        shell.devices.device_tab = DeviceTab::Outputs;
-        shell.inspect_device("output-a".into(), cx);
-        crate::ui::pages::settings::device_stream_mut(
-            &mut shell.settings.editor.device.audio,
-            Direction::Output,
-            "output-a",
-        );
-        cx.notify();
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell.set_page(Page::Devices, cx);
+            shell.devices.device_tab = DeviceTab::Outputs;
+            let _ = window;
+            shell.inspect_device("output-a".into(), cx);
+            crate::ui::pages::settings::device_stream_mut(
+                &mut shell.settings.editor.device.audio,
+                Direction::Output,
+                "output-a",
+            );
+            cx.notify();
+        });
     });
     cx.update(|window, cx| window.render_frame(cx));
     settle_spring(cx);
+    cached_frame(cx);
+    let before = inspector_rebuilds(&view, cx);
     burn_in(&view, |cx| inspector_rebuilds(&view, cx), cx);
     let (snapshot, input) = view.read_with(cx, |shell, cx| {
         (
@@ -130,7 +157,6 @@ fn device_period_nested_notifications_repaint_caret_without_a_publish(cx: &mut T
                 .clone(),
         )
     });
-    let before = inspector_rebuilds(&view, cx);
     input.update(cx, |_, cx| cx.notify());
     cached_frame(cx);
     assert!(
@@ -147,12 +173,12 @@ fn device_period_nested_notifications_repaint_caret_without_a_publish(cx: &mut T
 }
 
 fn library_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
-    view.read_with(cx, |shell, cx| shell.library_panel.read(cx).rebuild_count())
+    view.read_with(cx, |shell, cx| shell.library.panel.read(cx).rebuild_count())
 }
 
 fn rail_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
     view.read_with(cx, |shell, cx| {
-        shell.library_rail_panel.read(cx).rebuild_count()
+        shell.library.rail_panel.read(cx).rebuild_count()
     })
 }
 
@@ -194,7 +220,7 @@ fn burn_in(
 
 fn select_first_node(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
+        shell.selection.node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[0].id());
         cx.notify();
     });
     cached_frame(cx);
@@ -249,7 +275,7 @@ fn inspector_panel_stays_cached_across_key_neutral_shell_notifications(cx: &mut 
     finish_service(runtime);
 }
 
-/// `page_inspector` switches its whole content on `presentation.page`, so a
+/// `page_inspector` switches its whole content on the presentation page, so a
 /// page switch with a selection held must repaint the inspector into the new
 /// page's inspector on that notification alone.
 #[gpui_kit::test]
@@ -261,7 +287,8 @@ fn inspector_panel_follows_the_active_page_with_a_selection_held(cx: &mut TestAp
     let before = inspector_rebuilds(&view, cx);
 
     view.update(cx, |shell, cx| {
-        shell.presentation.page = crate::ui::pages::Page::Matrix;
+        shell.presentation.workspace =
+            crate::ui::pages::WorkspaceView::Page(crate::ui::pages::Page::Matrix);
         cx.notify();
     });
     cached_frame(cx);
@@ -404,7 +431,7 @@ fn library_panel_repaints_the_session_selection_without_a_publish(cx: &mut TestA
     let (first, second) = (nodes[0], nodes[1]);
 
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(first);
+        shell.selection.node = Some(first);
         cx.notify();
     });
     cached_frame(cx);
@@ -422,7 +449,7 @@ fn library_panel_repaints_the_session_selection_without_a_publish(cx: &mut TestA
     burn_in(&view, |cx| library_rebuilds(&view, cx), cx);
     let before = library_rebuilds(&view, cx);
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(second);
+        shell.selection.node = Some(second);
         cx.notify();
     });
     cached_frame(cx);
@@ -456,7 +483,7 @@ fn library_rail_replays_key_neutral_notifications_and_rebuilds_on_a_publish(
     let (view, cx, runtime) = test_shell(cx);
     open_graph_page(cx);
     view.update(cx, |shell, cx| {
-        shell.sidebar_open = false;
+        shell.chrome.sidebar_open = false;
         cx.notify();
     });
     settle_spring(cx);

@@ -28,6 +28,9 @@ pub(crate) struct Desktop {
 
 #[derive(Clone)]
 struct PresentationSnapshot {
+    /// The page to resume on reopen, without Settings: the settings page is
+    /// transient and never survives a hide-to-tray round trip, so the
+    /// snapshot keeps the plain page the workspace view would resume to.
     page: Page,
     camera: Camera,
     node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
@@ -42,7 +45,7 @@ struct PresentationSnapshot {
     selected_device: Option<String>,
     project_path: Option<std::path::PathBuf>,
     project_name: String,
-    project_message: Option<String>,
+    project_message: Option<project::ProjectMessage>,
     pending_project: Option<(
         crate::service::RequestId,
         crate::project::ProjectDocument,
@@ -54,16 +57,16 @@ struct PresentationSnapshot {
 impl PresentationSnapshot {
     fn capture(shell: &mut StudioShell) -> Self {
         Self {
-            page: shell.presentation.page,
-            camera: shell.camera,
-            node_positions: std::mem::take(&mut shell.node_positions),
-            mixer_order: shell.mixer.order.clone(),
-            pending_node_spawn: shell.pending_node_spawn.take(),
-            selected_node: shell.selected_node.take(),
-            selected_route: shell.selected_route,
-            sidebar_open: shell.sidebar_open,
-            inspector_open: shell.inspector_open,
-            compact: shell.compact,
+            page: shell.presentation.page(),
+            camera: shell.graph_view.camera,
+            node_positions: std::mem::take(&mut shell.graph_view.node_positions),
+            mixer_order: shell.mixer.presentation.order.clone(),
+            pending_node_spawn: shell.graph_view.pending_node_spawn.take(),
+            selected_node: shell.selection.node.take(),
+            selected_route: shell.selection.route,
+            sidebar_open: shell.chrome.sidebar_open,
+            inspector_open: shell.chrome.inspector_open,
+            compact: shell.chrome.compact,
             device_tab: shell.devices.device_tab,
             selected_device: shell.devices.selected_device.take(),
             project_path: shell.project_io.path.take(),
@@ -75,17 +78,17 @@ impl PresentationSnapshot {
     }
 
     fn restore(self, shell: &mut StudioShell) {
-        shell.presentation.page = self.page;
-        shell.camera = self.camera;
-        shell.node_positions = self.node_positions;
-        shell.mixer.order = self.mixer_order;
-        shell.pending_node_spawn = self.pending_node_spawn;
-        shell.node_name_editing = None;
-        shell.selected_node = self.selected_node;
-        shell.selected_route = self.selected_route;
-        shell.sidebar_open = self.sidebar_open;
-        shell.inspector_open = self.inspector_open;
-        shell.compact = self.compact;
+        shell.presentation.workspace = WorkspaceView::Page(self.page);
+        shell.graph_view.camera = self.camera;
+        shell.graph_view.node_positions = self.node_positions;
+        shell.mixer.presentation.order = self.mixer_order;
+        shell.graph_view.pending_node_spawn = self.pending_node_spawn;
+        shell.inspector.node_name_editing = None;
+        shell.selection.node = self.selected_node;
+        shell.selection.route = self.selected_route;
+        shell.chrome.sidebar_open = self.sidebar_open;
+        shell.chrome.inspector_open = self.inspector_open;
+        shell.chrome.compact = self.compact;
         shell.devices.device_tab = self.device_tab;
         shell.devices.selected_device = self.selected_device;
         shell.project_io.path = self.project_path;
@@ -93,7 +96,7 @@ impl PresentationSnapshot {
         shell.project_io.message = self.project_message;
         shell.project_io.busy = self.pending_project.is_some();
         shell.project_io.pending = self.pending_project;
-        shell.density = match self.preferences.density {
+        shell.chrome.density = match self.preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
             crate::project::UiDensity::Comfortable => Density::Comfortable,
         };
@@ -123,7 +126,7 @@ impl Desktop {
                 let state = shell.update(cx, |shell, cx| {
                     window.update(cx, |_, window, _| {
                         if shell.presentation.visible {
-                            capture_window_state(window, shell.presentation.page)
+                            capture_window_state(window, shell.presentation.page())
                         } else {
                             shell.window_state.clone()
                         }
@@ -186,7 +189,10 @@ impl Desktop {
                     appears_transparent: true,
                     ..Default::default()
                 }),
-                window_min_size: Some(size(px(940.0), px(600.0))),
+                window_min_size: Some(size(
+                    px(theme::WINDOW_MIN_WIDTH),
+                    px(theme::WINDOW_MIN_HEIGHT),
+                )),
                 // The mixer's meters must keep animating while another app is
                 // focused; gpui would otherwise cap the window at ~30 fps.
                 inactive_frame_interval: None,
@@ -196,11 +202,11 @@ impl Desktop {
             |window, cx| {
                 cx.new(|cx| {
                     let mut shell = StudioShell::new(state, window, cx, Some(desktop));
-                    shell.presentation.page = page(saved.workspace);
+                    shell.presentation.workspace = WorkspaceView::Page(page(saved.workspace));
                     if let Some(resume) = resume {
                         resume.restore(&mut shell);
                     }
-                    shell.window_state = capture_window_state(window, shell.presentation.page);
+                    shell.window_state = capture_window_state(window, shell.presentation.page());
                     shell
                 })
             },
@@ -373,7 +379,9 @@ impl Desktop {
     }
 
     pub(super) fn spawn_poll(&self, cx: &mut Context<Self>) {
+        let handle = self.state.read(cx).handle.clone();
         cx.spawn(async move |this, cx| {
+            let mut seen = handle.publish_generation();
             loop {
                 let delay = this
                     .update(cx, |desktop, _| {
@@ -384,9 +392,12 @@ impl Desktop {
                         }
                     })
                     .unwrap_or(100);
-                cx.background_executor()
-                    .timer(Duration::from_millis(delay))
-                    .await;
+                // A publish ends the wait early, so edits echo on the next
+                // frame instead of the next tick.
+                super::pump_wait(cx, &handle, seen, Duration::from_millis(delay)).await;
+                // Read before draining: a publish landing during the drain
+                // then cuts the next wait short instead of waiting it out.
+                seen = handle.publish_generation();
                 if this.update(cx, |desktop, cx| desktop.poll(cx)).is_err() {
                     break;
                 }
@@ -418,8 +429,49 @@ impl Desktop {
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {
-        let changed = self.state.update(cx, |state, _| state.poll());
+        // A minimized main window has nothing to repaint: while iconic the
+        // poll keeps absorbing snapshot changes silently and skips cx.notify,
+        // so an idle-but-running session leaves the frame pipeline unarmed
+        // instead of waking the main thread per repaint request. One notify
+        // on restore repaints everything absorbed in the meantime. The tray
+        // flyout is its own window and keeps its own notify path below.
+        let iconic = self.window.as_ref().is_some_and(|handle| {
+            handle
+                .update(cx, |_, window, _| native::window_is_iconic(window))
+                .unwrap_or(false)
+        });
+        let restored = self.main_window_minimized && !iconic;
+        self.main_window_minimized = iconic;
+        // The shared pump tick owns the state drain, project-load finish,
+        // autosave, meter pump, and the shell's notify decision.
+        let changed = if let Some(shell) = self.shell.clone() {
+            let ticked = shell.update(cx, |shell, cx| {
+                shell.pump_tick(
+                    cx,
+                    RepaintTerms {
+                        force: restored,
+                        mute: iconic,
+                    },
+                )
+            });
+            // A shell that died outside the release path leaves the state
+            // undrained; fall back to the bare drain so the tray below
+            // still sees the latest snapshot.
+            match ticked {
+                Ok(changed) => changed,
+                Err(_) => self.state.update(cx, |state, _| state.poll()),
+            }
+        } else {
+            // Tray-only ticks (window closed to the tray) have no shell to
+            // pump; the state still needs draining for tray status and
+            // actions.
+            self.state.update(cx, |state, _| state.poll())
+        };
         if self.state.read(cx).snapshot.phase == SessionPhase::Exited {
+            // The pump tick already requested the quit when it drained the
+            // exit (and requesting it again is harmless); either way the
+            // desktop's tick ends before the tray, window-state, and flyout
+            // work — nothing of it outlives the session.
             cx.quit();
             return;
         }
@@ -437,42 +489,13 @@ impl Desktop {
                             eprintln!("Moiren tray mixer: {error}");
                         }
                     }
-                    super::super::tray::TrayAction::StopSession => {
-                        self.state.update(cx, |state, _| {
-                            state.dispatch(AppRequest::Stop);
-                        })
-                    }
                     super::super::tray::TrayAction::ExitApp => cx.quit(),
                 }
             }
         }
-        if let Some(tray) = self.tray.as_ref() {
-            tray.set_session_active(self.state.read(cx).snapshot.phase == SessionPhase::Running);
-        }
         self.dismiss_flyout_on_focus_loss(cx);
-        // A minimized main window has nothing to repaint: while iconic the
-        // poll keeps absorbing snapshot changes silently and skips cx.notify,
-        // so an idle-but-running session leaves the frame pipeline unarmed
-        // instead of waking the main thread per repaint request. One notify
-        // on restore repaints everything absorbed in the meantime. The tray
-        // flyout is its own window and keeps its own notify path below.
-        let iconic = self.window.as_ref().is_some_and(|handle| {
-            handle
-                .update(cx, |_, window, _| native::window_is_iconic(window))
-                .unwrap_or(false)
-        });
-        let restored = self.main_window_minimized && !iconic;
-        self.main_window_minimized = iconic;
         if let Some(shell) = self.shell.clone() {
-            let saved = shell.update(cx, |shell, cx| {
-                shell.finish_project_load(cx);
-                shell.poll_autosave(cx);
-                let meters_changed = !shell.frames_wanted(cx) && shell.pump_meters(cx);
-                if (changed || meters_changed || restored) && !iconic {
-                    cx.notify();
-                }
-                shell.window_state.clone()
-            });
+            let saved = shell.update(cx, |shell, _| shell.window_state.clone());
             if let Ok(saved) = saved {
                 self.saved = saved;
             }
@@ -533,7 +556,10 @@ fn restored_placement(
     saved: &crate::project::WindowState,
     cx: &App,
 ) -> (WindowBounds, Option<DisplayId>) {
-    let dimensions = size(px(saved.width.max(940.0)), px(saved.height.max(600.0)));
+    let dimensions = size(
+        px(saved.width.max(theme::WINDOW_MIN_WIDTH)),
+        px(saved.height.max(theme::WINDOW_MIN_HEIGHT)),
+    );
     let mut rect = Bounds {
         origin: point(px(saved.x), px(saved.y)),
         size: dimensions,
@@ -544,9 +570,11 @@ fn restored_placement(
         .find(|display| {
             let screen = display.visible_bounds();
             rect.origin.x >= screen.origin.x
-                && rect.origin.x + px(100.0) <= screen.origin.x + screen.size.width
+                && rect.origin.x + px(theme::RESTORE_MIN_VISIBLE_WIDTH)
+                    <= screen.origin.x + screen.size.width
                 && rect.origin.y >= screen.origin.y
-                && rect.origin.y + px(40.0) <= screen.origin.y + screen.size.height
+                && rect.origin.y + px(theme::RESTORE_MIN_VISIBLE_HEIGHT)
+                    <= screen.origin.y + screen.size.height
         })
         .or_else(|| displays.first());
     if let Some(display) = display {

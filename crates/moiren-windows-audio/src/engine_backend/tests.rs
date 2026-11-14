@@ -87,9 +87,11 @@ fn virtual_mono_does_not_require_a_physical_master() {
     let project = virtual_project(1, 96_000);
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
     let (host, _rt) = bus.create_host(8).unwrap();
+    let request = request(&project, &host);
+    assert_eq!(validate(&request, true), Ok(96_000));
     assert_eq!(
-        validate(&request(&project, &host), true),
-        Ok((96_000, ProjectClock::VirtualRealtime))
+        select_clock(&request, &[]),
+        Ok(ProjectClock::VirtualRealtime)
     );
 }
 
@@ -287,9 +289,14 @@ fn backend<S: ProcessingSample>(probe: &Arc<Probe>) -> ProfessionalBackend<S> {
 }
 
 fn native_devices(faults: Faults) -> FakeNativeDevices {
+    native_devices_absent(faults, Vec::new())
+}
+
+fn native_devices_absent(faults: Faults, absent: Vec<String>) -> FakeNativeDevices {
     FakeNativeDevices {
         probe: Arc::default(),
         faults,
+        absent,
     }
 }
 
@@ -735,7 +742,6 @@ fn virtual_contract_and_native_constraints_are_validated_independently() {
             period_frames: Some(100),
             ..physical_device(ClockRole::Master)
         },
-        physical_device(ClockRole::Follower),
     ] {
         let mut project = virtual_project(2, 48_000);
         let sink = add_physical_output(&mut project, 2);
@@ -745,6 +751,22 @@ fn virtual_contract_and_native_constraints_are_validated_independently() {
         output.device = device;
         assert!(matches!(
             validate(&request(&project, &host), true),
+            Err(BackendError::Unsupported(_))
+        ));
+    }
+    {
+        // A follower output passes admission; the missing master is a clock
+        // constraint, checked once endpoint presence is known.
+        let mut project = virtual_project(2, 48_000);
+        let sink = add_physical_output(&mut project, 2);
+        let NodeConfig::Output(output) = project.nodes.get_mut(&sink).unwrap() else {
+            unreachable!()
+        };
+        output.device = physical_device(ClockRole::Follower);
+        let request = request(&project, &host);
+        assert!(validate(&request, true).is_ok());
+        assert!(matches!(
+            select_clock(&request, &[]),
             Err(BackendError::Unsupported(_))
         ));
     }
@@ -760,6 +782,90 @@ fn virtual_contract_and_native_constraints_are_validated_independently() {
     };
     assert!(matches!(validate(&request(&duplicate, &host), true),
         Err(BackendError::Unsupported(message)) if message.contains("duplicate virtual")));
+}
+
+#[test]
+fn prepared_streams_record_their_service_endpoint_identities() {
+    // Every registration site records the identity the graph bound — the
+    // service-side catalog row id — not the canonical id a native open
+    // resolves to. ASIO pins `asio:{CLSID}`; the observation must keep that
+    // exact string or the devices page cannot attribute the stream.
+    // (The process-loopback site is the fourth registrant; its identity is
+    // the parsed `moiren:process:{pid}:{creation}` pair, which needs a real
+    // foreign process to exercise and is covered by construction.)
+    let mut project = virtual_project(2, 48_000);
+    let physical_id = "asio:{01234567-89AB-CDEF-0123-456789ABCDEF}".to_string();
+    let physical_source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+    let physical_sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+    project
+        .graph
+        .connect(
+            project.graph.get_node(physical_source).unwrap().outputs()[0].id(),
+            project.graph.get_node(physical_sink).unwrap().inputs()[0].id(),
+            Default::default(),
+        )
+        .unwrap();
+    project.nodes.insert(
+        physical_source,
+        NodeConfig::Input(InputConfig {
+            source: InputSource::Physical(endpoint(&physical_id)),
+            channels: 2,
+            device: physical_device(ClockRole::Follower),
+        }),
+    );
+    project.nodes.insert(
+        physical_sink,
+        NodeConfig::Output(OutputConfig {
+            target: OutputTarget::Physical(endpoint(&physical_id)),
+            channels: 2,
+            device: physical_device(ClockRole::Master),
+        }),
+    );
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = backend::<f64>(&probe);
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    let mut identities: Vec<(NodeId, StreamEndpoint)> = streams
+        .iter()
+        .map(|stream| (stream.node, stream.endpoint.clone()))
+        .collect();
+    identities.sort_by_key(|(node, _)| format!("{node:?}"));
+    let mut expected = vec![
+        (
+            physical_source,
+            StreamEndpoint::Physical(physical_id.clone()),
+        ),
+        (physical_sink, StreamEndpoint::Physical(physical_id)),
+    ];
+    for (node, config) in &project.nodes {
+        let endpoint = match config {
+            NodeConfig::Input(input) => match &input.source {
+                InputSource::VirtualPlayback { endpoint_id } => {
+                    StreamEndpoint::Virtual(*endpoint_id)
+                }
+                _ => continue,
+            },
+            NodeConfig::Output(output) => match &output.target {
+                OutputTarget::VirtualMicrophone { endpoint_id } => {
+                    StreamEndpoint::Virtual(*endpoint_id)
+                }
+                _ => continue,
+            },
+            _ => continue,
+        };
+        expected.push((*node, endpoint));
+    }
+    expected.sort_by_key(|(node, _)| format!("{node:?}"));
+    assert_eq!(identities, expected);
+    owner.cancel();
+    let _ = owner.stop_and_join();
 }
 
 #[test]
@@ -931,6 +1037,76 @@ fn virtual_master_runs_native_capture_as_follower_and_retains_actual_failure() {
         assert_eq!(native.probe.dropped.load(Ordering::Acquire), 1);
         assert_sessions_joined(&probe, 1);
     }
+}
+
+#[test]
+fn capture_only_project_runs_on_the_virtual_clock_without_a_provider() {
+    let mut project = virtual_project(2, 48_000);
+    replace_with_physical_capture(&mut project);
+    // Drop the virtual microphone sink: a capture-only project with no
+    // outputs at all, paced purely by the QPC fallback clock.
+    let sink = *project.nodes.keys().last().unwrap();
+    project.nodes.remove(&sink);
+    project.graph.remove_node(sink).unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    // A provider is only an admission requirement for virtual endpoints, so
+    // the capture-only project validates without one.
+    assert_eq!(validate(&request(&project, &host), false), Ok(48_000));
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory(probe.clone())));
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| native.probe.started.load(Ordering::Acquire) == 1);
+    wait_until(|| owner.timeline().is_some_and(|t| t.frame >= 256));
+    owner.cancel();
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert!(returned.engine.timeline() >= 256);
+    assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.master_groups.load(Ordering::Acquire), 0);
+    assert_eq!(native.probe.stopped.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.released.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.dropped.load(Ordering::Acquire), 1);
+    // The capture native session is the only joined resource: no virtual
+    // boundary sessions exist to prepare.
+    assert_sessions_joined(&probe, 0);
+}
+
+#[test]
+fn empty_project_runs_on_the_virtual_clock_without_native_devices() {
+    let mut project = EngineProject::default();
+    project.processing.engine.processing_sr = 48_000.0;
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    assert_eq!(validate(&request(&project, &host), false), Ok(48_000));
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory(probe.clone())));
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| owner.timeline().is_some_and(|t| t.frame >= 256));
+    owner.cancel();
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert!(returned.engine.timeline() >= 256);
+    assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
+    assert_sessions_joined(&probe, 0);
 }
 
 #[test]
@@ -1357,4 +1533,148 @@ fn mono_virtual_boundaries_can_follow_a_stereo_physical_master() {
     assert_eq!(owner.stop_and_join().error, None);
     assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 0);
     assert_sessions_joined(&probe, 2);
+}
+
+/// A stereo chain over the given endpoints: capture on `capture_endpoint`,
+/// master render on `sink_endpoint`. Returns (source, sink).
+fn absent_stream_project(
+    capture_endpoint: &str,
+    sink_endpoint: &str,
+) -> (EngineProject, NodeId, NodeId) {
+    let mut project = EngineProject::default();
+    project.processing.engine.processing_sr = 96_000.0;
+    let source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+    project
+        .graph
+        .connect(
+            project.graph.get_node(source).unwrap().outputs()[0].id(),
+            project.graph.get_node(sink).unwrap().inputs()[0].id(),
+            Default::default(),
+        )
+        .unwrap();
+    project.nodes.insert(
+        source,
+        NodeConfig::Input(InputConfig {
+            source: InputSource::Physical(endpoint(capture_endpoint)),
+            channels: 2,
+            device: physical_device(ClockRole::Follower),
+        }),
+    );
+    project.nodes.insert(
+        sink,
+        NodeConfig::Output(OutputConfig {
+            target: OutputTarget::Physical(endpoint(sink_endpoint)),
+            channels: 2,
+            device: physical_device(ClockRole::Master),
+        }),
+    );
+    (project, source, sink)
+}
+
+#[test]
+fn absent_capture_prepares_a_silent_null_stream() {
+    // A missing device keeps its graph binding: the source binds constant
+    // silence instead of failing the session, the observation carries the
+    // absence, and only the present endpoint opens a native session
+    // (audit 2026-11-11 AS-3: the graph never loses topology).
+    let (project, source, sink) = absent_stream_project("{missing-input}", "native");
+    let native = native_devices_absent(Default::default(), vec!["{missing-input}".into()]);
+    let backend = ProfessionalBackend::<f64>::new().unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .expect("an absent endpoint prepares as a null stream");
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| native.probe.started.load(Ordering::Acquire) == 1);
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    let absent: Vec<_> = streams.iter().filter(|stream| stream.absent).collect();
+    assert_eq!(absent.len(), 1, "only the missing endpoint is absent");
+    assert_eq!(absent[0].node, source);
+    assert_eq!(
+        absent[0].endpoint,
+        StreamEndpoint::Physical("{missing-input}".into())
+    );
+    assert_eq!(absent[0].actual.buffer_frames, 0);
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.node == sink && !stream.absent),
+        "the present sink observes normally"
+    );
+    // Only the present sink opened a native session.
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 1);
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+}
+
+#[test]
+fn an_absent_master_output_degrades_to_the_virtual_clock() {
+    // The only output's device is gone: the project still prepares and
+    // runs, paced by the QPC fallback clock, with a discard sink bound to
+    // the missing node and the present capture keeping its worker.
+    let (project, _source, sink) = absent_stream_project("native", "{missing-output}");
+    let probe = Arc::new(Probe::default());
+    let native = native_devices_absent(Default::default(), vec!["{missing-output}".into()]);
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory(probe.clone())));
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .expect("an absent master degrades to the virtual clock");
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 1);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| owner.timeline().is_some_and(|t| t.frame >= 256));
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    assert_eq!(
+        streams.iter().filter(|stream| stream.absent).count(),
+        1,
+        "the absent output is the only absent stream"
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.node == sink && stream.absent)
+    );
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+    assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn a_returning_absent_endpoint_publishes_a_resource_event() {
+    // When the return probe finds the device again, poll_resource emits the
+    // event that drives the supervisor's stop-and-reprepare upgrade from
+    // the null stream to the real device.
+    let (project, source, _sink) = absent_stream_project("{missing-input}", "native");
+    let native = native_devices_absent(Default::default(), vec!["{missing-input}".into()]);
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_absence_probe(Arc::new(|_| true));
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    // The prepared transport is dropped without attaching; the absence watch
+    // is a backend-level concern.
+    drop(prepared);
+    let event = backend
+        .poll_resource()
+        .expect("the returning device emits an event");
+    assert_eq!(event.node, source);
+    assert_eq!(event.configuration, project.nodes[&source]);
+    assert!(event.available);
+    assert!(
+        backend.poll_resource().is_none(),
+        "the entry released with its event"
+    );
 }

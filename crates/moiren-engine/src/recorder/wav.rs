@@ -4,15 +4,8 @@ use std::{
     path::Path,
 };
 
-use super::{MAX_CHANNELS, RecorderReader};
+use super::{MAX_CHANNELS, RecorderReader, session::DRAIN_CHUNK_FRAMES, sink::RecordingSink};
 
-mod worker;
-pub use worker::{
-    RecordingError, RecordingSession, RecordingState, RecordingStatus, RecordingSummary,
-};
-pub(crate) use worker::{RecordingSource, spawn_recording};
-
-const DRAIN_CHUNK_FRAMES: usize = 4096;
 const RIFF_PREFIX_BYTES: u64 = 50;
 const MAX_DATA_BYTES: u64 = u32::MAX as u64 - RIFF_PREFIX_BYTES;
 
@@ -80,7 +73,7 @@ impl<W: Write + Seek> WavRecording<W> {
     }
 
     pub fn written_frames(&self) -> u64 {
-        self.data_bytes / (self.channels as u64 * 4)
+        self.frame_count()
     }
 
     pub fn is_failed(&self) -> bool {
@@ -123,22 +116,17 @@ impl<W: Write + Seek> WavRecording<W> {
             if read == 0 {
                 break;
             }
-            let used_bytes = read * self.channels * 4;
-            for (destination, &sample) in self.byte_scratch[..used_bytes]
-                .as_chunks_mut::<4>()
-                .0
-                .iter_mut()
-                .zip(&self.scratch[..read * self.channels])
-            {
-                destination.copy_from_slice(&sample.to_le_bytes());
-            }
-            if let Err(error) = self.writer.write_all(&self.byte_scratch[..used_bytes]) {
+            if let Err(error) = Self::write_samples(
+                &mut self.writer,
+                &mut self.byte_scratch,
+                &self.scratch[..read * self.channels],
+            ) {
                 // write_all may have written a partial frame. The reader has
                 // advanced, so resuming could silently produce corrupt audio.
                 self.failed = true;
                 return Err(error);
             }
-            self.data_bytes += used_bytes as u64;
+            self.data_bytes += (read * self.channels * 4) as u64;
             drained += read;
             remaining -= read;
             if read < frames {
@@ -148,17 +136,41 @@ impl<W: Write + Seek> WavRecording<W> {
         Ok(drained)
     }
 
-    pub fn finish(mut self) -> io::Result<W> {
+    /// Converts interleaved samples to little-endian bytes and writes them.
+    /// Split borrows let `drain_frames` feed `self.scratch` without copying.
+    fn write_samples(
+        writer: &mut W,
+        byte_scratch: &mut Vec<u8>,
+        samples: &[f32],
+    ) -> io::Result<()> {
+        let used_bytes = samples.len() * 4;
+        if byte_scratch.len() < used_bytes {
+            byte_scratch.resize(used_bytes, 0);
+        }
+        for (destination, &sample) in byte_scratch[..used_bytes]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(samples)
+        {
+            destination.copy_from_slice(&sample.to_le_bytes());
+        }
+        writer.write_all(&byte_scratch[..used_bytes])
+    }
+
+    /// Patches the RIFF/fact/data lengths and flushes, without consuming the
+    /// writer so the sink trait can finalize in place.
+    fn finalize(&mut self) -> io::Result<()> {
         self.check_healthy()?;
         let riff_size = RIFF_PREFIX_BYTES
             .checked_add(self.data_bytes)
             .ok_or_else(|| invalid_input("WAV RIFF size overflow"))?;
-        if riff_size > u32::MAX as u64 || self.written_frames() > u32::MAX as u64 {
+        if riff_size > u32::MAX as u64 || self.frame_count() > u32::MAX as u64 {
             return Err(invalid_input("WAV RIFF size exceeds the 32-bit limit"));
         }
         let data_size = u32::try_from(self.data_bytes)
             .map_err(|_| invalid_input("WAV data size exceeds the 32-bit limit"))?;
-        let frames = u32::try_from(self.written_frames())
+        let frames = u32::try_from(self.frame_count())
             .map_err(|_| invalid_input("WAV frame count exceeds the 32-bit limit"))?;
         self.writer.seek(SeekFrom::Start(4))?;
         self.writer.write_all(&(riff_size as u32).to_le_bytes())?;
@@ -168,7 +180,18 @@ impl<W: Write + Seek> WavRecording<W> {
         self.writer.write_all(&data_size.to_le_bytes())?;
         self.writer.seek(SeekFrom::End(0))?;
         self.writer.flush()?;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> io::Result<W> {
+        self.finalize()?;
         Ok(self.writer)
+    }
+
+    /// Frame count without borrowing conflicts with the same-named sink
+    /// method; both delegate here.
+    fn frame_count(&self) -> u64 {
+        self.data_bytes / (self.channels as u64 * 4)
     }
 
     fn check_healthy(&self) -> io::Result<()> {
@@ -179,6 +202,39 @@ impl<W: Write + Seek> WavRecording<W> {
         } else {
             Ok(())
         }
+    }
+}
+
+impl<W: Write + Seek + Send + 'static> RecordingSink for WavRecording<W> {
+    fn write_interleaved(&mut self, samples: &[f32], channels: usize) -> io::Result<()> {
+        self.check_healthy()?;
+        if channels != self.channels {
+            return Err(invalid_input("WAV and recorder channel counts differ"));
+        }
+        let additional_bytes = (samples.len() as u64)
+            .checked_mul(4)
+            .ok_or_else(|| invalid_input("WAV data size overflow"))?;
+        if self
+            .data_bytes
+            .checked_add(additional_bytes)
+            .is_none_or(|next| next > MAX_DATA_BYTES)
+        {
+            return Err(invalid_input("WAV RIFF size exceeds the 32-bit limit"));
+        }
+        if let Err(error) = Self::write_samples(&mut self.writer, &mut self.byte_scratch, samples) {
+            self.failed = true;
+            return Err(error);
+        }
+        self.data_bytes += additional_bytes;
+        Ok(())
+    }
+
+    fn written_frames(&self) -> u64 {
+        self.frame_count()
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        self.finalize()
     }
 }
 

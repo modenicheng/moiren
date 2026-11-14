@@ -1,6 +1,8 @@
 use rust_i18n::t;
 
 use super::*;
+use crate::ui::widgets::anchored_popover::clamped_left;
+use crate::ui::widgets::occluding_page::{claim_presses, occluding_page};
 use moiren_engine::audio_config::{BUFFER_SIZES, SAMPLE_RATES, SampleFormat};
 
 /// Which value a dropdown edits. Stream fields resolve through the draft via
@@ -111,10 +113,11 @@ fn menu_items(shell: &StudioShell, menu: &ValueMenu) -> Vec<MenuItem> {
     items
 }
 
-/// The shell-root overlay behind an open [`ValueMenu`]. Same dismissal
-/// chrome as the fault popover: an occluding page closes the menu on any
-/// press outside the menu rect and swallows the rest so the cached settings
-/// page and the workspace underneath never see the click.
+/// The shell-root overlay behind an open [`ValueMenu`]: an occluding page
+/// that closes the menu on any press outside the menu subtree (the menu
+/// claims its own presses) and swallows the rest so the cached settings
+/// page and the workspace underneath never see the click. Escape is not
+/// wired here — the settings page peels the value menu first, then itself.
 pub(crate) fn menu_overlay(
     shell: &StudioShell,
     window: &Window,
@@ -126,39 +129,35 @@ pub(crate) fn menu_overlay(
     let items = menu_items(shell, &menu);
     let this = cx.entity();
     let viewport = window.viewport_size();
-    let item = ControlSize::Small.metrics(shell.density).height;
+    let item = ControlSize::Small.metrics(shell.chrome.density).height;
     let height = (items.len() as f32 * (item + ITEM_GAP) - ITEM_GAP + MENU_PADDING * 2.)
         .min(f32::from(viewport.height) - 48.)
         .max(item * 3. + MENU_PADDING * 2.);
-    let width = MENU_WIDTH.min(f32::from(viewport.width) - 16.);
-    let left = menu
-        .at
-        .x
-        .min(px(f32::from(viewport.width) - width - 8.))
-        .max(px(8.));
-    let top = menu
-        .at
-        .y
-        .min(px(f32::from(viewport.height) - height - 8.))
-        .max(px(8.));
+    let width = MENU_WIDTH.min(f32::from(viewport.width) - 2. * theme::POPOVER_VIEWPORT_MARGIN);
+    let left = clamped_left(f32::from(menu.at.x), width, viewport);
+    let top = f32::from(menu.at.y)
+        .min(f32::from(viewport.height) - height - theme::POPOVER_VIEWPORT_MARGIN)
+        .max(theme::POPOVER_VIEWPORT_MARGIN);
     let dismiss = this.clone();
-    let mut list = div()
-        .id("settings-menu")
-        .absolute()
-        .left(left)
-        .top(top)
-        .w(px(width))
-        .max_h(px(height))
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .gap(px(ITEM_GAP))
-        .p(px(MENU_PADDING))
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .bg(theme::SURFACE)
-        .gpui_test_observe();
+    let mut list = claim_presses(
+        div()
+            .id("settings-menu")
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(width))
+            .max_h(px(height))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(ITEM_GAP))
+            .p(px(MENU_PADDING))
+            .rounded(px(theme::RADIUS_MD))
+            .border_1()
+            .border_color(theme::BORDER_STRONG)
+            .bg(theme::SURFACE)
+            .gpui_test_observe(),
+    );
     for (index, item) in items.into_iter().enumerate() {
         let this = this.clone();
         let apply = item.apply;
@@ -187,30 +186,15 @@ pub(crate) fn menu_overlay(
             }),
         );
     }
-    div()
-        .id("settings-menu-page")
-        .absolute()
-        .inset_0()
-        .size_full()
-        .occlude()
-        .on_any_mouse_down(move |event, _, cx| {
-            cx.stop_propagation();
-            let inside = event.position.x >= left
-                && event.position.x <= left + px(width)
-                && event.position.y >= top
-                && event.position.y <= top + px(height);
-            if !inside {
-                dismiss.update(cx, |shell, cx| {
-                    shell.settings.menu = None;
-                    cx.notify();
-                });
-            }
-        })
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(list)
-        .into_any_element()
+    occluding_page(
+        "settings-menu-page",
+        false,
+        move |cx| {
+            dismiss.update(cx, |shell, cx| {
+                shell.settings.menu = None;
+                cx.notify();
+            })
+        },
+        list,
+    )
 }
