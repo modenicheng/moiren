@@ -285,6 +285,7 @@ fn context(
             mixer: Default::default(),
             compressor: Default::default(),
             builtin: BuiltinState::for_kind(node.kind()),
+            plugin: None,
             source: (node.id() == input).then(|| source.clone()),
             output_endpoint_id: (node.id() == output).then(|| output_id.clone()),
             tint: None,

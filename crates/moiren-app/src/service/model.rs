@@ -117,6 +117,9 @@ pub enum AppRequest {
     ApplyGraph,
     Start(SessionSpec),
     RefreshCatalog,
+    /// Scan plugin directories in the sandboxed scanner subprocesses and
+    /// replace the published plugin library.
+    ScanPlugins,
     SetGainPan {
         gain: f64,
         pan: f64,
@@ -240,6 +243,8 @@ pub struct AppSnapshot {
     /// Refresh failure retains the last successful rows without changing the
     /// session phase/error. A successful refresh clears this owned diagnostic.
     pub catalog_error: Option<String>,
+    /// The latest sandboxed plugin scan; empty until the first scan lands.
+    pub plugins: Arc<super::PluginLibrary>,
     pub control: ControlSummary,
     pub signal_topics: super::SignalTopics,
     /// Whether the active session feeds its levels into the tone topic
@@ -326,6 +331,7 @@ impl PartialEq for AppSnapshot {
         same_arc(&self.loaded_project, &other.loaded_project)
             && self.last_cleanup == other.last_cleanup
             && (Arc::ptr_eq(&self.catalog, &other.catalog) || self.catalog == other.catalog)
+            && (Arc::ptr_eq(&self.plugins, &other.plugins) || self.plugins == other.plugins)
             && self.exports == other.exports
             && self.export_plan == other.export_plan
             && self.latency_profile == other.latency_profile

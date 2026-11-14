@@ -82,6 +82,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 builtin: super::BuiltinState::for_kind(kind),
                 source: None,
                 output_endpoint_id: None,
+                plugin: None,
                 tint: None,
             });
         }
@@ -101,6 +102,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .ok_or("The node does not exist")?;
             entry.source = None;
             entry.output_endpoint_id = None;
+            entry.plugin = None;
             for export in &mut next.exports {
                 if export.binding == Some(node) {
                     export.binding = None;
@@ -278,6 +280,17 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .find(|s| s.id == node)
                 .ok_or("The node does not exist")?
                 .output_endpoint_id = Some(endpoint_id);
+            validate_edited_node(next, node)?;
+        }
+        GraphEdit::BindPlugin { node, assignment } => {
+            if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Plugin {
+                return Err("Only Plugin nodes can carry a plugin assignment".into());
+            }
+            next.nodes
+                .iter_mut()
+                .find(|s| s.id == node)
+                .ok_or("The node does not exist")?
+                .plugin = assignment;
             validate_edited_node(next, node)?;
         }
         GraphEdit::BindExport { endpoint_id, node } => {

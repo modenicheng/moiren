@@ -1902,3 +1902,240 @@ fn settled_lifecycle_projections_do_not_advance_the_state_epoch() {
         "repeated stop projections are content-neutral"
     );
 }
+
+/// One-library test fixture: a stereo plugin with a single parameter under
+/// a known stable id.
+fn plugin_library_fixture() -> (PluginLibrary, String) {
+    use moiren_plugins::spec::{PluginDescriptor, PluginFormat, PluginParameterSpec};
+    let descriptor = PluginDescriptor {
+        format: PluginFormat::Clap,
+        path: "/plugins/fixture.clap".into(),
+        id: "org.moiren.fixture".into(),
+        name: "Fixture".into(),
+        vendor: "Moiren".into(),
+        version: "1.0".into(),
+        input_channels: 2,
+        output_channels: 2,
+        is_synth: false,
+        has_editor: false,
+    };
+    let key = descriptor.stable_id();
+    (
+        PluginLibrary::from_sandbox_report(moiren_plugins::sandbox::SandboxReport {
+            descriptors: vec![moiren_plugins::sandbox::SandboxDescriptor {
+                descriptor,
+                parameters: vec![PluginParameterSpec {
+                    id: 3,
+                    name: "Amount".into(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.25,
+                    automatable: true,
+                    stepped: false,
+                }],
+                latency_frames: 64,
+            }],
+            failures: Vec::new(),
+        }),
+        key,
+    )
+}
+
+#[test]
+fn plugin_assignment_edits_are_kind_checked_and_clearable() {
+    let mut service = ServiceGraph::default();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let gain = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Gain)
+        .unwrap()
+        .id();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (_, key) = plugin_library_fixture();
+    let assignment = PluginAssignment {
+        id: key.clone(),
+        preset: None,
+    };
+    // Only Plugin nodes accept an assignment.
+    assert!(
+        service
+            .edit(GraphEdit::BindPlugin {
+                node: gain,
+                assignment: Some(assignment.clone()),
+            })
+            .is_err()
+    );
+    // Invalid ids are rejected before the candidate swaps in.
+    assert!(
+        service
+            .edit(GraphEdit::BindPlugin {
+                node: plugin,
+                assignment: Some(PluginAssignment {
+                    id: "  ".into(),
+                    preset: None,
+                }),
+            })
+            .is_err()
+    );
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: Some(assignment),
+        })
+        .unwrap();
+    assert_eq!(
+        service.snapshot().node(plugin).unwrap().plugin,
+        Some(PluginAssignment {
+            id: key,
+            preset: None,
+        })
+    );
+    // Assignment is structural: the edit reports a rebuild is required.
+    let structural = service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: None,
+        })
+        .unwrap();
+    assert!(structural);
+    assert!(service.snapshot().node(plugin).unwrap().plugin.is_none());
+    // The generic clear also drops an assignment.
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: None,
+        })
+        .unwrap();
+    service.edit(GraphEdit::ClearBinding(plugin)).unwrap();
+    assert!(service.snapshot().node(plugin).unwrap().plugin.is_none());
+}
+
+#[test]
+fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    use moiren_engine::host::NodeConfig;
+    let mut service = ServiceGraph::default();
+    let (.., sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (library, key) = plugin_library_fixture();
+    let mut preparation = service.preparation();
+    preparation.plugins = std::sync::Arc::new(library);
+
+    // Unassigned: node-aimed failure.
+    let failure = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .unwrap_err();
+    assert_eq!(failure.node, Some(plugin));
+    assert!(failure.cause.contains("no plugin assigned"));
+
+    // Unknown id: node-aimed failure pointing at a rescan.
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: Some(PluginAssignment {
+                id: "CLAP|gone|/moved.clap".into(),
+                preset: None,
+            }),
+        })
+        .unwrap();
+    let mut preparation = service.preparation();
+    preparation.plugins = std::sync::Arc::new(plugin_library_fixture().0);
+    let failure = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .unwrap_err();
+    assert_eq!(failure.node, Some(plugin));
+    assert!(failure.cause.contains("missing from the library"));
+
+    // Assigned: lowers to the engine's plugin settings with the probe's
+    // parameter table and the assignment's preset.
+    let preset = vec![9, 9];
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: Some(PluginAssignment {
+                id: key,
+                preset: Some(preset.clone()),
+            }),
+        })
+        .unwrap();
+    let mut preparation = service.preparation();
+    preparation.plugins = std::sync::Arc::new(plugin_library_fixture().0);
+    let project = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .unwrap();
+    let NodeConfig::Plugin(settings) = &project.nodes[&plugin] else {
+        panic!("plugin config");
+    };
+    assert_eq!(settings.descriptor.id, "org.moiren.fixture");
+    assert_eq!(settings.parameters.len(), 1);
+    assert_eq!(settings.parameters[0].id, 3);
+    assert_eq!(settings.preset.as_deref(), Some(preset.as_slice()));
+
+    // Width mismatch: node-aimed failure naming the widths.
+    let mut narrow = service;
+    narrow
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 1,
+        })
+        .unwrap();
+    let mono = narrow
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin && node.channels() == 1)
+        .unwrap()
+        .id();
+    let (_, mono_key) = plugin_library_fixture();
+    narrow
+        .edit(GraphEdit::BindPlugin {
+            node: mono,
+            assignment: Some(PluginAssignment {
+                id: mono_key,
+                preset: None,
+            }),
+        })
+        .unwrap();
+    let mut preparation = narrow.preparation();
+    preparation.plugins = std::sync::Arc::new(plugin_library_fixture().0);
+    let failure = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .unwrap_err();
+    assert_eq!(failure.node, Some(mono));
+    assert!(failure.cause.contains("channels"));
+}

@@ -218,6 +218,9 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     if node.kind() == NodeKind::Sink {
         view = sections::sink_section(view, snapshot, entry, id, cx);
     }
+    if node.kind() == NodeKind::Plugin {
+        view = sections::plugin_section(view, snapshot, entry, cx);
+    }
     if node.kind() == NodeKind::Gain {
         view = sections::gain_section(view, shell, entry, id, cx);
     }

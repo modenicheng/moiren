@@ -104,6 +104,10 @@ enum Completion {
     },
     Reaped(SessionCleanupObservation),
     Catalog(Result<DeviceCatalog, BackendError>),
+    /// One sandboxed plugin scan; per-plugin problems stay inside the
+    /// library's failures, this carries only scan-level failures (a missing
+    /// scanner executable, for instance).
+    PluginScan(Result<PluginLibrary, BackendError>),
     Exports(Result<super::exports::runtime::Batch, String>),
 }
 
@@ -125,6 +129,19 @@ impl ApplySettings {
     }
 }
 
+/// Sandbox-scan bookkeeping in the CatalogRefresher shape: at most one
+/// in-flight scan, explicit requests only (no startup automation - spawning
+/// scanner subprocesses on every launch is not wanted yet).
+#[derive(Default)]
+struct PluginScanState {
+    requested: bool,
+    running: bool,
+}
+impl PluginScanState {
+    fn request(&mut self) {
+        self.requested = true;
+    }
+}
 /// Delay before a structure edit automatically applies; consecutive edits
 /// within the window coalesce into one rebuild.
 const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
@@ -163,6 +180,7 @@ pub struct ManagedDriver {
     document: u64,
     cleaning: usize,
     catalog: CatalogRefresher,
+    plugin_scan: PluginScanState,
     automatic_startup: bool,
     /// Startup with a restored project: once the first catalog arrives the
     /// restored graph starts as saved. IO nodes whose devices are absent
@@ -291,6 +309,7 @@ impl ManagedDriver {
             document: 0,
             cleaning: 0,
             catalog: CatalogRefresher::new(false),
+            plugin_scan: PluginScanState::default(),
             automatic_startup: false,
             automatic_resume: false,
             resume_notice: None,

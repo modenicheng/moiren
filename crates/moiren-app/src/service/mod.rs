@@ -13,6 +13,7 @@ mod mailbox;
 mod managed;
 pub(crate) mod measured_process;
 mod model;
+mod plugins;
 #[cfg(windows)]
 pub(crate) mod process_trace;
 mod recording;
@@ -43,6 +44,7 @@ pub use measured_process::{
     MeasuredProcessRequest, MeasuredProcessSummary, MeasuredProcessWindow, ProcessWindowPolicy,
 };
 pub use moiren_engine::audio_config::*;
+pub use plugins::{PluginAssignment, PluginEntry, PluginLibrary, empty_library, run_sandbox_scan};
 pub use recording::{
     DateTimeParts, RecordingCard, RecordingFormat, RecordingPhase, RecordingService,
     RecordingSnapshot,
@@ -153,6 +155,11 @@ pub struct ServiceContext {
     /// Content token for the snapshot publisher: bumped whenever the catalog
     /// Arc is swapped for different content (see [`Self::replace_catalog`]).
     catalog_epoch: u64,
+    /// The latest sandboxed plugin scan; empty until a scan completes. The
+    /// picker reads it, preparation resolves Plugin-node assignments against
+    /// it, and the token below advances only on content changes.
+    pub plugins: Arc<PluginLibrary>,
+    plugins_epoch: u64,
     pub control: ControlSummary,
     signals: signals::SignalService,
     /// The level subscription registry (decision D-4 route B): holds the
@@ -206,6 +213,8 @@ impl Default for ServiceContext {
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
             catalog_epoch: 0,
+            plugins: plugins::empty_library(),
+            plugins_epoch: 0,
             control: ControlSummary::default(),
             signals,
             levels,
@@ -308,6 +317,15 @@ impl ServiceContext {
         if *self.catalog != catalog {
             self.catalog = Arc::new(catalog);
             self.catalog_epoch = self.catalog_epoch.wrapping_add(1);
+        }
+    }
+
+    /// Swap in a new plugin library; same token discipline as
+    /// [`Self::replace_catalog`].
+    pub fn replace_plugins(&mut self, library: PluginLibrary) {
+        if *self.plugins != library {
+            self.plugins = Arc::new(library);
+            self.plugins_epoch = self.plugins_epoch.wrapping_add(1);
         }
     }
 
@@ -420,6 +438,12 @@ impl ServiceDriver for CoreDriver {
             }
             AppRequest::SetGainPan { gain, pan } => c.control.pending_gain_pan = Some((gain, pan)),
             AppRequest::RefreshCatalog => {}
+            // The core driver owns no workers; only the managed driver runs
+            // sandboxed scans.
+            AppRequest::ScanPlugins => {
+                c.graph
+                    .record_error("Plugin scanning requires the managed audio service");
+            }
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
@@ -524,6 +548,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         recordings: c.recordings.snapshots(),
         catalog: c.catalog.clone(),
         catalog_error: c.catalog_error.clone(),
+        plugins: c.plugins.clone(),
         control: c.control.clone(),
         signal_topics: c.signals.topics.clone(),
         tone_session: c.tone_session,
@@ -536,16 +561,18 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
 
 /// Content tokens for everything [`snapshot`] projects whose construction or
 /// comparison is expensive: the graph deep copy, the export statuses/plan
-/// projections, the session core fields, and the device catalog. Each token
-/// is advanced by the domain's own mutation paths (graph.rs, core.rs,
-/// exports.rs/runtime.rs, and `replace_catalog` here), so a change in any of
-/// them is guaranteed to be reflected in the next published snapshot.
+/// projections, the session core fields, the device catalog, and the plugin
+/// library. Each token is advanced by the domain's own mutation paths
+/// (graph.rs, core.rs, exports.rs/runtime.rs, and `replace_catalog` /
+/// `replace_plugins` here), so a change in any of them is guaranteed to be
+/// reflected in the next published snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SnapshotRevision {
     graph: u64,
     core: u64,
     exports: u64,
     catalog: u64,
+    plugins: u64,
     recordings: u64,
     /// Whole seconds of the session clock: the only snapshot input that
     /// advances on its own (the published elapsed is quantized to seconds,
@@ -560,6 +587,7 @@ pub(crate) fn snapshot_revision(c: &ServiceContext) -> SnapshotRevision {
         core: c.core.state_epoch(),
         exports: c.exports.state_epoch(),
         catalog: c.catalog_epoch,
+        plugins: c.plugins_epoch,
         recordings: c.recordings.state_epoch(),
         elapsed_secs: c.core.elapsed().as_secs(),
     }

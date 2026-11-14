@@ -22,6 +22,7 @@ pub enum NodeTemplate {
     Spectrum,
     Rack,
     Bus,
+    Plugin,
     Output,
 }
 
@@ -157,7 +158,7 @@ pub(crate) fn kind_icon(kind: NodeKind, source_class: Option<SourceClass>) -> &'
 pub(crate) const VIRTUAL_DEVICE_ICON: &str = "repeat";
 
 impl NodeTemplate {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Input,
         Self::VirtualDevice,
         Self::Application,
@@ -175,6 +176,7 @@ impl NodeTemplate {
         Self::Spectrum,
         Self::Rack,
         Self::Bus,
+        Self::Plugin,
         Self::Output,
     ];
 
@@ -197,6 +199,7 @@ impl NodeTemplate {
             Self::Spectrum => "Spectrum analyzer",
             Self::Rack => "Processor rack",
             Self::Bus => "Mix bus",
+            Self::Plugin => "Plugin",
             Self::Output => "Device output",
         }
     }
@@ -225,9 +228,9 @@ impl NodeTemplate {
             | Self::Delay
             | Self::ChannelMapper => "PROCESSING",
             Self::Recorder | Self::Meter | Self::Spectrum => "OBSERVATION",
-            Self::Bus => "ROUTING",
+            Self::Bus | Self::Rack => "ROUTING",
+            Self::Plugin => "PROCESSING",
             Self::Output => "DESTINATIONS",
-            Self::Rack => "ROUTING",
         }
     }
 
@@ -250,6 +253,7 @@ impl NodeTemplate {
             Self::Spectrum => "Managed FFT observation",
             Self::Rack => "Ordered processor chain",
             Self::Bus => "Bus dynamic input ports",
+            Self::Plugin => "Third-party effect from the plugin library",
             Self::Output => "WASAPI render endpoint",
         }
     }
@@ -270,6 +274,7 @@ impl NodeTemplate {
             Self::Spectrum => NodeKind::SpectrumAnalyzer,
             Self::Rack => NodeKind::Rack,
             Self::Bus => NodeKind::Bus,
+            Self::Plugin => NodeKind::Plugin,
             Self::Output => NodeKind::Sink,
         })
     }
@@ -287,6 +292,7 @@ impl NodeTemplate {
             Self::ChannelMapper => "route",
             Self::Rack => "list-details",
             Self::Bus => "git-merge",
+            Self::Plugin => "sliders",
             Self::Output => "speaker",
             Self::Gain => "volume",
             Self::Balance => "arrows-horizontal",
@@ -369,6 +375,18 @@ mod tests {
         assert_eq!(NodeTemplate::Tone.source_class(), Some(SourceClass::Tone));
         assert_eq!(NodeTemplate::Gain.source_class(), None);
         assert_eq!(NodeTemplate::VirtualDevice.kind(), Some(NodeKind::Source));
+    }
+
+    #[test]
+    fn plugin_template_creates_a_plugin_node_in_the_processing_group() {
+        assert!(NodeTemplate::ALL.contains(&NodeTemplate::Plugin));
+        assert_eq!(
+            NodeTemplate::Plugin.kind(),
+            Some(NodeKind::Plugin),
+            "the template lowers to the closed NodeKind enum"
+        );
+        assert_eq!(NodeTemplate::Plugin.group(), "PROCESSING");
+        assert!(NodeTemplate::Plugin.matches("third-party"));
     }
 
     #[test]

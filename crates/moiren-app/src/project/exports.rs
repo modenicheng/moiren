@@ -104,6 +104,7 @@ impl ProjectDocument {
             nodes,
             exports,
             revision: 0,
+            plugins: crate::service::empty_library(),
         })
     }
 }

@@ -63,6 +63,84 @@ fn fixture_settings() -> PluginSettings {
             automatable: true,
             stepped: false,
         }],
+        preset: None,
+    }
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns rustc to build the fixture and loads it as a dynamic library, both outside Miri"
+)]
+fn plugin_preset_is_restored_into_the_instance() {
+    // Capture a state chunk from a live fixture instance whose gain was
+    // moved off the default, exactly like a preset capture would.
+    let mut capture = moiren_plugins::instantiate(&fixture_settings().descriptor, 48_000.0, 256)
+        .expect("fixture instantiation");
+    let frames = 1;
+    let inputs = vec![vec![0.0f32; frames]; 2];
+    let mut outputs = vec![vec![0.0f32; frames]; 2];
+    let borrowed: Vec<&[f32]> = inputs.iter().map(|c| c.as_slice()).collect();
+    let mut borrowed_out: Vec<&mut [f32]> = outputs.iter_mut().map(|c| c.as_mut_slice()).collect();
+    capture
+        .process(
+            &borrowed,
+            &mut borrowed_out,
+            &[moiren_plugins::spec::PluginParamEvent {
+                parameter: 0,
+                value: 2.0,
+            }],
+        )
+        .expect("parameter push");
+    let preset = capture
+        .save_state()
+        .expect("state save")
+        .expect("the fixture stores state");
+
+    // A processor built with that preset renders the preset's gain from its
+    // very first block: 0.25 in, 0.5 out.
+    let settings = PluginSettings {
+        preset: Some(preset),
+        ..fixture_settings()
+    };
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let plugin = graph.create_node(NodeKind::Plugin, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    connect(&mut graph, source, plugin, Default::default());
+    connect(&mut graph, plugin, sink, Default::default());
+    let (writer, mut reader) = audio_bridge::<f64>(2, 16, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings
+        .bind_source(
+            source,
+            moiren_engine::boundary::ConstantSource {
+                channels: 2,
+                value: 0.25,
+            },
+        )
+        .unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let processor = PluginProcessor::<f64>::new(&settings, 48_000.0, 8).unwrap();
+    bindings.bind_plugin(plugin, processor).unwrap();
+
+    let mut signal_bus = Bus::new(Default::default()).unwrap();
+    let (host_control, host) = signal_bus.create_host(4).unwrap();
+    let mut compiled =
+        compile_with_signals(&graph, bindings, super::config(), &host_control).unwrap();
+    compiled.engine.attach_signal_host(host).unwrap();
+    pump(&mut signal_bus);
+
+    compiled.engine.render(8).unwrap();
+    pump(&mut signal_bus);
+    let mut output = vec![0.0_f64; 16];
+    let report = reader.read_interleaved(&mut output).unwrap();
+    assert!(report.transferred_frames > 0);
+    for sample in &output[..report.transferred_frames * 2] {
+        assert!(
+            (sample - 0.5).abs() < 1e-6,
+            "preset gain not applied: {sample}"
+        );
     }
 }
 

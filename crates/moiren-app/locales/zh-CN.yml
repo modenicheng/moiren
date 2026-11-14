@@ -1751,24 +1751,24 @@ _version: 2
 "Compression level":
   en: Compression level
   zh-CN: 压缩等级
+"%{count} observations; max %{ticks} x 100 ns":
+  en: "%{count} observations; max %{ticks} x 100 ns"
+  zh-CN: "%{count} 次观测；最大间隔 %{ticks} x 100 ns"
 "%{level} of %{max}":
   en: "%{level} of %{max}"
   zh-CN: "%{level} / %{max}"
 "0 is fastest, 8 is smallest.":
   en: 0 is fastest, 8 is smallest.
   zh-CN: 0 最快，8 体积最小。
-"%{attempts} attempts / %{submitted} submitted packets":
-  en: "%{attempts} attempts / %{submitted} submitted packets"
-  zh-CN: "尝试 %{attempts} 次 / 已提交 %{submitted} 个数据包"
-"%{count} observations; max %{ticks} x 100 ns":
-  en: "%{count} observations; max %{ticks} x 100 ns"
-  zh-CN: "%{count} 次观测；最大间隔 %{ticks} x 100 ns"
 "%{count} observations; timing unknown":
   en: "%{count} observations; timing unknown"
   zh-CN: "%{count} 次观测；时序未知"
 "%{count} packets":
   en: "%{count} packets"
   zh-CN: "%{count} 个数据包"
+"%{attempts} attempts / %{submitted} submitted packets":
+  en: "%{attempts} attempts / %{submitted} submitted packets"
+  zh-CN: "尝试 %{attempts} 次 / 已提交 %{submitted} 个数据包"
 "%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz":
   en: "%{evidence}; packet bound %{packet} / gap bound %{gap}; negotiated packet %{negotiated} frames at 48 kHz"
   zh-CN: "%{evidence}；数据包边界 %{packet} / 间隔边界 %{gap}；已协商数据包 %{negotiated} 帧（48 kHz）"
@@ -2519,3 +2519,18 @@ _version: 2
 "Unknown node":
   en: "Unknown node"
   zh-CN: "未知节点"
+"Plugin":
+  en: Plugin
+  zh-CN: 插件
+"Scan plugin folders":
+  en: Scan plugin folders
+  zh-CN: 扫描插件文件夹
+"Not assigned · choose a plugin":
+  en: Not assigned · choose a plugin
+  zh-CN: 未指派 · 请选择插件
+"%{count} plugin(s) in the library":
+  en: "%{count} plugin(s) in the library"
+  zh-CN: 插件库中有 %{count} 个插件
+"%{count} plugin(s), %{failed} excluded by failed scans":
+  en: "%{count} plugin(s), %{failed} excluded by failed scans"
+  zh-CN: "%{count} 个插件，%{failed} 个因扫描失败被排除"
