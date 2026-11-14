@@ -456,6 +456,70 @@ fn engine_recovery_closes_export_gate_until_owner_and_revision_are_confirmed() {
 }
 
 #[test]
+fn runtime_device_absence_degrades_and_recovers_without_a_failed_phase() {
+    // A device yanked mid-run (an absence-class owner failure) must not fail
+    // the managed session: the host retires the owner through its bounded
+    // cleanup and re-prepares at once — the real backend degrades the
+    // endpoint to a null stream there — and the session returns to Running
+    // on its own. A later resource-available event (the re-plug) swaps the
+    // degraded owner for a real stream through the same supervisor loop.
+    let mut rig = Rig::new();
+    rig.request(AppRequest::Start(SessionSpec {
+        source: InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+        output_endpoint_id: "output".into(),
+        gain: 1.0,
+        pan: 0.0,
+        max_block_frames: 256,
+    }));
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    assert_eq!(rig.state.prepares.load(Ordering::SeqCst), 1);
+    let host_id = rig.driver.owner.as_ref().unwrap().observer.read().host_id;
+    let output = rig.node(NodeKind::Sink);
+    let project = rig.driver.owner.as_ref().unwrap().observer.project();
+
+    rig.state.absent_owner_once.store(true, Ordering::SeqCst);
+    // The degrade re-prepare replaces the failed owner inside the same
+    // session: no Failed phase, no WaitingForResources, no user request.
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running
+            && r.state.prepares.load(Ordering::SeqCst) == 2
+            && r.state.starts.load(Ordering::SeqCst) == 2
+    });
+    assert_eq!(rig.c.core.error(), None);
+    assert_eq!(
+        rig.c.graph.snapshot().last_error,
+        None,
+        "the degrade is not a preparation failure"
+    );
+    assert_eq!(
+        rig.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id,
+        "the degrade keeps the managed host alive"
+    );
+    assert!(rig.c.graph.snapshot().active_revision.is_some());
+
+    // The re-plug event upgrades the degraded owner to the real stream.
+    rig.state
+        .events
+        .lock()
+        .unwrap()
+        .push_back(host::ResourceEvent {
+            node: output,
+            configuration: project.nodes[&output].clone(),
+            generation: 1,
+            available: true,
+        });
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running
+            && r.state.prepares.load(Ordering::SeqCst) == 3
+            && r.state.starts.load(Ordering::SeqCst) == 3
+    });
+    assert_eq!(rig.c.core.error(), None);
+}
+
+#[test]
 fn initial_export_apply_prepares_pcm_before_waiting_for_transport_admission() {
     let (mut rig, adapter) = export_rig();
     adapter.transport_unavailable.store(true, Ordering::Release);

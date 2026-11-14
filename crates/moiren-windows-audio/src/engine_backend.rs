@@ -21,7 +21,10 @@ use crate::virtual_owner::{
     VirtualPreparedTransport,
 };
 use crate::wasapi::{WasapiOptions, WasapiStream, resolve_endpoint};
-use absence::{AbsenceMonitor, AbsentDevice, AbsentEntry, StuckOpens};
+use absence::{
+    AbsenceMonitor, AbsentDevice, AbsentEntry, RuntimeAbsenceReport, RuntimeAbsent,
+    RuntimeAbsentMark, StuckOpens,
+};
 use moiren_core::graph::NodeId;
 use moiren_engine::{
     audio_config::{AudioBackend, SAMPLE_RATES, SampleFormat},
@@ -83,6 +86,11 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     /// instance's session (D3): re-prepares keep them as null streams until
     /// the device is observed missing or the user applies again.
     stuck: Arc<StuckOpens>,
+    /// Endpoints whose RUNNING stream failed with an absence-class error (the
+    /// runtime unplug): re-prepares keep them as null streams until the device
+    /// is observed missing once — the re-plug signal — or the user applies
+    /// again with a fresh backend.
+    runtime_absent: Arc<RuntimeAbsent>,
     /// Per-group open deadline; production uses [`OPEN_DEADLINE`].
     open_timeout: Duration,
     virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
@@ -97,6 +105,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             absence: AbsenceMonitor::default(),
             absence_probe: Arc::new(system_endpoint_resolve),
             stuck: Arc::default(),
+            runtime_absent: Arc::default(),
             open_timeout: OPEN_DEADLINE,
             virtual_provider: None,
             virtual_clock: Arc::new(QpcClockFactory),
@@ -322,15 +331,22 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
             .or_else(|| {
                 let probe = self.absence_probe.clone();
                 let stuck = self.stuck.clone();
+                let runtime_absent = self.runtime_absent.clone();
                 // A device that enumerates has "returned" — unless its open
                 // was abandoned past the deadline and it has not been seen
-                // missing since (D3). The first observation of a missing
-                // endpoint clears that verdict: a re-plug re-created the
-                // device instance, so the next sighting may open promptly.
+                // missing since (D3), or its running stream died of device
+                // removal and no re-plug (a missing sighting) has cleared the
+                // verdict yet. The first observation of a missing endpoint
+                // clears both verdicts: a re-plug re-created the device
+                // instance, so the next sighting may open promptly.
                 self.absence.poll(move |device| match probe(device) {
-                    Some(id) => !stuck.is_stuck(device.backend, &id),
+                    Some(id) => {
+                        !stuck.is_stuck(device.backend, &id)
+                            && !runtime_absent.is_marked(device.backend, &device.selector, &id)
+                    }
                     None => {
                         stuck.clear(device.backend, device.native_id.as_deref());
+                        runtime_absent.clear_id(device.backend, device.native_id.as_deref());
                         false
                     }
                 })
@@ -484,6 +500,11 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                         device.backend.title(),
                         if input { "input" } else { "output" },
                     );
+                    // A device removed mid-run confirms its own absence: the
+                    // missing sighting consumes the runtime-unplug verdict and
+                    // hands its last native id to the watch for the stale
+                    // clears. Plain absent endpoints have no verdict to take.
+                    let native_id = self.runtime_absent.take(device.backend, selector);
                     absent.push(AbsentPending {
                         direction: Direction {
                             node,
@@ -492,7 +513,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                             selector: selector.clone(),
                         },
                         input,
-                        native_id: None,
+                        native_id,
                     });
                     continue;
                 }
@@ -526,6 +547,41 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                         });
                         continue;
                     }
+                    // A present endpoint whose running stream died of device
+                    // removal: keep suppressing re-opens until the device is
+                    // observed missing once (the re-plug) or the session is
+                    // re-applied — reopening a just-invalidated device would
+                    // only re-fail and flap the transport.
+                    if self.runtime_absent.is_marked(device.backend, selector, &id) {
+                        let endpoint = match selector {
+                            EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
+                                endpoint_id.clone()
+                            }
+                            EndpointSelector::FollowDefault(_) => id.clone(),
+                        };
+                        log::info!(
+                            target: "moiren::audio::professional",
+                            "runtime-unplugged native device prepares as a null stream: node={:?} backend={} endpoint={endpoint:?} direction={}",
+                            node,
+                            device.backend.title(),
+                            if input { "input" } else { "output" },
+                        );
+                        absent.push(AbsentPending {
+                            direction: Direction {
+                                node,
+                                device,
+                                endpoint,
+                                selector: selector.clone(),
+                            },
+                            input,
+                            native_id: Some(id),
+                        });
+                        continue;
+                    }
+                    // The endpoint identity moved on (for example a followed
+                    // default that switched devices): a stale verdict pinned
+                    // to another native id no longer applies to this selector.
+                    self.runtime_absent.take(device.backend, selector);
                     let endpoint = match selector {
                         EndpointSelector::PinnedEndpoint { endpoint_id, .. } => endpoint_id.clone(),
                         // A followed default resolves to a concrete native id, which
@@ -652,6 +708,22 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 capacity,
                 master: group.master(),
                 recovery: (group.backend == AudioBackend::Asio).then(|| recovery.clone()),
+                absence: {
+                    // Every direction of the group reports device removal under
+                    // its own bound selector; a duplex group marks both.
+                    let marks: Vec<RuntimeAbsentMark> = group
+                        .input
+                        .iter()
+                        .chain(&group.output)
+                        .map(|direction| RuntimeAbsentMark {
+                            backend: direction.device.backend,
+                            selector: direction.selector.clone(),
+                            native_id: group.id.clone(),
+                        })
+                        .collect();
+                    (!marks.is_empty())
+                        .then(|| RuntimeAbsenceReport::new(self.runtime_absent.clone(), marks))
+                },
             };
             log::info!(
                 target: "moiren::audio::professional",

@@ -24,7 +24,9 @@ pub(crate) struct AbsentDevice {
     /// that were missing at prepare time; `Some` for endpoints whose open
     /// hung past its deadline — the ["stuck"](#105) flavor of absence, which
     /// enumerates as present and must not be re-opened until the device is
-    /// observed missing (a re-plug) or the session is re-applied.
+    /// observed missing (a re-plug) or the session is re-applied — and for
+    /// endpoints a running stream lost to device removal (the runtime-unplug
+    /// flavor), which suppress re-opens the same way.
     pub native_id: Option<String>,
 }
 
@@ -71,6 +73,112 @@ pub(super) struct AbsentEntry {
     pub node: NodeId,
     pub configuration: NodeConfig,
     pub device: AbsentDevice,
+}
+
+/// One endpoint identity a worker reports when its running stream dies of
+/// device removal: the selector the graph bound plus the native id the group
+/// had opened (a duplex group reports one mark per direction).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct RuntimeAbsentMark {
+    pub backend: AudioBackend,
+    pub selector: EndpointSelector,
+    pub native_id: String,
+}
+
+/// Session-scoped record of endpoints whose running native stream failed with
+/// an absence-class error (issue #105 runtime unplug). Like [`StuckOpens`], a
+/// marked endpoint prepares as a null stream and the absence watch refuses to
+/// report it back while it still enumerates — the suppress verdict holds until
+/// the endpoint is observed missing once (the re-plug signal that the device
+/// instance was re-created) or the session is re-applied with a fresh backend.
+/// Unlike a stuck open, the mark is keyed by the bound selector so a resolve
+/// that observes the device already missing can consume it and pass its last
+/// native id to the absence watch.
+#[derive(Default)]
+pub(crate) struct RuntimeAbsent {
+    marks: std::sync::Mutex<Vec<RuntimeAbsentMark>>,
+}
+
+impl RuntimeAbsent {
+    pub(crate) fn mark(&self, mark: RuntimeAbsentMark) {
+        let mut marks = self.marks.lock().unwrap_or_else(|p| p.into_inner());
+        match marks.iter().position(|existing| {
+            existing.backend == mark.backend && existing.selector == mark.selector
+        }) {
+            Some(index) => marks[index] = mark,
+            None => marks.push(mark),
+        }
+    }
+    /// The marked native id for this selector, if the endpoint is suppressed.
+    pub(crate) fn marked_id(
+        &self,
+        backend: AudioBackend,
+        selector: &EndpointSelector,
+    ) -> Option<String> {
+        self.marks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|existing| existing.backend == backend && &existing.selector == selector)
+            .map(|existing| existing.native_id.clone())
+    }
+    /// Is this exact (backend, selector, id) endpoint suppressed?
+    pub(crate) fn is_marked(
+        &self,
+        backend: AudioBackend,
+        selector: &EndpointSelector,
+        native_id: &str,
+    ) -> bool {
+        self.marked_id(backend, selector)
+            .is_some_and(|marked| marked == native_id)
+    }
+    /// Consume one selector's mark — the endpoint was just observed missing
+    /// from enumeration, which is itself the re-plug-clearing signal. Returns
+    /// the last native id so the absence watch can clear stale verdicts.
+    pub(crate) fn take(
+        &self,
+        backend: AudioBackend,
+        selector: &EndpointSelector,
+    ) -> Option<String> {
+        let mut marks = self.marks.lock().unwrap_or_else(|p| p.into_inner());
+        marks
+            .iter()
+            .position(|existing| existing.backend == backend && &existing.selector == selector)
+            .map(|index| marks.remove(index).native_id)
+    }
+    /// Forget every mark on one native id: the endpoint was observed missing,
+    /// so a later sighting may open for real again. A duplex group's two
+    /// selector marks share one id and clear together.
+    pub(crate) fn clear_id(&self, backend: AudioBackend, native_id: Option<&str>) {
+        let Some(native_id) = native_id else {
+            return;
+        };
+        self.marks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|existing| !(existing.backend == backend && existing.native_id == native_id));
+    }
+}
+
+/// What one native worker reports when its stream dies of device removal: the
+/// shared registry plus its group's endpoint identities. The worker marks
+/// before recording the failure, so the supervisor can never re-prepare
+/// against an unmarked endpoint.
+pub(crate) struct RuntimeAbsenceReport {
+    registry: Arc<RuntimeAbsent>,
+    marks: Vec<RuntimeAbsentMark>,
+}
+
+impl RuntimeAbsenceReport {
+    pub(crate) fn new(registry: Arc<RuntimeAbsent>, marks: Vec<RuntimeAbsentMark>) -> Self {
+        Self { registry, marks }
+    }
+    /// Mark every endpoint of this worker's group as runtime-absent.
+    pub(crate) fn report(&self) {
+        for mark in &self.marks {
+            self.registry.mark(mark.clone());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -273,5 +381,74 @@ mod tests {
         assert!(!stuck.is_stuck(AudioBackend::Wasapi, "{stuck-device}"));
         stuck.mark(AudioBackend::Wasapi, "{stuck-device}");
         assert!(stuck.is_stuck(AudioBackend::Wasapi, "{stuck-device}"));
+    }
+
+    fn runtime_mark(endpoint: &str, native_id: &str) -> RuntimeAbsentMark {
+        RuntimeAbsentMark {
+            backend: AudioBackend::Wasapi,
+            selector: EndpointSelector::PinnedEndpoint {
+                endpoint_id: endpoint.into(),
+                stable_id: None,
+            },
+            native_id: native_id.into(),
+        }
+    }
+
+    #[test]
+    fn runtime_marks_suppress_reopens_until_observed_missing_or_moved() {
+        let runtime = RuntimeAbsent::default();
+        let mark = runtime_mark("{unplugged}", "{native-a}");
+        runtime.mark(mark.clone());
+        // The same endpoint and id is suppressed; another selector, another
+        // id, or another backend is not.
+        assert!(runtime.is_marked(AudioBackend::Wasapi, &mark.selector, "{native-a}"));
+        assert!(!runtime.is_marked(AudioBackend::Wasapi, &mark.selector, "{native-b}"));
+        assert!(!runtime.is_marked(AudioBackend::Asio, &mark.selector, "{native-a}"));
+        // A new failure of the same selector replaces the id (a followed
+        // default that resolved to a different device before dying).
+        runtime.mark(runtime_mark("{unplugged}", "{native-b}"));
+        assert!(!runtime.is_marked(AudioBackend::Wasapi, &mark.selector, "{native-a}"));
+        assert!(runtime.is_marked(AudioBackend::Wasapi, &mark.selector, "{native-b}"));
+        // Observing the endpoint missing consumes the mark and returns its
+        // last native id for the stale-verdict clears.
+        assert_eq!(
+            runtime.take(AudioBackend::Wasapi, &mark.selector),
+            Some("{native-b}".into())
+        );
+        assert_eq!(runtime.take(AudioBackend::Wasapi, &mark.selector), None);
+        // clear_id forgets every selector marked on one native id — a duplex
+        // group's two directions clear together.
+        runtime.mark(runtime_mark("{input}", "{native-duplex}"));
+        runtime.mark(RuntimeAbsentMark {
+            backend: AudioBackend::Wasapi,
+            selector: EndpointSelector::PinnedEndpoint {
+                endpoint_id: "{output}".into(),
+                stable_id: None,
+            },
+            native_id: "{native-duplex}".into(),
+        });
+        runtime.clear_id(AudioBackend::Wasapi, Some("{native-duplex}"));
+        assert_eq!(
+            runtime.marked_id(AudioBackend::Wasapi, &mark.selector),
+            None
+        );
+        assert_eq!(
+            runtime.marked_id(
+                AudioBackend::Wasapi,
+                &EndpointSelector::PinnedEndpoint {
+                    endpoint_id: "{input}".into(),
+                    stable_id: None,
+                }
+            ),
+            None
+        );
+        // Without a native id there is nothing to clear.
+        runtime.mark(runtime_mark("{input}", "{native-duplex}"));
+        runtime.clear_id(AudioBackend::Wasapi, None);
+        assert!(runtime.is_marked(
+            AudioBackend::Wasapi,
+            &runtime_mark("{input}", "{native-duplex}").selector,
+            "{native-duplex}"
+        ));
     }
 }

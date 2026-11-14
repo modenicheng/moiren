@@ -77,6 +77,14 @@ fn api<T>(stage: &'static str, result: windows::core::Result<T>) -> Result<T, Ba
             BackendError::ResourceUnavailable(format!(
                 "{message}; the endpoint is already owned by another exclusive stream"
             ))
+        } else if code == AUDCLNT_E_DEVICE_INVALIDATED.0 || code == AUDCLNT_E_SERVICE_NOT_RUNNING.0
+        {
+            // The endpoint's device is gone (unplugged, disabled, reconfigured)
+            // or the audio service that drives it stopped: absence-class at
+            // every stage — a running owner degrades this endpoint to a null
+            // stream instead of parking the session (issue #105 runtime
+            // unplug), and an open that hits it still reports a resource wait.
+            BackendError::ResourceAbsent(message)
         } else {
             BackendError::ResourceUnavailable(message)
         }
@@ -262,7 +270,11 @@ impl EndpointNotificationRegistration {
 
     fn check(&self) -> Result<(), BackendError> {
         if self.invalidated.load(Ordering::Acquire) {
-            Err(BackendError::ResourceUnavailable(
+            // The runtime unplug signal: OnDeviceRemoved or a transition away
+            // from ACTIVE latched while the stream was running. Absence-class,
+            // so the owner degrades the endpoint to a null stream and the
+            // absence watch revives the real device on its return.
+            Err(BackendError::ResourceAbsent(
                 "selected WASAPI endpoint was removed or became inactive".into(),
             ))
         } else {
@@ -1100,14 +1112,51 @@ fn codec_for(format: &WAVEFORMATEXTENSIBLE) -> Result<(SampleFormat, SampleCodec
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceMode, EndpointNotifications, capture_packet_frames, frames_milliseconds,
+        DeviceMode, EndpointNotifications, api, capture_packet_frames, frames_milliseconds,
         minimum_exclusive_frames, next_exclusive_preset,
     };
+    use moiren_engine::host::BackendError;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_SERVICE_NOT_RUNNING,
+        AUDCLNT_E_UNSUPPORTED_FORMAT,
+    };
     use windows::core::PCWSTR;
+
+    #[test]
+    fn device_removal_hresults_classify_as_absence_not_unavailable() {
+        // The runtime-unplug classification: an invalidated endpoint or a
+        // stopped audio service is absence-class, while a contested exclusive
+        // device and format errors keep their hard-failure variants.
+        for code in [AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_SERVICE_NOT_RUNNING] {
+            let error: BackendError = api::<()>(
+                "GetCurrentPadding",
+                Err(windows::core::Error::from_hresult(code)),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, BackendError::ResourceAbsent(_)),
+                "{code:?} must classify as absence: {error:?}"
+            );
+        }
+        let in_use: BackendError = api::<()>(
+            "Initialize",
+            Err(windows::core::Error::from_hresult(AUDCLNT_E_DEVICE_IN_USE)),
+        )
+        .unwrap_err();
+        assert!(matches!(in_use, BackendError::ResourceUnavailable(_)));
+        let unsupported: BackendError = api::<()>(
+            "IsFormatSupported",
+            Err(windows::core::Error::from_hresult(
+                AUDCLNT_E_UNSUPPORTED_FORMAT,
+            )),
+        )
+        .unwrap_err();
+        assert!(matches!(unsupported, BackendError::Unsupported(_)));
+    }
 
     #[test]
     fn exclusive_capture_skips_shared_only_packet_query() {
