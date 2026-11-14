@@ -24,12 +24,40 @@ Case 'boot-must-follow-install-not-just-recent-observation' {
  $r=New-RemovalBootObservation ([DateTimeOffset]'2026-10-30T00:00:00Z') ([DateTimeOffset]'2026-11-08T00:01:00Z') ([uint64]60000)
  Check (-not$r.BootAfterDeployment) 'Old boot accepted'
 }
-Case 'boot-uptime-consistency-and-explicit-zone' {
+Case 'boot-uptime-corroboration-and-explicit-zone' {
  $r=New-RemovalBootObservation ([DateTimeOffset]'2026-11-08T00:00:00Z') ([DateTimeOffset]'2026-11-08T00:01:00Z') ([uint64]60000)
- Check ($r.BootAfterDeployment-and$r.ClockConsistent-and$r.UptimeMilliseconds-is[uint64]) 'Valid boot rejected'
+ Check ($r.BootAfterDeployment-and$r.UptimeCorroborated-and$r.UptimeMilliseconds-is[uint64]) 'Valid boot rejected'
  Check ($r.BootUtc-match'\+00:00$') 'Explicit timezone missing'
- $r=New-RemovalBootObservation ([DateTimeOffset]'2026-11-08T00:00:00Z') ([DateTimeOffset]'2026-11-08T00:01:00Z') ([uint64]1)
- Check (-not$r.ClockConsistent) 'Inconsistent uptime accepted'
+ $r=New-RemovalBootObservation ([DateTimeOffset]'2026-11-08T00:00:00Z') ([DateTimeOffset]'2026-11-08T00:01:00Z') ([uint64]315360000000)
+ Check (-not$r.UptimeCorroborated) 'Pre-install uptime accepted'
+ $r=New-RemovalBootObservation ([DateTimeOffset]'2026-11-08T13:26:07.5Z') ([DateTimeOffset]'2026-11-14T12:10:23.1069718Z') ([uint64]513844765)
+ Check ($r.BootAfterDeployment-and$r.UptimeCorroborated) 'Captured long-boot clock offset refused'
+}
+function BootEvent([string]$Fields='<Data Name="StartTime">2026-11-08T13:26:07.5000000Z</Data>') {
+ $e=[pscustomobject]@{Id=12;ProviderName='Microsoft-Windows-Kernel-General';LogName='System';RecordId=[long]6662754;Xml=('<Event><EventData>'+$Fields+'</EventData></Event>')}
+ $e|Add-Member ScriptMethod ToXml {return $this.Xml}
+ return $e
+}
+Case 'boot-event-requires-exact-provider-record-and-one-zoned-start-time' {
+ $r=Convert-RemovalBootEvent (BootEvent)
+ Check ($r.RecordId-eq6662754-and[DateTimeOffset]$r.BootUtc-eq[DateTimeOffset]'2026-11-08T13:26:07.5Z') 'Boot identity changed'
+ foreach($mode in @('provider','id','log','record','zone','duplicate','missing','malformed')){
+  $e=BootEvent
+  switch($mode){
+   'provider'{$e.ProviderName='Other'};'id'{$e.Id=1};'log'{$e.LogName='Application'};'record'{$e.RecordId='6662754'}
+   'zone'{$e=BootEvent '<Data Name="StartTime">2026-11-08T13:26:07.5</Data>'}
+   'duplicate'{$e=BootEvent ('<Data Name="StartTime">2026-11-08T13:26:07.5Z</Data>'*2)}
+   'missing'{$e=BootEvent '<Data Name="Other">none</Data>'}
+   'malformed'{$e.Xml='invalid xml'}
+  }
+  Reject {Convert-RemovalBootEvent $e}
+ }
+}
+Case 'boot-event-reader-fails-closed-on-empty-or-ambiguous-results' {
+ function Get-WinEvent {return @()}
+ Reject {Read-RemovalBootEvent}
+ function Get-WinEvent {return @((BootEvent),(BootEvent))}
+ Reject {Read-RemovalBootEvent}
 }
 Case 'empty-external-owners-is-explicit-complete-not-launch-instruction' {
  $r=Convert-RemovalProcesses @() 900
@@ -177,6 +205,7 @@ try {
   $script:pinToolLaunches=0
   function Read-RemovalTargetIdentity {@{host='mock-target';sid='mock-sid';session=0}}
   function Read-RemovalUptime {return [uint64]60000}
+  function Read-RemovalBootEvent {@{BootUtc=[DateTimeOffset]::UtcNow.AddSeconds(-60).ToString('o');RecordId=[long]42}}
   function Get-CimInstance {return [pscustomobject]@{LastBootUpTime=[DateTimeOffset]::UtcNow.AddSeconds(-60).LocalDateTime}}
   function Invoke-RemovalReadTool {$script:pinToolLaunches++;throw 'Unexpected tool dispatch'}
   $message=$null

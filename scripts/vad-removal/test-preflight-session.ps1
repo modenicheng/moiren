@@ -22,8 +22,9 @@ function Assert-RemovalTaskHost {}
 function Fixture {
  $r=Join-Path $root ([Guid]::NewGuid().ToString('N'));$null=[IO.Directory]::CreateDirectory($r)
  $now=[DateTimeOffset]::UtcNow;$boot=$now.AddSeconds(-60)
- $p=@{schema_version=1;host='LAPTOP-NP49RG6H';sid='S-1-5-21-3080296863-1242338503-1346362208-1001';session=[Diagnostics.Process]::GetCurrentProcess().SessionId
+ $p=@{schema_version=2;host='LAPTOP-NP49RG6H';sid='S-1-5-21-3080296863-1242338503-1346362208-1001';session=[Diagnostics.Process]::GetCurrentProcess().SessionId
   CollectorStartedUtc=$now.AddSeconds(-1).ToString('o');BootUtc=$boot.ToString('o');ObservedUtc=$now.ToString('o')
+  BootEventRecordId=[long]42;EndBootEventRecordId=[long]42;CollectorStartedUptimeMilliseconds=[uint64]59000
   UptimeMilliseconds=[uint64]60000;BootAfterDeployment=$true;SignaturesVerified=$true;CatalogMembersVerified=$true
   NativeOwners=@();RunningTasks=@();PresentRawChildren=@();ExternalOwners=@();ExternalOwnersProvenance='ObservedComplete'
   ExternalOwnersObservationStartedUtc=$now.AddMilliseconds(-10).ToString('o');ExternalOwnersObservedUtc=$now.ToString('o')
@@ -56,6 +57,28 @@ function Run($f){
  $r=$null
  for($i=0;$i-lt100;$i++){$r=Observe-RemovalPreflightSession $f.Session -ObservationMilliseconds 100;if(-not$r.NeedsObservation){break}}
  return $r
+}
+Case 'historical-wall-clock-offset-does-not-reject-fresh-monotonic-collection' {
+ $f=Fixture
+ # Captured target offset on 2026-11-14; the boot witness stays post-install.
+ $f.Snapshot.BootUtc=([DateTimeOffset]$f.Snapshot.BootUtc).AddMilliseconds(-5385.1448).ToString('o')
+ Assert-RemovalPreflightSnapshot $f.Snapshot ([DateTimeOffset]::UtcNow) $f.Snapshot.session
+}
+Case 'boot-witness-and-short-monotonic-interval-remain-required' {
+ foreach($mode in @('missing','changed','record-string','reset','elapsed','wall-jump','preinstall-uptime','legacy')){
+  $f=Fixture
+  switch($mode){
+   'missing'{$f.Snapshot.Remove('BootEventRecordId')}
+   'changed'{$f.Snapshot.EndBootEventRecordId=[long]43}
+   'record-string'{$f.Snapshot.BootEventRecordId='42'}
+   'reset'{$f.Snapshot.CollectorStartedUptimeMilliseconds=[uint64]61000}
+   'elapsed'{$f.Snapshot.UptimeMilliseconds=[uint64]180001}
+   'wall-jump'{$f.Snapshot.CollectorStartedUtc=([DateTimeOffset]$f.Snapshot.CollectorStartedUtc).AddSeconds(-10).ToString('o')}
+   'preinstall-uptime'{$f.Snapshot.UptimeMilliseconds=[uint64]315360000000}
+   'legacy'{$f.Snapshot.schema_version=1}
+  }
+  Reject {Assert-RemovalPreflightSnapshot $f.Snapshot ([DateTimeOffset]::UtcNow) $f.Snapshot.session}
+ }
 }
 Case 'actual-collector-owner-snapshot-and-persisted-pin-authorize-readiness-not-native-success' {
  $f=Fixture;Prepare $f

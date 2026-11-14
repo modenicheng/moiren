@@ -31,7 +31,7 @@ function Assert-RemovalPreflightProcesses($Rows) {
 function Assert-RemovalPreflightSnapshot($Snapshot,[DateTimeOffset]$Now,[int]$ControllerSession,
     [ValidateSet('Admission','Audit')][string]$ObservationMode='Admission') {
     $p=$Snapshot
-    if($p -isnot [Collections.IDictionary] -or $p.schema_version -ne 1 -or
+    if($p -isnot [Collections.IDictionary] -or $p.schema_version -ne 2 -or
         $p.host -cne 'LAPTOP-NP49RG6H' -or $p.sid -cne 'S-1-5-21-3080296863-1242338503-1346362208-1001'){
         throw 'Wrong/missing preflight target identity.'
     }
@@ -46,12 +46,19 @@ function Assert-RemovalPreflightSnapshot($Snapshot,[DateTimeOffset]$Now,[int]$Co
     $boot=Convert-RemovalPreflightTime $p.BootUtc;$observed=Convert-RemovalPreflightTime $p.ObservedUtc
     $started=Convert-RemovalPreflightTime $p.CollectorStartedUtc
     $processStarted=Convert-RemovalPreflightTime $p.ExternalOwnersObservationStartedUtc
-    Assert-RemovalPreflightInteger $p.UptimeMilliseconds 0 315360000000
+    Assert-RemovalPreflightInteger $p.UptimeMilliseconds 1 315360000000
+    Assert-RemovalPreflightInteger $p.CollectorStartedUptimeMilliseconds 1 315360000000
+    Assert-RemovalPreflightInteger $p.BootEventRecordId 1 ([long]::MaxValue)
+    Assert-RemovalPreflightInteger $p.EndBootEventRecordId 1 ([long]::MaxValue)
+    $elapsed=[double]$p.UptimeMilliseconds-[double]$p.CollectorStartedUptimeMilliseconds
+    $wallElapsed=($observed-$started).TotalMilliseconds
     $age=($Now-$observed).TotalSeconds
     if($boot -le [DateTimeOffset]'2026-11-07T16:10:12.358563Z' -or $boot -gt $started -or
         $started -gt $observed -or ($observed-$started).TotalSeconds -gt 120 -or $age -lt 0 -or $age -gt 120 -or
         $processStarted -lt $started -or $processStarted -gt $observed -or
-        [Math]::Abs(($observed-$boot).TotalMilliseconds-[double]$p.UptimeMilliseconds) -gt 5000){
+        $p.BootEventRecordId -ne $p.EndBootEventRecordId -or $elapsed -lt 0 -or $elapsed -gt 120000 -or
+        [Math]::Abs($wallElapsed-$elapsed) -gt 5000 -or
+        [double]$p.UptimeMilliseconds -gt ($observed-[DateTimeOffset]'2026-11-07T16:10:12.358563Z').TotalMilliseconds+5000){
         throw 'No fresh corroborated post-install boot/collection interval.'
     }
     foreach($field in @('NativeOwners','RunningTasks','PresentRawChildren')){

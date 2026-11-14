@@ -31,8 +31,9 @@ function Fixture {
  $process|Add-Member ScriptMethod Refresh {}
  $script:f=[pscustomobject]@{Root=$dir;Process=$process;Enumerations=0;Opens=0;Owner=$null}
  $now=[DateTimeOffset]::UtcNow
- $p=@{schema_version=1;host='LAPTOP-NP49RG6H';sid=$process.Token.Sid;session=[Diagnostics.Process]::GetCurrentProcess().SessionId
+ $p=@{schema_version=2;host='LAPTOP-NP49RG6H';sid=$process.Token.Sid;session=[Diagnostics.Process]::GetCurrentProcess().SessionId
   CollectorStartedUtc=$now.AddSeconds(-1).ToString('o');BootUtc=$now.AddSeconds(-60).ToString('o');ObservedUtc=$now.ToString('o')
+  BootEventRecordId=[long]42;EndBootEventRecordId=[long]42;CollectorStartedUptimeMilliseconds=[uint64]59000
   UptimeMilliseconds=[uint64]60000;BootAfterDeployment=$true;SignaturesVerified=$true;CatalogMembersVerified=$true
   NativeOwners=@();RunningTasks=@();PresentRawChildren=@();ExternalOwners=@();ExternalOwnersProvenance='ObservedComplete'
   ExternalOwnersObservationStartedUtc=$now.AddMilliseconds(-10).ToString('o');ExternalOwnersObservedUtc=$now.ToString('o')

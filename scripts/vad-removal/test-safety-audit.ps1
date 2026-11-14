@@ -26,9 +26,10 @@ function Open-RemovalSessionProcess([int]$ProcessId){return $script:fixture.Proc
 function Read-RemovalWorkerToken($Process){return $Process.Token}
 function Snapshot {
  $now=[DateTimeOffset]::UtcNow
- @{schema_version=1;host='LAPTOP-NP49RG6H';sid='S-1-5-21-3080296863-1242338503-1346362208-1001'
+ @{schema_version=2;host='LAPTOP-NP49RG6H';sid='S-1-5-21-3080296863-1242338503-1346362208-1001'
   session=[Diagnostics.Process]::GetCurrentProcess().SessionId
   CollectorStartedUtc=$now.ToString('o');BootUtc=$now.AddMinutes(-10).ToString('o');ObservedUtc=$now.ToString('o')
+  BootEventRecordId=[long]42;EndBootEventRecordId=[long]42;CollectorStartedUptimeMilliseconds=[uint64]600000
   UptimeMilliseconds=[uint64]600000;BootAfterDeployment=$true;SignaturesVerified=$true;CatalogMembersVerified=$true
   NativeOwners=@();RunningTasks=@();PresentRawChildren=@()
   ExternalOwners=@(@{Pid=42;Name='QQMusic.exe';Session=7;CreationUnixMs=[long]1794000000000;ExecutablePath='D:\QQMusic\QQMusic.exe'},
@@ -55,6 +56,7 @@ $now=[DateTimeOffset]::UtcNow.AddSeconds(-$age)
 $s.CollectorStartedUtc=$begin.ToString('o');$s.ObservedUtc=$now.ToString('o')
 $s.ExternalOwnersObservationStartedUtc=$now.ToString('o');$s.ExternalOwnersObservedUtc=$now.ToString('o')
 $s.UptimeMilliseconds=[uint64]($now-[DateTimeOffset]$s.BootUtc).TotalMilliseconds
+$s.CollectorStartedUptimeMilliseconds=[uint64]($begin-[DateTimeOffset]$s.BootUtc).TotalMilliseconds
 return $s
 '@
  [IO.File]::WriteAllText($Path,('function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){'+$body+'}'),[Text.UTF8Encoding]::new($false))
@@ -143,13 +145,14 @@ Case 'missing-or-replaced-external-identities-are-unsafe-without-stop-or-reopen'
  }
 }
 Case 'defaults-render-security-boot-and-driver-path-changes-are-unsafe' {
- foreach($mode in @('Defaults','Render','Security','BootUtc','Driver')){
+ foreach($mode in @('Defaults','Render','Security','BootUtc','BootEventRecordId','Driver')){
   $f=Fixture
   switch($mode){
    'Defaults'{$f.After.Defaults[0].id='changed-default'}
    'Render'{$f.After.Render[0].volume_scalar=[double]0.6}
    'Security'{$f.After.Security.SecureBoot=$true}
    'BootUtc'{$f.After.BootUtc=([DateTimeOffset]$f.After.BootUtc).AddSeconds(1).ToString('o')}
+   'BootEventRecordId'{$f.After.BootEventRecordId=[long]43;$f.After.EndBootEventRecordId=[long]43}
    'Driver'{$f.After.Driver.SysPath='C:\Windows\Other\MoirenVad.sys'}
   }
   $o=Prepare $f;$r=Run $o

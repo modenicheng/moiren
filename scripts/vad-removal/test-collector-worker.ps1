@@ -26,14 +26,14 @@ function StartFixture([string]$Body,[double]$Seconds=15){
   -EvidenceDirectory (Join-Path $root ([Guid]::NewGuid().ToString('N'))) -TimeoutSeconds $Seconds
 }
 Case 'pinned-fixture-collects-once-preserves-real-dictionary-and-closes' {
- $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=1;session=0;NativeTestStarted=$false;Qualified=$false;ExternalOwners=@();Value=42}}'
+ $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=2;session=0;NativeTestStarted=$false;Qualified=$false;ExternalOwners=@();Value=42}}'
  $r=Observe-RemovalCollectorWorker $o
  Check ($r.CollectionComplete-and$r.Completed-and-not$r.TimedOut-and$r.Snapshot.Value-eq42-and$r.Snapshot.session-eq0) 'Collection or dictionary values lost'
  Check (-not$r.NativeApproved-and-not$r.Qualified-and$r.InnerOwnersClosed) 'False native approval/unclosed owner'
  Close-RemovalCollectorWorker $o;Check $o.Closed 'Completed worker not closed'
 }
 Case 'original-read-tool-pins-cross-the-actual-runspace-as-detached-values' {
- $collector=Fixture 'function Read-RemovalPreflight {param($EvidenceDirectory,$ToolOwners,$ReadToolPins)@{schema_version=1;NativeTestStarted=$false;Qualified=$false;BcdPath=$ReadToolPins.BcdEdit.Path;BcdHash=$ReadToolPins.BcdEdit.Sha256}}'
+ $collector=Fixture 'function Read-RemovalPreflight {param($EvidenceDirectory,$ToolOwners,$ReadToolPins)@{schema_version=2;NativeTestStarted=$false;Qualified=$false;BcdPath=$ReadToolPins.BcdEdit.Path;BcdHash=$ReadToolPins.BcdEdit.Sha256}}'
  $pins=@{BcdEdit=@{Path='C:\Windows\System32\bcdedit.exe';Bytes=123;Sha256=('A'*64)}}
  $original=ConvertTo-Json -InputObject $pins -Depth 4 -Compress
  $o=Start-RemovalCollectorWorker -FiniteToolPath $finite -FiniteToolSha256 $finiteHash -CollectorPath $collector `
@@ -56,7 +56,7 @@ Case 'worker-throw-is-failed-not-empty-success' {
  Close-RemovalCollectorWorker $o
 }
 Case 'deadline-retains-same-invocation-and-late-completion-cannot-pass' {
- $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){Start-Sleep -Milliseconds 700;@{schema_version=1;NativeTestStarted=$false;Qualified=$false}}' 0.05
+ $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){Start-Sleep -Milliseconds 700;@{schema_version=2;NativeTestStarted=$false;Qualified=$false}}' 0.05
  $handle=$o.Invocation;$r=Observe-RemovalCollectorWorker $o
  Check ($r.TimedOut-and-not$r.Completed-and-not$r.CollectionComplete-and$o.Invocation-eq$handle-and-not$o.Closed) 'Timeout lost original live invocation'
  Reject {Close-RemovalCollectorWorker $o}
@@ -65,7 +65,7 @@ Case 'deadline-retains-same-invocation-and-late-completion-cannot-pass' {
  Close-RemovalCollectorWorker $o
 }
 Case 'successful-first-observation-is-not-invalidated-by-later-walltime' {
- $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=1;NativeTestStarted=$false;Qualified=$false}}'
+ $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=2;NativeTestStarted=$false;Qualified=$false}}'
  $r=Observe-RemovalCollectorWorker $o;Check $r.CollectionComplete 'Initial collection failed'
  $o.Clock=[pscustomobject]@{ElapsedMilliseconds=$o.DeadlineMilliseconds+1}
  $r=Observe-RemovalCollectorWorker $o;Check ($r.CollectionComplete-and-not$r.TimedOut) 'Reobservation invented timeout'
@@ -103,7 +103,7 @@ function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){
  Check ($child.Closed-and$o.Closed) 'Exact nested lifecycle not closed'
 }
 Case 'malformed-or-multiple-worker-output-refused' {
- foreach($body in @('return $null','"unexpected output";@{schema_version=1;NativeTestStarted=$false;Qualified=$false}','@{schema_version=1;NativeTestStarted=$true;Qualified=$true}')){
+ foreach($body in @('return $null','"unexpected output";@{schema_version=2;NativeTestStarted=$false;Qualified=$false}','@{schema_version=2;NativeTestStarted=$true;Qualified=$true}','@{schema_version=1;NativeTestStarted=$false;Qualified=$false}')){
   $o=StartFixture ('function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){'+$body+'}')
   $r=Observe-RemovalCollectorWorker $o;Check ($r.Completed-and-not$r.CollectionComplete) 'Malformed/native result accepted'
   Close-RemovalCollectorWorker $o
@@ -116,31 +116,31 @@ Case 'multiple-output-stops-at-first-invalid-value-without-large-array' {
  Close-RemovalCollectorWorker $o
 }
 Case 'warning-stream-cannot-be-silently-accepted-with-snapshot' {
- $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){Write-Warning "unexpected warning";@{schema_version=1;NativeTestStarted=$false;Qualified=$false}}'
+ $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){Write-Warning "unexpected warning";@{schema_version=2;NativeTestStarted=$false;Qualified=$false}}'
  $r=Observe-RemovalCollectorWorker $o
  Check ($r.Completed-and-not$r.CollectionComplete-and$r.Error-like'*unexpected warning*') 'Warning ignored as success'
  Close-RemovalCollectorWorker $o
 }
 Case 'nonterminating-error-stream-prevents-success-snapshot' {
- $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){Write-Error "explicit read error" -ErrorAction Continue;@{schema_version=1;NativeTestStarted=$false;Qualified=$false}}'
+ $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){Write-Error "explicit read error" -ErrorAction Continue;@{schema_version=2;NativeTestStarted=$false;Qualified=$false}}'
  $r=Observe-RemovalCollectorWorker $o
  Check ($r.Completed-and-not$r.CollectionComplete-and$r.Error) 'Nonterminating error was accepted as success'
  Close-RemovalCollectorWorker $o
 }
 Case 'oversize-single-snapshot-refused-before-acceptance' {
- $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=1;NativeTestStarted=$false;Qualified=$false;UnexpectedBlob=("x"*1048576)}}'
+ $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=2;NativeTestStarted=$false;Qualified=$false;UnexpectedBlob=("x"*1048576)}}'
  $r=Observe-RemovalCollectorWorker $o
  Check ($r.Completed-and-not$r.CollectionComplete-and$r.Error) 'Oversize single snapshot accepted'
  Close-RemovalCollectorWorker $o
 }
 Case 'explicit-diagnostic-stream-flood-is-drained-not-retained' {
- $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){for($i=0;$i-lt100;$i++){Write-Error "bounded diagnostic" -ErrorAction Continue};@{schema_version=1;NativeTestStarted=$false;Qualified=$false}}'
+ $o=StartFixture 'function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){for($i=0;$i-lt100;$i++){Write-Error "bounded diagnostic" -ErrorAction Continue};@{schema_version=2;NativeTestStarted=$false;Qualified=$false}}'
  $r=Observe-RemovalCollectorWorker $o
  Check ($r.Completed-and-not$r.CollectionComplete-and$o.PowerShell.Streams.Error.Count-eq0-and$o.Diagnostics.EmittedCount-eq100) 'Error stream retained or forgotten'
  Close-RemovalCollectorWorker $o
 }
 Case 'top-level-load-output-refused-not-dropped-at-EndInvoke' {
- $o=StartFixture '"unexpected top-level output";function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=1;NativeTestStarted=$false;Qualified=$false}}'
+ $o=StartFixture '"unexpected top-level output";function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){@{schema_version=2;NativeTestStarted=$false;Qualified=$false}}'
  $r=Observe-RemovalCollectorWorker $o
  Check ($r.Completed-and-not$r.CollectionComplete-and$r.Error) 'Top-level load output bypassed collector contract'
  Close-RemovalCollectorWorker $o

@@ -122,9 +122,10 @@ function Assert-RemovalTraceNativeOwnerApproval {Event 'UNEXPECTED-native-etw';t
 
 function New-LifetimeSnapshot {
     $now=[DateTimeOffset]::UtcNow
-    @{schema_version=1;host='LAPTOP-NP49RG6H';sid='S-1-5-21-3080296863-1242338503-1346362208-1001'
+    @{schema_version=2;host='LAPTOP-NP49RG6H';sid='S-1-5-21-3080296863-1242338503-1346362208-1001'
         session=[Diagnostics.Process]::GetCurrentProcess().SessionId
         CollectorStartedUtc=$now.ToString('o');BootUtc=$now.AddMinutes(-10).ToString('o');ObservedUtc=$now.ToString('o')
+        BootEventRecordId=[long]42;EndBootEventRecordId=[long]42;CollectorStartedUptimeMilliseconds=[uint64]600000
         UptimeMilliseconds=[uint64]600000;BootAfterDeployment=$true;SignaturesVerified=$true;CatalogMembersVerified=$true
         NativeOwners=@();RunningTasks=@();PresentRawChildren=@()
         ExternalOwners=@(@{Pid=42;Name='QQMusic.exe';Session=7;CreationUnixMs=[long]1794000000000;ExecutablePath='D:\QQMusic\QQMusic.exe'})
@@ -150,6 +151,7 @@ $now=[DateTimeOffset]::UtcNow
 $s.CollectorStartedUtc=$begin.ToString('o');$s.ObservedUtc=$now.ToString('o')
 $s.ExternalOwnersObservationStartedUtc=$now.ToString('o');$s.ExternalOwnersObservedUtc=$now.ToString('o')
 $s.UptimeMilliseconds=[uint64]($now-[DateTimeOffset]$s.BootUtc).TotalMilliseconds
+$s.CollectorStartedUptimeMilliseconds=[uint64]($begin-[DateTimeOffset]$s.BootUtc).TotalMilliseconds
 return $s
 '@
     [IO.File]::WriteAllText($Path,('function Read-RemovalPreflight($EvidenceDirectory,$ToolOwners){'+$body+'}'),[Text.UTF8Encoding]::new($false))

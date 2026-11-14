@@ -12,11 +12,27 @@ function Reject([scriptblock]$Action){$refused=$false;try{&$Action|Out-Null}catc
 function Case([string]$Name,[scriptblock]$Action){try{&$Action;$checks.Add(@{name=$Name;passed=$true})}catch{$checks.Add(@{name=$Name;passed=$false;error=$_.Exception.Message})}}
 function Reset {
  $script:events=New-Object Collections.Generic.List[object];$script:mode='';$script:owners=New-Object Collections.Generic.List[object]
- $script:boot=[DateTimeOffset]::UtcNow.AddSeconds(-60);$script:osCalls=0
+ $script:boot=[DateTimeOffset]::UtcNow.AddSeconds(-60);$script:osCalls=0;$script:uptimeCalls=0
 }
 function FreshDirectory {Join-Path $root ([Guid]::NewGuid().ToString('N'))}
 function Read-RemovalTargetIdentity {@{host='LAPTOP-NP49RG6H';sid='S-1-5-21-3080296863-1242338503-1346362208-1001';session=0}}
-function Read-RemovalUptime {return [uint64]60000}
+function Read-RemovalUptime {
+ $script:uptimeCalls++
+ if($script:uptimeCalls-ge3){
+  if($script:mode-eq'uptime-reset'){return [uint64]59999}
+  if($script:mode-eq'uptime-timeout'){return [uint64]180001}
+ }
+ return [uint64]60000
+}
+function Read-RemovalBootEvent {
+ $script:events.Add('boot-event');$script:osCalls++
+ $b=$script:boot;$record=[long]42
+ if($script:osCalls-gt1){
+  if($script:mode-eq'boot-changed'){$b=$b.AddDays(-1)}
+  if($script:mode-eq'boot-record-changed'){$record++}
+ }
+ @{BootUtc=$b.ToString('o');RecordId=$record}
+}
 function Assert-FiniteToolPath([string]$Path,[bool]$File) {}
 function Get-CimInstance([string]$ClassName,[string]$Filter,[string]$Namespace,[int]$OperationTimeoutSec,[string]$ErrorAction) {
  $script:events.Add('cim-'+$ClassName)
@@ -113,9 +129,9 @@ foreach($state in @('Queued','Unknown')){
 Case 'preboot-refusal-before-signature-tool-or-device-observation' {
  Reset;$script:boot=[DateTimeOffset]'2026-10-30T00:00:00Z'
  Reject {Read-RemovalPreflight -EvidenceDirectory (FreshDirectory) -ToolOwners $script:owners}
- Check ($script:events.Count-eq1-and$script:events[0]-ceq'cim-Win32_OperatingSystem') 'Old boot reached native/tool collectors'
+ Check ($script:events.Count-eq1-and$script:events[0]-ceq'boot-event') 'Old boot reached native/tool collectors'
 }
-foreach($failure in @('bad-manifest','bad-signature','old-driver','boot-changed')){
+foreach($failure in @('bad-manifest','bad-signature','old-driver','boot-changed','boot-record-changed','uptime-reset','uptime-timeout')){
  $script:testFailure=$failure
  Case ('refuses-'+$failure) {Reset;$script:mode=$script:testFailure;Reject {Read-RemovalPreflight -EvidenceDirectory (FreshDirectory) -ToolOwners $script:owners}}
 }

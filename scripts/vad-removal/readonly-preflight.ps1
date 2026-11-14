@@ -10,10 +10,35 @@ function Read-RemovalUptime {
 }
 
 function New-RemovalBootObservation([DateTimeOffset]$Boot,[DateTimeOffset]$Observed,[uint64]$Uptime) {
-    $delta=($Observed-$Boot).TotalMilliseconds
+    $deployment=[DateTimeOffset]'2026-11-07T16:10:12.358563Z'
+    # Wall time can be corrected during a long boot. Corroborate the post-install
+    # event with a conservative uptime bound, not equality to its wall-clock age.
     @{BootUtc=$Boot.ToUniversalTime().ToString('o');ObservedUtc=$Observed.ToUniversalTime().ToString('o')
-      UptimeMilliseconds=$Uptime;BootAfterDeployment=($Boot -gt [DateTimeOffset]'2026-11-07T16:10:12.358563Z')
-      ClockConsistent=($delta -ge 0 -and [Math]::Abs($delta-[double]$Uptime) -le 5000)}
+      UptimeMilliseconds=$Uptime;BootAfterDeployment=($Boot -gt $deployment)
+      UptimeCorroborated=($Boot -le $Observed -and $Uptime -gt 0 -and
+        [double]$Uptime -le ($Observed-$deployment).TotalMilliseconds+5000)}
+}
+
+function Convert-RemovalBootEvent($Event) {
+    if($null -eq $Event -or $Event.Id -ne 12 -or $Event.ProviderName -cne 'Microsoft-Windows-Kernel-General' -or
+        $Event.LogName -cne 'System' -or ($Event.RecordId -isnot [long] -and $Event.RecordId -isnot [int]) -or
+        $Event.RecordId -le 0){throw 'Missing/malformed system boot event identity.'}
+    $xml=[xml]$Event.ToXml()
+    $rows=@($xml.Event.EventData.Data|Where-Object{$_.Name -ceq 'StartTime'})
+    if($rows.Count -ne 1){throw 'Missing/duplicate boot event StartTime.'}
+    $text=[string]$rows[0].InnerText
+    if($text -notmatch '(?:Z|[+-]\d\d:\d\d)$'){throw 'Explicit-zone boot event time required.'}
+    $boot=[DateTimeOffset]::Parse($text,[Globalization.CultureInfo]::InvariantCulture)
+    @{BootUtc=$boot.ToUniversalTime().ToString('o');RecordId=[long]$Event.RecordId}
+}
+
+function Read-RemovalBootEvent {
+    # Event 12 is the recorded OS start, rather than CIM's adjusted boot time.
+    # Missing/cleared logs fail closed; collection retains this identity twice.
+    $rows=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Kernel-General';Id=12} `
+        -MaxEvents 1 -ErrorAction Stop)
+    if($rows.Count -ne 1){throw 'One latest system boot event required.'}
+    Convert-RemovalBootEvent $rows[0]
 }
 
 function New-RemovalIdentity([string]$HostName,[string]$Sid,[int]$Session) {
@@ -149,15 +174,16 @@ function Read-RemovalPreflight {
         [Parameter(Mandatory=$true)][AllowEmptyCollection()][Collections.Generic.List[object]]$ToolOwners,
         $ReadToolPins=$null)
     $ErrorActionPreference='Stop'
-    $started=[DateTimeOffset]::UtcNow
     $identity=Read-RemovalTargetIdentity
+    $startedUptime=Read-RemovalUptime
+    $started=[DateTimeOffset]::UtcNow
     Assert-FiniteToolPath $EvidenceDirectory $false
     if(Test-Path -LiteralPath $EvidenceDirectory){throw 'Fresh evidence directory required.'}
     $null=[IO.Directory]::CreateDirectory($EvidenceDirectory)
-    $os=Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 5 -ErrorAction Stop
-    $boot=[DateTimeOffset]$os.LastBootUpTime
+    $bootEvent=Read-RemovalBootEvent
+    $boot=[DateTimeOffset]$bootEvent.BootUtc
     $initial=New-RemovalBootObservation $boot ([DateTimeOffset]::UtcNow) (Read-RemovalUptime)
-    if(-not $initial.BootAfterDeployment -or -not $initial.ClockConsistent){throw 'User reboot not established; no subsequent tool/device collection.'}
+    if(-not $initial.BootAfterDeployment -or -not $initial.UptimeCorroborated){throw 'User reboot not established; no subsequent tool/device collection.'}
     # Freeze/validate all three before the first signature tool can launch. The
     # finite launcher checks the frozen expected hash again at each dispatch.
     $readTools=Resolve-RemovalReadTools -ReadToolPins $ReadToolPins
@@ -236,7 +262,8 @@ function Read-RemovalPreflight {
     $children=@(Get-PnpDevice -PresentOnly -ErrorAction Stop|Where-Object{$_.InstanceId -like 'MOIREN\VAD_RAW\*'}|ForEach-Object{
         [pscustomobject][ordered]@{InstanceId=$_.InstanceId;Status=$_.Status}
     }|Sort-Object InstanceId)
-    $endBoot=[DateTimeOffset](Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 5 -ErrorAction Stop).LastBootUpTime
+    $endBootEvent=Read-RemovalBootEvent
+    $endBoot=[DateTimeOffset]$endBootEvent.BootUtc
     # Capture process identities last; preserve the real enumeration interval
     # instead of stamping an older result with a later safety-collection time.
     $processStarted=[DateTimeOffset]::UtcNow
@@ -244,9 +271,14 @@ function Read-RemovalPreflight {
     $processEnded=[DateTimeOffset]::UtcNow
     $processes=Convert-RemovalProcesses $processRows $PID
     $observed=$processEnded;$bootRecord=New-RemovalBootObservation $endBoot $observed (Read-RemovalUptime)
-    if($endBoot -ne $boot -or -not $bootRecord.ClockConsistent -or ($observed-$started).TotalSeconds -gt 120){throw 'Boot changed or collection exceeded freshness bound.'}
-    $snapshot=@{schema_version=1;host=$identity.host;sid=$identity.sid;session=$identity.session
+    $elapsed=[double]$bootRecord.UptimeMilliseconds-[double]$startedUptime
+    $wallElapsed=($observed-$started).TotalMilliseconds
+    if($endBoot -ne $boot -or $endBootEvent.RecordId -ne $bootEvent.RecordId -or -not $bootRecord.UptimeCorroborated -or
+        $elapsed -lt 0 -or $elapsed -gt 120000 -or $wallElapsed -lt 0 -or $wallElapsed -gt 120000 -or
+        [Math]::Abs($wallElapsed-$elapsed) -gt 5000){throw 'Boot changed or collection exceeded freshness/clock bound.'}
+    $snapshot=@{schema_version=2;host=$identity.host;sid=$identity.sid;session=$identity.session
         CollectorStartedUtc=$started.ToString('o');BootUtc=$bootRecord.BootUtc;ObservedUtc=$bootRecord.ObservedUtc
+        CollectorStartedUptimeMilliseconds=$startedUptime;BootEventRecordId=$bootEvent.RecordId;EndBootEventRecordId=$endBootEvent.RecordId
         BootAfterDeployment=$bootRecord.BootAfterDeployment;UptimeMilliseconds=$bootRecord.UptimeMilliseconds
         SignaturesVerified=$true;CatalogMembersVerified=$true;Driver=$driver
         NativeOwners=$processes.NativeOwners;ExternalOwners=$processes.ExternalOwners

@@ -134,7 +134,7 @@ try {
     }
     if($state.OutputCount -ne 1){throw 'Collector returned no snapshot.'}
     $snapshot=$candidate
-    if($snapshot.schema_version -ne 1 -or $snapshot.NativeTestStarted -isnot [bool] -or $snapshot.NativeTestStarted -or
+    if($snapshot.schema_version -ne 2 -or $snapshot.NativeTestStarted -isnot [bool] -or $snapshot.NativeTestStarted -or
        $snapshot.Qualified -isnot [bool] -or $snapshot.Qualified){throw 'Malformed collector activity/acceptance flags.'}
     Assert-SnapshotSize $snapshot 0 @{Nodes=0;Characters=0}
     $state.Snapshot=$snapshot

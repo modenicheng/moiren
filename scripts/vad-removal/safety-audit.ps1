@@ -12,6 +12,7 @@ function ConvertTo-RemovalSafetyState($Snapshot) {
         # PS7 may decode archived JSON dates as DateTime; live schema validation
         # already requires explicit-zone text before this canonical projection.
         BootUtc=([DateTimeOffset]$p.BootUtc).ToUniversalTime().ToString('o')
+        BootEventRecordId=[long]$p.BootEventRecordId
         Driver=[ordered]@{Version=$d.Version;Inf=$d.Inf;State=$d.State;InstanceId=$d.InstanceId
             PnpStatus=$d.PnpStatus;ProblemCode=[long]$d.ProblemCode;SysPath=$d.SysPath
             SysSha256=$d.SysSha256;InfSha256=$d.InfSha256}
