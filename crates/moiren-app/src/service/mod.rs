@@ -167,6 +167,9 @@ pub struct ServiceContext {
     /// cleared with the owner. Powers the waiting-for-resources projection:
     /// the session stays intended while devices are away.
     pub active_execution: Option<moiren_engine::host::ExecutionState>,
+    /// Live native-open progress of the starting session (issue #105); the
+    /// status bar renders the "Starting audio (2/3)" detail from it.
+    pub starting_progress: Option<StartingProgress>,
     pending: VecDeque<(JobPriority, Job, DeferredPermit)>,
     slots: Arc<AtomicUsize>,
     /// Test observability for the snapshot publisher: counts every
@@ -208,6 +211,7 @@ impl Default for ServiceContext {
             levels,
             tone_session: false,
             active_execution: None,
+            starting_progress: None,
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),
             #[cfg(test)]
@@ -516,6 +520,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         error: c.core.error().map(str::to_owned),
         waiting: c.active_execution
             == Some(moiren_engine::host::ExecutionState::WaitingForResources),
+        starting_progress: c.starting_progress.clone(),
         recordings: c.recordings.snapshots(),
         catalog: c.catalog.clone(),
         catalog_error: c.catalog_error.clone(),
@@ -634,6 +639,7 @@ pub(crate) fn small_snapshot_inputs_match(c: &ServiceContext, last: &AppSnapshot
         && last.audio_settings == c.audio_settings
         && last.catalog_error == c.catalog_error
         && last.control == c.control
+        && last.starting_progress == c.starting_progress
         && last.signal_topics == c.signals.topics
         && last.tone_session == c.tone_session
         && native_same

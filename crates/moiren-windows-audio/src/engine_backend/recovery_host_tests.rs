@@ -582,6 +582,7 @@ impl EngineBackend<f64> for MockBackend {
                 recovery: Some(ticket),
             },
             cancel,
+            Duration::from_secs(10),
         )?;
         transport.workers.push(worker);
         if let Some(mixed) = &self.probe.mixed {
@@ -613,6 +614,7 @@ impl EngineBackend<f64> for MockBackend {
                     recovery: None,
                 },
                 cancel,
+                Duration::from_secs(10),
             )?;
             transport.workers.push(worker);
             transport.auxiliaries.push(Box::new(Auxiliary {

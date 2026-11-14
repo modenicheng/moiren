@@ -20,6 +20,50 @@ pub(crate) struct AbsentDevice {
     pub selector: EndpointSelector,
     pub backend: AudioBackend,
     pub input: bool,
+    /// The native id this endpoint last resolved to. `None` for endpoints
+    /// that were missing at prepare time; `Some` for endpoints whose open
+    /// hung past its deadline — the ["stuck"](#105) flavor of absence, which
+    /// enumerates as present and must not be re-opened until the device is
+    /// observed missing (a re-plug) or the session is re-applied.
+    pub native_id: Option<String>,
+}
+
+/// Session-scoped record of endpoints whose native open was abandoned after
+/// its deadline (issue #105, decision D3). A stuck endpoint prepares as a
+/// null stream and the absence watch refuses to report it back while it
+/// still enumerates; observing it missing clears the record so the normal
+/// absence recovery re-opens the device after a re-plug. A fresh backend
+/// instance (every user apply builds one) starts with an empty record —
+/// that is the manual retry.
+#[derive(Default)]
+pub(crate) struct StuckOpens {
+    endpoints: std::sync::Mutex<std::collections::HashSet<(AudioBackend, String)>>,
+}
+
+impl StuckOpens {
+    pub(crate) fn mark(&self, backend: AudioBackend, native_id: &str) {
+        self.endpoints
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((backend, native_id.to_owned()));
+    }
+    pub(crate) fn is_stuck(&self, backend: AudioBackend, native_id: &str) -> bool {
+        self.endpoints
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&(backend, native_id.to_owned()))
+    }
+    /// Forget one stuck verdict once the endpoint has been observed missing
+    /// from enumeration — the re-plug signal that the device instance was
+    /// re-created and may open promptly again.
+    pub(crate) fn clear(&self, backend: AudioBackend, native_id: Option<&str>) {
+        if let Some(id) = native_id {
+            self.endpoints
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&(backend, id.to_owned()));
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -115,6 +159,7 @@ mod tests {
                 },
                 backend: AudioBackend::Wasapi,
                 input: true,
+                native_id: None,
             },
         }
     }
@@ -209,5 +254,24 @@ mod tests {
         assert!(monitor.poll(counting).is_none());
         assert!(monitor.poll(counting).is_none());
         assert_eq!(probes.get(), 1);
+    }
+
+    #[test]
+    fn stuck_records_survive_until_observed_missing() {
+        let stuck = StuckOpens::default();
+        stuck.mark(AudioBackend::Wasapi, "{stuck-device}");
+        assert!(stuck.is_stuck(AudioBackend::Wasapi, "{stuck-device}"));
+        // A different endpoint or backend is unaffected.
+        assert!(!stuck.is_stuck(AudioBackend::Wasapi, "{other}"));
+        assert!(!stuck.is_stuck(AudioBackend::Asio, "{stuck-device}"));
+        // Clearing without a native id is a no-op (plain absent entries).
+        stuck.clear(AudioBackend::Wasapi, None);
+        assert!(stuck.is_stuck(AudioBackend::Wasapi, "{stuck-device}"));
+        // Observing the endpoint missing forgets the verdict; a fresh mark
+        // can be recorded again after another timed-out open.
+        stuck.clear(AudioBackend::Wasapi, Some("{stuck-device}"));
+        assert!(!stuck.is_stuck(AudioBackend::Wasapi, "{stuck-device}"));
+        stuck.mark(AudioBackend::Wasapi, "{stuck-device}");
+        assert!(stuck.is_stuck(AudioBackend::Wasapi, "{stuck-device}"));
     }
 }

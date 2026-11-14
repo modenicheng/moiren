@@ -705,6 +705,7 @@ fn transport_with_recovery<S: ProcessingSample>(
             recovery,
         },
         &CancellationToken::default(),
+        Duration::from_secs(10),
     )
     .unwrap();
     transport.workers.push(worker);

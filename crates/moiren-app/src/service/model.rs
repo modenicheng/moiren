@@ -183,6 +183,16 @@ pub struct ControlSummary {
     pub pending_gain_pan: Option<(f64, f64)>,
     pub last_result: Option<ControlReply>,
 }
+/// Live progress of a starting session's native device opens (issue #105):
+/// how many device groups settled out of how many, plus one endpoint still
+/// opening. Published only while the matching owner is actually preparing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartingProgress {
+    pub opened: usize,
+    pub total: usize,
+    /// Service-side endpoint id of one group still opening, when any remain.
+    pub endpoint: Option<String>,
+}
 /// Successful mailbox enqueue order; zero means no ordinary request consumed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
@@ -220,6 +230,9 @@ pub struct AppSnapshot {
     /// The live owner is waiting for audio resources: not a failure — the
     /// session stays intended and resumes when the devices return.
     pub waiting: bool,
+    /// Live native-open progress while the session phase is Starting; the
+    /// status bar renders "Starting audio (2/3): <device>" from it.
+    pub starting_progress: Option<StartingProgress>,
     /// Runtime recording state per recorder node. Durations are quantized to
     /// whole seconds so recording itself cannot push publishing past 1 Hz.
     pub recordings: Vec<super::RecordingSnapshot>,
@@ -329,6 +342,7 @@ impl PartialEq for AppSnapshot {
             && self.phase == other.phase
             && self.desired == other.desired
             && self.error == other.error
+            && self.starting_progress == other.starting_progress
             && self.recordings == other.recordings
             && self.catalog_error == other.catalog_error
             && self.control == other.control

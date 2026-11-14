@@ -14,7 +14,7 @@ pub const BUFFER_SIZES: [u32; 7] = [64, 128, 256, 512, 1024, 2048, 4096];
 /// Native Shared periods are exact device requests, independent of Engine blocks.
 pub const SHARED_PERIOD_RANGE: std::ops::RangeInclusive<u32> = 64..=4096;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioBackend {
     #[default]

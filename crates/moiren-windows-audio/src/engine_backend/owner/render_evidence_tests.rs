@@ -220,6 +220,7 @@ fn render_evidence_worker_returns_storage_on_run_cancel_preparation_failure_and_
                 recovery: None,
             },
             &CancellationToken::default(),
+            std::time::Duration::from_secs(1),
         );
         if phase == Phase::InvalidMetadata {
             assert!(result.is_err());

@@ -80,6 +80,20 @@ pub struct ProfessionalObservationSnapshot {
     pub streams: Vec<ProfessionalStreamObservation>,
 }
 
+/// Live progress of one preparation's native opens (issue #105): how many
+/// device groups settle out of how many, and one endpoint still opening.
+/// Published between handshakes on the control side and cleared when the
+/// preparation finishes, so the UI can show "Starting (2/3) · <device>"
+/// instead of an unexplained Starting phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfessionalPrepareProgress {
+    pub owner_generation: u64,
+    pub groups_total: usize,
+    pub groups_opened: usize,
+    /// Service-side endpoint id of one group still opening, when any remain.
+    pub endpoint: Option<String>,
+}
+
 #[derive(Default)]
 pub(crate) struct Counters {
     /// Single master writer publishes actual complete Engine consumption
@@ -181,7 +195,10 @@ impl Counters {
 }
 
 #[derive(Clone, Default)]
-pub struct ProfessionalObservations(Arc<Mutex<Option<Arc<Session>>>>);
+pub struct ProfessionalObservations {
+    session: Arc<Mutex<Option<Arc<Session>>>>,
+    progress: Arc<Mutex<Option<ProfessionalPrepareProgress>>>,
+}
 
 /// Control-side read access to exactly one published owner generation.
 /// Does not retain audio resources or republish a cleared session. Counters
@@ -198,36 +215,38 @@ struct Session {
 impl ProfessionalObservationReadHandle {
     pub fn snapshot(&self) -> ProfessionalObservationSnapshot {
         let session = &self.0;
-        ProfessionalObservationSnapshot {
-            owner_generation: session.generation,
-            running: session.running.load(Ordering::Acquire),
-            streams: session
-                .streams
-                .iter()
-                .map(|(stream, counters)| {
-                    let mut stream = stream.clone();
-                    stream.dropped_frames = counters.dropped.load(Ordering::Relaxed);
-                    stream.silent_frames = counters.silent.load(Ordering::Relaxed);
-                    stream.xruns = counters.xruns.load(Ordering::Relaxed);
-                    stream.native_callbacks = counters.native_callbacks.load(Ordering::Relaxed);
-                    stream.native_wait_wakes = counters.native_wait_wakes.load(Ordering::Relaxed);
-                    stream.native_written_frames =
-                        counters.native_written_frames.load(Ordering::Relaxed);
-                    stream.native_wait_timeouts =
-                        counters.native_wait_timeouts.load(Ordering::Relaxed);
-                    stream.native_dropped_frames = counters.native_dropped.load(Ordering::Relaxed);
-                    stream.native_silent_frames = counters.native_silent.load(Ordering::Relaxed);
-                    stream.native_capture_quality = counters.capture_quality();
-                    stream.native_xruns = counters.native_xruns.load(Ordering::Relaxed);
-                    stream.engine_blocks = counters.blocks.load(Ordering::Relaxed);
-                    stream.engine_busy_100ns = counters.render_ticks.load(Ordering::Relaxed);
-                    stream.engine_peak_block_100ns =
-                        counters.render_peak_ticks.load(Ordering::Relaxed);
-                    stream.driver_latency = counters.driver_latency();
-                    stream
-                })
-                .collect(),
-        }
+        professional_snapshot(session)
+    }
+}
+
+fn professional_snapshot(session: &Session) -> ProfessionalObservationSnapshot {
+    ProfessionalObservationSnapshot {
+        owner_generation: session.generation,
+        running: session.running.load(Ordering::Acquire),
+        streams: session
+            .streams
+            .iter()
+            .map(|(stream, counters)| {
+                let mut stream = stream.clone();
+                stream.dropped_frames = counters.dropped.load(Ordering::Relaxed);
+                stream.silent_frames = counters.silent.load(Ordering::Relaxed);
+                stream.xruns = counters.xruns.load(Ordering::Relaxed);
+                stream.native_callbacks = counters.native_callbacks.load(Ordering::Relaxed);
+                stream.native_wait_wakes = counters.native_wait_wakes.load(Ordering::Relaxed);
+                stream.native_written_frames =
+                    counters.native_written_frames.load(Ordering::Relaxed);
+                stream.native_wait_timeouts = counters.native_wait_timeouts.load(Ordering::Relaxed);
+                stream.native_dropped_frames = counters.native_dropped.load(Ordering::Relaxed);
+                stream.native_silent_frames = counters.native_silent.load(Ordering::Relaxed);
+                stream.native_capture_quality = counters.capture_quality();
+                stream.native_xruns = counters.native_xruns.load(Ordering::Relaxed);
+                stream.engine_blocks = counters.blocks.load(Ordering::Relaxed);
+                stream.engine_busy_100ns = counters.render_ticks.load(Ordering::Relaxed);
+                stream.engine_peak_block_100ns = counters.render_peak_ticks.load(Ordering::Relaxed);
+                stream.driver_latency = counters.driver_latency();
+                stream
+            })
+            .collect(),
     }
 }
 
@@ -235,7 +254,7 @@ impl ProfessionalObservations {
     /// Retain the current generation's metadata and shared counters off RT.
     /// Clearing or replacing the live session cannot redirect this handle.
     pub fn retain_session(&self) -> Option<ProfessionalObservationReadHandle> {
-        self.0
+        self.session
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
@@ -252,7 +271,7 @@ impl ProfessionalObservations {
         generation: u64,
         streams: Vec<(ProfessionalStreamObservation, Arc<Counters>)>,
     ) {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.session.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(previous) = state.as_ref() {
             previous.running.store(false, Ordering::Release);
         }
@@ -263,10 +282,47 @@ impl ProfessionalObservations {
         }));
     }
 
+    /// Live prepare progress, generation-fenced like the stream session. The
+    /// preparation thread is the only writer; the app service polls it.
+    #[cfg(any(windows, test))]
+    pub(super) fn publish_progress(
+        &self,
+        owner_generation: u64,
+        groups_total: usize,
+        groups_opened: usize,
+        endpoint: Option<String>,
+    ) {
+        *self.progress.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(ProfessionalPrepareProgress {
+                owner_generation,
+                groups_total,
+                groups_opened,
+                endpoint,
+            });
+    }
+
+    #[cfg(any(windows, test))]
+    pub(super) fn clear_progress(&self, owner_generation: u64) {
+        let mut progress = self.progress.lock().unwrap_or_else(|p| p.into_inner());
+        if progress
+            .as_ref()
+            .is_some_and(|p| p.owner_generation == owner_generation)
+        {
+            *progress = None;
+        }
+    }
+
+    pub fn snapshot_progress(&self) -> Option<ProfessionalPrepareProgress> {
+        self.progress
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     #[cfg(any(windows, test))]
     pub(super) fn running(&self, generation: u64) {
         if let Some(session) = self
-            .0
+            .session
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
@@ -278,7 +334,7 @@ impl ProfessionalObservations {
 
     #[cfg(any(windows, test))]
     pub(super) fn clear(&self, generation: u64) {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.session.lock().unwrap_or_else(|p| p.into_inner());
         if state.as_ref().is_some_and(|s| s.generation == generation) {
             // Cancellation also clears before joins. Retained counters still
             // receive final owner writes; false is not a completion witness.
@@ -287,6 +343,7 @@ impl ProfessionalObservations {
             }
             *state = None;
         }
+        self.clear_progress(generation);
     }
 }
 
@@ -360,6 +417,31 @@ mod tests {
         counters.latency_sequence.fetch_add(1, Ordering::SeqCst);
         counters.publish_native(NativeStreamStats::default(), None);
         assert_eq!(counters.capture_quality(), None, "unsupported is not zero");
+    }
+
+    #[test]
+    fn prepare_progress_is_generation_fenced_and_cleared_with_the_session() {
+        let observations = ProfessionalObservations::default();
+        assert!(observations.snapshot_progress().is_none());
+        observations.publish_progress(3, 4, 1, Some("{opening}".into()));
+        assert_eq!(
+            observations.snapshot_progress().unwrap(),
+            ProfessionalPrepareProgress {
+                owner_generation: 3,
+                groups_total: 4,
+                groups_opened: 1,
+                endpoint: Some("{opening}".into()),
+            }
+        );
+        // A newer generation's clear cannot retire the live record.
+        observations.clear_progress(2);
+        assert!(observations.snapshot_progress().is_some());
+        observations.clear_progress(3);
+        assert!(observations.snapshot_progress().is_none());
+        // Session teardown clears the progress of its own generation too.
+        observations.publish_progress(5, 1, 0, None);
+        observations.clear(5);
+        assert!(observations.snapshot_progress().is_none());
     }
 
     #[test]

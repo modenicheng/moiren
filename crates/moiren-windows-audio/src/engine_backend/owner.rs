@@ -102,15 +102,27 @@ impl RunState {
         drop(failure);
         self.cancel();
     }
-    fn await_activation(&self) -> bool {
+    /// One worker's activation wait. `fence` is that worker's own abandonment
+    /// flag: a fenced worker must never activate on the shared gate even if
+    /// its handshake slipped into the channel buffer just before the prepare
+    /// side stopped waiting (issue #105 per-worker fence).
+    fn await_activation(&self, fence: &AtomicBool) -> bool {
         let guard = self.mutex.lock().unwrap_or_else(|p| p.into_inner());
         let _guard = self
             .gate
             .wait_while(guard, |_| {
-                !self.stop.load(Ordering::Acquire) && !self.active.load(Ordering::Acquire)
+                !self.stop.load(Ordering::Acquire)
+                    && !self.active.load(Ordering::Acquire)
+                    && !fence.load(Ordering::Acquire)
             })
             .unwrap_or_else(|p| p.into_inner());
-        !self.stop.load(Ordering::Acquire)
+        !self.stop.load(Ordering::Acquire) && !fence.load(Ordering::Acquire)
+    }
+    /// Wake every parked worker without changing stop/active. Abandonment
+    /// pokes the gate so a fenced worker re-evaluates its own flag.
+    fn poke(&self) {
+        let _guard = self.mutex.lock().unwrap_or_else(|p| p.into_inner());
+        self.gate.notify_all();
     }
     fn activate(&self) -> Result<(), BackendError> {
         // Serialize the predicate change with wait_while to avoid a lost wake.
@@ -207,16 +219,107 @@ pub(super) struct WorkerRequest<S: ProcessingSample> {
     pub recovery: Option<RecoveryTicket>,
 }
 
+/// A spawned worker whose open handshake has not settled yet. The prepare
+/// side polls [`Opening::settle`]; on deadline or cancellation it calls
+/// [`Opening::abandon`], which fences the worker individually and detaches
+/// the thread — a hung OS call must never be joined (issue #105).
+pub(super) struct Opening {
+    worker: Worker,
+    state: Arc<RunState>,
+    fence: Arc<AtomicBool>,
+    receiver: mpsc::Receiver<Result<NativeStreamInfo, BackendError>>,
+}
+
+impl Opening {
+    /// Poll the handshake for at most `wait`. `None` means the open is still
+    /// unsettled; a settled failure is reported, never recorded into the
+    /// shared run state (the collector owns cross-group cancellation).
+    pub(super) fn settle(
+        &mut self,
+        wait: Duration,
+    ) -> Option<Result<NativeStreamInfo, BackendError>> {
+        match self.receiver.recv_timeout(wait) {
+            Ok(result) => Some(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            // The worker body always sends before exiting; a disconnect
+            // without a message means it panicked before the catch_unwind
+            // report could be written.
+            Err(mpsc::RecvTimeoutError::Disconnected) => Some(Err(BackendError::WorkerPanicked)),
+        }
+    }
+    /// Fence and detach: the worker never enters the run loop, never records
+    /// a failure, and releases whatever the OS call eventually returns on its
+    /// own thread. Abandonment is safe precisely because the fence is checked
+    /// at the worker's activation gate, not only at the handshake send.
+    pub(super) fn abandon(self) {
+        self.fence.store(true, Ordering::Release);
+        self.state.poke();
+    }
+    pub(super) fn into_worker(self) -> Worker {
+        self.worker
+    }
+}
+
 /// Startup allocates buffers and negotiates native metadata before returning.
+/// The wait is bounded by `deadline`: a hung open abandons its worker instead
+/// of blocking Stop, graph edits, and app exit on a driver call that may take
+/// minutes to return (issue #105).
+///
+/// Convenience wrapper for single-group callers (the owner-level test
+/// fixtures and the rt-check shadow harness); production prepares collect
+/// groups concurrently through [`start_worker`].
+#[cfg(test)]
 pub(super) fn spawn<S: ProcessingSample>(
     request: WorkerRequest<S>,
     cancel: &CancellationToken,
+    deadline: Duration,
 ) -> Result<(Worker, NativeStreamInfo), BackendError> {
+    use std::time::Instant;
+    let state = request.state.clone();
+    let mut opening = start_worker(request)?;
+    let mut remaining = deadline;
+    loop {
+        if cancel.is_cancelled() {
+            opening.abandon();
+            return Err(BackendError::Cancelled);
+        }
+        let slice = remaining.min(Duration::from_millis(20));
+        let started = Instant::now();
+        match opening.settle(slice) {
+            Some(Ok(info)) => return Ok((opening.into_worker(), info)),
+            Some(Err(error)) => {
+                // Mirror the settled-failure fencing of the old serial path:
+                // the worker itself has returned; cancel wakes any siblings.
+                state.cancel();
+                opening.abandon();
+                return Err(error);
+            }
+            None => {
+                remaining = remaining.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    opening.abandon();
+                    return Err(BackendError::ResourceUnavailable(
+                        "native open timed out".into(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Spawn one worker thread and return its unsettled handshake immediately;
+/// callers collect concurrently so total startup latency is the maximum of
+/// the group deadlines instead of their sum (issue #105).
+pub(super) fn start_worker<S: ProcessingSample>(
+    request: WorkerRequest<S>,
+) -> Result<Opening, BackendError> {
     let (tx, rx) = mpsc::sync_channel(1);
+    let fence = Arc::new(AtomicBool::new(false));
     let started = Arc::new(AtomicBool::new(false));
     let worker_started = started.clone();
     let state = request.state.clone();
     let panic_state = state.clone();
+    let worker_fence = fence.clone();
     let handle = thread::Builder::new()
         .name(if request.master {
             "moiren-professional-master".into()
@@ -231,47 +334,44 @@ pub(super) fn spawn<S: ProcessingSample>(
             );
             let mut retired_render_evidence = None;
             let result = catch_unwind(AssertUnwindSafe(|| {
-                native_owner(request, &tx, &worker_started, &mut retired_render_evidence)
+                native_owner(
+                    request,
+                    &tx,
+                    &worker_started,
+                    &worker_fence,
+                    &mut retired_render_evidence,
+                )
             }));
             if result.is_err() {
                 let _ = tx.send(Err(BackendError::WorkerPanicked));
-                panic_state.fail(BackendError::WorkerPanicked);
+                // An abandoned worker is no longer this transport's concern:
+                // a late panic must not poison a session that already moved
+                // on without the stream.
+                if !worker_fence.load(Ordering::Acquire) {
+                    panic_state.fail(BackendError::WorkerPanicked);
+                }
             }
             retired_render_evidence
         })
         .map_err(|e| BackendError::Failed(e.to_string()))?;
-    let mut worker = Worker {
-        handle: Some(handle),
-        started,
-        retired_render_evidence: None,
-    };
-    loop {
-        if cancel.is_cancelled() {
-            state.cancel();
-            let _ = worker.join();
-            return Err(BackendError::Cancelled);
-        }
-        match rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(Ok(info)) => return Ok((worker, info)),
-            Ok(Err(error)) => {
-                state.cancel();
-                let _ = worker.join();
-                return Err(error);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                state.cancel();
-                let _ = worker.join();
-                return Err(BackendError::WorkerPanicked);
-            }
-        }
-    }
+    Ok(Opening {
+        worker: Worker {
+            handle: Some(handle),
+            started,
+            retired_render_evidence: None,
+        },
+        state,
+        fence,
+        receiver: rx,
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn native_owner<S: ProcessingSample>(
     mut request: WorkerRequest<S>,
     sender: &mpsc::SyncSender<Result<NativeStreamInfo, BackendError>>,
     started: &AtomicBool,
+    fence: &AtomicBool,
     retired_render_evidence: &mut Option<crate::render_evidence::RenderEvidenceWriter>,
 ) {
     // Match the physical and virtual paths' scheduling class: this thread
@@ -287,6 +387,13 @@ fn native_owner<S: ProcessingSample>(
         }
     };
     let mut stream = RenderEvidenceStreamGuard::new(stream, retired_render_evidence);
+    if fence.load(Ordering::Acquire) {
+        // The open outlived its deadline while blocked in the driver: the
+        // prepare side already degraded this endpoint. Release the stream
+        // here — COM and exclusive pins unwind on this, their own, thread —
+        // and leave the shared run state untouched.
+        return;
+    }
     let info = stream.info();
     request
         .counters
@@ -325,7 +432,12 @@ fn native_owner<S: ProcessingSample>(
             return;
         }
     };
-    if sender.send(Ok(info)).is_err() || !request.state.await_activation() {
+    if sender.send(Ok(info)).is_err() || !request.state.await_activation(fence) {
+        return;
+    }
+    if fence.load(Ordering::Acquire) {
+        // Abandonment raced the activation wake: this worker must not take
+        // the Engine or speak for a transport that already replaced it.
         return;
     }
     let mut engine = if request.master {
