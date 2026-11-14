@@ -149,6 +149,7 @@ impl AssetSource for ActionAssets {
             "icons/sliders.svg" => Some(include_bytes!("../../../assets/icons/sliders.svg")),
             "icons/wave.svg" => Some(include_bytes!("../../../assets/icons/wave.svg")),
             "icons/app.svg" => Some(include_bytes!("../../../assets/icons/app.svg")),
+            "icons/repeat.svg" => Some(include_bytes!("../../../assets/icons/repeat.svg")),
             "icons/git-merge.svg" => Some(include_bytes!("../../../assets/icons/git-merge.svg")),
             "icons/clock.svg" => Some(include_bytes!("../../../assets/icons/clock.svg")),
             "icons/speaker.svg" => Some(include_bytes!("../../../assets/icons/speaker.svg")),

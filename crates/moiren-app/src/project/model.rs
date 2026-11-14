@@ -385,6 +385,20 @@ pub enum WorkspaceDocument {
     Devices,
 }
 
+/// The persisted form of the presentation-tier source class (OBS-style
+/// split): which resource class a Source node was created under. Tone and
+/// unbound nodes need it stored; bound nodes re-derive their class from the
+/// live binding, and older documents without the field read as unclassified.
+/// The UI-side mapping lives with [`SourceClass`] in the node catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceClassDocument {
+    Physical,
+    Virtual,
+    Application,
+    Tone,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeLayout {
@@ -392,6 +406,8 @@ pub struct NodeLayout {
     pub node_id: u64,
     pub x: f32,
     pub y: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_class: Option<SourceClassDocument>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

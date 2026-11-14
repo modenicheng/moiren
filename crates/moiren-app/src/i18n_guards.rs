@@ -706,7 +706,11 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 ///
 /// When one of these keys gains a literal call site, remove it here — the
 /// guard fails on stale entries on purpose.
-const DYNAMIC_KEY_EXCEPTIONS: [&str; 111] = [
+
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 115] = [
+
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 115] = [
+
     // AudioConfigError Display strings looked up at paint from the enum payload
     // (UiFailure::InvalidAudioSettings); mirrored in tests/i18n_ledger.rs
     // ALLOWED_RUNTIME_KEYS.
@@ -817,6 +821,8 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 111] = [
     "Threshold",
     "Tone generator",
     "Use each device's default period.",
+    "VAD virtual capture endpoint",
+    "Virtual device",
     "WASAPI",
     "WASAPI capture endpoint",
     "WASAPI render endpoint",

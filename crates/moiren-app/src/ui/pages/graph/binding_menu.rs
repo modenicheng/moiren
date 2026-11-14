@@ -66,6 +66,9 @@ fn row(this: Entity<StudioShell>, choice: BindingChoice) -> impl IntoElement {
             this.update(cx, |shell, cx| {
                 match choice.action.clone() {
                     BindingAction::Edit(edit) => {
+                        if let crate::service::GraphEdit::ClearBinding(node) = &edit {
+                            shell.pin_source_class_before_clear(*node, cx);
+                        }
                         shell
                             .state
                             .update(cx, |state, _| state.dispatch(AppRequest::EditGraph(edit)));
@@ -91,7 +94,11 @@ pub(crate) fn overlay(
     let Some(menu) = shell.graph_view.binding_menu else {
         return div().into_any_element();
     };
-    let Some(choices) = binding_choices::choices(&shell.state.read(cx).snapshot, menu.node) else {
+    let Some(choices) = binding_choices::choices(
+        &shell.state.read(cx).snapshot,
+        menu.node,
+        shell.graph_view.source_classes.get(&menu.node).copied(),
+    ) else {
         return div().into_any_element();
     };
     // Hang the menu under the chip, flipping above it when the window

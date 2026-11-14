@@ -462,6 +462,7 @@ impl StudioShell {
             graph_view: graph::page::GraphViewState {
                 camera: Camera::default(),
                 node_positions: Default::default(),
+                source_classes: Default::default(),
                 focus: cx.focus_handle(),
                 context_menu: None,
                 binding_menu: None,
