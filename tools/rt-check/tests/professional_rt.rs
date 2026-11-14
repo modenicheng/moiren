@@ -126,6 +126,8 @@ mod negotiation {
     pub(crate) const MAX_BUFFER_FRAMES: u32 = 65_536;
     pub(crate) const MAX_CHANNELS: usize = 32;
 }
+#[path = "../../../crates/moiren-windows-audio/src/engine_backend/absence.rs"]
+mod absence;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/owner.rs"]
 #[allow(dead_code)]
 mod professional_owner;
@@ -707,6 +709,7 @@ fn transport_with_recovery<S: ProcessingSample>(
             capacity: 4096,
             master: true,
             recovery,
+            absence: None,
         },
         &CancellationToken::default(),
         Duration::from_secs(10),

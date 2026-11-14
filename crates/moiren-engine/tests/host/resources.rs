@@ -48,6 +48,41 @@ fn resources_wait_recover_and_ignore_duplicate_or_unrelated_events() {
 }
 
 #[test]
+fn owner_absence_failure_reprepares_immediately_and_keeps_running() {
+    // A runtime device unplug (absence-class owner failure) is not a blocked
+    // preparation: the failed owner retires through the bounded cleanup lane
+    // and the supervisor re-prepares at once, so the session returns to
+    // Running without ever parking in WaitingForResources. The non-absence
+    // contrast is resources_lost_owner_is_reclaimed_and_recovers_in_new_epoch.
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let (project, _, _, _) = project();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    let before = wait(&host.observer(), |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    state.absent_owner_once.store(true, Ordering::SeqCst);
+    let recovered = wait(&host.observer(), |snapshot| {
+        snapshot.execution == ExecutionState::Running
+            && snapshot.owner_generation > before.owner_generation
+            && snapshot.update == UpdateState::Idle
+    });
+    wait_count(&state.stops, 1);
+    assert_eq!(state.prepares.load(Ordering::SeqCst), 2);
+    assert_eq!(state.attaches.load(Ordering::SeqCst), 2);
+    assert_eq!(state.starts.load(Ordering::SeqCst), 2);
+    assert!(recovered.active_revision.is_some());
+    assert!(recovered.fault.is_none());
+    // The retired owner's absence failure surfaces as cleanup diagnostics,
+    // never as a blocked update or a fault.
+    assert!(matches!(
+        &recovered.cleanup_error,
+        Some(BackendError::ResourceAbsent(_))
+    ));
+    assert!(state.events.lock().unwrap().is_empty());
+}
+
+#[test]
 fn resources_lost_owner_is_reclaimed_and_recovers_in_new_epoch() {
     let backend = FakeBackend::default();
     let state = backend.0.clone();

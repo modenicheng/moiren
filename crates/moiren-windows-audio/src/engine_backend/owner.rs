@@ -1,6 +1,7 @@
 //! Native workers park before activation. The master borrows Engine during the
 //! unwind boundary, then returns it through a control-only handoff after Stop.
 use super::{
+    absence::RuntimeAbsenceReport,
     native_observations::{NativeObservations, NativeStreamKind, NativeStreamObservation},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     recovery::RecoveryTicket,
@@ -274,6 +275,11 @@ pub(super) struct WorkerRequest<S: ProcessingSample> {
     pub capacity: usize,
     pub master: bool,
     pub recovery: Option<RecoveryTicket>,
+    /// Marks this worker's endpoints when its stream dies of an absence-class
+    /// error: the runtime-unplug report happens before the failure is
+    /// recorded, so the supervisor's immediate re-prepare can never race the
+    /// mark and resolve the endpoint as still-present (issue #105).
+    pub absence: Option<RuntimeAbsenceReport>,
 }
 
 /// A spawned worker whose open handshake has not settled yet. The prepare
@@ -601,6 +607,15 @@ fn native_owner<S: ProcessingSample>(
         // transport already moved on, and the cleanup lane recorded the
         // abandonment fault itself.
         if !fence.load(Ordering::Acquire) {
+            // A device-removal failure reports its endpoints as runtime
+            // absent before the failure becomes visible: the supervisor's
+            // degrade re-prepare (which only starts after this worker joined
+            // its cleanup) then binds them as null streams.
+            if matches!(error, BackendError::ResourceAbsent(_))
+                && let Some(absence) = &request.absence
+            {
+                absence.report();
+            }
             request.state.record_failure(error, recovery);
         }
     }

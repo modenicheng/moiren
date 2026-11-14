@@ -241,6 +241,9 @@ pub(super) struct FakeNativeDevices {
     /// Endpoints that report absence at resolve time, driving the null-stream
     /// preparation path.
     pub absent: Vec<String>,
+    /// Endpoints whose stream dies with the runtime-unplug absence error on
+    /// its first run-loop wait — a device removed mid-run.
+    pub unplug: Vec<String>,
     /// Endpoints whose stream open blocks on `hang_gate` before returning —
     /// a wedged driver activation.
     pub hang: Vec<String>,
@@ -284,6 +287,7 @@ impl NativeDevices for FakeNativeDevices {
         let probe = self.probe.clone();
         let faults = self.faults;
         let hangs = self.hang.contains(&group.id);
+        let unplugs = self.unplug.contains(&group.id);
         let hang_gate = self.hang_gate.clone();
         let open_barrier = self.open_barrier.clone();
         let teardown_gate = self.teardown_gate.clone();
@@ -329,6 +333,7 @@ impl NativeDevices for FakeNativeDevices {
                 info,
                 probe,
                 faults,
+                unplug: unplugs,
                 teardown_gate,
             }))
         }))
@@ -338,6 +343,9 @@ struct FakeNative {
     info: NativeStreamInfo,
     probe: Arc<NativeProbe>,
     faults: Faults,
+    /// This endpoint's device is yanked mid-run: `wait()` dies with the
+    /// runtime-unplug absence error.
+    unplug: bool,
     teardown_gate: Gate,
 }
 impl NativeStream for FakeNative {
@@ -374,6 +382,10 @@ impl NativeStream for FakeNative {
         if self.faults.hang_wait {
             self.teardown_gate.wait();
         }
+        if self.unplug {
+            // The device was yanked mid-run: the runtime-unplug absence class.
+            return Err(absence_error());
+        }
         if self.faults.wait {
             return Err(native_error("wait"));
         }
@@ -397,6 +409,11 @@ impl Drop for FakeNative {
 }
 pub(super) fn native_error(phase: &str) -> BackendError {
     BackendError::Failed(format!("injected native {phase} failure"))
+}
+/// The runtime-unplug absence class a real WASAPI stream reports from its
+/// endpoint-invalidation latch.
+pub(super) fn absence_error() -> BackendError {
+    BackendError::ResourceAbsent("selected WASAPI endpoint was removed or became inactive".into())
 }
 pub(super) fn wait_until(mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(3);

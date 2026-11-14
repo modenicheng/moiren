@@ -242,6 +242,7 @@ impl Fixture {
                 capacity: 1024,
                 master,
                 recovery: None,
+                absence: None,
             },
             &CancellationToken::default(),
             Duration::from_secs(10),
