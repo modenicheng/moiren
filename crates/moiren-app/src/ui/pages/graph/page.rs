@@ -153,18 +153,24 @@ pub(crate) struct WorldCache {
     graph: ArcSnapshot<crate::service::GraphSnapshot>,
     catalog: ArcSnapshot<crate::service::DeviceCatalog>,
     positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+    source_classes:
+        std::collections::HashMap<moiren_core::graph::NodeId, super::node_catalog::SourceClass>,
     detached: Option<moiren_core::graph::PortId>,
     locale: crate::i18n::UiLanguage,
     pub(crate) world: std::sync::Arc<crate::ui::pages::graph::graph_canvas::CanvasWorld>,
 }
 
 impl WorldCache {
-    /// Projects the cache entry for a world built from `snapshot` and
-    /// `positions`; the key fields stay private so a stale reuse cannot be
-    /// smuggled past [`Self::matches`].
+    /// Projects the cache entry for a world built from `snapshot`,
+    /// `positions` and `source_classes`; the key fields stay private so a
+    /// stale reuse cannot be smuggled past [`Self::matches`].
     pub(crate) fn build(
         snapshot: &crate::service::AppSnapshot,
         positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+        source_classes: std::collections::HashMap<
+            moiren_core::graph::NodeId,
+            super::node_catalog::SourceClass,
+        >,
         detached: Option<moiren_core::graph::PortId>,
         world: std::sync::Arc<crate::ui::pages::graph::graph_canvas::CanvasWorld>,
     ) -> Self {
@@ -172,6 +178,7 @@ impl WorldCache {
             graph: ArcSnapshot::new(snapshot.graph.clone()),
             catalog: ArcSnapshot::new(snapshot.catalog.clone()),
             positions,
+            source_classes,
             detached,
             locale: crate::i18n::current(),
             world,
@@ -182,13 +189,19 @@ impl WorldCache {
         &self,
         snapshot: &crate::service::AppSnapshot,
         positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+        source_classes: &std::collections::HashMap<
+            moiren_core::graph::NodeId,
+            super::node_catalog::SourceClass,
+        >,
         detached: Option<moiren_core::graph::PortId>,
     ) -> bool {
-        // Pointer fast path on the graph and catalog; positions compare by
-        // value (an allocation-free O(n) walk) because they mutate in place.
+        // Pointer fast path on the graph and catalog; positions and source
+        // classes compare by value (an allocation-free O(n) walk) because
+        // they mutate in place — the classes key the cards' identity icons.
         self.graph == ArcSnapshot::new(snapshot.graph.clone())
             && self.catalog == ArcSnapshot::new(snapshot.catalog.clone())
             && self.positions == *positions
+            && self.source_classes == *source_classes
             && self.detached == detached
             && self.locale == crate::i18n::current()
     }

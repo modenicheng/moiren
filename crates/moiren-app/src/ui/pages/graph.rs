@@ -260,6 +260,7 @@ impl StudioShell {
             crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
                 &state.snapshot,
                 &self.graph_view.node_positions,
+                &self.graph_view.source_classes,
             )
         };
         let sizes: arrange::CardSizes = world
@@ -312,6 +313,7 @@ impl StudioShell {
             crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
                 &state.snapshot,
                 &self.graph_view.node_positions,
+                &self.graph_view.source_classes,
             )
             .nodes
             .into_iter()
@@ -438,7 +440,12 @@ pub(crate) fn page(
             .world_cache
             .as_ref()
             .filter(|cache| {
-                cache.matches(&state.snapshot, &shell.graph_view.node_positions, detached)
+                cache.matches(
+                    &state.snapshot,
+                    &shell.graph_view.node_positions,
+                    &shell.graph_view.source_classes,
+                    detached,
+                )
             })
             .map(|cache| cache.world.clone());
         match reused {
@@ -453,6 +460,7 @@ pub(crate) fn page(
                 let mut world = crate::ui::pages::graph::graph_canvas::CanvasWorld::positioned(
                     &state.snapshot,
                     &shell.graph_view.node_positions,
+                    &shell.graph_view.source_classes,
                 );
                 if let Some(destination) = detached {
                     world.wires.retain(|wire| wire.dst_port != destination);
@@ -461,6 +469,7 @@ pub(crate) fn page(
                 shell.graph_view.world_cache = Some(page::WorldCache::build(
                     &state.snapshot,
                     shell.graph_view.node_positions.clone(),
+                    shell.graph_view.source_classes.clone(),
                     detached,
                     world.clone(),
                 ));

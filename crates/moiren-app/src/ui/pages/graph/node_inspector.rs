@@ -387,15 +387,33 @@ impl StudioShell {
         {
             self.inspector.node_name_editing = None;
         }
-        let graph = self.state.read(cx).snapshot.graph.clone();
-        self.selection.nodes.retain(|id| graph.node(*id).is_some());
-        // Class entries are spawn/project intent; retired nodes release
-        // theirs like the selection does.
-        self.graph_view
-            .source_classes
-            .retain(|id, _| graph.node(*id).is_some());
+        let snapshot = self.state.read(cx).snapshot.clone();
+        self.selection
+            .nodes
+            .retain(|id| snapshot.graph.node(*id).is_some());
+        // Materialize the presentation class of source nodes that arrived
+        // without one — the default rig, projects saved before the split,
+        // or any service-side topology step (undo/redo). The binding infers
+        // the class exactly once; from here on the stored class is the
+        // node's identity and later binding changes can never re-class it.
+        for state in &snapshot.graph.nodes {
+            if snapshot
+                .graph
+                .graph
+                .get_node(state.id)
+                .is_ok_and(|node| node.kind() == NodeKind::Source)
+                && !self.graph_view.source_classes.contains_key(&state.id)
+            {
+                let class = super::binding_choices::effective_source_class(&snapshot, state, None);
+                self.graph_view.source_classes.insert(state.id, class);
+            }
+        }
+        // Entries outlive their node on purpose: node ids are never reused
+        // within one graph lifetime, so an undo/redo of a spawn keeps its
+        // template class. Wholesale replacement (project load) restarts the
+        // id space and clears the map at that boundary instead.
         if let Some(id) = self.selection.node {
-            if graph.node(id).is_some() {
+            if snapshot.graph.node(id).is_some() {
                 self.selection.nodes.insert(id);
             } else {
                 self.selection.node = None;

@@ -117,18 +117,22 @@ pub(crate) fn kind_title(kind: NodeKind) -> &'static str {
     }
 }
 
-/// The card icon for a kind; a Source's icon follows its live input
-/// selection (physical mic, application loopback, or the tone generator).
-pub(crate) fn kind_icon(
-    kind: NodeKind,
-    source: Option<&crate::service::InputSelection>,
-) -> &'static str {
+/// The card icon for a kind. A Source's icon follows its presentation
+/// class — the stored identity, never the live binding: what a source node
+/// *is* comes from [`SourceClass`] alone, and the binding only names where
+/// it is wired (see the binding chip and `source_name`).
+pub(crate) fn kind_icon(kind: NodeKind, source_class: Option<SourceClass>) -> &'static str {
     use moiren_core::graph::NodeKind::*;
     match kind {
-        Source => match source {
-            Some(crate::service::InputSelection::Process { .. }) => "app",
-            Some(crate::service::InputSelection::Tone { .. }) => "wave",
-            Some(crate::service::InputSelection::Physical { .. }) | None => "mic",
+        Source => match source_class {
+            Some(SourceClass::Virtual) => VIRTUAL_DEVICE_ICON,
+            Some(SourceClass::Application) => "app",
+            Some(SourceClass::Tone) => "wave",
+            // `None` only occurs on the frame before the render sync
+            // materializes a class for a node that arrived without one;
+            // the physical glyph matches what materialization will pick
+            // for an unclassable node.
+            Some(SourceClass::Physical) | None => "mic",
         },
         Sink => "speaker",
         Bus => "git-merge",
@@ -148,27 +152,9 @@ pub(crate) fn kind_icon(
     }
 }
 
-/// The icon name every virtual-device surface wears (template card, VAD-bound
-/// source cards).
+/// The icon name every virtual-device surface wears (template card,
+/// virtual-class source cards).
 pub(crate) const VIRTUAL_DEVICE_ICON: &str = "repeat";
-
-/// The canvas card icon: like [`kind_icon`], except a Source bound to one of
-/// our virtual (VAD) endpoints wears the virtual-device glyph — the binding
-/// is an ordinary physical endpoint id, so only the catalog can tell the two
-/// apart.
-pub(crate) fn card_icon(
-    snapshot: &crate::service::AppSnapshot,
-    kind: NodeKind,
-    source: Option<&crate::service::InputSelection>,
-) -> &'static str {
-    if kind == NodeKind::Source
-        && let Some(crate::service::InputSelection::Physical { endpoint_id }) = source
-        && crate::ui::state::is_virtual_endpoint(&snapshot.catalog, endpoint_id)
-    {
-        return VIRTUAL_DEVICE_ICON;
-    }
-    kind_icon(kind, source)
-}
 
 impl NodeTemplate {
     pub const ALL: [Self; 18] = [
