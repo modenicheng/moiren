@@ -25,6 +25,7 @@
 //! against, re-derived from the published specification.
 
 pub mod clap;
+pub mod sandbox;
 pub mod scan;
 pub mod spec;
 pub mod vst2;

@@ -442,20 +442,28 @@ impl PluginInstance for Vst2Instance {
         let mut data: *mut c_void = std::ptr::null_mut();
         // SAFETY: control-side chunk request; the plugin hands back a buffer
         // it owns until the next dispatcher call.
+        //
+        // The dispatcher's `index` is the isBank flag: 0 saves the one
+        // program this instance runs (what every mainstream host stores),
+        // 1 would save a whole preset bank. Plugins exist that implement
+        // only one of the two (T-RackS CS Metering answers only program
+        // chunks), so the instance contract maps to the program side.
         let size = unsafe {
             ((*self.effect).dispatcher)(
                 self.effect,
                 EFF_GET_CHUNK,
-                1,
+                0,
                 0,
                 std::ptr::from_mut(&mut data).cast(),
                 0.0,
             )
         };
         if size <= 0 || data.is_null() {
-            return Err(PluginError::State(
-                "effGetChunk returned no program chunk".into(),
-            ));
+            // A plugin that claims effFlagsProgramChunks yet returns nothing
+            // for both program and bank chunks (T-RackS CS Metering) has no
+            // savable state; the VST2 ABI has no error code here, and
+            // mainstream hosts store nothing rather than fail the save.
+            return Ok(None);
         }
         // SAFETY: size bytes readable per the chunk contract.
         let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
@@ -478,7 +486,7 @@ impl PluginInstance for Vst2Instance {
                 ((*instance.effect).dispatcher)(
                     instance.effect,
                     EFF_SET_CHUNK,
-                    1,
+                    0,
                     state.len() as isize,
                     state.as_ptr() as *mut c_void,
                     0.0,
