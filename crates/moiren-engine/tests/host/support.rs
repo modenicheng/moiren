@@ -43,6 +43,9 @@ pub struct State {
     pub panic_prepare: AtomicBool,
     pub fail_update: AtomicBool,
     pub fail_owner: AtomicBool,
+    /// One-shot runtime absence-class owner failure: the owner dies exactly
+    /// once with `BackendError::ResourceAbsent` (a mid-run device unplug).
+    pub absent_owner_once: AtomicBool,
     pub pause_audio: AtomicBool,
     pub fail_stop: AtomicBool,
     /// The owner's stop keeps the runtime, like a wedged native owner
@@ -178,6 +181,12 @@ impl<S: ProcessingSample> PreparedTransport<S> for Transport {
                     if state.fail_owner.load(Ordering::SeqCst) {
                         error = Some(BackendError::ResourceUnavailable(
                             "owner disconnected".into(),
+                        ));
+                        break;
+                    }
+                    if state.absent_owner_once.swap(false, Ordering::SeqCst) {
+                        error = Some(BackendError::ResourceAbsent(
+                            "selected endpoint was removed or became inactive".into(),
                         ));
                         break;
                     }

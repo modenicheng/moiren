@@ -193,7 +193,15 @@ impl<S: ProcessingSample> Supervisor<S> {
                     self.fault = Some(Diagnostic::Backend(error.clone()));
                 }
                 self.stop_active();
-                self.blocked = Some((self.basis(), Diagnostic::Backend(error)));
+                // An absence-class failure (the device was unplugged mid-run)
+                // is not a blocked preparation: the backend re-prepares at
+                // once, degrading the missing endpoint to a null stream so the
+                // session keeps running instead of waiting for the re-plug
+                // (issue #105 runtime unplug). Every other failure keeps the
+                // stop-and-wait semantics.
+                if !matches!(error, BackendError::ResourceAbsent(_)) {
+                    self.blocked = Some((self.basis(), Diagnostic::Backend(error)));
+                }
             }
             _ => {}
         }

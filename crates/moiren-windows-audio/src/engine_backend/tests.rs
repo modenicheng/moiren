@@ -96,10 +96,20 @@ fn native_devices_absent(faults: Faults, absent: Vec<String>) -> FakeNativeDevic
         probe: Arc::default(),
         faults,
         absent,
+        unplug: Vec::new(),
         hang: Vec::new(),
         hang_gate: Gate::default(),
         open_barrier: None,
         teardown_gate: Gate::default(),
+    }
+}
+
+/// A fake whose `unplug` endpoints die with the runtime-unplug absence error
+/// on their first run-loop wait — a device yanked mid-run (issue #105).
+fn native_devices_unplugging(unplug: Vec<String>) -> FakeNativeDevices {
+    FakeNativeDevices {
+        unplug,
+        ..native_devices_absent(Default::default(), Vec::new())
     }
 }
 
@@ -112,6 +122,7 @@ fn native_devices_hanging(faults: Faults, hang: Vec<String>) -> (FakeNativeDevic
             probe: Arc::default(),
             faults,
             absent: Vec::new(),
+            unplug: Vec::new(),
             hang,
             hang_gate: gate.clone(),
             open_barrier: None,
@@ -1393,6 +1404,7 @@ fn group_opens_run_concurrently() {
         probe: Arc::default(),
         faults: Faults::default(),
         absent: Vec::new(),
+        unplug: Vec::new(),
         hang: Vec::new(),
         hang_gate: Gate::default(),
         open_barrier: Some(Arc::new(std::sync::Barrier::new(2))),
@@ -1478,6 +1490,7 @@ fn native_devices_wedged_teardown(faults: Faults) -> (FakeNativeDevices, Gate) {
             probe: Arc::default(),
             faults,
             absent: Vec::new(),
+            unplug: Vec::new(),
             hang: Vec::new(),
             hang_gate: Gate::default(),
             open_barrier: None,
@@ -1575,5 +1588,235 @@ fn a_wedged_run_loop_owner_is_abandoned_without_the_engine() {
     assert!(
         backend.poll_resource().is_none(),
         "an abandoned worker never spends a recovery ticket"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Runtime unplug: a running stream that dies of device removal degrades its
+// endpoint to a null stream and upgrades it on the re-plug (issue #105)
+// ---------------------------------------------------------------------------
+
+/// A presence probe the test flips like a physical re-plug: `true` resolves
+/// the endpoint to its native id, `false` reports it missing.
+fn presence_probe(endpoint: &str, present: &Arc<std::sync::atomic::AtomicBool>) -> AbsenceProbe {
+    let endpoint = endpoint.to_owned();
+    let present = present.clone();
+    Arc::new(move |_| present.load(Ordering::Acquire).then(|| endpoint.clone()))
+}
+
+#[test]
+fn a_runtime_unplug_degrades_to_a_null_stream_and_upgrades_on_return() {
+    // The capture device is yanked mid-run while it still enumerates: the
+    // owner fails absence-class, the immediate re-prepare binds the endpoint
+    // as a null stream WITHOUT reopening it (the suppress verdict), the
+    // healthy master keeps its native stream, and the watch upgrades the
+    // null stream only after the device is seen missing once and returns —
+    // the same re-plug contract as a stuck endpoint.
+    let (project, source, sink) = wasapi_stream_project("{yanked-input}", "{sink}");
+    let native = native_devices_unplugging(vec!["{yanked-input}".into()]);
+    let present = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_absence_probe(presence_probe("{yanked-input}", &present));
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel.clone());
+    owner.activate().unwrap();
+    wait_until(|| {
+        matches!(
+            owner.status(),
+            OwnerStatus::Failed(error) if matches!(error, BackendError::ResourceAbsent(_))
+        )
+    });
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, Some(absence_error()));
+    assert_eq!(native.probe.opened.load(Ordering::Acquire), 2);
+    assert_eq!(native.probe.dropped.load(Ordering::Acquire), 2);
+
+    // Degrade re-prepare while the invalidated endpoint still enumerates: it
+    // must not be reopened — it prepares as a null stream — while the healthy
+    // master reopens natively.
+    let healthy = native_devices(Default::default());
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &healthy)
+        .expect("the unplugged endpoint degrades instead of failing the prepare");
+    assert_eq!(
+        healthy.probe.opened.load(Ordering::Acquire),
+        1,
+        "only the healthy master is reopened"
+    );
+    let owner = attach(&project, prepared, cancel.clone());
+    owner.activate().unwrap();
+    wait_until(|| healthy.probe.started.load(Ordering::Acquire) == 1);
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    let degraded = streams
+        .iter()
+        .find(|stream| stream.node == source)
+        .expect("the degraded endpoint keeps its observation");
+    assert!(degraded.absent);
+    assert_eq!(degraded.actual.buffer_frames, 0);
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.node == sink && !stream.absent),
+        "the healthy master keeps its native stream"
+    );
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+
+    // A still-enumerating endpoint has not "returned": the suppress verdict
+    // holds, exactly like a stuck endpoint.
+    assert!(
+        backend.poll_resource().is_none(),
+        "the still-enumerating endpoint is suppressed"
+    );
+    // Re-plug cycle: missing once clears the verdict, the return emits the
+    // upgrade event. The watch probes at most once per second, so each
+    // transition waits out the throttle interval.
+    present.store(false, Ordering::Release);
+    assert!(backend.poll_resource().is_none());
+    std::thread::sleep(Duration::from_millis(1100));
+    assert!(
+        backend.poll_resource().is_none(),
+        "the missing observation clears the verdict without an event"
+    );
+    present.store(true, Ordering::Release);
+    std::thread::sleep(Duration::from_millis(1100));
+    let event = backend
+        .poll_resource()
+        .expect("the re-plugged endpoint reports its return");
+    assert_eq!(event.node, source);
+    assert_eq!(event.configuration, project.nodes[&source]);
+    assert!(event.available);
+
+    // The upgrade re-prepare opens the real stream again: both endpoints are
+    // native and nothing is absent.
+    let restored = native_devices(Default::default());
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &restored)
+        .expect("the recovered endpoint opens for real");
+    assert_eq!(restored.probe.opened.load(Ordering::Acquire), 2);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| restored.probe.started.load(Ordering::Acquire) == 2);
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    assert!(
+        streams.iter().all(|stream| !stream.absent),
+        "the upgraded session runs fully native"
+    );
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+}
+
+#[test]
+fn a_runtime_unplug_that_leaves_enumeration_upgrades_without_a_second_cycle() {
+    // The device is gone from enumeration by the time the degrade re-prepare
+    // resolves it: the resolve itself is the missing sighting that consumes
+    // the suppress verdict, so the returning device upgrades immediately —
+    // no extra unplug cycle may be required to lift the verdict.
+    let (project, source, _sink) = wasapi_stream_project("{gone-input}", "{sink}");
+    let native = native_devices_unplugging(vec!["{gone-input}".into()]);
+    let present = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let backend = ProfessionalBackend::<f64>::new()
+        .unwrap()
+        .with_absence_probe(presence_probe("{gone-input}", &present));
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel.clone());
+    owner.activate().unwrap();
+    wait_until(|| matches!(owner.status(), OwnerStatus::Failed(_)));
+    assert_eq!(owner.stop_and_join().error, Some(absence_error()));
+
+    // Degrade re-prepare with the endpoint missing from enumeration: the
+    // null stream registers the watch carrying the last native id.
+    let missing = native_devices_absent(Default::default(), vec!["{gone-input}".into()]);
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &missing)
+        .expect("the missing endpoint prepares as a null stream");
+    assert_eq!(missing.probe.opened.load(Ordering::Acquire), 1);
+    let owner = attach(&project, prepared, cancel.clone());
+    owner.activate().unwrap();
+    wait_until(|| missing.probe.started.load(Ordering::Acquire) == 1);
+    assert!(
+        backend
+            .observations()
+            .snapshot()
+            .expect("the degraded owner still observes its streams")
+            .streams
+            .iter()
+            .any(|stream| stream.node == source && stream.absent)
+    );
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+
+    // The device reappears: the first sighting after the throttle interval
+    // emits the upgrade event — the verdict was consumed at resolve time.
+    present.store(true, Ordering::Release);
+    std::thread::sleep(Duration::from_millis(1100));
+    let event = backend
+        .poll_resource()
+        .expect("the returning device upgrades without a second unplug cycle");
+    assert_eq!(event.node, source);
+    assert_eq!(event.configuration, project.nodes[&source]);
+    assert!(event.available);
+
+    let restored = native_devices(Default::default());
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &restored)
+        .expect("the recovered endpoint opens for real");
+    assert_eq!(restored.probe.opened.load(Ordering::Acquire), 2);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| restored.probe.started.load(Ordering::Acquire) == 2);
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+}
+
+#[test]
+fn a_generic_runtime_failure_keeps_the_reopen_contract() {
+    // A non-absence runtime error never degrades: the endpoint is not
+    // suppressed and the next prepare reopens the device for real. Only the
+    // absence class enters the null-stream degrade.
+    let (project, _source, _sink) = wasapi_stream_project("{flaky-input}", "{sink}");
+    let native = native_devices(Faults {
+        wait: true,
+        ..Default::default()
+    });
+    let backend = ProfessionalBackend::<f64>::new().unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel.clone());
+    owner.activate().unwrap();
+    wait_until(|| owner.status() == OwnerStatus::Failed(native_error("wait")));
+    assert_eq!(owner.stop_and_join().error, Some(native_error("wait")));
+
+    // No suppress verdict was recorded: both endpoints reopen natively.
+    let healthy = native_devices(Default::default());
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &healthy)
+        .expect("a generic failure keeps the ordinary reopen contract");
+    assert_eq!(healthy.probe.opened.load(Ordering::Acquire), 2);
+    let owner = attach(&project, prepared, cancel.clone());
+    owner.activate().unwrap();
+    wait_until(|| healthy.probe.started.load(Ordering::Acquire) == 2);
+    let streams = &backend.observations().snapshot().unwrap().streams;
+    assert!(streams.iter().all(|stream| !stream.absent));
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+    assert!(
+        backend.poll_resource().is_none(),
+        "no absence watch was registered for a generic failure"
     );
 }

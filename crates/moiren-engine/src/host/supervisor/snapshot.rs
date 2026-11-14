@@ -24,7 +24,9 @@ impl<S: ProcessingSample> Supervisor<S> {
             || matches!(
                 &update,
                 UpdateState::Blocked {
-                    reason: Diagnostic::Backend(BackendError::ResourceUnavailable(_)),
+                    reason: Diagnostic::Backend(
+                        BackendError::ResourceUnavailable(_) | BackendError::ResourceAbsent(_),
+                    ),
                     ..
                 }
             );

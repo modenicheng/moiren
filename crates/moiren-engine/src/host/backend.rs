@@ -87,6 +87,14 @@ impl CancellationToken {
 pub enum BackendError {
     #[error("resource unavailable: {0}")]
     ResourceUnavailable(String),
+    /// The endpoint's device is gone: it was removed, disabled, or its audio
+    /// infrastructure stopped while the owner was running. Absence-class
+    /// (issue #105 runtime unplug): unlike [`BackendError::ResourceUnavailable`]
+    /// this is not a blocked preparation — the owning backend re-prepares at
+    /// once and degrades the missing endpoint to a null stream, and a
+    /// prepare/open that fails this way still reports waiting-for-resources.
+    #[error("resource absent: {0}")]
+    ResourceAbsent(String),
     #[error("unsupported backend configuration: {0}")]
     Unsupported(String),
     #[error("backend failed: {0}")]
