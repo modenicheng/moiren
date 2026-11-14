@@ -4,8 +4,7 @@
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
 // Mirrors `NATIVE_TEARDOWN_DEADLINE` from the library root so the
 // shadow-compiled owner resolves the same teardown bound.
-pub(crate) const NATIVE_TEARDOWN_DEADLINE: std::time::Duration =
-    std::time::Duration::from_secs(2);
+pub(crate) const NATIVE_TEARDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 use moiren_engine::{
     audio_config::SampleFormat,
     boundary::{BoundaryReport, RtAudioSource},
@@ -127,6 +126,7 @@ mod negotiation {
     pub(crate) const MAX_CHANNELS: usize = 32;
 }
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/absence.rs"]
+#[allow(dead_code)]
 mod absence;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/owner.rs"]
 #[allow(dead_code)]
@@ -652,6 +652,59 @@ fn capture_queue_and_servo_are_allocation_free_with_startup_silence() {
     measure_capture::<f64>();
 }
 
+#[test]
+fn process_ingress_elapsed_freshness_discard_and_reprime_allocate_nothing() {
+    for rate in [44_100, 48_000, 96_000] {
+        let (mut ingress, mut source, observer) =
+            clock_bridge::capture_bridge(clock_bridge::ClockBridgeConfig {
+                output_sample_rate: rate,
+                capacity_frames: 64,
+                target_fill_frames: 16,
+                max_correction_ppm: 0.0,
+                detect_position_gaps: false,
+                max_ingress_elapsed_100ns: Some(100),
+                ..Default::default()
+            })
+            .unwrap();
+        let packet = clock_bridge::CapturePacket {
+            frames: 16,
+            flags: stats::SILENT,
+            device_position_frames: 0,
+            qpc_100ns: 0,
+        };
+        let mut output = [0.0; 2];
+        measured(|| {
+            for n in 0..1000 {
+                let origin = 1000 + n * 1000;
+                assert_eq!(
+                    ingress
+                        .push_packet_with_publication_clock(&[], packet, || Some(origin))
+                        .unwrap(),
+                    16
+                );
+                assert_eq!(
+                    source
+                        .read_interleaved_with_publication_clock(&mut output, || Some(origin + 1))
+                        .unwrap()
+                        .transferred_frames,
+                    1
+                );
+                let stale = source
+                    .read_interleaved_with_publication_clock(&mut output, || Some(origin + 101))
+                    .unwrap();
+                assert_eq!(stale.transferred_frames, 0);
+                assert!(stale.discontinuity);
+            }
+        });
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.ingress_elapsed_recoveries, 1000);
+        assert_eq!(snapshot.ingress_elapsed_discarded_frames, 16_000);
+        assert_eq!(snapshot.dropped_frames, 0);
+        assert!(source.oldest_frame_age(2_000_000).is_none());
+        assert!(!observer.queue_history().unwrap().saturated);
+    }
+}
+
 fn transport<S: ProcessingSample>(
     failure: Failure,
     panic: bool,
@@ -724,20 +777,18 @@ fn transport_with_recovery<S: ProcessingSample>(
 fn recoverable_notifications_are_published_only_after_owner_cleanup() {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Sink, 2).unwrap();
-    let config = moiren_engine::host::NodeConfig::Output(
-        moiren_engine::node::OutputConfig {
-                target: moiren_engine::node::OutputTarget::Physical(
-                    moiren_engine::node::EndpointSelector::FollowDefault(
-                        moiren_engine::node::DefaultDeviceRole::Multimedia,
-                    ),
-                ),
-                channels: 2,
-                device: moiren_engine::node::DeviceOptions {
-                    clock_role: moiren_engine::boundary::ClockRole::Master,
-                    ..Default::default()
-                },
+    let config = moiren_engine::host::NodeConfig::Output(moiren_engine::node::OutputConfig {
+        target: moiren_engine::node::OutputTarget::Physical(
+            moiren_engine::node::EndpointSelector::FollowDefault(
+                moiren_engine::node::DefaultDeviceRole::Multimedia,
+            ),
+        ),
+        channels: 2,
+        device: moiren_engine::node::DeviceOptions {
+            clock_role: moiren_engine::boundary::ClockRole::Master,
+            ..Default::default()
         },
-    );
+    });
     for failure in [
         Failure::Recover,
         Failure::RecoverStop,
@@ -801,20 +852,19 @@ fn deferred_recovery_respects_explicit_cancellation_and_rejected_tickets() {
         for exhaust_ticket in [false, true] {
             let mut graph = LogicalGraph::new();
             let node = graph.create_node(NodeKind::Sink, 2).unwrap();
-            let config = moiren_engine::host::NodeConfig::Output(
-                moiren_engine::node::OutputConfig {
-                        target: moiren_engine::node::OutputTarget::Physical(
-                            moiren_engine::node::EndpointSelector::FollowDefault(
-                                moiren_engine::node::DefaultDeviceRole::Multimedia,
-                            ),
+            let config =
+                moiren_engine::host::NodeConfig::Output(moiren_engine::node::OutputConfig {
+                    target: moiren_engine::node::OutputTarget::Physical(
+                        moiren_engine::node::EndpointSelector::FollowDefault(
+                            moiren_engine::node::DefaultDeviceRole::Multimedia,
                         ),
-                        channels: 2,
-                        device: moiren_engine::node::DeviceOptions {
-                            clock_role: moiren_engine::boundary::ClockRole::Master,
-                            ..Default::default()
-                        },
-                },
-            );
+                    ),
+                    channels: 2,
+                    device: moiren_engine::node::DeviceOptions {
+                        clock_role: moiren_engine::boundary::ClockRole::Master,
+                        ..Default::default()
+                    },
+                });
             let monitor = recovery::RecoveryMonitor::default();
             let ticket = monitor.register(3, vec![(node, config)], 96000);
             if exhaust_ticket {
@@ -997,20 +1047,18 @@ fn combined_native_and_dsp_faults_keep_panic_dominance_and_control_side_engine_d
 fn assert_combined_faults(faults: Faults, dsp_panic: bool) {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Sink, 2).unwrap();
-    let config = moiren_engine::host::NodeConfig::Output(
-        moiren_engine::node::OutputConfig {
-                target: moiren_engine::node::OutputTarget::Physical(
-                    moiren_engine::node::EndpointSelector::FollowDefault(
-                        moiren_engine::node::DefaultDeviceRole::Multimedia,
-                    ),
-                ),
-                channels: 2,
-                device: moiren_engine::node::DeviceOptions {
-                    clock_role: moiren_engine::boundary::ClockRole::Master,
-                    ..Default::default()
-                },
+    let config = moiren_engine::host::NodeConfig::Output(moiren_engine::node::OutputConfig {
+        target: moiren_engine::node::OutputTarget::Physical(
+            moiren_engine::node::EndpointSelector::FollowDefault(
+                moiren_engine::node::DefaultDeviceRole::Multimedia,
+            ),
+        ),
+        channels: 2,
+        device: moiren_engine::node::DeviceOptions {
+            clock_role: moiren_engine::boundary::ClockRole::Master,
+            ..Default::default()
         },
-    );
+    });
     let monitor = recovery::RecoveryMonitor::default();
     let ticket = monitor.register(3, vec![(node, config)], 96000);
     let (transport, compiled, released, probe) =
