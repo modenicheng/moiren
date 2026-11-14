@@ -9,12 +9,12 @@ pub struct ClockTick {
     /// immediate redue instead of discarding the missed work.
     pub backlog_periods: u64,
     /// Periods dropped to keep the repayable debt within
-    /// [`DEBT_CAP_PERIODS`]: permanently unrendered frames. An honest,
+    /// the admitted recovery ceiling: permanently unrendered frames. An honest,
     /// counted loss — never a silent rate bias on the boundary carriers.
     pub clamped_periods: u64,
 }
 
-/// Repayable debt ceiling in periods. A late wake repays its missed periods
+/// Legacy repayable debt ceiling in periods. A late wake repays its missed periods
 /// by rendering them back-to-back; debt beyond this cap is discarded and
 /// reported so the owner can escalate. The cap must stay below the boundary
 /// carriers' servo target headroom (2255 frames at the VAD shape) so a full
@@ -43,6 +43,7 @@ pub struct ClockSchedule {
     origin: u64,
     next: u64,
     last: u64,
+    recovery_cap_periods: u64,
 }
 
 impl ClockSchedule {
@@ -52,7 +53,23 @@ impl ClockSchedule {
         sample_rate: u64,
         now: u64,
     ) -> Result<Self, ClockError> {
-        if frequency == 0 || frames == 0 || sample_rate == 0 {
+        Self::with_recovery_cap(frequency, frames, sample_rate, now, DEBT_CAP_PERIODS)
+    }
+
+    /// A preparation-admitted ceiling includes the currently due period.
+    /// Every overdue period beyond it is reported by `clamped_periods`.
+    pub fn with_recovery_cap(
+        frequency: u64,
+        frames: usize,
+        sample_rate: u64,
+        now: u64,
+        recovery_cap_periods: u64,
+    ) -> Result<Self, ClockError> {
+        if frequency == 0
+            || frames == 0
+            || sample_rate == 0
+            || !(1..=DEBT_CAP_PERIODS).contains(&recovery_cap_periods)
+        {
             return Err(ClockError::InvalidConfiguration);
         }
         Ok(Self {
@@ -62,6 +79,7 @@ impl ClockSchedule {
             origin: now,
             next: 1,
             last: now,
+            recovery_cap_periods,
         })
     }
 
@@ -80,10 +98,10 @@ impl ClockSchedule {
         let elapsed = self.elapsed_periods(now)?;
         let mut backlog = elapsed.saturating_sub(self.next - 1);
         let mut clamped = 0;
-        if backlog > DEBT_CAP_PERIODS {
-            clamped = backlog - DEBT_CAP_PERIODS;
+        if backlog > self.recovery_cap_periods {
+            clamped = backlog - self.recovery_cap_periods;
             self.next = self.next.checked_add(clamped).ok_or(ClockError::Overflow)?;
-            backlog = DEBT_CAP_PERIODS;
+            backlog = self.recovery_cap_periods;
         }
         self.next = self.next.checked_add(1).ok_or(ClockError::Overflow)?;
         Ok(Some(ClockTick {

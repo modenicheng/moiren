@@ -14,7 +14,8 @@ type DriverStamp = [u64; 5];
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) struct Dispatch {
     pub action: ExportAction,
-    expected: Option<DriverStamp>,
+    pub expected: Option<DriverStamp>,
+    pub new_identity: Option<Arc<FreshExportIdentity>>,
 }
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) struct Work {
@@ -24,19 +25,34 @@ pub(crate) struct Work {
     pub drained: bool,
     pub shutdown: bool,
 }
-struct NativeObservation {
-    intent: ExportIntent,
-    snapshot: Option<DriverStamp>,
-    windows_name: Option<WindowsEndpointNameObservation>,
-    resource: ExportResourceState,
-    gate_open: bool,
-    allow_default: bool,
-    can_open: bool,
-    error: Option<String>,
+pub(crate) struct NativeObservation {
+    pub intent: ExportIntent,
+    /// Fresh policy publication, independent of PCM transport readiness.
+    pub publication_prepared: bool,
+    pub snapshot: Option<DriverStamp>,
+    /// Set only by the native adapter for a fresh, closed Removed snapshot.
+    #[cfg(feature = "vad-integration-probe")]
+    pub native_removed: Option<DriverStamp>,
+    pub resource: ExportResourceState,
+    pub gate_open: bool,
+    pub allow_default: bool,
+    pub can_open: bool,
+    pub error: Option<String>,
+    #[cfg(windows)]
+    pub diagnostics: Option<ExportDiagnostics>,
+    #[cfg(windows)]
+    pub diagnostic_provenance: moiren_windows_audio::vad::VadExportDiagnosticProvenance,
+    pub windows_name: Option<WindowsEndpointNameObservation>,
 }
 pub(crate) struct Batch {
     observations: Vec<NativeObservation>,
     pub errors: Vec<String>,
+}
+impl Batch {
+    #[cfg(test)]
+    pub(crate) fn observation_mut(&mut self, index: usize) -> &mut NativeObservation {
+        &mut self.observations[index]
+    }
 }
 pub(crate) trait Adapter: Send + Sync {
     /// No IO, waiting, or locks shared with control/PCM workers.
@@ -149,13 +165,14 @@ impl Runtime {
         result: Result<Batch, String>,
     ) -> Vec<String> {
         self.in_flight = false;
-        // Every completion replaces probe evidence, including missing endpoints
-        // and failed polls. Control dispatch retains its existing stamp policy.
+        // Every completion replaces diagnostic/probe evidence, including missing
+        // endpoints and failed polls. Dispatch keeps its own stamp policy.
+        #[cfg(windows)]
+        service.diagnostics.clear();
         #[cfg(feature = "vad-integration-probe")]
-        if !service.native_stamps.is_empty() {
-            service.native_stamps.clear();
-            service.mark_changed();
-        }
+        service.native_stamps.clear();
+        #[cfg(feature = "vad-integration-probe")]
+        service.observation_generations.clear();
         if std::mem::take(&mut self.shutdown_in_flight) {
             // Even a failed retirement attempt must permit closing the owning
             // file. Its cleanup revokes every endpoint, including unknown keys.
@@ -187,9 +204,92 @@ impl Runtime {
         let mut errors = batch.errors;
         for native in batch.observations {
             let id = native.intent.endpoint_id;
+            let publication_prepared = native.publication_prepared
+                && native.resource == ExportResourceState::Present
+                && native.error.is_none()
+                && native
+                    .snapshot
+                    .is_some_and(|stamp| stamp[..3].iter().all(|v| *v != 0));
+            #[cfg(windows)]
+            let publication_prepared = publication_prepared
+                && native.diagnostic_provenance
+                    == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh;
+            #[cfg(feature = "vad-integration-probe")]
+            let accepted_result = native.error.is_none();
+            #[cfg(feature = "vad-integration-probe")]
+            if service.available
+                && native.error.is_none()
+                && native.intent.validate().is_ok()
+                && let Some(stamp) = native.snapshot
+                && stamp[..3].iter().all(|value| *value != 0)
+            {
+                // Historical evidence stays separate from current observations.
+                // A new control session cannot inherit the previous tombstone.
+                if service
+                    .native_retirements
+                    .values()
+                    .any(|old| old.native_stamp[1] != stamp[1])
+                {
+                    service.native_retirements.clear();
+                }
+                if native.resource == ExportResourceState::Absent
+                    && !native.gate_open
+                    && !native.can_open
+                    && native.native_removed == Some(stamp)
+                    && service
+                        .native_retirements
+                        .get(&id)
+                        .is_none_or(|old| old.native_stamp != stamp)
+                {
+                    self.sequence = self
+                        .sequence
+                        .checked_add(1)
+                        .expect("export observation sequence exhausted");
+                    if service.native_retirements.len() >= MAX_EXPORTS
+                        && !service.native_retirements.contains_key(&id)
+                        && let Some(oldest) = service
+                            .native_retirements
+                            .iter()
+                            .min_by_key(|(_, evidence)| evidence.generation)
+                            .map(|(id, _)| *id)
+                    {
+                        service.native_retirements.remove(&oldest);
+                    }
+                    service.native_retirements.insert(
+                        id,
+                        ExportRetirementEvidence {
+                            generation: self.sequence,
+                            native_stamp: stamp,
+                        },
+                    );
+                }
+            }
             if native.resource == ExportResourceState::Absent {
-                // Confirmed absence needs no tombstone on the app side. A
-                // future desired export is reconciled as a fresh CREATE.
+                // Record accepted probe evidence, then keep the live provider
+                // observation absent so reconciliation still plans a fresh
+                // CREATE and no historical stamp becomes current authority.
+                self.sequence = self
+                    .sequence
+                    .checked_add(1)
+                    .expect("export observation sequence exhausted");
+                let generation = self.sequence;
+                let accepted = native.error.is_none()
+                    && !native.gate_open
+                    && !native.can_open
+                    && service
+                        .observe(ExportObservation {
+                            intent: native.intent.clone(),
+                            generation,
+                            resource: ExportResourceState::Absent,
+                            allow_default: native.allow_default,
+                            gate_open: false,
+                            active_revision: None,
+                        })
+                        .is_ok();
+                if accepted {
+                    #[cfg(feature = "vad-integration-probe")]
+                    service.observation_generations.insert(id, generation);
+                }
                 if service.observations.remove(&id).is_some() {
                     service.mark_changed();
                 }
@@ -198,14 +298,27 @@ impl Runtime {
             if let Some(stamp) = native.snapshot {
                 self.stamps.insert(native.intent.endpoint_id, stamp);
             }
-            if native.resource == ExportResourceState::Present
+            #[cfg(windows)]
+            let current_name = native.diagnostic_provenance
+                == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh;
+            #[cfg(not(windows))]
+            let current_name = true;
+            let windows_name = if current_name
+                && native.resource == ExportResourceState::Present
                 && native.error.is_none()
-                && let (Some(name), Some(stamp)) = (&native.windows_name, native.snapshot)
-                && name.native_identity == [stamp[0], stamp[1], stamp[2]]
-                && name.error.is_none()
             {
-                windows_names.insert(id, name.clone());
-            }
+                native
+                    .windows_name
+                    .as_ref()
+                    .filter(|name| {
+                        native.snapshot.is_some_and(|stamp| {
+                            name.native_identity == [stamp[0], stamp[1], stamp[2]]
+                        }) && name.error.is_none()
+                    })
+                    .cloned()
+            } else {
+                None
+            };
             #[cfg(feature = "vad-integration-probe")]
             let native_stamp = native.snapshot.filter(|_| {
                 native.error.is_none() && native.resource != ExportResourceState::Unavailable
@@ -216,6 +329,29 @@ impl Runtime {
             if native.error.is_none() {
                 self.healthy.insert(native.intent.endpoint_id);
             }
+            #[cfg(windows)]
+            let diagnostics = native.diagnostics.map(|mut diagnostics| {
+                // Evidence belongs to this lifecycle result, never to identity
+                // or generation values supplied in a detached diagnostic DTO.
+                let fresh = native.diagnostic_provenance
+                    == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh;
+                diagnostics.native_stamp = native.snapshot.filter(|_| fresh);
+                if !fresh {
+                    // QUERY failure retains lifecycle/control state, but the
+                    // cached measurement must not acquire this poll's sequence.
+                    diagnostics.telemetry = None;
+                }
+                diagnostics.error = native.error.clone();
+                diagnostics.windows_name = native
+                    .windows_name
+                    .filter(|_| fresh && native.resource == ExportResourceState::Present)
+                    .filter(|name| {
+                        native.snapshot.is_some_and(|stamp| {
+                            name.native_identity == [stamp[0], stamp[1], stamp[2]]
+                        })
+                    });
+                diagnostics
+            });
             if let Some(error) = native.error {
                 errors.push(error);
             }
@@ -223,9 +359,10 @@ impl Runtime {
                 .sequence
                 .checked_add(1)
                 .expect("export observation sequence exhausted");
+            let generation = self.sequence;
             if let Err(error) = service.observe(ExportObservation {
                 intent: native.intent,
-                generation: self.sequence,
+                generation,
                 resource: native.resource,
                 allow_default: native.allow_default,
                 gate_open: native.gate_open,
@@ -233,6 +370,23 @@ impl Runtime {
             }) {
                 errors.push(error);
             } else {
+                if publication_prepared && let Some(identity) = service.new_identities.remove(&id) {
+                    identity.revoke();
+                }
+                if let Some(name) = windows_name {
+                    windows_names.insert(id, name);
+                }
+                #[cfg(feature = "vad-integration-probe")]
+                if native.resource != ExportResourceState::Unavailable && accepted_result {
+                    service.observation_generations.insert(id, generation);
+                }
+                #[cfg(windows)]
+                if let Some(mut diagnostics) =
+                    diagnostics.filter(|_| native.resource != ExportResourceState::Unavailable)
+                {
+                    diagnostics.generation = self.sequence;
+                    service.diagnostics.insert(id, diagnostics);
+                }
                 #[cfg(feature = "vad-integration-probe")]
                 if let Some(stamp) = native_stamp
                     && service.native_stamps.get(&id) != Some(&stamp)
@@ -343,6 +497,11 @@ impl Runtime {
                 };
                 Dispatch {
                     expected: self.stamps.get(&id).copied(),
+                    new_identity: matches!(action, ExportAction::Create { .. })
+                        .then(|| service.new_identities.get(&id))
+                        .flatten()
+                        .filter(|identity| identity.valid_for(id))
+                        .cloned(),
                     action,
                 }
             })
@@ -418,9 +577,13 @@ impl Adapter for WindowsAdapter {
             for view in self.0.export_observations() {
                 if let Some(snapshot) = view.snapshot
                     && snapshot.gate_open()
-                    && let Err(error) =
-                        self.0
-                            .set_export_gate(view.spec.id, snapshot_stamp(snapshot), false, 0, 0)
+                    && let Err(error) = self.0.set_export_gate(
+                        view.endpoint_id,
+                        snapshot_stamp(snapshot),
+                        false,
+                        0,
+                        0,
+                    )
                 {
                     errors.push(error.to_string());
                 }
@@ -431,7 +594,9 @@ impl Adapter for WindowsAdapter {
                 if let Some(snapshot) = view.snapshot
                     && matches!(snapshot.state(), PdoState::Creating | PdoState::Present)
                     && !snapshot.gate_open()
-                    && let Err(error) = self.0.retire_export(view.spec.id, snapshot_stamp(snapshot))
+                    && let Err(error) = self
+                        .0
+                        .retire_export(view.endpoint_id, snapshot_stamp(snapshot))
                 {
                     errors.push(error.to_string());
                 }
@@ -449,16 +614,31 @@ impl Adapter for WindowsAdapter {
                     };
                     Channels::try_from(intent.channels as u32)
                         .map_err(|e| e.to_string())
-                        .and_then(|channels| {
-                            self.0
-                                .create_export(
+                        .and_then(|channels| match dispatch.new_identity {
+                            Some(identity) if identity.valid_for(intent.endpoint_id) => self
+                                .0
+                                .establish_export(
+                                    identity.native(),
+                                    direction,
+                                    channels,
+                                    &intent.name,
+                                    allow_default,
+                                )
+                                .map_err(|error| error.to_string()),
+                            Some(_) => Err(
+                                "fresh export allocation was revoked or differs from its endpoint"
+                                    .into(),
+                            ),
+                            None => self
+                                .0
+                                .reopen_export(
                                     intent.endpoint_id,
                                     direction,
                                     channels,
                                     &intent.name,
                                     allow_default,
                                 )
-                                .map_err(|e| e.to_string())
+                                .map_err(|error| error.to_string()),
                         })
                 }
                 ExportAction::SetGate { endpoint_id, open } => dispatch
@@ -489,69 +669,99 @@ impl Adapter for WindowsAdapter {
         let name_targets = provider_views
             .iter()
             .map(|view| moiren_windows_audio::vad::VadEndpointNameTarget {
-                endpoint_id: view.spec.id,
-                intent: view.spec.intent,
+                endpoint_id: view.endpoint_id,
+                intent: view.intent,
                 snapshot: view.snapshot,
                 removing: view.removing,
-                error: view.error.clone(),
+                error: view.error.clone().or_else(|| {
+                    (view.diagnostic_provenance
+                        == moiren_windows_audio::vad::VadExportDiagnosticProvenance::CachedAfterQueryFailure)
+                        .then(|| "QUERY failed; retained snapshot is not current name authority".into())
+                }),
             })
             .collect::<Vec<_>>();
         let windows_names = self.0.export_name_observations(&name_targets);
         let observations = provider_views
             .into_iter()
             .map(|view| {
-                let resource = match view.snapshot.map(|s| s.state()) {
-                    Some(PdoState::Removed) => ExportResourceState::Absent,
-                    Some(PdoState::Removing) => ExportResourceState::Removing,
-                    _ if view.removing => ExportResourceState::Removing,
-                    Some(PdoState::Present) => ExportResourceState::Present,
-                    _ => ExportResourceState::Creating,
-                };
-                let snapshot = view.snapshot.map(|s| {
-                    [
-                        s.pdo_token().get(),
-                        s.session_epoch(),
-                        s.endpoint_generation(),
-                        s.stream_generation(),
-                        s.gate_epoch(),
-                    ]
-                });
-                let windows_name = windows_names
+                let mut native = NativeObservation::from(view);
+                native.windows_name = windows_names
                     .iter()
-                    .find(|name| name.endpoint_id == view.spec.id)
-                    .map(|name| WindowsEndpointNameObservation {
-                        native_identity: name.native_identity,
-                        observed_qpc_100ns: name.observed_qpc_100ns,
-                        mmdevice_id: name.mmdevice_id.clone(),
-                        name: name.name.clone(),
-                        error: name.error.clone(),
+                    .find(|name| name.endpoint_id == native.intent.endpoint_id)
+                    .map(|observation| WindowsEndpointNameObservation {
+                        native_identity: observation.native_identity,
+                        observed_qpc_100ns: observation.observed_qpc_100ns,
+                        device_state: observation.device_state,
+                        device_state_error: observation.device_state_error.clone(),
+                        mmdevice_id: observation.mmdevice_id.clone(),
+                        name: observation.name.clone(),
+                        error: observation.error.clone(),
                     });
-                NativeObservation {
-                    intent: ExportIntent {
-                        endpoint_id: view.spec.id,
-                        name: view.spec.name,
-                        direction: if view.spec.intent == Intent::Playback {
-                            ExportDirection::Playback
-                        } else {
-                            ExportDirection::Microphone
-                        },
-                        channels: view.spec.channels as usize,
-                        enabled: true,
-                        binding: None,
-                    },
-                    snapshot,
-                    windows_name,
-                    resource,
-                    gate_open: view.snapshot.is_some_and(|s| s.gate_open()),
-                    allow_default: view.spec.allow_default,
-                    can_open: native_can_open(view.transport_prepared, view.snapshot),
-                    error: view.error,
-                }
+                native
             })
             .collect();
         Batch {
             observations,
             errors,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl From<moiren_windows_audio::vad::VadExportObservation> for NativeObservation {
+    fn from(view: moiren_windows_audio::vad::VadExportObservation) -> Self {
+        use moiren_windows_audio::vad::{Intent, PdoState};
+        let resource = match view.snapshot.map(|s| s.state()) {
+            Some(PdoState::Removed) => ExportResourceState::Absent,
+            Some(PdoState::Removing) => ExportResourceState::Removing,
+            _ if view.removing => ExportResourceState::Removing,
+            Some(PdoState::Present) => ExportResourceState::Present,
+            _ => ExportResourceState::Creating,
+        };
+        Self {
+            publication_prepared: view
+                .snapshot
+                .is_some_and(|snapshot| snapshot.policy_prepared()),
+            intent: ExportIntent {
+                endpoint_id: view.endpoint_id,
+                name: view.spec_name,
+                direction: if view.intent == Intent::Playback {
+                    ExportDirection::Playback
+                } else {
+                    ExportDirection::Microphone
+                },
+                channels: view.channels as usize,
+                enabled: true,
+                binding: None,
+            },
+            snapshot: view.snapshot.map(snapshot_stamp),
+            #[cfg(feature = "vad-integration-probe")]
+            native_removed: view
+                .snapshot
+                .filter(|snapshot| {
+                    snapshot.state() == PdoState::Removed
+                        && !snapshot.gate_open()
+                        && view.error.is_none()
+                        && view.diagnostic_provenance
+                            == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh
+                })
+                .map(snapshot_stamp),
+            resource,
+            gate_open: view.snapshot.is_some_and(|s| s.gate_open()),
+            allow_default: view.allow_default,
+            can_open: native_can_open(view.transport_prepared, view.snapshot),
+            diagnostics: Some(ExportDiagnostics {
+                // Runtime binds this evidence only after observe accepts it.
+                generation: 0,
+                native_stamp: view.snapshot.map(snapshot_stamp),
+                transport_prepared: view.transport_prepared,
+                telemetry: view.telemetry,
+                error: view.error.clone(),
+                windows_name: None,
+            }),
+            error: view.error,
+            diagnostic_provenance: view.diagnostic_provenance,
+            windows_name: None,
         }
     }
 }

@@ -18,6 +18,9 @@ REMOVAL_FUNCTIONS = (
     ("VadChildCleanup", r"void\s+VadChildCleanup\s*\(\s*WDFOBJECT\s+object\s*\)\s*\{"),
     ("VadChildDestroy", r"void\s+VadChildDestroy\s*\(\s*WDFOBJECT\s+object\s*\)\s*\{"),
 )
+PCM_FUNCTIONS = (
+    ("VadPcmTransferLocked", r"void\s+VadPcmTransferLocked\s*\(\s*VAD_SHARED\s*\*\s*shared\s*,[\s\S]*?\)\s*\{"),
+)
 
 
 def extract(source: str, source_name: str, functions=FUNCTIONS) -> str:
@@ -52,13 +55,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--kind", choices=("cleanup", "removal"), default="cleanup")
+    parser.add_argument("--kind", choices=("cleanup", "removal", "pcm"), default="cleanup")
     args = parser.parse_args()
     try:
         generated = extract(
             args.source.read_text(encoding="utf-8"),
             args.source.as_posix(),
-            FUNCTIONS if args.kind == "cleanup" else REMOVAL_FUNCTIONS,
+            {"cleanup": FUNCTIONS, "removal": REMOVAL_FUNCTIONS, "pcm": PCM_FUNCTIONS}[args.kind],
         )
     except (OSError, ValueError) as error:
         parser.exit(1, f"{args.kind} extraction failed: {error}\n")

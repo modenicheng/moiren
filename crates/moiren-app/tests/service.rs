@@ -1,4 +1,6 @@
-use moiren_app::service::{DispatchError, InputSelection, ServiceCore, SessionPhase, SessionSpec};
+use moiren_app::service::{
+    DispatchError, InputSelection, RunLimit, ServiceCore, SessionPhase, SessionSpec,
+};
 fn tone_spec() -> SessionSpec {
     SessionSpec {
         source: InputSelection::Tone {
@@ -7,6 +9,7 @@ fn tone_spec() -> SessionSpec {
         output_endpoint_id: "test-output".into(),
         gain: 0.05,
         pan: 0.0,
+        limit: RunLimit::UntilStopped,
         max_block_frames: 256,
     }
 }

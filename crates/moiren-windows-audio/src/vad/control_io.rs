@@ -1,6 +1,8 @@
 //! One exclusive owning file object, with bounded overlapped control waits.
 
-use super::{CREATE_SIZE, ClientError, DeviceInterface, EndpointKey, MAX_ENDPOINTS, ProtocolError};
+use super::{
+    CREATE_IDENTITY_SIZE, ClientError, DeviceInterface, EndpointKey, MAX_ENDPOINTS, ProtocolError,
+};
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::atomic::{AtomicU64, Ordering},
@@ -31,6 +33,8 @@ fn operation_name(code: u32) -> &'static str {
     match code {
         crate::vad::IOCTL_CAPABILITIES => "CAPABILITIES",
         crate::vad::IOCTL_CREATE => "CREATE",
+        crate::vad::IOCTL_CREATE_IDENTITY => "CREATE_IDENTITY",
+        crate::vad::IOCTL_IDENTITY_CAPABILITIES => "IDENTITY_CAPABILITIES",
         crate::vad::IOCTL_QUERY => "QUERY",
         crate::vad::IOCTL_REMOVE => "REMOVE",
         crate::vad::IOCTL_SET_GATE => "SET_GATE",
@@ -44,6 +48,10 @@ fn operation_label(operation: &'static str, phase: &'static str) -> &'static str
     match (operation, phase) {
         ("CAPABILITIES", "DeviceIoControl(VAD)") => "CAPABILITIES DeviceIoControl(VAD)",
         ("CREATE", "DeviceIoControl(VAD)") => "CREATE DeviceIoControl(VAD)",
+        ("CREATE_IDENTITY", "DeviceIoControl(VAD)") => "CREATE_IDENTITY DeviceIoControl(VAD)",
+        ("IDENTITY_CAPABILITIES", "DeviceIoControl(VAD)") => {
+            "IDENTITY_CAPABILITIES DeviceIoControl(VAD)"
+        }
         ("QUERY", "DeviceIoControl(VAD)") => "QUERY DeviceIoControl(VAD)",
         ("REMOVE", "DeviceIoControl(VAD)") => "REMOVE DeviceIoControl(VAD)",
         ("SET_GATE", "DeviceIoControl(VAD)") => "SET_GATE DeviceIoControl(VAD)",
@@ -51,6 +59,12 @@ fn operation_label(operation: &'static str, phase: &'static str) -> &'static str
         ("WRITE_PCM", "DeviceIoControl(VAD)") => "WRITE_PCM DeviceIoControl(VAD)",
         ("CAPABILITIES", "GetOverlappedResultEx(VAD)") => "CAPABILITIES GetOverlappedResultEx(VAD)",
         ("CREATE", "GetOverlappedResultEx(VAD)") => "CREATE GetOverlappedResultEx(VAD)",
+        ("CREATE_IDENTITY", "GetOverlappedResultEx(VAD)") => {
+            "CREATE_IDENTITY GetOverlappedResultEx(VAD)"
+        }
+        ("IDENTITY_CAPABILITIES", "GetOverlappedResultEx(VAD)") => {
+            "IDENTITY_CAPABILITIES GetOverlappedResultEx(VAD)"
+        }
         ("QUERY", "GetOverlappedResultEx(VAD)") => "QUERY GetOverlappedResultEx(VAD)",
         ("REMOVE", "GetOverlappedResultEx(VAD)") => "REMOVE GetOverlappedResultEx(VAD)",
         ("SET_GATE", "GetOverlappedResultEx(VAD)") => "SET_GATE GetOverlappedResultEx(VAD)",
@@ -65,7 +79,7 @@ fn control_error(code: u32, phase: &'static str, error: Error) -> ClientError {
 }
 
 struct Request {
-    input: [u8; CREATE_SIZE],
+    input: [u8; CREATE_IDENTITY_SIZE],
     output: [u8; 128],
     overlapped: OVERLAPPED,
     returned: u32,
@@ -241,7 +255,7 @@ impl ControlHandle {
         input: &[u8],
         deadline: Instant,
     ) -> Result<[u8; N], ClientError> {
-        if input.len() > CREATE_SIZE || N > 128 {
+        if input.len() > CREATE_IDENTITY_SIZE || N > 128 {
             return Err(ProtocolError::Inconsistent("control buffer exceeds ABI bounds").into());
         }
         if self.poisoned {
@@ -255,7 +269,7 @@ impl ControlHandle {
             .map_err(|error| ClientError::windows("CreateEventW(VAD IOCTL)", error))?;
         let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
         let mut request = Box::new(Request {
-            input: [0; CREATE_SIZE],
+            input: [0; CREATE_IDENTITY_SIZE],
             output: [0; 128],
             overlapped: OVERLAPPED {
                 hEvent: raw(&event),
@@ -444,6 +458,11 @@ mod tests {
         let operations = [
             (crate::vad::IOCTL_CAPABILITIES, "CAPABILITIES"),
             (crate::vad::IOCTL_CREATE, "CREATE"),
+            (crate::vad::IOCTL_CREATE_IDENTITY, "CREATE_IDENTITY"),
+            (
+                crate::vad::IOCTL_IDENTITY_CAPABILITIES,
+                "IDENTITY_CAPABILITIES",
+            ),
             (crate::vad::IOCTL_QUERY, "QUERY"),
             (crate::vad::IOCTL_REMOVE, "REMOVE"),
             (crate::vad::IOCTL_SET_GATE, "SET_GATE"),
@@ -538,7 +557,7 @@ mod tests {
     fn test_request() -> Box<Request> {
         let event = test_event();
         Box::new(Request {
-            input: [0; CREATE_SIZE],
+            input: [0; CREATE_IDENTITY_SIZE],
             output: [0; 128],
             overlapped: OVERLAPPED {
                 hEvent: raw(&event),
@@ -553,6 +572,25 @@ mod tests {
         control
             .exchange::<0>(crate::vad::IOCTL_QUERY, &[], Instant::now())
             .unwrap_err()
+    }
+
+    #[test]
+    fn identity_request_fits_retained_control_storage_without_native_io() {
+        let mut control = test_control();
+        let request = [0; CREATE_IDENTITY_SIZE];
+        assert!(matches!(
+            control.exchange::<128>(crate::vad::IOCTL_CREATE_IDENTITY, &request, Instant::now()),
+            Err(ClientError::DeadlineExceeded)
+        ));
+        assert!(!control.poisoned && control.pending.is_none());
+        assert!(matches!(
+            control.exchange::<128>(
+                crate::vad::IOCTL_CREATE_IDENTITY,
+                &[0; CREATE_IDENTITY_SIZE + 1],
+                Instant::now()
+            ),
+            Err(ClientError::Protocol(_))
+        ));
     }
 
     fn assert_native_error(error: ClientError, expected: HRESULT) {

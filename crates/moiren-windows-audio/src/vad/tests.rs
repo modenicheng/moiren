@@ -16,6 +16,62 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
 fn id() -> StableEndpointId {
     StableEndpointId::new(0x0807_0605_0403_0201, 0x100f_0e0d_0c0b_0a09)
 }
+
+#[test]
+fn identity_create_is_negotiated_separately_from_unchanged_v2() {
+    let mut identity_caps = [0; IDENTITY_CAPABILITIES_SIZE];
+    put32(&mut identity_caps, 0, IDENTITY_CAPABILITIES_SIZE as u32);
+    put32(&mut identity_caps, 4, IDENTITY_VERSION);
+    put32(&mut identity_caps, 8, CAP_PUBLICATION_IDENTITY);
+    assert!(IdentityCapabilities::decode(&identity_caps).is_ok());
+    for offset in [0, 4, 8, 12] {
+        let mut malformed = identity_caps;
+        put32(&mut malformed, offset, 999);
+        assert!(IdentityCapabilities::decode(&malformed).is_err());
+    }
+    // The pre-identity v2 decoder rejects flags outside 0x3f. New capability
+    // discovery must not change that legacy response or its reserved words.
+    let base = caps_bytes(63);
+    assert_eq!(u32_at(&base, 8) & !63, 0);
+    Capabilities::decode(&base).unwrap();
+    assert!(Capabilities::decode(&caps_bytes(63 | CAP_PUBLICATION_IDENTITY)).is_err());
+    let legacy = create_request(id(), Intent::Playback, Channels::Stereo, "Name", false).unwrap();
+    for mode in [
+        PublicationMode::EstablishNew,
+        PublicationMode::ReopenOrAdopt,
+    ] {
+        let bytes = create_identity_request(
+            id(),
+            Intent::Playback,
+            Channels::Stereo,
+            "Name",
+            false,
+            mode,
+        )
+        .unwrap();
+        assert_eq!(bytes.len(), CREATE_IDENTITY_SIZE);
+        assert_eq!(u32_at(&bytes, 0), CREATE_IDENTITY_SIZE as u32);
+        assert_eq!(u32_at(&bytes, 4), IDENTITY_VERSION);
+        assert_eq!(&bytes[8..CREATE_SIZE], &legacy[8..]);
+        assert_eq!(u32_at(&bytes, 168), mode as u32);
+        assert_eq!(u32_at(&bytes, 36), 0);
+        assert_eq!(u32_at(&bytes, 172), 0);
+    }
+    assert_eq!(u32_at(&legacy, 4), ABI_VERSION);
+    assert_eq!(IOCTL_CREATE_IDENTITY, 0x0022_e01c);
+    assert_ne!(IOCTL_CREATE_IDENTITY, IOCTL_CREATE);
+    assert!(
+        create_identity_request(
+            StableEndpointId::new(0, 0),
+            Intent::Playback,
+            Channels::Stereo,
+            "Name",
+            false,
+            PublicationMode::EstablishNew
+        )
+        .is_err()
+    );
+}
 fn caps_bytes(flags: u32) -> [u8; 64] {
     let mut bytes = [0; 64];
     for (offset, value) in [
@@ -369,16 +425,8 @@ fn lifecycle_identity_and_all_generations_cannot_regress() {
 }
 
 #[test]
-fn pcm_shape_requires_open_running_stream_but_native_closed_gate_is_valid_snapshot() {
-    for (offset, value) in [
-        (16, 4),
-        (28, 0),
-        (32, 0),
-        (36, 0),
-        (92, 0),
-        (100, 0),
-        (100, 1),
-    ] {
+fn pcm_shape_requires_an_admitted_stream_but_accepts_paused_prerun() {
+    for (offset, value) in [(16, 4), (28, 0), (32, 0), (36, 0), (92, 0), (100, 0)] {
         let mut bytes = snapshot_bytes();
         put32(&mut bytes, offset, value);
         let result = EndpointSnapshot::decode(&bytes, caps()).and_then(|s| s.pcm_shape(caps()));
@@ -389,6 +437,10 @@ fn pcm_shape_requires_open_running_stream_but_native_closed_gate_is_valid_snapsh
     let native = EndpointSnapshot::decode(&bytes, caps()).unwrap();
     assert_eq!(native.stream_state(), StreamState::Running);
     assert_eq!(native.pcm_shape(caps()), Err(ProtocolError::NotReady));
+    let mut paused_bytes = snapshot_bytes();
+    put32(&mut paused_bytes, 100, 1);
+    let paused = EndpointSnapshot::decode(&paused_bytes, caps()).unwrap();
+    assert!(paused.pcm_shape(caps()).is_ok());
     // Native admission publishes its generation before format/packets exist.
     // QUERY during that interval is normal not-ready, not a malformed ABI.
     put32(&mut bytes, 88, 0);

@@ -112,6 +112,10 @@ impl PcmPlaybackBridge {
         self.pcm_packet.len()
     }
 
+    pub fn packet_frames(&self) -> u32 {
+        u32::try_from(self.engine_packet.len() / 2).unwrap_or(u32::MAX)
+    }
+
     /// Return the carrier when a native stream is retired. The transport
     /// worker can then rebuild only its format-dependent scratch state after a
     /// stream reopen without moving the Engine-facing bridge endpoint.
@@ -177,6 +181,10 @@ impl PcmMicrophoneBridge {
         self.pcm_packet.len()
     }
 
+    pub fn packet_frames(&self) -> u32 {
+        u32::try_from(self.engine_packet.len() / 2).unwrap_or(u32::MAX)
+    }
+
     /// Engine-authored frames currently queued in the carrier. Worker-side
     /// only: the re-prime wait and diagnostics observe the level; the graph
     /// producer is the only writer.
@@ -192,6 +200,13 @@ impl PcmMicrophoneBridge {
 
     /// Drains one fixed-size packet; any missing Engine frames are silence.
     pub fn encode_packet(&mut self) -> Result<&[u8], PcmBoundaryError> {
+        Ok(self.encode_packet_with_metrics()?.0)
+    }
+
+    /// Encodes a packet and returns the silence count captured during the same
+    /// mutable operation. Returning the scalar beside the borrow avoids a
+    /// second borrow of this bridge while the packet is submitted.
+    pub fn encode_packet_with_metrics(&mut self) -> Result<(&[u8], usize), PcmBoundaryError> {
         let report = self
             .carrier
             .read_interleaved(&mut self.engine_packet)
@@ -205,13 +220,15 @@ impl PcmMicrophoneBridge {
                 diagnostic_qpc(),
             );
         }
+        let silence_frames =
+            (self.engine_packet.len() / 2).saturating_sub(report.transferred_frames);
         encode_interleaved(
             &self.engine_packet,
             &mut self.pcm_packet,
             self.format,
             self.channels,
         )?;
-        Ok(&self.pcm_packet)
+        Ok((&self.pcm_packet, silence_frames))
     }
 }
 
@@ -280,6 +297,25 @@ mod tests {
             bridge.encode_packet().unwrap(),
             &[0x00, 0x20, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00]
         );
+    }
+
+    #[test]
+    fn microphone_packet_metrics_report_only_the_missing_tail() {
+        let (mut engine_writer, carrier_reader) = audio_bridge(2, 8, 4096).unwrap();
+        engine_writer.write_interleaved(&[0.25, -0.5]).unwrap();
+        let mut bridge = PcmMicrophoneBridge::new(
+            Channels::Stereo,
+            SampleFormat::Pcm16,
+            2,
+            4096,
+            carrier_reader,
+        )
+        .unwrap();
+
+        let (packet, silence_frames) = bridge.encode_packet_with_metrics().unwrap();
+        assert_eq!(packet.len(), 8);
+        assert_eq!(silence_frames, 1);
+        assert_eq!(bridge.packet_frames(), 2);
     }
 
     #[test]

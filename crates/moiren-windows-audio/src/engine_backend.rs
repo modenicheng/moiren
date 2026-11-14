@@ -1,21 +1,37 @@
 //! Resolve intent on control, then negotiate every native stream on its owner.
 mod absence;
+mod native_observations;
 pub(crate) mod observations;
 #[cfg(windows)]
 mod owner;
+mod process_admission;
 #[cfg(any(windows, test))]
 mod recovery;
 
+pub use native_observations::{
+    NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
+    NativeObservationSnapshot, NativeObservations, NativeProcessDeliveryObservation,
+    NativeProcessInterpolationCollector, NativeProcessInterpolationOrigin,
+    NativeProcessTraceCollector, NativeProcessWindowCandidate, NativeRenderEvidenceOrigin,
+    NativeRenderEvidenceReader, NativeRenderPaddingObservation, NativeSrcBoundaryTrace,
+    NativeSrcChunkBoundary, NativeSrcRouteObservation, NativeSrcTrace, NativeSrcTraceChunk,
+    NativeSrcTraceCollector, NativeStreamKind, NativeStreamObservation,
+    PreparedNativeProcessWindow, PreparedSrcRoute, SRC_TRACE_MAX_CHECKPOINTS, SrcTraceRefusal,
+};
 #[cfg(windows)]
 pub use observations::{
-    ProfessionalObservationSnapshot, ProfessionalObservations, ProfessionalPrepareProgress,
-    ProfessionalStreamObservation, StreamEndpoint,
+    ProfessionalObservationReadHandle, ProfessionalObservationSnapshot, ProfessionalObservations,
+    ProfessionalPrepareProgress, ProfessionalStreamObservation, StreamEndpoint,
 };
 
 use crate::asio::{AsioOptions, AsioStream};
 use crate::bridge::{CaptureWriteClock, ProcessSource, RingSink, RingSource, Tone, unsupported};
+use crate::latency::render::RenderPaddingObserver;
+use crate::latency::shared_period::SharedPeriodReport;
+use crate::latency::{
+    LatencyBudgetPolicy, NativeStreamTiming, PreparedRenderQueue, RenderQueuePolicy, TelemetryMode,
+};
 use crate::native::{NativeStreamInfo, canonical_asio_driver_id};
-use crate::resample::StereoResampler;
 use crate::virtual_owner::{
     ProjectClock, QpcClockFactory, VirtualBoundaryProvider, VirtualClockFactory,
     VirtualPreparedTransport,
@@ -61,6 +77,11 @@ const NATIVE_IO_BUDGET_FIXED_MARGIN_BYTES: usize = 131_072;
 /// endpoint can block for a minute — this bound converts that hang into a
 /// null-stream degradation instead of a frozen session start.
 const OPEN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Control-side projection of native owner preparation. The tuple mirrors the
+/// owner's return shape so it can cross the handshake without naming private
+/// stream/provider diagnostics in the transport API.
+type NativeOwnerMetadata = std::sync::Mutex<Option<NativeOwnerMetadataValue>>;
 /// How often the parallel handshake collector re-checks cancellation while
 /// waiting for open settlements.
 const OPEN_POLL_SLICE: Duration = Duration::from_millis(20);
@@ -77,8 +98,21 @@ use validation::validate;
 /// enumeration right now); production asks the enumerator/registry.
 type AbsenceProbe = Arc<dyn Fn(&AbsentDevice) -> Option<String> + Send + Sync>;
 
+type NativeOwnerMetadataValue = (
+    NativeStreamTiming,
+    Option<SharedPeriodReport>,
+    Option<PreparedRenderQueue>,
+    Option<RenderPaddingObserver>,
+    Option<(
+        crate::render_evidence::RenderEvidenceFormat,
+        crate::render_evidence::RenderEvidenceConfig,
+        crate::render_evidence::RenderEvidenceReader,
+    )>,
+);
+
 pub struct ProfessionalBackend<S: ProcessingSample> {
     observations: ProfessionalObservations,
+    native_observations: NativeObservations,
     recovery: RecoveryMonitor,
     absence: AbsenceMonitor,
     absence_probe: AbsenceProbe,
@@ -95,12 +129,22 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     open_timeout: Duration,
     virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
     virtual_clock: Arc<dyn VirtualClockFactory>,
+    process_bridge: crate::process_loopback::ProcessBridgeOptions,
+    process_pcm_capture: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
+    render_evidence_capacity: Option<usize>,
+    measured_process_bridges: Vec<process_admission::MeasuredBridgeRequest>,
+    virtual_buffer: crate::virtual_owner::VirtualBufferOptions,
+    render_queue: RenderQueuePolicy,
+    latency_budget: LatencyBudgetPolicy,
+    telemetry: TelemetryMode,
+    virtual_callback_timing: bool,
     marker: PhantomData<S>,
 }
 impl<S: ProcessingSample> ProfessionalBackend<S> {
     pub fn new() -> Result<Self, BackendError> {
         Ok(Self {
             observations: ProfessionalObservations::default(),
+            native_observations: NativeObservations::default(),
             recovery: RecoveryMonitor::default(),
             absence: AbsenceMonitor::default(),
             absence_probe: Arc::new(system_endpoint_resolve),
@@ -109,11 +153,41 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             open_timeout: OPEN_DEADLINE,
             virtual_provider: None,
             virtual_clock: Arc::new(QpcClockFactory),
+            process_bridge: Default::default(),
+            process_pcm_capture: None,
+            render_evidence_capacity: None,
+            measured_process_bridges: Vec::new(),
+            virtual_buffer: Default::default(),
+            render_queue: RenderQueuePolicy::default(),
+            latency_budget: LatencyBudgetPolicy::default(),
+            telemetry: TelemetryMode::Summary,
+            virtual_callback_timing: false,
             marker: PhantomData,
         })
     }
     pub fn observations(&self) -> ProfessionalObservations {
         self.observations.clone()
+    }
+    /// Diagnostic storage only, never a queue target or saved audio setting.
+    pub fn with_render_evidence(
+        mut self,
+        capacity_frames: Option<usize>,
+    ) -> Result<Self, BackendError> {
+        if capacity_frames.is_some_and(|frames| !(1..=131_072).contains(&frames)) {
+            return Err(unsupported(
+                "render evidence capacity must be 1..131072 frames",
+            ));
+        }
+        self.render_evidence_capacity = capacity_frames;
+        Ok(self)
+    }
+    pub fn native_observations(&self) -> NativeObservations {
+        self.native_observations.clone()
+    }
+    /// Pure-virtual Engine callback service time, not a saved latency setting.
+    pub fn with_virtual_callback_timing(mut self, enabled: bool) -> Self {
+        self.virtual_callback_timing = enabled;
+        self
     }
     /// Enable virtual resource preparation without changing physical settings.
     pub fn with_virtual_provider(mut self, provider: Arc<dyn VirtualBoundaryProvider>) -> Self {
@@ -125,6 +199,67 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         self.virtual_clock = clock;
         self
     }
+    pub fn with_process_bridge(
+        mut self,
+        bridge: crate::process_loopback::ProcessBridgeOptions,
+    ) -> Result<Self, BackendError> {
+        bridge.prepare().map_err(unsupported)?;
+        self.process_bridge = bridge;
+        Ok(self)
+    }
+    /// Explicit native diagnostic preparation, never persisted as a desktop
+    /// latency preset and never enabled by an ordinary graph owner.
+    pub fn with_process_pcm_capture(
+        mut self,
+        config: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
+    ) -> Result<Self, BackendError> {
+        if let Some(config) = config {
+            config.validate().map_err(unsupported)?;
+        }
+        self.process_pcm_capture = config;
+        Ok(self)
+    }
+    pub fn with_virtual_buffer(
+        mut self,
+        buffer: crate::virtual_owner::VirtualBufferOptions,
+    ) -> Result<Self, BackendError> {
+        buffer.validate().map_err(unsupported)?;
+        self.virtual_buffer = buffer;
+        Ok(self)
+    }
+    pub fn with_render_queue(mut self, policy: RenderQueuePolicy) -> Result<Self, BackendError> {
+        policy.validate().map_err(unsupported)?;
+        self.render_queue = policy;
+        Ok(self)
+    }
+    pub fn with_latency_budget(
+        mut self,
+        policy: LatencyBudgetPolicy,
+    ) -> Result<Self, BackendError> {
+        if let LatencyBudgetPolicy::Custom {
+            input_capacity_frames,
+            input_target_frames,
+            render,
+            ..
+        } = policy
+        {
+            if !(4..=262_144).contains(&input_capacity_frames)
+                || !(2..input_capacity_frames).contains(&input_target_frames)
+            {
+                return Err(unsupported(
+                    "custom physical input queue exceeds the bounded frame range",
+                ));
+            }
+            render.validate().map_err(unsupported)?;
+            self.render_queue = render;
+        }
+        self.latency_budget = policy;
+        Ok(self)
+    }
+    pub fn with_telemetry(mut self, mode: TelemetryMode) -> Self {
+        self.telemetry = mode;
+        self
+    }
     /// Shorten the native open deadline (tests bound abandoned-open
     /// behavior without sleeping for the production bound).
     #[cfg(test)]
@@ -133,7 +268,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         self
     }
     /// Replace the absent-device return probe (tests flip device presence
-    /// without touching the enumerator or the registry). The probe resolves
+    /// without touching the enumerator or the registry).
+    /// The probe resolves
     /// the selector to its native id — `None` means the device is missing
     /// from enumeration right now.
     #[cfg(test)]
@@ -190,6 +326,7 @@ impl Group {
                         .unwrap_or(processing_rate),
                     device: direction.device,
                     input: self.input.is_some(),
+                    exclusive_period_evidence: None,
                 };
                 Ok(Box::new(move || Ok(Box::new(WasapiStream::open(options)?))))
             }
@@ -368,10 +505,24 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         cancel: &CancellationToken,
         native: &dyn NativeDevices,
     ) -> Result<PreparedBackend<S>, BackendError> {
+        if request.mode == PrepareMode::Update {
+            // This marks preparation intent, not successful activation. Never
+            // let a reused owner make its initial route look current forever.
+            self.native_observations
+                .invalidate_src_route(request.owner_generation);
+        }
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
+        if let LatencyBudgetPolicy::Custom { render, .. } = self.latency_budget
+            && render != self.render_queue
+        {
+            return Err(unsupported(
+                "latency budget and renderer must use the same render queue policy",
+            ));
+        }
         let rate = validate(&request, self.virtual_provider.is_some())?;
+        self.validate_measured_sources(request.project)?;
         let mut bindings = NodeBindings::new();
         if request.mode == PrepareMode::Update {
             for (&node, config) in &request.project.nodes {
@@ -409,11 +560,53 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             .filter(|c| matches!(c, NodeConfig::Input(_) | NodeConfig::Output(_)))
             .count();
         let capacity = (request.project.processing.engine.max_block_frames * 8).max(16384);
-        let prepared_bytes = io_count
+        let capture_capacity = match self.latency_budget {
+            LatencyBudgetPolicy::Custom {
+                input_capacity_frames,
+                ..
+            } => usize::try_from(input_capacity_frames).map_err(unsupported)?,
+            LatencyBudgetPolicy::Compatible => capacity,
+        };
+        let mut prepared_bytes = io_count
             .checked_mul(
-                capacity * NATIVE_IO_BUDGET_BYTES_PER_FRAME + NATIVE_IO_BUDGET_FIXED_MARGIN_BYTES,
+                capacity.max(capture_capacity) * NATIVE_IO_BUDGET_BYTES_PER_FRAME
+                    + NATIVE_IO_BUDGET_FIXED_MARGIN_BYTES,
             )
             .ok_or_else(|| unsupported("native queue budget overflow"))?;
+        for (&node, config) in &request.project.nodes {
+            let extra = match config {
+                NodeConfig::Input(input)
+                    if matches!(input.source, InputSource::Application { .. }) =>
+                {
+                    let InputSource::Application { executable, .. } = &input.source else {
+                        unreachable!()
+                    };
+                    // Resolve the selected policy for storage accounting now;
+                    // admission runs again after the master's actual demand
+                    // is negotiated. Never budget a measured queue as legacy.
+                    let mut config = self
+                        .process_bridge_for(node, process_selector(executable)?, rate, 1)?
+                        .clock_config()
+                        .map_err(unsupported)?;
+                    config.native_pcm = self.process_pcm_capture;
+                    config.storage_bytes().map_err(unsupported)?
+                }
+                NodeConfig::Input(input)
+                    if matches!(input.source, InputSource::VirtualPlayback { .. }) =>
+                {
+                    virtual_extra_bytes(self.virtual_buffer, capacity, input.channels)?
+                }
+                NodeConfig::Output(output)
+                    if matches!(output.target, OutputTarget::VirtualMicrophone { .. }) =>
+                {
+                    virtual_extra_bytes(self.virtual_buffer, capacity, output.channels)?
+                }
+                _ => 0,
+            };
+            prepared_bytes = prepared_bytes
+                .checked_add(extra)
+                .ok_or_else(|| unsupported("native queue budget overflow"))?;
+        }
         if prepared_bytes > request.project.processing.audio_byte_budget {
             return Err(unsupported(
                 "professional native queues/SRC exceed the audio preparation budget",
@@ -423,9 +616,25 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             request.owner_generation,
             self.observations.clone(),
         ));
+        transport.native_observations = self.native_observations.clone();
+        transport.src_route = Arc::new(native_observations::src_route::RouteState {
+            prepared: native_observations::src_route::prepared_route(
+                request.project,
+                request.graph_revision,
+                request.plan_revision,
+            ),
+            ..Default::default()
+        });
+        let block_demand = u32::try_from(request.project.processing.engine.max_block_frames)
+            .map_err(|_| unsupported("virtual block demand overflow"))?;
+        let recovery_cap_periods = self
+            .virtual_buffer
+            .admitted_recovery_cap_periods()
+            .map_err(unsupported)?;
         let mut groups: Vec<Group> = Vec::new();
         let mut absent: Vec<AbsentPending> = Vec::new();
         let mut processes = Vec::new();
+        let mut process_nodes = Vec::new();
         for (&node, config) in &request.project.nodes {
             if cancel.is_cancelled() {
                 return Err(BackendError::Cancelled);
@@ -460,16 +669,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                             return Err(unsupported("duplicate process capture ownership"));
                         }
                         processes.push(identity);
-                        prepare_process(
-                            node,
-                            input.device,
-                            identity,
-                            rate,
-                            capacity,
-                            &mut bindings,
-                            &mut transport,
-                            cancel,
-                        )?;
+                        process_nodes.push((node, input.device, identity));
                         continue;
                     }
                     InputSource::Physical(selector) => (selector, true, input.device),
@@ -659,19 +859,54 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         let recovery = self
             .recovery
             .register(request.owner_generation, asio_configurations, rate);
-        let (mut virtual_sessions, virtual_sinks, virtual_observations) = virtual_io::prepare(
+        let initial_clock = select_clock(
             &request,
-            self.virtual_provider.as_deref(),
-            rate,
-            &mut bindings,
-            cancel,
+            &absent
+                .iter()
+                .map(|pending| pending.direction.node)
+                .collect::<Vec<_>>(),
         )?;
-        transport.streams.extend(virtual_observations);
+        let clock = initial_clock;
+        // Virtual demand deliberately follows clock selection: an absent
+        // physical master must fall back to QPC and use the virtual recovery
+        // burst, while a present master's negotiated wake is learned below.
+        let mut process_demand = if clock == ProjectClock::VirtualRealtime {
+            self.virtual_buffer
+                .prepare_recovery(rate, block_demand)
+                .map_err(unsupported)?
+                .engine_burst_frames
+        } else {
+            // Replaced with the physical master's negotiated whole wake below.
+            block_demand
+                .checked_mul(recovery_cap_periods as u32)
+                .ok_or_else(|| unsupported("virtual burst demand overflow"))?
+        };
+        // Preserve the default pure-virtual early result while custom virtual
+        // carriers and all physical projects wait for their final demand.
+        let virtual_prepared = if clock == ProjectClock::VirtualRealtime
+            && self.virtual_buffer == Default::default()
+        {
+            Some(virtual_io::prepare(
+                &request,
+                self.virtual_provider.as_deref(),
+                rate,
+                process_demand,
+                self.virtual_buffer,
+                &mut bindings,
+                cancel,
+            )?)
+        } else {
+            None
+        };
+        // Custom input admission depends on the master's actual negotiated
+        // period, so open that group before any physical capture followers.
+        groups.sort_by_key(|group| !group.master());
+        let mut master_timing: Option<NativeStreamTiming> = None;
         // Open every native group concurrently (issue #105): all workers
-        // park before activation and each owns its COM apartment, so the
-        // serialization was never load-bearing. Total startup latency is the
-        // maximum of the open deadlines instead of their sum, and one slow
-        // device no longer delays every other device's start.
+        // park before activation and each owns its own COM apartment, so the
+        // prior master-first serialization is no longer load-bearing. Custom
+        // input admission still learns the whole physical wake after the
+        // master settles below.
         struct PendingOpen {
             group: Group,
             counters: Arc<Counters>,
@@ -679,12 +914,13 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             capture_clock: Option<Arc<CaptureWriteClock>>,
             render_tx: Option<rtrb::Producer<crate::native::StereoFrame>>,
             opening: Opening,
+            metadata: Arc<NativeOwnerMetadata>,
         }
         let mut pending: Vec<PendingOpen> = Vec::with_capacity(groups.len());
         for group in groups {
             let counters = Arc::new(Counters::default());
             let (capture_tx, capture_rx, capture_clock) = if group.input.is_some() {
-                let (tx, rx) = RingBuffer::new(capacity);
+                let (tx, rx) = RingBuffer::new(capture_capacity);
                 (Some(tx), Some(rx), Some(Arc::new(CaptureWriteClock::new())))
             } else {
                 (None, None, None)
@@ -695,8 +931,48 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             } else {
                 (None, None)
             };
+            let metadata = Arc::new(std::sync::Mutex::new(None));
+            let owner_metadata = metadata.clone();
+            let factory = native.factory(&group, rate)?;
+            let queue = self.render_queue;
+            let renders = group.output.is_some();
+            let evidence_capacity = self.render_evidence_capacity;
             let worker_request = WorkerRequest {
-                factory: native.factory(&group, rate)?,
+                factory: Box::new(move || {
+                    let mut stream = factory()?;
+                    if renders {
+                        stream.configure_render_queue(queue)?;
+                    }
+                    let prepared = (
+                        stream.prepared_timing(),
+                        stream.shared_period(),
+                        stream.render_queue(),
+                        stream.render_padding_observer(),
+                    );
+                    // Attach last: an installed writer must return through the
+                    // owner guard, never an early metadata/factory error path.
+                    let evidence = if renders && let Some(capacity_frames) = evidence_capacity {
+                        let format = stream
+                            .render_evidence_format()
+                            .ok_or_else(|| unsupported("native render evidence unavailable"))?;
+                        let config = crate::render_evidence::RenderEvidenceConfig {
+                            capacity_frames,
+                            max_packet_frames: stream.info().buffer_frames as usize,
+                        };
+                        let (writer, reader) =
+                            crate::render_evidence::render_evidence_stream(config, format)
+                                .map_err(unsupported)?;
+                        stream
+                            .attach_render_evidence(writer)
+                            .map_err(|failure| failure.0)?;
+                        Some((format, config, reader))
+                    } else {
+                        None
+                    };
+                    *owner_metadata.lock().unwrap_or_else(|p| p.into_inner()) =
+                        Some((prepared.0, prepared.1, prepared.2, prepared.3, evidence));
+                    Ok(stream)
+                }),
                 capture: capture_tx,
                 capture_clock: capture_clock.clone(),
                 render: render_rx,
@@ -743,6 +1019,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 capture_rx,
                 capture_clock,
                 render_tx,
+                metadata,
                 opening: owner::start_worker(worker_request)?,
             });
         }
@@ -755,6 +1032,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             capture_rx: Option<rtrb::Consumer<crate::native::StereoFrame>>,
             capture_clock: Option<Arc<CaptureWriteClock>>,
             render_tx: Option<rtrb::Producer<crate::native::StereoFrame>>,
+            metadata: Arc<NativeOwnerMetadata>,
             info: NativeStreamInfo,
         }
         let mut settled: Vec<OpenedGroup> = Vec::with_capacity(pending.len());
@@ -814,6 +1092,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             match open.opening.settle(slice) {
                 Some(Ok(info)) => {
                     let open = pending.remove(0);
+                    let metadata = open.metadata.clone();
                     log::info!(
                         target: "moiren::audio::professional",
                         "native device group opened: backend={} endpoint={:?} actual_rate={} actual_format={:?} actual_channels={} actual_buffer_frames={}",
@@ -830,6 +1109,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                         capture_rx,
                         capture_clock,
                         render_tx,
+                        metadata: _,
                         opening,
                     } = open;
                     transport.workers.push(opening.into_worker());
@@ -839,6 +1119,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                         capture_rx,
                         capture_clock,
                         render_tx,
+                        metadata,
                         info,
                     });
                     self.observations.publish_progress(
@@ -871,25 +1152,30 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 .map(|pending| pending.direction.node)
                 .collect::<Vec<_>>(),
         )?;
-        if matches!(clock, ProjectClock::Physical(_)) {
-            transport.sinks.extend(&virtual_sinks);
-            if !virtual_sessions.is_empty() {
-                transport
-                    .auxiliaries
-                    .push(Box::new(virtual_io::VirtualAuxiliary(std::mem::take(
-                        &mut virtual_sessions,
-                    ))));
-            }
-        }
         for OpenedGroup {
             group,
             counters,
             capture_rx,
             capture_clock,
             render_tx,
+            metadata,
             info,
         } in settled
         {
+            let (timing, shared_period, render_queue, padding, evidence) = metadata
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+                .expect("native preparation publishes metadata before its handshake");
+            if group.master() {
+                master_timing = Some(timing);
+                // Exact-demand Pump renders short final segments. Admit the
+                // whole nominal SRC wake, not obsolete Engine-block rounding.
+                let demand = render_queue.map_or(info.buffer_frames, |queue| queue.target_frames);
+                process_demand =
+                    crate::resample::nominal_master_input_bound(rate, info.sample_rate, demand)
+                        .ok_or_else(|| unsupported("process demand bound invalid or overflowed"))?;
+            }
             for direction in group.input.iter().chain(&group.output) {
                 if direction.device.sample_format != SampleFormat::Native
                     && direction.device.sample_format != info.format
@@ -915,25 +1201,115 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 }
             }
             if let Some(input) = &group.input {
-                bindings
-                    .bind_source(
-                        input.node,
-                        RingSource::<S>::new(
-                            capture_rx.unwrap(),
-                            info.sample_rate,
-                            rate,
-                            info.buffer_frames as usize,
-                            capacity,
-                            counters.clone(),
-                            capture_clock.unwrap(),
-                        )?,
+                let queue = if matches!(self.latency_budget, LatencyBudgetPolicy::Custom { .. }) {
+                    let prepared = crate::latency::prepare_latency_budget(
+                        timing,
+                        master_timing.ok_or_else(|| {
+                            unsupported("custom physical input budgets require a physical master")
+                        })?,
+                        self.latency_budget,
                     )
                     .map_err(unsupported)?;
+                    // The renamed backend uses a FIR at the graph boundary.
+                    // Admit its whole wake, including nominal FIR reserve, instead
+                    // of reusing the old linear bridge's two-frame reserve.
+                    let LatencyBudgetPolicy::Custom {
+                        input_jitter_frames,
+                        ..
+                    } = self.latency_budget
+                    else {
+                        unreachable!()
+                    };
+                    Some(
+                        crate::latency::transport::prepare_transport_input(
+                            crate::latency::transport::TransportInputPolicy::Target {
+                                capacity_frames: prepared.input.capacity_frames,
+                                target_frames: prepared.input.prime_frames,
+                                jitter_frames: input_jitter_frames,
+                            },
+                            Some(crate::latency::transport::InputDeliveryTiming {
+                                sample_rate: timing.sample_rate,
+                                max_packet_frames: timing.capacity_frames,
+                                max_gap_frames: timing
+                                    .period_frames
+                                    .expect("custom budget requires actual period"),
+                                source: crate::latency::transport::DeliveryTimingSource::Declared,
+                            }),
+                            rate,
+                            process_demand,
+                            32,
+                        )
+                        .map_err(unsupported)?,
+                    )
+                } else {
+                    None
+                };
+                let source = RingSource::<S>::new(
+                    capture_rx.unwrap(),
+                    info.sample_rate,
+                    rate,
+                    info.buffer_frames as usize,
+                    capture_capacity,
+                    counters.clone(),
+                    capture_clock.unwrap(),
+                )?;
+                let source = if let Some(queue) = queue {
+                    source.with_input_queue(queue)
+                } else {
+                    source
+                };
+                bindings
+                    .bind_source(input.node, source)
+                    .map_err(unsupported)?;
+                transport.native_streams.push(NativeStreamObservation {
+                    node: input.node,
+                    kind: NativeStreamKind::PhysicalInput,
+                    timing: Some(timing),
+                    shared_period,
+                    render_queue: None,
+                    input_queue: queue,
+                    virtual_budget: None,
+                });
                 transport
                     .streams
                     .push((observation(input, true, false, info), counters.clone()));
             }
             if let Some(output) = &group.output {
+                if let Some((format, config, reader)) = evidence {
+                    transport.native_render_evidence.push(
+                        native_observations::RenderEvidenceSource::new(
+                            native_observations::NativeRenderEvidenceOrigin {
+                                schema_version: 1,
+                                owner_generation: request.owner_generation,
+                                node: output.node,
+                                kind: if group.master() {
+                                    NativeStreamKind::MasterOutput
+                                } else {
+                                    NativeStreamKind::FollowerOutput
+                                },
+                                format,
+                                config,
+                            },
+                            reader,
+                        ),
+                    );
+                }
+                transport.native_streams.push(NativeStreamObservation {
+                    node: output.node,
+                    kind: if group.master() {
+                        NativeStreamKind::MasterOutput
+                    } else {
+                        NativeStreamKind::FollowerOutput
+                    },
+                    timing: Some(timing),
+                    shared_period,
+                    render_queue,
+                    input_queue: None,
+                    virtual_budget: None,
+                });
+                if let Some(padding) = padding {
+                    transport.native_renders.push((output.node, padding));
+                }
                 bindings
                     .bind_sink(
                         output.node,
@@ -949,6 +1325,68 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                     .streams
                     .push((observation(output, false, group.master(), info), counters));
             }
+        }
+        let virtual_io::PreparedVirtualIo {
+            sessions: mut virtual_sessions,
+            sinks: virtual_sinks,
+            observations: virtual_observations,
+            probes: virtual_probes,
+        } = match virtual_prepared {
+            Some(prepared) => prepared,
+            None => virtual_io::prepare(
+                &request,
+                self.virtual_provider.as_deref(),
+                rate,
+                process_demand,
+                self.virtual_buffer,
+                &mut bindings,
+                cancel,
+            )?,
+        };
+        for (stream, _) in &virtual_observations {
+            let virtual_budget = self
+                .virtual_buffer
+                .prepare_budget(rate, block_demand, process_demand)
+                .map_err(unsupported)?;
+            transport.native_streams.push(NativeStreamObservation {
+                node: stream.node,
+                kind: if stream.input {
+                    NativeStreamKind::VirtualPlayback
+                } else {
+                    NativeStreamKind::VirtualMicrophone
+                },
+                timing: None,
+                shared_period: None,
+                render_queue: None,
+                input_queue: virtual_budget.queue,
+                virtual_budget: Some(virtual_budget),
+            });
+        }
+        transport.native_probes.extend(virtual_probes);
+        transport.streams.extend(virtual_observations);
+        if matches!(clock, ProjectClock::Physical(_)) {
+            transport.sinks.extend(&virtual_sinks);
+            if !virtual_sessions.is_empty() {
+                transport
+                    .auxiliaries
+                    .push(Box::new(virtual_io::VirtualAuxiliary(std::mem::take(
+                        &mut virtual_sessions,
+                    ))));
+            }
+        }
+        for (node, device, identity) in process_nodes {
+            prepare_process(
+                node,
+                device,
+                identity,
+                self.process_bridge_for(node, identity, rate, process_demand)?,
+                self.measured_source_generation(node),
+                self.telemetry,
+                self.process_pcm_capture,
+                &mut bindings,
+                &mut transport,
+                cancel,
+            )?;
         }
         // Absent endpoints keep their graph bindings as null streams: a
         // constant silence source for capture, a discard sink for render.
@@ -1013,6 +1451,15 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             // The retired transport keeps publishing and fencing the stream
             // observations even when it owns no worker or auxiliary, so
             // virtual-only projects stay visible in the diagnostics snapshot.
+            let clock_probe = Arc::new(
+                crate::virtual_owner::VirtualClockProbe::new(
+                    rate,
+                    block_demand,
+                    recovery_cap_periods,
+                )
+                .with_callback_timing(self.virtual_callback_timing),
+            );
+            transport.virtual_clock = Some(clock_probe.clone());
             virtual_sessions.push(transport.into_follower(cancel.clone())?);
             let stop = crate::StopSignal::new().map_err(unsupported)?;
             let gate = crate::ActivationGate::new(stop.clone()).map_err(unsupported)?;
@@ -1024,13 +1471,18 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             virtual_sinks.extend(absent_virtual_sinks);
             return Ok(PreparedBackend {
                 bindings,
-                transport: Some(Box::new(VirtualPreparedTransport::new(
-                    virtual_sinks,
-                    virtual_sessions,
-                    stop,
-                    gate,
-                    clock,
-                ))),
+                transport: Some(Box::new(
+                    VirtualPreparedTransport::new(
+                        virtual_sinks,
+                        virtual_sessions,
+                        stop,
+                        gate,
+                        clock,
+                    )
+                    .with_recovery_cap(recovery_cap_periods)?
+                    .with_callback_timing(self.virtual_callback_timing)
+                    .with_clock_probe(clock_probe),
+                )),
             });
         }
         Ok(PreparedBackend {
@@ -1039,6 +1491,26 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         })
     }
 }
+fn virtual_extra_bytes(
+    buffer: crate::virtual_owner::VirtualBufferOptions,
+    reserved_frames: usize,
+    channels: usize,
+) -> Result<usize, BackendError> {
+    let crate::latency::transport::TransportInputPolicy::Target {
+        capacity_frames, ..
+    } = buffer.input
+    else {
+        return Ok(0);
+    };
+    // The base estimate already covers the default carrier. Larger explicit
+    // rings must also fit the aggregate project budget before any owner opens.
+    (capacity_frames as usize)
+        .saturating_sub(reserved_frames)
+        .checked_mul(channels)
+        .and_then(|samples| samples.checked_mul(size_of::<f32>()))
+        .ok_or_else(|| unsupported("virtual carrier budget overflow"))
+}
+
 fn observation(
     direction: &Direction,
     input: bool,
@@ -1056,8 +1528,12 @@ fn observation(
         silent_frames: 0,
         xruns: 0,
         native_callbacks: 0,
+        native_wait_wakes: 0,
+        native_written_frames: 0,
+        native_wait_timeouts: 0,
         native_dropped_frames: 0,
         native_silent_frames: 0,
+        native_capture_quality: None,
         native_xruns: 0,
         engine_blocks: 0,
         engine_busy_100ns: 0,
@@ -1090,8 +1566,12 @@ fn absent_observation(
         silent_frames: 0,
         xruns: 0,
         native_callbacks: 0,
+        native_wait_wakes: 0,
+        native_written_frames: 0,
+        native_wait_timeouts: 0,
         native_dropped_frames: 0,
         native_silent_frames: 0,
+        native_capture_quality: None,
         native_xruns: 0,
         engine_blocks: 0,
         engine_busy_100ns: 0,
@@ -1163,8 +1643,10 @@ fn prepare_process<S: ProcessingSample>(
     node: NodeId,
     device: DeviceOptions,
     identity: (u32, u64),
-    engine_rate: u32,
-    capacity: usize,
+    bridge: crate::process_loopback::ProcessBridgeOptions,
+    measured_source_generation: Option<u64>,
+    telemetry: TelemetryMode,
+    pcm_capture: Option<crate::clock_bridge::native_pcm::NativePcmConfig>,
     bindings: &mut NodeBindings<S>,
     transport: &mut Transport<S>,
     cancel: &CancellationToken,
@@ -1181,18 +1663,50 @@ fn prepare_process<S: ProcessingSample>(
     cancel.on_cancel(move || {
         let _ = cancel_stop.request_stop();
     })?;
-    let prepared = crate::process_loopback::prepare_process_capture_with_gate(
+    let prepared = crate::process_loopback::stream::prepare_process_capture_with_gate_and_pcm(
         crate::process_loopback::ProcessLoopbackOptions {
-            target,
+            artifact: None,
+            bridge,
+            target: target.clone(),
             duration: crate::SessionDuration::UntilStopped,
-            latency_telemetry: crate::latency::TelemetryMode::Summary,
+            latency_telemetry: telemetry,
         },
         stop.clone(),
         gate.clone(),
+        pcm_capture,
     )
     .map_err(unsupported)?;
     let channels = prepared.channels;
     let sample_rate = prepared.sample_rate;
+    transport
+        .native_process_delivery
+        .push(native_observations::ProcessDeliverySource {
+            node,
+            process: target,
+            input_sample_rate: sample_rate,
+            consumer_sample_rate: bridge.engine_sample_rate,
+            prepared_consumer_demand_frames: bridge.max_demand_frames,
+            admitted_bridge: bridge,
+            measured_source_generation,
+            bridge: prepared.observer.clone(),
+            consumer: transport
+                .streams
+                .iter()
+                .find(|(stream, _)| stream.master)
+                .and_then(|(_, counters)| counters.consumer_events.get().cloned()),
+        });
+    transport.native_streams.push(NativeStreamObservation {
+        node,
+        kind: NativeStreamKind::ProcessInput,
+        timing: None,
+        shared_period: None,
+        render_queue: None,
+        input_queue: Some(bridge.prepare().map_err(unsupported)?),
+        virtual_budget: None,
+    });
+    transport
+        .native_bridges
+        .push((node, prepared.observer.clone()));
     transport.auxiliaries.push(Box::new(ProcessOwner {
         capture: Some(prepared.session),
         gate,
@@ -1200,7 +1714,6 @@ fn prepare_process<S: ProcessingSample>(
     }));
     let source = ProcessSource::<S> {
         source: prepared.source,
-        src: StereoResampler::new(48000, engine_rate, capacity).map_err(unsupported)?,
         scratch: vec![0.0; 512].into_boxed_slice(),
         marker: PhantomData,
     };
@@ -1226,8 +1739,12 @@ fn prepare_process<S: ProcessingSample>(
             silent_frames: 0,
             xruns: 0,
             native_callbacks: 0,
+            native_wait_wakes: 0,
+            native_written_frames: 0,
+            native_wait_timeouts: 0,
             native_dropped_frames: 0,
             native_silent_frames: 0,
+            native_capture_quality: None,
             native_xruns: 0,
             engine_blocks: 0,
             engine_busy_100ns: 0,

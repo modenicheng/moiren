@@ -68,6 +68,12 @@ impl Drop for Streaming<'_> {
 /// `flags`.
 pub(crate) trait LeaseClient {
     fn release_packet(&self, frames: u32, flags: u32) -> Result<()>;
+    fn release_packet_hresult(&self, frames: u32, flags: u32) -> windows::core::HRESULT {
+        match self.release_packet(frames, flags) {
+            Ok(()) => windows::core::HRESULT(0),
+            Err(error) => error.code(),
+        }
+    }
 }
 
 impl LeaseClient for IAudioCaptureClient {
@@ -79,6 +85,17 @@ impl LeaseClient for IAudioCaptureClient {
 impl LeaseClient for IAudioRenderClient {
     fn release_packet(&self, frames: u32, flags: u32) -> Result<()> {
         unsafe { self.ReleaseBuffer(frames, flags) }
+    }
+    fn release_packet_hresult(&self, frames: u32, flags: u32) -> windows::core::HRESULT {
+        // The generated Result<()> wrapper discards nonzero success codes.
+        // SAFETY: same live interface, arguments and owner thread as ReleaseBuffer.
+        unsafe {
+            (windows::core::Interface::vtable(self).ReleaseBuffer)(
+                windows::core::Interface::as_raw(self),
+                frames,
+                flags,
+            )
+        }
     }
 }
 
@@ -119,6 +136,11 @@ impl<'a, C: LeaseClient> PacketLease<'a, C> {
     pub fn release(mut self) -> Result<()> {
         self.released = true;
         self.client.release_packet(self.frames, 0)
+    }
+    pub fn release_hresult(mut self) -> windows::core::HRESULT {
+        // Mark before the COM call: even a failed release must not be retried by Drop.
+        self.released = true;
+        self.client.release_packet_hresult(self.frames, 0)
     }
 }
 impl<C: LeaseClient> Drop for PacketLease<'_, C> {
@@ -290,8 +312,39 @@ impl Process {
 
 #[cfg(test)]
 mod tests {
+    use super::{LeaseClient, LeaseFallback, PacketLease};
     use super::{OwnedHandle, WaitOutcome, wait_for_handles};
+    use std::cell::Cell;
     use windows::Win32::System::Threading::SetEvent;
+    use windows::core::HRESULT;
+
+    #[test]
+    fn render_evidence_release_preserves_raw_success_and_failure_without_retry() {
+        struct RawClient {
+            calls: Cell<usize>,
+            hr: HRESULT,
+        }
+        impl LeaseClient for RawClient {
+            fn release_packet(&self, _: u32, _: u32) -> windows::core::Result<()> {
+                panic!("raw release must not erase a nonzero successful HRESULT");
+            }
+            fn release_packet_hresult(&self, frames: u32, flags: u32) -> HRESULT {
+                assert_eq!(frames, 2);
+                assert_eq!(flags, 0);
+                self.calls.set(self.calls.get() + 1);
+                self.hr
+            }
+        }
+        for hr in [0, 1, -2_147_024_891] {
+            let client = RawClient {
+                calls: Cell::new(0),
+                hr: HRESULT(hr),
+            };
+            let lease = PacketLease::new(&client, 2, LeaseFallback::RenderSilent);
+            assert_eq!(lease.release_hresult().0, hr);
+            assert_eq!(client.calls.get(), 1);
+        }
+    }
 
     #[test]
     fn wait_for_handles_reports_timeout_and_signaled_index() {

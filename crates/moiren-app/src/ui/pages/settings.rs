@@ -12,14 +12,23 @@ use moiren_engine::audio_config::{
 };
 use moiren_engine::node::DeviceMode;
 
+use crate::ui::state::UiFailure;
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod cache_tests;
 mod fields;
+mod measured;
+#[cfg(all(test, windows, feature = "gpui-test"))]
+mod measured_ui_tests;
 mod menu;
 mod model;
 #[cfg(test)]
 mod model_tests;
+mod native_period;
 mod persistence;
 mod transaction;
-use fields::{choices, pref_choices, rate_title, row, row_with_note, rows, select_trigger};
+mod transport;
+use fields::{choices, field, pref_choices, rate_title, row, row_with_note, rows, select_trigger};
 pub(crate) use fields::{footer, stream_editor};
 use menu::ValueField;
 pub(crate) use menu::{ValueMenu, menu_overlay};
@@ -48,6 +57,13 @@ pub(crate) struct SettingsKey {
     restore_last_project: bool,
     pending_request: bool,
     project_message: Option<project::ProjectMessage>,
+    /// Transport-only editors own nested input entities; their values must
+    /// be part of the panel key, or a cached splice misses live text edits.
+    busy: bool,
+    device_conflict: bool,
+    measured: model::MeasuredKey,
+    expert_modes: [bool; 2],
+    inputs: Vec<(Entity<component::input::InputState>, SharedString)>,
 }
 
 pub(crate) type SettingsPanelHost = PanelHost<SettingsPanel>;
@@ -68,8 +84,35 @@ impl CachedPanel for SettingsPanel {
             restore_last_project: shell.preferences.values.restore_last_project,
             pending_request: state.pending_request,
             project_message: shell.project_io.message.clone(),
+            busy: settings.busy(),
+            device_conflict: settings.section == Section::Transport && settings.device.dirty(),
+            measured: settings.measured.cache_key(),
+            expert_modes: settings.expert_inputs.modes(),
+            // Invalid text is intent too, even when the last valid draft did
+            // not move. Identity also replaces subscriptions after Discard.
+            inputs: settings
+                .period_inputs
+                .iter()
+                .filter(|(key, _)| key.0 == Editor::Global)
+                .map(|(_, entry)| &entry.input)
+                .chain(settings.expert_inputs.inputs())
+                .chain(settings.measured.inputs())
+                .map(|input| (input.clone(), input.read(cx).value()))
+                .collect(),
             scroll: shell.settings.scroll.offset().y,
         }
+    }
+
+    fn observe_nested(
+        &self,
+        owner: &Entity<Self::Owner>,
+        cx: &mut Context<PanelHost<Self>>,
+    ) -> Vec<Subscription> {
+        let inputs = owner.read_with(cx, |shell, cx| self.key(shell, cx).inputs);
+        inputs
+            .into_iter()
+            .map(|(input, _)| cx.observe(&input, |host, _, cx| host.notify_nested(cx)))
+            .collect()
     }
 
     fn render(
@@ -130,6 +173,12 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
             Section::Interface,
         ),
         (
+            "settings-nav-transport",
+            ActionIcon::Sliders,
+            t!("Input buffers"),
+            Section::Transport,
+        ),
+        (
             "settings-nav-diagnostics",
             ActionIcon::ListDetails,
             t!("Diagnostics"),
@@ -177,6 +226,7 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
     }
     let content = match shell.settings.editor.section {
         Section::Audio => audio(shell, cx).into_any_element(),
+        Section::Transport => transport::editor(shell, cx).into_any_element(),
         Section::Interface => interface(shell, cx).into_any_element(),
         Section::Diagnostics => diagnostics(shell, cx).into_any_element(),
     };
@@ -207,8 +257,10 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                 cx.notify();
                             }
                         });
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
+                    // Text keys must reach the focused input's platform handler.
+                    // The underlying workspace is unmounted while settings are open.
                 })
                 .focus_trap("settings-focus-trap", &shell.settings.editor.focus)
                 .child(
@@ -289,7 +341,10 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
                                             // cards used to show through the
                                             // bar's transparent fill.
                                             .when(
-                                                shell.settings.editor.section == Section::Audio,
+                                                matches!(
+                                                    shell.settings.editor.section,
+                                                    Section::Audio | Section::Transport
+                                                ),
                                                 |column| {
                                                     column.child(fields::actions(
                                                         shell,
@@ -594,6 +649,41 @@ fn peak_hold_title(hold: crate::project::PeakHold) -> String {
     }
 }
 
+fn process_input_summary(
+    input: Option<crate::service::ExpertInputBuffer>,
+    measured: Option<&crate::service::MeasuredProcessSummary>,
+    snapshot: &crate::service::AppSnapshot,
+) -> String {
+    match measured {
+        Some(measured) => t!(
+            "Measured source node %{node}; PID %{pid} (created %{created}); target %{target} / capacity %{capacity} / jitter %{jitter} frames at 48 kHz; origin session %{session} / owner %{owner} / revision %{revision}; selection %{selection}",
+            node = node_display_name(snapshot, measured.request.node),
+            pid = measured.process_pid,
+            created = measured.process_creation_time_100ns,
+            target = measured.request.target_frames,
+            capacity = measured.request.capacity_frames,
+            jitter = measured.request.jitter_frames,
+            session = measured.request.session_generation.0,
+            owner = measured.request.native_owner_generation,
+            revision = measured.request.graph_revision,
+            selection = measured.selection_id,
+        )
+        .into(),
+        None => transport::summary(input),
+    }
+}
+
+fn node_display_name(
+    snapshot: &crate::service::AppSnapshot,
+    node: moiren_core::graph::NodeId,
+) -> String {
+    snapshot
+        .graph
+        .node(node)
+        .map(crate::ui::presentation::display_label)
+        .unwrap_or_else(|| t!("Unknown node").into())
+}
+
 /// The diagnostics card's native timing rows: the processing parameters
 /// once, then one group per live stream titled by device · node · role.
 fn native_timing_card_rows(snapshot: &crate::service::AppSnapshot) -> Vec<Div> {
@@ -621,6 +711,16 @@ fn native_timing_card_rows(snapshot: &crate::service::AppSnapshot) -> Vec<Div> {
     items
 }
 
+fn native_detail(id: impl Into<ElementId>, key: &str, value: String) -> Stateful<Div> {
+    let accessible_text = format!("{key}: {value}");
+    detail(key, value)
+        .id(id)
+        // A label alone does not emit a native accessibility node in GPUI.
+        .role(Role::Label)
+        .aria_label(accessible_text.clone())
+        .aria_value(accessible_text)
+}
+
 fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
@@ -645,6 +745,26 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(detail(
             &t!("Device buffer policy"),
             t!(snapshot.latency_profile.title()),
+        ))
+        .child(
+            native_detail(
+                "process-input-requested",
+                &t!("Requested process input"),
+                transport::process_summary(
+                    snapshot.transport_latency,
+                    snapshot.measured_process.as_ref(),
+                    snapshot,
+                ),
+            )
+            .gpui_test_observe(),
+        )
+        .child(detail(
+            &t!("Requested VAD input"),
+            transport::vad_summary(snapshot.transport_latency),
+        ))
+        .child(detail(
+            &t!("Requested render queue"),
+            transport::render_summary(snapshot.transport_latency),
         ));
     let columns = match (running, snapshot.active_audio_settings.as_ref()) {
         (true, Some(active)) => div()
@@ -673,6 +793,29 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     ))
                     .when_some(snapshot.active_latency_profile, |column, profile| {
                         column.child(detail(&t!("Device buffer policy"), t!(profile.title())))
+                    })
+                    .when_some(snapshot.active_transport_latency, |column, active| {
+                        column
+                            .child(
+                                native_detail(
+                                    "process-input-active",
+                                    &t!("Active process request"),
+                                    transport::process_summary(
+                                        active,
+                                        snapshot.active_measured_process.as_ref(),
+                                        snapshot,
+                                    ),
+                                )
+                                .gpui_test_observe(),
+                            )
+                            .child(detail(
+                                &t!("Active VAD request"),
+                                transport::vad_summary(active),
+                            ))
+                            .child(detail(
+                                &t!("Active render queue"),
+                                transport::render_summary(active),
+                            ))
                     }),
             ),
         _ => requested_column,
@@ -702,6 +845,34 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(card_shell().px(px(theme::SPACE_4)).pt(px(theme::SPACE_2)).pb(px(theme::SPACE_2)).child(rows(
             native_timing_card_rows(snapshot),
         )))
+        .child(label(t!(
+            "Input targets are estimates. Physical end-to-end latency is unqualified."
+        )))
+        .child(
+            card_shell()
+                .px(px(theme::SPACE_4))
+                .py(px(theme::SPACE_3))
+                .child(heading(t!("Actual native timing")))
+                .children(
+                    crate::ui::presentation::process_trace_rows(snapshot)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (key, value))| {
+                            native_detail(("process-trace-row", index), &key, value)
+                                .gpui_test_observe()
+                        }),
+                )
+                .children(
+                    crate::ui::presentation::native_timing_rows(snapshot)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (key, value))| {
+                            native_detail(("native-timing-row", index), &key, value)
+                                .gpui_test_observe()
+                        }),
+                ),
+        )
+        .child(export_diagnostics(snapshot))
         .child(group(
             t!("System"),
             div()
@@ -721,6 +892,23 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 .child(label(crate::ui::presentation::control_feedback(
                     snapshot,
                     state.pending_request,
+                )))
+                .child(detail(&t!("CPU load"), t!("Unavailable")))
+                .child(
+                    detail(
+                        &t!("Physical end-to-end latency"),
+                        t!("Unknown / unqualified"),
+                    )
+                    .id("diagnostics-physical-latency")
+                    .aria_label(format!(
+                        "{}: {}",
+                        t!("Physical end-to-end latency"),
+                        t!("Unknown / unqualified")
+                    ))
+                    .gpui_test_observe(),
+                )
+                .child(label(t!(
+                    "Queue fill and packet timing do not measure CPU load or physical end-to-end latency."
                 )))
                 .when_some(snapshot.catalog.asio_error.clone(), |view, error| {
                     view.child(
@@ -742,6 +930,38 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     .on_click(|_, _, cx| cx.quit()),
             ),
         )
+}
+
+fn export_diagnostics(snapshot: &crate::service::AppSnapshot) -> AnyElement {
+    let mut exports = card_shell()
+        .id("provider-export-diagnostics")
+        .px(px(theme::SPACE_4))
+        .py(px(theme::SPACE_3))
+        .flex_none()
+        .gap(px(theme::SPACE_2))
+        .child(heading(t!("Provider export diagnostics")));
+    if snapshot.exports.is_empty() {
+        exports = exports.child(label(t!("No native export observations")));
+    }
+    for status in &snapshot.exports {
+        let id = SharedString::from(format!("provider-export-{}", status.intent.endpoint_id));
+        let endpoint = div()
+            .id(id.clone())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(theme::SPACE_1))
+            .children(
+                crate::ui::presentation::export_diagnostic_rows(status)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (key, value))| {
+                        native_detail((id.clone(), index), &key, value).gpui_test_observe()
+                    }),
+            );
+        exports = exports.child(endpoint.gpui_test_observe());
+    }
+    exports.gpui_test_observe().into_any_element()
 }
 
 fn processing_summary(audio: &AudioSettings) -> String {

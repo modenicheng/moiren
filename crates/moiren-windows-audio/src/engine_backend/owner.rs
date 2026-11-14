@@ -2,6 +2,7 @@
 //! unwind boundary, then returns it through a control-only handoff after Stop.
 use super::{
     absence::RuntimeAbsenceReport,
+    native_observations::{NativeObservations, NativeStreamKind, NativeStreamObservation},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     recovery::RecoveryTicket,
 };
@@ -34,11 +35,17 @@ use std::{
 };
 
 #[cfg(test)]
+#[path = "owner/demand_tests.rs"]
+mod demand_tests;
+#[cfg(test)]
 #[path = "owner/idle_tests.rs"]
 mod idle_tests;
 #[cfg(test)]
 #[path = "owner/lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "owner/render_evidence_tests.rs"]
+mod render_evidence_tests;
 
 /// How often the bounded join re-checks worker completion.
 const TEARDOWN_POLL_SLICE: Duration = Duration::from_millis(5);
@@ -200,8 +207,9 @@ impl Timeline {
 }
 
 pub(super) struct Worker {
-    handle: Option<JoinHandle<()>>,
+    handle: Option<JoinHandle<Option<crate::render_evidence::RenderEvidenceWriter>>>,
     started: Arc<AtomicBool>,
+    retired_render_evidence: Option<crate::render_evidence::RenderEvidenceWriter>,
     /// This worker's own abandonment flag: shared with the open-phase
     /// [`Opening`] and re-armed at teardown, so a worker whose driver call
     /// wedged past the teardown deadline can never record a failure or spend
@@ -231,12 +239,20 @@ impl Worker {
             }
             thread::sleep(TEARDOWN_POLL_SLICE);
         }
-        self.handle
-            .take()
-            .expect("worker handle retained until the join")
-            .join()
-            .map_err(|_| BackendError::WorkerPanicked)?;
+        if let Some(handle) = self.handle.take() {
+            self.retired_render_evidence =
+                handle.join().map_err(|_| BackendError::WorkerPanicked)?;
+            if let Some(writer) = self.retired_render_evidence.as_mut() {
+                writer.publish_joined();
+            }
+        }
         Ok(())
+    }
+
+    /// Test-only wait for a worker whose test fixture always finishes.
+    #[cfg(test)]
+    fn join(&mut self) -> Result<(), BackendError> {
+        self.join_within(Instant::now() + Duration::from_secs(30))
     }
     /// Fence and detach. The late tail still unwinds on the worker thread —
     /// its stream releases there — but records nothing into shared state.
@@ -334,10 +350,12 @@ pub(super) fn spawn<S: ProcessingSample>(
         match opening.settle(slice) {
             Some(Ok(info)) => return Ok((opening.into_worker(), info)),
             Some(Err(error)) => {
-                // Mirror the settled-failure fencing of the old serial path:
-                // the worker itself has returned; cancel wakes any siblings.
+                // The worker has settled with failure and will publish its
+                // retired diagnostics when joined. Only cancel siblings and
+                // drop the Opening receiver; fencing here would also detach
+                // the worker before Worker::join_within can collect it.
                 state.cancel();
-                opening.abandon();
+                drop(opening);
                 return Err(error);
             }
             None => {
@@ -378,8 +396,15 @@ pub(super) fn start_worker<S: ProcessingSample>(
                 "native worker started: master={}",
                 request.master,
             );
+            let mut retired_render_evidence = None;
             let result = catch_unwind(AssertUnwindSafe(|| {
-                native_owner(request, &tx, &worker_started, &worker_fence)
+                native_owner(
+                    request,
+                    &tx,
+                    &worker_started,
+                    &worker_fence,
+                    &mut retired_render_evidence,
+                )
             }));
             if result.is_err() {
                 let _ = tx.send(Err(BackendError::WorkerPanicked));
@@ -390,12 +415,14 @@ pub(super) fn start_worker<S: ProcessingSample>(
                     panic_state.fail(BackendError::WorkerPanicked);
                 }
             }
+            retired_render_evidence
         })
         .map_err(|e| BackendError::Failed(e.to_string()))?;
     Ok(Opening {
         worker: Worker {
             handle: Some(handle),
             started,
+            retired_render_evidence: None,
             fence: fence.clone(),
         },
         state,
@@ -410,19 +437,21 @@ fn native_owner<S: ProcessingSample>(
     sender: &mpsc::SyncSender<Result<NativeStreamInfo, BackendError>>,
     started: &AtomicBool,
     fence: &AtomicBool,
+    retired_render_evidence: &mut Option<crate::render_evidence::RenderEvidenceWriter>,
 ) {
     // Match the physical and virtual paths' scheduling class: this thread
     // paces exclusive native deadlines. Registration failure is non-fatal.
     #[cfg(windows)]
     let _mmcss = crate::win32_raii::Mmcss::audio();
     let native = (request.factory)();
-    let mut stream = match native {
+    let stream = match native {
         Ok(stream) => stream,
         Err(error) => {
             let _ = sender.send(Err(error));
             return;
         }
     };
+    let mut stream = RenderEvidenceStreamGuard::new(stream, retired_render_evidence);
     if fence.load(Ordering::Acquire) {
         // The open outlived its deadline while blocked in the driver: the
         // prepare side already degraded this endpoint. Release the stream
@@ -592,7 +621,42 @@ fn native_owner<S: ProcessingSample>(
     }
 }
 
+/// Move variable-size diagnostic storage out before native destruction on every
+/// return/unwind path. The thread result retains it until the control joiner.
+struct RenderEvidenceStreamGuard<'a> {
+    stream: Box<dyn NativeStream>,
+    retired: &'a mut Option<crate::render_evidence::RenderEvidenceWriter>,
+}
+impl<'a> RenderEvidenceStreamGuard<'a> {
+    fn new(
+        stream: Box<dyn NativeStream>,
+        retired: &'a mut Option<crate::render_evidence::RenderEvidenceWriter>,
+    ) -> Self {
+        Self { stream, retired }
+    }
+}
+impl std::ops::Deref for RenderEvidenceStreamGuard<'_> {
+    type Target = dyn NativeStream;
+    fn deref(&self) -> &Self::Target {
+        &*self.stream
+    }
+}
+impl std::ops::DerefMut for RenderEvidenceStreamGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.stream
+    }
+}
+impl Drop for RenderEvidenceStreamGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(mut writer) = self.stream.take_render_evidence() {
+            writer.close();
+            *self.retired = Some(writer);
+        }
+    }
+}
+
 pub(super) struct Pump {
+    consumer_events: Option<crate::latency::events::EventHistoryWriter>,
     capture: Option<Producer<StereoFrame>>,
     capture_clock: Option<Arc<CaptureWriteClock>>,
     capture_frames: u64,
@@ -643,6 +707,13 @@ impl Pump {
             .then(crate::latency::QpcClock::new)
             .flatten();
         Ok(Self {
+            consumer_events: if master {
+                let (writer, observer) = crate::latency::events::event_history();
+                let _ = counters.consumer_events.set(observer);
+                Some(writer)
+            } else {
+                None
+            },
             capture,
             capture_clock,
             capture_frames: 0,
@@ -717,16 +788,29 @@ impl Pump {
             if self.pending == self.offset {
                 self.pending = 0;
                 self.offset = 0;
+                // Ask before advancing the graph. Filling a capacity-sized
+                // scratch buffer here would hide latency outside the native
+                // target queue even when the device needs only one period.
+                let demand = native.render_demand()?;
+                if demand > self.output.len() {
+                    return Err(unsupported(
+                        "native render demand exceeded its prepared capacity",
+                    ));
+                }
+                if demand == 0 {
+                    return Ok(progress);
+                }
                 let mut rendered = 0usize;
+                let consumption_qpc = self.qpc.as_ref().and_then(crate::latency::QpcClock::now);
                 if !self.master {
                     let queued = rx.slots() + src.queued_frames();
                     src.set_correction_ppm(self.servo.observe(queued));
                 }
-                while self.pending < self.output.len() {
+                while self.pending < demand {
                     refill(src, rx);
-                    let count = src.produce(&mut self.output[self.pending..]);
+                    let count = src.produce(&mut self.output[self.pending..demand]);
                     self.pending += count;
-                    if self.pending == self.output.len() {
+                    if self.pending == demand {
                         break;
                     }
                     if self.master {
@@ -739,12 +823,21 @@ impl Pump {
                                 "Engine did not produce its prepared master sink",
                             ));
                         }
+                        // Engine's block is a ceiling, not a minimum. Only
+                        // advance the input needed for this native demand;
+                        // rounding the tail up hides source residency in SRC.
+                        let missing = src
+                            .input_frames_needed(demand - self.pending)
+                            .filter(|&frames| frames > 0)
+                            .ok_or_else(|| unsupported("native render SRC demand invalid"))?;
+                        let block = engine.config().max_block_frames;
+                        let frames = missing.min(block);
                         // DSP-load accounting: two QPC reads and relaxed
                         // atomics per block — no allocation, no blocking, no
                         // clock domain beyond QPC itself.
                         let began = self.qpc.as_ref().and_then(|clock| clock.now());
                         engine
-                            .render(block)
+                            .render(frames)
                             .map_err(|e| BackendError::Failed(e.to_string()))?;
                         if let Some(spent) = began
                             .zip(self.qpc.as_ref().and_then(|clock| clock.now()))
@@ -760,7 +853,7 @@ impl Pump {
                         // One second of audio completes the window; its worst
                         // block becomes the published peak and the next
                         // window starts fresh.
-                        let window = (self.engine_rate as usize / block.max(1)).max(1);
+                        let window = (self.engine_rate as usize / frames.max(1)).max(1);
                         if self.window_blocks >= window {
                             self.counters
                                 .render_peak_ticks
@@ -768,19 +861,25 @@ impl Pump {
                             self.window_blocks = 0;
                             self.window_peak = 0;
                         }
-                        rendered += block;
+                        rendered += frames;
                         timeline.publish(engine);
                     } else {
                         // Followers run only from queued master output and never
                         // advance Engine's timeline to mask a queue shortfall.
-                        let missing = self.output.len() - self.pending;
-                        self.output[self.pending..].fill([0.0; 2]);
+                        let missing = demand - self.pending;
+                        self.output[self.pending..demand].fill([0.0; 2]);
                         self.counters
                             .silent
                             .fetch_add(missing as u64, Ordering::Relaxed);
                         self.counters.xruns.fetch_add(1, Ordering::Relaxed);
-                        self.pending = self.output.len();
+                        // Preserve only the requested wake; padding the full
+                        // scratch would manufacture silent residency beyond
+                        // the native queue and inflate measured latency.
+                        self.pending = demand;
                     }
+                }
+                if let Some(events) = &mut self.consumer_events {
+                    events.record(rendered as u64, consumption_qpc);
                 }
             }
             let written = native.write(&self.output[self.offset..self.pending])?;
@@ -803,6 +902,19 @@ pub(super) struct Transport<S: ProcessingSample> {
     pub sinks: Vec<NodeId>,
     pub observations: ProfessionalObservations,
     pub streams: Vec<(ProfessionalStreamObservation, Arc<Counters>)>,
+    pub native_observations: NativeObservations,
+    pub src_route: Arc<super::native_observations::src_route::RouteState>,
+    pub native_streams: Vec<NativeStreamObservation>,
+    pub native_bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
+    pub native_process_delivery: Vec<super::native_observations::ProcessDeliverySource>,
+    pub native_probes: Vec<(
+        NodeId,
+        NativeStreamKind,
+        Arc<crate::virtual_owner::BoundaryProbe>,
+    )>,
+    pub native_renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+    pub native_render_evidence: Vec<super::native_observations::RenderEvidenceSource>,
+    pub virtual_clock: Option<Arc<crate::virtual_owner::VirtualClockProbe>>,
     pub generation: u64,
 }
 impl<S: ProcessingSample> Transport<S> {
@@ -816,6 +928,15 @@ impl<S: ProcessingSample> Transport<S> {
             sinks: Vec::new(),
             observations,
             streams: Vec::new(),
+            native_observations: NativeObservations::default(),
+            src_route: Arc::default(),
+            native_streams: Vec::new(),
+            native_bridges: Vec::new(),
+            native_process_delivery: Vec::new(),
+            native_probes: Vec::new(),
+            native_renders: Vec::new(),
+            native_render_evidence: Vec::new(),
+            virtual_clock: None,
             generation,
         }
     }
@@ -837,6 +958,17 @@ impl<S: ProcessingSample> Transport<S> {
         }))
     }
     fn activate(&self) -> Result<(), BackendError> {
+        self.native_observations.publish_with_render_evidence(
+            self.generation,
+            self.native_streams.clone(),
+            self.native_bridges.clone(),
+            self.native_probes.clone(),
+            self.native_renders.clone(),
+            self.native_process_delivery.clone(),
+            self.virtual_clock.clone(),
+            self.src_route.clone(),
+            self.native_render_evidence.clone(),
+        );
         for auxiliary in &self.auxiliaries {
             if let Err(error) = auxiliary.activate() {
                 self.cancel();
@@ -859,6 +991,7 @@ impl<S: ProcessingSample> Transport<S> {
             }
         }
         self.observations.clear(self.generation);
+        self.native_observations.clear(self.generation);
     }
     fn failure(&self) -> Option<BackendError> {
         self.state
@@ -895,6 +1028,7 @@ impl<S: ProcessingSample> Transport<S> {
             && !self.state.stop.load(Ordering::Acquire)
         {
             self.observations.running(self.generation);
+            self.native_observations.running(self.generation);
             OwnerStatus::Running
         } else {
             OwnerStatus::Starting
@@ -957,6 +1091,7 @@ impl<S: ProcessingSample> Transport<S> {
             }
         }
         self.observations.clear(self.generation);
+        self.native_observations.clear(self.generation);
         log::debug!(
             target: "moiren::audio::professional",
             "transport cleanup finished: generation={}",

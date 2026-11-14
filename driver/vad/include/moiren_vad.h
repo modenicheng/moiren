@@ -31,6 +31,12 @@ typedef UINT64 uint64_t;
 // OUT_DIRECT render PCM (kernel -> user), IN_DIRECT capture PCM (user -> kernel).
 #define IOCTL_MOIREN_VAD_READ_PCM     0x0022e016u
 #define IOCTL_MOIREN_VAD_WRITE_PCM    0x0022e019u
+// Independent opt-in request version; all replies retain the v2 snapshot ABI.
+#define IOCTL_MOIREN_VAD_CREATE_IDENTITY 0x0022e01cu
+#define IOCTL_MOIREN_VAD_IDENTITY_CAPABILITIES 0x0022e020u
+#define MOIREN_VAD_IDENTITY_VERSION 1u
+#define MOIREN_VAD_IDENTITY_ESTABLISH_NEW 1u
+#define MOIREN_VAD_IDENTITY_REOPEN_OR_ADOPT 2u
 
 #define MOIREN_VAD_INTENT_PLAYBACK   1u
 #define MOIREN_VAD_INTENT_MICROPHONE 2u
@@ -44,6 +50,7 @@ typedef UINT64 uint64_t;
 #define MOIREN_VAD_CAP_STREAMS       0x00000008u
 #define MOIREN_VAD_CAP_PCM           0x00000010u
 #define MOIREN_VAD_CAP_CREATE_DEFERRED 0x00000020u
+#define MOIREN_VAD_CAP_PUBLICATION_IDENTITY 0x00000040u
 #define MOIREN_VAD_CREATE_DEFERRED_KIND 5u // CREATE reply tag, never a PDO state.
 #define MOIREN_VAD_FORMAT_PCM16      0x00000001u
 #define MOIREN_VAD_FORMAT_FLOAT32    0x00000002u
@@ -72,6 +79,31 @@ typedef struct MOIREN_VAD_CREATE_REQUEST {
     uint32_t Reserved;
     uint16_t Name[MOIREN_VAD_MAX_NAME_UNITS]; // NUL-terminated UTF-16.
 } MOIREN_VAD_CREATE_REQUEST;
+
+// EstablishNew is an explicit management decision for a newly allocated ID,
+// never inferred from absent storage. ReopenOrAdopt never mints a reference.
+// Separate IOCTL/version: no v2 Reserved field acquires a hidden meaning.
+typedef struct MOIREN_VAD_CREATE_IDENTITY_REQUEST {
+    uint32_t Size;
+    uint32_t Version;
+    uint32_t Intent;
+    uint32_t Channels;
+    MOIREN_VAD_ENDPOINT_ID StableId;
+    uint32_t AllowDefault;
+    uint32_t Reserved;
+    uint16_t Name[MOIREN_VAD_MAX_NAME_UNITS];
+    uint32_t Mode;
+    uint32_t Reserved1;
+} MOIREN_VAD_CREATE_IDENTITY_REQUEST;
+
+// Queried explicitly; base v2 CAPS flags/reserved remain byte-compatible with
+// old strict decoders. This reply authorizes only the separate identity IOCTL.
+typedef struct MOIREN_VAD_IDENTITY_CAPABILITIES {
+    uint32_t Size;
+    uint32_t Version;
+    uint32_t Flags;
+    uint32_t Reserved;
+} MOIREN_VAD_IDENTITY_CAPABILITIES;
 
 typedef struct MOIREN_VAD_ENDPOINT_REQUEST {
     uint32_t Size;
@@ -171,6 +203,8 @@ typedef struct MOIREN_VAD_PCM_HEADER {
 static_assert(sizeof(MOIREN_VAD_HEADER) == 8);
 static_assert(sizeof(MOIREN_VAD_ENDPOINT_ID) == 16);
 static_assert(sizeof(MOIREN_VAD_CREATE_REQUEST) == 168);
+static_assert(sizeof(MOIREN_VAD_CREATE_IDENTITY_REQUEST) == 176);
+static_assert(sizeof(MOIREN_VAD_IDENTITY_CAPABILITIES) == 16);
 static_assert(sizeof(MOIREN_VAD_ENDPOINT_REQUEST) == 32);
 static_assert(sizeof(MOIREN_VAD_GATE_REQUEST) == 48);
 static_assert(sizeof(MOIREN_VAD_CAPABILITIES) == 64);
@@ -181,6 +215,9 @@ static_assert(sizeof(MOIREN_VAD_PCM_HEADER) == 80);
 VAD_OFFSET(MOIREN_VAD_CREATE_REQUEST, StableId, 16);
 VAD_OFFSET(MOIREN_VAD_CREATE_REQUEST, AllowDefault, 32);
 VAD_OFFSET(MOIREN_VAD_CREATE_REQUEST, Name, 40);
+VAD_OFFSET(MOIREN_VAD_CREATE_IDENTITY_REQUEST, StableId, 16);
+VAD_OFFSET(MOIREN_VAD_CREATE_IDENTITY_REQUEST, Name, 40);
+VAD_OFFSET(MOIREN_VAD_CREATE_IDENTITY_REQUEST, Mode, 168);
 VAD_OFFSET(MOIREN_VAD_ENDPOINT_REQUEST, SessionEpoch, 16);
 VAD_OFFSET(MOIREN_VAD_ENDPOINT_REQUEST, EndpointGeneration, 24);
 VAD_OFFSET(MOIREN_VAD_GATE_REQUEST, Open, 32);

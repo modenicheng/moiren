@@ -28,6 +28,7 @@ pub(crate) mod format;
 pub mod latency;
 pub mod native;
 pub mod process_loopback;
+pub mod render_evidence;
 pub(crate) mod resample;
 pub(crate) mod servo;
 pub mod stats;
@@ -87,3 +88,9 @@ mod win32_raii;
 
 #[cfg(windows)]
 pub(crate) mod negotiation;
+
+// One counting allocator per library-test binary, shared by bounded hot-path
+// regressions. Integration-test binaries install their own copy.
+#[cfg(test)]
+#[path = "../tests/common/alloc_guard.rs"]
+pub(crate) mod test_allocation;

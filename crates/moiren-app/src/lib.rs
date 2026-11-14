@@ -5,6 +5,7 @@
 // strings. See `i18n` for the language list and runtime switching.
 rust_i18n::i18n!("locales", fallback = "en");
 
+pub mod cli;
 // Console control-event hook: the Win32 handler routine is unsafe by nature,
 // isolated here behind the same allow pattern as `ui::touchpad`.
 #[cfg(windows)]

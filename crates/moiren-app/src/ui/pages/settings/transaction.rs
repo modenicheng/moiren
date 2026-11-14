@@ -12,6 +12,19 @@ impl StudioShell {
         if self.settings.editor.busy() {
             return;
         }
+        if editor == Editor::Global
+            && let Err(error) = self.settings.editor.capture_expert_inputs(cx)
+        {
+            self.settings.editor.global.feedback = Some(DraftFeedback::Diagnostic { cause: error });
+            cx.notify();
+            return;
+        }
+        if let Err(error) = self.settings.editor.validate_period_inputs(editor, cx) {
+            let draft = self.settings.editor.draft_mut(editor);
+            draft.feedback = Some(DraftFeedback::Diagnostic { cause: error });
+            cx.notify();
+            return;
+        }
         let draft = self.settings.editor.draft_mut(editor);
         draft.changed();
         if self.preferences.path.is_none() {
@@ -20,7 +33,7 @@ impl StudioShell {
             return;
         }
         let snapshot = &self.state.read(cx).snapshot;
-        let submitted = match draft.submission(&snapshot.audio_settings, snapshot.latency_profile) {
+        let submitted = match draft.capture(snapshot) {
             Ok(submitted) => submitted,
             Err(feedback) => {
                 draft.feedback = Some(feedback);
@@ -33,13 +46,19 @@ impl StudioShell {
             cx.notify();
             return;
         }
+        if let Err(error) = submitted.transport.validate() {
+            draft.feedback = Some(DraftFeedback::Diagnostic { cause: error });
+            cx.notify();
+            return;
+        }
         // Recheck the phase at activation: a stale running button must never
         // turn Save into an unexpected start after audio has stopped.
         let snapshot = &self.state.read(cx).snapshot;
         let restart = restart
             && snapshot.phase == SessionPhase::Running
             && (snapshot.active_audio_settings.as_ref() != Some(&submitted.audio)
-                || snapshot.active_latency_profile != expected_active_profile(submitted.profile));
+                || snapshot.active_latency_profile != expected_active_profile(submitted.profile)
+                || snapshot.active_transport_latency != Some(submitted.transport));
         match self.state.update(cx, |state, _| {
             state.try_dispatch(AppRequest::SetAudioSettings(submitted.audio.clone()))
         }) {
@@ -94,16 +113,28 @@ impl StudioShell {
                 });
             let settings_match = snapshot.audio_settings == pending.submitted.audio;
             let profile_match = snapshot.latency_profile == pending.submitted.profile;
+            let transport_match = snapshot.transport_latency == pending.submitted.transport;
             let mut next = None;
             let mut complete = false;
             let mut feedback = None;
             match pending.stage {
-                Stage::Audio | Stage::Profile if !settings_match => {
+                Stage::Audio | Stage::Transport | Stage::Profile if !settings_match => {
                     feedback = Some(failure.unwrap_or(DraftFeedback::Rejected {
                         what: Rejection::AudioSettings,
                     }));
                 }
-                Stage::Audio if !profile_match => {
+                Stage::Audio if pending.submitted.save_transport => {
+                    next = Some((
+                        AppRequest::SetTransportLatency(pending.submitted.transport),
+                        Stage::Transport,
+                    ));
+                }
+                Stage::Audio | Stage::Transport | Stage::Profile if !transport_match => {
+                    feedback = Some(failure.unwrap_or(DraftFeedback::Rejected {
+                        what: Rejection::TransportLatency,
+                    }));
+                }
+                Stage::Audio | Stage::Transport if !profile_match => {
                     next = Some((
                         AppRequest::SetLatencyProfile(pending.submitted.profile),
                         Stage::Profile,
@@ -114,7 +145,15 @@ impl StudioShell {
                         what: Rejection::LatencyPolicy,
                     }));
                 }
-                Stage::Audio | Stage::Profile => {
+                Stage::Audio | Stage::Transport | Stage::Profile
+                    if !pending.submitted.matches_requested(snapshot) =>
+                {
+                    feedback = Some(failure.unwrap_or(DraftFeedback::Diagnostic {
+                        cause: t!("Measured Process selection changed while saving. Your draft is retained.")
+                            .to_string(),
+                    }));
+                }
+                Stage::Audio | Stage::Transport | Stage::Profile => {
                     if pending.restart && snapshot.phase == SessionPhase::Running {
                         next = Some((AppRequest::ApplyGraph, Stage::Restart));
                     } else {
@@ -122,10 +161,12 @@ impl StudioShell {
                     }
                 }
                 Stage::Restart => {
-                    if snapshot.phase == SessionPhase::Running
-                        && snapshot.active_audio_settings.as_ref() == Some(&pending.submitted.audio)
-                        && snapshot.active_latency_profile
-                            == expected_active_profile(pending.submitted.profile)
+                    if !pending.submitted.matches_requested(snapshot) {
+                        feedback = Some(DraftFeedback::Diagnostic {
+                            cause: t!("Settings changed while restarting. Your draft is retained.")
+                                .to_string(),
+                        });
+                    } else if pending.submitted.matches_active(snapshot)
                         && snapshot.graph.pending_revision.is_none()
                         && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
                         && failure.is_none()
@@ -173,8 +214,10 @@ impl StudioShell {
                 let draft = self.settings.editor.draft_mut(editor);
                 draft.audio = pending.submitted.audio;
                 draft.profile = pending.submitted.profile;
+                draft.transport = pending.submitted.transport;
                 self.preferences.values.audio = draft.audio.clone();
                 self.preferences.values.latency_profile = draft.profile;
+                self.preferences.values.transport_latency = draft.transport;
                 draft.committed();
                 if matches!(pending.stage, Stage::Restart) {
                     draft.feedback = Some(DraftFeedback::Restarted);

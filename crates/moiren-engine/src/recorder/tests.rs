@@ -173,6 +173,7 @@ pub(super) fn observe<S: ProcessingSample>(recorder: &mut Recorder, channels: &[
             };
             recorder.observe(
                 &ProcessContext {
+                    execution: None,
                     timeline_epoch: 1,
                     timeline_start: 0,
                     frames,

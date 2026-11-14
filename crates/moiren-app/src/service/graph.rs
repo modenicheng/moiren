@@ -1,7 +1,7 @@
 //! The service owns the editable topology. Pages receive immutable projections;
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{
-    ExportIntent, InputSelection, PluginAssignment, PluginLibrary, RecordingCard,
+    ExportIntent, InputSelection, PluginAssignment, PluginLibrary, RecordingCard, RunLimit,
     SessionGeneration, SessionSpec, validate_exports,
 };
 use moiren_core::graph::{EdgeId, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
@@ -1023,6 +1023,7 @@ impl ServiceGraph {
             output_endpoint_id: output_endpoint_id.clone(),
             gain: 1.0,
             pan: 0.0,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         });
         spec.source = source;

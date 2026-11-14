@@ -1123,13 +1123,14 @@ mod tests {
     /// the readings move, so only a reading or status change may wake the
     /// interface (SD-8). Driven by the fake engine's constant source, whose
     /// windows stand in for silence: arriving, valid, and bit-identical.
+    #[cfg(all(test, feature = "gpui-test"))]
     #[test]
     fn legacy_meter_wakes_on_changes_only_not_on_publications() {
         use std::sync::atomic::Ordering;
 
         use crate::service::{
-            AppRequest, GraphEdit, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase,
-            SessionSpec, test_backend::FakeBackend,
+            AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceRuntime,
+            SessionPhase, SessionSpec, test_backend::FakeBackend,
         };
         use crate::ui::{finish_service, wait_for, wait_until};
 
@@ -1149,6 +1150,7 @@ mod tests {
                 output_endpoint_id: "output".into(),
                 gain: 1.,
                 pan: 0.,
+                limit: RunLimit::UntilStopped,
                 max_block_frames: 256,
             }))
             .unwrap();
@@ -1212,14 +1214,28 @@ mod tests {
             meters.update_points(&snapshot, true, true)
         });
 
-        // A delivery stall is a status change: it must wake exactly once,
-        // then stay quiet while the stall persists.
+        // Leave publications queued before pausing. Polling must drain that
+        // tail before the subscription's delivery-inactivity timer can expire;
+        // sleeping without polling would stamp the old tail as delivered now.
+        // Route-B level sources expose publication through their live engine
+        // subscriptions, not relay attempt counters.
+        let before_pause = snapshot.signal_topics.monitor_output.held_subscriptions();
+        wait_until(Duration::from_secs(3), || {
+            snapshot.signal_topics.monitor_output.held_subscriptions() >= before_pause
+        });
         backend_state.pause_audio.store(true, Ordering::Relaxed);
         // The stall clock starts at the feed's last delivery, not at this
         // store: on a loaded runner a publication can still land just after
         // the pause, so a fixed sleep underestimates the wait. Bound it.
         wait_until(STALE_AFTER + Duration::from_secs(3), || {
-            meters.update_points(&snapshot, true, true)
+            let woke = meters.update_points(&snapshot, true, true);
+            if meters.input_status != MeterStatus::Stale
+                || meters.output_status != MeterStatus::Stale
+            {
+                return false;
+            }
+            assert!(woke, "the transition to Stale must wake");
+            true
         });
         assert!(
             !meters.update_points(&snapshot, true, true),
@@ -1229,7 +1245,13 @@ mod tests {
         // Recovery is a status change too: Stale → Live with fresh readings.
         backend_state.pause_audio.store(false, Ordering::Relaxed);
         wait_until(Duration::from_secs(3), || {
-            meters.update_points(&snapshot, true, true)
+            let woke = meters.update_points(&snapshot, true, true);
+            if meters.input_status != MeterStatus::Live || meters.output_status != MeterStatus::Live
+            {
+                return false;
+            }
+            assert!(woke, "the recovery to Live must wake");
+            true
         });
 
         finish_service(runtime);

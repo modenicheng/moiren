@@ -162,7 +162,7 @@ impl LevelSource {
     /// How many live leases currently hold an engine subscription: the
     /// demand the realtime window tap actually sees.
     #[cfg(test)]
-    fn held_subscriptions(&self) -> usize {
+    pub(crate) fn held_subscriptions(&self) -> usize {
         self.shared
             .leases
             .lock()
@@ -284,21 +284,6 @@ impl LevelRegistry {
             ],
             nodes: Default::default(),
         }
-    }
-
-    /// How many engine subscriptions the registry currently holds: the
-    /// demand the realtime window taps actually see.
-    #[cfg(test)]
-    pub(crate) fn demanded_levels(&self) -> usize {
-        self.monitors
-            .iter()
-            .map(|slot| slot.source.held_subscriptions())
-            .sum::<usize>()
-            + self
-                .nodes
-                .values()
-                .map(|source| source.held_subscriptions())
-                .sum::<usize>()
     }
 
     /// One registry round. The relay's per-slot loop runs here against the

@@ -1,4 +1,7 @@
-use moiren_windows_audio::vad::{Channels, Intent, PcmPacketStamp, StableEndpointId};
+use moiren_windows_audio::vad::{
+    Channels, EndpointSnapshot, Intent, PcmPacketStamp, PdoState, SampleFormat, StableEndpointId,
+    StreamState,
+};
 use serde::Serialize;
 
 #[derive(Clone, Debug)]
@@ -45,6 +48,69 @@ pub(super) fn pattern(index: usize, channels: Channels) -> [f32; 2] {
             0.0
         },
     ]
+}
+
+pub(super) fn ac_microphone_payload(frames: u32) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(
+        frames == 480,
+        "AC diagnostic requires exact stereo PCM16/480"
+    );
+    let mut bytes = Vec::with_capacity(frames as usize * 4);
+    // 480 frames contain integral 1/1.5 kHz cycles at 48 kHz, so repeating
+    // this buffer preserves phase. Quantized peaks match the original DC test.
+    for frame in 0..frames {
+        for (period, peak) in [(48, 2048.0_f32), (32, 5120.0_f32)] {
+            let phase = (frame % period) as f32 * std::f32::consts::TAU / period as f32;
+            bytes.extend_from_slice(&((phase.sin() * peak).round() as i16).to_le_bytes());
+        }
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod ac_tests {
+    use super::*;
+
+    #[test]
+    fn ac_payload_is_exact_pcm16_zero_mean_and_phase_continuous_per_packet() {
+        let bytes = ac_microphone_payload(480).unwrap();
+        assert_eq!(bytes.len(), 1920);
+        let samples: Vec<_> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
+        for (channel, period, peak) in [(0, 48, 2048_i16), (1, 32, 5120_i16)] {
+            let channel: Vec<_> = samples.iter().skip(channel).step_by(2).copied().collect();
+            assert_eq!(channel.iter().map(|&v| i64::from(v)).sum::<i64>(), 0);
+            assert_eq!(channel.iter().max(), Some(&peak));
+            assert_eq!(channel.iter().min(), Some(&-peak));
+            for i in period..480 {
+                assert_eq!(channel[i], channel[i % period]);
+            }
+            assert_eq!(channel[0], 0);
+            assert!(channel[479] < 0);
+        }
+        for frames in [0, 144, 479, 481, 960] {
+            assert!(ac_microphone_payload(frames).is_err());
+        }
+    }
+
+    #[test]
+    fn diagnostic_energy_preserves_silence_and_rejects_malformed_data_without_matching_dc() {
+        let mut seen = Observation::default();
+        seen.observe_diagnostic_energy(&[0.0, 0.0, 0.25, -0.5, -0.1, 0.125])
+            .unwrap();
+        assert_eq!((seen.signal_frames, seen.silent_frames), (2, 1));
+        assert!(seen.observe_diagnostic_energy(&[f32::NAN, 0.0]).is_err());
+        assert!(seen.observe_diagnostic_energy(&[0.0]).is_err());
+        assert!(
+            Observation::default()
+                .observe(&[0.25, -0.5, -0.1, 0.125], [0.25, -0.5])
+                .is_err()
+        );
+    }
 }
 
 #[derive(Default)]
@@ -133,6 +199,22 @@ pub(super) struct Observation {
 }
 
 impl Observation {
+    pub fn observe_diagnostic_energy(&mut self, frames: &[f32]) -> anyhow::Result<()> {
+        anyhow::ensure!(frames.len().is_multiple_of(2), "incomplete two-slot frame");
+        for frame in frames.as_chunks::<2>().0 {
+            anyhow::ensure!(
+                frame.iter().all(|v| v.is_finite()),
+                "nonfinite diagnostic PCM"
+            );
+            if frame.iter().all(|v| v.abs() <= 2.0 / 32768.0) {
+                self.silent_frames += 1;
+            } else {
+                self.signal_frames += 1;
+            }
+        }
+        Ok(())
+    }
+
     pub fn observe(&mut self, frames: &[f32], expected: [f32; 2]) -> anyhow::Result<()> {
         anyhow::ensure!(frames.len().is_multiple_of(2), "incomplete two-slot frame");
         // Accommodate PCM16 rounding at each boundary, not gain/channel changes.
@@ -190,17 +272,371 @@ pub(super) fn revoke_and_drain<T>(
     Ok(value)
 }
 
+pub(super) fn retain_cleanup_failure<T>(
+    outcome: anyhow::Result<T>,
+    stage: &str,
+    cleanup: anyhow::Result<()>,
+) -> anyhow::Result<T> {
+    match cleanup {
+        Ok(()) => outcome,
+        Err(error) => match outcome {
+            Ok(_) => Err(error.context(format!("{stage} cleanup failed"))),
+            Err(original) => {
+                Err(original.context(format!("{stage} cleanup also failed: {error:#}")))
+            }
+        },
+    }
+}
+
+pub(super) fn cleanup_all<T: Copy>(
+    items: &[T],
+    mut cleanup: impl FnMut(T) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut errors = Vec::new();
+    for &item in items {
+        if let Err(error) = cleanup(item) {
+            errors.push(format!("{error:#}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{} cleanup operation(s) failed: {}",
+            errors.len(),
+            errors.join("; ")
+        )
+    }
+}
+
+/// Detached diagnostic evidence only. Explicit scalar fields keep the report
+/// portable without parsing Debug output or lending the snapshot new authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct EndpointDiagnostic {
+    pub stable_id: String,
+    pub pdo_token: u64,
+    pub session_epoch: u64,
+    pub endpoint_generation: u64,
+    pub stream_generation: u64,
+    pub gate_epoch: u64,
+    pub gate_open: bool,
+    pub state: &'static str,
+    pub stream_state: &'static str,
+    pub intent: &'static str,
+    pub sample_format: Option<&'static str>,
+    pub packet_frames: u32,
+    pub channels: u32,
+    pub dropped_packets: u64,
+    pub silence_packets: u64,
+    pub last_status: u32,
+    pub policy_prepared: bool,
+    pub audio_ready: bool,
+}
+
+impl From<EndpointSnapshot> for EndpointDiagnostic {
+    fn from(snapshot: EndpointSnapshot) -> Self {
+        Self {
+            stable_id: snapshot.stable_id().to_string(),
+            pdo_token: snapshot.pdo_token().get(),
+            session_epoch: snapshot.session_epoch(),
+            endpoint_generation: snapshot.endpoint_generation(),
+            stream_generation: snapshot.stream_generation(),
+            gate_epoch: snapshot.gate_epoch(),
+            gate_open: snapshot.gate_open(),
+            state: match snapshot.state() {
+                PdoState::Present => "Present",
+                PdoState::Removing => "Removing",
+                PdoState::Removed => "Removed",
+                PdoState::Creating => "Creating",
+            },
+            stream_state: match snapshot.stream_state() {
+                StreamState::Closed => "Closed",
+                StreamState::Paused => "Paused",
+                StreamState::Running => "Running",
+            },
+            intent: match snapshot.intent() {
+                Intent::Playback => "Playback",
+                Intent::Microphone => "Microphone",
+            },
+            sample_format: snapshot.sample_format().map(|format| match format {
+                SampleFormat::Pcm16 => "Pcm16",
+                SampleFormat::Float32 => "Float32",
+            }),
+            packet_frames: snapshot.packet_frames(),
+            channels: snapshot.channels() as u32,
+            dropped_packets: snapshot.dropped_packets(),
+            silence_packets: snapshot.silence_packets(),
+            last_status: snapshot.last_status(),
+            policy_prepared: snapshot.policy_prepared(),
+            audio_ready: snapshot.audio_ready(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FailureObservation {
+    pub scope: &'static str,
+    pub current_snapshot: Option<EndpointDiagnostic>,
+    pub query_error: Option<String>,
+    pub progress_validation_error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct MicrophoneCompletionIdentity {
+    // Names the actual PcmCompletion variant, not an NTSTATUS or the reason
+    // for a driver's freshness rejection.
+    status: &'static str,
+    // One-based capture completion collection order within this case, not a
+    // native packet index. Unknown after the diagnostic counter overflows.
+    ordinal: Option<u64>,
+    // Capture completion stamps are the original user-side WRITE submission
+    // identity, not driver consumption time. Both QPC fields are raw ticks,
+    // unlike PositionSample's qpc_100ns; unavailable collection QPC stays null.
+    stamp_sequence: u64,
+    stamp_qpc: u64,
+    collected_qpc: Option<u64>,
+}
+
+#[derive(Clone, Copy, Default, Debug, Serialize)]
+pub(super) struct MicrophoneCompletionDiagnostics {
+    completion_count: u64,
+    ordinal_overflow: bool,
+    first_completion: Option<MicrophoneCompletionIdentity>,
+    first_dropped_completion: Option<MicrophoneCompletionIdentity>,
+}
+
+impl MicrophoneCompletionDiagnostics {
+    #[cfg(windows)]
+    pub fn observe(
+        &mut self,
+        completion: &moiren_windows_audio::vad::PcmCompletion<'_>,
+        collected_qpc: impl FnOnce() -> Option<u64>,
+    ) {
+        use moiren_windows_audio::vad::PcmCompletion;
+
+        let (status, stamp, dropped) = match completion {
+            PcmCompletion::Capture { stamp, .. } => ("capture", stamp, false),
+            PcmCompletion::CaptureDropped { stamp } => ("capture_dropped", stamp, true),
+            PcmCompletion::Render { .. } => return,
+        };
+        match self.completion_count.checked_add(1) {
+            Some(count) => self.completion_count = count,
+            None => self.ordinal_overflow = true,
+        }
+        if self.first_completion.is_some() && (!dropped || self.first_dropped_completion.is_some())
+        {
+            return;
+        }
+        // Exactly two fixed records, with at most one QPC sample per retained
+        // completion. A first completion that drops fills both with one sample.
+        // Counter/sample failure is diagnostic only: never change PCM handling.
+        let identity = MicrophoneCompletionIdentity {
+            status,
+            ordinal: (!self.ordinal_overflow).then_some(self.completion_count),
+            stamp_sequence: stamp.sequence,
+            stamp_qpc: stamp.qpc,
+            collected_qpc: collected_qpc(),
+        };
+        self.first_completion.get_or_insert(identity);
+        if dropped {
+            self.first_dropped_completion.get_or_insert(identity);
+        }
+    }
+}
+
+pub(super) const RECENT_WRITES: usize = 64;
+const DROP_NEIGHBORS: usize = 9;
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct WriteCompletion {
+    pub status: &'static str,
+    // These are the original WRITE header values returned by PcmOwner, not
+    // either of the probe's QPC samples surrounding submit_write().
+    pub header_sequence: u64,
+    pub header_qpc: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct WriteSubmission {
+    /// Probe-local correlation ID paired with an opaque ticket in the FIFO.
+    /// Never a decoded PcmTicket or a guessed native/header sequence.
+    pub probe_ticket_id: Option<u64>,
+    pub submit_before_qpc: Option<u64>,
+    pub submit_after_qpc: Option<u64>,
+    /// Instant-clock nanoseconds relative to this case's pre-Start origin.
+    pub target_deadline_elapsed_ns: Option<u128>,
+    pub submit_entry_elapsed_ns: u128,
+    pub submit_entry_lateness_ns: Option<u128>,
+    pub pending_before: usize,
+    pub pending_after: usize,
+    pub submit_succeeded: bool,
+    pub completion: Option<WriteCompletion>,
+}
+
+#[derive(Debug)]
+struct WriteRing<const N: usize> {
+    records: [Option<WriteSubmission>; N],
+    next: usize,
+    len: usize,
+}
+
+impl<const N: usize> WriteRing<N> {
+    #[cfg(windows)]
+    fn push(&mut self, record: WriteSubmission) {
+        self.records[self.next] = Some(record);
+        self.next = (self.next + 1) % N;
+        self.len = (self.len + 1).min(N);
+    }
+
+    #[cfg(windows)]
+    fn replace(&mut self, record: WriteSubmission) {
+        // Exhausted diagnostic IDs are explicitly unknown, never aliases.
+        if record.probe_ticket_id.is_some()
+            && let Some(slot) = self
+                .records
+                .iter_mut()
+                .find(|slot| slot.is_some_and(|old| old.probe_ticket_id == record.probe_ticket_id))
+        {
+            *slot = Some(record);
+        }
+    }
+}
+
+impl<const N: usize> Default for WriteRing<N> {
+    fn default() -> Self {
+        Self {
+            records: [None; N],
+            next: 0,
+            len: 0,
+        }
+    }
+}
+
+impl<const N: usize> Serialize for WriteRing<N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len))?;
+        for offset in 0..self.len {
+            seq.serialize_element(&self.records[(self.next + N - self.len + offset) % N])?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MicrophoneSubmitDiagnostics {
+    capacity: usize,
+    submission_count: u64,
+    id_overflow: bool,
+    recent: WriteRing<RECENT_WRITES>,
+    first_completion: Option<WriteSubmission>,
+    first_dropped_completion: Option<WriteSubmission>,
+    first_drop_neighbors: WriteRing<DROP_NEIGHBORS>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    drop_following_remaining: usize,
+}
+
+impl Default for MicrophoneSubmitDiagnostics {
+    fn default() -> Self {
+        Self {
+            capacity: RECENT_WRITES,
+            submission_count: 0,
+            id_overflow: false,
+            recent: WriteRing::default(),
+            first_completion: None,
+            first_dropped_completion: None,
+            first_drop_neighbors: WriteRing::default(),
+            #[cfg(windows)]
+            drop_following_remaining: 0,
+        }
+    }
+}
+
+impl MicrophoneSubmitDiagnostics {
+    #[cfg(windows)]
+    pub fn submitted(&mut self, mut record: WriteSubmission) -> WriteSubmission {
+        match self.submission_count.checked_add(1) {
+            Some(count) => self.submission_count = count,
+            None => self.id_overflow = true,
+        }
+        record.probe_ticket_id = (!self.id_overflow).then_some(self.submission_count);
+        self.recent.push(record);
+        if self.drop_following_remaining != 0 {
+            self.first_drop_neighbors.push(record);
+            self.drop_following_remaining -= 1;
+        }
+        record
+    }
+
+    #[cfg(windows)]
+    pub fn completed(&mut self, mut record: WriteSubmission, completion: WriteCompletion) {
+        record.completion = Some(completion);
+        self.recent.replace(record);
+        self.first_drop_neighbors.replace(record);
+        self.first_completion.get_or_insert(record);
+        if completion.status == "capture_dropped" && self.first_dropped_completion.is_none() {
+            self.first_dropped_completion = Some(record);
+            // The probe keeps one WRITE pending. At its completion the recent
+            // tail is that submission; retain it and up to four predecessors.
+            let count = self.recent.len.min(5);
+            for offset in 0..count {
+                let index = (self.recent.next + RECENT_WRITES - count + offset) % RECENT_WRITES;
+                if let Some(neighbor) = self.recent.records[index] {
+                    self.first_drop_neighbors.push(neighbor);
+                }
+            }
+            self.drop_following_remaining = 4;
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct FailureCounters {
     pub mode: crate::NativeMode,
     pub signal_frames: u64,
     pub silent_frames: u64,
     pub microphone_dropped_packets: u64,
+    pub microphone_completion_diagnostics: MicrophoneCompletionDiagnostics,
+    pub microphone_submit_diagnostics: MicrophoneSubmitDiagnostics,
     pub native_buffer_frames: u32,
     pub driver_packet_frames: u32,
     pub stream_generation: u64,
     pub native_discontinuities: u64,
     pub native_position: Option<PositionProgress>,
+    pub admitted_opened: Option<EndpointDiagnostic>,
+    pub admitted_pcm_shape: Option<EndpointDiagnostic>,
+    pub failure_observation: Option<FailureObservation>,
+}
+
+pub(super) fn observe_signal_failure<T>(
+    outcome: anyhow::Result<T>,
+    admitted: EndpointSnapshot,
+    observation: &mut Option<FailureObservation>,
+    query: impl FnOnce(moiren_windows_audio::vad::EndpointKey) -> anyhow::Result<EndpointSnapshot>,
+) -> anyhow::Result<T> {
+    if outcome.is_err() {
+        let mut evidence = FailureObservation {
+            scope: "Post-failure pre-cleanup QUERY; later observation, not atomic failure instant or admission authority",
+            current_snapshot: None,
+            query_error: None,
+            progress_validation_error: None,
+        };
+        // One best-effort observation, never a retry or a new admission stamp.
+        // Retain decoded evidence even if lifecycle validation rejects it.
+        match query(admitted.key()) {
+            Ok(current) => {
+                evidence.current_snapshot = Some(current.into());
+                evidence.progress_validation_error = current
+                    .require_progress_after(admitted)
+                    .err()
+                    .map(|error| error.to_string());
+            }
+            Err(error) => evidence.query_error = Some(format!("{error:#}")),
+        }
+        *observation = Some(evidence);
+    }
+    outcome
 }
 
 pub(super) fn diagnose_failure<T>(
@@ -247,6 +683,547 @@ mod tests {
 
     fn id() -> StableEndpointId {
         StableEndpointId::new(0x42, 0x1234_5678_9abc_def0)
+    }
+
+    fn put32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put64(bytes: &mut [u8], offset: usize, value: u64) {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    // Synthetic protocol fixtures only: these epochs are not target observations.
+    fn endpoint_fixture(adjust: impl FnOnce(&mut [u8; 128])) -> EndpointSnapshot {
+        let mut caps = [0; 64];
+        for (offset, value) in [
+            (0, 64),
+            (4, 2),
+            (8, 31),
+            (12, 64),
+            (16, 1),
+            (20, 48_000),
+            (24, 3),
+            (28, 6),
+            (32, 6),
+            (36, 4),
+            (48, 4800),
+        ] {
+            put32(&mut caps, offset, value);
+        }
+        put64(&mut caps, 40, 7);
+        let mut bytes = [0; 128];
+        for (offset, value) in [
+            (0, 128),
+            (4, 2),
+            (16, 1),
+            (20, 2),
+            (24, 1),
+            (28, 1),
+            (32, 1),
+            (36, 1),
+            (88, 1),
+            (92, 480),
+            (96, 0xc000_0059),
+            (100, 2),
+        ] {
+            put32(&mut bytes, offset, value);
+        }
+        for (offset, value) in [
+            (8, 0x42),
+            (40, 7),
+            (48, 0x42),
+            (56, 11),
+            (64, 13),
+            (104, (1 << 53) + 1),
+            (112, 23),
+        ] {
+            put64(&mut bytes, offset, value);
+        }
+        bytes[72..88].copy_from_slice(&id().to_le_bytes());
+        adjust(&mut bytes);
+        EndpointSnapshot::decode(
+            &bytes,
+            moiren_windows_audio::vad::Capabilities::decode(&caps).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn failure_counters() -> FailureCounters {
+        FailureCounters {
+            mode: crate::NativeMode::Event,
+            signal_frames: 36_960,
+            silent_frames: 9_600,
+            microphone_dropped_packets: 2,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
+            native_buffer_frames: 480,
+            driver_packet_frames: 480,
+            stream_generation: 11,
+            native_discontinuities: 0,
+            native_position: None,
+            admitted_opened: Some(endpoint_fixture(|_| {}).into()),
+            admitted_pcm_shape: Some(endpoint_fixture(|_| {}).into()),
+            failure_observation: None,
+        }
+    }
+
+    #[test]
+    fn fresh_case_exposes_empty_bounded_write_submission_diagnostics() {
+        let json = serde_json::to_value(failure_counters()).unwrap();
+        let submissions = &json["microphone_submit_diagnostics"];
+        assert_eq!(submissions["recent"], serde_json::json!([]));
+        assert_eq!(submissions["capacity"], 64);
+        assert!(submissions["first_completion"].is_null());
+        assert!(submissions["first_dropped_completion"].is_null());
+        assert_eq!(submissions["first_drop_neighbors"], serde_json::json!([]));
+    }
+
+    #[cfg(windows)]
+    fn write_submission() -> WriteSubmission {
+        WriteSubmission {
+            probe_ticket_id: None,
+            submit_before_qpc: Some(100),
+            submit_after_qpc: Some(130),
+            target_deadline_elapsed_ns: Some(5_000_000),
+            submit_entry_elapsed_ns: 6_000_000,
+            submit_entry_lateness_ns: Some(1_000_000),
+            pending_before: 0,
+            pending_after: 1,
+            submit_succeeded: true,
+            completion: None,
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_ring_is_fixed_and_retains_first_drop_neighbors_after_wrap() {
+        let mut diagnostics = MicrophoneSubmitDiagnostics::default();
+        for index in 1..=200 {
+            let record = diagnostics.submitted(write_submission());
+            assert_eq!(record.probe_ticket_id, Some(index));
+            diagnostics.completed(
+                record,
+                WriteCompletion {
+                    status: if index == 70 {
+                        "capture_dropped"
+                    } else {
+                        "capture"
+                    },
+                    header_sequence: index + 1_000,
+                    header_qpc: index + 110,
+                },
+            );
+        }
+        let json = serde_json::to_value(&diagnostics).unwrap();
+        let recent = json["recent"].as_array().unwrap();
+        assert_eq!(recent.len(), RECENT_WRITES);
+        assert_eq!(recent[0]["probe_ticket_id"], 137);
+        assert_eq!(recent[63]["probe_ticket_id"], 200);
+        assert_eq!(json["first_completion"]["probe_ticket_id"], 1);
+        assert_eq!(json["first_dropped_completion"]["probe_ticket_id"], 70);
+        assert_eq!(
+            json["first_dropped_completion"]["completion"]["header_sequence"],
+            1_070
+        );
+        let neighbors = json["first_drop_neighbors"].as_array().unwrap();
+        assert_eq!(neighbors.len(), DROP_NEIGHBORS);
+        for (record, index) in neighbors.iter().zip(66..=74) {
+            assert_eq!(record["probe_ticket_id"], index);
+            assert!(!record["completion"].is_null());
+        }
+        assert_eq!(diagnostics.recent.records.len(), RECENT_WRITES);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_write_samples_and_diagnostic_id_overflow_do_not_invent_header_identity() {
+        let mut diagnostics = MicrophoneSubmitDiagnostics::default();
+        diagnostics.submission_count = u64::MAX;
+        let mut failed = write_submission();
+        failed.submit_succeeded = false;
+        failed.pending_after = 0;
+        failed.submit_before_qpc = None;
+        failed.submit_after_qpc = None;
+        diagnostics.submitted(failed);
+        let json = serde_json::to_value(diagnostics).unwrap();
+        assert_eq!(json["id_overflow"], true);
+        assert_eq!(json["submission_count"], u64::MAX);
+        assert!(json["recent"][0]["probe_ticket_id"].is_null());
+        assert!(json["recent"][0]["completion"].is_null());
+        assert!(json["first_completion"].is_null());
+        assert!(!json["recent"][0]["submit_succeeded"].as_bool().unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn first_dropped_capture_identity_survives_phase_and_cleanup_failures() {
+        use moiren_windows_audio::vad::PcmCompletion;
+
+        let mut counters = failure_counters();
+        let submitted = counters
+            .microphone_submit_diagnostics
+            .submitted(write_submission());
+        counters.microphone_submit_diagnostics.completed(
+            submitted,
+            WriteCompletion {
+                status: "capture_dropped",
+                header_sequence: 42,
+                header_qpc: 91_000,
+            },
+        );
+        counters.microphone_completion_diagnostics.observe(
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 42,
+                    qpc: 91_000,
+                },
+            },
+            || None, // QPC sampling failure must not change the PCM outcome.
+        );
+        counters.microphone_completion_diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 43,
+                    qpc: 92_000,
+                },
+                bytes: 960,
+            },
+            || panic!("first drop already filled both records"),
+        );
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(5))
+            .context("original phase failure");
+        let identity = original.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let outcome = revoke_and_drain::<()>(
+            Err(original),
+            || anyhow::bail!("revoke failed"),
+            || anyhow::bail!("drain failed"),
+        );
+        let mut line = String::new();
+        let error =
+            diagnose_failure(outcome, &counters, |message| line = message.into()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        let json: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let diagnostics = &json["counters"]["microphone_completion_diagnostics"];
+        let expected = serde_json::json!({
+            "status": "capture_dropped", "ordinal": 1, "stamp_sequence": 42,
+            "stamp_qpc": 91_000, "collected_qpc": null,
+        });
+        assert_eq!(diagnostics["first_completion"], expected);
+        assert_eq!(diagnostics["first_dropped_completion"], expected);
+        assert_eq!(diagnostics["completion_count"], 2);
+        assert_eq!(diagnostics["ordinal_overflow"], false);
+        let submitted = &json["counters"]["microphone_submit_diagnostics"];
+        assert_eq!(submitted["first_dropped_completion"]["probe_ticket_id"], 1);
+        assert_eq!(submitted["recent"][0]["completion"]["header_qpc"], 91_000);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capture_completion_ordinal_overflow_is_explicit_and_never_wraps() {
+        use moiren_windows_audio::vad::PcmCompletion;
+
+        let mut diagnostics = MicrophoneCompletionDiagnostics::default();
+        diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 7,
+                    qpc: 100,
+                },
+                bytes: 960,
+            },
+            || Some(110),
+        );
+        diagnostics.completion_count = u64::MAX - 1;
+        diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 8,
+                    qpc: 200,
+                },
+                bytes: 960,
+            },
+            || panic!("the first record is already retained"),
+        );
+        assert_eq!(diagnostics.completion_count, u64::MAX);
+        assert!(!diagnostics.ordinal_overflow);
+        diagnostics.observe(
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 9,
+                    qpc: 300,
+                },
+            },
+            || Some(310),
+        );
+        diagnostics.observe(
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 10,
+                    qpc: 400,
+                },
+            },
+            || panic!("overflow cannot replace either retained record"),
+        );
+        let json = serde_json::to_value(diagnostics).unwrap();
+        assert_eq!(json["completion_count"], u64::MAX);
+        assert_eq!(json["ordinal_overflow"], true);
+        assert_eq!(json["first_completion"]["ordinal"], 1);
+        assert_eq!(json["first_dropped_completion"]["stamp_sequence"], 9);
+        assert!(json["first_dropped_completion"]["ordinal"].is_null());
+    }
+
+    #[test]
+    fn endpoint_diagnostic_serializes_every_admitted_identity_shape_and_readiness_field() {
+        let diagnostic = EndpointDiagnostic::from(endpoint_fixture(|_| {}));
+        assert_eq!(
+            serde_json::to_value(diagnostic).unwrap(),
+            serde_json::json!({
+                "stable_id": "123456789abcdef00000000000000042",
+                "pdo_token": 66,
+                "session_epoch": 7,
+                "endpoint_generation": 66,
+                "stream_generation": 11,
+                "gate_epoch": 13,
+                "gate_open": true,
+                "state": "Present",
+                "stream_state": "Running",
+                "intent": "Microphone",
+                "sample_format": "Pcm16",
+                "packet_frames": 480,
+                "channels": 1,
+                "dropped_packets": 9_007_199_254_740_993_u64,
+                "silence_packets": 23,
+                "last_status": 0xc000_0059_u32,
+                "policy_prepared": true,
+                "audio_ready": true,
+            })
+        );
+    }
+
+    #[test]
+    fn endpoint_diagnostic_keeps_closed_unready_and_unknown_format_explicit() {
+        let snapshot = endpoint_fixture(|bytes| {
+            for (offset, value) in [
+                (16, 2),
+                (20, 1),
+                (24, 2),
+                (28, 0),
+                (32, 0),
+                (36, 0),
+                (88, 0),
+                (92, 0),
+                (100, 0),
+            ] {
+                put32(bytes, offset, value);
+            }
+        });
+        let value = serde_json::to_value(EndpointDiagnostic::from(snapshot)).unwrap();
+        assert_eq!(value["state"], "Removing");
+        assert_eq!(value["stream_state"], "Closed");
+        assert_eq!(value["intent"], "Playback");
+        assert_eq!(value["channels"], 2);
+        assert_eq!(value["gate_open"], false);
+        assert_eq!(value["audio_ready"], false);
+        assert_eq!(value["policy_prepared"], false);
+        assert!(value["sample_format"].is_null());
+        assert_eq!(value["packet_frames"], 0);
+    }
+
+    #[test]
+    fn successful_signal_phase_does_not_query_or_add_failure_observation() {
+        let mut counters = failure_counters();
+        assert_eq!(
+            observe_signal_failure(
+                Ok(42),
+                endpoint_fixture(|_| {}),
+                &mut counters.failure_observation,
+                |_| panic!("successful signal phase must not issue a diagnostic QUERY"),
+            )
+            .unwrap(),
+            42
+        );
+        assert!(counters.failure_observation.is_none());
+    }
+
+    #[test]
+    fn failed_signal_queries_once_before_revoke_and_drain_then_emits_original_error() {
+        let admitted = endpoint_fixture(|_| {});
+        let mut counters = failure_counters();
+        let actions = std::cell::RefCell::new(Vec::new());
+        let gate = std::cell::Cell::new(13);
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(1306))
+            .context("GetOverlappedResult(VAD PCM)");
+        let original_chain = format!("{original:#}");
+        let identity = original.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let outcome = observe_signal_failure::<()>(
+            Err(original),
+            admitted,
+            &mut counters.failure_observation,
+            |key| {
+                actions.borrow_mut().push("query");
+                assert_eq!(key, admitted.key());
+                Ok(endpoint_fixture(|bytes| put64(bytes, 64, gate.get())))
+            },
+        );
+        let outcome = revoke_and_drain(
+            outcome,
+            || {
+                actions.borrow_mut().push("revoke");
+                gate.set(14);
+                anyhow::bail!("secondary revoke failure")
+            },
+            || {
+                actions.borrow_mut().push("drain");
+                anyhow::bail!("secondary drain failure")
+            },
+        );
+        let mut line = String::new();
+        let error = diagnose_failure(outcome, &counters, |message| {
+            actions.borrow_mut().push("emit");
+            line = message.to_owned();
+        })
+        .unwrap_err();
+        assert_eq!(*actions.borrow(), ["query", "revoke", "drain", "emit"]);
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        assert_eq!(error.to_string(), "GetOverlappedResult(VAD PCM)");
+        let diagnostic: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(diagnostic["error"], original_chain);
+        let evidence = &diagnostic["counters"];
+        assert_eq!(evidence["admitted_opened"]["gate_epoch"], 13);
+        assert_eq!(evidence["admitted_pcm_shape"]["gate_epoch"], 13);
+        let observation = &evidence["failure_observation"];
+        assert_eq!(
+            observation["scope"],
+            "Post-failure pre-cleanup QUERY; later observation, not atomic failure instant or admission authority"
+        );
+        assert_eq!(observation["current_snapshot"]["gate_epoch"], 13);
+        assert!(observation["query_error"].is_null());
+        assert!(observation["progress_validation_error"].is_null());
+        assert_eq!(gate.get(), 14);
+    }
+
+    #[test]
+    fn failed_signal_retains_decoded_query_snapshot_even_when_progress_validation_fails() {
+        let admitted = endpoint_fixture(|_| {});
+        for (current, invalid) in [
+            (admitted, false),
+            (endpoint_fixture(|bytes| put64(bytes, 64, 14)), false),
+            (
+                endpoint_fixture(|bytes| {
+                    put32(bytes, 28, 0);
+                    put32(bytes, 36, 0);
+                    put32(bytes, 100, 1);
+                }),
+                false,
+            ),
+            (
+                endpoint_fixture(|bytes| {
+                    put64(bytes, 56, 12);
+                    put32(bytes, 88, 2);
+                    put32(bytes, 92, 960);
+                }),
+                false,
+            ),
+            (endpoint_fixture(|bytes| put64(bytes, 64, 12)), true),
+            (endpoint_fixture(|bytes| put64(bytes, 72, 0x43)), true),
+        ] {
+            let mut counters = failure_counters();
+            let calls = std::cell::Cell::new(0);
+            let error = observe_signal_failure::<()>(
+                Err(anyhow::anyhow!("original PCM phase failure")),
+                admitted,
+                &mut counters.failure_observation,
+                |key| {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(key, admitted.key());
+                    Ok(current)
+                },
+            )
+            .unwrap_err();
+            assert_eq!(calls.get(), 1);
+            assert_eq!(error.to_string(), "original PCM phase failure");
+            let observation = counters.failure_observation.as_ref().unwrap();
+            assert_eq!(observation.current_snapshot, Some(current.into()));
+            assert!(observation.query_error.is_none());
+            assert_eq!(observation.progress_validation_error.is_some(), invalid);
+            if invalid {
+                assert!(
+                    observation
+                        .progress_validation_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("endpoint identity or lifecycle regressed")
+                );
+            }
+            let value = serde_json::to_value(&counters).unwrap();
+            assert_eq!(
+                value["failure_observation"]["current_snapshot"],
+                serde_json::to_value(EndpointDiagnostic::from(current)).unwrap()
+            );
+            assert_eq!(value["admitted_opened"]["gate_epoch"], 13);
+            assert_eq!(value["admitted_pcm_shape"]["packet_frames"], 480);
+        }
+    }
+
+    #[test]
+    fn failed_diagnostic_query_keeps_full_query_chain_and_original_phase_error() {
+        let admitted = endpoint_fixture(|_| {});
+        let mut counters = failure_counters();
+        let actions = std::cell::RefCell::new(Vec::new());
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(1306))
+            .context("original PCM failure context");
+        let original_chain = format!("{original:#}");
+        let identity = original.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let outcome = observe_signal_failure::<()>(
+            Err(original),
+            admitted,
+            &mut counters.failure_observation,
+            |key| {
+                actions.borrow_mut().push("query");
+                assert_eq!(key, admitted.key());
+                Err(anyhow::anyhow!("diagnostic QUERY transport refused")
+                    .context("best-effort current endpoint QUERY"))
+            },
+        );
+        let outcome = revoke_and_drain(
+            outcome,
+            || {
+                actions.borrow_mut().push("revoke");
+                Ok(())
+            },
+            || {
+                actions.borrow_mut().push("drain");
+                Ok(())
+            },
+        );
+        let mut line = String::new();
+        let error = diagnose_failure(outcome, &counters, |message| {
+            actions.borrow_mut().push("emit");
+            line = message.to_owned();
+        })
+        .unwrap_err();
+        assert_eq!(*actions.borrow(), ["query", "revoke", "drain", "emit"]);
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        assert_eq!(error.to_string(), "original PCM failure context");
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let observation = &value["counters"]["failure_observation"];
+        assert!(observation["current_snapshot"].is_null());
+        assert!(observation["progress_validation_error"].is_null());
+        assert_eq!(
+            observation["query_error"],
+            "best-effort current endpoint QUERY: diagnostic QUERY transport refused"
+        );
+        assert_eq!(value["error"], original_chain);
     }
 
     #[test]
@@ -398,6 +1375,54 @@ mod tests {
     }
 
     #[test]
+    fn expected_diagnostic_refusal_retains_each_cleanup_failure_and_original_cause() {
+        for failure in 0..8 {
+            let original = std::io::Error::from_raw_os_error(5);
+            let mut result =
+                Err::<(), _>(anyhow::Error::new(original).context("diagnostic always unqualified"));
+            for (index, stage) in ["gate revoke", "PCM drain", "native Stop"]
+                .into_iter()
+                .enumerate()
+            {
+                result = retain_cleanup_failure(
+                    result,
+                    stage,
+                    if failure & (1 << index) != 0 {
+                        Err(anyhow::anyhow!("failure-{index}"))
+                    } else {
+                        Ok(())
+                    },
+                );
+            }
+            let error = result.unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(5)
+            );
+            let chain = format!("{error:#}");
+            assert!(chain.contains("diagnostic always unqualified"));
+            for index in 0..3 {
+                assert_eq!(
+                    chain.contains(&format!("failure-{index}")),
+                    failure & (1 << index) != 0,
+                    "{chain}"
+                );
+            }
+        }
+        assert!(
+            retain_cleanup_failure(Ok(42), "native Stop", Err(anyhow::anyhow!("stop failed")))
+                .is_err()
+        );
+        assert_eq!(
+            retain_cleanup_failure(Ok(42), "native Stop", Ok(())).unwrap(),
+            42
+        );
+    }
+
+    #[test]
     fn failed_revoke_still_drains_and_cannot_report_success() {
         let drained = std::cell::Cell::new(false);
         let result = revoke_and_drain(
@@ -414,6 +1439,25 @@ mod tests {
             revoke_and_drain(Ok(42), || Ok(()), || Err(anyhow::anyhow!("drain failed"))).is_err()
         );
         assert_eq!(revoke_and_drain(Ok(42), || Ok(()), || Ok(())).unwrap(), 42);
+    }
+
+    #[test]
+    fn cleanup_runs_every_item_and_reports_all_failures() {
+        let actions = std::cell::RefCell::new(Vec::new());
+        let result = cleanup_all(&[1_u8, 2, 3], |item| {
+            actions.borrow_mut().push(item);
+            match item {
+                1 => Err(anyhow::anyhow!("first cleanup failed")),
+                2 => Ok(()),
+                3 => Err(anyhow::anyhow!("last cleanup failed")),
+                _ => unreachable!(),
+            }
+        });
+        assert_eq!(*actions.borrow(), [1, 2, 3]);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("2 cleanup operation(s) failed"));
+        assert!(error.contains("first cleanup failed"));
+        assert!(error.contains("last cleanup failed"));
     }
 
     #[test]
@@ -465,6 +1509,38 @@ mod tests {
     }
 
     #[test]
+    fn failure_counters_distinguish_unobserved_endpoint_evidence_from_missing_fields() {
+        let counters = FailureCounters {
+            mode: crate::NativeMode::Event,
+            signal_frames: 0,
+            silent_frames: 0,
+            microphone_dropped_packets: 0,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
+            native_buffer_frames: 0,
+            driver_packet_frames: 0,
+            stream_generation: 0,
+            native_discontinuities: 0,
+            native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
+        };
+        let diagnostic = serde_json::to_value(counters).unwrap();
+        for field in [
+            "admitted_opened",
+            "admitted_pcm_shape",
+            "failure_observation",
+        ] {
+            assert_eq!(
+                diagnostic.get(field),
+                Some(&serde_json::Value::Null),
+                "{field} must explicitly report unavailable evidence before gate admission"
+            );
+        }
+    }
+
+    #[test]
     fn failed_outcome_diagnoses_counters_after_cleanup_and_preserves_original_error() {
         let mut position = PositionProgress {
             frequency: 48_000,
@@ -477,11 +1553,16 @@ mod tests {
             signal_frames: 23_136,
             silent_frames: 25_344,
             microphone_dropped_packets: 27,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 2048,
             driver_packet_frames: 480,
             stream_generation: 7,
             native_discontinuities: 2,
             native_position: Some(position),
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         let actions = std::cell::RefCell::new(Vec::new());
         let error = anyhow::Error::new(std::io::Error::from_raw_os_error(5))
@@ -537,11 +1618,16 @@ mod tests {
             signal_frames: 47_520,
             silent_frames: 0,
             microphone_dropped_packets: 0,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,
             native_discontinuities: 0,
             native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         assert_eq!(
             diagnose_failure(Ok(42), &counters, |_| panic!("success is not failure")).unwrap(),
@@ -562,11 +1648,16 @@ mod tests {
             signal_frames: seen.signal_frames,
             silent_frames: seen.silent_frames,
             microphone_dropped_packets: 31,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,
             native_discontinuities: 0,
             native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         let mut line = String::new();
         let error =
@@ -586,15 +1677,27 @@ mod tests {
             signal_frames: 47_520,
             silent_frames: 0,
             microphone_dropped_packets: 0,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,
             native_discontinuities: 0,
             native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         let drained = std::cell::Cell::new(false);
-        let outcome = revoke_and_drain(
+        let mut failure_observation = None;
+        let outcome = observe_signal_failure(
             Ok(42),
+            endpoint_fixture(|_| {}),
+            &mut failure_observation,
+            |_| panic!("successful signal phase must not QUERY for a later cleanup failure"),
+        );
+        let outcome = revoke_and_drain(
+            outcome,
             || anyhow::bail!("revoke failed"),
             || {
                 drained.set(true);
@@ -605,6 +1708,7 @@ mod tests {
         let error =
             diagnose_failure(outcome, &counters, |message| line = message.to_owned()).unwrap_err();
         assert!(drained.get());
+        assert!(failure_observation.is_none());
         assert_eq!(error.to_string(), "revoke failed");
         let diagnostic: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(diagnostic["error"], "revoke failed");

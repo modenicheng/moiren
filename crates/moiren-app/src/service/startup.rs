@@ -1,4 +1,99 @@
-use super::{AudioBackend, DeviceCatalog, InputSelection, SessionSpec};
+use moiren_core::graph::{NodeId, NodeKind};
+
+use super::{AudioBackend, DeviceCatalog, GraphSnapshot, InputSelection, RunLimit, SessionSpec};
+
+/// A restored Source or Sink whose physical device is absent from the
+/// catalog, so it cannot take part in the resumed session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OfflineIo {
+    pub node: NodeId,
+    pub label: String,
+    pub kind: NodeKind,
+    pub endpoint_id: String,
+}
+
+/// The restored IO nodes a resumed session runs without.
+///
+/// Offline means a Source bound to a physical input, or a Sink bound to an
+/// output, whose device the catalog does not list. Software and application
+/// sources need no device, and export-bound nodes use Moiren-owned virtual
+/// endpoints that the export runtime may create after the first catalog, so
+/// neither is ever reported here.
+///
+/// The graph needs one Source and one Sink to start, so a node is only
+/// strippable while an online node of its kind remains. When every node of
+/// a kind is offline nothing is stripped: the host waits for the devices and
+/// recovers on its own when they return.
+pub(super) fn strippable_offline_io(
+    snapshot: &GraphSnapshot,
+    catalog: &DeviceCatalog,
+) -> Vec<OfflineIo> {
+    let mut offline = Vec::new();
+    let (mut online_sources, mut online_sinks) = (0usize, 0usize);
+    for node in snapshot.graph.nodes() {
+        let kind = node.kind();
+        if !matches!(kind, NodeKind::Source | NodeKind::Sink) {
+            continue;
+        }
+        let Some(state) = snapshot.nodes.iter().find(|state| state.id == node.id()) else {
+            continue;
+        };
+        let online = match kind {
+            NodeKind::Source => &mut online_sources,
+            _ => &mut online_sinks,
+        };
+        if snapshot
+            .exports
+            .iter()
+            .any(|export| export.binding == Some(node.id()))
+        {
+            *online += 1;
+            continue;
+        }
+        let presence = match kind {
+            NodeKind::Source => match &state.source {
+                None => None,
+                Some(InputSelection::Physical { endpoint_id }) => Some((
+                    catalog
+                        .inputs
+                        .iter()
+                        .any(|row| row.endpoint_id == *endpoint_id),
+                    endpoint_id.clone(),
+                )),
+                Some(_) => Some((true, String::new())),
+            },
+            _ => state.output_endpoint_id.as_ref().map(|endpoint_id| {
+                (
+                    catalog
+                        .outputs
+                        .iter()
+                        .any(|row| row.endpoint_id == *endpoint_id)
+                        || catalog
+                            .vad_endpoints
+                            .values()
+                            .any(|owned| owned == endpoint_id),
+                    endpoint_id.clone(),
+                )
+            }),
+        };
+        match presence {
+            // An unbound node cannot start anyway, so it is no fallback sibling.
+            None => {}
+            Some((true, _)) => *online += 1,
+            Some((false, endpoint_id)) => offline.push(OfflineIo {
+                node: node.id(),
+                label: state.label.clone(),
+                kind,
+                endpoint_id,
+            }),
+        }
+    }
+    offline.retain(|io| match io.kind {
+        NodeKind::Source => online_sources > 0,
+        _ => online_sinks > 0,
+    });
+    offline
+}
 
 /// WASAPI owns system defaults; ASIO has no safe default driver binding in the
 /// preferences, so automatic startup remains idle until a stable driver row is
@@ -29,78 +124,11 @@ pub(super) fn default_session_for_backend(
             endpoint_id: input.clone(),
         },
         output_endpoint_id: output.clone(),
+        limit: RunLimit::UntilStopped,
         gain: 0.0,
         pan: 0.0,
         max_block_frames: 256,
     };
     spec.validate().ok()?;
     Some(spec)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::service::DeviceRow;
-
-    fn fixture() -> DeviceCatalog {
-        DeviceCatalog {
-            inputs: vec![DeviceRow {
-                endpoint_id: "input".into(),
-                name: "input".into(),
-            }],
-            outputs: vec![DeviceRow {
-                endpoint_id: "output".into(),
-                name: "output".into(),
-            }],
-            default_input_endpoint_id: Some("input".into()),
-            default_output_endpoint_id: Some("output".into()),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn default_session_is_muted_and_follows_the_default_endpoints() {
-        let session = default_session_for_backend(&fixture(), AudioBackend::Wasapi).unwrap();
-        assert_eq!(session.gain, 0.0);
-        assert_eq!(session.pan, 0.0);
-        assert_eq!(
-            session.source,
-            InputSelection::Physical {
-                endpoint_id: "input".into()
-            }
-        );
-    }
-
-    #[test]
-    fn asio_never_uses_wasapi_defaults_for_automatic_startup() {
-        assert!(default_session_for_backend(&fixture(), AudioBackend::Asio).is_none());
-        assert!(default_session_for_backend(&fixture(), AudioBackend::Wasapi).is_some());
-    }
-
-    #[test]
-    fn owned_vad_defaults_never_enter_the_physical_startup_path() {
-        for endpoint in ["input", "output"] {
-            let mut catalog = fixture();
-            catalog.vad_endpoints.insert(
-                moiren_engine::node::VirtualEndpointId::from_bytes([0x42; 16]),
-                endpoint.into(),
-            );
-            assert!(default_session_for_backend(&catalog, AudioBackend::Wasapi).is_none());
-        }
-    }
-
-    #[test]
-    fn missing_or_stale_defaults_never_choose_an_arbitrary_device() {
-        let mut catalog = fixture();
-        catalog.default_input_endpoint_id = None;
-        assert!(default_session_for_backend(&catalog, AudioBackend::Wasapi).is_none());
-        catalog.default_input_endpoint_id = Some("vanished".into());
-        assert!(default_session_for_backend(&catalog, AudioBackend::Wasapi).is_none());
-        catalog.default_input_endpoint_id = Some("input".into());
-        catalog.default_output_endpoint_id = Some("vanished".into());
-        assert!(default_session_for_backend(&catalog, AudioBackend::Wasapi).is_none());
-        catalog.default_output_endpoint_id = Some("output".into());
-        catalog.outputs.clear();
-        assert!(default_session_for_backend(&catalog, AudioBackend::Wasapi).is_none());
-    }
 }

@@ -875,6 +875,12 @@ impl StudioShell {
     fn sync_presentation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
+        if self.presentation.workspace.is_settings() {
+            self.sync_native_period_inputs(window, cx);
+            self.sync_expert_inputs(window, cx);
+            self.sync_measured_exact_inputs(window, cx);
+            self.finish_measured_process(cx);
+        }
         self.finish_node_spawn(cx);
         graph::sync_binding_menu(self, cx);
         fault_popover::sync(self, cx);
@@ -1063,6 +1069,9 @@ impl StudioShell {
                 .text_input_entities()
                 .iter()
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self.settings.editor.period_owns_focus(focused, cx)
+            || self.settings.editor.exact_owns_focus(focused, cx)
+            || self.settings.editor.expert_owns_focus(focused, cx)
     }
 
     /// Every text-input entity the shell renders nested in a cached panel:

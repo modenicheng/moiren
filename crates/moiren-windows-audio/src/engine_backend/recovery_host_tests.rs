@@ -9,11 +9,6 @@
 //! so that relative mount stays short and recovery changes land in the same
 //! review. Run it with
 //! `cargo test --locked --manifest-path tools/rt-check/Cargo.toml`.
-use crate::bridge::{RingSink, Tone};
-use crate::native::{
-    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
-    StereoFrame,
-};
 use super::{
     observations::{
         Counters, ProfessionalObservationSnapshot, ProfessionalObservations,
@@ -21,6 +16,11 @@ use super::{
     },
     owner::{self, AuxiliaryOwner, Transport, WorkerRequest},
     recovery::{RecoveryMonitor, RecoveryTicket},
+};
+use crate::bridge::{RingSink, Tone};
+use crate::native::{
+    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
+    StereoFrame,
 };
 use moiren_core::graph::{NodeId, NodeKind, SendParams};
 use moiren_engine::{
@@ -638,8 +638,12 @@ impl EngineBackend<f64> for MockBackend {
                 silent_frames: 0,
                 xruns: 0,
                 native_callbacks: 0,
+                native_wait_wakes: 0,
+                native_written_frames: 0,
+                native_wait_timeouts: 0,
                 native_dropped_frames: 0,
                 native_silent_frames: 0,
+                native_capture_quality: None,
                 native_xruns: 0,
                 engine_blocks: 0,
                 engine_busy_100ns: 0,

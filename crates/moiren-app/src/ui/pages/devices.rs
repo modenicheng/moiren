@@ -41,6 +41,11 @@ pub(crate) struct DevicesKey {
     /// The device list scrolls inside the cached page (same
     /// scroll-under-cache rationale as `exports_scroll`).
     device_list_scroll: Pixels,
+    /// `sync_native_period_inputs` creates the device period input during
+    /// this page's cached render. That nested input can notify on its own;
+    /// identity alone must not rebuild a panel whose semantic inputs are
+    /// unchanged.
+    device_period_inputs: Vec<gpui::EntityId>,
 }
 
 pub(crate) type DevicesPanelHost = PanelHost<DevicesPanel>;
@@ -60,15 +65,24 @@ impl CachedPanel for DevicesPanel {
             // precedent for scrollable containers under a cached panel).
             exports_scroll: shell.devices.exports_scroll.offset(),
             device_list_scroll: shell.devices.device_list_scroll.offset().y,
+            device_period_inputs: shell
+                .settings
+                .editor
+                .device_period_inputs()
+                .map(Entity::entity_id)
+                .collect(),
         }
     }
 
     fn render(
         &self,
         shell: &mut Self::Owner,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self::Owner>,
     ) -> AnyElement {
+        // Creating the override input is render-side because InputState
+        // needs Window; mount does not carry the editor drafts.
+        shell.sync_native_period_inputs(window, cx);
         page(shell, cx)
     }
 
@@ -401,8 +415,11 @@ fn physical_device_list(
                 // Design 23 §3.2/R2: opening the detail view is the row's
                 // only interaction. Routing and run state live on the
                 // graph, never here.
-                .on_click(move |_, _, cx| {
-                    this.update(cx, |shell, cx| shell.inspect_device(click_id.clone(), cx))
+                .on_click(move |_, window, cx| {
+                    this.update(cx, |shell, cx| {
+                        let _ = window;
+                        shell.inspect_device(click_id.clone(), cx);
+                    })
                 })
                 .child(
                     div()

@@ -1,15 +1,17 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::service::{AudioLatencyProfile, RequestId};
+use crate::service::{
+    AppSnapshot, AudioLatencyProfile, MeasuredProcessSummary, RequestId, TransportLatencySettings,
+};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Editor {
     Global,
     Device,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Direction {
     Input,
     Output,
@@ -51,6 +53,7 @@ impl StreamTarget {
 pub(crate) enum Section {
     #[default]
     Audio,
+    Transport,
     Interface,
     Diagnostics,
 }
@@ -59,7 +62,8 @@ pub(crate) enum Section {
 pub(crate) struct Draft {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
-    original: (AudioSettings, AudioLatencyProfile),
+    pub transport: TransportLatencySettings,
+    original: (AudioSettings, AudioLatencyProfile, TransportLatencySettings),
     /// The draft's status line payload (design 21 §4): stored typed and
     /// locale-free, translated at paint by [`feedback_text`]. One field
     /// serves both the failure prose and the progress notes the old
@@ -89,7 +93,36 @@ impl PartialEq for Draft {
             && self.original == other.original
             && self.feedback == other.feedback
             && self.pending.is_some() == other.pending.is_some()
+            && self.transport == other.transport
     }
+}
+
+/// Local presentation only: deadlines and receipt bookkeeping do not repaint.
+#[derive(PartialEq)]
+pub(super) struct MeasuredKey {
+    pub node: Option<moiren_core::graph::NodeId>,
+    pub bounds: [u32; 3],
+    pub exact: bool,
+    pub busy: bool,
+    pub error: Option<String>,
+    pub message: Option<String>,
+    #[cfg(windows)]
+    pub retained_open: bool,
+    #[cfg(windows)]
+    pub retained: RetainedKey,
+    #[cfg(windows)]
+    pub live_open: bool,
+    #[cfg(windows)]
+    pub live_policy: [Option<u64>; 5],
+}
+
+#[cfg(windows)]
+#[derive(PartialEq)]
+pub(super) struct RetainedKey {
+    pub policy: moiren_windows_audio::process_loopback::ReplayWindowPolicy,
+    pub error: Option<String>,
+    pub busy: bool,
+    pub result_revision: u64,
 }
 
 #[derive(Clone)]
@@ -108,11 +141,15 @@ pub(crate) struct Pending {
 pub(super) struct Submission {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
+    pub transport: TransportLatencySettings,
+    pub measured_process: Option<MeasuredProcessSummary>,
+    pub save_transport: bool,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {
     Audio,
+    Transport,
     Profile,
     Restart,
 }
@@ -187,6 +224,9 @@ impl DraftFeedback {
                 | Self::SavingLatencyPolicy
                 | Self::RestartingAudio
                 | Self::Restarted
+                // Diagnostic prose is data, but a malformed period is still
+                // actionable input feedback and must keep the draft dirty.
+                | Self::Diagnostic { .. }
         )
     }
 }
@@ -196,6 +236,7 @@ impl DraftFeedback {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Rejection {
     AudioSettings,
+    TransportLatency,
     LatencyPolicy,
     NoRestart,
 }
@@ -207,6 +248,11 @@ pub(crate) enum Domain {
     Backend,
     Processing,
     LatencyPolicy,
+    RenderQueue,
+    ProcessIngressLimit,
+    ProcessInput,
+    VadInput,
+    VadRecoveryCap,
     InputDefaults,
     OutputDefaults,
     /// A device id as raw data, never a pre-rendered label.
@@ -247,6 +293,9 @@ pub(super) fn feedback_text_in(feedback: &DraftFeedback, locale: &str) -> String
         .to_string(),
         DraftFeedback::Rejected { what } => match what {
             Rejection::AudioSettings => t!("Audio settings were rejected.", locale = locale),
+            Rejection::TransportLatency => {
+                t!("Input buffer settings were rejected.", locale = locale)
+            }
             Rejection::LatencyPolicy => t!("Latency policy was rejected.", locale = locale),
             Rejection::NoRestart => t!("Audio did not restart. Your draft is retained.", locale = locale),
         }
@@ -291,6 +340,13 @@ fn domain_label(domain: &Domain, locale: &str) -> String {
         Domain::Backend => t!("Backend", locale = locale).to_string(),
         Domain::Processing => t!("Processing", locale = locale).to_string(),
         Domain::LatencyPolicy => t!("Device buffer policy", locale = locale).to_string(),
+        Domain::RenderQueue => t!("Render queue", locale = locale).to_string(),
+        Domain::ProcessIngressLimit => {
+            t!("Process host ingress elapsed limit", locale = locale).to_string()
+        }
+        Domain::ProcessInput => t!("Process input buffer", locale = locale).to_string(),
+        Domain::VadInput => t!("VAD input buffer", locale = locale).to_string(),
+        Domain::VadRecoveryCap => t!("VAD recovery cap", locale = locale).to_string(),
         Domain::InputDefaults => t!("Input defaults", locale = locale).to_string(),
         Domain::OutputDefaults => t!("Output defaults", locale = locale).to_string(),
         Domain::InputOverride(id) => t!(
@@ -311,11 +367,16 @@ fn domain_label(domain: &Domain, locale: &str) -> String {
 }
 
 impl Draft {
-    pub fn new(audio: AudioSettings, profile: AudioLatencyProfile) -> Self {
+    pub fn new(
+        audio: AudioSettings,
+        profile: AudioLatencyProfile,
+        transport: TransportLatencySettings,
+    ) -> Self {
         Self {
-            original: (audio.clone(), profile),
+            original: (audio.clone(), profile, transport),
             audio,
             profile,
+            transport,
             feedback: None,
             pending: None,
             revision: 0,
@@ -326,6 +387,7 @@ impl Draft {
         self.feedback.as_ref().is_some_and(DraftFeedback::is_error)
             || self.audio != self.original.0
             || self.profile != self.original.1
+            || self.transport != self.original.2
     }
 
     /// Marks the draft user-edited. Every interactive write (segmented
@@ -339,7 +401,7 @@ impl Draft {
 
     pub fn committed(&mut self) {
         self.revision += 1;
-        self.original = (self.audio.clone(), self.profile);
+        self.original = (self.audio.clone(), self.profile, self.transport);
         self.pending = None;
         self.feedback = Some(DraftFeedback::Saved);
     }
@@ -348,7 +410,9 @@ impl Draft {
         &self,
         current: &AudioSettings,
         profile: AudioLatencyProfile,
+        transport: TransportLatencySettings,
     ) -> Result<Submission, DraftFeedback> {
+        let merged_transport = self.merge_transport(transport)?;
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,
             profile: merge_value(
@@ -357,7 +421,80 @@ impl Draft {
                 profile,
                 Domain::LatencyPolicy,
             )?,
+            transport: merged_transport,
+            measured_process: None,
+            save_transport: merged_transport != transport,
         })
+    }
+
+    fn merge_transport(
+        &self,
+        current: TransportLatencySettings,
+    ) -> Result<TransportLatencySettings, DraftFeedback> {
+        Ok(TransportLatencySettings {
+            render: merge_value(
+                self.original.2.render,
+                self.transport.render,
+                current.render,
+                Domain::RenderQueue,
+            )?,
+            process_max_ingress_elapsed_100ns: merge_value(
+                self.original.2.process_max_ingress_elapsed_100ns,
+                self.transport.process_max_ingress_elapsed_100ns,
+                current.process_max_ingress_elapsed_100ns,
+                Domain::ProcessIngressLimit,
+            )?,
+            process: merge_value(
+                self.original.2.process,
+                self.transport.process,
+                current.process,
+                Domain::ProcessInput,
+            )?,
+            vad: merge_value(
+                self.original.2.vad,
+                self.transport.vad,
+                current.vad,
+                Domain::VadInput,
+            )?,
+            vad_recovery_cap_periods: merge_value(
+                self.original.2.vad_recovery_cap_periods,
+                self.transport.vad_recovery_cap_periods,
+                current.vad_recovery_cap_periods,
+                Domain::VadRecoveryCap,
+            )?,
+        })
+    }
+
+    pub(super) fn capture(&self, snapshot: &AppSnapshot) -> Result<Submission, DraftFeedback> {
+        let mut submitted = self.submission(
+            &snapshot.audio_settings,
+            snapshot.latency_profile,
+            snapshot.transport_latency,
+        )?;
+        // A changed consumer envelope needs fresh measured admission; never
+        // reuse a finite-window proof for another envelope. An unchanged save
+        // preserves the service's newer selection instead of an old draft.
+        if !submitted.save_transport {
+            submitted.measured_process = snapshot.measured_process.clone();
+        }
+        Ok(submitted)
+    }
+}
+
+impl Submission {
+    pub(super) fn matches_requested(&self, snapshot: &AppSnapshot) -> bool {
+        snapshot.audio_settings == self.audio
+            && snapshot.transport_latency == self.transport
+            && snapshot.latency_profile == self.profile
+            && snapshot.measured_process == self.measured_process
+    }
+
+    pub(super) fn matches_active(&self, snapshot: &AppSnapshot) -> bool {
+        snapshot.phase == SessionPhase::Running
+            && snapshot.active_audio_settings.as_ref() == Some(&self.audio)
+            && snapshot.active_transport_latency == Some(self.transport)
+            && snapshot.active_latency_profile == expected_active_profile(self.profile)
+            && snapshot.active_measured_process == self.measured_process
     }
 }
 
@@ -451,6 +588,9 @@ fn rebase_audio(
 }
 
 pub(crate) struct SettingsEditor {
+    pub(super) period_inputs: super::native_period::PeriodInputs,
+    pub(super) expert_inputs: super::transport::exact::ExpertInputs,
+    pub(super) measured: super::measured::MeasuredEditor,
     pub global: Draft,
     pub device: Draft,
     pub focus: FocusHandle,
@@ -461,8 +601,15 @@ pub(crate) struct SettingsEditor {
 
 impl SettingsEditor {
     pub fn new(preferences: &crate::project::AppPreferences, cx: &mut App) -> Self {
-        let draft = Draft::new(preferences.audio.clone(), preferences.latency_profile);
+        let draft = Draft::new(
+            preferences.audio.clone(),
+            preferences.latency_profile,
+            preferences.transport_latency,
+        );
         Self {
+            period_inputs: Default::default(),
+            expert_inputs: Default::default(),
+            measured: Default::default(),
             global: draft.clone(),
             device: draft,
             focus: cx.focus_handle(),
@@ -487,7 +634,7 @@ impl SettingsEditor {
     }
 
     pub fn busy(&self) -> bool {
-        self.global.pending.is_some() || self.device.pending.is_some()
+        self.global.pending.is_some() || self.device.pending.is_some() || self.measured.busy()
     }
 }
 
@@ -545,6 +692,8 @@ impl StudioShell {
 
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.settings.editor.global.dirty() && self.settings.editor.global.pending.is_none() {
+            self.settings.editor.reset_period_inputs(Editor::Global);
+            self.settings.editor.reset_expert_inputs();
             self.settings.editor.global = self.current_settings_draft(cx);
         }
         self.settings.editor.previous_focus = window.focused(cx);
@@ -589,11 +738,16 @@ impl StudioShell {
 
     pub(crate) fn current_settings_draft(&self, cx: &App) -> Draft {
         let snapshot = &self.state.read(cx).snapshot;
-        Draft::new(snapshot.audio_settings.clone(), snapshot.latency_profile)
+        Draft::new(
+            snapshot.audio_settings.clone(),
+            snapshot.latency_profile,
+            snapshot.transport_latency,
+        )
     }
 
     pub(crate) fn inspect_device(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.settings.editor.device.dirty() && self.settings.editor.device.pending.is_none() {
+            self.settings.editor.reset_period_inputs(Editor::Device);
             let mut fresh = self.current_settings_draft(cx);
             // A fresh draft restarts at revision 0; carrying the successor
             // keeps the replacement visible to the panel keys even when the
