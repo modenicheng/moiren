@@ -288,7 +288,7 @@ impl LevelRegistry {
 
     /// How many engine subscriptions the registry currently holds: the
     /// demand the realtime window taps actually see.
-    #[cfg(all(test, not(windows)))]
+    #[cfg(all(test, not(target_os = "windows")))]
     pub(crate) fn demanded_levels(&self) -> usize {
         self.monitors
             .iter()
