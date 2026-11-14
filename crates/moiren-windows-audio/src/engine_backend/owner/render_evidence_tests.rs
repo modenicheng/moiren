@@ -118,7 +118,7 @@ fn render_evidence_retirement_frees_only_native_box_not_evidence_storage() {
     );
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Normal,
     PreparedCancel,
@@ -148,7 +148,6 @@ fn render_evidence_worker_returns_storage_on_run_cancel_preparation_failure_and_
             }
         }
         fn start(&mut self) -> Result<(), BackendError> {
-            self.state.cancel();
             assert!(self.phase != Phase::StartPanic, "injected Start failure");
             Ok(())
         }
@@ -156,13 +155,16 @@ fn render_evidence_worker_returns_storage_on_run_cancel_preparation_failure_and_
             Ok(())
         }
         fn wait(&mut self, _: Duration) -> Result<bool, BackendError> {
-            unreachable!()
+            self.state.cancel();
+            Ok(true)
         }
         fn read(&mut self, _: &mut [StereoFrame]) -> Result<usize, BackendError> {
-            unreachable!()
+            self.state.cancel();
+            Ok(0)
         }
         fn write(&mut self, _: &[StereoFrame]) -> Result<usize, BackendError> {
-            unreachable!()
+            self.state.cancel();
+            Ok(0)
         }
         fn take_render_evidence(&mut self) -> Option<RenderEvidenceWriter> {
             self.inner.writer.take()
@@ -224,6 +226,14 @@ fn render_evidence_worker_returns_storage_on_run_cancel_preparation_failure_and_
         );
         if phase == Phase::InvalidMetadata {
             assert!(result.is_err());
+            let dropped_deadline = Instant::now() + Duration::from_secs(3);
+            while !dropped.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < dropped_deadline,
+                    "settled worker did not finish native teardown: {phase:?}"
+                );
+                std::thread::yield_now();
+            }
         } else {
             let (mut worker, _) = result.unwrap();
             if phase == Phase::PreparedCancel {
