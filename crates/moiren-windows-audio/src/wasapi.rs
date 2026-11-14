@@ -1744,6 +1744,10 @@ fn codec_for(format: &WAVEFORMATEXTENSIBLE) -> Result<(SampleFormat, SampleCodec
 }
 
 #[cfg(test)]
+#[path = "wasapi/period_tests.rs"]
+mod period_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use moiren_engine::host::BackendError;
