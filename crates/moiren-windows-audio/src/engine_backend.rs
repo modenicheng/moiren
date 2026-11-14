@@ -1538,9 +1538,20 @@ impl AuxiliaryOwner for ProcessOwner {
     fn finished(&self) -> bool {
         self.capture.as_ref().is_some_and(|c| c.is_finished())
     }
-    fn join(&mut self) -> Result<(), BackendError> {
+    fn join(&mut self, deadline: Instant) -> Result<(), BackendError> {
         if let Some(capture) = self.capture.take() {
-            let report = capture.join().map_err(unsupported)?;
+            // The loopback worker's COM wind-down gets the same teardown
+            // bound as the native streams: a wedged release detaches the
+            // worker instead of parking the cleanup lane (issue #105).
+            let report = capture.join_within(deadline).map_err(|error| {
+                if matches!(error, crate::capture::CaptureError::TeardownTimeout) {
+                    BackendError::ResourceUnavailable(
+                        "process capture worker did not finish teardown within its deadline".into(),
+                    )
+                } else {
+                    unsupported(error)
+                }
+            })?;
             if matches!(
                 report.status,
                 crate::capture::CaptureStatus::Failed | crate::capture::CaptureStatus::TargetExited

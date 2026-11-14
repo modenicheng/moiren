@@ -68,6 +68,8 @@ pub enum CaptureError {
     PcmArtifact(#[from] PcmArtifactError),
     #[error("PCM evidence preparation or copy failed: {0}")]
     PcmEvidence(#[from] PcmEvidenceError),
+    #[error("capture worker did not finish teardown within its deadline")]
+    TeardownTimeout,
     #[error(transparent)]
     LatencyBudget(#[from] crate::latency::LatencyBudgetError),
     #[error("capture startup channel closed before preparation completed")]

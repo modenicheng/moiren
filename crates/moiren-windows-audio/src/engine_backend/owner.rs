@@ -30,7 +30,7 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(test)]
@@ -45,6 +45,21 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "owner/render_evidence_tests.rs"]
 mod render_evidence_tests;
+
+/// How often the bounded join re-checks worker completion.
+const TEARDOWN_POLL_SLICE: Duration = Duration::from_millis(5);
+
+/// Tests use a shorter-but-generous bound: small enough that an abandoned
+/// worker costs seconds, large enough that the shadow harness's deliberate
+/// teardown pauses (ordering choreography released by the next supervisor
+/// poll) are never falsely abandoned under CI load.
+fn teardown_deadline() -> Duration {
+    if cfg!(test) {
+        Duration::from_secs(1)
+    } else {
+        crate::NATIVE_TEARDOWN_DEADLINE
+    }
+}
 
 pub(super) trait AuxiliaryOwner: Send {
     fn activate(&self) -> Result<(), BackendError>;
@@ -62,7 +77,11 @@ pub(super) trait AuxiliaryOwner: Send {
             OwnerStatus::Starting
         }
     }
-    fn join(&mut self) -> Result<(), BackendError>;
+    /// Wind the auxiliary down, waiting at most until `deadline`; a driver-
+    /// backed auxiliary abandons its worker past the deadline instead of
+    /// parking the cleanup lane. Software-cooperative auxiliaries may ignore
+    /// the deadline.
+    fn join(&mut self, deadline: Instant) -> Result<(), BackendError>;
 }
 
 pub(super) type StreamFactory =
@@ -190,9 +209,35 @@ pub(super) struct Worker {
     handle: Option<JoinHandle<Option<crate::render_evidence::RenderEvidenceWriter>>>,
     started: Arc<AtomicBool>,
     retired_render_evidence: Option<crate::render_evidence::RenderEvidenceWriter>,
+    /// This worker's own abandonment flag: shared with the open-phase
+    /// [`Opening`] and re-armed at teardown, so a worker whose driver call
+    /// wedged past the teardown deadline can never record a failure or spend
+    /// a recovery ticket afterwards (issue #105 teardown bound).
+    fence: Arc<AtomicBool>,
 }
 impl Worker {
-    fn join(&mut self) -> Result<(), BackendError> {
+    /// Wait for the worker's teardown until `deadline`, then abandon it: a
+    /// wedged `stop()`/`release()`/drop must not park the cleanup lane — and
+    /// with it Stop, re-apply, and app exit — forever. Abandonment fences the
+    /// worker's late tail (failure recording, recovery) and detaches the
+    /// thread; whatever the driver call eventually returns unwinds on that
+    /// same thread.
+    fn join_within(&mut self, deadline: Instant) -> Result<(), BackendError> {
+        loop {
+            match self.handle.as_ref() {
+                // Already joined or abandoned in a previous cleanup pass.
+                None => return Ok(()),
+                Some(handle) if handle.is_finished() => break,
+                Some(_) => {}
+            }
+            if Instant::now() >= deadline {
+                self.abandon();
+                return Err(BackendError::ResourceUnavailable(
+                    "native worker did not finish teardown within its deadline".into(),
+                ));
+            }
+            thread::sleep(TEARDOWN_POLL_SLICE);
+        }
         if let Some(handle) = self.handle.take() {
             self.retired_render_evidence =
                 handle.join().map_err(|_| BackendError::WorkerPanicked)?;
@@ -201,6 +246,18 @@ impl Worker {
             }
         }
         Ok(())
+    }
+
+    /// Test-only wait for a worker whose test fixture always finishes.
+    #[cfg(test)]
+    fn join(&mut self) -> Result<(), BackendError> {
+        self.join_within(Instant::now() + Duration::from_secs(30))
+    }
+    /// Fence and detach. The late tail still unwinds on the worker thread —
+    /// its stream releases there — but records nothing into shared state.
+    fn abandon(&mut self) {
+        self.fence.store(true, Ordering::Release);
+        self.handle = None;
     }
 }
 
@@ -274,7 +331,6 @@ pub(super) fn spawn<S: ProcessingSample>(
     cancel: &CancellationToken,
     deadline: Duration,
 ) -> Result<(Worker, NativeStreamInfo), BackendError> {
-    use std::time::Instant;
     let state = request.state.clone();
     let mut opening = start_worker(request)?;
     let mut remaining = deadline;
@@ -288,10 +344,12 @@ pub(super) fn spawn<S: ProcessingSample>(
         match opening.settle(slice) {
             Some(Ok(info)) => return Ok((opening.into_worker(), info)),
             Some(Err(error)) => {
-                // Mirror the settled-failure fencing of the old serial path:
-                // the worker itself has returned; cancel wakes any siblings.
+                // The worker has settled with failure and will publish its
+                // retired diagnostics when joined. Only cancel siblings and
+                // drop the Opening receiver; fencing here would also detach
+                // the worker before Worker::join_within can collect it.
                 state.cancel();
-                opening.abandon();
+                drop(opening);
                 return Err(error);
             }
             None => {
@@ -359,6 +417,7 @@ pub(super) fn start_worker<S: ProcessingSample>(
             handle: Some(handle),
             started,
             retired_render_evidence: None,
+            fence: fence.clone(),
         },
         state,
         fence,
@@ -474,12 +533,15 @@ fn native_owner<S: ProcessingSample>(
         }
         Ok(())
     }));
-    let stopped = catch_unwind(AssertUnwindSafe(|| stream.stop()));
-    // Even a panic or Stop failure returns the complete runtime before any
-    // worker-local destruction. The host alone retires/drops its processors.
+    // Return the complete runtime before any worker-local teardown: the
+    // host alone retires/drops its processors, and a wedged stop()/release()
+    // below must not hold the runtime hostage past the teardown deadline
+    // (issue #105). `stream.stop()` touches no engine state, so moving the
+    // handoff ahead of it keeps every guarantee the old ordering made.
     if let Some(engine) = engine {
         request.slot.put(engine);
     }
+    let stopped = catch_unwind(AssertUnwindSafe(|| stream.stop()));
     let notification = catch_unwind(AssertUnwindSafe(|| {
         request
             .counters
@@ -527,14 +589,20 @@ fn native_owner<S: ProcessingSample>(
     }
     log::debug!(
         target: "moiren::audio::professional",
-        "native stream stopped: master={} failure={:?}",
+        "native stream stopped: master={} failure={:?} abandoned={}",
         request.master,
         failure,
+        fence.load(Ordering::Acquire),
     );
     if let Some(error) = failure {
         // This is only a candidate: another worker's Stop/Drop or auxiliary
         // Join can still make the entire transport terminal during retirement.
-        request.state.record_failure(error, recovery);
+        // A worker abandoned at the teardown deadline reports nothing: the
+        // transport already moved on, and the cleanup lane recorded the
+        // abandonment fault itself.
+        if !fence.load(Ordering::Acquire) {
+            request.state.record_failure(error, recovery);
+        }
     }
 }
 
@@ -984,13 +1052,19 @@ impl<S: ProcessingSample> Transport<S> {
                 self.state.fail(BackendError::WorkerPanicked);
             }
         }
+        // Each worker gets its own full deadline: healthy teardowns run in
+        // milliseconds regardless of the budget, while one wedged driver
+        // release is fenced and abandoned at its deadline instead of parking
+        // Stop, re-apply, and app exit (issue #105 teardown bound).
+        let worker_deadline = teardown_deadline();
         for worker in &mut self.workers {
-            if let Err(error) = worker.join() {
+            if let Err(error) = worker.join_within(Instant::now() + worker_deadline) {
                 self.state.fail(error);
             }
         }
         for mut auxiliary in self.auxiliaries.drain(..) {
-            if let Err(error) = catch_unwind(AssertUnwindSafe(|| auxiliary.join()))
+            let deadline = Instant::now() + teardown_deadline();
+            if let Err(error) = catch_unwind(AssertUnwindSafe(|| auxiliary.join(deadline)))
                 .unwrap_or(Err(BackendError::WorkerPanicked))
             {
                 self.state.fail(error);
@@ -1112,11 +1186,11 @@ impl<S: ProcessingSample> BackendOwner<S> for Owner<S> {
     }
     fn stop_and_join(mut self: Box<Self>) -> OwnerReturn<S> {
         self.transport.cleanup();
-        let engine = self
-            .transport
-            .slot
-            .take()
-            .expect("Engine is retained outside native unwind boundaries");
+        // `None` only when a wedged master never made it past the run loop
+        // (the runtime handoff precedes stop/release precisely so a wedged
+        // teardown still returns it): the abandoned worker still holds the
+        // Engine and drops it when the driver call finally completes.
+        let engine = self.transport.slot.take();
         let error = self.transport.take_error(&self.cancellation, true);
         OwnerReturn { engine, error }
     }

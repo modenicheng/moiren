@@ -44,6 +44,18 @@ pub use duration::{DurationError, SessionDuration};
 /// the clock bridge and boundary resamplers.
 pub(crate) const NATIVE_SAMPLE_RATE: u32 = 48_000;
 
+/// Per-resource teardown deadline for native owners (issue #105): healthy
+/// stop/release/drop runs in tens of milliseconds per device (ASIO resets
+/// the slowest healthy case on record, well under a second), so 2 s bounds
+/// one wedged driver wind-down at a still-responsive Stop without falsely
+/// abandoning a slow-but-alive teardown — and stays tighter than the 10 s
+/// open bound because teardown blocks a user-initiated Stop or app exit.
+///
+/// Windows-only like both of its users (the professional and virtual
+/// owners); other platforms compile no native owner teardown.
+#[cfg(windows)]
+pub(crate) const NATIVE_TEARDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[cfg(windows)]
 mod session;
 #[cfg(windows)]

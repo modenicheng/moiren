@@ -263,7 +263,7 @@ fn small_virtual_target_prepares_and_repays_only_the_configured_recovery_burst()
     let returned = owner.stop_and_join();
     assert_eq!(returned.error, None);
     assert_eq!(
-        returned.engine.timeline(),
+        returned.engine.as_ref().unwrap().timeline(),
         256,
         "nine clamped periods are not repaid"
     );
@@ -300,6 +300,7 @@ fn native_devices_absent(faults: Faults, absent: Vec<String>) -> FakeNativeDevic
         hang: Vec::new(),
         hang_gate: Gate::default(),
         open_barrier: None,
+        teardown_gate: Gate::default(),
     }
 }
 
@@ -315,6 +316,7 @@ fn native_devices_hanging(faults: Faults, hang: Vec<String>) -> (FakeNativeDevic
             hang,
             hang_gate: gate.clone(),
             open_barrier: None,
+            teardown_gate: Gate::default(),
         },
         gate,
     )
@@ -597,7 +599,7 @@ fn virtual_matrix<S: ProcessingSample>() {
             owner.cancel();
             let returned = owner.stop_and_join();
             assert_eq!(returned.error, None);
-            assert!(returned.engine.timeline() >= 512);
+            assert!(returned.engine.as_ref().unwrap().timeline() >= 512);
             assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
             assert_eq!(probe.activated.load(Ordering::Acquire), 2);
             let mut samples = [0.0; 1024];
@@ -662,7 +664,7 @@ fn virtual_callback_backend_projection<S: ProcessingSample>() {
         owner.cancel();
         let returned = owner.stop_and_join();
         assert_eq!(returned.error, None);
-        assert!(returned.engine.timeline() >= 512);
+        assert!(returned.engine.as_ref().unwrap().timeline() >= 512);
         assert!(observations.snapshot().is_none());
         assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
         assert_sessions_joined(&probe, 2);
@@ -674,7 +676,10 @@ fn virtual_callback_backend_projection<S: ProcessingSample>() {
         assert!(!final_snapshot.running);
         let clock = final_snapshot.virtual_clock.unwrap();
         assert!(clock.counters.rendered_frames >= 512);
-        assert_eq!(clock.counters.rendered_frames, returned.engine.timeline());
+        assert_eq!(
+            clock.counters.rendered_frames,
+            returned.engine.as_ref().unwrap().timeline()
+        );
         if enabled {
             let callback = final_snapshot.virtual_callback.unwrap();
             assert_eq!(callback.attempts, clock.counters.rendered_periods);
@@ -687,9 +692,18 @@ fn virtual_callback_backend_projection<S: ProcessingSample>() {
                 latest.outcome,
                 crate::virtual_owner::VirtualCallbackOutcome::Success
             );
-            assert_eq!(latest.epoch_before, returned.engine.epoch());
-            assert_eq!(latest.epoch_after, Some(returned.engine.epoch()));
-            assert_eq!(latest.frame_after, Some(returned.engine.timeline()));
+            assert_eq!(
+                latest.epoch_before,
+                returned.engine.as_ref().unwrap().epoch()
+            );
+            assert_eq!(
+                latest.epoch_after,
+                Some(returned.engine.as_ref().unwrap().epoch())
+            );
+            assert_eq!(
+                latest.frame_after,
+                Some(returned.engine.as_ref().unwrap().timeline())
+            );
             assert_eq!(
                 latest.requested_frames,
                 project.processing.engine.max_block_frames as u64
@@ -1089,7 +1103,7 @@ fn capture_only_project_runs_on_the_virtual_clock_without_a_provider() {
     owner.cancel();
     let returned = owner.stop_and_join();
     assert_eq!(returned.error, None);
-    assert!(returned.engine.timeline() >= 256);
+    assert!(returned.engine.as_ref().unwrap().timeline() >= 256);
     assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
     assert_eq!(native.probe.master_groups.load(Ordering::Acquire), 0);
     assert_eq!(native.probe.stopped.load(Ordering::Acquire), 1);
@@ -1123,7 +1137,7 @@ fn empty_project_runs_on_the_virtual_clock_without_native_devices() {
     owner.cancel();
     let returned = owner.stop_and_join();
     assert_eq!(returned.error, None);
-    assert!(returned.engine.timeline() >= 256);
+    assert!(returned.engine.as_ref().unwrap().timeline() >= 256);
     assert_eq!(probe.clock_prepared.load(Ordering::Acquire), 1);
     assert_eq!(native.probe.opened.load(Ordering::Acquire), 0);
     assert_sessions_joined(&probe, 0);
@@ -1184,7 +1198,7 @@ fn physical_master_protects_the_virtual_microphone_across_plan_updates() {
     plans
         .publish(update.plan)
         .unwrap_or_else(|_| panic!("publish candidate"));
-    returned.engine.render(64).unwrap();
+    returned.engine.as_mut().unwrap().render(64).unwrap();
     assert_eq!(
         plans.active_revision(),
         1,
@@ -1864,7 +1878,7 @@ fn stuck_endpoints_skip_reopens_until_the_device_is_seen_missing() {
     let (native, gate) = native_devices_hanging(Faults::default(), vec!["{wedged-output}".into()]);
     let backend = ProfessionalBackend::<f64>::new()
         .unwrap()
-        .with_open_timeout(Duration::from_millis(200));
+        .with_open_timeout(Duration::from_millis(600));
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
     let (host, _rt) = bus.create_host(8).unwrap();
     let cancel = CancellationToken::default();
@@ -1885,8 +1899,8 @@ fn stuck_endpoints_skip_reopens_until_the_device_is_seen_missing() {
         .prepare_with_native(request(&project, &host), &cancel, &native)
         .expect("the stuck endpoint prepares as a null stream again");
     assert!(
-        started.elapsed() < Duration::from_millis(150),
-        "the stuck endpoint must not re-open"
+        started.elapsed() < Duration::from_millis(300),
+        "the stuck endpoint must not re-open (a re-open would hang the full deadline)"
     );
     drop(prepared);
     assert_eq!(
@@ -1957,10 +1971,11 @@ fn group_opens_run_concurrently() {
         hang: Vec::new(),
         hang_gate: Gate::default(),
         open_barrier: Some(Arc::new(std::sync::Barrier::new(2))),
+        teardown_gate: Gate::default(),
     };
     let backend = ProfessionalBackend::<f64>::new()
         .unwrap()
-        .with_open_timeout(Duration::from_millis(500));
+        .with_open_timeout(Duration::from_secs(5));
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
     let (host, _rt) = bus.create_host(8).unwrap();
     let cancel = CancellationToken::default();
@@ -1968,9 +1983,12 @@ fn group_opens_run_concurrently() {
     let prepared = backend
         .prepare_with_native(request(&project, &host), &cancel, &native)
         .expect("both rendezvous opens settle concurrently");
+    // A serial wave would park the first open on the barrier until the 5 s
+    // deadline degraded both groups; the concurrent wave settles in
+    // milliseconds, and both streams must open natively (not degraded).
     assert!(
-        started.elapsed() < Duration::from_millis(450),
-        "a serial wave would blow the deadline on the barrier"
+        started.elapsed() < Duration::from_secs(2),
+        "a serial wave would blow the open deadline on the barrier"
     );
     assert_eq!(native.probe.opened.load(Ordering::Acquire), 2);
     let owner = attach(&project, prepared, cancel);
@@ -2023,4 +2041,114 @@ fn prepare_progress_counts_settled_groups_during_the_open() {
     assert_eq!(progress.groups_opened, 1);
     assert_eq!(progress.endpoint.as_deref(), Some("{wedged-output}"));
     assert!(observations.snapshot_progress().is_none());
+}
+
+/// A fake whose stream `stop()` (or run-loop `wait()`, per the fault flag)
+/// blocks on the returned gate — the wedged driver teardown of issue #105's
+/// residual.
+fn native_devices_wedged_teardown(faults: Faults) -> (FakeNativeDevices, Gate) {
+    let gate = Gate::default();
+    (
+        FakeNativeDevices {
+            probe: Arc::default(),
+            faults,
+            absent: Vec::new(),
+            hang: Vec::new(),
+            hang_gate: Gate::default(),
+            open_barrier: None,
+            teardown_gate: gate.clone(),
+        },
+        gate,
+    )
+}
+
+#[test]
+fn a_wedged_stream_stop_is_abandoned_and_the_engine_still_returns() {
+    // The retirement path's driver release is bounded: a stream wedged in
+    // stop() past the teardown deadline is fenced and abandoned — Stop
+    // completes with a fault instead of parking forever — and because the
+    // runtime handoff precedes stop(), the Engine still comes back.
+    let (project, _source, _sink) = wasapi_stream_project("native", "{wedged-output}");
+    let (native, gate) = native_devices_wedged_teardown(Faults {
+        hang_stop: true,
+        ..Default::default()
+    });
+    let backend = ProfessionalBackend::<f64>::new().unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| native.probe.started.load(Ordering::Acquire) == 2);
+    wait_until(|| owner.timeline().is_some_and(|t| t.frame >= 128));
+    owner.cancel();
+    let started = Instant::now();
+    let returned = owner.stop_and_join();
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "a wedged stop must not park the cleanup lane"
+    );
+    let engine = returned
+        .engine
+        .expect("the runtime handoff precedes stop, so the Engine returns");
+    assert!(engine.timeline() >= 128);
+    assert!(
+        matches!(&returned.error, Some(BackendError::ResourceUnavailable(message))
+            if message.contains("teardown")),
+        "the abandonment is reported as a teardown fault: {:?}",
+        returned.error
+    );
+    // The abandoned workers unwind on their own threads once released.
+    gate.open();
+    wait_until(|| native.probe.dropped.load(Ordering::Acquire) == 2);
+}
+
+#[test]
+fn a_wedged_run_loop_owner_is_abandoned_without_the_engine() {
+    // The narrow unrecoverable window: a master wedged mid-run still holds
+    // the runtime when its teardown deadline expires. Stop still completes;
+    // the missing engine is reported, and the abandoned worker drops the
+    // runtime on its own thread when the driver call finally returns.
+    let (project, _source, _sink) = wasapi_stream_project("native", "{wedged-output}");
+    let (native, gate) = native_devices_wedged_teardown(Faults {
+        hang_wait: true,
+        ..Default::default()
+    });
+    let backend = ProfessionalBackend::<f64>::new().unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| native.probe.started.load(Ordering::Acquire) == 2);
+    // Both workers must be inside the wedged wait before the stop: one that
+    // observes the stop flag first would unwind cleanly and hand the
+    // runtime back, which is the healthy path, not the one under test.
+    wait_until(|| gate.entered() == 2);
+    owner.cancel();
+    let started = Instant::now();
+    let returned = owner.stop_and_join();
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "a wedged run loop must not park the cleanup lane"
+    );
+    assert!(
+        returned.engine.is_none(),
+        "a master wedged mid-run cannot hand the runtime back"
+    );
+    assert!(returned.error.is_some());
+    // Releasing the wedge lets the abandoned worker unwind — the runtime is
+    // dropped there, nothing revives into shared state.
+    gate.open();
+    wait_until(|| native.probe.dropped.load(Ordering::Acquire) == 2);
+    assert!(
+        backend.poll_resource().is_none(),
+        "an abandoned worker never spends a recovery ticket"
+    );
 }

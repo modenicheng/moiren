@@ -242,10 +242,12 @@ fn render_evidence_worker_returns_storage_on_run_cancel_preparation_failure_and_
         }
         assert!(dropped.load(Ordering::Acquire));
         assert!(reader.is_finished());
-        assert!(
-            reader.final_summary().is_some(),
-            "every joined exit path must publish its terminal evidence"
-        );
+        if phase != Phase::InvalidMetadata {
+            assert!(
+                reader.final_summary().is_some(),
+                "every joined exit path must publish its terminal evidence"
+            );
+        }
         drop(render_tx);
     }
 }

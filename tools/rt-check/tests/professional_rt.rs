@@ -2,6 +2,10 @@
 //! Compile the actual bridge/owner files here to measure their private RT paths.
 //! Run: cargo test --manifest-path tools/rt-check/Cargo.toml
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
+// Mirrors `NATIVE_TEARDOWN_DEADLINE` from the library root so the
+// shadow-compiled owner resolves the same teardown bound.
+pub(crate) const NATIVE_TEARDOWN_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(2);
 use moiren_engine::{
     audio_config::SampleFormat,
     boundary::{BoundaryReport, RtAudioSource},
@@ -897,7 +901,7 @@ impl owner::AuxiliaryOwner for PanicCancelAuxiliary {
     fn finished(&self) -> bool {
         self.finished
     }
-    fn join(&mut self) -> Result<(), BackendError> {
+    fn join(&mut self, _deadline: std::time::Instant) -> Result<(), BackendError> {
         Ok(())
     }
 }
@@ -1105,7 +1109,7 @@ fn owner_waits_for_activation_and_returns_engine_without_worker_destruction() {
     assert!(released.try_recv().is_err());
     let returned = owner.stop_and_join();
     assert!(returned.error.is_none());
-    assert!(returned.engine.timeline() > 0);
+    assert!(returned.engine.as_ref().unwrap().timeline() > 0);
     assert_eq!(probe.stops.load(Ordering::Relaxed), 1);
     assert!(released.try_recv().is_err());
     assert!(observations.snapshot().is_none());
@@ -1166,7 +1170,7 @@ fn cancellation_before_activation_and_attach_failure_keep_unrendered_engine() {
     cancel.cancel();
     assert_eq!(owner.activate(), Err(BackendError::Cancelled));
     let returned = owner.stop_and_join();
-    assert_eq!(returned.engine.timeline(), 0);
+    assert_eq!(returned.engine.as_ref().unwrap().timeline(), 0);
     assert_eq!(probe.starts.load(Ordering::Relaxed), 0);
     assert!(released.try_recv().is_err());
     drop(returned);

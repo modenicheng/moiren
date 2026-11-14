@@ -179,7 +179,10 @@ pub struct OwnerTimeline {
 }
 
 /// Must preserve Engine ownership on every native error and caught RT panic.
-/// stop_and_join is non-RT, must not panic, and returns only after native stop.
+/// stop_and_join is non-RT, must not panic, and returns only after native
+/// teardown — or after its bounded teardown deadline, in which case a wedged
+/// native owner may still hold the Engine and [`OwnerReturn::engine`] is
+/// `None` (the runtime is dropped when the driver call finally returns).
 pub trait BackendOwner<S: ProcessingSample>: Send + 'static {
     /// Opens the prepared owner's start gate. Attach must not start audio.
     /// Called once by the coordinator after current-basis/closing validation.
@@ -191,7 +194,11 @@ pub trait BackendOwner<S: ProcessingSample>: Send + 'static {
 }
 
 pub struct OwnerReturn<S: ProcessingSample> {
-    pub engine: Engine<S>,
+    /// `None` only under bounded-teardown abandonment (issue #105): the
+    /// native owner stayed wedged in a driver call past the teardown
+    /// deadline and could not hand the runtime back. The abandoned thread
+    /// still holds it and drops it when the call completes.
+    pub engine: Option<Engine<S>>,
     pub error: Option<BackendError>,
 }
 

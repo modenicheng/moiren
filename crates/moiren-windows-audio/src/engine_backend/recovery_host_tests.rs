@@ -374,7 +374,7 @@ impl AuxiliaryOwner for Auxiliary {
     fn finished(&self) -> bool {
         false
     }
-    fn join(&mut self) -> Result<(), BackendError> {
+    fn join(&mut self, _deadline: std::time::Instant) -> Result<(), BackendError> {
         if self.joined {
             return Ok(());
         }

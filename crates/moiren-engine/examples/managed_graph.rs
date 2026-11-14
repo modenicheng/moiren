@@ -172,7 +172,10 @@ impl PreparedTransport<f64> for Transport {
                 cancellation.wait_cancelled(Duration::from_millis(1));
             }
             running.failed.store(error.is_some(), Ordering::Release);
-            OwnerReturn { engine, error }
+            OwnerReturn {
+                engine: Some(engine),
+                error,
+            }
         });
         Ok(Box::new(Driver {
             progress,
