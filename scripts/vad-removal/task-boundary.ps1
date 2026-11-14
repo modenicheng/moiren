@@ -61,9 +61,23 @@ function New-RemovalTaskSpec {
         RunDirectory=$RunDirectory;Arguments=$line;ReviewedForNative=$false}
 }
 
+function Resolve-RemovalTaskPrincipalSid($Value) {
+    if($Value -isnot [string] -or [string]::IsNullOrWhiteSpace($Value) -or
+        $Value.Length -gt 512 -or $Value -match '[\x00-\x1f]'){
+        throw 'Bounded task principal SID/account required.'
+    }
+    if($Value.StartsWith('S-',[StringComparison]::OrdinalIgnoreCase)){
+        return [Security.Principal.SecurityIdentifier]::new($Value).Value
+    }
+    # Task Scheduler can normalize the supplied SID to an account name.
+    # Translate that name back to its SID; a friendly-name match is not identity.
+    return [Security.Principal.NTAccount]::new($Value).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
 function Assert-RemovalTaskDefinition($Spec,$Task) {
     $d=$Task.Definition
-    if($Task.Path -cne $Spec.Path -or $Task.Name -cne $Spec.Name -or $d.Principal.UserId -cne $Spec.Sid -or
+    $principalSid=Resolve-RemovalTaskPrincipalSid $d.Principal.UserId
+    if($Task.Path -cne $Spec.Path -or $Task.Name -cne $Spec.Name -or $principalSid -cne $Spec.Sid -or
         $d.Principal.LogonType -ne 3 -or $d.Principal.RunLevel -ne 0 -or $d.Triggers.Count -ne 0 -or $d.Actions.Count -ne 1){
         throw 'Task identity/principal/action count/trigger differs.'
     }
@@ -277,8 +291,11 @@ function Get-RemovalTaskObservation($Owner) {
         $last=$Owner.RegisteredTask.LastRunTime
         $now=[DateTimeOffset]::UtcNow
         $r.ObservedUtc=$now.ToString('o')
-        $r.NeverRun=($last -is [DateTime] -and ($last -eq [DateTime]::MinValue -or
-            $last -eq [DateTime]'1899-12-30T00:00:00'))
+        # Scheduler versions expose different sentinel dates. The original
+        # SCHED_S_TASK_HAS_NOT_RUN result must corroborate the exact sentinel.
+        $r.NeverRun=($r.LastTaskResult -eq 267011 -and $last -is [DateTime] -and
+            ($last -eq [DateTime]::MinValue -or $last -eq [DateTime]'1899-12-30T00:00:00' -or
+             $last -eq [DateTime]'1999-11-30T00:00:00'))
         if($Owner.DispatchAttempted -and $null -ne $Owner.InstanceGuid -and $last -is [DateTime]){
             $dispatch=[DateTimeOffset]::Parse($Owner.DispatchUtc,[Globalization.CultureInfo]::InvariantCulture)
             $lastUtc=$last.ToUniversalTime()

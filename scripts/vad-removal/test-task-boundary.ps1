@@ -122,6 +122,45 @@ Case 'registration-success-uses-create-only-and-retains-exact-task' {
  Start-RemovalTaskOnce $o
  Check ($o.DispatchAttempted-and$o.RegisteredTask.RunCalls-eq1) 'Created task not dispatched exactly once'
 }
+Case 'scheduler-normalized-account-is-validated-by-resolved-sid' {
+ $s=Spec;$o=New-RemovalTaskOwner -Spec $s
+ $script:mockScheduler=FakeScheduler $s 'success'
+ $script:mockScheduler.Folder|Add-Member ScriptMethod RegisterTaskDefinition {
+  param($name,$definition,$flags,$sid,$password,$logon,$sddl)
+  $this.Calls++;$this.Task.Definition.Principal.UserId='Cheng Jiaqi'
+  return $this.Task
+ } -Force
+ function Resolve-RemovalTaskPrincipalSid($Value){
+  if($Value-cne'Cheng Jiaqi'){throw 'Unexpected normalized account'}
+  return 'S-1-5-21-3080296863-1242338503-1346362208-1001'
+ }
+ Register-RemovalTaskDefinition $o
+ Check ($o.RegistrationKnown-and-not$o.Error-and$o.RegisteredXml-ceq$o.RegisteredTask.Xml) 'Normalized principal lost verified registration'
+ Check ([Object]::ReferenceEquals($o.RegisteredTask,$script:mockScheduler.Task)) 'Original returned COM owner replaced'
+}
+Case 'actual-account-name-resolves-to-current-token-sid' {
+ $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+ Check ((Resolve-RemovalTaskPrincipalSid $identity.Name)-ceq$identity.User.Value) 'Actual account resolution differs from token'
+ Check ((Resolve-RemovalTaskPrincipalSid $identity.User.Value)-ceq$identity.User.Value) 'Literal SID not preserved'
+ foreach($value in @($null,'','S-invalid','Moiren-Nonexistent-'+[Guid]::NewGuid().ToString('N'))){
+  Reject {Resolve-RemovalTaskPrincipalSid $value}
+ }
+}
+Case 'wrong-or-unresolvable-normalized-account-still-refuses-definition' {
+ $s=Spec;$t=FakeTask $s;$t.Definition.Principal.UserId='wrong-account'
+ function Resolve-RemovalTaskPrincipalSid($Value){return 'S-1-5-18'}
+ Reject {Assert-RemovalTaskDefinition $s $t}
+ function Resolve-RemovalTaskPrincipalSid($Value){throw 'Account cannot be resolved'}
+ Reject {Assert-RemovalTaskDefinition $s $t}
+}
+Case 'captured-1999-never-run-date-requires-the-original-scheduler-result' {
+ $s=Spec;$t=FakeTask $s;$o=Owner $s $t
+ $t.LastRunTime=[DateTime]'1999-11-30T00:00:00'
+ $r=Get-RemovalTaskObservation $o
+ Check ($r.NeverRun-and-not$r.Error-and-not$r.LastRunKnown) 'Actual target never-run sentinel refused'
+ $t.LastTaskResult=0;$r=Get-RemovalTaskObservation $o
+ Check (-not$r.NeverRun) 'Old date alone classified an executed task as never run'
+}
 Case 'spec-binds-observed-session-nonce-argument-and-exact-worker' {
  $s=Spec;Check ($s.SessionId-eq2-and$s.Path-ceq('\'+$s.Name)-and$s.Sid-ceq'S-1-5-21-3080296863-1242338503-1346362208-1001') 'Wrong identity'
  Check ($s.Arguments.Contains($s.Nonce)-and$s.Arguments.Contains($s.WorkerPath)-and-not$s.ReviewedForNative) 'Missing exact nonce/entry or false approval'
