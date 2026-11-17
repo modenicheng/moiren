@@ -88,14 +88,20 @@ pub struct ChipLayout {
 
 /// A recorder card's session strip: the status line (dot, phase word, and
 /// the hot-layer duration slot on its right), the output file name, and the
-/// three transport slots. Slot rects always exist; which carry affordances
-/// follows `RecordAction::available` in both the paint and the hit test.
+/// transport bar with its three slots. Every rect always exists in every
+/// phase; which slots carry affordances follows `RecordAction::available`
+/// in both the paint and the hit test, and the bar is the single rect the
+/// painter fills and strokes.
 #[derive(Debug, Clone)]
 pub struct RecordingLayout {
     pub dot: Bounds<f32>,
     pub status: TextLayout,
     pub duration: TextLayout,
     pub file_name: TextLayout,
+    /// The transport bar container: the record slot grown by one bar inset
+    /// on every side. Derived from the slot constants, so the container and
+    /// its slots cannot drift apart.
+    pub bar: Bounds<f32>,
     pub record: Bounds<f32>,
     pub pause: Bounds<f32>,
     pub stop: Bounds<f32>,
@@ -265,13 +271,24 @@ impl NodeLayout {
             let phase_w = 96.;
             let clock_x = 112.;
             // Transport slots sit inset in their bar container, one stride
-            // apart; the container's face derives from the same constants.
+            // apart; the container is the record slot grown by the same
+            // inset on every side, the single geometry the painter uses.
             let slot = |offset: f32| Bounds {
                 origin: point(
                     left + theme::card::REC_BAR_INSET + offset,
                     body_top + theme::card::REC_ROW_TRANSPORT + theme::card::REC_BAR_INSET,
                 ),
                 size: size(theme::card::REC_BTN, theme::card::REC_BTN),
+            };
+            let record = slot(0.);
+            let pause = slot(theme::card::REC_BTN + theme::card::REC_BTN_GAP);
+            let stop = slot(2. * (theme::card::REC_BTN + theme::card::REC_BTN_GAP));
+            let bar = Bounds {
+                origin: point(
+                    record.origin.x - theme::card::REC_BAR_INSET,
+                    record.origin.y - theme::card::REC_BAR_INSET,
+                ),
+                size: size(theme::card::REC_TRANSPORT_W, theme::card::REC_TRANSPORT_H),
             };
             RecordingLayout {
                 dot: Bounds {
@@ -296,9 +313,10 @@ impl NodeLayout {
                     inner,
                     theme::card::REC_FILE_SIZE,
                 ),
-                record: slot(0.),
-                pause: slot(theme::card::REC_BTN + theme::card::REC_BTN_GAP),
-                stop: slot(2. * (theme::card::REC_BTN + theme::card::REC_BTN_GAP)),
+                bar,
+                record,
+                pause,
+                stop,
             }
         });
         let rack = (!node.rack_stages.is_empty()).then(|| Bounds {
@@ -408,6 +426,7 @@ impl NodeLayout {
                 status: strip.status.project(camera),
                 duration: strip.duration.project(camera),
                 file_name: strip.file_name.project(camera),
+                bar: camera.project_rect(strip.bar),
                 record: camera.project_rect(strip.record),
                 pause: camera.project_rect(strip.pause),
                 stop: camera.project_rect(strip.stop),
@@ -530,6 +549,11 @@ impl NodeLayout {
                 status: text(&strip.status),
                 duration: text(&strip.duration),
                 file_name: text(&strip.file_name),
+                bar: {
+                    let mut bar = strip.bar;
+                    shift(&mut bar);
+                    bar
+                },
                 record: {
                     let mut record = strip.record;
                     shift(&mut record);

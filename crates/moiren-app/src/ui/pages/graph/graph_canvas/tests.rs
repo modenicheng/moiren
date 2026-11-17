@@ -1115,16 +1115,46 @@ fn recorder_strip_lays_out_status_line_name_and_transport_slots() {
     for slot in [strip.record, strip.pause, strip.stop] {
         assert_eq!(slot.size, size(theme::card::REC_BTN, theme::card::REC_BTN));
     }
-    // The bar container wraps the slots with the hairline inset on both
-    // sides, so slots and container cannot drift apart.
-    let bar_width = strip.stop.origin.x + theme::card::REC_BTN + theme::card::REC_BAR_INSET
-        - (strip.record.origin.x - theme::card::REC_BAR_INSET);
-    assert_close(bar_width, theme::card::REC_TRANSPORT_W);
+    // The bar container wraps the slots: the record slot sits exactly one
+    // bar inset inside the container's top-left corner and the stop slot
+    // one inset inside its bottom-right corner, so the container's stroke
+    // ring never crosses a slot's fill.
+    let inset = theme::card::REC_BAR_INSET;
+    assert_eq!(
+        strip.bar.origin,
+        point(strip.record.origin.x - inset, strip.record.origin.y - inset),
+        "the container opens one inset before the record slot"
+    );
+    assert_eq!(
+        strip.bar.size,
+        size(theme::card::REC_TRANSPORT_W, theme::card::REC_TRANSPORT_H)
+    );
+    for slot in [strip.record, strip.pause, strip.stop] {
+        assert_eq!(
+            slot.origin.y,
+            strip.bar.origin.y + inset,
+            "every slot clears the container's top stroke"
+        );
+    }
+    assert_eq!(
+        strip.stop.origin.x + strip.stop.size.width + inset,
+        strip.bar.origin.x + strip.bar.size.width,
+        "the container closes one inset after the stop slot"
+    );
+    assert_eq!(
+        strip.record.size.height + 2. * inset,
+        strip.bar.size.height,
+        "the container's stroke ring stays outside every slot fill"
+    );
+    assert!(
+        inset >= theme::HAIRLINE_W,
+        "the hairline stroke paints inside the container bounds, so the slot inset must keep it off the slot fills"
+    );
 }
 
-/// The transport bar keeps its shape in every phase: slots
-/// always exist at the same offsets, so the ghost outlines the painter draws
-/// for unavailable slots never collapse the row.
+/// The transport bar keeps its shape in every phase: the container and the
+/// three slot rects always exist at the same offsets, so no phase can
+/// collapse or move the row.
 #[test]
 fn transport_slots_hold_their_geometry_in_every_phase() {
     use crate::service::RecordingPhase;
@@ -1143,13 +1173,118 @@ fn transport_slots_hold_their_geometry_in_every_phase() {
         Some(RecordingPhase::Recording),
         Some(RecordingPhase::Paused),
         Some(RecordingPhase::Rebinding),
+        Some(RecordingPhase::Stopping),
         Some(RecordingPhase::Finished),
         Some(RecordingPhase::Failed),
     ] {
         let strip = strip_for(phase);
+        assert_eq!(strip.bar, idle.bar);
         assert_eq!(strip.record, idle.record);
         assert_eq!(strip.pause, idle.pause);
         assert_eq!(strip.stop, idle.stop);
+    }
+}
+
+/// Every transport slot paints as a real button in every phase: the record
+/// key stays a red solid for the session's whole life, an unavailable pause
+/// or stop dims to a raised face with a muted glyph, and no slot ever
+/// renders the hollow outline the old ghost design drew.
+#[test]
+fn transport_slots_paint_as_real_buttons_in_every_phase() {
+    use super::RecordAction;
+    use crate::service::RecordingPhase;
+    use crate::ui::pages::graph::graph_canvas_view::transport_look;
+
+    let phases = [
+        None,
+        Some(RecordingPhase::Recording),
+        Some(RecordingPhase::Paused),
+        Some(RecordingPhase::Rebinding),
+        Some(RecordingPhase::Stopping),
+        Some(RecordingPhase::Finished),
+        Some(RecordingPhase::Failed),
+    ];
+
+    // The record key is the strip's one loud element: red wash under a red
+    // glyph, in every phase — the button never disappears while a session
+    // runs, and the card's state dot carries the blink instead.
+    for phase in phases {
+        let look = transport_look(RecordAction::Record, phase);
+        assert_eq!(
+            look.background,
+            theme::DANGER_WASH,
+            "record face for {phase:?}"
+        );
+        assert_eq!(
+            look.glyph_color,
+            theme::DANGER,
+            "record glyph for {phase:?}"
+        );
+        assert_eq!(look.glyph, "player-record", "record glyph for {phase:?}");
+        assert_ne!(
+            look.background,
+            theme::controls::TRANSPARENT,
+            "the record key must never paint hollow, for {phase:?}"
+        );
+    }
+
+    // The pause slot: ⏸ while running, ▶ while held, and its own ⏸ glyph
+    // dimmed wherever the phase takes the affordance away — still a solid
+    // raised face either way.
+    for phase in phases {
+        let look = transport_look(RecordAction::Pause, phase);
+        let expected_glyph = match phase {
+            Some(RecordingPhase::Paused) => "player-play",
+            _ => "player-pause",
+        };
+        assert_eq!(look.glyph, expected_glyph, "pause glyph for {phase:?}");
+        assert_eq!(
+            look.background,
+            theme::controls::RAISED,
+            "pause face for {phase:?}"
+        );
+        assert_ne!(
+            look.background,
+            theme::controls::TRANSPARENT,
+            "the pause slot must never paint hollow, for {phase:?}"
+        );
+        let enabled = RecordAction::Pause.available(phase).is_some();
+        assert_eq!(
+            look.glyph_color,
+            if enabled {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            },
+            "pause glyph strength for {phase:?}"
+        );
+    }
+
+    // The stop slot: full strength while a session is live, dimmed
+    // otherwise, on the same solid raised face.
+    for phase in phases {
+        let look = transport_look(RecordAction::Stop, phase);
+        assert_eq!(look.glyph, "player-stop", "stop glyph for {phase:?}");
+        assert_eq!(
+            look.background,
+            theme::controls::RAISED,
+            "stop face for {phase:?}"
+        );
+        assert_ne!(
+            look.background,
+            theme::controls::TRANSPARENT,
+            "the stop slot must never paint hollow, for {phase:?}"
+        );
+        let enabled = RecordAction::Stop.available(phase).is_some();
+        assert_eq!(
+            look.glyph_color,
+            if enabled {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            },
+            "stop glyph strength for {phase:?}"
+        );
     }
 }
 

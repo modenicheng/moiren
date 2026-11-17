@@ -993,17 +993,14 @@ pub(in crate::ui) fn paint_recording_strip(
         );
     }
     // Transport bar: one rounded container under the session rows, its three
-    // slots inset by a hairline so the row reads as a single control. Which
-    // slots carry an affordance follows the same availability the hit test
-    // consults, so paint and pointer never drift; empty slots draw ghost
-    // outlines so the bar keeps its shape in every phase.
-    let bar = frame.window_rect(Bounds {
-        origin: point(
-            layout.record.origin.x - theme::card::REC_BAR_INSET,
-            layout.record.origin.y - theme::card::REC_BAR_INSET,
-        ),
-        size: size(theme::card::REC_TRANSPORT_W, theme::card::REC_TRANSPORT_H),
-    });
+    // slots inset by a hairline so the row reads as a single control. The
+    // container and the slots each project exactly one rect from the shared
+    // layout — face, stroke, and glyphs all hang off those rects, so no
+    // layer re-derives an offset and every layer scales with the camera.
+    // Every slot is a real button in every phase (see [`transport_look`]);
+    // which of them answer a press follows the same availability the hit
+    // test consults, so paint and pointer never drift.
+    let bar = frame.window_rect(layout.bar);
     let radius = theme::RADIUS_SM * scale;
     window.paint_quad(PaintQuad {
         bounds: bar,
@@ -1020,52 +1017,71 @@ pub(in crate::ui) fn paint_recording_strip(
     ];
     for (bounds, action) in slots {
         let bounds = frame.window_rect(*bounds);
-        let Some(affordance) = action.available(recording.phase) else {
-            // Ghost slot: transparent face with the bar's own hairline so an
-            // empty slot never collapses the row.
-            window.paint_quad(PaintQuad {
-                bounds,
-                corner_radii: radius.into(),
-                background: theme::controls::TRANSPARENT.into(),
-                border_widths: theme::HAIRLINE_W.into(),
-                border_color: theme::GRIP,
-                border_style: BorderStyle::default(),
-            });
-            continue;
-        };
-        // The record affordance is the one loud element on the strip: a red
-        // wash under the red glyph marks the card's armed state. The other
-        // slots sit a step raised with full-strength glyphs.
-        let background = if affordance == RecordAction::Record {
-            theme::DANGER_WASH
-        } else {
-            theme::controls::RAISED
-        };
-        rounded(bounds, background, radius, window);
-        let glyph = match affordance {
-            RecordAction::Record => "player-record",
-            RecordAction::Pause => "player-pause",
-            RecordAction::Resume => "player-play",
-            RecordAction::Stop => "player-stop",
-        };
+        let look = transport_look(action, recording.phase);
+        rounded(bounds, look.background, radius, window);
         let glyph_px = px(10. * scale);
         let inset = (bounds.size.width - glyph_px) / 2.;
-        let color = if affordance == RecordAction::Record {
-            theme::DANGER
-        } else {
-            theme::TEXT
-        };
         let _ = window.paint_svg(
             Bounds {
                 origin: bounds.origin + point(inset, inset),
                 size: size(glyph_px, glyph_px),
             },
-            format!("icons/{glyph}.svg").into(),
+            format!("icons/{}.svg", look.glyph).into(),
             None,
             TransformationMatrix::unit(),
-            color,
+            look.glyph_color,
             cx,
         );
+    }
+}
+
+/// One transport slot's resting look: the face it fills and the glyph it
+/// wears. The single decision behind the strip's paint, so the layout tests
+/// can pin the phase semantics without a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::ui) struct TransportLook {
+    pub(in crate::ui) background: Hsla,
+    pub(in crate::ui) glyph: &'static str,
+    pub(in crate::ui) glyph_color: Hsla,
+}
+
+/// The transport look for one slot in one phase. No slot ever turns
+/// hollow: the record key keeps its red wash and red glyph from idle
+/// through the terminal phases (its press is gated by the hit test while a
+/// session is live), and a pause or stop slot the phase does not offer
+/// dims to a raised face with a muted glyph instead of an outline.
+pub(in crate::ui) fn transport_look(
+    action: RecordAction,
+    phase: Option<crate::service::RecordingPhase>,
+) -> TransportLook {
+    let affordance = action.available(phase);
+    // A disabled slot keeps its own glyph: the pause slot rests as ⏸, and
+    // only a paused session flips it to the ▶ resume.
+    let glyph = match affordance.unwrap_or(action) {
+        RecordAction::Record => "player-record",
+        RecordAction::Pause => "player-pause",
+        RecordAction::Resume => "player-play",
+        RecordAction::Stop => "player-stop",
+    };
+    let record = action == RecordAction::Record;
+    TransportLook {
+        // The record affordance is the one loud element on the strip: a red
+        // wash under the red glyph marks the card's armed state. The other
+        // slots sit a step raised, at full strength while enabled and
+        // muted once the phase takes them away.
+        background: if record {
+            theme::DANGER_WASH
+        } else {
+            theme::controls::RAISED
+        },
+        glyph,
+        glyph_color: if record {
+            theme::DANGER
+        } else if affordance.is_some() {
+            theme::TEXT
+        } else {
+            theme::TEXT_MUTED
+        },
     }
 }
 

@@ -139,8 +139,9 @@ impl CanvasFrame {
             {
                 return Some(HitTarget::Chip { node: &node.id });
             }
-            // Transport slots only hit while the phase offers them, exactly
-            // as the strip paints them; they win over the card beneath.
+            // Transport slots only hit while the phase offers them; the
+            // strip paints the others dimmed, so a muted button never
+            // answers a press. Slots win over the card beneath.
             if let Some(strip) = layout.recording.as_ref()
                 && let Some(recording) = node.recording.as_ref()
             {
