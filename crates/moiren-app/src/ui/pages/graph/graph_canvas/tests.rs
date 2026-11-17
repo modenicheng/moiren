@@ -1062,21 +1062,131 @@ fn recorder_strip_lays_out_status_line_name_and_transport_slots() {
     });
     let layout = NodeLayout::new(&recorder);
     let strip = layout.recording.as_ref().expect("recorder card strip");
-    // The status line leads with the dot, the duration text closes the same
-    // line, and the file name takes the row below.
-    assert!(strip.status.bounds.origin.x > strip.dot.origin.x);
-    assert!(strip.duration.bounds.origin.x > strip.status.bounds.origin.x);
-    assert!(
-        strip.duration.bounds.origin.y < strip.file_name.bounds.origin.y,
-        "the file name sits under the status line"
+    let left = 32. + theme::card::RAIL_W + theme::card::PADDING;
+    let inner = theme::NODE_WIDTH - theme::card::RAIL_W - 2. * theme::card::PADDING;
+    let body_top = 80. + theme::card::BODY_TOP;
+    // The status line leads with the dot; the phase word and the live clock
+    // share it.
+    assert_eq!(
+        strip.dot.origin,
+        point(left, body_top + 4.),
+        "the dot hangs on the status line"
     );
-    // Three side-by-side transport slots, one stride apart.
-    let stride = theme::card::REC_BTN + 6.;
+    assert_eq!(
+        strip.dot.size,
+        size(theme::card::REC_DOT, theme::card::REC_DOT)
+    );
+    assert_eq!(
+        strip.status.bounds.origin,
+        point(left + 16., body_top + 2.),
+        "the phase word follows the dot"
+    );
+    assert_close(strip.status.font_size, theme::card::REC_STATUS_SIZE);
+    assert_eq!(
+        strip.duration.bounds.origin,
+        point(left + 112., body_top),
+        "the clock closes the status line"
+    );
+    assert_close(strip.duration.font_size, theme::card::REC_CLOCK_SIZE);
+    assert_close(
+        strip.duration.bounds.origin.x + strip.duration.bounds.size.width,
+        left + inner,
+    );
+    // The file name takes its own row below, full width.
+    assert_eq!(
+        strip.file_name.bounds.origin,
+        point(left, body_top + theme::card::REC_ROW_FILE)
+    );
+    assert_close(strip.file_name.font_size, theme::card::REC_FILE_SIZE);
+    assert_close(strip.file_name.bounds.size.width, inner);
+    // Three side-by-side transport slots, one stride apart, inset in their
+    // bar container on the transport row.
+    let stride = theme::card::REC_BTN + theme::card::REC_BTN_GAP;
+    assert_eq!(
+        strip.record.origin,
+        point(
+            left + theme::card::REC_BAR_INSET,
+            body_top + theme::card::REC_ROW_TRANSPORT + theme::card::REC_BAR_INSET,
+        ),
+        "the record slot opens the transport bar"
+    );
     assert_close(strip.pause.origin.x - strip.record.origin.x, stride);
     assert_close(strip.stop.origin.x - strip.pause.origin.x, stride);
+    for slot in [strip.record, strip.pause, strip.stop] {
+        assert_eq!(slot.size, size(theme::card::REC_BTN, theme::card::REC_BTN));
+    }
+    // The bar container wraps the slots with the hairline inset on both
+    // sides, so slots and container cannot drift apart.
+    let bar_width = strip.stop.origin.x + theme::card::REC_BTN + theme::card::REC_BAR_INSET
+        - (strip.record.origin.x - theme::card::REC_BAR_INSET);
+    assert_close(bar_width, theme::card::REC_TRANSPORT_W);
+}
+
+/// The transport bar keeps its shape in every phase: slots
+/// always exist at the same offsets, so the ghost outlines the painter draws
+/// for unavailable slots never collapse the row.
+#[test]
+fn transport_slots_hold_their_geometry_in_every_phase() {
+    use crate::service::RecordingPhase;
+
+    let strip_for = |phase| {
+        let mut recorder = node("rec", "Recorder", "48kHz L/R").at(32., 80.);
+        recorder.recording = Some(super::CardRecording {
+            phase,
+            file_name: String::new(),
+        });
+        let layout = NodeLayout::new(&recorder);
+        layout.recording.expect("recorder card strip").clone()
+    };
+    let idle = strip_for(None);
+    for phase in [
+        Some(RecordingPhase::Recording),
+        Some(RecordingPhase::Paused),
+        Some(RecordingPhase::Rebinding),
+        Some(RecordingPhase::Finished),
+        Some(RecordingPhase::Failed),
+    ] {
+        let strip = strip_for(phase);
+        assert_eq!(strip.record, idle.record);
+        assert_eq!(strip.pause, idle.pause);
+        assert_eq!(strip.stop, idle.stop);
+    }
+}
+
+/// The file row shows the session's output name while one is set; an idle
+/// card that never recorded falls back to the node's static detail, and a
+/// running session before its name is published paints nothing.
+#[test]
+fn recorder_strip_file_row_names_the_file_or_falls_back_to_detail() {
+    use crate::service::RecordingPhase;
+    use crate::ui::pages::graph::graph_canvas_view::strip_file_label;
+
+    let detail = "48000 frame buffer";
+    let idle = super::CardRecording {
+        phase: None,
+        file_name: String::new(),
+    };
     assert_eq!(
-        strip.record.size,
-        size(theme::card::REC_BTN, theme::card::REC_BTN)
+        strip_file_label(&idle, detail),
+        Some((detail, theme::TEXT_FAINT)),
+        "idle metadata is recovered onto the file row"
+    );
+    let named = super::CardRecording {
+        phase: Some(RecordingPhase::Recording),
+        file_name: "moiren-rec.wav".into(),
+    };
+    assert_eq!(
+        strip_file_label(&named, detail),
+        Some(("moiren-rec.wav", theme::TEXT_MUTED))
+    );
+    let unnamed = super::CardRecording {
+        phase: Some(RecordingPhase::Recording),
+        file_name: String::new(),
+    };
+    assert_eq!(
+        strip_file_label(&unnamed, detail),
+        None,
+        "a live session paints no fallback metadata"
     );
 }
 

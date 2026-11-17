@@ -707,23 +707,24 @@ fn paint_recording_durations(
     );
 }
 
-/// The recording blink: the strip's status dot dims for half of every
-/// second, the camera/DAW convention for "tape is rolling". It rides this
-/// overlay's 1 Hz snapshot frames — no frame demand of its own — and reads
-/// the wall clock so the phase never depends on paint timing. The dimming
-/// quad goes over the cached dot rather than erasing it, so the blink works
-/// over any card face (fault wash included).
+/// The recording blink: the strip's status dot dims for the last quarter of
+/// every second — a 75% lit duty cycle, the camera/DAW convention for "tape
+/// is rolling" with a longer hold. It rides this overlay's 1 Hz snapshot
+/// frames — no frame demand of its own — and reads the wall clock so the
+/// phase never depends on paint timing. The dimming quad goes over the
+/// cached dot rather than erasing it, so the blink works over any card face
+/// (fault wash included).
 fn paint_recording_dot_blink(
     frame: &CanvasFrame,
     strip: &RecordingLayout,
     paint: crate::ui::pages::graph::graph_canvas_view::Paint<'_>,
 ) {
     let crate::ui::pages::graph::graph_canvas_view::Paint { shapes: _, window } = paint;
-    let half_second = std::time::SystemTime::now()
+    let lit = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.subsec_millis() < 500)
+        .map(|since| dot_blink_lit(since.subsec_millis()))
         .unwrap_or(true);
-    if half_second {
+    if lit {
         return;
     }
     let dot = frame.window_rect(strip.dot);
@@ -741,6 +742,13 @@ fn paint_recording_dot_blink(
         border_color: crate::ui::theme::controls::TRANSPARENT,
         border_style: BorderStyle::default(),
     });
+}
+
+/// The blink's square wave: the dot stays lit for 75% of every second and
+/// dims over the remaining quarter. Split from the painter so
+/// the duty cycle carries its own assertion.
+fn dot_blink_lit(subsec_millis: u32) -> bool {
+    subsec_millis < 750
 }
 
 fn paint_graph_meter_frame(
@@ -907,4 +915,19 @@ pub(in crate::ui) fn node_levels(
             }
         })
     })
+}
+
+#[cfg(test)]
+mod blink_tests {
+    use super::dot_blink_lit;
+
+    /// The square wave the dot blink rides: lit for three quarters of every
+    /// second, dim over the remaining quarter.
+    #[test]
+    fn dot_blink_holds_a_75_percent_lit_duty_cycle() {
+        assert!(dot_blink_lit(0));
+        assert!(dot_blink_lit(749));
+        assert!(!dot_blink_lit(750), "the dot dims over the last quarter");
+        assert!(!dot_blink_lit(999));
+    }
 }

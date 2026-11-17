@@ -167,21 +167,35 @@ pub mod card {
     pub const METER_H: f32 = 3.;
     pub const METER_CHANNEL_GAP: f32 = 2.;
     pub const METER_CHANNELS: usize = 2;
-    /// Recording-strip bodies (recorder cards): a status line, the output
-    /// file name, and one row of transport affordances. The live duration
-    /// shares the status line's right half but is painted by the hot layer.
-    pub const RECORD_BODY_H: f32 = 56.;
+    /// Recording-strip bodies (recorder cards): the status line (phase word
+    /// and the live clock), the output file name, and the transport bar. The
+    /// clock shares the status line but is painted by the hot layer.
+    pub const RECORD_BODY_H: f32 = 60.;
     /// One transport glyph slot on the recording strip.
     pub const REC_BTN: f32 = 18.;
     /// Gap between the transport slots.
     pub const REC_BTN_GAP: f32 = 6.;
     /// The status dot beside the phase word.
-    pub const REC_DOT: f32 = 7.;
-    /// The strip's status line and live duration, one step above the generic
-    /// card hint so the session state reads at a glance.
+    pub const REC_DOT: f32 = 9.;
+    /// The strip's phase word, one step above the generic card hint so the
+    /// session state reads at a glance.
     pub const REC_STATUS_SIZE: f32 = super::TEXT_CAPTION;
+    /// The strip's live clock: the type ladder's large step, mono digits so
+    /// the ticking seconds hold their width. Alias tracks the ladder.
+    pub const REC_CLOCK_SIZE: f32 = super::TEXT_LG;
     /// The strip's output file name.
     pub const REC_FILE_SIZE: f32 = super::TEXT_XS;
+    /// The file-name row's offset from the body top (recorder strip redesign).
+    pub const REC_ROW_FILE: f32 = 20.;
+    /// The transport bar row's offset from the body top (recorder strip redesign).
+    pub const REC_ROW_TRANSPORT: f32 = 36.;
+    /// The transport bar's height: its slots plus the hairline rim.
+    pub const REC_TRANSPORT_H: f32 = 20.;
+    /// The transport bar's width, derived so the slots' stride can drift
+    /// without the container silently growing stale.
+    pub const REC_TRANSPORT_W: f32 = 2. * REC_BAR_INSET + 3. * REC_BTN + 2. * REC_BTN_GAP;
+    /// The transport bar's face-to-slot inset (recorder strip redesign).
+    pub const REC_BAR_INSET: f32 = 1.;
     /// Base distance from the card top to the first port anchor; taller
     /// bodies push the port rail down instead of overlapping the meter.
     pub const PORT_Y: f32 = 80.;

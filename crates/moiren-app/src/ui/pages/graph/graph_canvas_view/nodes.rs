@@ -918,13 +918,14 @@ fn paint_binding_chip(
     );
 }
 
-/// The recorder card's session strip: status dot and phase word, the output
-/// file name, and the transport slots the phase offers. The ticking duration
-/// shares the status line's right half but is painted by the hot layer, so
-/// the cached card never repaints per second.
+/// The recorder card's session strip: status dot and phase word, the live
+/// clock slot, the output file name, and the transport bar the phase fills.
+/// The ticking duration shares the status line's right half but is painted
+/// by the hot layer, so the cached card never repaints per second.
 pub(in crate::ui) fn paint_recording_strip(
     frame: &CanvasFrame,
     recording: &CardRecording,
+    detail: &str,
     layout: &RecordingLayout,
     scale: f32,
     paint: Paint<'_>,
@@ -949,17 +950,21 @@ pub(in crate::ui) fn paint_recording_strip(
         border_color: theme::controls::TRANSPARENT,
         border_style: BorderStyle::default(),
     });
+    // The phase word is the strip's state readout: red while tape rolls,
+    // amber while held, muted otherwise, faint before the first session.
+    let word_color = match recording.phase {
+        Some(RecordingPhase::Recording) => theme::DANGER,
+        Some(RecordingPhase::Paused) => theme::WARNING,
+        Some(_) => theme::TEXT_MUTED,
+        None => theme::TEXT_FAINT,
+    };
     paint_label(
         frame,
         &layout.status,
         Label {
             text: &crate::ui::presentation::recording_phase_text(recording.phase),
             family: theme::FONT_UI,
-            color: if active {
-                theme::TEXT
-            } else {
-                theme::TEXT_MUTED
-            },
+            color: word_color,
             right_aligned: false,
             weight: FontWeight::SEMIBOLD,
         },
@@ -969,14 +974,14 @@ pub(in crate::ui) fn paint_recording_strip(
         },
         cx,
     );
-    if !recording.file_name.is_empty() {
+    if let Some((text, color)) = strip_file_label(recording, detail) {
         paint_label(
             frame,
             &layout.file_name,
             Label {
-                text: &recording.file_name,
+                text,
                 family: theme::FONT_UI,
-                color: theme::TEXT_MUTED,
+                color,
                 right_aligned: false,
                 weight: FontWeight::NORMAL,
             },
@@ -987,27 +992,56 @@ pub(in crate::ui) fn paint_recording_strip(
             cx,
         );
     }
-    // Transport slots: which carry an affordance follows the same
-    // availability the hit test consults, so paint and pointer never drift.
+    // Transport bar: one rounded container under the session rows, its three
+    // slots inset by a hairline so the row reads as a single control. Which
+    // slots carry an affordance follows the same availability the hit test
+    // consults, so paint and pointer never drift; empty slots draw ghost
+    // outlines so the bar keeps its shape in every phase.
+    let bar = frame.window_rect(Bounds {
+        origin: point(
+            layout.record.origin.x - theme::card::REC_BAR_INSET,
+            layout.record.origin.y - theme::card::REC_BAR_INSET,
+        ),
+        size: size(theme::card::REC_TRANSPORT_W, theme::card::REC_TRANSPORT_H),
+    });
+    let radius = theme::RADIUS_SM * scale;
+    window.paint_quad(PaintQuad {
+        bounds: bar,
+        corner_radii: radius.into(),
+        background: theme::SURFACE_4.into(),
+        border_widths: theme::HAIRLINE_W.into(),
+        border_color: theme::GRIP,
+        border_style: BorderStyle::default(),
+    });
     let slots = [
         (&layout.record, RecordAction::Record),
         (&layout.pause, RecordAction::Pause),
         (&layout.stop, RecordAction::Stop),
     ];
     for (bounds, action) in slots {
+        let bounds = frame.window_rect(*bounds);
         let Some(affordance) = action.available(recording.phase) else {
+            // Ghost slot: transparent face with the bar's own hairline so an
+            // empty slot never collapses the row.
+            window.paint_quad(PaintQuad {
+                bounds,
+                corner_radii: radius.into(),
+                background: theme::controls::TRANSPARENT.into(),
+                border_widths: theme::HAIRLINE_W.into(),
+                border_color: theme::GRIP,
+                border_style: BorderStyle::default(),
+            });
             continue;
         };
-        let bounds = frame.window_rect(*bounds);
         // The record affordance is the one loud element on the strip: a red
-        // wash under the red glyph marks the card's armed state. Everything
-        // else stays neutral.
+        // wash under the red glyph marks the card's armed state. The other
+        // slots sit a step raised with full-strength glyphs.
         let background = if affordance == RecordAction::Record {
             theme::DANGER_WASH
         } else {
-            theme::SURFACE_4
+            theme::controls::RAISED
         };
-        rounded(bounds, background, theme::RADIUS_SM * scale, window);
+        rounded(bounds, background, radius, window);
         let glyph = match affordance {
             RecordAction::Record => "player-record",
             RecordAction::Pause => "player-pause",
@@ -1019,7 +1053,7 @@ pub(in crate::ui) fn paint_recording_strip(
         let color = if affordance == RecordAction::Record {
             theme::DANGER
         } else {
-            theme::TEXT_MUTED
+            theme::TEXT
         };
         let _ = window.paint_svg(
             Bounds {
@@ -1035,9 +1069,27 @@ pub(in crate::ui) fn paint_recording_strip(
     }
 }
 
+/// The strip's file row: the session's output name while one is set, or —
+/// only on an idle card that has never named a file — the node's static
+/// detail ("48 kHz L/R"), metadata the strip's presence used to swallow.
+/// Terminal phases without a name paint nothing, as before. Returns the text
+/// with its color.
+pub(in crate::ui) fn strip_file_label<'a>(
+    recording: &'a CardRecording,
+    detail: &'a str,
+) -> Option<(&'a str, Hsla)> {
+    if !recording.file_name.is_empty() {
+        Some((&recording.file_name, theme::TEXT_MUTED))
+    } else if recording.phase.is_none() {
+        Some((detail, theme::TEXT_FAINT))
+    } else {
+        None
+    }
+}
+
 /// The live duration over a recorder card, painted by the hot layer at the
-/// strip's reserved slot. Text only — geometry comes from the shared frame,
-/// translated for dragged cards by the caller.
+/// strip's reserved clock slot. Text only — geometry comes from the shared
+/// frame, translated for dragged cards by the caller.
 pub(in crate::ui) fn paint_recording_duration(
     frame: &CanvasFrame,
     layout: &RecordingLayout,
@@ -1051,8 +1103,8 @@ pub(in crate::ui) fn paint_recording_duration(
         &layout.duration,
         Label {
             text: &crate::ui::presentation::recording_duration_text(secs),
-            family: theme::FONT_UI,
-            color: theme::TEXT_MUTED,
+            family: theme::FONT_MONO,
+            color: theme::TEXT,
             right_aligned: true,
             weight: FontWeight::SEMIBOLD,
         },
@@ -1570,6 +1622,7 @@ pub(in crate::ui) fn paint_node(
             paint_recording_strip(
                 frame,
                 recording,
+                &node.detail,
                 strip,
                 layout.scale,
                 Paint {

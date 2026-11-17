@@ -336,10 +336,10 @@ fn channel_mapper_controls(
 }
 
 /// The recorder's detail surface: the session header (the card strip's
-/// status line, mirrored), the transport, the output directory, the format
-/// with its encoding knobs, and the buffer. The card carries the quick
-/// transport; this column carries everything else. Every control keeps its
-/// hit-test id, so tests and the paint agree.
+/// status line, mirrored), the transport mirror, and the SESSION / OUTPUT /
+/// BUFFER sections. The card carries the quick transport; this column
+/// carries everything else. Every control keeps its hit-test id, so tests
+/// and the paint agree.
 ///
 /// The step rows share one rhythm with the builtin field rows: label left,
 /// value and the ± steppers right.
@@ -416,13 +416,6 @@ fn recorder_flac_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> St
                 .text_size(px(theme::TEXT_SM))
                 .text_color(theme::TEXT_MUTED)
                 .child(t!("0 is fastest, 8 is smallest.").to_owned()),
-        )
-        .child(
-            div()
-                .id("recorder-flac-apply-hint")
-                .text_size(px(theme::TEXT_SM))
-                .text_color(theme::TEXT_MUTED)
-                .child(t!("Applies to the next recording.").to_owned()),
         )
 }
 
@@ -540,14 +533,42 @@ fn recorder_mp3_controls(shell: &StudioShell, this: &Entity<StudioShell>) -> Sta
             );
         }
     }
-    section = section.child(
-        div()
-            .id("recorder-mp3-apply-hint")
-            .text_size(px(theme::TEXT_SM))
-            .text_color(theme::TEXT_MUTED)
-            .child(t!("Applies to the next recording.").to_owned()),
-    );
     section
+}
+
+/// One recorder section: a hairline rule over its uppercase caption, then
+/// the section's rows SPACE_1_5 apart. The rule keeps SPACE_3
+/// of air above it — the column's own SPACE_2 gap plus this top padding.
+fn recorder_group(id: &'static str, title: &str) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .pt(px(theme::SPACE_1))
+        .gap(px(theme::SPACE_1_5))
+        .child(div().w_full().h(px(theme::HAIRLINE_W)).bg(theme::HAIRLINE))
+        .child(
+            div()
+                .id(id)
+                .gpui_test_observe()
+                .text_size(px(theme::TEXT_TINY))
+                .text_color(theme::TEXT_FAINT)
+                .child(title.to_owned()),
+        )
+}
+
+/// The failed session's diagnostic: the raw engine error never
+/// localizes, like the catalog error string, so the wash container carries
+/// the danger styling the bare text used to lack.
+fn recorder_error_block(error: &str) -> impl IntoElement {
+    div()
+        .id("recorder-error")
+        .gpui_test_observe()
+        .rounded(px(theme::RADIUS_SM))
+        .bg(theme::DANGER_WASH)
+        .p(px(theme::SPACE_2))
+        .text_size(px(theme::TEXT_SM))
+        .text_color(theme::DANGER)
+        .child(error.to_owned())
 }
 
 fn recorder_controls(
@@ -565,7 +586,8 @@ fn recorder_controls(
     let this = cx.entity();
     view = view.child(heading(t!("Recorder")));
     // Session header: the card strip's status line, mirrored. The dot's
-    // color is the phase's one-word summary; the clock is the live datum.
+    // color is the phase's one-word summary; the clock is the live datum,
+    // same size and mono family as the card strip's clock.
     let (dot, word) = match phase {
         None => (theme::TEXT_FAINT, theme::TEXT_MUTED),
         Some(RecordingPhase::Recording) => (theme::DANGER, theme::TEXT),
@@ -578,6 +600,7 @@ fn recorder_controls(
     };
     let mut status = div()
         .id("recorder-status")
+        .gpui_test_observe()
         .flex()
         .items_center()
         .justify_between()
@@ -605,40 +628,23 @@ fn recorder_controls(
     if let Some(entry) = session {
         status = status.child(
             div()
-                .text_size(px(theme::TEXT_MD))
+                .text_size(px(theme::card::REC_CLOCK_SIZE))
                 .text_color(theme::TEXT)
                 .font_weight(FontWeight::SEMIBOLD)
+                .font_family(theme::FONT_MONO)
                 .child(crate::ui::presentation::recording_duration_text(
                     entry.recorded_secs,
                 )),
         );
     }
     view = view.child(status);
-    if let Some(entry) = session {
-        if !entry.path.as_os_str().is_empty() {
-            view = view.child(detail(&t!("File"), entry.path.display().to_string()));
-        }
-        if entry.dropped_frames > 0 {
-            view = view.child(detail(
-                &t!("Dropped frames"),
-                entry.dropped_frames.to_string(),
-            ));
-        }
-        if let Some(error) = &entry.error {
-            // Raw diagnostic, like the catalog error string: engine errors
-            // are not catalog text and never localize.
-            view = view.child(
-                div()
-                    .id("recorder-error")
-                    .text_size(px(theme::TEXT_SM))
-                    .text_color(theme::DANGER)
-                    .child(error.as_str().to_owned()),
-            );
-        }
+    if let Some(error) = session.and_then(|entry| entry.error.as_ref()) {
+        view = view.child(recorder_error_block(error.as_str()));
     }
-    // Transport mirror: the same requests the card's strip dispatches. The
-    // icons put the transport's vocabulary where the eye already looks for
-    // it; the destructive stop wears the danger skin.
+    // Transport mirror, up front after the status: the quick actions sit
+    // before the sections so start/pause/stop are one glance away. The icons
+    // put the transport's vocabulary where the eye already looks for it; the
+    // destructive stop wears the danger skin.
     let transport = |request: AppRequest| {
         let this = this.clone();
         move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
@@ -651,6 +657,7 @@ fn recorder_controls(
     };
     let mut row = div()
         .id("recorder-transport")
+        .gpui_test_observe()
         .flex()
         .gap(px(theme::SPACE_2));
     if !live {
@@ -710,14 +717,33 @@ fn recorder_controls(
         );
     }
     view = view.child(row);
-    // Output directory: a machine-level preference, resolved at start time.
+    // SESSION: the session's own rows — its file and how much the engine
+    // had to drop. The header itself always renders, so the section
+    // skeleton stays put whether or not a session has run yet.
+    let mut session_group = recorder_group("recorder-group-session", t!("SESSION").as_ref());
+    if let Some(entry) = session {
+        if !entry.path.as_os_str().is_empty() {
+            session_group =
+                session_group.child(detail(&t!("File"), entry.path.display().to_string()));
+        }
+        if entry.dropped_frames > 0 {
+            session_group = session_group.child(detail(
+                &t!("Dropped frames"),
+                entry.dropped_frames.to_string(),
+            ));
+        }
+    }
+    view = view.child(session_group);
+    // OUTPUT: directory, format, and the encoding knobs — every
+    // machine-level preference, all resolved at start time.
+    let mut output = recorder_group("recorder-group-output", t!("OUTPUT").as_ref());
     // The path needs the column's whole width to wrap legibly, so the change
     // action stays on its own row beneath it.
-    view = view.child(detail(
+    output = output.child(detail(
         &t!("Output directory"),
         shell.recording_output_directory().display().to_string(),
     ));
-    view = view.child(
+    output = output.child(
         button("recorder-directory", t!("Change directory…")).on_click({
             let this = this.clone();
             move |_, _, cx| {
@@ -725,8 +751,7 @@ fn recorder_controls(
             }
         }),
     );
-    // Format: like the directory, a machine-level preference resolved at
-    // start time. One segmented selector; the selected option carries the
+    // Format: one segmented selector; the selected option carries the
     // primary skin, and the encoding knobs mount beneath it.
     let format = shell.recording_format();
     let mut format_row = div().id("recorder-format").flex().gap(px(theme::SPACE_1));
@@ -776,22 +801,42 @@ fn recorder_controls(
             ),
         );
     }
-    view = view.child(format_row);
+    output = output.child(format_row);
     // Encoding knobs apply to the next encoded start, like the format itself.
     if format == crate::service::RecordingFormat::Mp3 {
-        view = view.child(recorder_mp3_controls(shell, &this));
+        output = output.child(recorder_mp3_controls(shell, &this));
     }
     if format == crate::service::RecordingFormat::Flac {
-        view = view.child(recorder_flac_controls(shell, &this));
+        output = output.child(recorder_flac_controls(shell, &this));
     }
-    // Buffer: one second steps at the graph's processing rate. A live
-    // session would be revoked by the reconfiguration, so the steps lock
-    // while one runs.
+    if format != crate::service::RecordingFormat::Wav {
+        // One apply hint closes the format group: the format and the knobs
+        // above are preference-level settings, never mid-session changes.
+        output = output.child(
+            div()
+                .id(if format == crate::service::RecordingFormat::Mp3 {
+                    "recorder-mp3-apply-hint"
+                } else {
+                    "recorder-flac-apply-hint"
+                })
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::TEXT_MUTED)
+                .child(t!("Applies to the next recording.").to_owned()),
+        );
+    }
+    view = view.child(output);
+    // BUFFER: one second steps at the graph's processing rate, seconds as
+    // the primary reading. A live session would be revoked by the
+    // reconfiguration, so the steps lock while one runs.
     let second = sample_rate.max(1);
-    view = view.child(recorder_step_row(
+    let mut buffer = recorder_group("recorder-group-buffer", t!("BUFFER").as_ref());
+    buffer = buffer.child(recorder_step_row(
         "recorder-buffer",
         t!("Buffer"),
-        t!("%{frames} frames", frames = settings.capacity_frames).to_string(),
+        crate::ui::presentation::buffer_summary_text(
+            settings.capacity_frames as u32,
+            sample_rate as u32,
+        ),
         button("recorder-shrink", "\u{2212}")
             .disabled(live)
             .on_click(edit(
@@ -817,8 +862,9 @@ fn recorder_controls(
         )),
     ));
     if live {
-        view = view.child(label(t!("The buffer is fixed while a recording runs.")));
+        buffer = buffer.child(label(t!("The buffer is fixed while a recording runs.")));
     }
+    view = view.child(buffer);
     view
 }
 

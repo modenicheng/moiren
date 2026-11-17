@@ -260,35 +260,45 @@ impl NodeLayout {
         let recording = node.recording.as_ref().map(|_| {
             let left = node.x + theme::card::RAIL_W + padding;
             let inner = width - theme::card::RAIL_W - 2. * padding;
-            let status_w = (inner * 0.42).max(48.);
-            let button_y = body_top + 34.;
-            let button = |offset: f32| Bounds {
-                origin: point(left + offset, button_y),
+            // Status-line columns (recorder strip redesign): the phase word leads, the
+            // live clock closes the line flush with the strip's right edge.
+            let phase_w = 96.;
+            let clock_x = 112.;
+            // Transport slots sit inset in their bar container, one stride
+            // apart; the container's face derives from the same constants.
+            let slot = |offset: f32| Bounds {
+                origin: point(
+                    left + theme::card::REC_BAR_INSET + offset,
+                    body_top + theme::card::REC_ROW_TRANSPORT + theme::card::REC_BAR_INSET,
+                ),
                 size: size(theme::card::REC_BTN, theme::card::REC_BTN),
             };
             RecordingLayout {
                 dot: Bounds {
-                    origin: point(left, body_top + 2.5),
+                    origin: point(left, body_top + 4.),
                     size: size(theme::card::REC_DOT, theme::card::REC_DOT),
                 },
                 status: TextLayout::new(
-                    left + theme::card::REC_DOT + 6.,
-                    body_top,
-                    status_w,
+                    left + 16.,
+                    body_top + 2.,
+                    phase_w,
                     theme::card::REC_STATUS_SIZE,
                 ),
                 duration: TextLayout::new(
-                    left + theme::card::REC_DOT + 6. + status_w,
+                    left + clock_x,
                     body_top,
-                    inner - status_w - theme::card::REC_DOT - 6.,
-                    theme::card::REC_STATUS_SIZE,
+                    inner - clock_x,
+                    theme::card::REC_CLOCK_SIZE,
                 ),
-                file_name: TextLayout::new(left, body_top + 18., inner, theme::card::REC_FILE_SIZE),
-                // Transport sits right-aligned against the strip's inner
-                // edge, reading as one bar under the session info.
-                record: button(inner - 3. * theme::card::REC_BTN - 2. * theme::card::REC_BTN_GAP),
-                pause: button(inner - 2. * theme::card::REC_BTN - theme::card::REC_BTN_GAP),
-                stop: button(inner - theme::card::REC_BTN),
+                file_name: TextLayout::new(
+                    left,
+                    body_top + theme::card::REC_ROW_FILE,
+                    inner,
+                    theme::card::REC_FILE_SIZE,
+                ),
+                record: slot(0.),
+                pause: slot(theme::card::REC_BTN + theme::card::REC_BTN_GAP),
+                stop: slot(2. * (theme::card::REC_BTN + theme::card::REC_BTN_GAP)),
             }
         });
         let rack = (!node.rack_stages.is_empty()).then(|| Bounds {
