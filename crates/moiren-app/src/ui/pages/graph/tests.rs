@@ -4492,7 +4492,7 @@ fn graph_panel_rebuilds_on_a_catalog_only_republish(cx: &mut gpui_kit::TestAppCo
 /// A seeded plugin-library fixture for the inspector suites: one stereo
 /// plugin with two factory presets, under a stable id both the picker rows
 /// and the assignment key share.
-fn preset_library_fixture() -> (crate::service::PluginLibrary, String) {
+fn preset_library_fixture_at(channels: u32) -> (crate::service::PluginLibrary, String) {
     use moiren_plugins::spec::{PluginDescriptor, PluginFormat, PluginParameterSpec};
     let descriptor = PluginDescriptor {
         format: PluginFormat::Clap,
@@ -4501,8 +4501,8 @@ fn preset_library_fixture() -> (crate::service::PluginLibrary, String) {
         name: "Preset Fixture".into(),
         vendor: "Moiren".into(),
         version: "1.0".into(),
-        input_channels: 2,
-        output_channels: 2,
+        input_channels: channels,
+        output_channels: channels,
         is_synth: false,
         has_editor: false,
     };
@@ -4529,6 +4529,11 @@ fn preset_library_fixture() -> (crate::service::PluginLibrary, String) {
         ),
         key,
     )
+}
+
+/// Convenience wrapper matching the preset picker's stereo fixture.
+fn preset_library_fixture() -> (crate::service::PluginLibrary, String) {
+    preset_library_fixture_at(2)
 }
 
 /// The preset picker's full loop over a real service: the seeded library's
@@ -4609,6 +4614,46 @@ fn plugin_inspector_preset_picker_selects_and_persists(cx: &mut gpui_kit::TestAp
                 .plugin
                 .clone();
             assignment.is_some_and(|assignment| assignment.preset_program.is_none())
+        })
+    });
+    finish_service(runtime);
+}
+
+/// The width-adaptation full loop over a real service: clicking a plugin
+/// row whose bus width differs from the unwired node resizes the node in
+/// the same edit, so the assignment lowers without the width fault.
+#[gpui_kit::test]
+fn plugin_picker_assignment_adapts_unwired_node_width(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    let (library, key) = preset_library_fixture_at(6);
+    let mut context = crate::service::ServiceContext::default();
+    context.plugins = std::sync::Arc::new(library);
+    let (view, cx, runtime) = test_shell_with(cx, context);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+
+    let id = add_node(&view, cx, NodeKind::Plugin);
+    view.update(cx, |shell, cx| {
+        shell.selection.node = Some(id);
+        shell.chrome.inspector_open = true;
+        cx.notify();
+    });
+    render(cx);
+
+    let picker_id = gpui_kit::SharedString::from(format!("bind-plugin-{key}"));
+    cx.update(|window, cx| window.click(picker_id, cx));
+    let budget = Instant::now() + Duration::from_secs(3);
+    wait_until(budget.saturating_duration_since(Instant::now()), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            let snapshot = &shell.state.read(cx).snapshot;
+            snapshot
+                .graph
+                .node(id)
+                .unwrap()
+                .plugin
+                .as_ref()
+                .is_some_and(|assignment| assignment.id == key)
+                && snapshot.graph.graph.get_node(id).unwrap().channels() == 6
         })
     });
     finish_service(runtime);

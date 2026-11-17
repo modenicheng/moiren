@@ -226,6 +226,7 @@ fn preset_picker(
             GraphEdit::BindPlugin {
                 node: id,
                 assignment: Some(assignment),
+                adapt_channels: None,
             },
         )
     };

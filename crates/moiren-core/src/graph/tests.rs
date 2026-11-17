@@ -152,3 +152,127 @@ fn validation_detects_corrupt_layout_and_cycle_at_the_compiler_boundary() {
     });
     assert_eq!(graph.validate(), Err(GraphError::CycleDetected));
 }
+
+/// Resizing a width-mirroring node rewrites its ports in place: identities
+/// survive, edges compatible with the new width keep flowing, and the next
+/// validate agrees. A wired node whose neighbors cannot follow is rejected
+/// wholesale; disconnecting the stranded routes frees the resize.
+#[test]
+fn set_node_channels_resizes_ports_in_place_and_keeps_compatible_edges() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let plugin = graph.create_node(NodeKind::Plugin, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    let in_port = graph.get_node(plugin).unwrap().inputs()[0].id();
+    let out_port = graph.get_node(plugin).unwrap().outputs()[0].id();
+    let edge_in = graph
+        .connect(
+            graph.get_node(source).unwrap().outputs()[0].id(),
+            in_port,
+            SendParams::default(),
+        )
+        .unwrap();
+    let edge_out = graph
+        .connect(
+            out_port,
+            graph.get_node(sink).unwrap().inputs()[0].id(),
+            SendParams::default(),
+        )
+        .unwrap();
+
+    // Widening only works when every far side can follow: both neighbors
+    // are 2ch here, so the whole resize is rejected and nothing moved.
+    assert_eq!(
+        graph.set_node_channels(plugin, 6),
+        Err(GraphError::StrandedEdges)
+    );
+    assert_eq!(graph.get_node(plugin).unwrap().channels(), 2);
+    assert_eq!(graph.validate(), Ok(()));
+
+    // Disconnecting the stranded routes frees the resize; port identities
+    // survive and the widened ports accept fresh equal-width wiring.
+    graph.disconnect(edge_in).unwrap();
+    graph.disconnect(edge_out).unwrap();
+    graph.set_node_channels(plugin, 6).unwrap();
+    assert_eq!(graph.get_node(plugin).unwrap().channels(), 6);
+    assert_eq!(
+        graph.get_node(plugin).unwrap().inputs()[0].id(),
+        in_port,
+        "port identities survive the resize"
+    );
+    assert_eq!(graph.get_node(plugin).unwrap().inputs()[0].channels(), 6);
+    assert_eq!(graph.get_node(plugin).unwrap().outputs()[0].channels(), 6);
+    graph.set_node_channels(source, 6).unwrap();
+    graph.set_node_channels(sink, 6).unwrap();
+    graph
+        .connect(
+            graph.get_node(source).unwrap().outputs()[0].id(),
+            in_port,
+            SendParams::default(),
+        )
+        .unwrap();
+    graph
+        .connect(
+            out_port,
+            graph.get_node(sink).unwrap().inputs()[0].id(),
+            SendParams::default(),
+        )
+        .unwrap();
+    graph.validate().unwrap();
+
+    // Reconnected at the new width, everything flows again — and any real
+    // resize strands its incident edges by the equal-width invariant (only
+    // a no-op resize can keep one), so a wired node must be freed first.
+    assert_eq!(
+        graph.set_node_channels(plugin, 4),
+        Err(GraphError::StrandedEdges)
+    );
+    graph.validate().unwrap();
+}
+
+/// The resize contract's boundaries: fixed-stream layouts are rejected,
+/// kind width rules still hold, and the graph survives untouched.
+#[test]
+fn set_node_channels_rejects_non_mirroring_layouts_and_invalid_widths() {
+    let mut graph = LogicalGraph::new();
+    let rack = graph.create_rack(&[1, 2], &[2, 1]).expect("rack streams");
+    let mapper = graph.create_channel_mapper(1, 2).expect("mapper");
+    let pan = graph.create_node(NodeKind::Pan, 2).unwrap();
+    let before = graph.clone();
+    assert_eq!(
+        graph.set_node_channels(rack, 4),
+        Err(GraphError::FixedPortLayout)
+    );
+    assert_eq!(
+        graph.set_node_channels(mapper, 4),
+        Err(GraphError::FixedPortLayout)
+    );
+    // Pan is fixed stereo by kind rule; zero is never a width.
+    assert_eq!(
+        graph.set_node_channels(pan, 4),
+        Err(GraphError::InvalidChannelCount)
+    );
+    assert_eq!(
+        graph.set_node_channels(pan, 0),
+        Err(GraphError::InvalidChannelCount)
+    );
+    assert_eq!(
+        graph.set_node_channels(NodeId(u64::MAX), 2),
+        Err(GraphError::NodeNotFound)
+    );
+    assert_eq!(graph, before, "every rejection leaves the graph untouched");
+
+    // Bus ports mirror the width, so the bus itself resizes.
+    let bus = graph.create_node(NodeKind::Bus, 2).unwrap();
+    graph.add_input_port(bus, 2).unwrap();
+    graph.set_node_channels(bus, 4).unwrap();
+    let bus_node = graph.get_node(bus).unwrap();
+    assert!(
+        bus_node
+            .inputs()
+            .iter()
+            .chain(bus_node.outputs())
+            .all(|port| port.channels() == 4)
+    );
+    graph.validate().unwrap();
+}

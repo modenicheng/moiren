@@ -1126,6 +1126,7 @@ fn plugin_assignments_round_trip_through_graph_documents() {
         .edit(crate::service::GraphEdit::BindPlugin {
             node: plugin_node,
             assignment: Some(assignment.clone()),
+            adapt_channels: None,
         })
         .unwrap();
     // Snapshot -> document -> JSON -> document -> graph keeps the
