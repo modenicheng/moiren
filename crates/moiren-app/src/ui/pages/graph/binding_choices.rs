@@ -28,8 +28,11 @@ pub(crate) enum BindingAction {
     Edit(GraphEdit),
     Refresh,
     /// Kick a sandboxed plugin scan; the list re-renders from the replaced
-    /// library when the scan lands.
-    ScanPlugins,
+    /// library when the scan lands. Unchanged roots are served from the
+    /// on-disk scan cache unless `force` bypasses it.
+    ScanPlugins {
+        force: bool,
+    },
 }
 
 /// What one choice binds. Also the stable identity both surfaces derive
@@ -47,6 +50,7 @@ pub(crate) enum BindingTarget {
     MicrophoneExport { endpoint_id: String },
     Plugin { id: String },
     ScanPlugins,
+    ForceScanPlugins,
 }
 
 impl BindingTarget {
@@ -67,6 +71,7 @@ impl BindingTarget {
             }
             Self::Plugin { id } => format!("bind-plugin-{id}").into(),
             Self::ScanPlugins => "scan-plugins".into(),
+            Self::ForceScanPlugins => "force-scan-plugins".into(),
         }
     }
 }
@@ -280,7 +285,8 @@ pub(crate) fn source_choices(
 }
 
 /// The plugin picker's ordered list: clear (only when something is
-/// assigned), the library's plugins, and the sandboxed rescan action.
+/// assigned), the library's plugins, the cache-aware refresh, and the
+/// forced rescan that bypasses the cache.
 pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> Vec<BindingChoice> {
     let id = entry.id;
     let mut choices = Vec::new();
@@ -315,7 +321,13 @@ pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> 
         target: BindingTarget::ScanPlugins,
         label: t!("Scan plugin folders").to_string(),
         current: false,
-        action: BindingAction::ScanPlugins,
+        action: BindingAction::ScanPlugins { force: false },
+    });
+    choices.push(BindingChoice {
+        target: BindingTarget::ForceScanPlugins,
+        label: t!("Force full rescan").to_string(),
+        current: false,
+        action: BindingAction::ScanPlugins { force: true },
     });
     choices
 }

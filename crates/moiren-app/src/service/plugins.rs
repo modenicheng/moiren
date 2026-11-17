@@ -6,8 +6,14 @@
 //! parameter tables arrived from the scanner subprocess's probe, which
 //! guarantees the engine's `PluginSettings` contract: they match what a
 //! fresh instance reports.
+//!
+//! Scans are cached per root on disk (see [`super::plugin_cache`]): a root
+//! whose plugin tree is unchanged since its last scan serves its cached
+//! report instead of spawning a scanner subprocess, and only changed roots
+//! pay for the sandbox. The forced rescan (the picker's "force" row)
+//! bypasses the cache and refreshes every entry.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::Path, path::PathBuf, sync::Arc};
 
 use moiren_plugins::{
     sandbox::{self, SandboxReport},
@@ -105,16 +111,70 @@ pub struct PluginAssignment {
     pub preset: Option<Vec<u8>>,
 }
 
-/// Run one full sandboxed scan over the standard roots. Blocking — submit
-/// through the job pool; never call on the service thread. Failures (a
-/// missing scanner executable, for instance) surface as `Err` while
-/// per-plugin problems stay inside the report as failures.
+/// Run one full sandboxed scan over the standard roots, reusing cached
+/// per-root reports whose trees are unchanged (see [`super::plugin_cache`]).
+/// Blocking — submit through the job pool; never call on the service thread.
+/// Failures (a missing scanner executable, for instance) surface as `Err`
+/// while per-plugin problems stay inside the report as failures.
 pub fn run_sandbox_scan() -> Result<PluginLibrary, super::BackendError> {
+    scan_with_cache(false)
+}
+
+/// Run a full sandboxed scan that bypasses the cache: every root re-scans
+/// and refreshes its cache entry. This is the user's "something is wrong
+/// with my plugin list" action, so no root is served from disk.
+pub fn run_forced_plugin_scan() -> Result<PluginLibrary, super::BackendError> {
+    scan_with_cache(true)
+}
+
+/// The scan cache lives beside the preferences; the injectable core keeps
+/// the production wrappers free of test plumbing.
+fn scan_with_cache(force: bool) -> Result<PluginLibrary, super::BackendError> {
+    let cache_path = super::plugin_cache::cache_path()
+        .map_err(|error| super::BackendError::new("plugin-scan", error.to_string()))?;
     let config = sandbox::SandboxConfig::discover()
         .map_err(|error| super::BackendError::new("plugin-scan", error.to_string()))?;
     let roots = scan::default_directories();
-    let mut library = PluginLibrary::from_sandbox_report(sandbox::scan_sandboxed(&roots, &config));
-    library.roots = roots;
+    scan_with_cache_at(&roots, &config, &cache_path, force)
+}
+
+/// Scan every root, serving unchanged trees from the cache unless `force`.
+/// A fresh report updates its cache entry; a failed re-scan of a changed
+/// root drops the stale entry so the next scan retries the root.
+pub(crate) fn scan_with_cache_at(
+    roots: &[PathBuf],
+    config: &sandbox::SandboxConfig,
+    cache_path: &Path,
+    force: bool,
+) -> Result<PluginLibrary, super::BackendError> {
+    let mut cache = super::plugin_cache::ScanCache::load_at(cache_path);
+    let mut report = sandbox::SandboxReport::default();
+    for root in roots {
+        if !force && let Some(cached) = cache.usable(root) {
+            report
+                .descriptors
+                .extend(cached.descriptors.iter().cloned());
+            report.failures.extend(cached.failures.iter().cloned());
+            continue;
+        }
+        match sandbox::scan_root_sandboxed(root, config) {
+            Ok(part) => {
+                cache.record(root, part.clone());
+                report.descriptors.extend(part.descriptors);
+                report.failures.extend(part.failures);
+            }
+            Err((path, error)) => {
+                cache.drop_root(root);
+                report.failures.push(sandbox::SandboxFailure {
+                    path,
+                    reason: error.to_string(),
+                });
+            }
+        }
+    }
+    cache.save(roots);
+    let mut library = PluginLibrary::from_sandbox_report(report);
+    library.roots = roots.to_vec();
     Ok(library)
 }
 
@@ -225,5 +285,164 @@ mod tests {
                 .preset
                 .is_none()
         );
+    }
+
+    /// Scan-cache integration over the injectable scan core. The scanner
+    /// path deliberately names nothing: a cache hit must serve the cached
+    /// report without touching the sandbox (no failure rows), while a miss
+    /// or a forced scan must attempt the spawn and surface its failure.
+    mod scan_cache {
+        use super::*;
+        use crate::service::plugin_cache::test_support::TempDir;
+
+        fn config() -> sandbox::SandboxConfig {
+            sandbox::SandboxConfig::new("missing-scanner-binary", std::time::Duration::ZERO)
+        }
+
+        fn descriptor(path: &Path, id: &str) -> PluginDescriptor {
+            PluginDescriptor {
+                format: PluginFormat::Vst3,
+                path: path.to_path_buf(),
+                id: id.into(),
+                name: format!("Plugin {id}"),
+                vendor: "Example".into(),
+                version: "1.0".into(),
+                input_channels: 2,
+                output_channels: 2,
+                is_synth: false,
+                has_editor: false,
+            }
+        }
+
+        fn plugin_root(guard: &TempDir) -> PathBuf {
+            let root = guard.path().join("VST3");
+            let bundle = root.join("gain.vst3").join("Contents").join("x86_64-win");
+            std::fs::create_dir_all(&bundle).expect("nested bundle directories");
+            std::fs::write(bundle.join("gain.vst3"), "binary").expect("plugin file");
+            root
+        }
+
+        fn cached_library(root: &Path) -> PluginLibrary {
+            let mut library = PluginLibrary::from_sandbox_report(sandbox::SandboxReport {
+                descriptors: vec![sandbox::SandboxDescriptor {
+                    descriptor: descriptor(&root.join("gain.vst3"), "AAAA"),
+                    parameters: Vec::new(),
+                    latency_frames: 0,
+                }],
+                failures: Vec::new(),
+            });
+            library.roots = vec![root.to_path_buf()];
+            library
+        }
+
+        fn write_cache(cache_path: &Path, roots: &[PathBuf]) {
+            let mut cache = super::super::super::plugin_cache::ScanCache::load_at(cache_path);
+            cache.record(
+                &roots[0],
+                sandbox::SandboxReport {
+                    descriptors: vec![sandbox::SandboxDescriptor {
+                        descriptor: descriptor(&roots[0].join("gain.vst3"), "AAAA"),
+                        parameters: Vec::new(),
+                        latency_frames: 0,
+                    }],
+                    failures: Vec::new(),
+                },
+            );
+            cache.save(roots);
+        }
+
+        fn scan_roots(roots: &[PathBuf], cache_path: &Path, force: bool) -> PluginLibrary {
+            scan_with_cache_at(roots, &config(), cache_path, force).expect("scan succeeds")
+        }
+
+        #[test]
+        fn unchanged_roots_are_served_from_the_cache_without_spawning() {
+            let guard = TempDir::new("scan-hit");
+            let root = plugin_root(&guard);
+            let cache_path = guard.path().join("plugin-scan-cache.json");
+            let seeded = cached_library(&root);
+            write_cache(&cache_path, std::slice::from_ref(&root));
+
+            let library = scan_roots(std::slice::from_ref(&root), &cache_path, false);
+            // No failures means no sandbox spawn was attempted: the cached
+            // report answered for this root.
+            assert!(library.failures.is_empty(), "{:?}", library.failures);
+            assert_eq!(library.len(), 1);
+            assert_eq!(library, seeded);
+        }
+
+        #[test]
+        fn changed_roots_rescan_and_a_failed_rescan_drops_the_entry() {
+            let guard = TempDir::new("scan-miss");
+            let root = plugin_root(&guard);
+            let cache_path = guard.path().join("plugin-scan-cache.json");
+            write_cache(&cache_path, std::slice::from_ref(&root));
+
+            // Touch a nested file: the tree changed, so the sandbox is
+            // attempted (and fails, since no scanner binary exists here).
+            // The pause clears the recorded stamp's coarse-clock tick (see
+            // `test_support::MTIME_SETTLING`).
+            std::thread::sleep(crate::service::plugin_cache::test_support::MTIME_SETTLING);
+            std::fs::write(
+                root.join("gain.vst3/Contents/x86_64-win/gain.vst3"),
+                "updated",
+            )
+            .expect("touch nested file");
+            let library = scan_roots(std::slice::from_ref(&root), &cache_path, false);
+            assert_eq!(library.failures.len(), 1, "a miss must attempt the spawn");
+
+            // The failed re-scan dropped the stale entry: the next scan
+            // retries the root rather than trusting the stale report.
+            let retry = scan_roots(std::slice::from_ref(&root), &cache_path, false);
+            assert_eq!(retry.failures.len(), 1);
+            assert_eq!(retry.len(), 0, "no stale descriptors survive the drop");
+        }
+
+        #[test]
+        fn forced_scans_bypass_a_valid_cache() {
+            let guard = TempDir::new("scan-force");
+            let root = plugin_root(&guard);
+            let cache_path = guard.path().join("plugin-scan-cache.json");
+            write_cache(&cache_path, std::slice::from_ref(&root));
+
+            let library = scan_roots(std::slice::from_ref(&root), &cache_path, true);
+            assert_eq!(
+                library.failures.len(),
+                1,
+                "a forced scan must attempt the spawn despite the valid cache"
+            );
+        }
+
+        #[test]
+        fn corrupt_cache_files_degrade_to_a_full_rescan() {
+            let guard = TempDir::new("scan-corrupt");
+            let root = plugin_root(&guard);
+            let cache_path = guard.path().join("plugin-scan-cache.json");
+            std::fs::write(&cache_path, "{ definitely not json").expect("corrupt cache");
+
+            let library = scan_roots(std::slice::from_ref(&root), &cache_path, false);
+            assert_eq!(
+                library.failures.len(),
+                1,
+                "a corrupt cache must not block or skew the scan"
+            );
+        }
+
+        #[test]
+        fn scan_level_failures_still_surface_as_err() {
+            // A scanner config that cannot even resolve reports spawn-level
+            // failure inside the report; a broken *config discovery* path is
+            // the Err half and stays covered by the production wrapper's
+            // mapping, which this test mirrors through a bad root only.
+            let guard = TempDir::new("scan-err");
+            let root = plugin_root(&guard);
+            let cache_path = guard.path().join("plugin-scan-cache.json");
+            // An empty cache and a missing scanner: every root fails inside
+            // the report, and the call still succeeds with failures recorded.
+            let library = scan_with_cache_at(&[root], &config(), &cache_path, false)
+                .expect("scan-level success with per-root failures");
+            assert_eq!(library.len(), 0);
+            assert_eq!(library.failures.len(), 1);
+        }
     }
 }

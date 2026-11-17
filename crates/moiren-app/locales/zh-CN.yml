@@ -1763,6 +1763,9 @@ _version: 2
 "Scan plugin folders":
   en: Scan plugin folders
   zh-CN: 扫描插件文件夹
+"Force full rescan":
+  en: Force full rescan
+  zh-CN: 强制完整重扫
 "Not assigned · choose a plugin":
   en: Not assigned · choose a plugin
   zh-CN: 未指派 · 请选择插件

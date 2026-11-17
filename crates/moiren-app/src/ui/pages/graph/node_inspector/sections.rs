@@ -356,10 +356,10 @@ fn binding_choice_button(
                             .state
                             .update(cx, |state, _| state.dispatch(AppRequest::RefreshCatalog));
                     }
-                    binding_choices::BindingAction::ScanPlugins => {
-                        shell
-                            .state
-                            .update(cx, |state, _| state.dispatch(AppRequest::ScanPlugins));
+                    binding_choices::BindingAction::ScanPlugins { force } => {
+                        shell.state.update(cx, |state, _| {
+                            state.dispatch(AppRequest::ScanPlugins { force })
+                        });
                     }
                 }
                 cx.notify();
