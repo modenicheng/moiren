@@ -1694,6 +1694,18 @@ _version: 2
 "Dropped frames":
   en: Dropped frames
   zh-CN: 丢弃帧数
+"SESSION":
+  en: SESSION
+  zh-CN: 会话
+"OUTPUT":
+  en: OUTPUT
+  zh-CN: 输出
+"BUFFER":
+  en: BUFFER
+  zh-CN: 缓冲
+"%{secs} s · %{detail}":
+  en: "%{secs} s · %{detail}"
+  zh-CN: "%{secs} 秒 · %{detail}"
 "Start recording":
   en: Start recording
   zh-CN: 开始录制
