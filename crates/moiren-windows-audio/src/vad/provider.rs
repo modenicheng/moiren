@@ -425,9 +425,16 @@ struct VadSession {
 impl VadSession {
     fn spawn(config: WorkerConfig, state: Arc<SessionState>) -> Result<Self, BackendError> {
         let worker_state = state.clone();
+        let thread_guard = moiren_engine::threads::register_thread(
+            "moiren-vad-pcm",
+            moiren_engine::threads::ThreadClass::Rt,
+        );
         let worker = thread::Builder::new()
             .name("moiren-vad-pcm".into())
-            .spawn(move || run_worker(config, worker_state))
+            .spawn(move || {
+                thread_guard.enter();
+                run_worker(config, worker_state)
+            })
             .map_err(|error| {
                 state.drained.store(true, Ordering::Release);
                 BackendError::Failed(format!("start VAD worker: {error}"))

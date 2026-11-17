@@ -326,6 +326,7 @@ impl HotSurface for GraphMeters {
             return false;
         };
         shell.update(cx, |shell, cx| {
+            shell.chrome.frames.graph_frames += 1;
             #[cfg(feature = "gpui-test")]
             shell.trace.borrow_mut().begin(true);
             #[cfg(feature = "gpui-test")]

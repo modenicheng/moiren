@@ -280,6 +280,10 @@ pub(crate) struct ShellChrome {
     /// `Window::is_window_hovered`'s last observed value, so `status::sync`
     /// closes panels on the pointer-leaves-the-window transition.
     pub(crate) status_window_hovered: bool,
+    /// Production frame counters the performance panel's UI row reads: the
+    /// smallest ungated subset of the gpui-test `MeterTrace`. The panel's
+    /// sampler differences these at its own 1 Hz; nothing here notifies.
+    pub(crate) frames: FrameCounters,
     /// The performance panel's CPU history and process table.
     pub(crate) perf: crate::ui::monitoring::perf::PerfModel,
     /// The process sampler, alive only while the performance panel is open.
@@ -323,6 +327,18 @@ fn titlebar_drag_region(id: &'static str) -> impl IntoElement {
         .h_full()
         .window_control_area(WindowControlArea::Drag)
         .gpui_test_observe()
+}
+
+/// The two counters the performance panel needs from the render pipeline,
+/// kept outside the gpui-test `MeterTrace` so the panel compiles and counts
+/// in production: root shell renders (the UI row's fps) and the graph page's
+/// meter-frame pump invocations (its animation-frame activity). Plain
+/// fields on the shell, read by the panel's sampler at 1 Hz — no
+/// notification, no key, no snapshot traffic.
+#[derive(Debug, Default)]
+pub(crate) struct FrameCounters {
+    pub(crate) shell_renders: usize,
+    pub(crate) graph_frames: usize,
 }
 
 /// Status-bar names must survive long Windows device names.

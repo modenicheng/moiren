@@ -45,9 +45,14 @@ pub(crate) fn spawn<S: ProcessingSample>(
     jobs: Receiver<Cleanup<S>>,
     completed: SyncSender<Reclaimed>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
+    let thread_guard = crate::threads::register_thread(
+        "moiren-host-cleanup",
+        crate::threads::ThreadClass::Control,
+    );
     thread::Builder::new()
         .name("moiren-host-cleanup".into())
         .spawn(move || {
+            thread_guard.enter();
             while let Ok(job) = jobs.recv() {
                 let result = reclaim(job);
                 if completed.send(result).is_err() {
