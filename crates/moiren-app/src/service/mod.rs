@@ -566,6 +566,16 @@ pub struct ServiceRuntime {
 static SERVICE_WAKES: AtomicU64 = AtomicU64::new(0);
 static SERVICE_ROUND_US: AtomicU64 = AtomicU64::new(0);
 
+/// Service-loop wake count since process start.
+pub(crate) fn service_wakes() -> u64 {
+    SERVICE_WAKES.load(Ordering::Relaxed)
+}
+
+/// The last completed round's work duration in microseconds.
+pub(crate) fn service_round_us() -> u64 {
+    SERVICE_ROUND_US.load(Ordering::Relaxed)
+}
+
 impl ServiceRuntime {
     pub fn spawn() -> io::Result<Self> {
         Self::spawn_with_driver(CoreDriver)

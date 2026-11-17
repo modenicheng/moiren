@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 use rust_i18n::t;
 
 use super::*;
+use crate::ui::monitoring::perf::ThreadRow;
+use moiren_engine::threads::ThreadClass;
 
 /// One second of one-minute history per point.
 const HISTORY_LEN: usize = crate::ui::monitoring::perf::HISTORY_LEN;
 const PAD: f32 = 10.;
 const STRIP_HEIGHT: f32 = 16.;
-const CHART_HEIGHT: f32 = 56.;
 const CPU_COLUMN: f32 = 52.;
-const MEM_COLUMN: f32 = 68.;
 const MARK_WIDTH: f32 = 2.;
 /// The XRUN strip's window: now sits at its right edge.
 const STRIP_WINDOW: Duration = Duration::from_secs(60);
@@ -26,7 +26,7 @@ fn panel_width(item: StatusItem) -> f32 {
         StatusItem::Engine => 280.,
         StatusItem::Clock => 320.,
         StatusItem::Xrun => 300.,
-        StatusItem::Perf => 320.,
+        StatusItem::Perf => 360.,
         StatusItem::Format => 320.,
     }
 }
@@ -482,67 +482,140 @@ fn xrun_strip(ages: Vec<f32>) -> AnyElement {
 
 // --- Performance ------------------------------------------------------------
 
+/// The per-thread row's fixed columns: the rate figure and the CPU share.
+const RATE_COLUMN: f32 = 62.;
+/// The over-budget count column: a "!" marker plus the window's count.
+const WARN_COLUMN: f32 = 30.;
+/// The two sparklines' height: a quarter of the old system chart, enough to
+/// read a shape without owning the panel.
+const MINI_CHART_HEIGHT: f32 = 28.;
+
 fn perf(shell: &StudioShell, cx: &Context<StudioShell>) -> Vec<AnyElement> {
-    let model = &shell.chrome.perf;
+    let this = cx.entity();
     let dsp = shell.state.read(cx).runtime.dsp();
-    let mut rows = vec![header(
+    let threads = shell.chrome.perf.threads();
+    let mut body = vec![header(
         t!("Performance"),
-        Some(t!("By process, refreshed every second").into_owned().into()),
-        None,
+        Some(
+            t!("Moiren's own threads, refreshed every second")
+                .into_owned()
+                .into(),
+        ),
+        Some(
+            ActionButton::new("status-perf-reset", t!("Reset"))
+                .variant(ButtonVariant::Ghost)
+                .size(ControlSize::Small)
+                .on_click(move |_, _, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.chrome.perf.reset_threads();
+                        cx.notify();
+                    })
+                })
+                .into_any_element(),
+        ),
     )];
-    rows.push(process_columns(
-        div()
-            .text_size(px(theme::TEXT_CAPTION))
-            .text_color(theme::TEXT_FAINT)
-            .child(t!("Process"))
-            .into_any_element(),
-        div()
-            .text_size(px(theme::TEXT_CAPTION))
-            .text_color(theme::TEXT_FAINT)
-            .child(t!("CPU"))
-            .into_any_element(),
-        div()
-            .text_size(px(theme::TEXT_CAPTION))
-            .text_color(theme::TEXT_FAINT)
-            .child(t!("Memory"))
-            .into_any_element(),
-    ));
-    if model.processes().is_empty() {
-        rows.push(note(t!("Sampling…")));
+    if !threads.sampled() {
+        body.push(note(t!("Sampling…")));
+    } else if !threads.os_data() {
+        body.push(note(t!("Thread CPU sampling is Windows-only")));
     }
-    let own_pid = std::process::id();
-    for process in model.processes() {
-        let own = process.pid == own_pid;
-        rows.push(process_columns(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_color(if own { theme::TEXT } else { theme::TEXT_MUTED })
-                .child(process.name.clone())
-                .into_any_element(),
-            div()
-                .font_family(theme::FONT_MONO)
-                .text_color(theme::TEXT_MUTED)
-                .child(format!("{:.1}%", process.cpu_percent))
-                .into_any_element(),
-            div()
-                .font_family(theme::FONT_MONO)
-                .text_color(theme::TEXT_FAINT)
-                .child(format!("{} MB", process.mem_bytes / 1024 / 1024))
-                .into_any_element(),
+    let thread_rows = threads.rows();
+    let rt: Vec<_> = thread_rows
+        .iter()
+        .filter(|row| row.class == ThreadClass::Rt)
+        .collect();
+    if !rt.is_empty() {
+        // The RT group collapses on its own when the session stops: the
+        // threads exit, their registry rows go, and no zombie rows remain.
+        body.push(group_caption(t!("Realtime threads")));
+        body.extend(rt.iter().map(|row| thread_row(row)));
+        body.push(mini_chart(
+            threads.master_history().iter().copied().collect(),
         ));
     }
-    rows.push(divider());
-    rows.push(kv(
+    let control: Vec<_> = thread_rows
+        .iter()
+        .filter(|row| row.class == ThreadClass::Control)
+        .collect();
+    if !control.is_empty() {
+        body.push(group_caption(t!("Control threads")));
+        body.extend(control.iter().map(|row| thread_row(row)));
+    }
+    let ui: Vec<_> = thread_rows
+        .iter()
+        .filter(|row| row.class == ThreadClass::Ui)
+        .collect();
+    if !ui.is_empty() {
+        body.push(group_caption(t!("User interface")));
+        body.extend(ui.iter().map(|row| thread_row(row)));
+    }
+    body.push(group_caption(t!("Plugin host")));
+    let plugins: Vec<_> = thread_rows
+        .iter()
+        .filter(|row| row.class == ThreadClass::Plugin)
+        .collect();
+    if plugins.is_empty() {
+        // The Phase 3 slot: a placeholder, not a dead row — plugin host
+        // threads will appear here as they register.
+        body.push(note(t!("No plugin host thread")));
+    } else {
+        body.extend(plugins.iter().map(|row| thread_row(row)));
+    }
+    let (other_percent, other_threads) = threads.other();
+    if other_threads > 0 {
+        body.push(group_caption(t!("Other threads")));
+        body.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_2))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(theme::TEXT_MUTED)
+                        .child(t!("%{count} unnamed", count = other_threads)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(theme::FONT_MONO)
+                        .text_color(theme::TEXT_MUTED)
+                        .child(
+                            other_percent
+                                .map(|percent| format!("{percent:.1}%"))
+                                .unwrap_or_else(|| "—".into()),
+                        ),
+                )
+                .into_any_element(),
+        );
+        if threads.native_callbacks_advanced() {
+            body.push(note(t!("Includes the driver-owned ASIO callback thread")));
+        }
+    }
+    body.push(divider());
+    // The bottom totals: Moiren's own threads first, then the machine (the
+    // retained system accounting, downgraded to one line — DWM and audiodg
+    // competing for cores are invisible from inside the process).
+    let own_total = thread_rows
+        .iter()
+        .filter_map(|row| row.cpu_percent)
+        .sum::<f32>();
+    body.push(kv(t!("Moiren threads"), format!("{own_total:.1}%")));
+    body.push(kv(
         t!("Total CPU / last 60 s"),
-        model
+        shell
+            .chrome
+            .perf
             .current()
             .map(|percent| format!("{percent:.1}%"))
             .unwrap_or_else(|| "—".into()),
     ));
-    rows.push(cpu_chart(model.history().iter().copied().collect()));
+    body.push(mini_chart(
+        shell.chrome.perf.history().iter().copied().collect(),
+    ));
     if let Some(load) = dsp {
-        rows.push(kv(
+        body.push(kv(
             t!("DSP load"),
             t!(
                 "%{average} avg / %{peak} peak",
@@ -551,39 +624,108 @@ fn perf(shell: &StudioShell, cx: &Context<StudioShell>) -> Vec<AnyElement> {
             ),
         ));
     }
-    rows
+    body
 }
 
-/// The three-column process row layout, shared by the header and the rows.
-fn process_columns(name: AnyElement, cpu: AnyElement, mem: AnyElement) -> AnyElement {
+/// A group's quiet caption row.
+fn group_caption(caption: impl Into<SharedString>) -> AnyElement {
     div()
-        .flex()
-        .items_center()
-        .gap(px(theme::SPACE_2))
-        .child(div().flex_1().min_w_0().child(name))
-        .child(
-            div()
-                .flex_none()
-                .w(px(CPU_COLUMN))
-                .flex()
-                .justify_end()
-                .child(cpu),
-        )
-        .child(
-            div()
-                .flex_none()
-                .w(px(MEM_COLUMN))
-                .flex()
-                .justify_end()
-                .child(mem),
-        )
+        .text_size(px(theme::TEXT_CAPTION))
+        .text_color(theme::TEXT_FAINT)
+        .child(caption.into())
         .into_any_element()
 }
 
-/// Total CPU over the last minute: grid at the quarter marks, the halo fill
-/// under the curve, and the curve itself in signal cyan. The line hugs the
-/// right edge until a minute of history accumulates.
-fn cpu_chart(history: Vec<f32>) -> AnyElement {
+/// The sparkline height for both kept charts (the RT master row and the
+/// bottom system total): a quarter of the old chart, enough to read a shape.
+fn mini_chart(history: Vec<f32>) -> AnyElement {
+    cpu_chart(history, MINI_CHART_HEIGHT)
+}
+
+/// One per-thread row: color dot, name, class badge, then the rate, CPU and
+/// over-budget columns.
+fn thread_row(row: &ThreadRow) -> AnyElement {
+    let (dot, badge_text) = match row.class {
+        ThreadClass::Rt => (theme::SIGNAL_DEVICE, "RT"),
+        ThreadClass::Control => (theme::TEXT_FAINT, "CTL"),
+        ThreadClass::Ui => (theme::TEXT_FAINT, "UI"),
+        ThreadClass::Plugin => (theme::TEXT_FAINT, "VST"),
+    };
+    let rate = row
+        .rate
+        .map(|rate| format!("{rate:.0}/s"))
+        .unwrap_or_else(|| "—".into());
+    let cpu = row
+        .cpu_percent
+        .map(|percent| format!("{percent:.1}%"))
+        .unwrap_or_else(|| "—".into());
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACE_0_5))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_2))
+                .child(div().flex_none().size(px(DOT_SIZE)).rounded_full().bg(dot))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme::TEXT)
+                        .child(row.name.clone()),
+                )
+                .child(badge(badge_text, dot))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(RATE_COLUMN))
+                        .flex()
+                        .justify_end()
+                        .font_family(theme::FONT_MONO)
+                        .text_color(theme::TEXT_MUTED)
+                        .child(rate),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(CPU_COLUMN))
+                        .flex()
+                        .justify_end()
+                        .font_family(theme::FONT_MONO)
+                        .text_color(theme::TEXT_MUTED)
+                        .child(cpu),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(WARN_COLUMN))
+                        .flex()
+                        .justify_end()
+                        .font_family(theme::FONT_MONO)
+                        .when(row.over_budget > 0, |cell| {
+                            cell.text_color(theme::WARNING)
+                                .child(format!("!{}", row.over_budget))
+                        }),
+                ),
+        )
+        .when_some(row.detail.clone(), |row_el, detail| {
+            row_el.child(
+                div()
+                    .text_size(px(theme::TEXT_CAPTION))
+                    .text_color(theme::TEXT_FAINT)
+                    .child(detail),
+            )
+        })
+        .into_any_element()
+}
+
+/// Total CPU over the last minute at the given height: grid at the quarter
+/// marks, the halo fill under the curve, and the curve itself in signal
+/// cyan. The line hugs the right edge until a minute of history accumulates.
+fn cpu_chart(history: Vec<f32>, height: f32) -> AnyElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -631,7 +773,7 @@ fn cpu_chart(history: Vec<f32>) -> AnyElement {
         },
     )
     .w_full()
-    .h(px(CHART_HEIGHT))
+    .h(px(height))
     .into_any_element()
 }
 

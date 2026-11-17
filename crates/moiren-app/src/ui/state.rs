@@ -226,7 +226,9 @@ impl UiState {
                 engine_blocks: stream.engine_blocks,
             })
             .collect();
-        // The engine render accounting rides on the master output's pump.
+        // The engine render accounting rides on the master output's pump;
+        // the driver callbacks and over-budget windows ride on the same
+        // stream for the thread panel.
         let render = status
             .observation
             .streams
@@ -236,6 +238,8 @@ impl UiState {
                 blocks: stream.engine_blocks,
                 busy_100ns: stream.engine_busy_100ns,
                 peak_block_100ns: stream.engine_peak_block_100ns,
+                over_budget: stream.engine_over_budget,
+                native_callbacks: stream.native_callbacks,
             });
         let processing = snapshot
             .active_audio_settings
