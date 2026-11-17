@@ -19,6 +19,9 @@ use crate::ui::theme;
 
 mod nodes;
 
+/// The file-row decision, re-exported for the canvas layout tests.
+#[cfg(test)]
+pub(in crate::ui) use nodes::strip_file_label;
 pub(in crate::ui) use nodes::{CanvasShapesHandle, Paint};
 pub(in crate::ui) use nodes::{
     paint_fault_banner, paint_fault_tooltip, paint_meter_bars, paint_node,
