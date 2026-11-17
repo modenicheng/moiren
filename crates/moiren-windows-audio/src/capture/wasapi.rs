@@ -159,9 +159,16 @@ pub(crate) fn start_owner(
     let started = Arc::new(AtomicBool::new(false));
     let worker_started = started.clone();
     let (tx, rx) = mpsc::sync_channel(1);
+    let thread_guard = moiren_engine::threads::register_thread(
+        "moiren-shared-capture",
+        moiren_engine::threads::ThreadClass::Rt,
+    );
     let worker = thread::Builder::new()
         .name("moiren-shared-capture".into())
-        .spawn(move || owner(worker_stop, tx, worker_started))
+        .spawn(move || {
+            thread_guard.enter();
+            owner(worker_stop, tx, worker_started)
+        })
         .map_err(|error| CaptureError::WorkerSpawn {
             code: error.raw_os_error(),
         })?;

@@ -125,9 +125,14 @@ pub fn query_capabilities(driver_id: &str) -> Result<AsioCapabilities, BackendEr
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
         let driver_id = driver_id.to_owned();
+        let thread_guard = moiren_engine::threads::register_thread(
+            "moiren-asio-capabilities",
+            moiren_engine::threads::ThreadClass::Control,
+        );
         std::thread::Builder::new()
             .name("moiren-asio-capabilities".into())
             .spawn(move || {
+                thread_guard.enter();
                 query_with_driver(|| {
                     let clsid = super::registry::parse_id(&driver_id)?;
                     let id = super::registry::canonical_id(&clsid);

@@ -142,9 +142,16 @@ pub(crate) fn spawn<S: ProcessingSample>(
         structural_values: Vec::new(),
         parameter_intent: 0,
     };
+    let thread_guard = crate::threads::register_thread(
+        "moiren-host-control",
+        crate::threads::ThreadClass::Control,
+    );
     thread::Builder::new()
         .name("moiren-host-control".into())
-        .spawn(move || supervisor.run())
+        .spawn(move || {
+            thread_guard.enter();
+            supervisor.run()
+        })
         .map_err(|error| HostError::Worker(error.to_string()))
 }
 

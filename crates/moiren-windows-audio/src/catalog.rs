@@ -310,15 +310,21 @@ fn collect_endpoints(
         let id = id.clone();
         let flow = *flow;
         let probe = probe.clone();
+        let thread_guard = moiren_engine::threads::register_thread(
+            "moiren-catalog-probe",
+            moiren_engine::threads::ThreadClass::Control,
+        );
         if std::thread::Builder::new()
             .name("moiren-catalog-probe".to_owned())
             .spawn(move || {
+                thread_guard.enter();
                 let probed = probe(&id, flow);
                 let _ = sender.send((id, probed));
             })
             .is_err()
         {
-            // Thread spawn failed: nothing will report for this row.
+            // Thread spawn failed: nothing will report for this row. Dropping
+            // the guard retires the registry row with it.
             continue;
         }
         spawned += 1;

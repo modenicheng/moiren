@@ -95,11 +95,11 @@ use std::{
     io,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 pub const MAX_PENDING_JOBS: usize = 16;
 /// Fixed management budgets. A4 drains its completion/control/retire channels
@@ -561,6 +561,25 @@ pub struct ServiceRuntime {
     handle: AppHandle,
     thread: JoinHandle<()>,
 }
+/// Cheap `app-service` loop probes for the status bar's per-thread panel:
+/// one wake counter (one fetch_add per round, relaxed) and the last round's
+/// work duration (dispatch through snapshot publish, park time excluded).
+/// Plain statics on purpose: the UI's 1 Hz sampler reads them directly while
+/// the panel is open, so they never ride `AppSnapshot` and add nothing to
+/// the snapshot tax (#177).
+static SERVICE_WAKES: AtomicU64 = AtomicU64::new(0);
+static SERVICE_ROUND_US: AtomicU64 = AtomicU64::new(0);
+
+/// Service-loop wake count since process start.
+pub(crate) fn service_wakes() -> u64 {
+    SERVICE_WAKES.load(Ordering::Relaxed)
+}
+
+/// The last completed round's work duration in microseconds.
+pub(crate) fn service_round_us() -> u64 {
+    SERVICE_ROUND_US.load(Ordering::Relaxed)
+}
+
 impl ServiceRuntime {
     pub fn spawn() -> io::Result<Self> {
         Self::spawn_with_driver(CoreDriver)
@@ -606,9 +625,14 @@ impl ServiceRuntime {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut pool = JobPool::new()?;
         let (hand_tx, hand_rx) = mpsc::sync_channel(1);
+        let thread_guard = moiren_engine::threads::register_thread(
+            "app-service",
+            moiren_engine::threads::ThreadClass::Control,
+        );
         let thread = thread::Builder::new()
             .name("app-service".into())
             .spawn(move || {
+                thread_guard.enter();
                 let (handle, mailbox) =
                     ServiceMailbox::with_snapshot(thread::current(), snapshot(&c));
                 // Snapshot publishing is token-gated: `snapshot(&c)` deep-copies
@@ -623,6 +647,11 @@ impl ServiceRuntime {
                 }
                 let mut exiting = false;
                 loop {
+                    // Panel probe: one relaxed add per wake, and the round's
+                    // work duration measured to the publish decision below.
+                    // Control thread only; park time stays out of the figure.
+                    SERVICE_WAKES.fetch_add(1, Ordering::Relaxed);
+                    let round_began = Instant::now();
                     let mut handled = 0;
                     if !exiting {
                         for _ in 0..16 {
@@ -666,6 +695,10 @@ impl ServiceRuntime {
                         mailbox.publish(snapshot(&c));
                         published_revision = revision;
                     }
+                    SERVICE_ROUND_US.store(
+                        u64::try_from(round_began.elapsed().as_micros()).unwrap_or(u64::MAX),
+                        Ordering::Relaxed,
+                    );
                     if c.core.phase() == SessionPhase::Exited {
                         break;
                     }

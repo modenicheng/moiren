@@ -25,13 +25,21 @@ pub(crate) struct StreamCounters {
     pub engine_blocks: u64,
 }
 
-/// The master output's engine render accounting from one observation.
+/// The master output's accounting from one observation: the engine render
+/// numbers the DSP-load readout consumes, plus the master stream's
+/// cumulative driver-callback count and over-budget windows, which the
+/// thread panel reads for its rate figure, ASIO attribution note and
+/// over-budget window. All cumulative per session generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RenderCounters {
     pub blocks: u64,
     pub busy_100ns: u64,
     /// Worst single block of the last completed one-second window.
     pub peak_block_100ns: u64,
+    /// One-second windows whose worst block exceeded one block's audio time.
+    pub over_budget: u64,
+    /// The driver's native callback count (the ASIO callback's heartbeat).
+    pub native_callbacks: u64,
 }
 
 /// One observation snapshot, reduced to what the runtime statistics consume.
@@ -242,6 +250,15 @@ impl RuntimeStats {
 
     pub(crate) fn dsp(&self) -> Option<DspLoad> {
         self.dsp
+    }
+
+    /// The master stream's cumulative RT counters with their session
+    /// generation, raw for the thread panel's own deltas (the panel
+    /// differences against its own baseline, `XrunStats` discipline: a
+    /// generation change rebases, it never produces a burst). `None` while
+    /// no master observation exists.
+    pub(crate) fn rt_counters(&self) -> Option<(u64, RenderCounters)> {
+        self.render_seen
     }
 }
 
@@ -491,12 +508,16 @@ mod tests {
             blocks: 1_000,
             busy_100ns: 10_000,
             peak_block_100ns: 20,
+            over_budget: 0,
+            native_callbacks: 0,
         };
         // 100 blocks in one second, 5.33 s of audio, 26666 busy units.
         let current = RenderCounters {
             blocks: 1_100,
             busy_100ns: 36_666,
             peak_block_100ns: 100,
+            over_budget: 0,
+            native_callbacks: 0,
         };
         let load = dsp_load(previous, current, 256, 48_000).unwrap();
         assert!(
@@ -517,6 +538,8 @@ mod tests {
             blocks: 5,
             busy_100ns: 1,
             peak_block_100ns: 1,
+            over_budget: 0,
+            native_callbacks: 0,
         };
         assert_eq!(
             dsp_load(counters, counters, 256, 48_000),
@@ -558,6 +581,8 @@ mod tests {
                     blocks: 6,
                     busy_100ns: 0,
                     peak_block_100ns: 0,
+                    over_budget: 0,
+                    native_callbacks: 0,
                 },
                 256,
                 48_000
@@ -582,6 +607,8 @@ mod tests {
             blocks,
             busy_100ns: busy,
             peak_block_100ns: 0,
+            over_budget: 0,
+            native_callbacks: 0,
         };
         let mut stats = RuntimeStats::default();
         stats.ingest(
@@ -664,6 +691,8 @@ mod tests {
                     blocks: 1_000,
                     busy_100ns: 10_000,
                     peak_block_100ns: 0,
+                    over_budget: 0,
+                    native_callbacks: 0,
                 }),
                 block_frames: 256,
                 sample_rate: 48_000,

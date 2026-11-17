@@ -108,7 +108,7 @@ pub(crate) fn sync(shell: &mut StudioShell, window: &Window) {
     let hovered = window.is_window_hovered();
     if shell.chrome.status_window_hovered && !hovered {
         shell.status_disarm();
-        shell.status_stop_process_sampling();
+        shell.status_stop_perf_sampling();
         shell.chrome.status_popup = None;
         shell.chrome.status_hover_item = None;
         shell.chrome.status_hover_panel = false;
@@ -194,7 +194,7 @@ impl StudioShell {
     pub(crate) fn status_close(&mut self, cx: &mut Context<Self>) {
         self.chrome.status_popup = None;
         self.chrome.status_hover_panel = false;
-        self.status_stop_process_sampling();
+        self.status_stop_perf_sampling();
         cx.notify();
     }
 
@@ -202,9 +202,9 @@ impl StudioShell {
         self.chrome.status_popup = Some(item);
         self.chrome.status_hover_panel = false;
         if item == StatusItem::Perf {
-            self.status_start_process_sampling(cx);
+            self.status_start_perf_sampling(cx);
         } else {
-            self.status_stop_process_sampling();
+            self.status_stop_perf_sampling();
         }
         cx.notify();
     }
@@ -231,33 +231,45 @@ impl StudioShell {
         self.chrome.status_timer = None;
     }
 
-    /// Samples the process table off the UI thread once a second while the
-    /// performance panel is open. The first sample lands immediately so the
-    /// rows appear at once, with zero CPU shares until a second table
-    /// provides the delta.
-    fn status_start_process_sampling(&mut self, cx: &mut Context<Self>) {
+    /// Samples the per-thread table off the UI thread once a second while
+    /// the performance panel is open. The first sample lands immediately so
+    /// the rows appear at once, with no CPU shares until a second sample
+    /// provides the delta. Never a per-frame poll: the task owns the 1 Hz
+    /// cadence and dies with the panel (#38/#40).
+    fn status_start_perf_sampling(&mut self, cx: &mut Context<Self>) {
         if self.chrome.perf_task.is_some() {
             return;
         }
         let cores = std::thread::available_parallelism()
             .map(|cores| cores.get() as f32)
             .unwrap_or(1.);
-        let own_pid = std::process::id();
         self.chrome.perf_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| {
             loop {
-                let table = cx
+                let threads = cx
                     .background_executor()
-                    .spawn(async move { crate::system::sample_processes() })
+                    .spawn(async move { crate::system::sample_threads() })
                     .await;
                 let open = this
                     .update(cx, |shell, cx| {
                         if shell.chrome.status_popup != Some(StatusItem::Perf) {
                             return false;
                         }
-                        shell
-                            .chrome
-                            .perf
-                            .ingest_processes(table, Instant::now(), cores, own_pid);
+                        let now = Instant::now();
+                        let rt = shell.state.read(cx).runtime.rt_counters();
+                        let probes = crate::ui::monitoring::perf::ProbeRead {
+                            service_wakes: crate::service::service_wakes(),
+                            service_round_us: crate::service::service_round_us(),
+                            shell_renders: shell.chrome.frames.shell_renders,
+                            graph_frames: shell.chrome.frames.graph_frames,
+                        };
+                        shell.chrome.perf.ingest_threads(
+                            threads,
+                            moiren_engine::threads::snapshot(),
+                            probes,
+                            rt,
+                            now,
+                            cores,
+                        );
                         cx.notify();
                         true
                     })
@@ -270,9 +282,9 @@ impl StudioShell {
         }));
     }
 
-    fn status_stop_process_sampling(&mut self) {
+    fn status_stop_perf_sampling(&mut self) {
         self.chrome.perf_task = None;
-        self.chrome.perf.forget_processes();
+        self.chrome.perf.forget_threads();
     }
 }
 
