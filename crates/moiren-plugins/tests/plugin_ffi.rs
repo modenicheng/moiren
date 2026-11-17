@@ -222,6 +222,56 @@ fn vst2_lifecycle_process_and_chunk() {
 }
 
 #[test]
+fn vst2_factory_presets_enumerate_and_select() {
+    let source = descriptor(PluginFormat::Vst2, "4D746731");
+    let mut instance = instantiate(&source, SAMPLE_RATE, BLOCK).expect("vst2 instantiate");
+
+    // The fixture exposes three named factory programs, in order.
+    assert_eq!(
+        instance.preset_names(),
+        vec!["Flat".to_string(), "Boost".to_string(), "Cut".to_string()]
+    );
+
+    // Selecting a program restores the program's gain: the parameter table
+    // (read fresh off the instance) and the rendered output both follow.
+    instance.select_preset(1).expect("program 1");
+    assert_close(
+        instance.parameters()[0].default as f32,
+        1.0,
+        "boost program default",
+    );
+    // 4.0 gain quadruples the signal.
+    for (sample, expected) in run_block(&mut instance, &[])
+        .iter()
+        .zip([-2.0, 2.0, -4.0, 0.5])
+    {
+        assert_close(*sample, expected, "boost program gain");
+    }
+
+    instance.select_preset(2).expect("program 2");
+    assert_close(
+        instance.parameters()[0].default as f32,
+        0.125,
+        "cut program default",
+    );
+    instance.select_preset(0).expect("program 0");
+    assert_close(
+        instance.parameters()[0].default as f32,
+        0.25,
+        "flat program default",
+    );
+
+    // An index the plugin never advertised is rejected, not dispatched.
+    assert!(instance.select_preset(3).is_err());
+    // Out-of-range indexes must not disturb the running program.
+    assert_close(
+        instance.parameters()[0].default as f32,
+        0.25,
+        "failed selection leaves the program",
+    );
+}
+
+#[test]
 fn vst3_lifecycle_process_and_state() {
     let scanned = scan::scan_directories(&[fixture_dir().to_path_buf()]);
     // Instantiate the scanned descriptor itself so path and id are the pair

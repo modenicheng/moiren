@@ -62,6 +62,7 @@ fn main() {
             Ok(instance) => report.descriptors.push(SandboxDescriptor {
                 parameters: instance.parameters().to_vec(),
                 latency_frames: instance.latency_frames(),
+                presets: instance.preset_names(),
                 descriptor,
             }),
             Err(error) => report.failures.push(SandboxFailure {

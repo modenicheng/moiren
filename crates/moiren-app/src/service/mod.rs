@@ -366,7 +366,7 @@ pub trait ServiceDriver: Send + 'static {
     /// True only when no owned completion, preparation or session remains.
     fn is_drained(&self) -> bool;
 }
-struct CoreDriver;
+pub(crate) struct CoreDriver;
 impl ServiceDriver for CoreDriver {
     fn is_drained(&self) -> bool {
         true
@@ -597,7 +597,7 @@ impl ServiceRuntime {
         Self::spawn_with_context(driver, context)
     }
 
-    fn spawn_with_context(
+    pub(crate) fn spawn_with_context(
         mut driver: impl ServiceDriver,
         mut c: ServiceContext,
     ) -> io::Result<Self> {

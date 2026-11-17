@@ -1120,6 +1120,7 @@ fn plugin_assignments_round_trip_through_graph_documents() {
     let assignment = crate::service::PluginAssignment {
         id: "CLAP|org.example.gain|C:/plugins/gain.clap".into(),
         preset: Some(vec![1, 2, 3, 4]),
+        preset_program: None,
     };
     service
         .edit(crate::service::GraphEdit::BindPlugin {

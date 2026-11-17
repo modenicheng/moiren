@@ -700,6 +700,14 @@ pub fn validate_node_state(
         {
             return Err("The plugin preset is too large".into());
         }
+        // The two preset forms resolve differently (state chunk vs factory
+        // program index); both set is a corrupt assignment, not a fallback.
+        if plugin.preset.is_some() && plugin.preset_program.is_some() {
+            return Err(
+                "A plugin assignment carries either a state chunk or a factory preset, not both"
+                    .into(),
+            );
+        }
     }
     Ok(())
 }

@@ -43,14 +43,19 @@ pub const DEFAULT_ROOT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const PROBE_SAMPLE_RATE: f64 = 48_000.0;
 pub const PROBE_MAX_BLOCK_FRAMES: u32 = 256;
 
-/// One probed plugin: the scanned descriptor plus the table only a live
-/// instance can report. The probe ran in the scanner subprocess, so this
-/// table is guaranteed to match a fresh instance of the same binary.
+/// One probed plugin: the scanned descriptor plus the tables only a live
+/// instance can report. The probe ran in the scanner subprocess, so these
+/// are guaranteed to match a fresh instance of the same binary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SandboxDescriptor {
     pub descriptor: PluginDescriptor,
     pub parameters: Vec<PluginParameterSpec>,
     pub latency_frames: u32,
+    /// Factory preset names in selection order, as the live instance
+    /// reports them. `default` keeps caches and reports written before
+    /// preset collection loadable: an absent list reads as "none reported".
+    #[serde(default)]
+    pub presets: Vec<String>,
 }
 
 /// A per-path scan or probe failure, in the same shape the in-process
@@ -256,6 +261,7 @@ mod tests {
                     stepped: false,
                 }],
                 latency_frames: 0,
+                presets: vec!["Default".into(), "Loud".into()],
             }],
             failures: vec![SandboxFailure {
                 path: PathBuf::from("/plugins/broken.clap"),
@@ -272,5 +278,39 @@ mod tests {
     #[test]
     fn report_paths_are_unique_per_call() {
         assert_ne!(unique_report_path(), unique_report_path());
+    }
+
+    #[test]
+    fn reports_written_before_preset_collection_load_with_an_empty_list() {
+        // A cache or report predating the presets field carries no `presets`
+        // key; it must read as "none reported", not fail the load.
+        let mut entry = serde_json::to_value(SandboxDescriptor {
+            descriptor: PluginDescriptor {
+                format: crate::spec::PluginFormat::Clap,
+                path: PathBuf::from("/plugins/gain.clap"),
+                id: "org.example.gain".into(),
+                name: "Gain".into(),
+                vendor: "Example".into(),
+                version: "1.0".into(),
+                input_channels: 2,
+                output_channels: 2,
+                is_synth: false,
+                has_editor: false,
+            },
+            parameters: Vec::new(),
+            latency_frames: 0,
+            presets: Vec::new(),
+        })
+        .unwrap();
+        entry
+            .as_object_mut()
+            .expect("object entry")
+            .remove("presets");
+        let report: SandboxReport = serde_json::from_value(serde_json::json!({
+            "descriptors": [entry],
+            "failures": [],
+        }))
+        .expect("old report loads");
+        assert!(report.descriptors[0].presets.is_empty());
     }
 }

@@ -321,6 +321,7 @@ mod tests {
                 descriptor: descriptor(root, "gain"),
                 parameters: Vec::new(),
                 latency_frames: 0,
+                presets: Vec::new(),
             }],
             failures: Vec::new(),
         }

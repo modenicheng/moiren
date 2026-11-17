@@ -20,6 +20,7 @@ pub const EFF_FLAGS_CAN_DOUBLE_REPLACING: i32 = 1 << 12;
 // Host -> plugin opcodes (AEffect.dispatcher).
 pub const EFF_OPEN: i32 = 0;
 pub const EFF_CLOSE: i32 = 1;
+pub const EFF_SET_PROGRAM: i32 = 6;
 pub const EFF_GET_PARAM_NAME: i32 = 8;
 pub const EFF_SET_SAMPLE_RATE: i32 = 10;
 pub const EFF_SET_BLOCK_SIZE: i32 = 11;
@@ -27,6 +28,7 @@ pub const EFF_MAINS_CHANGED: i32 = 12;
 pub const EFF_GET_CHUNK: i32 = 23;
 pub const EFF_SET_CHUNK: i32 = 24;
 pub const EFF_CAN_BE_AUTOMATED: i32 = 26;
+pub const EFF_GET_PROGRAM_NAME_INDEXED: i32 = 29;
 pub const EFF_GET_EFFECT_NAME: i32 = 45;
 pub const EFF_GET_VENDOR_STRING: i32 = 47;
 pub const EFF_GET_PRODUCT_STRING: i32 = 48;

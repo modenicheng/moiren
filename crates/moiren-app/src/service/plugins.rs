@@ -29,6 +29,10 @@ pub struct PluginEntry {
     pub descriptor: PluginDescriptor,
     pub parameters: Vec<PluginParameterSpec>,
     pub latency_frames: u32,
+    /// Factory preset names in selection order, as the probe reported them;
+    /// empty when the format or plugin exposes none. The preset picker
+    /// renders exactly this list, and a selection persists the index.
+    pub presets: Vec<String>,
 }
 
 /// The latest sandboxed scan, published as one immutable snapshot.
@@ -62,6 +66,7 @@ impl PluginLibrary {
                 descriptor: probed.descriptor,
                 parameters: probed.parameters,
                 latency_frames: probed.latency_frames,
+                presets: probed.presets,
             });
         }
         library
@@ -100,15 +105,20 @@ impl PluginLibrary {
 }
 
 /// What a Plugin node is bound to: the scanned plugin's stable id plus an
-/// optional state chunk (see `PluginSettings::preset`). Assignments are
-/// plain data — they persist in project documents and survive rescans.
+/// optional preset — either a captured state chunk (see
+/// `PluginSettings::preset`, restored projects) or a factory preset index
+/// into the scan-reported preset list (the Inspector's preset picker).
+/// Assignments are plain data — they persist in project documents and
+/// survive rescans — and the two preset forms are mutually exclusive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginAssignment {
     pub id: String,
-    /// Saved plugin state; today only restored projects carry one, until
-    /// preset capture/selection UI exists.
+    /// Saved plugin state chunk; today only restored projects carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<Vec<u8>>,
+    /// Factory preset, by index into the plugin's scanned preset list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_program: Option<u32>,
 }
 
 /// Run one full sandboxed scan over the standard roots, reusing cached
@@ -211,16 +221,19 @@ mod tests {
                     descriptor: descriptor("/a/gain.vst3", "AAAA"),
                     parameters: Vec::new(),
                     latency_frames: 0,
+                    presets: Vec::new(),
                 },
                 SandboxDescriptor {
                     descriptor: descriptor("/a/gain.vst3", "AAAA"),
                     parameters: Vec::new(),
                     latency_frames: 0,
+                    presets: Vec::new(),
                 },
                 SandboxDescriptor {
                     descriptor: descriptor("/b/other.vst3", "BBBB"),
                     parameters: Vec::new(),
                     latency_frames: 12,
+                    presets: vec!["Default".into()],
                 },
             ],
             failures: vec![SandboxFailure {
@@ -238,6 +251,11 @@ mod tests {
         assert!(library.get(&key).is_some());
         let other = library.get(&descriptor("/b/other.vst3", "BBBB").stable_id());
         assert_eq!(other.expect("distinct entry").latency_frames, 12);
+        // The probe's preset list rides into the entry untouched.
+        assert_eq!(
+            other.expect("distinct entry").presets,
+            vec!["Default".to_string()]
+        );
     }
 
     #[test]
@@ -263,6 +281,7 @@ mod tests {
         let plain = PluginAssignment {
             id: "VST3|AA|/a/gain.vst3".into(),
             preset: None,
+            preset_program: None,
         };
         let json = serde_json::to_string(&plain).unwrap();
         assert_eq!(
@@ -272,19 +291,28 @@ mod tests {
         let preset = PluginAssignment {
             id: "VST3|AA|/a/gain.vst3".into(),
             preset: Some(vec![1, 2, 3]),
+            preset_program: None,
         };
         let json = serde_json::to_string(&preset).unwrap();
         assert_eq!(
             serde_json::from_str::<PluginAssignment>(&json).unwrap(),
             preset
         );
-        // Old documents without the field load with no preset.
-        assert!(
-            serde_json::from_str::<PluginAssignment>("{\"id\":\"x\"}")
-                .unwrap()
-                .preset
-                .is_none()
+        // The factory-program form round-trips too.
+        let program = PluginAssignment {
+            id: "VST3|AA|/a/gain.vst3".into(),
+            preset: None,
+            preset_program: Some(2),
+        };
+        let json = serde_json::to_string(&program).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PluginAssignment>(&json).unwrap(),
+            program
         );
+        // Old documents without the preset fields load with neither form.
+        let restored = serde_json::from_str::<PluginAssignment>("{\"id\":\"x\"}").unwrap();
+        assert!(restored.preset.is_none());
+        assert!(restored.preset_program.is_none());
     }
 
     /// Scan-cache integration over the injectable scan core. The scanner
@@ -328,6 +356,7 @@ mod tests {
                     descriptor: descriptor(&root.join("gain.vst3"), "AAAA"),
                     parameters: Vec::new(),
                     latency_frames: 0,
+                    presets: Vec::new(),
                 }],
                 failures: Vec::new(),
             });
@@ -344,6 +373,7 @@ mod tests {
                         descriptor: descriptor(&roots[0].join("gain.vst3"), "AAAA"),
                         parameters: Vec::new(),
                         latency_frames: 0,
+                        presets: Vec::new(),
                     }],
                     failures: Vec::new(),
                 },

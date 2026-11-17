@@ -299,6 +299,16 @@ pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> 
         });
     }
     for (plugin_id, label) in snapshot.plugins.picker_rows() {
+        // Re-picking the plugin that is already assigned re-binds it without
+        // disturbing its preset selection; a different plugin starts fresh.
+        let assignment = match entry.plugin.as_ref() {
+            Some(existing) if existing.id == plugin_id => existing.clone(),
+            _ => crate::service::PluginAssignment {
+                id: plugin_id.clone(),
+                preset: None,
+                preset_program: None,
+            },
+        };
         choices.push(BindingChoice {
             target: BindingTarget::Plugin {
                 id: plugin_id.clone(),
@@ -310,10 +320,7 @@ pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> 
                 .is_some_and(|assignment| assignment.id == plugin_id),
             action: BindingAction::Edit(GraphEdit::BindPlugin {
                 node: id,
-                assignment: Some(crate::service::PluginAssignment {
-                    id: plugin_id,
-                    preset: None,
-                }),
+                assignment: Some(assignment),
             }),
         });
     }

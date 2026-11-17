@@ -1775,3 +1775,18 @@ _version: 2
 "%{count} plugin(s), %{failed} excluded by failed scans":
   en: "%{count} plugin(s), %{failed} excluded by failed scans"
   zh-CN: "%{count} 个插件，%{failed} 个因扫描失败被排除"
+"Preset":
+  en: Preset
+  zh-CN: 预设
+"Factory default":
+  en: Factory default
+  zh-CN: 出厂默认
+"Saved state":
+  en: Saved state
+  zh-CN: 已保存状态
+"Discard saved state":
+  en: Discard saved state
+  zh-CN: 丢弃已保存状态
+"Program %{index}":
+  en: "Program %{index}"
+  zh-CN: "程序 %{index}"

@@ -59,6 +59,38 @@ fn fixture_settings() -> PluginSettings {
             stepped: false,
         }],
         preset: None,
+        preset_program: None,
+    }
+}
+
+/// The same fixture driven through its VST2 entry point, whose three factory
+/// programs ("Flat", "Boost", "Cut") give the preset-selection path
+/// something real to select.
+fn vst2_settings() -> PluginSettings {
+    PluginSettings {
+        descriptor: PluginDescriptor {
+            format: PluginFormat::Vst2,
+            path: fixture_path().to_path_buf(),
+            id: "4D746731".into(),
+            name: "Moiren Test Gain".into(),
+            vendor: "Moiren".into(),
+            version: "1.0.0".into(),
+            input_channels: 2,
+            output_channels: 2,
+            is_synth: false,
+            has_editor: false,
+        },
+        parameters: vec![PluginParameterSpec {
+            id: 0,
+            name: "Gain".into(),
+            min: 0.0,
+            max: 1.0,
+            default: 0.25,
+            automatable: true,
+            stepped: false,
+        }],
+        preset: None,
+        preset_program: None,
     }
 }
 
@@ -137,6 +169,76 @@ fn plugin_preset_is_restored_into_the_instance() {
             "preset gain not applied: {sample}"
         );
     }
+}
+
+/// A factory preset, selected by its index into the scan-reported preset
+/// list, restores the program's state from the very first block: the VST2
+/// fixture's "Boost" program is a 4.0 gain, so 0.25 in renders 1.0 out.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns rustc to build the fixture and loads it as a dynamic library, both outside Miri"
+)]
+fn plugin_preset_program_selects_the_factory_program() {
+    let settings = PluginSettings {
+        preset_program: Some(1),
+        ..vst2_settings()
+    };
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let plugin = graph.create_node(NodeKind::Plugin, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    connect(&mut graph, source, plugin, Default::default());
+    connect(&mut graph, plugin, sink, Default::default());
+    let (writer, mut reader) = audio_bridge::<f64>(2, 16, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings
+        .bind_source(
+            source,
+            moiren_engine::boundary::ConstantSource {
+                channels: 2,
+                value: 0.25,
+            },
+        )
+        .unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let processor = PluginProcessor::<f64>::new(&settings, 48_000.0, 8).unwrap();
+    bindings.bind_plugin(plugin, processor).unwrap();
+
+    let mut signal_bus = Bus::new(Default::default()).unwrap();
+    let (host_control, host) = signal_bus.create_host(4).unwrap();
+    let mut compiled =
+        compile_with_signals(&graph, bindings, super::config(), &host_control).unwrap();
+    compiled.engine.attach_signal_host(host).unwrap();
+    pump(&mut signal_bus);
+
+    compiled.engine.render(8).unwrap();
+    pump(&mut signal_bus);
+    let mut output = vec![0.0_f64; 16];
+    let report = reader.read_interleaved(&mut output).unwrap();
+    assert!(report.transferred_frames > 0);
+    for sample in &output[..report.transferred_frames * 2] {
+        assert!(
+            (sample - 1.0).abs() < 1e-6,
+            "preset program not applied: {sample}"
+        );
+    }
+}
+
+/// A preset program outside the plugin's reported list fails preparation at
+/// construction, so a stale index against a changed plugin surfaces as a
+/// located fault instead of a silent wrong state.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns rustc to build the fixture and loads it as a dynamic library, both outside Miri"
+)]
+fn plugin_preset_program_outside_the_list_fails_construction() {
+    let settings = PluginSettings {
+        preset_program: Some(9),
+        ..vst2_settings()
+    };
+    assert!(PluginProcessor::<f64>::new(&settings, 48_000.0, 8).is_err());
 }
 
 #[test]

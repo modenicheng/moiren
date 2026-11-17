@@ -1751,6 +1751,7 @@ fn plugin_library_fixture() -> (PluginLibrary, String) {
                     stepped: false,
                 }],
                 latency_frames: 64,
+                presets: vec!["Flat".into(), "Loud".into()],
             }],
             failures: Vec::new(),
         }),
@@ -1787,6 +1788,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
     let assignment = PluginAssignment {
         id: key.clone(),
         preset: None,
+        preset_program: None,
     };
     // Only Plugin nodes accept an assignment.
     assert!(
@@ -1805,6 +1807,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
                 assignment: Some(PluginAssignment {
                     id: "  ".into(),
                     preset: None,
+                    preset_program: None,
                 }),
             })
             .is_err()
@@ -1820,6 +1823,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
         Some(PluginAssignment {
             id: key,
             preset: None,
+            preset_program: None,
         })
     );
     // Assignment is structural: the edit reports a rebuild is required.
@@ -1886,6 +1890,7 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
             assignment: Some(PluginAssignment {
                 id: "CLAP|gone|/moved.clap".into(),
                 preset: None,
+                preset_program: None,
             }),
         })
         .unwrap();
@@ -1906,6 +1911,7 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
             assignment: Some(PluginAssignment {
                 id: key,
                 preset: Some(preset.clone()),
+                preset_program: None,
             }),
         })
         .unwrap();
@@ -1945,6 +1951,7 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
             assignment: Some(PluginAssignment {
                 id: mono_key,
                 preset: None,
+                preset_program: None,
             }),
         })
         .unwrap();
@@ -1955,4 +1962,159 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
         .unwrap_err();
     assert_eq!(failure.node, Some(mono));
     assert!(failure.cause.contains("channels"));
+}
+
+/// The preset picker's writes: a factory program is one of the two preset
+/// forms, the two forms are mutually exclusive, and rapid selections ride
+/// the BindPlugin undo key into a single undo step.
+#[test]
+fn plugin_preset_program_selection_round_trips_through_undo() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    use moiren_engine::host::NodeConfig;
+    let mut service = ServiceGraph::default();
+    let (.., sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (library, key) = plugin_library_fixture();
+    let assign = |program: Option<u32>| GraphEdit::BindPlugin {
+        node: plugin,
+        assignment: Some(PluginAssignment {
+            id: key.clone(),
+            preset: None,
+            preset_program: program,
+        }),
+    };
+    service.edit(assign(None)).unwrap();
+
+    // Carrying both preset forms is corrupt, not a fallback order.
+    assert!(
+        service
+            .edit(GraphEdit::BindPlugin {
+                node: plugin,
+                assignment: Some(PluginAssignment {
+                    id: key.clone(),
+                    preset: Some(vec![1]),
+                    preset_program: Some(1),
+                }),
+            })
+            .is_err()
+    );
+    assert_eq!(
+        service.snapshot().node(plugin).unwrap().plugin,
+        Some(PluginAssignment {
+            id: key.clone(),
+            preset: None,
+            preset_program: None,
+        })
+    );
+
+    // Selection lands in the candidate...
+    service.edit(assign(Some(1))).unwrap();
+    service.edit(assign(Some(2))).unwrap();
+    let assignment = service
+        .snapshot()
+        .node(plugin)
+        .unwrap()
+        .plugin
+        .clone()
+        .expect("assigned");
+    assert_eq!(assignment.preset_program, Some(2));
+    assert!(assignment.preset.is_none());
+
+    // ...and lowers to the engine's plugin settings.
+    let mut preparation = service.preparation();
+    preparation.plugins = std::sync::Arc::new(library);
+    let project = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .unwrap();
+    let NodeConfig::Plugin(settings) = &project.nodes[&plugin] else {
+        panic!("plugin config");
+    };
+    assert_eq!(settings.preset_program, Some(2));
+    assert!(settings.preset.is_none());
+
+    // Rapid selections coalesce onto the BindPlugin undo key: one undo step
+    // returns to the journal entry recorded before the first selection (the
+    // initial unselected assignment), and redo restores the latest one.
+    assert!(service.undo());
+    assert_eq!(service.snapshot().node(plugin).unwrap().plugin, None);
+    assert!(service.redo());
+    let assignment = service
+        .snapshot()
+        .node(plugin)
+        .unwrap()
+        .plugin
+        .clone()
+        .expect("assigned");
+    assert_eq!(assignment.preset_program, Some(2));
+}
+
+/// A stale factory-program index (against a changed plugin) survives the
+/// edit chain as data: project lowering stays valid, and the rejection is
+/// the engine's instance construction (select_preset), which surfaces as a
+/// node-aimed preparation fault through the usual path.
+#[test]
+fn plugin_preset_program_outside_the_scanned_list_stays_valid_project_data() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    use moiren_engine::host::NodeConfig;
+    let mut service = ServiceGraph::default();
+    let (.., sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (library, key) = plugin_library_fixture();
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: Some(PluginAssignment {
+                id: key,
+                preset: None,
+                preset_program: Some(7),
+            }),
+        })
+        .unwrap();
+    let mut preparation = service.preparation();
+    preparation.plugins = std::sync::Arc::new(library);
+    let project = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .expect("the index is data until instance construction");
+    let NodeConfig::Plugin(settings) = &project.nodes[&plugin] else {
+        panic!("plugin config");
+    };
+    assert_eq!(settings.preset_program, Some(7));
 }
