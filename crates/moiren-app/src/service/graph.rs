@@ -241,10 +241,16 @@ pub enum GraphEdit {
     /// Assign a Plugin node's plugin (resolved by stable id against the
     /// service's plugin library at preparation time) or clear the
     /// assignment. Assignment is structural: it rebuilds the node's
-    /// processor.
+    /// processor. `adapt_channels` also resizes the node to the assigned
+    /// plugin's bus width as part of the same edit and undo step — the
+    /// picker only proposes it when no connected route would strand (the
+    /// core rejects a resize that would leave an edge width-mismatched), so
+    /// a bind that cannot adapt safely keeps the preparation width fault as
+    /// the presentation.
     BindPlugin {
         node: NodeId,
         assignment: Option<PluginAssignment>,
+        adapt_channels: Option<usize>,
     },
     BindExport {
         endpoint_id: moiren_engine::node::VirtualEndpointId,
@@ -699,6 +705,14 @@ pub fn validate_node_state(
             .is_some_and(|preset| preset.len() > 16 * 1024 * 1024)
         {
             return Err("The plugin preset is too large".into());
+        }
+        // The two preset forms resolve differently (state chunk vs factory
+        // program index); both set is a corrupt assignment, not a fallback.
+        if plugin.preset.is_some() && plugin.preset_program.is_some() {
+            return Err(
+                "A plugin assignment carries either a state chunk or a factory preset, not both"
+                    .into(),
+            );
         }
     }
     Ok(())

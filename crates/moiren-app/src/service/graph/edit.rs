@@ -282,9 +282,41 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .output_endpoint_id = Some(endpoint_id);
             validate_edited_node(next, node)?;
         }
-        GraphEdit::BindPlugin { node, assignment } => {
-            if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Plugin {
+        GraphEdit::BindPlugin {
+            node,
+            assignment,
+            adapt_channels,
+        } => {
+            let kind = next.graph.get_node(node).map_err(|e| e.to_string())?.kind();
+            if kind != NodeKind::Plugin {
                 return Err("Only Plugin nodes can carry a plugin assignment".into());
+            }
+            // The width adaptation is part of the same candidate edit (one
+            // revision, one undo step with the bind). The core rejects any
+            // resize that would strand a connected route, so a caller that
+            // proposes adaptation for a wired-incompatible node fails the
+            // whole edit instead of losing its wiring.
+            if let Some(channels) = adapt_channels
+                && channels
+                    != next
+                        .graph
+                        .get_node(node)
+                        .map_err(|e| e.to_string())?
+                        .channels()
+            {
+                next.graph
+                    .set_node_channels(node, channels)
+                    .map_err(|e| e.to_string())?;
+                // A strip channel mode picked for the old width may not
+                // exist at the new one; Normal is valid at every width.
+                let state = next
+                    .nodes
+                    .iter_mut()
+                    .find(|s| s.id == node)
+                    .ok_or("The node does not exist")?;
+                if state.mixer.channel_mode > channels + 2 {
+                    state.mixer.channel_mode = 0;
+                }
             }
             next.nodes
                 .iter_mut()

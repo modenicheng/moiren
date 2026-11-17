@@ -564,16 +564,38 @@ unsafe extern "C" fn vst2_process_accum(
     _frames: i32,
 ) {
 }
+
+/// Per-effect state: the current gain plus the selected factory program.
+/// Programs exist so the host's preset surfaces have something real to
+/// enumerate and select in the fixture suites.
+pub struct Vst2State {
+    gain: f64,
+    program: i32,
+}
+
+/// `VST2_PROGRAMS[i]` is the factory program name and `VST2_PROGRAM_GAINS[i]`
+/// the gain the program restores, so a host-side selection is observable
+/// both through the parameter table and the rendered output.
+pub const VST2_PROGRAMS: [&str; 3] = ["Flat", "Boost", "Cut"];
+const VST2_PROGRAM_GAINS: [f64; 3] = [1.0, 4.0, 0.5];
+
+fn vst2_program_gain(program: i32) -> f64 {
+    VST2_PROGRAM_GAINS
+        .get(program as usize)
+        .copied()
+        .unwrap_or(DEFAULT_GAIN)
+}
+
 unsafe extern "C" fn vst2_set_parameter(effect: *mut AEffect, index: i32, value: f32) {
     if index == 0 {
         unsafe {
-            *(*effect).object.cast::<f64>() = value as f64 * GAIN_MAX;
+            (*(*effect).object.cast::<Vst2State>()).gain = value as f64 * GAIN_MAX;
         }
     }
 }
 unsafe extern "C" fn vst2_get_parameter(effect: *mut AEffect, index: i32) -> f32 {
     if index == 0 {
-        let gain = unsafe { *((*effect).object as *const f64) };
+        let gain = unsafe { (*(*effect).object.cast::<Vst2State>()).gain };
         (gain / GAIN_MAX) as f32
     } else {
         0.0
@@ -591,14 +613,17 @@ pub extern "C" fn VSTPluginMain(
         opt: f32,
     ) -> isize,
 ) -> *mut AEffect {
-    let state = Box::new(DEFAULT_GAIN);
+    let state = Box::new(Vst2State {
+        gain: DEFAULT_GAIN,
+        program: 0,
+    });
     let effect = Box::new(AEffect {
         magic: 0x5673_7450, // 'VstP'
         dispatcher: vst2_dispatcher_raw,
         process: vst2_process_accum,
         set_parameter: vst2_set_parameter,
         get_parameter: vst2_get_parameter,
-        num_programs: 1,
+        num_programs: VST2_PROGRAMS.len() as i32,
         num_params: 1,
         num_inputs: CHANNELS as i32,
         num_outputs: CHANNELS as i32,
@@ -635,7 +660,18 @@ unsafe extern "C" fn vst2_dispatcher_raw(
         1 => {
             // effClose: free the effect and its state.
             let boxed = unsafe { Box::from_raw(effect) };
-            drop(unsafe { Box::from_raw(boxed.object.cast::<f64>()) });
+            drop(unsafe { Box::from_raw(boxed.object.cast::<Vst2State>()) });
+            0
+        }
+        6 => {
+            // effSetProgram: select the program and restore its gain.
+            let state = unsafe { (*effect).object.cast::<Vst2State>() };
+            if (0..VST2_PROGRAMS.len() as i32).contains(&(value as i32)) {
+                unsafe {
+                    (*state).program = value as i32;
+                    (*state).gain = vst2_program_gain(value as i32);
+                }
+            }
             0
         }
         8 => {
@@ -649,7 +685,7 @@ unsafe extern "C" fn vst2_dispatcher_raw(
         }
         23 => {
             // effGetChunk (program)
-            let gain = unsafe { *((*effect).object as *const f64) };
+            let gain = unsafe { (*(*effect).object.cast::<Vst2State>()).gain };
             CHUNK_BITS.store(gain.to_bits(), Ordering::SeqCst);
             unsafe {
                 *(ptr as *mut *mut c_void) =
@@ -664,11 +700,25 @@ unsafe extern "C" fn vst2_dispatcher_raw(
                 let bytes = ptr as *const u8;
                 let gain = unsafe { std::ptr::read_unaligned(bytes.cast::<[u8; 8]>()) };
                 let gain = f64::from_le_bytes(gain);
-                unsafe { *(*effect).object.cast::<f64>() = gain };
+                unsafe { (*(*effect).object.cast::<Vst2State>()).gain = gain };
             }
             0
         }
         26 => 1, // effCanBeAutomated
+        29 => {
+            // effGetProgramNameIndexed
+            let named = usize::try_from(index).map(|index| VST2_PROGRAMS.get(index)).ok().flatten();
+            if let (Some(name), true) = (named, !ptr.is_null()) {
+                let mut written = 0usize;
+                for byte in format!("{name}\0").bytes() {
+                    unsafe { ptr.cast::<u8>().add(written).write(byte) };
+                    written += 1;
+                }
+                1
+            } else {
+                0
+            }
+        }
         45 => {
             // effGetEffectName
             unsafe {
@@ -696,7 +746,7 @@ unsafe extern "C" fn vst2_process_replacing(
     outputs: *mut *mut f32,
     frames: i32,
 ) {
-    let gain = unsafe { *((*effect).object as *const f64) } as f32;
+    let gain = unsafe { (*(*effect).object.cast::<Vst2State>()).gain } as f32;
     for channel in 0..CHANNELS {
         let source = unsafe { *inputs.add(channel) };
         let target = unsafe { *outputs.add(channel) };

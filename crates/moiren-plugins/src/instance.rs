@@ -36,4 +36,22 @@ pub trait PluginInstance: Send {
     fn load_state(&mut self, _state: &[u8]) -> Result<(), PluginError> {
         Ok(())
     }
+    /// Factory preset names in selection order, as the plugin itself spells
+    /// them. Collected by the scan probe and rendered by the preset picker;
+    /// empty when the format (or this plugin) exposes no factory presets —
+    /// VST3 programs and CLAP preset discovery are separate, format-specific
+    /// surfaces that are not probed yet.
+    fn preset_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Select a factory preset by its index into [`Self::preset_names`].
+    /// Control-side; an error means the format or plugin cannot select
+    /// presets (callers only pass indexes a scan actually reported). On
+    /// success the reported parameter table reflects the selected state, so
+    /// hosts diffing against it never swallow the first automation.
+    fn select_preset(&mut self, _index: u32) -> Result<(), PluginError> {
+        Err(PluginError::State(
+            "plugin exposes no selectable presets".into(),
+        ))
+    }
 }

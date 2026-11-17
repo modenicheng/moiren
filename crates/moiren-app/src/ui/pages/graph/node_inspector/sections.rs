@@ -141,8 +141,9 @@ pub(super) fn sink_section(
 }
 
 /// The plugin picker section: the shared choice list over the service's
-/// plugin library (the same entries the chip menu offers), plus the
-/// library's scan failures so exclusions are visible, never silent.
+/// plugin library (the same entries the chip menu offers), the library's
+/// scan failures so exclusions are visible, never silent, and the assigned
+/// plugin's preset picker.
 pub(super) fn plugin_section(
     mut view: Stateful<Div>,
     snapshot: &crate::service::AppSnapshot,
@@ -171,6 +172,107 @@ pub(super) fn plugin_section(
             count = snapshot.plugins.len(),
             failed = snapshot.plugins.failures.len()
         )));
+    }
+    preset_picker(view, snapshot, entry, cx)
+}
+
+/// The assigned plugin's preset picker, under the plugin section: the
+/// factory preset list the scan reported (VST2 programs today), the saved
+/// state chunk a restored project may carry, and the selection edits riding
+/// the same BindPlugin chain as the assignment itself.
+///
+/// A plugin with no scanned preset list renders only its saved state (if
+/// any) — the picker never invents rows the scan did not report. Capturing
+/// the current state as a new preset is a deliberate follow-up.
+fn preset_picker(
+    mut view: Stateful<Div>,
+    snapshot: &crate::service::AppSnapshot,
+    entry: &crate::service::GraphNodeState,
+    cx: &Context<StudioShell>,
+) -> Stateful<Div> {
+    use crate::service::PluginAssignment;
+    let Some(assignment) = &entry.plugin else {
+        return view;
+    };
+    let presets = snapshot
+        .plugins
+        .get(&assignment.id)
+        .map(|plugin| plugin.presets.as_slice())
+        .unwrap_or(&[]);
+    if presets.is_empty() && assignment.preset.is_none() {
+        // No factory list and no saved state: nothing selectable, so the
+        // section stays out of the column entirely.
+        return view;
+    }
+    // The current selection by name: a factory program resolves through the
+    // scanned list (a stale index against a changed plugin shows its
+    // number), a chunk is its own thing, and neither means the plugin's
+    // state as installed.
+    let current = match (assignment.preset_program, assignment.preset.is_some()) {
+        (Some(index), _) => presets
+            .get(index as usize)
+            .cloned()
+            .unwrap_or_else(|| t!("Program %{index}", index = index + 1).into_owned()),
+        (None, true) => t!("Saved state").into_owned(),
+        (None, false) => t!("Factory default").into_owned(),
+    };
+    view = view
+        .child(heading(t!("Preset")))
+        .child(detail(&t!("Preset"), current));
+    let id = entry.id;
+    let rebind = |assignment: PluginAssignment| {
+        edit(
+            cx.entity(),
+            GraphEdit::BindPlugin {
+                node: id,
+                assignment: Some(assignment),
+                adapt_channels: None,
+            },
+        )
+    };
+    if !presets.is_empty() {
+        view = view.child(
+            button("preset-default", t!("Factory default"))
+                .variant(
+                    if assignment.preset.is_none() && assignment.preset_program.is_none() {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Ghost
+                    },
+                )
+                .on_click(rebind(PluginAssignment {
+                    id: assignment.id.clone(),
+                    preset: None,
+                    preset_program: None,
+                })),
+        );
+        for (index, name) in presets.iter().enumerate() {
+            let index = index as u32;
+            view = view.child(
+                button(SharedString::from(format!("preset-{index}")), name.clone())
+                    .variant(if assignment.preset_program == Some(index) {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .on_click(rebind(PluginAssignment {
+                        id: assignment.id.clone(),
+                        preset: None,
+                        preset_program: Some(index),
+                    })),
+            );
+        }
+    }
+    if assignment.preset.is_some() {
+        view = view.child(
+            button("preset-discard-state", t!("Discard saved state"))
+                .variant(ButtonVariant::Ghost)
+                .on_click(rebind(PluginAssignment {
+                    id: assignment.id.clone(),
+                    preset: None,
+                    preset_program: assignment.preset_program,
+                })),
+        );
     }
     view
 }
@@ -356,10 +458,10 @@ fn binding_choice_button(
                             .state
                             .update(cx, |state, _| state.dispatch(AppRequest::RefreshCatalog));
                     }
-                    binding_choices::BindingAction::ScanPlugins => {
-                        shell
-                            .state
-                            .update(cx, |state, _| state.dispatch(AppRequest::ScanPlugins));
+                    binding_choices::BindingAction::ScanPlugins { force } => {
+                        shell.state.update(cx, |state, _| {
+                            state.dispatch(AppRequest::ScanPlugins { force })
+                        });
                     }
                 }
                 cx.notify();

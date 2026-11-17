@@ -96,15 +96,19 @@ enum Completion {
 
 /// Sandbox-scan bookkeeping in the CatalogRefresher shape: at most one
 /// in-flight scan, explicit requests only (no startup automation — spawning
-/// scanner subprocesses on every launch is not wanted yet).
+/// scanner subprocesses on every launch is not wanted yet). The scan itself
+/// consults the on-disk per-root cache; `force` marks a user-initiated
+/// rescan that must bypass it, and the latest request's flag wins.
 #[derive(Default)]
 struct PluginScanState {
     requested: bool,
+    force: bool,
     running: bool,
 }
 impl PluginScanState {
-    fn request(&mut self) {
+    fn request(&mut self, force: bool) {
         self.requested = true;
+        self.force = force;
     }
 }
 

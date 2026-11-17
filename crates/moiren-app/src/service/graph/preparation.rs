@@ -291,6 +291,7 @@ impl GraphPreparation {
                         descriptor: entry.descriptor.clone(),
                         parameters: entry.parameters.clone(),
                         preset: assignment.preset.clone(),
+                        preset_program: assignment.preset_program,
                     })
                 }
             };

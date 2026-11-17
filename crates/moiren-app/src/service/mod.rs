@@ -12,6 +12,7 @@ mod latency;
 mod mailbox;
 mod managed;
 mod model;
+mod plugin_cache;
 mod plugins;
 mod recording;
 #[cfg(test)]
@@ -35,7 +36,10 @@ pub use latency::AudioLatencyProfile;
 use managed::LevelRegistry;
 pub use managed::{LevelLease, LevelSource, ManagedDriver};
 pub use moiren_engine::audio_config::*;
-pub use plugins::{PluginAssignment, PluginEntry, PluginLibrary, empty_library, run_sandbox_scan};
+pub use plugins::{
+    PluginAssignment, PluginEntry, PluginLibrary, empty_library, run_forced_plugin_scan,
+    run_sandbox_scan,
+};
 pub use recording::{
     DateTimeParts, RecordingCard, RecordingFormat, RecordingPhase, RecordingService,
     RecordingSnapshot,
@@ -362,7 +366,7 @@ pub trait ServiceDriver: Send + 'static {
     /// True only when no owned completion, preparation or session remains.
     fn is_drained(&self) -> bool;
 }
-struct CoreDriver;
+pub(crate) struct CoreDriver;
 impl ServiceDriver for CoreDriver {
     fn is_drained(&self) -> bool {
         true
@@ -386,7 +390,7 @@ impl ServiceDriver for CoreDriver {
             AppRequest::RefreshCatalog => {}
             // The core driver owns no workers; only the managed driver runs
             // sandboxed scans.
-            AppRequest::ScanPlugins => {
+            AppRequest::ScanPlugins { .. } => {
                 c.graph
                     .record_error("Plugin scanning requires the managed audio service");
             }
@@ -593,7 +597,7 @@ impl ServiceRuntime {
         Self::spawn_with_context(driver, context)
     }
 
-    fn spawn_with_context(
+    pub(crate) fn spawn_with_context(
         mut driver: impl ServiceDriver,
         mut c: ServiceContext,
     ) -> io::Result<Self> {

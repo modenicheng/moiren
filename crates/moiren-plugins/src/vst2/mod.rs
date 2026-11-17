@@ -328,6 +328,20 @@ pub(crate) fn instantiate(
 }
 
 impl Vst2Instance {
+    /// Re-read the live parameter values as the table's defaults. State
+    /// restores (chunk load, program switch) move the plugin off its scanned
+    /// defaults, and the automation schema must track what the plugin
+    /// reports now: a stale table would make the host's change-diff swallow
+    /// the first edit whose value happens to equal the stale default.
+    fn refresh_parameters(&mut self) {
+        for (index, parameter) in self.parameters.iter_mut().enumerate() {
+            // SAFETY: control-side value read on the live effect; the index
+            // is within the table the constructor collected.
+            let value = unsafe { ((*self.effect).get_parameter)(self.effect, index as i32) };
+            parameter.default = f64::from(value).clamp(0.0, 1.0);
+        }
+    }
+
     /// Suspend, apply, resume — the state-transfer window the spec expects.
     fn with_suspended_renderer(
         &mut self,
@@ -494,9 +508,73 @@ impl PluginInstance for Vst2Instance {
             };
             Ok(())
         });
-        // Defaults may have moved; refresh the scanned table's starting
-        // point is not needed — automation targets stay normalized.
+        // The chunk moved the plugin off its scanned defaults; the table
+        // must follow what the instance reports now (see
+        // `refresh_parameters` for why a stale table would swallow edits).
+        if outcome.is_ok() {
+            self.refresh_parameters();
+        }
         outcome
+    }
+
+    fn preset_names(&self) -> Vec<String> {
+        // SAFETY: control-side name reads on the live effect; each call
+        // writes at most kVstMaxProgNameLen bytes into the local buffer.
+        let count = unsafe { (*self.effect).num_programs }.clamp(0, 4096);
+        let mut names = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let mut buffer = [0u8; 64];
+            unsafe {
+                ((*self.effect).dispatcher)(
+                    self.effect,
+                    EFF_GET_PROGRAM_NAME_INDEXED,
+                    index,
+                    0,
+                    buffer.as_mut_ptr().cast(),
+                    0.0,
+                );
+            }
+            let name = string_from_cbuf(&buffer);
+            // Some plugins answer the opcode with an empty buffer; a
+            // numbered row keeps the picker aligned with the plugin's own
+            // program order instead of collapsing the list.
+            names.push(if name.is_empty() {
+                format!("Program {}", index + 1)
+            } else {
+                name
+            });
+        }
+        names
+    }
+
+    fn select_preset(&mut self, index: u32) -> Result<(), PluginError> {
+        // The dispatcher's result is no reliable success signal (many
+        // plugins return the new index, others 0 regardless), so the index
+        // is validated against the advertised program count first.
+        let programs = unsafe { (*self.effect).num_programs }.max(0) as u32;
+        if index >= programs {
+            return Err(PluginError::State(format!(
+                "program {index} is outside the plugin's {programs} reported programs"
+            )));
+        }
+        // SAFETY: control-side program switch on the live effect. The VST2
+        // hosting contract does not suspend the renderer for a program
+        // change (unlike a chunk transfer), so no stop/start dance here.
+        unsafe {
+            ((*self.effect).dispatcher)(
+                self.effect,
+                EFF_SET_PROGRAM,
+                0,
+                index as isize,
+                std::ptr::null_mut(),
+                0.0,
+            );
+        }
+        // The program moved the plugin off its scanned defaults; the table
+        // must follow what the instance reports now (see
+        // `refresh_parameters` for why a stale table would swallow edits).
+        self.refresh_parameters();
+        Ok(())
     }
 }
 

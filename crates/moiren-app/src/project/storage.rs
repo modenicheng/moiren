@@ -163,7 +163,7 @@ pub fn save_preferences_at(
     write_json(path, preferences)
 }
 
-pub(super) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, PersistenceError> {
+pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, PersistenceError> {
     let file = File::open(path).map_err(|error| io_error("open", path, error))?;
     let mut bytes = Vec::new();
     file.take(MAX_DOCUMENT_BYTES + 1)
@@ -180,7 +180,7 @@ pub(super) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, Persisten
     })
 }
 
-pub(super) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), PersistenceError> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), PersistenceError> {
     let mut bytes = serde_json::to_vec_pretty(value).map_err(|source| PersistenceError::Json {
         path: path.to_owned(),
         source,

@@ -1721,8 +1721,9 @@ fn settled_lifecycle_projections_do_not_advance_the_state_epoch() {
 }
 
 /// One-library test fixture: a stereo plugin with a single parameter under
-/// a known stable id.
-fn plugin_library_fixture() -> (PluginLibrary, String) {
+/// a known stable id. `channels` overrides the bus width for the adaptation
+/// suites; the stable id stays the same shape.
+fn plugin_library_fixture_at(channels: u32) -> (PluginLibrary, String) {
     use moiren_plugins::spec::{PluginDescriptor, PluginFormat, PluginParameterSpec};
     let descriptor = PluginDescriptor {
         format: PluginFormat::Clap,
@@ -1731,8 +1732,8 @@ fn plugin_library_fixture() -> (PluginLibrary, String) {
         name: "Fixture".into(),
         vendor: "Moiren".into(),
         version: "1.0".into(),
-        input_channels: 2,
-        output_channels: 2,
+        input_channels: channels,
+        output_channels: channels,
         is_synth: false,
         has_editor: false,
     };
@@ -1751,11 +1752,16 @@ fn plugin_library_fixture() -> (PluginLibrary, String) {
                     stepped: false,
                 }],
                 latency_frames: 64,
+                presets: vec!["Flat".into(), "Loud".into()],
             }],
             failures: Vec::new(),
         }),
         key,
     )
+}
+
+fn plugin_library_fixture() -> (PluginLibrary, String) {
+    plugin_library_fixture_at(2)
 }
 
 #[test]
@@ -1787,6 +1793,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
     let assignment = PluginAssignment {
         id: key.clone(),
         preset: None,
+        preset_program: None,
     };
     // Only Plugin nodes accept an assignment.
     assert!(
@@ -1794,6 +1801,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
             .edit(GraphEdit::BindPlugin {
                 node: gain,
                 assignment: Some(assignment.clone()),
+                adapt_channels: None,
             })
             .is_err()
     );
@@ -1805,7 +1813,9 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
                 assignment: Some(PluginAssignment {
                     id: "  ".into(),
                     preset: None,
+                    preset_program: None,
                 }),
+                adapt_channels: None,
             })
             .is_err()
     );
@@ -1813,6 +1823,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
         .edit(GraphEdit::BindPlugin {
             node: plugin,
             assignment: Some(assignment),
+            adapt_channels: None,
         })
         .unwrap();
     assert_eq!(
@@ -1820,6 +1831,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
         Some(PluginAssignment {
             id: key,
             preset: None,
+            preset_program: None,
         })
     );
     // Assignment is structural: the edit reports a rebuild is required.
@@ -1827,6 +1839,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
         .edit(GraphEdit::BindPlugin {
             node: plugin,
             assignment: None,
+            adapt_channels: None,
         })
         .unwrap();
     assert!(structural);
@@ -1836,6 +1849,7 @@ fn plugin_assignment_edits_are_kind_checked_and_clearable() {
         .edit(GraphEdit::BindPlugin {
             node: plugin,
             assignment: None,
+            adapt_channels: None,
         })
         .unwrap();
     service.edit(GraphEdit::ClearBinding(plugin)).unwrap();
@@ -1886,7 +1900,9 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
             assignment: Some(PluginAssignment {
                 id: "CLAP|gone|/moved.clap".into(),
                 preset: None,
+                preset_program: None,
             }),
+            adapt_channels: None,
         })
         .unwrap();
     let mut preparation = service.preparation();
@@ -1906,7 +1922,9 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
             assignment: Some(PluginAssignment {
                 id: key,
                 preset: Some(preset.clone()),
+                preset_program: None,
             }),
+            adapt_channels: None,
         })
         .unwrap();
     let mut preparation = service.preparation();
@@ -1945,7 +1963,9 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
             assignment: Some(PluginAssignment {
                 id: mono_key,
                 preset: None,
+                preset_program: None,
             }),
+            adapt_channels: None,
         })
         .unwrap();
     let mut preparation = narrow.preparation();
@@ -1955,4 +1975,335 @@ fn plugin_preparation_lowers_assignments_and_fails_at_the_node() {
         .unwrap_err();
     assert_eq!(failure.node, Some(mono));
     assert!(failure.cause.contains("channels"));
+}
+
+/// The preset picker's writes: a factory program is one of the two preset
+/// forms, the two forms are mutually exclusive, and rapid selections ride
+/// the BindPlugin undo key into a single undo step.
+#[test]
+fn plugin_preset_program_selection_round_trips_through_undo() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    use moiren_engine::host::NodeConfig;
+    let mut service = ServiceGraph::default();
+    let (.., sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (library, key) = plugin_library_fixture();
+    let assign = |program: Option<u32>| GraphEdit::BindPlugin {
+        node: plugin,
+        assignment: Some(PluginAssignment {
+            id: key.clone(),
+            preset: None,
+            preset_program: program,
+        }),
+        adapt_channels: None,
+    };
+    service.edit(assign(None)).unwrap();
+
+    // Carrying both preset forms is corrupt, not a fallback order.
+    assert!(
+        service
+            .edit(GraphEdit::BindPlugin {
+                node: plugin,
+                assignment: Some(PluginAssignment {
+                    id: key.clone(),
+                    preset: Some(vec![1]),
+                    preset_program: Some(1),
+                }),
+                adapt_channels: None,
+            })
+            .is_err()
+    );
+    assert_eq!(
+        service.snapshot().node(plugin).unwrap().plugin,
+        Some(PluginAssignment {
+            id: key.clone(),
+            preset: None,
+            preset_program: None,
+        })
+    );
+
+    // Selection lands in the candidate...
+    service.edit(assign(Some(1))).unwrap();
+    service.edit(assign(Some(2))).unwrap();
+    let assignment = service
+        .snapshot()
+        .node(plugin)
+        .unwrap()
+        .plugin
+        .clone()
+        .expect("assigned");
+    assert_eq!(assignment.preset_program, Some(2));
+    assert!(assignment.preset.is_none());
+
+    // ...and lowers to the engine's plugin settings.
+    let mut preparation = service.preparation();
+    preparation.plugins = std::sync::Arc::new(library);
+    let project = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .unwrap();
+    let NodeConfig::Plugin(settings) = &project.nodes[&plugin] else {
+        panic!("plugin config");
+    };
+    assert_eq!(settings.preset_program, Some(2));
+    assert!(settings.preset.is_none());
+
+    // Rapid selections coalesce onto the BindPlugin undo key: one undo step
+    // returns to the journal entry recorded before the first selection (the
+    // initial unselected assignment), and redo restores the latest one.
+    assert!(service.undo());
+    assert_eq!(service.snapshot().node(plugin).unwrap().plugin, None);
+    assert!(service.redo());
+    let assignment = service
+        .snapshot()
+        .node(plugin)
+        .unwrap()
+        .plugin
+        .clone()
+        .expect("assigned");
+    assert_eq!(assignment.preset_program, Some(2));
+}
+
+/// A stale factory-program index (against a changed plugin) survives the
+/// edit chain as data: project lowering stays valid, and the rejection is
+/// the engine's instance construction (select_preset), which surfaces as a
+/// node-aimed preparation fault through the usual path.
+#[test]
+fn plugin_preset_program_outside_the_scanned_list_stays_valid_project_data() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
+    use moiren_engine::host::NodeConfig;
+    let mut service = ServiceGraph::default();
+    let (.., sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (library, key) = plugin_library_fixture();
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: Some(PluginAssignment {
+                id: key,
+                preset: None,
+                preset_program: Some(7),
+            }),
+            adapt_channels: None,
+        })
+        .unwrap();
+    let mut preparation = service.preparation();
+    preparation.plugins = std::sync::Arc::new(library);
+    let project = preparation
+        .configured_engine_project(256, &AudioSettings::default(), AudioLatencyProfile::Low)
+        .expect("the index is data until instance construction");
+    let NodeConfig::Plugin(settings) = &project.nodes[&plugin] else {
+        panic!("plugin config");
+    };
+    assert_eq!(settings.preset_program, Some(7));
+}
+
+/// Same-width adaptation is the no-op half of a bind; undo still steps the
+/// whole bind back.
+#[test]
+fn plugin_bind_with_matching_width_adaptation_is_a_plain_bind() {
+    let mut service = ServiceGraph::default();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (library, key) = plugin_library_fixture();
+    let _ = library;
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: Some(PluginAssignment {
+                id: key.clone(),
+                preset: None,
+                preset_program: None,
+            }),
+            adapt_channels: Some(2),
+        })
+        .unwrap();
+    assert!(service.snapshot().node(plugin).unwrap().plugin.is_some());
+    assert!(service.undo());
+    assert!(service.snapshot().node(plugin).unwrap().plugin.is_none());
+}
+
+/// An unwired node binds and adapts in one candidate edit: the node carries
+/// the plugin's bus width afterwards, a strip mode that cannot exist at the
+/// new width resets to the width-independent Normal, and one undo step
+/// restores width and assignment together.
+#[test]
+fn plugin_bind_adaptation_resizes_and_resets_the_dead_mode_undoably() {
+    let mut service = ServiceGraph::default();
+    // A wide node whose strip mode (Swap, index `width + 2`) is meaningful
+    // only at six channels; the assigned plugin is stereo.
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 6,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let (library, key) = plugin_library_fixture();
+    let _ = library;
+    service
+        .edit(GraphEdit::SetMixer {
+            node: plugin,
+            state: MixerState {
+                channel_mode: 8, // Swap: exists only on a 6ch strip.
+                ..MixerState::default()
+            },
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::BindPlugin {
+            node: plugin,
+            assignment: Some(PluginAssignment {
+                id: key,
+                preset: None,
+                preset_program: None,
+            }),
+            adapt_channels: Some(2),
+        })
+        .unwrap();
+    let snapshot = service.snapshot();
+    assert_eq!(
+        snapshot.graph.get_node(plugin).unwrap().channels(),
+        2,
+        "the node carries the plugin's bus width"
+    );
+    assert!(snapshot.node(plugin).unwrap().plugin.is_some());
+    assert_eq!(
+        snapshot.node(plugin).unwrap().mixer.channel_mode,
+        0,
+        "a 6ch-only mode cannot survive a narrowing"
+    );
+    // One undo step restores both the width and the assignment together.
+    assert!(service.undo());
+    let snapshot = service.snapshot();
+    assert_eq!(snapshot.graph.get_node(plugin).unwrap().channels(), 6);
+    assert!(snapshot.node(plugin).unwrap().plugin.is_none());
+    assert!(service.redo());
+    assert_eq!(
+        service
+            .snapshot()
+            .graph
+            .get_node(plugin)
+            .unwrap()
+            .channels(),
+        2
+    );
+}
+
+/// A wired node's adaptation proposal that would strand its route fails the
+/// whole edit: the wiring stays intact, the assignment does not persist,
+/// and the rejection is reported at the node.
+#[test]
+fn plugin_bind_adaptation_refuses_to_strand_connected_routes() {
+    let mut service = ServiceGraph::default();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Plugin,
+            channels: 2,
+        })
+        .unwrap();
+    let plugin = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Plugin)
+        .unwrap()
+        .id();
+    let source = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Source)
+        .unwrap()
+        .id();
+    service
+        .edit(GraphEdit::Connect {
+            source: service.snapshot().graph.get_node(source).unwrap().outputs()[0].id(),
+            destination: service.snapshot().graph.get_node(plugin).unwrap().inputs()[0].id(),
+        })
+        .unwrap();
+    let (library, key) = plugin_library_fixture_at(6);
+    let _ = library;
+    let edges_before = service.snapshot().graph.edges().len();
+    assert!(
+        service
+            .edit(GraphEdit::BindPlugin {
+                node: plugin,
+                assignment: Some(PluginAssignment {
+                    id: key,
+                    preset: None,
+                    preset_program: None,
+                }),
+                adapt_channels: Some(6),
+            })
+            .is_err(),
+        "widening a wired node would strand its route"
+    );
+    let snapshot = service.snapshot();
+    assert_eq!(
+        snapshot.graph.get_node(plugin).unwrap().channels(),
+        2,
+        "the wiring keeps the node at its old width"
+    );
+    assert!(snapshot.node(plugin).unwrap().plugin.is_none());
+    assert!(snapshot.node_faulted(plugin), "the rejection is reported");
+    assert_eq!(snapshot.graph.edges().len(), edges_before);
 }

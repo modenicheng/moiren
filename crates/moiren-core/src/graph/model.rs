@@ -28,6 +28,8 @@ pub enum GraphError {
     FixedPortLayout,
     #[error("disconnect the port before removing it")]
     PortConnected,
+    #[error("this width change would strand connected routes; disconnect them first")]
+    StrandedEdges,
     #[error("gain must be finite and nonnegative, pan must be finite in [-1, 1]")]
     InvalidSendParameters,
     #[error("node layout or graph object identity violates the model contract")]

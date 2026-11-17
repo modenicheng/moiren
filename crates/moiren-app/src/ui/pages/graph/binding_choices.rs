@@ -28,8 +28,11 @@ pub(crate) enum BindingAction {
     Edit(GraphEdit),
     Refresh,
     /// Kick a sandboxed plugin scan; the list re-renders from the replaced
-    /// library when the scan lands.
-    ScanPlugins,
+    /// library when the scan lands. Unchanged roots are served from the
+    /// on-disk scan cache unless `force` bypasses it.
+    ScanPlugins {
+        force: bool,
+    },
 }
 
 /// What one choice binds. Also the stable identity both surfaces derive
@@ -47,6 +50,7 @@ pub(crate) enum BindingTarget {
     MicrophoneExport { endpoint_id: String },
     Plugin { id: String },
     ScanPlugins,
+    ForceScanPlugins,
 }
 
 impl BindingTarget {
@@ -67,6 +71,7 @@ impl BindingTarget {
             }
             Self::Plugin { id } => format!("bind-plugin-{id}").into(),
             Self::ScanPlugins => "scan-plugins".into(),
+            Self::ForceScanPlugins => "force-scan-plugins".into(),
         }
     }
 }
@@ -280,7 +285,8 @@ pub(crate) fn source_choices(
 }
 
 /// The plugin picker's ordered list: clear (only when something is
-/// assigned), the library's plugins, and the sandboxed rescan action.
+/// assigned), the library's plugins, the cache-aware refresh, and the
+/// forced rescan that bypasses the cache.
 pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> Vec<BindingChoice> {
     let id = entry.id;
     let mut choices = Vec::new();
@@ -293,6 +299,27 @@ pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> 
         });
     }
     for (plugin_id, label) in snapshot.plugins.picker_rows() {
+        // Re-picking the plugin that is already assigned re-binds it without
+        // disturbing its preset selection; a different plugin starts fresh.
+        let assignment = match entry.plugin.as_ref() {
+            Some(existing) if existing.id == plugin_id => existing.clone(),
+            _ => crate::service::PluginAssignment {
+                id: plugin_id.clone(),
+                preset: None,
+                preset_program: None,
+            },
+        };
+        // Width adaptation rides the same bind when the plugin's bus width
+        // differs from the node's — but only when the edit cannot strand a
+        // connected route: the core rejects a resize whose far side keeps
+        // the old width, so a wired-incompatible node binds in place and
+        // keeps the preparation width fault as the presentation instead of
+        // losing its wiring.
+        let adapt_channels = plugin_width(snapshot, &plugin_id).and_then(|width| {
+            (width != node_channels(snapshot, id))
+                .then_some(width)
+                .filter(|width| !edges_strand(snapshot, id, *width))
+        });
         choices.push(BindingChoice {
             target: BindingTarget::Plugin {
                 id: plugin_id.clone(),
@@ -304,10 +331,8 @@ pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> 
                 .is_some_and(|assignment| assignment.id == plugin_id),
             action: BindingAction::Edit(GraphEdit::BindPlugin {
                 node: id,
-                assignment: Some(crate::service::PluginAssignment {
-                    id: plugin_id,
-                    preset: None,
-                }),
+                assignment: Some(assignment),
+                adapt_channels,
             }),
         });
     }
@@ -315,9 +340,55 @@ pub(crate) fn plugin_choices(snapshot: &AppSnapshot, entry: &GraphNodeState) -> 
         target: BindingTarget::ScanPlugins,
         label: t!("Scan plugin folders").to_string(),
         current: false,
-        action: BindingAction::ScanPlugins,
+        action: BindingAction::ScanPlugins { force: false },
+    });
+    choices.push(BindingChoice {
+        target: BindingTarget::ForceScanPlugins,
+        label: t!("Force full rescan").to_string(),
+        current: false,
+        action: BindingAction::ScanPlugins { force: true },
     });
     choices
+}
+
+/// The plugin's bus width the node must carry, or `None` when the plugin is
+/// missing from the library or reports zero (a descriptor the format cannot
+/// answer without instantiation — never a safe width).
+fn plugin_width(snapshot: &AppSnapshot, plugin_id: &str) -> Option<usize> {
+    snapshot
+        .plugins
+        .get(plugin_id)
+        .map(|plugin| plugin.descriptor.channels() as usize)
+        .filter(|width| *width > 0)
+}
+
+fn node_channels(snapshot: &AppSnapshot, id: NodeId) -> usize {
+    snapshot
+        .graph
+        .graph
+        .get_node(id)
+        .map(|node| node.channels())
+        .unwrap_or_default()
+}
+
+/// Whether binding `width` on the node would strand an incident route: the
+/// same equal-width rule the graph's connect contract enforces, evaluated
+/// against each far endpoint port.
+fn edges_strand(snapshot: &AppSnapshot, id: NodeId, width: usize) -> bool {
+    snapshot.graph.graph.edges().iter().any(|edge| {
+        let far_port = if edge.src() == id {
+            edge.dst_port()
+        } else if edge.dst() == id {
+            edge.src_port()
+        } else {
+            return false;
+        };
+        snapshot
+            .graph
+            .graph
+            .get_port(far_port)
+            .is_ok_and(|far| far.channels() != width)
+    })
 }
 
 /// The sink picker's ordered list: clear (only when something is bound),
@@ -392,7 +463,10 @@ fn microphone_exports(snapshot: &AppSnapshot) -> impl Iterator<Item = &ExportInt
 mod tests {
     // No `use super::*` here: the glob re-exports gpui_kit's `test`, which
     // shadows the std #[test] attribute (the PR #28 trap).
-    use super::{BindingChoice, SourceClass, effective_source_class, source_choices};
+    use super::{
+        BindingAction, BindingChoice, BindingTarget, SourceClass, effective_source_class,
+        plugin_choices, plugin_width, source_choices,
+    };
     use crate::service::InputSelection;
     use moiren_core::graph::NodeKind;
     use moiren_engine::audio_config::AudioBackend;
@@ -680,5 +754,134 @@ mod tests {
                 "an absent class with binding {source:?} must bootstrap as {expected:?}"
             );
         }
+    }
+
+    /// The picker's width-adaptation preflight: an unwired node proposes the
+    /// plugin's bus width, a wired node whose route cannot follow binds in
+    /// place (the fault stays the presentation), and the preflight helpers
+    /// answer a missing plugin with no width at all.
+    #[test]
+    fn plugin_picker_adapts_unwired_nodes_and_spares_wired_routes() {
+        use crate::service::{GraphEdit, PluginLibrary, ServiceGraph};
+        use moiren_plugins::spec::{PluginDescriptor, PluginFormat};
+
+        let descriptor = |channels: u32| PluginDescriptor {
+            format: PluginFormat::Clap,
+            path: "/plugins/adapt.clap".into(),
+            id: "org.moiren.adapt".into(),
+            name: "Adapt Fixture".into(),
+            vendor: "Moiren".into(),
+            version: "1.0".into(),
+            input_channels: channels,
+            output_channels: channels,
+            is_synth: false,
+            has_editor: false,
+        };
+        let library = PluginLibrary::from_sandbox_report(moiren_plugins::sandbox::SandboxReport {
+            descriptors: vec![moiren_plugins::sandbox::SandboxDescriptor {
+                descriptor: descriptor(6),
+                parameters: Vec::new(),
+                latency_frames: 0,
+                presets: Vec::new(),
+            }],
+            failures: Vec::new(),
+        });
+
+        let plugin_row_action = |graph: crate::service::GraphSnapshot, library: &PluginLibrary| {
+            let mut snapshot = snapshot(AudioBackend::Wasapi);
+            *std::sync::Arc::make_mut(&mut snapshot.graph) = graph;
+            snapshot.plugins = std::sync::Arc::new(library.clone());
+            let plugin = snapshot
+                .graph
+                .graph
+                .nodes()
+                .iter()
+                .find(|node| node.kind() == NodeKind::Plugin)
+                .unwrap()
+                .id();
+            let entry = snapshot.graph.node(plugin).unwrap().clone();
+            let action = plugin_choices(&snapshot, &entry)
+                .into_iter()
+                .find(|choice| matches!(choice.target, BindingTarget::Plugin { .. }))
+                .expect("plugin row")
+                .action;
+            (action, plugin)
+        };
+        // An unwired stereo node: the picker proposes widening to the plugin.
+        let mut unwired = ServiceGraph::default();
+        unwired
+            .edit(GraphEdit::AddNode {
+                kind: NodeKind::Plugin,
+                channels: 2,
+            })
+            .unwrap();
+        let (action, plugin) = plugin_row_action(unwired.snapshot(), &library);
+        let BindingAction::Edit(GraphEdit::BindPlugin {
+            node,
+            adapt_channels,
+            ..
+        }) = &action
+        else {
+            panic!("expected an edit action, got {action:?}")
+        };
+        assert_eq!(*node, plugin);
+        assert_eq!(*adapt_channels, Some(6));
+
+        // The same node wired to its 2ch source: the route cannot follow,
+        // so the row binds in place with no adaptation.
+        let mut wired = ServiceGraph::default();
+        wired
+            .edit(GraphEdit::AddNode {
+                kind: NodeKind::Plugin,
+                channels: 2,
+            })
+            .unwrap();
+        let source = wired
+            .snapshot()
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .unwrap()
+            .id();
+        let source_out = wired.snapshot().graph.get_node(source).unwrap().outputs()[0].id();
+        let plugin_in = wired
+            .snapshot()
+            .graph
+            .get_node(
+                wired
+                    .snapshot()
+                    .graph
+                    .nodes()
+                    .iter()
+                    .find(|node| node.kind() == NodeKind::Plugin)
+                    .unwrap()
+                    .id(),
+            )
+            .unwrap()
+            .inputs()[0]
+            .id();
+        wired
+            .edit(GraphEdit::Connect {
+                source: source_out,
+                destination: plugin_in,
+            })
+            .unwrap();
+        let (action, plugin) = plugin_row_action(wired.snapshot(), &library);
+        let BindingAction::Edit(GraphEdit::BindPlugin {
+            node,
+            adapt_channels,
+            ..
+        }) = &action
+        else {
+            panic!("expected an edit action, got {action:?}")
+        };
+        assert_eq!(*node, plugin);
+        assert_eq!(*adapt_channels, None);
+
+        // The width helpers: a missing plugin has no width to adapt to.
+        let mut snapshot = snapshot(AudioBackend::Wasapi);
+        snapshot.plugins = std::sync::Arc::new(library);
+        assert_eq!(plugin_width(&snapshot, "CLAP|missing|/gone.clap"), None);
     }
 }

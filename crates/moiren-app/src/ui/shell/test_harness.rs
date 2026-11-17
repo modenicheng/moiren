@@ -108,9 +108,23 @@ pub fn test_shell(
     &mut gpui_kit::VisualTestContext,
     ServiceRuntime,
 ) {
+    test_shell_with(cx, crate::service::ServiceContext::default())
+}
+
+/// The same shell over a caller-built service context, so suites can seed
+/// domains the default context starts empty (the plugin library, for one).
+#[cfg(feature = "gpui-test")]
+pub fn test_shell_with(
+    cx: &mut gpui_kit::TestAppContext,
+    context: crate::service::ServiceContext,
+) -> (
+    gpui_kit::Entity<super::StudioShell>,
+    &mut gpui_kit::VisualTestContext,
+    ServiceRuntime,
+) {
     use gpui_kit::AppContext;
     cx.update(gpui_kit::init);
-    let runtime = spawn_service();
+    let runtime = ServiceRuntime::spawn_with_context(crate::service::CoreDriver, context).unwrap();
     let handle = runtime.handle();
     let snapshot = initial_projection(&handle);
     let state = cx.new(|_| UiState::new(handle, snapshot));
