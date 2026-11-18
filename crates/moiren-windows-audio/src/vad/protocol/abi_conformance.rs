@@ -91,6 +91,19 @@ fn scalar_constants_match_header() {
         ("MOIREN_VAD_CAP_STREAMS", CAP_STREAMS as u64),
         ("MOIREN_VAD_CAP_PCM", CAP_PCM as u64),
         ("MOIREN_VAD_CAP_CREATE_DEFERRED", CAP_CREATE_DEFERRED as u64),
+        (
+            "MOIREN_VAD_CAP_PUBLICATION_IDENTITY",
+            CAP_PUBLICATION_IDENTITY as u64,
+        ),
+        ("MOIREN_VAD_IDENTITY_VERSION", IDENTITY_VERSION as u64),
+        (
+            "MOIREN_VAD_IDENTITY_ESTABLISH_NEW",
+            PublicationMode::EstablishNew as u64,
+        ),
+        (
+            "MOIREN_VAD_IDENTITY_REOPEN_OR_ADOPT",
+            PublicationMode::ReopenOrAdopt as u64,
+        ),
         ("MOIREN_VAD_FORMAT_PCM16", FORMAT_PCM16 as u64),
         ("MOIREN_VAD_FORMAT_FLOAT32", FORMAT_FLOAT32 as u64),
         ("MOIREN_VAD_INTENT_PLAYBACK", Intent::Playback as u64),

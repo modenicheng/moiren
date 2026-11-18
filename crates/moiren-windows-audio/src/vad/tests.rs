@@ -19,6 +19,9 @@ fn id() -> StableEndpointId {
 
 #[test]
 fn identity_create_is_negotiated_separately_from_unchanged_v2() {
+    let identity_request = identity_capabilities_request();
+    assert_eq!(u32_at(&identity_request, 0), identity_request.len() as u32);
+    assert_eq!(u32_at(&identity_request, 4), IDENTITY_VERSION);
     let mut identity_caps = [0; IDENTITY_CAPABILITIES_SIZE];
     put32(&mut identity_caps, 0, IDENTITY_CAPABILITIES_SIZE as u32);
     put32(&mut identity_caps, 4, IDENTITY_VERSION);
