@@ -303,7 +303,8 @@ def validate_provenance(raw, result_bytes, ack, expected):
     return manifest
 
 
-def verify_delivery(evidence_directory, remote_run, expected_local_ack_sha256):
+def verify_delivery(evidence_directory, remote_run, expected_local_ack_sha256, *,
+                    expected_local_ack_pin=None, expected_manifest_pin=None):
     run = canonical_run(remote_run)
     expected_hash = hash_text(expected_local_ack_sha256)
     root = safe_local(evidence_directory, directory=True)
@@ -312,6 +313,10 @@ def verify_delivery(evidence_directory, remote_run, expected_local_ack_sha256):
     with ExitStack() as stack:
         ack_file = open_input(stack, root / 'local-ack.json', ACK_CAP)
         ack, ack_raw = read_local_ack(ack_file, run, expected_hash)
+        source_ack = {'Path': run + '.archive-local.json', 'Bytes': len(ack_raw),
+                      'Sha256': expected_hash}
+        if expected_local_ack_pin is not None:
+            same_pin(source_ack, expected_local_ack_pin)
         inventory_file = open_input(stack, root / 'inventory.json', FILE_CAP)
         _, _, inventory_raw = read_stream(inventory_file, FILE_CAP, capture=True)
         matches_bytes(ack['InventoryPin'], inventory_raw)
@@ -381,6 +386,8 @@ def verify_delivery(evidence_directory, remote_run, expected_local_ack_sha256):
         require(captures['export/inventory.json'] == inventory_raw, 'embedded inventory differs from pinned sidecar')
         manifest = validate_provenance(captures['export/provenance.json'],
                                        captures['run/controller-result.json'], ack, expected)
+        if expected_manifest_pin is not None:
+            same_pin(manifest, expected_manifest_pin)
         # Re-read the original open handles. No external target pin path is opened.
         matches_bytes({'Bytes': len(ack_raw), 'Sha256': expected_hash}, read_stream(ack_file, ACK_CAP, True)[2])
         matches_bytes(ack['InventoryPin'], read_stream(inventory_file, FILE_CAP, True)[2])
@@ -391,8 +398,7 @@ def verify_delivery(evidence_directory, remote_run, expected_local_ack_sha256):
         receipt = {'SchemaVersion': 1, 'Meaning': 'HOST_ARCHIVE_DELIVERY_VERIFIED',
                    'Target': TARGET, 'RunDirectory': run, 'Nonce': ack['Nonce'],
                    'ResultPin': ack['ResultPin'], 'ManifestPin': manifest,
-                   'SourceLocalAckPin': {'Path': run + '.archive-local.json', 'Bytes': len(ack_raw),
-                                         'Sha256': expected_hash},
+                   'SourceLocalAckPin': source_ack,
                    'ArchivePin': ack['ArchivePin'], 'InventoryPin': ack['InventoryPin'],
                    'HostArchivePin': archive_pin,
                    'HostInventoryPin': content_pin(root / 'inventory.json', inventory_file, FILE_CAP),

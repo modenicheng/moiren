@@ -26,10 +26,10 @@ def pin(path, data):
             'Sha256': hashlib.sha256(data).hexdigest().upper()}
 
 
-def fixture(directory):
-    run = r'D:\MoirenTest\fixture-delivery'
+def fixture(directory, run=r'D:\MoirenTest\fixture-delivery', manifest_pin=None):
     nonce = 'a' * 32
-    manifest_pin = pin(r'D:\MoirenTest\inputs.json', b'{}')
+    if manifest_pin is None:
+        manifest_pin = pin(r'D:\MoirenTest\inputs.json', b'{}')
     result = encoded({'ControllerComplete': True, 'Nonce': nonce, 'Safe': False,
                       'SchemaVersion': 1, 'Manifest': manifest_pin,
                       'NativePassed': False, 'Qualified': False})

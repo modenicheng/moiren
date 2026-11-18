@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Production entry handoff tests use local files and a fake SSH boundary."""
 import base64
+from contextlib import redirect_stdout
 import hashlib
 import importlib.util
 import io
@@ -24,6 +25,7 @@ def load(name, path):
 
 SOURCE = Path(__file__).resolve().parents[1] / 'vad-diagnostic.py'
 M = load('diagnostic_handoff_tests', SOURCE) if SOURCE.exists() else None
+ARCHIVE_FIXTURE = load('diagnostic_archive_fixture', Path(__file__).with_name('vad-delivery.tests.py'))
 RUN = r'D:\MoirenTest\diagnostic-handoff-fixture'
 SOURCES = r'D:\MoirenTest\reviewed\vad-removal'
 MANIFEST = r'D:\MoirenTest\reviewed\run-manifest.json'
@@ -167,6 +169,67 @@ class Handoff(unittest.TestCase):
         self.assertFalse(result['Qualified'])
         self.assertFalse(result['CleanupAuthorized'])
         self.assertEqual(json.loads((self.root / 'host' / 'handoff-complete.json').read_bytes()), result)
+
+    def completed_fixture(self, root, archive_manifest=None, wrong_ack_size=False):
+        archive = root / 'delivery'
+        archive.mkdir(parents=True)
+        ARCHIVE_FIXTURE.fixture(archive, RUN, archive_manifest or self.manifest_pin)
+        ack = pin(RUN + '.archive-local.json', (archive / 'local-ack.json').read_bytes())
+        if wrong_ack_size:
+            ack['Bytes'] += 1
+        stdout = encoded({'Qualified': False, 'LocalAcknowledgement': ack})
+        terminal = dict(self.terminal,
+                        LocalAcknowledgementPin=ack,
+                        StdoutPin=pin(RUN + '.entry-stdout.log', stdout))
+        (root / 'entry-stdout.log').write_bytes(stdout)
+        (root / 'entry-stderr.log').write_bytes(b'original diagnostic failure')
+        data = encoded(terminal)
+        (root / 'entry-terminal.json').write_bytes(data)
+        return pin(RUN + '.entry-terminal.json', data)
+
+    def completed_cli(self, root, terminal_pin):
+        powershell = self.root / 'powershell-pin.json'
+        powershell.write_bytes(encoded(self.powershell))
+        terminal = self.root / 'original-terminal-pin.json'
+        terminal.write_bytes(encoded(terminal_pin))
+        argv = ['--manifest-copy', str(self.manifest),
+                '--expected-manifest-sha256', self.manifest_hash,
+                '--remote-manifest', MANIFEST, '--run-directory', RUN,
+                '--powershell-pin', str(powershell),
+                '--expected-powershell-pin-sha256', pin('', powershell.read_bytes())['Sha256'],
+                '--output-directory', str(root), '--completed-entry-pin', str(terminal)]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(M.main(argv), 0)
+        return json.loads(output.getvalue())
+
+    def test_completed_cli_verifies_original_entry_and_archive_without_transport(self):
+        root = self.root / 'manual-complete'
+        terminal_pin = self.completed_fixture(root)
+        receipt = self.completed_cli(root, terminal_pin)
+        self.assertEqual(receipt['Meaning'], 'COMPLETED_DIAGNOSTIC_VERIFIED_LOCALLY')
+        self.assertEqual(receipt['EntryExitCode'], 1)
+        self.assertEqual(receipt['EntryTerminalPin'], terminal_pin)
+        self.assertFalse(receipt['Qualified'])
+        self.assertFalse(receipt['CleanupAuthorized'])
+        self.assertTrue((root / 'delivery' / 'host-delivery.json').is_file())
+        M.TRANSPORT.subprocess.Popen.assert_not_called()
+
+    def test_completed_cli_refuses_mutation_or_archive_from_another_manifest(self):
+        for mode in ('terminal', 'stdout', 'stderr', 'archive', 'manifest', 'ack-length'):
+            with self.subTest(mode=mode):
+                root = self.root / mode
+                other_manifest = pin(MANIFEST, b'other reviewed manifest') if mode == 'manifest' else None
+                terminal_pin = self.completed_fixture(root, other_manifest, wrong_ack_size=mode == 'ack-length')
+                target = {'terminal': 'entry-terminal.json', 'stdout': 'entry-stdout.log',
+                          'stderr': 'entry-stderr.log', 'archive': 'delivery/archive.zip'}.get(mode)
+                if target:
+                    with (root / target).open('ab') as stream:
+                        stream.write(b' ')
+                with self.assertRaises(ValueError):
+                    self.completed_cli(root, terminal_pin)
+                self.assertFalse((root / 'delivery' / 'host-delivery.json').exists())
+        M.TRANSPORT.subprocess.Popen.assert_not_called()
 
     def test_exit_zero_without_ack_is_retained_but_not_delivered(self):
         self.terminal.update(ExitCode=0, LocalAcknowledgementPin=None)

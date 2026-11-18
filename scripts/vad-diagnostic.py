@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Launch one pinned removal diagnostic and deliver its closed evidence.
+"""Launch a pinned removal diagnostic or verify an existing closed run locally.
 
 The target entry and the complete source set are locked before the first import.
 An exit-1 closed diagnostic remains evidence worth delivering, not a native pass.
 No target operation is attempted without explicit user reboot confirmation.
+Local verification starts no process on the target and writes no target receipt.
 """
 import argparse
 from contextlib import ExitStack
@@ -201,6 +202,46 @@ def _terminal(value, config):
                         run + '.archive-local.json')
 
 
+def _assert_original_entry_stdout(data, acknowledgment):
+    original = DELIVERY.strict_json(data)
+    require(original.get('Qualified') is False
+            and original.get('LocalAcknowledgement') == acknowledgment,
+            'original child stdout acknowledgment binding differs; no current-file adoption')
+
+
+def verify_completed_diagnostic(config, terminal_pin, evidence_directory):
+    """Verify a manual run against its original terminal pin and local copies."""
+    run = config['RunDirectory']
+    DELIVERY.pin(terminal_pin, DELIVERY.ACK_CAP, run + '.entry-terminal.json')
+    root = DELIVERY.safe_local(evidence_directory, directory=True)
+    terminal_path = root / 'entry-terminal.json'
+    with ExitStack() as stack:
+        terminal_file = DELIVERY.open_input(stack, terminal_path, DELIVERY.ACK_CAP)
+        raw = DELIVERY.read_stream(terminal_file, DELIVERY.ACK_CAP, True)[2]
+        DELIVERY.matches_bytes(terminal_pin, raw)
+        terminal = DELIVERY.strict_json(raw)
+        acknowledgment = _terminal(terminal, config)
+        pinned_files = [(terminal_path, terminal_file, terminal_pin)]
+        for field, name in (('StdoutPin', 'entry-stdout.log'), ('StderrPin', 'entry-stderr.log')):
+            path = root / name
+            stream = DELIVERY.open_input(stack, path, DELIVERY.ACK_CAP)
+            data = DELIVERY.read_stream(stream, DELIVERY.ACK_CAP, True)[2]
+            DELIVERY.matches_bytes(terminal[field], data)
+            if field == 'StdoutPin':
+                _assert_original_entry_stdout(data, acknowledgment)
+            pinned_files.append((path, stream, terminal[field]))
+
+        archive = DELIVERY.verify_delivery(root / 'delivery', run, acknowledgment['Sha256'],
+                                           expected_local_ack_pin=acknowledgment,
+                                           expected_manifest_pin=config['ManifestPin'])
+        for path, stream, expected in pinned_files:
+            DELIVERY.matches_bytes(expected, DELIVERY.read_stream(stream, DELIVERY.ACK_CAP, True)[2])
+            DELIVERY.assert_local_identity(path, stream)
+    return {'SchemaVersion': 1, 'Meaning': 'COMPLETED_DIAGNOSTIC_VERIFIED_LOCALLY',
+            'RunDirectory': run, 'EntryTerminalPin': terminal_pin, 'EntryExitCode': terminal['ExitCode'],
+            'Archive': archive, 'NativePassed': False, 'Qualified': False, 'CleanupAuthorized': False}
+
+
 def run_diagnostic(*, manifest_copy, expected_manifest_sha256, remote_manifest,
                    remote_run, powershell_pin, output_directory, user_reboot_confirmed,
                    worker_session_id=0, launch=None, download=None, deliver=None, file_handoff=None):
@@ -244,10 +285,7 @@ def run_diagnostic(*, manifest_copy, expected_manifest_sha256, remote_manifest,
             _, _, data = DELIVERY.read_stream(log, DELIVERY.ACK_CAP, True)
             DELIVERY.matches_bytes(expected, data)
             if field == 'StdoutPin':
-                original = DELIVERY.strict_json(data)
-                require(original.get('Qualified') is False
-                        and original.get('LocalAcknowledgement') == acknowledgment,
-                        'original child stdout acknowledgment binding differs; no current-file adoption')
+                _assert_original_entry_stdout(data, acknowledgment)
         sources = {item['Name']: item for item in config['Sources']}
         finalizer = sources['delivery-finalize.ps1']
         dependencies = [{key: sources[name][key] for key in ('Path', 'Bytes', 'Sha256')}
@@ -286,15 +324,22 @@ def main(argv=None):
     parser.add_argument('--run-directory', required=True)
     parser.add_argument('--powershell-pin', type=Path, required=True)
     parser.add_argument('--expected-powershell-pin-sha256', required=True)
-    parser.add_argument('--output-directory', type=Path, required=True)
+    parser.add_argument('--output-directory', type=Path, required=True,
+                        help='New output for a launch, or existing SCP copies for local verification')
+    parser.add_argument('--completed-entry-pin', type=Path,
+                        help='Verify local copies with the original entry response instead of launching')
     parser.add_argument('--worker-session-id', type=int, default=0)
     parser.add_argument('--user-reboot-confirmed', action='store_true')
     parser.add_argument('--file-handoff-helper', type=Path)
     parser.add_argument('--expected-file-handoff-helper-sha256')
     parser.add_argument('--file-handoff-parent')
     args = parser.parse_args(argv)
-    require(args.user_reboot_confirmed is True, 'user reboot confirmation required; no target access')
     handoff_args = (args.file_handoff_helper, args.expected_file_handoff_helper_sha256, args.file_handoff_parent)
+    if args.completed_entry_pin is None:
+        require(args.user_reboot_confirmed is True, 'user reboot confirmation required; no target access')
+    else:
+        require(not any(value is not None for value in handoff_args),
+                'local verification does not accept target handoff options')
     require(not any(value is not None for value in handoff_args) or all(value is not None for value in handoff_args),
             'file handoff requires helper path, independent SHA256 and staging parent together')
     file_handoff = None if args.file_handoff_helper is None else {
@@ -307,12 +352,18 @@ def main(argv=None):
         require(sha == DELIVERY.hash_text(args.expected_powershell_pin_sha256),
                 'independent PowerShell pin SHA256 differs')
         powershell = DELIVERY.strict_json(raw)
-        receipt = run_diagnostic(manifest_copy=args.manifest_copy,
-                                 expected_manifest_sha256=args.expected_manifest_sha256,
-                                 remote_manifest=args.remote_manifest, remote_run=args.run_directory,
-                                 powershell_pin=powershell, output_directory=args.output_directory,
-                                 user_reboot_confirmed=True, worker_session_id=args.worker_session_id,
-                                 file_handoff=file_handoff)
+        inputs = dict(manifest_copy=args.manifest_copy,
+                      expected_manifest_sha256=args.expected_manifest_sha256,
+                      remote_manifest=args.remote_manifest, remote_run=args.run_directory,
+                      powershell_pin=powershell, worker_session_id=args.worker_session_id)
+        if args.completed_entry_pin is None:
+            receipt = run_diagnostic(**inputs, output_directory=args.output_directory,
+                                     user_reboot_confirmed=True, file_handoff=file_handoff)
+        else:
+            config = prepare_config(**inputs)
+            pin_file = DELIVERY.open_input(stack, args.completed_entry_pin, DELIVERY.ACK_CAP)
+            terminal_pin = DELIVERY.strict_json(DELIVERY.read_stream(pin_file, DELIVERY.ACK_CAP, True)[2])
+            receipt = verify_completed_diagnostic(config, terminal_pin, args.output_directory)
     print(json.dumps(receipt, separators=(',', ':'), allow_nan=False))
     return 0
 

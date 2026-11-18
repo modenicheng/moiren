@@ -38,6 +38,26 @@ an acknowledgment or any incomplete/unknown orchestration is not delivery
 authority. Final handoff keeps `NativePassed=false`, `Qualified=false` and
 `CleanupAuthorized=false`.
 
+### Verifying a separately launched run
+
+`scripts/vad-diagnostic.py --completed-entry-pin PATH` verifies an existing
+closed run locally. Supply the terminal pin saved from the original entry's
+SSH response and the same reviewed manifest and PowerShell pins used for
+launch. An SSH exit code alone carries no terminal proof. If the original
+response is missing, a new hash of the remote terminal file cannot substitute
+for the received pin.
+
+Use plain SCP to copy the target's `.entry-terminal.json`,
+`.entry-stdout.log` and `.entry-stderr.log` sidecars into the
+`--output-directory` under those names without the run prefix. Copy the
+`.archive-local.json`, `.zip.inventory.json` and `.zip` sidecars into its
+`delivery/` directory as `local-ack.json`, `inventory.json` and
+`archive.zip` respectively. Keep the original response separately as
+`PATH`. The verifier checks the terminal, both logs, the original stdout
+acknowledgment, the manifest binding and all archive members. This mode uses
+local files only and publishes a local receipt. It preserves an exit-1
+closed diagnostic as failure evidence and grants no cleanup or qualification.
+
 ## Verification Boundaries
 
 Evidence root: `D:\coding\moiren-evidence\20261108-production-handoff`.
