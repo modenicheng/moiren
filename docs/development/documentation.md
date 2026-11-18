@@ -64,12 +64,11 @@
 
 ## 本地代理记忆（不上库）
 
-仓库 `.gitignore` 把 `.zcode/`、`.superpowers/`、`.tmp/`、`.v2c/`、`.claude/settings.local.json` 等列为"AI Slops"，这些是个人工作记忆，**不提交**：
+个人代理记忆、计划与 SDD 证据放在 gitignored 的本地目录；具体路径、文件格式与同步方式见未跟踪的 `docs/development/local/README.md`（模板见 [local.example.md](local.example.md)）。
 
-- zcode 项目记忆：`~/.zcode/cli/memories/projects/<project>/memory/`，`MEMORY.md` 是索引，单篇按 `日期-主题.md` 命名，frontmatter 写 `name`/`description`/`metadata`，正文固定 **Why** / **How to apply**，用 `[[wiki 链接]]` 串联。
-- 计划：`.zcode/plans/`（范围、决策、阶段、验证门、风险）。
-- SDD 证据：`.superpowers/sdd/`（brief / context / report / review / diff / 命令日志）。
-- 维护时机：战役收官、审计定案、踩坑定位、用户拍板之后更新记忆；稳定、可共享的规则再沉淀进本目录。
+- 本地记忆只记录一次性决策、踩坑、战役状态与个人习惯；稳定、可共享的规则回填到本目录。
+- 不把个人机器、凭据、内部地址写进公开文档；需要引用时用占位符。
+- 更新时机：战役收官、审计定案、踩坑定位、用户拍板之后；但不要用记忆替代仓库事实，代码/CI 才是最终事实源。
 
 ## 检查清单（提交文档 PR 前）
 

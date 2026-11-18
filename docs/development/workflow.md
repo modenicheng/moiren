@@ -92,15 +92,9 @@ git merge --ff-only origin/main
 
 ## 跨机与网络
 
-- **LAN 测试机**：ssh 别名 `moiren-lan`（仓库 `D:\moiren`，`receive.denyCurrentBranch=updateInstead`）；本地 remote 名 `lan`。`git push lan main` 会自动更新远端工作树；耗时的 build/test 在远端开 worktree 跑。
-- 远端无显示器时 gpui/DWM 相关性能数据不可用；窗口交互需在 console 会话启动。
-- **GitHub 通道**：HTTPS 依赖本机代理（Clash `127.0.0.1:7897`），`gh` API 与 SSH 会各自独立故障。SSH 超时可改用 HTTPS + gh 凭据：
-  ```sh
-  git -c credential.helper="!gh auth git-credential" \
-      push https://github.com/modenicheng/moiren.git <branch>
-  ```
-  git 经代理出现 TLS EOF 时加 `-c http.version=HTTP/1.1`；curl 经代理访问 GitHub 需要 `--ssl-no-revoke`。
-- 不要替用户切换/重启代理或改系统网络配置；网络恢复后从中断处继续。
+- 本仓库可能配置了本地辅助测试机、`lan` remote 或代理；具体主机、路径、ssh 别名、代理地址与并发限制属于本地环境信息，见未跟踪的 `docs/development/local/machines.md`（模板见 [local.example.md](local.example.md)）。
+- 公开文档不写机器名、IP、ssh 别名、代理地址或本地绝对路径。
+- 网络故障时只使用用户已有的通道（SSH/HTTPS 等），不要替用户切换/重启代理或改系统配置；恢复后从中断处继续。
 
 ## 清理债务
 

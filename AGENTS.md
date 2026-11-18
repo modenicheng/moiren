@@ -12,6 +12,7 @@ Moiren is a Rust 2024 workspace for Windows real-time audio. This file holds onl
 6. **Verify before claiming.** Run the gate for the touched surface ([verification.md](docs/development/verification.md)); `cargo test --workspace` alone is not the full gate. Hardware acceptance is user-run and stays separate from portable tests.
 7. **Safe collaboration.** Re-check `git branch`/`git status` before staging; never touch `.git/` or another session's WIP; one task = one branch/worktree. Ask the user for unresolved decisions instead of guessing.
 8. **Commit/PR discipline.** Conventional commits, atomic slices, squash-merged PRs; details and exceptions in [workflow.md](docs/development/workflow.md).
+9. **Personal environment stays local.** Never commit machine names/IPs, ssh aliases, proxies, personal preferences or hardware notes. Put them in the untracked `docs/development/local/` (template [local.example.md](docs/development/local.example.md)); tracked docs keep generic rules only.
 
 ## Start here
 
@@ -21,6 +22,7 @@ Moiren is a Rust 2024 workspace for Windows real-time audio. This file holds onl
 - [docs/TODO.md](docs/TODO.md): active design decisions and the work queue.
 - `docs/designs/NN-*.md`, `docs/audit/YYYY-MM-DD/`, `docs/validation/`, `docs/experiments/`: records, not current truth.
 - Each crate has a thin `AGENTS.md` that forwards to [docs/development/crates/](docs/development/crates/).
+- Untracked local environment/preferences: `docs/development/local/` (template [local.example.md](docs/development/local.example.md)), if present.
 
 ## Repository at a glance
 

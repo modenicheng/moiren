@@ -41,6 +41,10 @@ tools/audio-hack-lab/*.log
 .superpowers/
 .claude/settings.local.json
 
+# Personal/local development notes (machines, preferences, local quirks).
+# Tracked template: docs/development/local.example.md
+/docs/development/local/
+
 # Git worktrees live under .worktrees/ by repository convention
 .worktrees/
 

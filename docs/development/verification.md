@@ -44,26 +44,16 @@ cargo test --locked -p moiren-app --features gpui-test
 - 注意：**crate 目录内的文档（含 `crates/*/AGENTS.md`）会触发该 crate 的测试面**；根级 docs 通常不触发。文档 PR 也可能跑全 crate 测试，这是映射的既有设计，不是异常。
 - 未知路径与根 manifest/lock/toolchain/workflow 变化会保守回退到全量。
 
-## 本地环境注意事项
+## 本地/跨机环境
 
-- 重命令**串行执行**（一次一个），cargo 用 `-j 2`/`-j 4` 控制并发，避免降频；编译/测试并发时不要同时压满。
-- 后台 Git Bash 可能没有 cargo PATH，用 `"$USERPROFILE/.cargo/bin/cargo.exe"` 全路径。
-- `moiren-app.exe` 正在运行时 cargo 无法重链：可把 `target/debug/moiren-app.exe` 重命名为 `.running` 后跑测试，结束后删掉。
-- Windows 本地 Miri 有 std 分配器 UB 误报（与改动无关），**Linux CI 才是 Miri 门槛**；本地失败先对照原行为是否复现。
-- 时序脆弱测试的回归判定用"隔离单跑 + CI 是否复现 + 对照 main 同条件"，不要只凭一次全套失败就认回归。
+个人机器、辅助测试机、代理、ssh 别名、线程数、TEMP 绕法、本机 cargo/Miri 坑属于本地信息，见未跟踪的 `docs/development/local/`（模板见 [local.example.md](local.example.md)）。不存在时按本文件门禁在本机串行执行，并先向用户确认；不要假设某台机器一定可用。
 
-## 远程测试机
-
-- 第二台物理机通过 ssh 别名 `moiren-lan` 访问（仓库 `D:\moiren`，remote `lan`，`updateInstead`）。本机内存/降频压力大时，编译与全套测试优先迁到远端。
-- 远端用户级环境变量已设 `CARGO_BUILD_JOBS=4`、`RUST_TEST_THREADS=4`；首次构建可临时用本机代理加速 crates.io，**不做永久代理配置**。
-- 远端 gpui 构建若遇到 `%TEMP%` 路径含空格导致的 fxc 失败，先在 ssh 会话里设无空格 `TMP`/`TEMP`（如 `D:\rt-temp`）再跑。
-- 长任务用后台 ssh 链：日志重定向 + 末尾写 `done.txt` 哨兵；本地轮询 `test result:` / `FAILED` 汇总，不要同步阻塞等待。
-- 远端无活动显示器时 DWM 不合成，帧管线/性能类问题不能在该机复现；只做无回归旁证。
+通用要求：重命令一次一个、降低并发避免降频；Windows 本地 Miri 的 std 分配器误报不能当回归，以 Linux CI 为准；时序脆弱测试用"隔离单跑 + CI 是否复现 + 对照 main 同条件"判定。
 
 ## 硬件与 soak
 
 - 真机验收由用户按清单执行（设备切换、拔卡、卡死复现、插件扫描、VAD、ASIO、soak 等）；agent 不代替用户做硬件结论。
-- 证据位置：`docs/validation/`（验收契约）、`docs/experiments/`（按日期的实验 JSON/日志）、`docs/designs/screenshots/`（UI 截图）、`docs/designs/evidence/`（soak/测量证据）。个人过夜 soak 数据可在 `.zcode/night-flake/`（本地、不上库）。
+- 证据位置：`docs/validation/`（验收契约）、`docs/experiments/`（按日期的实验 JSON/日志）、`docs/designs/screenshots/`（UI 截图）、`docs/designs/evidence/`（soak/测量证据）；个人过夜 soak 数据放本地未跟踪目录。
 - 硬件验收与便携测试分开报告：不要说"测试全绿"而实际只跑了便携部分；也不要把一次真机结果外推成长期稳定性。
 
 ## 完成定义
