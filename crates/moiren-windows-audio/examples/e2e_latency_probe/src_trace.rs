@@ -320,12 +320,21 @@ mod tests {
         for _ in 0..660 {
             fixture.callbacks(100);
             stream.poll();
+            // Synthetic callbacks can outrun file IO. Pause this fixture at
+            // backpressure so this test measures ordering, not writer speed.
+            if let Some(pending) = stream.pending.take() {
+                stream.writer.as_ref().unwrap().wait_to_submit(pending);
+            }
             assert!(stream.collector.artifact().retained_checkpoints <= PENDING_LIMIT);
         }
         fixture.close();
         let mut report = None;
         stream.finish(&summary_path, &mut report).unwrap();
-        assert_eq!(report.as_ref().unwrap()["history_complete"], true);
+        assert_eq!(
+            report.as_ref().unwrap()["history_complete"],
+            true,
+            "{report:?}"
+        );
         assert_eq!(report.as_ref().unwrap()["qualified"], false);
         let first = std::fs::read(&summary_path).unwrap();
         stream.finish(&summary_path, &mut report).unwrap();

@@ -83,6 +83,15 @@ impl ChunkWriter {
             })
     }
 
+    #[cfg(test)]
+    pub(super) fn wait_to_submit(&self, chunk: NativeSrcTraceChunk) {
+        self.sender
+            .as_ref()
+            .expect("live writer")
+            .send(Command::Chunk(chunk))
+            .expect("fixture writer accepts ordered chunks");
+    }
+
     /// Only teardown may wait for file IO. Polling uses try_send and keeps a
     /// returned chunk on Full; RT is not connected to this queue or worker.
     #[cfg(test)]
