@@ -2690,6 +2690,7 @@ mod tests {
             snapshot: Some(
                 EndpointSnapshot::decode(&bytes, Capabilities::decode(&caps).unwrap()).unwrap(),
             ),
+            removed_via_query: false,
             removing: false,
             transport_prepared: true,
             telemetry: Some(VadPcmTelemetrySnapshot::default()),

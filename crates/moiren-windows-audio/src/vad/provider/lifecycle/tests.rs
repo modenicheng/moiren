@@ -142,6 +142,7 @@ struct Fake {
     fail_create: bool,
     defer_create: bool,
     fail_remove: bool,
+    already_removed_at_remove: bool,
     revoke_on_remove_failure: bool,
     fail_query: bool,
     query_calls: usize,
@@ -162,6 +163,7 @@ impl Default for Fake {
             fail_create: false,
             defer_create: false,
             fail_remove: false,
+            already_removed_at_remove: false,
             revoke_on_remove_failure: false,
             fail_query: false,
             query_calls: 0,
@@ -277,7 +279,11 @@ impl EndpointControl for Fake {
             return Err(unavailable("REMOVE timeout"));
         }
         self.current = snapshot_generation(
-            PdoState::Removing,
+            if self.already_removed_at_remove {
+                PdoState::Removed
+            } else {
+                PdoState::Removing
+            },
             previous.stream_generation(),
             previous.gate_epoch(),
             false,
@@ -711,12 +717,65 @@ fn explicit_retry_of_failed_remove_is_not_suppressed_by_revoked_snapshot() {
 }
 
 #[test]
+fn remove_reply_needs_one_direct_query_before_becoming_retirement_evidence() {
+    for query_fails in [false, true] {
+        let mut lifecycle = Lifecycle::new(Fake {
+            already_removed_at_remove: true,
+            ..Fake::default()
+        });
+        lifecycle.create(spec()).unwrap();
+        lifecycle.retire(id(), [11, 7, 11, 3, 5]).unwrap();
+        let terminal = lifecycle.control.current;
+        assert_eq!(terminal.state(), PdoState::Removed);
+        let queries = lifecycle.control.query_calls;
+        lifecycle.control.fail_query = query_fails;
+
+        let view = lifecycle.poll().remove(0);
+        assert_eq!(lifecycle.control.query_calls, queries + 1);
+        assert_eq!(view.snapshot, Some(terminal));
+        assert_eq!(view.removed_via_query, !query_fails);
+        assert_eq!(view.error.is_some(), query_fails);
+        let retained = lifecycle.poll().remove(0);
+        assert_eq!(lifecycle.control.query_calls, queries + 1);
+        assert_eq!(retained.removed_via_query, !query_fails);
+        assert_eq!(retained.diagnostic_provenance, view.diagnostic_provenance);
+
+        lifecycle.control.fail_query = false;
+        lifecycle.create(spec()).unwrap();
+        let replaced = lifecycle.poll().remove(0);
+        assert_eq!(replaced.snapshot.unwrap().state(), PdoState::Present);
+        assert!(!replaced.removed_via_query);
+    }
+}
+
+#[test]
+fn poll_confirms_a_terminal_remove_retry_before_the_batch_is_returned() {
+    let mut lifecycle = Lifecycle::new(Fake {
+        fail_remove: true,
+        revoke_on_remove_failure: true,
+        already_removed_at_remove: true,
+        ..Fake::default()
+    });
+    lifecycle.create(spec()).unwrap();
+    assert!(lifecycle.retire(id(), [11, 7, 11, 3, 5]).is_err());
+    lifecycle.control.fail_remove = false;
+    let queries = lifecycle.control.query_calls;
+    let view = lifecycle.poll().remove(0);
+    assert_eq!(lifecycle.control.query_calls, queries + 2);
+    assert_eq!(lifecycle.control.remove_calls, 2);
+    assert_eq!(view.snapshot.unwrap().state(), PdoState::Removed);
+    assert!(view.removed_via_query);
+}
+
+#[test]
 fn retirement_confirmation_queries_retained_removed_and_fails_closed() {
     let mut lifecycle = Lifecycle::new(Fake::default());
     lifecycle.create(spec()).unwrap();
     let terminal = snapshot(PdoState::Removed, 3, 5, false);
     lifecycle.control.current = terminal;
-    assert_eq!(lifecycle.poll()[0].snapshot, Some(terminal));
+    let view = lifecycle.poll().remove(0);
+    assert_eq!(view.snapshot, Some(terminal));
+    assert!(view.removed_via_query);
     let queries = lifecycle.control.query_calls;
     let expected = stamp(terminal);
     let mut stale = expected;

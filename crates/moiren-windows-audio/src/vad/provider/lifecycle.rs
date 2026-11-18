@@ -15,6 +15,7 @@ pub struct ExportSpec {
 pub struct ExportView {
     pub spec: ExportSpec,
     pub snapshot: Option<super::super::EndpointSnapshot>,
+    pub removed_via_query: bool,
     pub removing: bool,
     pub error: Option<String>,
     pub transport_prepared: bool,
@@ -26,6 +27,7 @@ pub(super) struct EndpointRecord {
     pub spec: ExportSpec,
     publication_mode: Option<super::super::PublicationMode>,
     pub snapshot: Option<super::super::EndpointSnapshot>,
+    removed_query_stamp: Option<[u64; 5]>,
     pub removing: bool,
     // The driver revokes before the ACX call. A queried Removing state cannot
     // replace the successful REMOVE acknowledgment needed to set this flag.
@@ -37,6 +39,35 @@ pub(super) struct EndpointRecord {
 }
 
 impl EndpointRecord {
+    fn accept_query(
+        &mut self,
+        result: Result<super::super::EndpointSnapshot, BackendError>,
+    ) -> Option<super::super::EndpointSnapshot> {
+        match result {
+            Ok(snapshot) => {
+                self.snapshot = Some(snapshot);
+                self.removed_query_stamp =
+                    (snapshot.state() == PdoState::Removed).then(|| stamp(snapshot));
+                self.diagnostic_provenance = VadExportDiagnosticProvenance::Fresh;
+                self.error = ((snapshot.last_status() as i32) < 0).then(|| {
+                    format!(
+                        "VAD endpoint preparation failed: {:#x}",
+                        snapshot.last_status()
+                    )
+                });
+                Some(snapshot)
+            }
+            Err(error) => {
+                self.diagnostic_provenance = VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+                self.error = Some(error.to_string());
+                for session in &self.sessions {
+                    session.revoke();
+                }
+                None
+            }
+        }
+    }
+
     pub(super) fn reap_sessions(&mut self) {
         self.sessions.retain(|session| {
             // Acquire completion BEFORE copying relaxed counters. If the
@@ -272,6 +303,7 @@ impl<C: EndpointControl> Lifecycle<C> {
                 spec: spec.clone(),
                 publication_mode: mode,
                 snapshot: None,
+                removed_query_stamp: None,
                 removing: false,
                 removal_accepted: false,
                 sessions: Vec::new(),
@@ -305,74 +337,65 @@ impl<C: EndpointControl> Lifecycle<C> {
 
     pub fn poll(&mut self) -> Vec<ExportView> {
         for record in self.endpoints.values_mut() {
-            record.diagnostic_provenance = VadExportDiagnosticProvenance::Fresh;
             record.reap_sessions();
             if let Some(previous) = record.snapshot
                 && previous.state() != PdoState::Removed
+                && let Some(snapshot) = record.accept_query(self.control.query(previous))
             {
-                match self.control.query(previous) {
-                    Ok(snapshot) => {
-                        record.snapshot = Some(snapshot);
-                        record.error = ((snapshot.last_status() as i32) < 0).then(|| {
-                            format!(
-                                "VAD endpoint preparation failed: {:#x}",
-                                snapshot.last_status()
-                            )
-                        });
-                        if snapshot.gate_open()
-                            && (record.removing
-                                || record.error.is_some()
-                                || !record.sessions.iter().any(|s| s.admitted()))
-                        {
-                            for session in &record.sessions {
-                                session.revoke();
-                            }
+                if snapshot.gate_open()
+                    && (record.removing
+                        || record.error.is_some()
+                        || !record.sessions.iter().any(|s| s.admitted()))
+                {
+                    for session in &record.sessions {
+                        session.revoke();
+                    }
+                    log::debug!(
+                        target: "moiren::audio::vad",
+                        "event=lifecycle_gate_close endpoint={:?} previous={previous:?} queried={snapshot:?} removing={} error={:?} admitted={}",
+                        snapshot.key(),
+                        record.removing,
+                        record.error,
+                        record.sessions.iter().any(|s| s.admitted()),
+                    );
+                    match self.control.gate(snapshot, false) {
+                        Ok(snapshot) => {
                             log::debug!(
                                 target: "moiren::audio::vad",
-                                "event=lifecycle_gate_close endpoint={:?} previous={previous:?} queried={snapshot:?} removing={} error={:?} admitted={}",
+                                "event=lifecycle_gate_close_result endpoint={:?} result={snapshot:?}",
                                 snapshot.key(),
-                                record.removing,
-                                record.error,
-                                record.sessions.iter().any(|s| s.admitted()),
                             );
-                            match self.control.gate(snapshot, false) {
-                                Ok(snapshot) => {
-                                    log::debug!(
-                                        target: "moiren::audio::vad",
-                                        "event=lifecycle_gate_close_result endpoint={:?} result={snapshot:?}",
-                                        snapshot.key(),
-                                    );
-                                    record.snapshot = Some(snapshot);
-                                }
-                                Err(error) => {
-                                    log::debug!(
-                                        target: "moiren::audio::vad",
-                                        "event=lifecycle_gate_close_result endpoint={:?} error={error:?}",
-                                        snapshot.key(),
-                                    );
-                                    record.error = Some(error.to_string());
-                                }
-                            }
+                            record.snapshot = Some(snapshot);
                         }
-                        let snapshot = record.snapshot.expect("queried export");
-                        if record.removing
-                            && !record.removal_accepted
-                            && snapshot.state() != PdoState::Removed
-                            && !snapshot.gate_open()
-                            && record.sessions.is_empty()
-                        {
-                            let _ = Self::submit_removal(&mut self.control, record, snapshot);
-                        }
-                    }
-                    Err(error) => {
-                        record.diagnostic_provenance =
-                            VadExportDiagnosticProvenance::CachedAfterQueryFailure;
-                        record.error = Some(error.to_string());
-                        for session in &record.sessions {
-                            session.revoke();
+                        Err(error) => {
+                            log::debug!(
+                                target: "moiren::audio::vad",
+                                "event=lifecycle_gate_close_result endpoint={:?} error={error:?}",
+                                snapshot.key(),
+                            );
+                            record.error = Some(error.to_string());
                         }
                     }
                 }
+                let snapshot = record.snapshot.expect("queried export");
+                if record.removing
+                    && !record.removal_accepted
+                    && snapshot.state() != PdoState::Removed
+                    && !snapshot.gate_open()
+                    && record.sessions.is_empty()
+                {
+                    let _ = Self::submit_removal(&mut self.control, record, snapshot);
+                }
+            }
+            if let Some(terminal) = record.snapshot
+                && terminal.state() == PdoState::Removed
+                && record.removed_query_stamp != Some(stamp(terminal))
+                && record.error.is_none()
+            {
+                // A mutation may return Removed before it has been queried.
+                // Try once before publishing absence. A failed QUERY stays
+                // unconfirmed because the driver may already reuse the slot.
+                record.accept_query(self.control.query(terminal));
             }
         }
         self.endpoints
@@ -380,6 +403,10 @@ impl<C: EndpointControl> Lifecycle<C> {
             .map(|record| ExportView {
                 spec: record.spec.clone(),
                 snapshot: record.snapshot,
+                removed_via_query: record.snapshot.is_some_and(|snapshot| {
+                    snapshot.state() == PdoState::Removed
+                        && record.removed_query_stamp == Some(stamp(snapshot))
+                }),
                 removing: record.removing,
                 error: record.error.clone(),
                 transport_prepared: record.sessions.iter().any(|s| s.prepared()),

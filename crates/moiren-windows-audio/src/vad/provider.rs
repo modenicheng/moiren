@@ -73,6 +73,8 @@ pub struct VadExportObservation {
     pub channels: Channels,
     pub allow_default: bool,
     pub snapshot: Option<super::EndpointSnapshot>,
+    /// The retained terminal stamp was read through a direct driver QUERY.
+    pub removed_via_query: bool,
     pub removing: bool,
     pub transport_prepared: bool,
     pub telemetry: Option<VadPcmTelemetrySnapshot>,
@@ -85,6 +87,7 @@ impl From<ExportView> for VadExportObservation {
         let ExportView {
             spec,
             snapshot,
+            removed_via_query,
             removing,
             transport_prepared,
             telemetry,
@@ -99,6 +102,7 @@ impl From<ExportView> for VadExportObservation {
             channels: spec.channels,
             allow_default: spec.allow_default,
             snapshot,
+            removed_via_query,
             removing,
             transport_prepared,
             telemetry,
@@ -1706,6 +1710,7 @@ mod tests {
                 allow_default: false,
             },
             snapshot: None,
+            removed_via_query: false,
             removing: true,
             error: Some("CREATE timeout".into()),
             transport_prepared: false,

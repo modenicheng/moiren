@@ -42,6 +42,11 @@ Diagnostic completion is separate from acceptance; missing/failed direct
 Removed, exact name or PCM never permits a streaming rename pass. Saved failed
 or unknown observations are not replaced by later successes.
 
+The provider records the exact old stamp when a driver QUERY observes
+`Removed`. If a mutation replies with `Removed` first, the provider attempts
+one direct QUERY before returning the observation batch. The app's rename
+receipt requires that stamp and an error-free observation.
+
 ## Small implementation shape
 
 - A focused portable streaming evidence/type module with regression tests.

@@ -143,6 +143,7 @@ fn provider_view(intent: &ExportIntent) -> VadExportObservation {
             true,
             true,
         )),
+        removed_via_query: false,
         removing: false,
         transport_prepared: true,
         telemetry: Some(telemetry()),
@@ -688,6 +689,13 @@ fn direct_retirement_mapping_requires_a_fresh_real_removed_snapshot() {
                     view.error = Some("QUERY failed".into());
                 }
                 let stamp = view.snapshot.map(snapshot_stamp);
+                assert!(
+                    NativeObservation::from(view.clone())
+                        .native_removed
+                        .is_none(),
+                    "a terminal snapshot without a QUERY witness must never be direct evidence"
+                );
+                view.removed_via_query = true;
                 assert_eq!(
                     NativeObservation::from(view).native_removed,
                     if state == PdoState::Removed && fresh && !failed {

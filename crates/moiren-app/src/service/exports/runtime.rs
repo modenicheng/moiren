@@ -740,6 +740,7 @@ impl From<moiren_windows_audio::vad::VadExportObservation> for NativeObservation
                 .snapshot
                 .filter(|snapshot| {
                     snapshot.state() == PdoState::Removed
+                        && view.removed_via_query
                         && !snapshot.gate_open()
                         && view.error.is_none()
                         && view.diagnostic_provenance
