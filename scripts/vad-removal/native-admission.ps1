@@ -7,6 +7,89 @@ if($null -eq (Get-Variable -Name RemovalOperationContexts -Scope Script -ErrorAc
     $script:RemovalOperationContexts=New-Object 'Runtime.CompilerServices.ConditionalWeakTable[object,object]'
 }
 
+function Initialize-RemovalControllerProcessSecurity {
+    if('Moiren.RemovalControllerProcessSecurity' -as [type]){return}
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace Moiren {
+    public static class RemovalControllerProcessSecurity {
+        private const uint KernelObject = 6;
+        private const uint DaclSecurityInformation = 4;
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
+        [DllImport("advapi32.dll")]
+        private static extern uint GetSecurityInfo(IntPtr handle, uint objectType, uint information,
+            IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
+        [DllImport("advapi32.dll")]
+        private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+        [DllImport("advapi32.dll")]
+        private static extern uint SetSecurityInfo(IntPtr handle, uint objectType, uint information,
+            IntPtr owner, IntPtr group, byte[] dacl, IntPtr sacl);
+
+        public static byte[] ReadCurrentDescriptor() {
+            IntPtr descriptor;
+            uint status = GetSecurityInfo(GetCurrentProcess(), KernelObject, DaclSecurityInformation,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out descriptor);
+            if (status != 0) throw new Win32Exception((int)status);
+            try {
+                uint length = GetSecurityDescriptorLength(descriptor);
+                if (length < 20 || length > 1048576)
+                    throw new InvalidOperationException("Invalid process security descriptor size.");
+                byte[] bytes = new byte[length];
+                Marshal.Copy(descriptor, bytes, 0, bytes.Length);
+                return bytes;
+            } finally {
+                LocalFree(descriptor);
+            }
+        }
+
+        public static void WriteCurrentDacl(byte[] acl) {
+            uint status = SetSecurityInfo(GetCurrentProcess(), KernelObject, DaclSecurityInformation,
+                IntPtr.Zero, IntPtr.Zero, acl, IntPtr.Zero);
+            if (status != 0) throw new Win32Exception((int)status);
+        }
+    }
+}
+'@
+}
+
+function Add-RemovalControllerObservationAce([Security.AccessControl.RawAcl]$Acl,
+    [Security.Principal.SecurityIdentifier]$User) {
+    # PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, as requested by the probe.
+    $mask=0x101000
+    foreach($ace in $Acl){
+        if($ace -is [Security.AccessControl.CommonAce] -and
+            $ace.AceType -eq [Security.AccessControl.AceType]::AccessAllowed -and
+            $ace.AceFlags -eq [Security.AccessControl.AceFlags]::None -and
+            $ace.SecurityIdentifier -eq $User -and $ace.AccessMask -eq $mask){return $false}
+    }
+    # Append so a preexisting denial still takes precedence.
+    $Acl.InsertAce($Acl.Count,[Security.AccessControl.CommonAce]::new(
+        'None','AccessAllowed',$mask,$User,$false,$null))
+    return $true
+}
+
+function Grant-RemovalControllerObservationAccess {
+    Assert-RemovalTaskHost
+    Initialize-RemovalControllerProcessSecurity
+    $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
+    $descriptor=[Security.AccessControl.RawSecurityDescriptor]::new(
+        [Moiren.RemovalControllerProcessSecurity]::ReadCurrentDescriptor(),0)
+    $acl=$descriptor.DiscretionaryAcl
+    if($null -eq $acl){throw 'Controller process has no explicit discretionary ACL.'}
+    if(Add-RemovalControllerObservationAce $acl $user){
+        $bytes=[byte[]]::new($acl.BinaryLength)
+        $acl.GetBinaryForm($bytes,0)
+        [Moiren.RemovalControllerProcessSecurity]::WriteCurrentDacl($bytes)
+    }
+}
+
 function Assert-RemovalDiagnosticRelease {
     param($Owner)
     $ErrorActionPreference='Stop'

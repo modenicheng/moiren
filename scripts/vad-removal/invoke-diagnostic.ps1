@@ -21,6 +21,7 @@ try {
     . (Join-Path $PSScriptRoot 'diagnostic-controller.ps1')
     . (Join-Path $PSScriptRoot 'closed-export.ps1')
     $inputs=New-RemovalRunInputs -ManifestPath $ManifestPath -ExpectedSha256 $ManifestSha256 -SourceDirectory $PSScriptRoot
+    Grant-RemovalControllerObservationAccess
     $controller=New-RemovalDiagnosticController -RunDirectory $RunDirectory -Inputs $inputs `
         -UserRebootConfirmed -WorkerSessionId $WorkerSessionId
     Start-RemovalDiagnosticController $controller

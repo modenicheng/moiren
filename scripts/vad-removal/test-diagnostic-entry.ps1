@@ -3,6 +3,7 @@ Set-StrictMode -Version 2
 $ErrorActionPreference='Stop'
 if([Environment]::MachineName -ceq 'LAPTOP-NP49RG6H'){throw 'Host-only entry tests must not run on target.'}
 . (Join-Path $PSScriptRoot 'finite-tool.ps1')
+. (Join-Path $PSScriptRoot 'native-admission.ps1')
 $root=Join-Path $PSScriptRoot ('logs\diagnostic-entry-'+[Guid]::NewGuid().ToString('N'))
 $null=[IO.Directory]::CreateDirectory($root)
 $entry=Join-Path $PSScriptRoot 'invoke-diagnostic.ps1'
@@ -25,6 +26,58 @@ foreach($mode in @('confirmation','host')){
  if($text-notlike$expected-or(Test-Path $path)){throw 'Entry imported helpers/read manifest/touched target before guard.'}
  $checks.Add(@{name=$mode+'-before-imports-and-files';passed=$true})
 }
+
+# Exercise the ACL edit with a same-user deny and an unrelated allow. The
+# observation ACE must follow them and confer only the two probe rights.
+$user=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$flags=[Security.AccessControl.AceFlags]::None
+$deny=[Security.AccessControl.CommonAce]::new($flags,'AccessDenied',1,$user,$false,$null)
+$existing=[Security.AccessControl.CommonAce]::new($flags,'AccessAllowed',0x40000,$system,$false,$null)
+$acl=[Security.AccessControl.RawAcl]::new(2,3)
+$acl.InsertAce(0,$deny)
+$acl.InsertAce(1,$existing)
+$added=Add-RemovalControllerObservationAce $acl $user
+$addedAgain=Add-RemovalControllerObservationAce $acl $user
+if(-not $added -or $addedAgain -or $acl.Count -ne 3 -or -not $acl[0].Equals($deny) -or -not $acl[1].Equals($existing) -or
+    $acl[2].AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or $acl[2].AceFlags -ne $flags -or
+    $acl[2].SecurityIdentifier -ne $user -or $acl[2].AccessMask -ne 0x101000){
+    throw 'Controller observation ACE changed existing access or granted more than query/synchronize.'
+}
+$checks.Add(@{name='controller-observation-ace-is-narrow-and-idempotent';passed=$true})
+
+$aclChild=Join-Path $root 'process-security.ps1'
+[IO.File]::WriteAllText($aclChild,@'
+param([string]$Library)
+$ErrorActionPreference='Stop'
+. $Library
+# This disposable process is the only object changed by the fixture.
+function Assert-RemovalTaskHost {}
+Initialize-RemovalControllerProcessSecurity
+$before=[Security.AccessControl.RawSecurityDescriptor]::new(
+    [Moiren.RemovalControllerProcessSecurity]::ReadCurrentDescriptor(),0).DiscretionaryAcl
+$user=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$null=Add-RemovalControllerObservationAce $before $user
+Grant-RemovalControllerObservationAccess
+Grant-RemovalControllerObservationAccess
+$after=[Security.AccessControl.RawSecurityDescriptor]::new(
+    [Moiren.RemovalControllerProcessSecurity]::ReadCurrentDescriptor(),0).DiscretionaryAcl
+$expected=[byte[]]::new($before.BinaryLength)
+$actual=[byte[]]::new($after.BinaryLength)
+$before.GetBinaryForm($expected,0)
+$after.GetBinaryForm($actual,0)
+if([Convert]::ToBase64String($actual) -cne [Convert]::ToBase64String($expected)){
+    throw 'Process DACL did not round-trip with only the observation ACE.'
+}
+'@)
+$o=Start-FiniteTool -Executable $exe -ExpectedSha256 (Get-FileHash $exe).Hash `
+    -OutputDirectory (Join-Path $root 'acl-child') -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive',
+        '-File',$aclChild,'-Library',(Join-Path $PSScriptRoot 'native-admission.ps1'))
+$r=Observe-FiniteTool $o
+if(-not $r.ExitedConfirmed -or $r.NeedsObservation){throw 'Process DACL fixture did not exit.'}
+Close-FiniteToolOwner $o
+if($r.ExitCode -ne 0){throw ([IO.File]::ReadAllText($o.StderrPath))}
+$checks.Add(@{name='controller-observation-ace-round-trips-through-windows';passed=$true})
 
 function Invoke-EncodingRegression {
  [CmdletBinding()]
@@ -60,7 +113,13 @@ foreach($guard in @($guards|Sort-Object {$_.Extent.StartOffset} -Descending)){
 $entry=Join-Path $root 'invoke-diagnostic.ps1';Save-EncodingAscii $entry $text
 Save-EncodingAscii (Join-Path $root 'diagnostic-controller.ps1') @'
 function New-RemovalRunInputs { [pscustomobject]@{Fixture=$true} }
-function New-RemovalDiagnosticController { [pscustomobject]@{Completed=$true} }
+function Grant-RemovalControllerObservationAccess { $script:ObservationAccessGranted=$true }
+function New-RemovalDiagnosticController {
+ if(-not (Get-Variable -Name ObservationAccessGranted -Scope Script -ErrorAction SilentlyContinue)){
+  throw 'Controller constructed before the worker can observe it.'
+ }
+ [pscustomobject]@{Completed=$true}
+}
 function Start-RemovalDiagnosticController {
  if($global:EncodingFixtureError){throw $global:EncodingExpectedError}
 }

@@ -5,6 +5,34 @@ to a real worker/probe admission protocol. No user reboot confirmation has
 been received. No remote command, native audio, OBS, ETW, scheduler mutation,
 driver installation/restart or system reboot is performed by this slice.
 
+## 2026-11-18 controller process access
+
+On the test machine, the Limited interactive worker launched the frozen probe,
+which exited with `0x80070005` before writing `probe-ready.json`. A separate
+same-account observer reproduced the denial when opening the elevated SSH
+controller with either of the two rights requested by the probe. The observer
+could open its own process with those rights.
+
+After validating the run manifest, the diagnostic entry grants its own user SID
+`PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` on its own process object.
+The grant retains the existing DACL entries and follows existing denies. If
+the DACL operation fails, the entry refuses before constructing the controller
+or starting ETW or the task. The worker still runs as Limited. The frozen
+probe still checks both process handles, creation times and live status before
+requesting admission.
+
+The Windows entry regression covers the grant ordering, exact access mask,
+repeat calls and a real DACL read/write round trip in a disposable process.
+On the test machine, separate Limited workers observed the same disposable
+elevated controller before and after the grant. Query and synchronize
+changed from denied to allowed. Terminate, write memory, duplicate handle
+and write DACL remained denied. These workers opened process handles only.
+
+The user-run hardware gate remains the complete diagnostic with a verified
+probe-ready/admit pair, evidence of the actual `Removed` deadline, terminal
+task/probe/ETW ownership and before/after state. Only measured device results
+can establish this gate.
+
 ## Actual entry and ownership
 
 The example `e2e_latency_probe` accepts an opt-in `managed-removal` prefix.
