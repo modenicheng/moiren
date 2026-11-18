@@ -73,6 +73,37 @@ class RemovalStages(unittest.TestCase):
         native['native']['vad_cleanup']['diagnostic_provenance'] = 'CachedAfterQueryFailure'
         self.assertFalse(self.analyze(native=native)['direct_removed_observed'])
 
+    def test_diagnostic_only_cleanup_preserves_source_and_engine_witnesses(self):
+        for diagnostic in ('late_observation', 'unconfirmed_terminal', None):
+            with self.subTest(diagnostic=diagnostic):
+                native = report('Removed')
+                native['native']['error'] = 'VAD cleanup could not confirm Removed'
+                snapshot = native['native'].pop('vad_cleanup')
+                if diagnostic is not None:
+                    native['native']['vad_cleanup'] = {diagnostic: snapshot}
+                value = self.analyze(native=native)
+                self.assertTrue(value['source_stop_join_observed'])
+                self.assertTrue(value['engine_closed_observed'])
+                self.assertEqual(value['native_error'], native['native']['error'])
+                self.assertFalse(value['direct_removed_observed'])
+                self.assertFalse(value['trace_association_available'])
+                self.assertFalse(value['qualified'])
+
+    def test_malformed_shutdown_witnesses_do_not_erase_independent_evidence(self):
+        for field, invalidated, preserved in (
+            ('vad_playback', 'source_stop_join_observed', 'engine_closed_observed'),
+            ('engine_cleanup', 'engine_closed_observed', 'source_stop_join_observed'),
+        ):
+            with self.subTest(field=field):
+                native = report('Removed')
+                native['native'][field] = 'invalid witness'
+                value = self.analyze(native=native)
+                self.assertFalse(value[invalidated])
+                self.assertTrue(value[preserved])
+                self.assertTrue(value['direct_removed_observed'])
+                self.assertTrue(value['trace_association_available'])
+                self.assertFalse(value['qualified'])
+
     def test_missing_error_fields_do_not_become_positive_lifecycle_evidence(self):
         native = report('Removed')
         del native['native']['vad_cleanup']['error']

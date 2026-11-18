@@ -87,6 +87,23 @@ def analyze(text, summary, report):
     try:
         native = report['native']
         result['native_error'] = native.get('error')
+        # These witnesses have their own receipts. A missing terminal QUERY
+        # cannot erase shutdown evidence, and malformed shutdown receipts
+        # cannot invalidate an independently bound trace.
+        playback = native.get('vad_playback')
+        result['source_stop_join_observed'] = (
+            isinstance(playback, dict)
+            and playback.get('worker_joined') is True
+            and playback.get('native_stop_succeeded') is True
+            and 'failure' in playback and playback['failure'] is None
+        )
+        engine = native.get('engine_cleanup')
+        result['engine_closed_observed'] = (
+            isinstance(engine, dict)
+            and engine.get('host') == 'Closed'
+            and engine.get('fault') == 'None'
+            and engine.get('cleanup_error') == 'None'
+        )
         cleanup = native['vad_cleanup']
         snapshot = cleanup['snapshot']
         stamp = snapshot['stamp']
@@ -103,14 +120,6 @@ def analyze(text, summary, report):
         if not fresh:
             refuse('retained QUERY is cached, failed or missing provenance')
         result['direct_removed_observed'] = fresh and snapshot.get('state') == 'Removed'
-        playback = native.get('vad_playback') or {}
-        result['source_stop_join_observed'] = (playback.get('worker_joined') is True and
-                                              playback.get('native_stop_succeeded') is True and
-                                              'failure' in playback and playback['failure'] is None)
-        engine = native.get('engine_cleanup') or {}
-        result['engine_closed_observed'] = (engine.get('host') == 'Closed' and
-                                           engine.get('fault') == 'None' and
-                                           engine.get('cleanup_error') == 'None')
     except (KeyError, TypeError, ValueError, AttributeError):
         refuse('missing or malformed exact runtime/session QUERY stamp')
         return result

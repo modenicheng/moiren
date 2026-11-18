@@ -98,6 +98,10 @@ The output keeps these independent facts:
 - Decoder statistics, retained overwrite/saturation evidence and unknown raw
   ETW loss.
 
+The reader retains verified Stop/join and Engine Closed fields when the
+cleanup QUERY is missing, late or unconfirmed. A malformed shutdown witness
+only withholds its own positive observation.
+
 First/last/first-failure kinds of the same scalar sequence are deduplicated
 without inventing retries. Conflicting scalar records, QPC/frequency changes,
 counter/watermark regression or impossible growth, malformed/duplicate decoder
