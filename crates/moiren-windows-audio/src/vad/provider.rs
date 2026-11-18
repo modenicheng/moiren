@@ -361,7 +361,6 @@ impl WindowsVadProvider {
 
     /// Confirm a terminal snapshot with a same-session driver QUERY.
     /// Unlike normal polling, this reads the driver even for a retained Removed record.
-    #[cfg(feature = "probe-tools")]
     pub fn confirm_retired_export(
         &self,
         id: VirtualEndpointId,

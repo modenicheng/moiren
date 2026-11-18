@@ -556,7 +556,6 @@ impl<C: EndpointControl> Lifecycle<C> {
         Self::submit_removal(&mut self.control, record, current)
     }
 
-    #[cfg(any(test, feature = "probe-tools"))]
     pub(super) fn confirm_retired(
         &mut self,
         id: VirtualEndpointId,
