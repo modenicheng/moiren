@@ -360,8 +360,11 @@ fn export_row(
                         .child(heading(status.intent.name.clone()).min_w_0().truncate()),
                 )
                 .when_some(desired, |row, desired| {
+                    // Candidate configuration, not a live fact: the accent
+                    // marks "configured on" while cyan stays reserved for
+                    // the page's live-stream badges (In use / Running).
                     row.child(if desired.enabled {
-                        badge(t!("Enabled"), theme::SIGNAL_DEVICE)
+                        badge(t!("Enabled"), theme::controls::FOCUS)
                     } else {
                         badge(t!("Disabled"), theme::TEXT_MUTED)
                     })
@@ -370,7 +373,7 @@ fn export_row(
         // Direction and channel shape; the endpoint's name (the field below)
         // is the identity the rest of the system shows, so the raw endpoint
         // id stays off the screen.
-        .child(mono_caption(format!(
+        .child(caption(format!(
             "{} / {}",
             t!(status.intent.direction.title()),
             if status.intent.channels == 1 {
@@ -512,8 +515,10 @@ fn export_row(
                     }),
                 ),
         );
-        // The warning travels with the controls it qualifies: shape edits
-        // retire the endpoint, so a binding must move first.
+        // The eligibility switch closes the control group and the warning
+        // sums the group up (channels, name, eligibility all retire the
+        // endpoint); the read-only users section follows the hairline.
+        row = row.child(default_control(shell, status, cx));
         row = row.child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first.")));
         row = row.child(hairline());
         let users = monitor::device_users(snapshot, &DeviceKey::Virtual(id));
@@ -547,7 +552,6 @@ fn export_row(
             }
         }
         row = row.child(block);
-        row = row.child(default_control(shell, status, cx));
     } else {
         row = row.child(label(t!("Removed from the graph. The service retains lifecycle tracking until safe retirement is confirmed.")));
     }

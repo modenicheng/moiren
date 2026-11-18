@@ -80,6 +80,12 @@ pub(crate) fn hairline() -> Div {
         .bg(theme::HAIRLINE)
 }
 
+/// The shared empty-state geometry (design 24 §4): the icon tile's edge and
+/// the glyph inside it. One source for the helper and the graph inspector's
+/// empty selection, which is the same block.
+pub(crate) const EMPTY_TILE: f32 = 64.;
+pub(crate) const EMPTY_ICON: f32 = 28.;
+
 /// A composed empty state: an icon tile over an optional title and one
 /// sentence, centered in whatever box the caller gives it. The graph
 /// inspector's empty selection established the pattern; lists and panels
@@ -105,8 +111,8 @@ pub(crate) fn empty_state(
         .child(
             div()
                 .flex_none()
-                .w(px(64.))
-                .h(px(64.))
+                .w(px(EMPTY_TILE))
+                .h(px(EMPTY_TILE))
                 .items_center()
                 .justify_center()
                 .rounded(px(theme::RADIUS_LG))
@@ -114,7 +120,7 @@ pub(crate) fn empty_state(
                 .child(
                     component::Icon::default()
                         .path(icon)
-                        .size(px(28.))
+                        .size(px(EMPTY_ICON))
                         .text_color(theme::TEXT_FAINT),
                 ),
         )

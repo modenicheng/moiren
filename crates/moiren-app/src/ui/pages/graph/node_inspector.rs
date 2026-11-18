@@ -50,8 +50,8 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                             .id("inspector-empty-art")
                             .flex()
                             .flex_none()
-                            .w(px(64.))
-                            .h(px(64.))
+                            .w(px(EMPTY_TILE))
+                            .h(px(EMPTY_TILE))
                             .items_center()
                             .justify_center()
                             .rounded(px(theme::RADIUS_LG))
@@ -59,7 +59,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                             .child(
                                 component::Icon::default()
                                     .path("icons/zoom-scan.svg")
-                                    .size(px(28.))
+                                    .size(px(EMPTY_ICON))
                                     .text_color(theme::TEXT_FAINT),
                             )
                             .gpui_test_observe(),

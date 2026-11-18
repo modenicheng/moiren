@@ -178,7 +178,8 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         card("clock-processing")
                             .gap(px(theme::SPACE_2))
                             .child(section_title(key))
-                            .child(mono_caption(value)),
+                            .child(mono_caption(value))
+                            .gpui_test_observe(),
                     );
                 }
                 for view in views.streams {
@@ -186,16 +187,13 @@ pub(crate) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         card(SharedString::from(format!("clock-stream-{:?}", view.node)))
                             .gap(px(theme::SPACE_2))
                             .child(heading(view.device_title.clone()))
-                            .child(mono_caption(format!(
-                                "{} / {}",
-                                view.node_label,
-                                view.role()
-                            )))
+                            .child(caption(format!("{} / {}", view.node_label, view.role())))
                             .children(
                                 view.rows
                                     .into_iter()
                                     .map(|(key, value)| detail_mono(&key, value)),
-                            ),
+                            )
+                            .gpui_test_observe(),
                     );
                 }
             }
@@ -389,6 +387,16 @@ pub(super) fn section_title(text: impl Into<SharedString>) -> Div {
 pub(super) fn mono_caption(text: impl Into<SharedString>) -> Div {
     div()
         .font_family(theme::FONT_MONO)
+        .text_size(px(theme::TEXT_CAPTION))
+        .text_color(theme::TEXT_MUTED)
+        .child(text.into())
+}
+
+/// A plain caption line for non-numeric metadata (a card's direction /
+/// channel shape, a clock group's node / role): the caption size in the UI
+/// face — mono stays reserved for numeric readouts.
+pub(super) fn caption(text: impl Into<SharedString>) -> Div {
+    div()
         .text_size(px(theme::TEXT_CAPTION))
         .text_color(theme::TEXT_MUTED)
         .child(text.into())

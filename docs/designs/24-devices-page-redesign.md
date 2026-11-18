@@ -107,7 +107,7 @@
 
 - 页头:标题 + 两行定位说明(虚拟设备是什么、状态语义怎么读)。
 - 创建卡(settings 卡语言):`Type [Playback|Microphone]`、`Channels [Mono|Stereo]` 两组带标签行 + 名称输入 + Create。
-- 设备卡:标题(名称)+ 方向/声道 caption;状态事实组(Endpoint/Gate/Binding/Status);控制组(声道、改名[输入+按钮同行]、启用/停用+移除、默认资格);控件就近警告;Users 分节。
+- 设备卡:标题(名称)+ 方向/声道 caption;标题行 Enabled/Disabled 徽标用品牌紫/中性灰(候选配置态,**不用**青色——青色保留给活流徽标);状态事实组(Endpoint/Gate/Binding);控制组(声道、改名[输入+按钮同行]、启用/停用+移除、默认资格)+ 组末就近警告;Users 分节。
 - `export-default-help` 帮助块(测试锚定)保留,挂在页头说明组。
 
 ### 3.5 Clock
@@ -141,8 +141,8 @@
 
 **新增(共享零件,进 `shell/controls.rs`)**:
 
-- `empty_state(icon, message)`:icon 块 + 说明的居中空态;设备页列表/inspector/Clock/Exports 空态统一用它。
-- `detail_mono(key, value)`:`detail` 的等宽值变体,用于流参数/时钟数值行。
+- `empty_state(icon, message)` + `EMPTY_TILE`/`EMPTY_ICON` 几何常量:icon 块 + 说明的居中空态;设备页列表/inspector/Clock/Exports 空态统一用它,graph inspector 空态同源收编。
+- `detail_mono(key, value)`:`detail` 的等宽值变体,用于流参数/时钟**数值**行( FRONTEND §5.4:mono 保留给数值读数;方向/角色等非数值元数据走 UI 字体 caption)。
 - `hairline()`:水平 1px 分隔线。
 - `page_tab(id, label, active, on_click)`:页内下划线 tab(Role::Tab + aria_selected),设备页四 tab 用;先落在 devices.rs,等第二个使用点出现再上移 widgets。
 
