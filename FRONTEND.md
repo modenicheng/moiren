@@ -6,7 +6,7 @@
 
 **2026-10-15 应用框架接入：Graph、Mixer、Matrix、Devices 和 Settings 共用 gpui 组件与服务快照。** 页面按工作站需求重新组织，不直接复制 Figma。服务拥有候选 LogicalGraph，支持真实拓扑事务、编译启动、Gain / Balance / Mono / Swap、输入与输出观测，以及项目和偏好保存。当前音频驱动的运行范围仍是单 Source、单 Sink 的双声道图；多设备候选可以编辑，应用时会明确报告运行限制。具体接线与验证见 [应用前端接入](docs/designs/13-application-frontend-integration.md)。
 
-使用时按以下顺序判断：用户最新明确要求 → 本文件中的已确认要求 → 当前任务指定的 Figma 设计 → 对应设计文档 → 现有试验实现。仓库工程约束仍以 [AGENTS.md](AGENTS.md) 为准。设计示例、历史验收记录和助手先前的完成声明不能代替当前验证。
+使用时按以下顺序判断：用户最新明确要求 → 本文件中的已确认要求 → 当前任务指定的 Figma 设计 → 对应设计文档 → 现有试验实现。仓库工程约束以 [AGENTS.md](AGENTS.md) 与 [开发与协作细则](docs/development/README.md) 为准。设计示例、历史验收记录和助手先前的完成声明不能代替当前验证。
 
 ### 2026-10-16 范围更正与实现边界
 
@@ -363,7 +363,7 @@ Settings 负责 Audio Engine、Appearance、Shortcuts、Diagnostics 等应用偏
 
 ### 9.1 开始任务
 
-1. 阅读本文件、[AGENTS.md](AGENTS.md) 和当前任务对应的设计入口。
+1. 阅读本文件、[AGENTS.md](AGENTS.md)、[开发与协作细则](docs/development/README.md) 和当前任务对应的设计入口。
 2. 判断任务是 Figma 设计、组件库调整、源码实现还是技术验证。只做用户授权的阶段与范围。
 3. 修改前查看目标、所属母版、变体和调用实例。源码任务先查工作区状态，保留用户已有改动。
 4. 按节点与属性列出目标范围；需要修改全局 Theme 或共享母版时，先判断哪些页面会被影响。
