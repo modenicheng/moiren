@@ -1,40 +1,9 @@
 # moiren-signal
 
-Crate guide. Read [../../AGENTS.md](../../AGENTS.md) first; this file adds local detail and never overrides the root rules.
+Crate-local entry. Repository rules live in the development docs:
 
-## Role
+- [Top-level rules](../../AGENTS.md)
+- [Development index](../../docs/development/README.md)
+- [Crate guide](../../docs/development/crates/moiren-signal.md)
 
-Independent typed `Latest`/`Stream` signal storage used by the engine and the app control plane. Registration, subscription, name resolution, pumping, and owner cleanup are non-RT; publication happens through one `RtHost` per owner thread and a current operation scope. Values and block headers/elements must be `Copy + Send + Sync + 'static`.
-
-Do not turn this crate into a general pub/sub broker: its contract is fixed-capacity, budgeted, fully preallocated storage with explicit lifecycle ownership.
-
-## Layout
-
-- `src/host/` (`mod.rs`, `binding.rs`, `scope.rs`, `slot.rs`): `RtHost`, host ownership, activation, scopes, and prepared updates.
-- `src/transport/latest.rs`, `src/transport/stream.rs`: the two transport shapes (`Latest` coalesces; `Stream` is a bounded ordered queue).
-- `src/dispatcher.rs`, `src/demand.rs`: block fanout, demand caching, and pump budgeting (`PumpBudget`).
-- `src/registry.rs`, `src/lifecycle.rs`, `src/subscriber.rs`, `src/types.rs`, `src/budget.rs`, `src/storage.rs`, `src/sequence.rs`, `src/error.rs`: `Bus`, topic lifecycle, subscriber guards, config/limits, budget accounting, and storage/sequence primitives.
-- `src/test_alloc.rs`: TLS allocation counting used by the tests.
-- `tests/`: `allocation.rs`, `concurrency.rs`, `demand.rs`, `host.rs`, `latest.rs`, `lifecycle.rs`, `registry.rs`, `stream.rs`; `examples/custom_block.rs` is the end-to-end example.
-
-## Invariants
-
-- Never allocate, lock, or make syscalls on the RT path. Preparation allocates and charges storage; `commit` moves only preallocated owners; `RetiredHostUpdate`, activation failures, and the stopped host must return to non-RT before being dropped (destruction can free heap storage and final lifecycle leases).
-- Publication requires a `scope(&op)` authorized by a current operation table. A superseded table fails even if the key/handle is reused; scopes and block guards borrow the exclusive host access and are not `Send`.
-- `Latest` is observation with coalescing; `Stream` is a bounded ordered queue with local drop on full subscribers and no replay for late subscribers. Preserve those semantics when touching fanout.
-- Budget the complete transport layout (metadata plus payload plus padding) and keep `required_copy_bytes` and the saturating statistics truthful. Pump visits directory slots round-robin; no worker or wakeup is created.
-- Keep the `BusConfig` limits and the "no concurrent host migration" rule; a new host may rebind a registered topic only after the old host is stopped and released on non-RT.
-
-## Verification
-
-```sh
-cargo test --locked -p moiren-signal
-cargo run --locked -p moiren-signal --example custom_block
-```
-
-CI runs Miri in stacked and Tree Borrows modes. The allocator tests enable the TLS allocator only around RT calls; registration, subscription, pumping, thread joins, and final cleanup are intentionally outside that window. The concurrency test uses finite work, channels, and barriers instead of sleeps — follow that pattern.
-
-## Docs
-
-- [README.md](README.md) is the canonical contract for ownership, activation, budgeting, and verification boundaries.
-- [docs/superpowers/specs/2026-10-10-rt-ui-signal-bus-design.md](../../docs/superpowers/specs/2026-10-10-rt-ui-signal-bus-design.md) is the design record.
+Read the crate guide before editing. Summary: bounded typed Latest/Stream signal storage with preallocated transport and explicit RT ownership.
