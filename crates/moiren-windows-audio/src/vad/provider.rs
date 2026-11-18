@@ -359,6 +359,20 @@ impl WindowsVadProvider {
             .collect()
     }
 
+    /// Confirm a terminal snapshot with a same-session driver QUERY.
+    /// Unlike normal polling, this reads the driver even for a retained Removed record.
+    #[cfg(feature = "probe-tools")]
+    pub fn confirm_retired_export(
+        &self,
+        id: VirtualEndpointId,
+        expected: [u64; 5],
+    ) -> Result<super::EndpointSnapshot, BackendError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .confirm_retired(id, expected)
+    }
+
     /// Explicitly read Windows endpoint names on a control worker.
     ///
     /// This is deliberately separate from `export_observations`: normal

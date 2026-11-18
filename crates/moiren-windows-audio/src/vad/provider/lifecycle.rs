@@ -556,6 +556,35 @@ impl<C: EndpointControl> Lifecycle<C> {
         Self::submit_removal(&mut self.control, record, current)
     }
 
+    #[cfg(any(test, feature = "probe-tools"))]
+    pub(super) fn confirm_retired(
+        &mut self,
+        id: VirtualEndpointId,
+        expected: [u64; 5],
+    ) -> Result<super::super::EndpointSnapshot, BackendError> {
+        let previous = self
+            .endpoints
+            .get(&id)
+            .and_then(|record| record.snapshot)
+            .ok_or_else(|| unavailable("missing terminal export snapshot"))?;
+        if previous.state() != PdoState::Removed || stamp(previous) != expected {
+            return Err(BackendError::Cancelled);
+        }
+
+        // EndpointControl::query validates the key, shape and state transition.
+        let current = self.control.query(previous)?;
+        if current.state() != PdoState::Removed || stamp(current) != expected {
+            return Err(BackendError::Cancelled);
+        }
+        if (current.last_status() as i32) < 0 {
+            return Err(unavailable(&format!(
+                "VAD endpoint removal QUERY status: {:#x}",
+                current.last_status()
+            )));
+        }
+        Ok(current)
+    }
+
     fn submit_removal(
         control: &mut C,
         record: &mut EndpointRecord,

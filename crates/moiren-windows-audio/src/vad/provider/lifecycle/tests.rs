@@ -711,6 +711,47 @@ fn explicit_retry_of_failed_remove_is_not_suppressed_by_revoked_snapshot() {
 }
 
 #[test]
+fn retirement_confirmation_queries_retained_removed_and_fails_closed() {
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    lifecycle.create(spec()).unwrap();
+    let terminal = snapshot(PdoState::Removed, 3, 5, false);
+    lifecycle.control.current = terminal;
+    assert_eq!(lifecycle.poll()[0].snapshot, Some(terminal));
+    let queries = lifecycle.control.query_calls;
+    let expected = stamp(terminal);
+    let mut stale = expected;
+    stale[4] -= 1;
+    assert!(lifecycle.confirm_retired(id(), stale).is_err());
+    assert_eq!(lifecycle.control.query_calls, queries);
+
+    assert_eq!(lifecycle.confirm_retired(id(), expected).unwrap(), terminal);
+    assert_eq!(lifecycle.control.query_calls, queries + 1);
+
+    lifecycle.control.fail_query = true;
+    assert!(lifecycle.confirm_retired(id(), expected).is_err());
+    lifecycle.control.fail_query = false;
+    for mismatched in [
+        snapshot(PdoState::Removing, 3, 5, false),
+        snapshot(PdoState::Removed, 3, 6, false),
+        snapshot_generation(PdoState::Removed, 3, 5, false, 12),
+        snapshot_native_with_status(
+            PdoState::Removed,
+            3,
+            5,
+            false,
+            11,
+            (StreamState::Closed, false, false),
+            0xc0000001,
+        ),
+    ] {
+        lifecycle.control.current = mismatched;
+        assert!(lifecycle.confirm_retired(id(), expected).is_err());
+    }
+    assert_eq!(lifecycle.control.query_calls, queries + 6);
+    assert_eq!(lifecycle.endpoints[&id()].snapshot, Some(terminal));
+}
+
+#[test]
 fn eligibility_and_name_recreate_only_after_observed_absence() {
     let mut lifecycle = Lifecycle::new(Fake::default());
     lifecycle.create(spec()).unwrap();

@@ -13,7 +13,7 @@ use moiren_windows_audio::{
         ProcessLoopbackOptions, inspect_process,
         prepare_process_capture_with_gate_returning_with_abort,
     },
-    vad::{Channels, Intent, PdoState, WindowsVadProvider},
+    vad::{Channels, EndpointSnapshot, Intent, PdoState, VadExportObservation, WindowsVadProvider},
 };
 use std::{
     str::FromStr,
@@ -2168,39 +2168,101 @@ fn retire_vad(
     endpoint_id: VirtualEndpointId,
     last_observation: &mut Option<Value>,
     expected: Option<RetirementPin>,
-) -> Result<moiren_windows_audio::vad::VadExportObservation> {
-    let deadline = Instant::now() + Duration::from_secs(20);
+) -> Result<VadExportObservation> {
+    retire_vad_with(
+        Instant::now() + Duration::from_secs(20),
+        last_observation,
+        expected,
+        Instant::now,
+        || {
+            provider
+                .export_observations()
+                .into_iter()
+                .find(|view| view.endpoint_id == endpoint_id)
+                .context("VAD export missing during cleanup")
+        },
+        |snapshot| {
+            let stamp = snapshot_stamp(snapshot);
+            if snapshot.state() == PdoState::Removed {
+                return Ok(Some(provider.confirm_retired_export(endpoint_id, stamp)?));
+            }
+            if snapshot.gate_open() {
+                provider.set_export_gate(endpoint_id, stamp, false, 0, 0)?;
+            } else if snapshot.state() != PdoState::Removing {
+                provider.retire_export(endpoint_id, stamp)?;
+            }
+            Ok(None)
+        },
+        thread::sleep,
+    )
+}
+
+fn retire_vad_with(
+    deadline: Instant,
+    last_observation: &mut Option<Value>,
+    expected: Option<RetirementPin>,
+    mut now: impl FnMut() -> Instant,
+    mut observe: impl FnMut() -> Result<VadExportObservation>,
+    mut advance: impl FnMut(EndpointSnapshot) -> Result<Option<EndpointSnapshot>>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<VadExportObservation> {
+    *last_observation = None;
     loop {
-        let view = provider
-            .export_observations()
-            .into_iter()
-            .find(|view| view.endpoint_id == endpoint_id)
-            .context("VAD export missing during cleanup")?;
-        *last_observation = Some(vad_observation_json(&view));
-        let Some(snapshot) = view.snapshot else {
-            ensure!(
-                Instant::now() < deadline,
-                "VAD cleanup snapshot became uncertain"
-            );
-            thread::sleep(Duration::from_millis(50));
-            continue;
-        };
-        if let Some(expected) = expected {
-            expected.validate(snapshot_stamp(snapshot))?;
-        }
-        if snapshot.state() == PdoState::Removed {
-            return Ok(view);
-        }
-        if snapshot.gate_open() {
-            provider.set_export_gate(endpoint_id, snapshot_stamp(snapshot), false, 0, 0)?;
-        } else if snapshot.state() != PdoState::Removing {
-            provider.retire_export(endpoint_id, snapshot_stamp(snapshot))?;
-        }
         ensure!(
-            Instant::now() < deadline,
-            "VAD cleanup did not reach Removed"
+            now() < deadline,
+            "VAD cleanup did not reach Removed before deadline"
         );
-        thread::sleep(Duration::from_millis(50));
+        let observed = observe();
+        let observed_at = now();
+        let mut view = observed?;
+        if observed_at >= deadline {
+            *last_observation = Some(serde_json::json!({
+                "late_observation": vad_observation_json(&view),
+            }));
+            bail!("VAD cleanup observation arrived after deadline");
+        }
+
+        let terminal = view
+            .snapshot
+            .is_some_and(|snapshot| snapshot.state() == PdoState::Removed);
+        // A REMOVE reply or a retained provider snapshot can report Removed.
+        // Keep it in diagnostics until a direct QUERY confirms it.
+        let observation = vad_observation_json(&view);
+        *last_observation = Some(if terminal {
+            serde_json::json!({ "unconfirmed_terminal": observation })
+        } else {
+            observation
+        });
+        if let Some(snapshot) = view.snapshot {
+            if let Some(expected) = expected {
+                expected.validate(snapshot_stamp(snapshot))?;
+            }
+            ensure!(
+                now() < deadline,
+                "VAD cleanup did not reach Removed before deadline"
+            );
+            let advanced = advance(snapshot);
+            let finished_at = now();
+            if terminal {
+                let confirmed = advanced?.context("VAD cleanup missing direct terminal QUERY")?;
+                view.snapshot = Some(confirmed);
+                view.diagnostic_provenance =
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh;
+                let observation = vad_observation_json(&view);
+                if finished_at >= deadline {
+                    *last_observation =
+                        Some(serde_json::json!({ "late_observation": observation }));
+                    bail!("VAD cleanup terminal QUERY arrived after deadline");
+                }
+                *last_observation = Some(observation);
+                return Ok(view);
+            }
+            advanced?;
+        }
+        let remaining = deadline.saturating_duration_since(now());
+        if !remaining.is_zero() {
+            sleep(Duration::from_millis(50).min(remaining));
+        }
     }
 }
 #[cfg(test)]
@@ -2208,8 +2270,7 @@ mod tests {
     use super::*;
     use moiren_engine::{boundary::ClockRole, host::NodeConfig};
     use moiren_windows_audio::vad::{
-        Capabilities, EndpointSnapshot, StreamState, VadExportDiagnosticProvenance,
-        VadExportObservation, VadPcmTelemetrySnapshot,
+        Capabilities, StreamState, VadExportDiagnosticProvenance, VadPcmTelemetrySnapshot,
     };
     use std::cell::{Cell, RefCell};
 
@@ -2554,6 +2615,26 @@ mod tests {
         gate_epoch: u64,
         driver_quality: [u64; 2],
     ) -> VadExportObservation {
+        endpoint_view_with_pdo(
+            intent,
+            state,
+            gate_open,
+            stream_generation,
+            gate_epoch,
+            driver_quality,
+            PdoState::Present,
+        )
+    }
+
+    fn endpoint_view_with_pdo(
+        intent: Intent,
+        state: StreamState,
+        gate_open: bool,
+        stream_generation: u64,
+        gate_epoch: u64,
+        driver_quality: [u64; 2],
+        pdo_state: PdoState,
+    ) -> VadExportObservation {
         let id = VirtualEndpointId::from_bytes([intent as u8; 16]);
         let mut caps = [0u8; 64];
         for (offset, value) in [
@@ -2576,12 +2657,12 @@ mod tests {
         for (offset, value) in [
             (0, 128u32),
             (4, 2),
-            (16, PdoState::Present as u32),
+            (16, pdo_state as u32),
             (20, intent as u32),
             (24, 2),
             (28, u32::from(gate_open)),
             (32, 1),
-            (36, 1),
+            (36, u32::from(pdo_state == PdoState::Present)),
             (88, 2),
             (92, 48),
             (100, state as u32),
@@ -2615,6 +2696,132 @@ mod tests {
             error: None,
             diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
         }
+    }
+
+    fn removed_view() -> VadExportObservation {
+        endpoint_view_with_pdo(
+            Intent::Playback,
+            StreamState::Closed,
+            false,
+            17,
+            19,
+            [0, 0],
+            PdoState::Removed,
+        )
+    }
+
+    #[test]
+    fn retirement_rejects_observation_at_deadline_before_advancing() {
+        for view in [
+            removed_view(),
+            endpoint_view(Intent::Playback, StreamState::Running),
+        ] {
+            let start = Instant::now();
+            let deadline = start + Duration::from_secs(20);
+            let clock = Cell::new(start);
+            let mut receipt = None;
+            let result = retire_vad_with(
+                deadline,
+                &mut receipt,
+                None,
+                || clock.get(),
+                || {
+                    clock.set(deadline);
+                    Ok(view.clone())
+                },
+                |_| panic!("late observation cannot authorize an operation"),
+                |_| panic!("expired deadline"),
+            );
+            assert!(result.is_err());
+            let receipt = receipt.unwrap();
+            assert!(receipt.get("snapshot").is_none());
+            assert_eq!(receipt["late_observation"], vad_observation_json(&view));
+        }
+    }
+
+    #[test]
+    fn retirement_needs_a_timely_direct_query_of_the_terminal_snapshot() {
+        for late in [false, true] {
+            let start = Instant::now();
+            let deadline = start + Duration::from_secs(20);
+            let clock = Cell::new(start);
+            let queried = Cell::new(false);
+            let mut receipt = None;
+            let mut view = removed_view();
+            view.diagnostic_provenance = VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+            let snapshot = view.snapshot.unwrap();
+            let result = retire_vad_with(
+                deadline,
+                &mut receipt,
+                Some(RetirementPin::Admitted(snapshot_stamp(snapshot))),
+                || clock.get(),
+                || Ok(view.clone()),
+                |provisional_snapshot| {
+                    assert_eq!(provisional_snapshot, snapshot);
+                    assert!(!queried.replace(true));
+                    if late {
+                        clock.set(deadline);
+                    }
+                    Ok(Some(snapshot))
+                },
+                |_| panic!("terminal observation should not sleep"),
+            );
+            assert!(queried.get());
+            let receipt = receipt.unwrap();
+            if late {
+                assert!(result.is_err());
+                assert!(receipt.get("snapshot").is_none());
+                assert_eq!(receipt["late_observation"]["snapshot"]["state"], "Removed");
+            } else {
+                assert!(result.is_ok());
+                assert_eq!(receipt["snapshot"]["state"], "Removed");
+                assert_eq!(receipt["diagnostic_provenance"], "Fresh");
+            }
+        }
+    }
+
+    #[test]
+    fn retirement_keeps_unconfirmed_terminal_after_query_failure() {
+        let start = Instant::now();
+        let mut receipt = None;
+        let view = removed_view();
+        let result = retire_vad_with(
+            start + Duration::from_secs(20),
+            &mut receipt,
+            None,
+            || start,
+            || Ok(view.clone()),
+            |_| anyhow::bail!("driver QUERY failed"),
+            |_| panic!("terminal observation should not sleep"),
+        );
+        assert_eq!(result.unwrap_err().to_string(), "driver QUERY failed");
+        let receipt = receipt.unwrap();
+        assert!(receipt.get("snapshot").is_none());
+        assert_eq!(receipt["unconfirmed_terminal"], vad_observation_json(&view));
+    }
+
+    #[test]
+    fn retirement_caps_sleep_and_does_not_start_a_poll_at_deadline() {
+        let start = Instant::now();
+        let remaining = Duration::from_millis(12);
+        let clock = Cell::new(start);
+        let view = endpoint_view(Intent::Playback, StreamState::Running);
+        let result = retire_vad_with(
+            start + remaining,
+            &mut None,
+            None,
+            || clock.get(),
+            || {
+                assert_eq!(clock.get(), start);
+                Ok(view.clone())
+            },
+            |_| Ok(None),
+            |interval| {
+                assert_eq!(interval, remaining);
+                clock.set(clock.get() + interval);
+            },
+        );
+        assert!(result.is_err());
     }
 
     #[test]

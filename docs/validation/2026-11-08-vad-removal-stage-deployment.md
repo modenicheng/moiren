@@ -82,6 +82,12 @@ output has an independent1MiB maximum and create-new semantics. It performs no
 native operation. The exact five-scalar typed QUERY stamp selects runtime and
 session; cached/failed/missing provenance cannot establish direct Removed.
 
+The current probe confirms a reported `Removed` state with a same-session
+driver QUERY for the exact retirement stamp. The QUERY must complete before
+the existing 20-second cleanup deadline. A terminal snapshot without that
+confirmation is retained under `unconfirmed_terminal`. Late results are
+retained under `late_observation`. Both fields are diagnostic only.
+
 The output keeps these independent facts:
 
 - Partial decoded-stage association and observed/unobserved stages.
